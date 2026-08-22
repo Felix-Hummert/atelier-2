@@ -1,0 +1,331 @@
+<title>Werkstatt-Zielbild</title>
+<style>
+:root{
+  --paper:#F3F1EA; --ink:#20241F; --muted:#6B6F63; --line:#DDD9CC;
+  --card:#FBFAF5; --panel:#FFFFFF; --accent:#1E6E50; --run:#2A7DB8;
+  --amber:#9A6B10; --red:#A33D2F; --queued:#B9B5A7; --logbg:#23261F; --logink:#D9DECB;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#1B1D19; --ink:#ECEAE0; --muted:#9BA091; --line:#3A3D34;
+    --card:#242720; --panel:#2A2D25; --accent:#5FB893; --run:#6FB4E0;
+    --amber:#D2A24C; --red:#D0766A; --queued:#5A5D52; --logbg:#14160F; --logink:#C4C9B4;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#1B1D19; --ink:#ECEAE0; --muted:#9BA091; --line:#3A3D34;
+  --card:#242720; --panel:#2A2D25; --accent:#5FB893; --run:#6FB4E0;
+  --amber:#D2A24C; --red:#D0766A; --queued:#5A5D52; --logbg:#14160F; --logink:#C4C9B4;
+}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;line-height:1.5;margin:0;padding:0 1.25rem 5rem}
+main{max-width:70rem;margin:0 auto}
+header.page{padding:3rem 0 1.2rem;border-bottom:1px solid var(--line)}
+.eyebrow{font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700}
+h1{font-size:2.3rem;margin:.2rem 0 .4rem;letter-spacing:-.02em;text-wrap:balance}
+.lede{max-width:48rem;color:var(--muted);margin:0}
+h2{font-size:1.25rem;margin:2.6rem 0 .15rem}
+h2 .no{color:var(--accent);font-variant-numeric:tabular-nums;margin-right:.4rem}
+.q{color:var(--muted);font-style:italic;margin:.1rem 0 .9rem}
+.note{background:var(--card);border-left:3px solid var(--accent);border-radius:0 .5rem .5rem 0;padding:.6rem .9rem;margin:.85rem 0 0;font-size:.89rem}
+code{font-family:ui-monospace,"Cascadia Mono",Menlo,monospace;font-size:.87em}
+.mock{border:1px solid var(--line);border-radius:.75rem;background:var(--card);overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.frame{display:grid;grid-template-columns:11.5rem 1fr;min-height:22rem}
+.rail{background:var(--panel);border-right:1px solid var(--line);padding:.8rem .6rem;display:flex;flex-direction:column;gap:.15rem}
+.rail .brand{font-weight:800;letter-spacing:-.02em;padding:.2rem .55rem .7rem;font-size:1rem}
+.rail a{display:flex;align-items:center;gap:.55rem;padding:.4rem .55rem;border-radius:.45rem;color:var(--muted);text-decoration:none;font-size:.89rem}
+.rail a.on{background:var(--paper);color:var(--ink);font-weight:650}
+.rail a .ico{width:1.05rem;text-align:center}
+.rail .badge{margin-left:auto;font-size:.68rem;background:var(--amber);color:#fff;border-radius:1rem;padding:.02rem .4rem;font-weight:700}
+.rail .badge.run{background:var(--run)}
+.rail .grow{flex:1}
+.rail .proj{border-top:1px solid var(--line);margin-top:.5rem;padding-top:.55rem;font-size:.8rem;color:var(--muted)}
+.rail .proj b{color:var(--ink)}
+.stagewrap{padding:.9rem 1.05rem 1.05rem;min-width:0}
+.pagehead{display:flex;align-items:center;gap:.65rem;margin-bottom:.75rem;flex-wrap:wrap}
+.pagehead h3{margin:0;font-size:1.05rem}
+.pagehead .right{margin-left:auto;display:flex;gap:.5rem;align-items:center}
+.btn{background:var(--accent);color:#fff;border-radius:.45rem;padding:.28rem .85rem;font-size:.82rem;font-weight:650}
+.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+.st-dot{width:.68rem;height:.68rem;border-radius:50%;flex:none}
+.st-dot.run{background:var(--run);box-shadow:0 0 0 4px color-mix(in srgb,var(--run) 20%,transparent)}
+.st-dot.wait{background:var(--amber)} .st-dot.ok{background:var(--accent)} .st-dot.bad{background:var(--red)} .st-dot.q{background:var(--queued)}
+.mini{display:inline-flex;gap:.26rem;align-items:center}
+.mini i{width:.54rem;height:.54rem;border-radius:50%;background:var(--queued);font-style:normal}
+.mini i.d{background:var(--accent)} .mini i.r{background:var(--run)} .mini i.w{background:var(--amber)} .mini i.b{background:var(--red)}
+.issue{font-size:.74rem;border:1px solid var(--line);border-radius:1rem;padding:.05rem .5rem;color:var(--muted);background:var(--card);white-space:nowrap}
+.chip{border:1px solid var(--line);background:var(--card);border-radius:.35rem;padding:.1rem .5rem;font-size:.73rem;color:var(--muted);white-space:nowrap}
+.chip b{color:var(--ink);font-weight:600}
+.sect{font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:.95rem 0 .4rem;font-weight:700}
+.row{display:flex;align-items:center;gap:.65rem;background:var(--panel);border:1px solid var(--line);border-radius:.55rem;padding:.5rem .8rem;margin-bottom:.4rem;font-size:.89rem}
+.row b{font-size:.9rem;white-space:nowrap}
+.row .dim{color:var(--muted);font-size:.8rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .tail{margin-left:auto;display:flex;gap:.55rem;align-items:center}
+.act{font-size:.79rem;font-weight:650;color:var(--accent);white-space:nowrap}
+.chat{display:flex;flex-direction:column;gap:.6rem;max-width:42rem}
+.msg{border-radius:.7rem;padding:.55rem .8rem;font-size:.89rem;max-width:92%}
+.msg.you{background:color-mix(in srgb,var(--accent) 10%,var(--panel));align-self:flex-end;border:1px solid color-mix(in srgb,var(--accent) 25%,var(--line))}
+.msg.house{background:var(--panel);border:1px solid var(--line);align-self:flex-start}
+.runcard{border:1px solid var(--line);border-left:3px solid var(--run);background:var(--card);border-radius:.5rem;padding:.45rem .65rem;margin-top:.45rem;display:flex;align-items:center;gap:.55rem;font-size:.84rem}
+.runcard.ok{border-left-color:var(--accent)}
+.runcard.wait{border-left-color:var(--amber)}
+.runcard .dim{color:var(--muted);font-size:.78rem}
+.runcard .act{margin-left:auto}
+.inputbar{display:flex;gap:.5rem;margin-top:.75rem;max-width:42rem}
+.inputbar input{flex:1;border:1px solid var(--line);border-radius:.55rem;padding:.5rem .8rem;font-size:.89rem;background:var(--panel);color:var(--ink)}
+.legend{display:flex;gap:.85rem;flex-wrap:wrap;font-size:.74rem;color:var(--muted);margin:.1rem 0 .1rem}
+.legend i{font-style:normal;display:inline-flex;align-items:center;gap:.3rem}
+.lg{display:inline-block;width:.8rem;height:.8rem;border:2px solid var(--muted);background:var(--panel)}
+.lg.circle{border-radius:50%}
+.lg.square{border-radius:.16rem}
+.lg.hex{clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%);border:none;background:var(--muted)}
+.loopbox{display:flex;align-items:flex-start;border:1.5px dashed var(--line);border-radius:.8rem;padding:.5rem .35rem .05rem;margin:0 .15rem;position:relative}
+.loopbox>.lbl{position:absolute;top:-.6rem;left:.75rem;background:var(--card);padding:0 .4rem;font-size:.66rem;color:var(--muted);white-space:nowrap}
+.rounds{font-size:.77rem;color:var(--muted);margin:-.35rem 0 .65rem}
+.rounds b{color:var(--ink)}
+.pipe{display:flex;align-items:flex-start;overflow-x:auto;padding:.95rem .2rem 1.1rem}
+.stage{display:flex;flex-direction:column;align-items:center;min-width:6.4rem}
+.dot{width:2.2rem;height:2.2rem;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.92rem;font-weight:700;border:2.5px solid var(--queued);color:var(--queued);background:var(--panel);position:relative}
+.dot.action{border-radius:.4rem}
+.dot.hexn{border-radius:0;border:none;clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%);width:2.45rem;background:var(--queued)}
+.dot.hexn>i{font-style:normal;position:absolute;inset:2.5px;clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%);background:var(--panel);display:flex;align-items:center;justify-content:center}
+.dot.hexn.wait{background:var(--amber);color:var(--amber)}
+.dot.done{border-color:var(--accent);color:var(--accent)}
+.dot.wait{border-color:var(--amber);color:var(--amber)}
+.dot.run{border-color:var(--run);color:var(--run)}
+.dot.run::after{content:"";position:absolute;inset:-7px;border-radius:50%;border:2px solid var(--run);opacity:.55;animation:pulse 1.6s ease-out infinite}
+@media (prefers-reduced-motion: reduce){.dot.run::after{animation:none;opacity:.3}}
+@keyframes pulse{0%{transform:scale(.82);opacity:.55}100%{transform:scale(1.25);opacity:0}}
+.dot.still{border-color:var(--muted);color:var(--muted)}
+.dot.hexn.still{background:var(--muted);color:var(--muted)}
+.stage b{margin-top:.42rem;font-size:.78rem;font-weight:600}
+.stage small{color:var(--muted);font-size:.68rem;margin-top:.06rem}
+.pl{flex:none;height:2px;background:var(--line);width:2.1rem;margin-top:1.08rem}
+.pl.done{background:var(--accent)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:.55rem;padding:.65rem .85rem}
+.panel h4{margin:.05rem 0 .4rem;font-size:.9rem;display:flex;align-items:center;gap:.5rem}
+.tag{font-size:.65rem;letter-spacing:.08em;text-transform:uppercase;border-radius:.3rem;padding:.07rem .4rem;font-weight:700}
+.tag.run{background:color-mix(in srgb,var(--run) 14%,transparent);color:var(--run)}
+.tabs{display:flex;gap:.15rem;border-bottom:1px solid var(--line);margin-bottom:.5rem;font-size:.79rem}
+.tabs span{padding:.26rem .55rem;color:var(--muted)}
+.tabs span.on{color:var(--ink);font-weight:600;border-bottom:2px solid var(--accent);margin-bottom:-1px}
+.log{background:var(--logbg);color:var(--logink);border-radius:.45rem;padding:.6rem .7rem;font-family:ui-monospace,Menlo,monospace;font-size:.73rem;line-height:1.6;overflow-x:auto;white-space:pre}
+.log .t{color:#8A9178} .log .ok{color:#9CD3A8}
+.cursor{display:inline-block;width:.55em;height:1em;background:var(--logink);vertical-align:text-bottom;animation:blink 1.1s steps(1) infinite}
+@media (prefers-reduced-motion: reduce){.cursor{animation:none}}
+@keyframes blink{50%{opacity:0}}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(13.5rem,1fr));gap:.6rem}
+.wf{background:var(--panel);border:1px solid var(--line);border-radius:.55rem;padding:.65rem .8rem}
+.wf b{display:block;font-size:.91rem}
+.wf small{color:var(--muted);display:block;margin-top:.1rem}
+table{width:100%;border-collapse:collapse;font-size:.84rem}
+th{font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:left;padding:.3rem .5rem;border-bottom:1px solid var(--line)}
+td{padding:.38rem .5rem;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+.st{font-weight:600} .st.ok{color:var(--accent)} .st.bad{color:var(--red)}
+footer{margin-top:3rem;border-top:1px solid var(--line);padding-top:1rem;color:var(--muted);font-size:.88rem}
+.ia{width:100%;border-collapse:collapse;font-size:.9rem;margin:.9rem 0 0}
+.ia td,.ia th{border:1px solid var(--line);padding:.42rem .6rem;text-align:left;vertical-align:top}
+.ia th{background:var(--card);font-size:.74rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+@media(max-width:44rem){.frame{grid-template-columns:1fr}.rail{flex-direction:row;flex-wrap:wrap;border-right:none;border-bottom:1px solid var(--line)}.rail .grow,.rail .proj{display:none}}
+</style>
+<main>
+<header class="page">
+  <div class="eyebrow">Fassung 6 · 22.08. · English UI, Ruhe als Standard</div>
+  <h1>Werkstatt-Zielbild</h1>
+  <p class="lede">Zwei Grundregeln auf jeder Fläche: <b>UI-Sprache ist Englisch</b> (die frozen Wörter des Hauses), und <b>Ruhe als Standard</b> — die Hauptansicht zeigt nur Name, Zustand, Fortschritt und den einen nächsten Zug; alles Weitere (Dauer, Modelle, Hashes, Logs) erscheint erst am Detail oder auf Hover. Jede Info ist da — aber genau dann, wenn du sie suchst.</p>
+  <table class="ia">
+    <tr><th>Left rail</th><th>Frage</th><th>Sichtbar per Default</th></tr>
+    <tr><td><b>Chat</b></td><td>Was soll passieren?</td><td>Gespräch + lebende Run-Karten (Name · Issue · Zustand)</td></tr>
+    <tr><td><b>Board</b></td><td>Wie weit sind wir?</td><td>Zeile je Lauf: Punkt, Name, Issue, ein Status-Satz, Mini-Pipeline</td></tr>
+    <tr><td><b>Workflows</b></td><td>Was kann das Haus?</td><td>Karten: Name + ein Satz. Detail: Graph + Start</td></tr>
+    <tr><td><b>History</b></td><td>Was ist gelaufen?</td><td>Name · Issue · Ergebnis in Klartext · Dauer</td></tr>
+  </table>
+</header>
+
+<h2><span class="no">01</span>Chat</h2>
+<p class="q">Du sagst, was du willst. Arbeit erscheint als Karte — nur Name, Issue, Zustand. Details ein Klick.</p>
+<div class="mock"><div class="frame">
+  <nav class="rail">
+    <div class="brand">atelier</div>
+    <a class="on"><span class="ico">▸</span>Chat</a>
+    <a><span class="ico">◫</span>Board<span class="badge run">4</span><span class="badge">1</span></a>
+    <a><span class="ico">⧉</span>Workflows</a>
+    <a><span class="ico">≡</span>History</a>
+    <div class="grow"></div>
+    <div class="proj"><b>atelier-2</b> · switch project</div>
+    <div class="proj" style="border-top:none;margin-top:.15rem;padding-top:.15rem">⚙ Settings · ◯ Profile <span style="font-size:.68rem">(later)</span></div>
+  </nav>
+  <div class="stagewrap">
+    <div class="chat">
+      <div class="msg you">Finish the preview door (#450) and fix the wait bug (#510) — in parallel.</div>
+      <div class="msg house">Started two runs. I'll ping you when one needs you.
+        <div class="runcard"><span class="st-dot run"></span><b>Preview door</b><span class="issue">#450</span><span class="dim">review · round 2/3</span><span class="act">Watch →</span></div>
+        <div class="runcard"><span class="st-dot run"></span><b>Wait bug</b><span class="issue">#510</span><span class="dim">build</span><span class="act">Watch →</span></div>
+      </div>
+      <div class="msg house"><b>Done:</b> Wait bug — PR merged, issue #510 closed.
+        <div class="runcard ok"><span class="st-dot ok"></span><b>Wait bug</b><span class="issue">#510 ✓</span><span class="dim">38 min</span><span class="act">Result →</span></div>
+      </div>
+      <div class="msg house"><b>Needs you:</b> merge gate on “Preview door” — review is green. Merge?
+        <div class="runcard wait"><span class="st-dot wait"></span><b>merge gate</b><span class="issue">#450</span><span class="act">Answer →</span></div>
+      </div>
+    </div>
+    <div class="inputbar"><input value="Yes, merge — then start B2."><span class="btn">Send</span></div>
+  </div>
+</div></div>
+<div class="note">Der Chat ist Vision #7 (Dirigent) — Engine steht, die Chat-Tür ist der nächste große Kopf. Bis dahin füllt der Desk diese Rolle.</div>
+
+<h2><span class="no">02</span>Board</h2>
+<p class="q">Eine Zeile pro Lauf, ein Status-Satz, Mini-Pipeline. Mehr zeigt die Hauptansicht nicht — Dauer, Modelle, Details wohnen im Lauf.</p>
+<div class="mock"><div class="frame">
+  <nav class="rail">
+    <div class="brand">atelier</div>
+    <a><span class="ico">▸</span>Chat</a>
+    <a class="on"><span class="ico">◫</span>Board<span class="badge run">4</span><span class="badge">1</span></a>
+    <a><span class="ico">⧉</span>Workflows</a>
+    <a><span class="ico">≡</span>History</a>
+    <div class="grow"></div>
+    <div class="proj"><b>atelier-2</b> · switch project</div>
+    <div class="proj" style="border-top:none;margin-top:.15rem;padding-top:.15rem">⚙ Settings · ◯ Profile <span style="font-size:.68rem">(later)</span></div>
+  </nav>
+  <div class="stagewrap">
+    <div class="pagehead"><h3>Board</h3></div>
+    <div class="sect">Needs you · 1</div>
+    <div class="row"><span class="st-dot wait"></span><b>merge gate · Preview door</b><span class="issue">#450</span><div class="tail"><span class="act">Answer →</span></div></div>
+    <div class="sect">Running · 3</div>
+    <div class="row"><span class="st-dot run"></span><b>Preview door</b><span class="issue">#450</span><span class="dim">review · round 2/3</span><div class="tail"><span class="mini"><i class="d"></i><i class="d"></i><i class="r"></i><i></i><i></i></span></div></div>
+    <div class="row"><span class="st-dot run"></span><b>Runner session B1</b><span class="issue">#15</span><span class="dim">build</span><div class="tail"><span class="mini"><i class="d"></i><i class="r"></i><i></i><i></i></span></div></div>
+    <div class="row"><span class="st-dot bad"></span><b>Docs sweep</b><span class="issue">#162</span><span class="dim" style="color:var(--red)">not green after 3 rounds</span><div class="tail"><span class="act">Why? →</span></div></div>
+    <div class="sect">Queued · 1</div>
+    <div class="row"><span class="st-dot q"></span><b>Runner session B2</b><span class="issue">#15</span><span class="dim">after B1</span></div>
+    <div class="sect">Done today · 2</div>
+    <div class="row"><span class="st-dot ok"></span><b>Wait bug</b><span class="issue">#510 ✓</span><span class="dim">PR #512 merged, issue closed</span></div>
+    <div class="row"><span class="st-dot ok"></span><b>Secret scan</b><span class="issue">#505 ✓</span><span class="dim">PR #507 merged</span></div>
+  </div>
+</div></div>
+<div class="note">Ergebnis in Klartext („PR merged, issue closed"), Rot mit „Why?" direkt daneben. Die Abschnitts-Zähler ersetzen jede weitere Statistik.</div>
+
+<h2><span class="no">03</span>Run — der Graph, live</h2>
+<p class="q">Klick auf eine Board-Zeile. Form = Typ (Kreis Agent, Quadrat Action, Hexagon Wait), Farbe = Zustand. Ein Knoten-Panel — das des angeklickten Knotens.</p>
+<div class="mock"><div class="frame">
+  <nav class="rail">
+    <div class="brand">atelier</div>
+    <a><span class="ico">▸</span>Chat</a>
+    <a class="on"><span class="ico">◫</span>Board<span class="badge run">4</span><span class="badge">1</span></a>
+    <a><span class="ico">⧉</span>Workflows</a>
+    <a><span class="ico">≡</span>History</a>
+    <div class="grow"></div>
+    <div class="proj"><b>atelier-2</b> · switch project</div>
+    <div class="proj" style="border-top:none;margin-top:.15rem;padding-top:.15rem">⚙ Settings · ◯ Profile <span style="font-size:.68rem">(later)</span></div>
+  </nav>
+  <div class="stagewrap">
+    <div class="pagehead"><span class="act">← Board</span><h3>Preview door</h3><span class="issue">#450</span><div class="right"><span class="btn ghost">Cancel run</span></div></div>
+    <div class="pipe">
+      <div class="stage"><div class="dot done">✓</div><b>plan</b></div><div class="pl done"></div>
+      <div class="loopbox"><span class="lbl">↻ until green · max 3</span>
+        <div class="stage"><div class="dot done">✓</div><b>build</b></div><div class="pl done"></div>
+        <div class="stage"><div class="dot run">▶</div><b>review</b><small>41 s</small></div><div class="pl"></div>
+        <div class="stage"><div class="dot">·</div><b>fix</b></div>
+      </div><div class="pl"></div>
+      <div class="stage"><div class="dot hexn"><i>⬢</i></div><b>merge gate</b><small>then: you</small></div><div class="pl"></div>
+      <div class="stage"><div class="dot action">·</div><b>open PR</b></div>
+    </div>
+    <div class="rounds">Rounds: <b>1</b> red (2 findings → fix) · <b>2</b> running</div>
+    <div class="panel">
+      <h4>review <span class="tag run">running</span><span style="margin-left:auto" class="chip">grok</span></h4>
+      <div class="tabs"><span class="on">Log · live</span><span>Input</span><span>Prompt</span><span>Evidence</span></div>
+      <div class="log"><span class="t">13:41:02</span> Reading diff against main, 14 files …
+<span class="t">13:41:19</span> Checking resolve_start_bindings against the starter path
+<span class="t">13:41:36</span> <span class="ok">Finding 1 drafted</span> — refusal ordering …
+<span class="t">13:41:43</span> Writing verdict<span class="cursor"></span></div>
+    </div>
+  </div>
+</div></div>
+<div class="note">Jeder Knoten trägt seine <b>komplette Geschichte</b> in Tabs: <b>Result</b> (mit Artefakten als Chips, z.&nbsp;B. „patch.diff · 14 files ⧉"), <b>Input</b> (was er bekam: Order + Vorgänger-Outputs über die Kontext-Kanten), <b>Prompt</b>, <b>Log</b>, <b>Evidence</b> (Hashes, Receipt, Who/Modell/Usage). Fertige Knoten öffnen auf Result, laufende auf Log. Alles ist dauerhaft gespeichert (event-sourced + CAS) — die Ansicht holt es erst, wenn du klickst.</div>
+
+<h2><span class="no">04</span>Workflows</h2>
+<p class="q">Liste: nur Karten. Detail: derselbe Graph, still — Start ist die eine Aktion. Kein Editor: Agenten erstellen, du segnest auf dem Board ab.</p>
+<div class="mock"><div class="frame">
+  <nav class="rail">
+    <div class="brand">atelier</div>
+    <a><span class="ico">▸</span>Chat</a>
+    <a><span class="ico">◫</span>Board<span class="badge run">4</span><span class="badge">1</span></a>
+    <a class="on"><span class="ico">⧉</span>Workflows</a>
+    <a><span class="ico">≡</span>History</a>
+    <div class="grow"></div>
+    <div class="proj"><b>atelier-2</b> · switch project</div>
+    <div class="proj" style="border-top:none;margin-top:.15rem;padding-top:.15rem">⚙ Settings · ◯ Profile <span style="font-size:.68rem">(later)</span></div>
+  </nav>
+  <div class="stagewrap">
+    <div class="pagehead"><h3>Workflows</h3><div class="tabs" style="border:none;margin:0"><span class="on">Catalog</span><span>Building blocks</span></div></div>
+    <div class="cards">
+      <div class="wf"><b>iterate-code</b><small>build → review → fix, until green</small></div>
+      <div class="wf"><b>diff-review</b><small>one diff, one verdict</small></div>
+      <div class="wf"><b>iterate-text</b><small>write → check</small></div>
+      <div class="wf"><b>ui-quality-review</b><small>planned — needs #301-B</small></div>
+    </div>
+  </div>
+</div></div>
+<div style="height:1rem"></div>
+<div class="mock"><div class="frame">
+  <nav class="rail">
+    <div class="brand">atelier</div>
+    <a><span class="ico">▸</span>Chat</a>
+    <a><span class="ico">◫</span>Board<span class="badge run">4</span><span class="badge">1</span></a>
+    <a class="on"><span class="ico">⧉</span>Workflows</a>
+    <a><span class="ico">≡</span>History</a>
+    <div class="grow"></div>
+    <div class="proj"><b>atelier-2</b> · switch project</div>
+    <div class="proj" style="border-top:none;margin-top:.15rem;padding-top:.15rem">⚙ Settings · ◯ Profile <span style="font-size:.68rem">(later)</span></div>
+  </nav>
+  <div class="stagewrap">
+    <div class="pagehead"><span class="act">← Workflows</span><h3>iterate-code</h3><span class="chip">v3 · 41 runs</span><div class="right"><span class="btn">Start</span></div></div>
+    <div class="legend"><i><span class="lg circle"></span>Agent</i><i><span class="lg square"></span>Action</i><i><span class="lg hex"></span>Wait</i><i>┄ loop</i></div>
+    <div class="pipe" style="padding-top:.5rem">
+      <div class="stage"><div class="dot still">·</div><b>plan</b></div><div class="pl"></div>
+      <div class="loopbox"><span class="lbl">↻ until green · max 3</span>
+        <div class="stage"><div class="dot still">·</div><b>build</b></div><div class="pl"></div>
+        <div class="stage"><div class="dot still">·</div><b>review</b></div><div class="pl"></div>
+        <div class="stage"><div class="dot still">·</div><b>fix</b></div>
+      </div><div class="pl"></div>
+      <div class="stage"><div class="dot hexn still"><i>⬢</i></div><b>merge gate</b></div><div class="pl"></div>
+      <div class="stage"><div class="dot still action">·</div><b>open PR</b></div>
+    </div>
+    <div class="panel" style="max-width:24rem">
+      <h4>Start</h4>
+      <div style="display:flex;align-items:center;gap:.5rem;margin:.3rem 0;font-size:.85rem"><span style="width:4.5rem;color:var(--muted)">Order</span><i style="font-style:normal;border:1px solid var(--line);border-radius:.4rem;padding:.2rem .6rem;background:var(--card);flex:1">Issue #450</i></div>
+      <div style="display:flex;align-items:center;gap:.5rem;margin:.3rem 0;font-size:.85rem"><span style="width:4.5rem;color:var(--muted)">Crew</span><i style="font-style:normal;border:1px solid var(--line);border-radius:.4rem;padding:.2rem .6rem;background:var(--card);flex:1">Default</i></div>
+      <div style="display:flex;gap:.5rem;align-items:center;margin-top:.5rem"><span class="btn">Go</span><span class="chip">Preview: 6 nodes · all startable ✓</span></div>
+    </div>
+  </div>
+</div></div>
+<div class="note">Knoten-Klick im stillen Graphen zeigt Prompt-Vorlage, Rolle und Skills — erst auf Nachfrage. „Building blocks" (Agents · Skills · Actions) ist der zweite Reiter: ruhiges Inventar, kein Pflicht-Stopp. Ein neuer Entwurf eines Agenten erscheint als „Needs you: approve draft" auf dem Board, mit diesem Graph-Bild und dem Publish-Gate-Vergleich.</div>
+
+<h2><span class="no">05</span>History</h2>
+<div class="mock"><div class="frame">
+  <nav class="rail">
+    <div class="brand">atelier</div>
+    <a><span class="ico">▸</span>Chat</a>
+    <a><span class="ico">◫</span>Board<span class="badge run">4</span><span class="badge">1</span></a>
+    <a><span class="ico">⧉</span>Workflows</a>
+    <a class="on"><span class="ico">≡</span>History</a>
+    <div class="grow"></div>
+    <div class="proj"><b>atelier-2</b> · switch project</div>
+    <div class="proj" style="border-top:none;margin-top:.15rem;padding-top:.15rem">⚙ Settings · ◯ Profile <span style="font-size:.68rem">(later)</span></div>
+  </nav>
+  <div class="stagewrap">
+    <div class="pagehead"><h3>History</h3><div class="right"><span class="chip">7 days</span></div></div>
+    <table>
+      <tr><th>Run</th><th>Order</th><th>Result</th><th>Took</th></tr>
+      <tr><td>Wait bug</td><td>#510</td><td class="st ok">PR #512 merged</td><td>38 min</td></tr>
+      <tr><td>Secret scan</td><td>#505</td><td class="st ok">PR #507 merged</td><td>21 min</td></tr>
+      <tr><td>Docs sweep</td><td>#162</td><td class="st bad">Not green after 3 rounds</td><td>44 min</td></tr>
+      <tr><td>Probefahrt</td><td>—</td><td class="st ok">Done</td><td>4 min</td></tr>
+    </table>
+  </div>
+</div></div>
+<div class="note">Klick auf eine Zeile: derselbe Graph, eingefroren mit Endfarben — und <b>jeder Knoten behält für immer seine komplette Geschichte</b> (Result + Artefakte, Input, Prompt, Log, Evidence), gleiche Tabs wie im Live-Lauf. Die History ist kein Abstellraum, sondern der volle Lauf in der Vergangenheitsform. Export als Beweis-Dossier ist #104.</div>
+
+<footer>
+Fassung 6.2: Settings + Profile unten in der Leiste beim Projekt-Umschalter verankert — ehrlich als „later" markiert (Settings existieren heute rudimentär, Profil kommt mit Login/OIDC #82); aufgenommen, damit der Platz reserviert ist. Fassung 6 = Fassung 5 entrümpelt: UI komplett Englisch; pro Zeile nur Name · Issue · ein Status-Satz · Mini-Pipeline; Run-Ansicht zeigt EIN Knoten-Panel (das angeklickte); Zeiten/Modelle/Hashes erst am Detail; History ohne Hash-Spalte (Evidence wohnt im eingefrorenen Graphen). Prinzipien unverändert: ein Graph-Renderer in drei Zeitformen; Form=Typ, Farbe=Zustand; kein Editor — Agenten erstellen, du segnest ab. — Wenn das dein Bild trifft: Ich friere es als Mockup v5 + Ziel-Sätze im Repo ein und schneide die erste Bau-Scheibe (Board).
+</footer>
+</main>
