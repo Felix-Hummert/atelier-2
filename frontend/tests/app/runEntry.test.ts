@@ -155,6 +155,7 @@ describe("mobile run entry", () => {
                 depends_on: []
               }
             ],
+            loops: [],
             name: "Nightly regression sweep",
             description: "Runs the sweep and files what it finds."
           }

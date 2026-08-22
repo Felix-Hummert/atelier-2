@@ -129,6 +129,7 @@ describe("the authored agent roles a second consumer may edit", () => {
       agent_roles: roles,
       orders: [],
       node_previews: [],
+      loops: [],
       name: "roles",
       description: null
     }) as WorkflowRevisionDetail["graph"];

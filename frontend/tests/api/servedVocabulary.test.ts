@@ -139,6 +139,7 @@ describe("the served vocabulary", () => {
             depends_on: []
           }
         ],
+        loops: [],
         name: "Cook to order",
         description: null
       }

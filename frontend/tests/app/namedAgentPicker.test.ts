@@ -68,6 +68,7 @@ function v3Revision(hash: string, documentBase64: string) {
           depends_on: []
         }
       ],
+      loops: [],
       name: "Named start",
       description: null
     }

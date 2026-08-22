@@ -37,6 +37,7 @@ function v3Revision(name: string): WorkflowRevisionDetail {
           depends_on: []
         }
       ],
+      loops: [],
       name,
       description: null
     }

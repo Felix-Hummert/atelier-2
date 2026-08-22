@@ -324,6 +324,7 @@ def test_the_published_v3_revision_reads_back_naming_what_it_waits_for(
                 "depends_on": ["implement"],
             },
         ],
+        "loops": [],
         "name": V3_DOCUMENT_NAME,
         "description": None,
     }
