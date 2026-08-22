@@ -5,6 +5,7 @@
   import { THE_ONE_PROJECT } from "../lib/project";
   import { standingMarks } from "../lib/runState";
   import { studioPageCopy } from "../lib/studioPageCopy";
+  import { studioQuestions } from "../lib/studioQuestions";
 
   export let running: number;
   export let waiting: number;
@@ -24,7 +25,7 @@
       onclick={(event) => { event.preventDefault(); navigate("/atelier/project"); }}
     >{label}<span class="project-enter" aria-hidden="true">›</span></a>
     <InfoHint
-      label="Why one project"
+      label={studioQuestions.whyOneProject.hintLabel}
       exact="One installation, one project. The backend has no project register yet."
     />
   </div>

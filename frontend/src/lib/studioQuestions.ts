@@ -21,11 +21,13 @@ export const studioQuestions = {
   },
   whyOneProject: {
     id: "why-one-project",
-    question: "Why is there only one project?"
+    question: "Why is there only one project?",
+    hintLabel: "Why one project"
   },
   lastLandingTime: {
     id: "last-landing-time",
-    question: "When exactly did the last run land?"
+    question: "When exactly did the last run land?",
+    hintLabel: "Exact time"
   },
   reloadStudioRuns: {
     id: "reload-studio-runs",
@@ -44,9 +46,6 @@ export type StudioQuestionId = StudioQuestion["id"];
 export const studioQuestionAttribute = "data-studio-question";
 export const studioStageSelector = ".studio-home";
 export const studioInteractiveSelector = 'a[href], button, [role="button"], [role="link"]';
-
-const whyOneProjectName = "Why one project";
-const lastLandingTimeName = "Exact time";
 
 export type StudioControlFacts = {
   questionId: string | null;
@@ -81,10 +80,10 @@ export function questionForStudioControlFacts(facts: StudioControlFacts): Studio
     if (facts.href.startsWith("/atelier/runs/")) return studioQuestions.inboxRun;
     if (facts.href === "/atelier/project") return studioQuestions.project;
   }
-  if (facts.tag === "button" && facts.ariaLabel === whyOneProjectName) {
+  if (facts.tag === "button" && facts.ariaLabel === studioQuestions.whyOneProject.hintLabel) {
     return studioQuestions.whyOneProject;
   }
-  if (facts.tag === "button" && facts.ariaLabel === lastLandingTimeName) {
+  if (facts.tag === "button" && facts.ariaLabel === studioQuestions.lastLandingTime.hintLabel) {
     return studioQuestions.lastLandingTime;
   }
   if (
