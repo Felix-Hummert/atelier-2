@@ -356,10 +356,14 @@ def main(arguments: list[str] | None = None) -> int:
     session: CoreRunnerSession | None = None
     with server:
         for _ in range(_MAXIMUM_RUNNER_CONNECTIONS):
-            with context.wrap_socket(server.accept()[0], server_side=True) as connection:
+            with context.wrap_socket(
+                server.accept()[0], server_side=True
+            ) as connection:
                 presented = connection.getpeercert(binary_form=True)
                 if presented is None:
-                    raise RuntimeError("TLS client did not present an authenticated leaf")
+                    raise RuntimeError(
+                        "TLS client did not present an authenticated leaf"
+                    )
                 presented_pem = x509.load_der_x509_certificate(presented).public_bytes(
                     serialization.Encoding.PEM
                 )
@@ -370,8 +374,12 @@ def main(arguments: list[str] | None = None) -> int:
                     expected_uri=expected_runner_uri,
                     expected_eku=ExtendedKeyUsageOID.CLIENT_AUTH,
                 )
-                if presented != peer_certificate.public_bytes(serialization.Encoding.DER):
-                    raise RuntimeError("Runner peer leaf differs from the issuer handoff")
+                if presented != peer_certificate.public_bytes(
+                    serialization.Encoding.DER
+                ):
+                    raise RuntimeError(
+                        "Runner peer leaf differs from the issuer handoff"
+                    )
                 if session is None:
                     # Attested and constructed once, against the first
                     # connection -- neither the launcher's inspect attestation
@@ -396,13 +404,13 @@ def main(arguments: list[str] | None = None) -> int:
                         reference,
                         invocation,
                     )
-                released = _drive_until_released_or_dropped(connection, session, scenario)
+                released = _drive_until_released_or_dropped(
+                    connection, session, scenario
+                )
             if released:
                 break
     if not released:
-        raise RuntimeError(
-            "runner did not reach RELEASED within the reconnect bound"
-        )
+        raise RuntimeError("runner did not reach RELEASED within the reconnect bound")
     return 0
 
 
