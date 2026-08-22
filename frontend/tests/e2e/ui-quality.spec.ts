@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { runPageSchema } from "../../src/api/client";
+import { THE_ONE_PROJECT } from "../../src/lib/project";
 import {
   unnamedAxeViolations,
   type AxeBaselineEntry,
@@ -22,14 +23,14 @@ const surfaces: readonly { surface: CoreSurface; path: string; ready: (page: Pag
       surface: "studio",
       path: "/atelier",
       ready: async (page) => {
-        await expect(page.getByRole("heading", { name: "Studio" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
       }
     },
     {
       surface: "project",
       path: "/atelier/project",
       ready: async (page) => {
-        await expect(page.getByRole("heading", { name: "This workshop" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
       },
       pseudoReady: async (page) => {
         await expect(page.getByText("[[[ Project ]]]", { exact: true })).toBeVisible();
@@ -99,7 +100,7 @@ async function routeProjectReads(page: Page, read: () => ProjectRunReply, loadin
 }
 
 async function expectStudioCopyFits(page: Page, desktop: boolean): Promise<void> {
-  const heading = page.getByRole("heading", { name: "[[[ Studio ]]]" });
+  const heading = page.getByRole("heading", { name: "[[[ Board ]]]" });
   const board = page.locator(".studio-board");
   const home = page.locator(".studio-home");
   expect(await heading.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
@@ -126,16 +127,23 @@ test("core surfaces render owned display strings under a pseudo-locale", async (
     const separator = path.includes("?") ? "&" : "?";
     await page.goto(`${path}${separator}pseudo-locale=1`);
     if (path === "/atelier") {
-      await expect(page.getByRole("heading", { name: "[[[ Studio ]]]" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "[[[ Board ]]]" })).toBeVisible();
     } else if (pseudoReady !== undefined) {
       await pseudoReady(page);
     } else {
       await ready(page);
     }
     const rail = page.getByRole("navigation", { name: "Workshop" });
-    await expect(rail.getByText("[[[ Studio ]]]", { exact: true })).toBeVisible();
-    await expect(rail.getByText("[[[ Projekte ]]]", { exact: true })).toBeVisible();
-    await expect(rail.getByText("[[[ Runs ]]]", { exact: true })).toBeVisible();
+    await expect(rail.getByText("[[[ atelier ]]]", { exact: true })).toBeVisible();
+    await expect(rail.getByText("[[[ Chat ]]]", { exact: true })).toBeVisible();
+    await expect(rail.getByText("[[[ Board ]]]", { exact: true })).toBeVisible();
+    await expect(rail.getByText("[[[ Workflows ]]]", { exact: true })).toBeVisible();
+    await expect(rail.getByText("[[[ History ]]]", { exact: true })).toBeVisible();
+    await expect(rail.getByText("[[[ (later) ]]]", { exact: true })).toHaveCount(3);
+    await expect(rail.getByText("[[[ switch project ]]]", { exact: true })).toBeVisible();
+    await expect(rail.getByText("[[[ Settings ]]]", { exact: true })).toBeVisible();
+    await expect(rail.getByText("[[[ Profile ]]]", { exact: true })).toBeVisible();
+    await expect(rail.getByText(THE_ONE_PROJECT, { exact: true })).toBeVisible();
   }
 });
 
@@ -146,9 +154,9 @@ test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio keep
     await page.goto("/atelier?pseudo-locale=1");
     await page.evaluate(() => window.scrollTo(0, 0));
     await expect(page.getByText("[[[ Atelier ]]]", { exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "[[[ Studio ]]]" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "[[[ Board ]]]" })).toBeVisible();
     await expect(page.getByRole("link", { name: "[[[ Start ]]]" })).toBeVisible();
-    await expect(page.getByRole("article", { name: "This workshop" })).toBeVisible();
+    await expect(page.getByRole("article", { name: THE_ONE_PROJECT })).toBeVisible();
     await expectStudioCopyFits(page, viewport.width === 1280);
     await page.screenshot({ path: `test-results/studio-common-${viewport.width}.png`, fullPage: true });
   }
@@ -161,7 +169,7 @@ test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio keep
     await page.evaluate(() => window.scrollTo(0, 0));
 
     await expect(page.getByText("[[[ Atelier ]]]", { exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "[[[ Studio ]]]" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "[[[ Board ]]]" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "[[[ Nothing is running ]]]" })).toBeVisible();
     await expect(page.getByText("[[[ A workflow becomes a run, and a run is what this workshop shows. ]]]", { exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "[[[ Start a run ]]]" })).toBeVisible();
@@ -198,7 +206,7 @@ test("Project keeps work, absence, loading, and retained failure readable", asyn
       await page.goto(`/atelier/project${suffix}`, { waitUntil: "domcontentloaded" });
       await expect(page.getByText("Looking…")).toBeVisible();
       await page.locator("main.workshop-stage").evaluate((stage) => { stage.scrollTop = 0; });
-      await expect(page.getByRole("heading", { level: 1, name: "This workshop" })).toBeVisible();
+      await expect(page.getByRole("heading", { level: 1, name: THE_ONE_PROJECT })).toBeVisible();
       await expect(page.getByRole("link", { name: pseudoLocale ? "[[[ Start a run ]]]" : "Start a run" })).toBeVisible();
       await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-loading.png`, fullPage: true });
       loading.release();

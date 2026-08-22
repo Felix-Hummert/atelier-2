@@ -349,7 +349,7 @@
 </script>
 
 <section aria-labelledby="project-title">
-  <Breadcrumb steps={[{ label: "Studio", path: "/atelier" }]} current={THE_ONE_PROJECT} {navigate} />
+  <Breadcrumb steps={[{ label: "Board", path: "/atelier" }]} current={THE_ONE_PROJECT} {navigate} />
 
   <header class="page-header">
     <div>

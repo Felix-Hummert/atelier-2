@@ -2,6 +2,7 @@
   import { THE_ONE_PROJECT } from "../lib/project";
   import type { CockpitRoute } from "../lib/route";
   import { wrapDisplayCopy } from "../lib/displayCopy";
+  import { railCopy } from "../lib/railCopy";
   import {
     WORKSHOP_DESTINATIONS,
     activeWorkshopDestination,
@@ -17,32 +18,19 @@
   }
 
   const destinationMarks: Record<(typeof WORKSHOP_DESTINATIONS)[number]["id"], string> = {
-    studio: "✳",
-    projects: "▣",
-    runs: "▷",
-    library: "❖",
-    settings: "⚙"
+    chat: "▸",
+    board: "◫",
+    workflows: "⧉",
+    history: "≡"
   };
 
   $: active = activeWorkshopDestination(route);
 </script>
 
 <div class="workshop">
-  <header class="workshop-topbar">
-    <span class="wordmark">atelier<b>·2</b></span>
-    <button
-      class="project-chip"
-      type="button"
-      title="Open the project"
-      onclick={() => navigate("/atelier/project")}
-    >
-      <span class="project-chip-dot" aria-hidden="true"></span>
-      <span>{THE_ONE_PROJECT}</span>
-      <small>project</small>
-    </button>
-  </header>
-
   <nav class="workshop-rail" aria-label="Workshop">
+    <div class="rail-brand">{wrapDisplayCopy(railCopy.brand)}</div>
+
     {#each WORKSHOP_DESTINATIONS as destination (destination.id)}
       {#if destinationIsReachable(destination)}
         <a
@@ -59,13 +47,28 @@
           <span class="nav-destination-label">{wrapDisplayCopy(destination.label)}</span>
         </a>
       {:else}
-        <span class="nav-destination unavailable" aria-disabled="true" title={destination.vision}>
+        <span class="nav-destination unavailable" aria-disabled="true" title={wrapDisplayCopy(destination.vision)}>
           <span class="nav-destination-mark" aria-hidden="true">{destinationMarks[destination.id]}</span>
           <span class="nav-destination-label">{wrapDisplayCopy(destination.label)}</span>
-          <small class="nav-destination-vision">{destination.visionRef}</small>
+          <small class="nav-destination-vision">{wrapDisplayCopy(railCopy.later)}</small>
         </span>
       {/if}
     {/each}
+
+    <div class="rail-grow"></div>
+
+    <div class="rail-project" title={wrapDisplayCopy(railCopy.switchProjectHint)}>
+      <b>{THE_ONE_PROJECT}</b>
+      <span>{wrapDisplayCopy(railCopy.switchProject)}</span>
+    </div>
+    <div class="rail-settings">
+      <span aria-hidden="true">⚙</span>
+      <span title={wrapDisplayCopy(railCopy.settingsHint)}>{wrapDisplayCopy(railCopy.settings)}</span>
+      ·
+      <span aria-hidden="true">◯</span>
+      <span title={wrapDisplayCopy(railCopy.profileHint)}>{wrapDisplayCopy(railCopy.profile)}</span>
+      <small>{wrapDisplayCopy(railCopy.later)}</small>
+    </div>
   </nav>
 
   <main bind:this={stage} class="workshop-stage" tabindex="-1">

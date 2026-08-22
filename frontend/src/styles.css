@@ -22,6 +22,16 @@
   --shadow: 0 10px 30px rgb(60 55 40 / 12%);
   --r: 10px;
   --r-lg: 16px;
+  --r-pill: 999px;
+  --space-1: 0.25rem;
+  --space-2: 0.4rem;
+  --space-3: 0.625rem;
+  --space-4: 0.875rem;
+  --space-5: 1.125rem;
+  --text-2xs: 0.68rem;
+  --text-xs: 0.78rem;
+  --text-sm: 0.875rem;
+  --text-lg: 1.25rem;
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
@@ -137,80 +147,41 @@ button.quiet {
 .workshop {
   display: grid;
   grid-template-columns: 13.125rem minmax(0, 1fr);
-  grid-template-rows: 3.5rem minmax(0, 1fr);
   min-height: 100vh;
   background: var(--ground);
   color: var(--ink);
 }
 
-.workshop-topbar {
-  grid-column: 1 / 3;
-  display: flex;
-  align-items: center;
-  gap: 0.875rem;
-  padding: 0 1.125rem;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-}
-
-.wordmark {
-  font-family: var(--serif);
-  font-size: 1.25rem;
-  letter-spacing: 0.02em;
-}
-
-.wordmark b {
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.project-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-height: 44px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 0.3rem 0.875rem 0.3rem 0.65rem;
-  color: var(--ink);
-  background: var(--chip);
-  font-size: 0.84rem;
-  font-weight: 600;
-}
-
-.project-chip-dot {
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 50%;
-  background: var(--accent);
-}
-
-.project-chip small {
-  color: var(--ink-dim);
-  font-weight: 500;
-}
-
 .workshop-rail {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: var(--space-1);
   min-height: 0;
-  padding: 0.875rem 0.625rem;
+  padding: var(--space-4) var(--space-3);
   border-right: 1px solid var(--line);
   background: var(--panel);
+}
+
+.rail-brand {
+  padding: var(--space-1) var(--space-3) var(--space-4);
+  font-family: var(--serif);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--accent);
 }
 
 .nav-destination {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.4rem 0.625rem;
+  gap: var(--space-2) var(--space-3);
   width: 100%;
   min-height: 44px;
-  padding: 0.55rem 0.75rem;
+  padding: var(--space-3);
   border-radius: var(--r);
   color: var(--ink-dim);
-  font-size: 0.875rem;
+  font-size: var(--text-sm);
   text-decoration: none;
 }
 
@@ -226,7 +197,7 @@ button.quiet {
 }
 
 .nav-destination-mark {
-  width: 1.125rem;
+  width: var(--space-5);
   text-align: center;
 }
 
@@ -243,8 +214,40 @@ button.quiet {
 .nav-destination-vision {
   margin-left: auto;
   color: var(--ink-dim);
-  font-size: 0.68rem;
+  font-size: var(--text-2xs);
   letter-spacing: 0.04em;
+}
+
+.rail-grow {
+  flex: 1;
+}
+
+.rail-project,
+.rail-settings {
+  padding: var(--space-2) var(--space-3) 0;
+  border-top: 1px solid var(--line);
+  color: var(--ink-dim);
+  font-size: var(--text-xs);
+}
+
+.rail-project {
+  padding-top: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.rail-project b {
+  color: var(--ink);
+}
+
+.rail-settings {
+  border-top: none;
+  padding-top: var(--space-1);
+}
+
+.rail-settings small {
+  font-size: var(--text-2xs);
 }
 
 .workshop-stage {
@@ -263,27 +266,30 @@ button.quiet {
 @media (max-width: 48rem) {
   .workshop {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto minmax(0, 1fr);
-  }
-
-  .workshop-topbar {
-    grid-column: 1;
-    flex-wrap: wrap;
-    min-height: 3.5rem;
-    padding-top: 0.5rem;
-    padding-bottom: 0.5rem;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .workshop-rail {
     flex-direction: row;
     flex-wrap: wrap;
+    align-items: center;
     border-right: 0;
     border-bottom: 1px solid var(--line);
+  }
+
+  .rail-brand {
+    padding: var(--space-1) var(--space-3);
   }
 
   .nav-destination {
     width: auto;
     flex: 1 1 auto;
+  }
+
+  .rail-grow,
+  .rail-project,
+  .rail-settings {
+    display: none;
   }
 }
 

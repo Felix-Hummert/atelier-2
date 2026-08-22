@@ -31,8 +31,8 @@ export const studioQuestions = {
   },
   reloadStudioRuns: {
     id: "reload-studio-runs",
-    question: "Can I read the studio runs again?",
-    readLabel: "studio runs"
+    question: "Can I read the board runs again?",
+    readLabel: "board runs"
   },
   retryProjection: {
     id: "retry-projection",

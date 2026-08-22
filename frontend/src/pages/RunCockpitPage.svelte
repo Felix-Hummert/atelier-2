@@ -852,7 +852,7 @@
 
 <section aria-labelledby={v3Run !== null ? "v3-run-title" : "run-title"}>
   <Breadcrumb
-    steps={[{ label: "Studio", path: "/atelier" }, { label: THE_ONE_PROJECT, path: "/atelier/project" }]}
+    steps={[{ label: "Board", path: "/atelier" }, { label: THE_ONE_PROJECT, path: "/atelier/project" }]}
     current={trailHere}
     {navigate}
   />

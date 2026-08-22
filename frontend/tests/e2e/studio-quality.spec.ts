@@ -1,6 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 import { encodePublicRunReference, runPageSchema, type RunV1, type RunV3 } from "../../src/api/client";
+import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { humanMove, standingWords } from "../../src/lib/runState";
 import { connectionLabels } from "../../src/lib/streamStatus";
 import { studioPageCopy } from "../../src/lib/studioPageCopy";
@@ -130,7 +131,7 @@ async function expectPopulatedCopy(page: Page): Promise<void> {
   await expect(inbox.getByText(wrapped(requiredMove("WAITING_RECONCILIATION")))).toBeVisible();
 
   await expect(page.getByRole("heading", { name: wrapped(studioPageCopy.projects) })).toBeVisible();
-  const card = page.getByRole("article", { name: "This workshop" });
+  const card = page.getByRole("article", { name: THE_ONE_PROJECT });
   await expect(card.getByText(`2 ${wrapped(studioPageCopy.runningCount)}`)).toBeVisible();
   await expect(card.getByText(`2 ${wrapped(studioPageCopy.waitingCount)}`)).toBeVisible();
   await expect(card.getByText(`1 ${wrapped(studioPageCopy.failedCount)}`)).toBeVisible();
@@ -213,7 +214,7 @@ test("proves(studio-elements-answer-named-questions): every interactive Studio c
     reply = "questions";
     await page.goto("/atelier");
     await expect(page.getByRole("heading", { name: studioPageCopy.title })).toBeVisible();
-    await expect(page.getByRole("article", { name: "This workshop" })).toBeVisible();
+    await expect(page.getByRole("article", { name: THE_ONE_PROJECT })).toBeVisible();
     await expect(page.getByRole("link", { name: studioPageCopy.start })).toBeVisible();
     await expect(
       page.getByRole("button", { name: studioQuestions.lastLandingTime.hintLabel })
