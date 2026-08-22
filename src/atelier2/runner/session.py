@@ -371,6 +371,17 @@ def run_candidate_session(
     prior lifetime's retained journal record, if any, decides whether this
     call launches a real child or replays the fact that lifetime already
     fixed -- see `retained_terminal_record`.
+
+    Named, deferred gap (`#15-B4`): an empty journal only proves "nothing was
+    ever published"; it cannot yet tell apart a lifetime that crashed before
+    calling `start_runner_child` from one that crashed *after* -- while a
+    real child from that earlier lifetime could still be alive, orphaned,
+    outside this process's own reap path. Closing that gap needs a durable
+    "child observed started" marker (or the Core-side liveness/reconnect
+    mechanism `#15`'s board tracks separately) neither of which exists yet;
+    until then, only a caller that can guarantee this exact container's
+    previous lifetime never reached `start_runner_child` may safely resume it
+    this way.
     """
     fence = _CoreFrameFence(channel, binding, invocation)
     journal = RunnerJournal(journal_directory)
