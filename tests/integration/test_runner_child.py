@@ -28,7 +28,7 @@ from atelier2.contracts.runner_manifests import (
     RunnerManifestV1,
     candidate_runner_manifest,
 )
-from atelier2.runner.__main__ import (
+from atelier2.runner.session import (
     _control_or_child_exit,
     _CoreFrameFence,
     _reap_child,

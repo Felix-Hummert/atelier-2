@@ -70,10 +70,10 @@ from atelier2.ports.agent_attempts import (
 )
 from atelier2.runner.__main__ import (
     CandidateScenario,
-    _CoreFrameFence,
     _declared_scenario,
     _load_verified_client_identity,
 )
+from atelier2.runner.session import _CoreFrameFence
 
 
 def _profile() -> AuthProfileRevision:

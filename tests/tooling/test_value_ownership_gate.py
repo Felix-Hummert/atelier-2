@@ -153,7 +153,7 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
         "store; mirrors SQLITE_LOCK_TIMEOUT_SECONDS' value without its owner "
         "-- a sweep follow-up on #251",
     ),
-    "runner/__main__.py::_CONTROL_POLL_SECONDS": SpelledValue(
+    "runner/session.py::_CONTROL_POLL_SECONDS": SpelledValue(
         1,
         "stable candidate invariant: the cadence of child-exit checks between "
         "control-frame polls; the enforced spans themselves come from the "
