@@ -15,7 +15,7 @@ describe("the workshop rail names four destinations", () => {
     expect(reachable.map((destination) => [destination.label, destination.path])).toEqual([
       ["Board", "/atelier"],
       ["Workflows", "/atelier/workflows"],
-      ["History", "/atelier/project"]
+      ["History", "/atelier/history"]
     ]);
 
     const deferred = WORKSHOP_DESTINATIONS.filter((destination) => !destinationIsReachable(destination));
@@ -32,11 +32,16 @@ describe("the workshop rail names four destinations", () => {
     expect(activeWorkshopDestination({ page: "workflow", name: "Preview door" })).toBe(
       "workflows"
     );
-    expect(activeWorkshopDestination({ page: "project" })).toBe("history");
-    expect(activeWorkshopDestination({ page: "new" })).toBe("history");
+    // Starting a run is a Workflows-owned action (reachable from Board and
+    // from a workflow's own detail page), not a History concern.
+    expect(activeWorkshopDestination({ page: "new" })).toBe("workflows");
+    expect(activeWorkshopDestination({ page: "history" })).toBe("history");
     expect(activeWorkshopDestination({ page: "run", publicReference: "run1.cnVu" })).toBe(
       "history"
     );
+    // The old project level stays reachable at its own URL as a seed for a
+    // future project area, but no longer marks the rail's History tab.
+    expect(activeWorkshopDestination({ page: "project" })).toBeNull();
     expect(activeWorkshopDestination({ page: "not-found" })).toBeNull();
   });
 });
