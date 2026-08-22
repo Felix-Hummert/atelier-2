@@ -13,6 +13,9 @@ from atelier2.adapters.dbos.schema import (
     auth_profile_revisions,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
+from atelier2.application.resolve_start_bindings import (
+    AuthProfileMissingForConfiguration,
+)
 from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
@@ -230,7 +233,9 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
                 .one_or_none()
             )
         if auth_record is None:
-            raise ValueError("agent configuration references a missing auth profile")
+            raise AuthProfileMissingForConfiguration(
+                configuration.auth_profile_revision_hash
+            )
         return configuration, auth_profile_from_record(auth_record)
 
     def list_agent_configuration_revisions(

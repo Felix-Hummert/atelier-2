@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import assert_never
 
 import sqlalchemy as sa
@@ -40,8 +41,16 @@ from atelier2.adapters.yaml_workflows import (
     parse_executable_workflow_document,
 )
 from atelier2.application.bind_run_configuration import bind_run_configuration
+from atelier2.application.resolve_start_bindings import (
+    AuthProfileMissingForConfiguration,
+    agent_role_completeness_refusal,
+    resolve_start_bindings,
+)
 from atelier2.contracts.agents import (
     AgentBindingSet,
+    AgentConfigurationRevision,
+    AgentConfigurationRevisionHash,
+    AuthProfileRevision,
     ResolvedAgentBinding,
 )
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
@@ -71,22 +80,16 @@ from atelier2.contracts.schemas_v3 import (
 from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflows import (
-    AgentNodeV2,
     WorkflowGraph,
     WorkflowGraphV2,
 )
 from atelier2.contracts.workflows_v3 import (
-    AgentNodeV3,
     WorkflowGraphV3,
 )
-from atelier2.ports.agent_executions import AgentExecutorKey, AgentExecutorRegistry
+from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
     AuthoredOrder,
-    DurableAgentConfigurationRevisionMissing,
-    DurableAgentExecutorBindingUnavailable,
-    DurableAgentExecutorCapabilityUnavailable,
-    DurableBindingConstraintRefused,
     DurableInvalidAgentBindings,
     DurablePublishedRunResult,
     DurableRunCreated,
@@ -346,29 +349,50 @@ def _resolved_graph_input_schema(
     return None
 
 
-def _refused_distinct_occupation(
-    graph: WorkflowGraphV3, resolved: tuple[ResolvedAgentBinding, ...]
-) -> DurableBindingConstraintRefused | None:
-    """Refuse a start whose `distinct_from` pair resolved to one occupation.
+@dataclass(frozen=True)
+class _TransactionAgentConfigurationReads:
+    """Binding reads through the write transaction's own open connection.
 
-    The document already held the names. This is the binding seam: same
-    configuration hash means the same agent sits on both nodes. Nothing
-    about judgment is compared. No process has started.
+    `resolve_start_bindings` never opens a connection: a start's binding
+    decision reads through the exact connection its serialized write
+    transaction already holds -- the same locks, the same snapshot -- rather
+    than a second read path with its own visibility. The row mappers are the
+    same ones `DbosAgentConfigurationCatalog` reads with; only the connection
+    differs.
     """
 
-    by_role = {binding.role.value: binding for binding in resolved}
-    for node in graph.nodes:
-        if not isinstance(node, AgentNodeV3) or node.binding_constraint is None:
-            continue
-        other = graph.node(node.binding_constraint.distinct_from)
-        assert isinstance(other, AgentNodeV3)
-        left = by_role[node.role]
-        right = by_role[other.role]
-        if left.configuration.revision_hash == right.configuration.revision_hash:
-            return DurableBindingConstraintRefused(
-                node.id, node.binding_constraint.distinct_from
+    connection: Connection
+
+    def agent_configuration_revision(
+        self, revision_hash: AgentConfigurationRevisionHash
+    ) -> tuple[AgentConfigurationRevision, AuthProfileRevision] | None:
+        configuration_record = (
+            self.connection.execute(
+                sa.select(agent_configuration_revisions).where(
+                    agent_configuration_revisions.c.revision_hash == revision_hash.value
+                )
             )
-    return None
+            .mappings()
+            .one_or_none()
+        )
+        if configuration_record is None:
+            return None
+        configuration = agent_configuration_from_record(configuration_record)
+        auth_record = (
+            self.connection.execute(
+                sa.select(auth_profile_revisions).where(
+                    auth_profile_revisions.c.revision_hash
+                    == configuration.auth_profile_revision_hash.value
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if auth_record is None:
+            raise AuthProfileMissingForConfiguration(
+                configuration.auth_profile_revision_hash
+            )
+        return configuration, auth_profile_from_record(auth_record)
 
 
 class DbosDurableRunStarter:
@@ -484,17 +508,15 @@ class DbosDurableRunStarter:
                         (StartPublishedRunRequestV2, StartPublishedRunRequestV3),
                     ):
                         return DurableInvalidAgentBindings()
-                    expected_roles = {
-                        node.role
-                        for node in graph.nodes
-                        if isinstance(node, (AgentNodeV2, AgentNodeV3))
-                    }
-                    requested_roles = {
-                        binding.role.value
-                        for binding in request.agent_bindings.bindings
-                    }
-                    if expected_roles != requested_roles:
-                        return DurableInvalidAgentBindings()
+                    # The role check runs before the retry check below reads
+                    # anything, so a request whose roles are wrong is refused
+                    # by that alone -- the same precedence an existing but
+                    # mismatched run gets from the retry check that follows.
+                    role_refusal = agent_role_completeness_refusal(
+                        graph, request.agent_bindings
+                    )
+                    if role_refusal is not None:
+                        return role_refusal
                     binding_set = request.agent_bindings
                     existing_record = (
                         connection.execute(
@@ -523,64 +545,15 @@ class DbosDurableRunStarter:
                         return DurableRunExisting(
                             run_from_record_with_bindings(connection, existing_record)
                         )
-                    resolved: list[ResolvedAgentBinding] = []
-                    for binding in request.agent_bindings.bindings:
-                        configuration_record = (
-                            connection.execute(
-                                sa.select(agent_configuration_revisions).where(
-                                    agent_configuration_revisions.c.revision_hash
-                                    == binding.agent_configuration_revision_hash.value
-                                )
-                            )
-                            .mappings()
-                            .one_or_none()
-                        )
-                        if configuration_record is None:
-                            return DurableAgentConfigurationRevisionMissing()
-                        configuration = agent_configuration_from_record(
-                            configuration_record
-                        )
-                        auth_record = (
-                            connection.execute(
-                                sa.select(auth_profile_revisions).where(
-                                    auth_profile_revisions.c.revision_hash
-                                    == configuration.auth_profile_revision_hash.value
-                                )
-                            )
-                            .mappings()
-                            .one_or_none()
-                        )
-                        if auth_record is None:
-                            raise RuntimeError(
-                                "agent configuration auth profile is missing"
-                            )
-                        auth = auth_profile_from_record(auth_record)
-                        executor_key = AgentExecutorKey(
-                            auth.provider_id, configuration.executor_revision
-                        )
-                        if not self._agent_executor_registry.contains(executor_key):
-                            return DurableAgentExecutorBindingUnavailable()
-                        if (
-                            configuration.requested_capability
-                            not in self._agent_executor_registry.declared_capabilities(
-                                executor_key
-                            )
-                        ):
-                            return DurableAgentExecutorCapabilityUnavailable()
-                        if not self._agent_executor_registry.is_startable(
-                            executor_key, configuration.requested_capability
-                        ):
-                            return DurableAgentExecutorBindingUnavailable()
-                        resolved.append(
-                            ResolvedAgentBinding(binding.role, configuration, auth)
-                        )
-                    resolved_bindings = tuple(resolved)
-                    if isinstance(graph, WorkflowGraphV3):
-                        occupied = _refused_distinct_occupation(
-                            graph, resolved_bindings
-                        )
-                        if occupied is not None:
-                            return occupied
+                    bindings_result = resolve_start_bindings(
+                        graph,
+                        binding_set,
+                        _TransactionAgentConfigurationReads(connection),
+                        self._agent_executor_registry,
+                    )
+                    if not isinstance(bindings_result, tuple):
+                        return bindings_result
+                    resolved_bindings = bindings_result
                 else:
                     assert_never(graph)
 
@@ -772,7 +745,12 @@ class DbosDurableRunStarter:
                 return DurableRunCreated(run)
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
-        except (ValueError, RuntimeError, DatabaseError):
+        except (
+            AuthProfileMissingForConfiguration,
+            ValueError,
+            RuntimeError,
+            DatabaseError,
+        ):
             return DurableStateCorrupt()
         finally:
             if client is not None:
