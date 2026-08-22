@@ -84,6 +84,23 @@ function populatedRuns(): RunV1[] {
   ];
 }
 
+/**
+ * A frozen noon, not the real wall clock: the Board's "Done today" group
+ * compares a row's real V3 end stamp against the page's own `new Date()`,
+ * so a `minutesAgo` fixture anchored to the real clock could cross local
+ * midnight between this Node-side computation and the browser's read of
+ * "today" -- or simply drift a fixture meant to stay "today" onto
+ * yesterday -- whenever the suite happens to run within a couple of hours
+ * of midnight (CI runs in UTC with no TZ pin). `page.clock.setFixedTime`
+ * pins the browser's `Date` to the same instant this fixture is computed
+ * against, removing the hour of the day as a variable entirely.
+ */
+const FROZEN_NOON = new Date(2026, 0, 15, 12, 0, 0);
+
+function minutesAgo(minutes: number): string {
+  return new Date(FROZEN_NOON.getTime() - minutes * 60_000).toISOString();
+}
+
 function questionMapRuns(): Array<RunV1 | RunV3> {
   return [
     ...populatedRuns(),
@@ -93,7 +110,7 @@ function questionMapRuns(): Array<RunV1 | RunV3> {
       state: "COMPLETED",
       terminal_hash: revisionHash,
       node_rail: [{ node_id: "review", state: "succeeded", attempt: null }],
-      ended_at: "2026-08-18T12:00:00Z"
+      ended_at: minutesAgo(15)
     })
   ];
 }
@@ -199,6 +216,9 @@ test("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Studio 
 
 test("proves(studio-elements-answer-named-questions): every interactive Studio control answers one named user question on populated and empty Studio", async ({ page }) => {
   expect(runPageSchema.safeParse({ items: questionMapRuns(), next_after: null }).success).toBe(true);
+  // Pins the browser's own `Date` to the same frozen instant `minutesAgo`
+  // computed the "Done today" fixture against (see FROZEN_NOON above).
+  await page.clock.setFixedTime(FROZEN_NOON);
   await mockAttentionOpen(page);
   let reply: StudioReadReply = "questions";
   await routeStudioReads(page, () => reply);
@@ -208,12 +228,14 @@ test("proves(studio-elements-answer-named-questions): every interactive Studio c
     reply = "questions";
     await page.goto("/atelier");
     await expect(page.getByRole("heading", { name: studioPageCopy.title })).toBeVisible();
-    await expect(page.getByRole("region", { name: "Done · 2" })).toBeVisible();
-    await expect(page.getByRole("link", { name: studioPageCopy.start })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Done today · 2" })).toBeVisible();
+    // No Start of any kind sits beside the Board head (#532): starting a
+    // workflow is a Workflows-owned action now, and once the five-list read
+    // confirms, ReadState.svelte mounts no control at all.
+    await expect(page.getByRole("link", { name: "Start", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /board runs/ })).toHaveCount(0);
     await expectStudioControlsAnswerNamedQuestions(page, [
-      studioQuestions.start.id,
-      studioQuestions.openRun.id,
-      studioQuestions.reloadStudioRuns.id
+      studioQuestions.openRun.id
     ]);
   }
 
@@ -224,8 +246,7 @@ test("proves(studio-elements-answer-named-questions): every interactive Studio c
     await expect(page.getByRole("heading", { name: studioPageCopy.emptyTitle })).toBeVisible();
     await expect(page.getByRole("link", { name: studioPageCopy.emptyStart })).toBeVisible();
     await expectStudioControlsAnswerNamedQuestions(page, [
-      studioQuestions.emptyStart.id,
-      studioQuestions.reloadStudioRuns.id
+      studioQuestions.emptyStart.id
     ]);
   }
 });

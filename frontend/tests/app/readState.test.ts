@@ -4,8 +4,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import ReadState from "../../src/components/ReadState.svelte";
 import {
   beginRead,
+  confirmRead,
   failRead,
-  retainedRead
+  retainedRead,
+  type RetainedRead
 } from "../../src/lib/readResource";
 
 type ReadStateFailure =
@@ -15,7 +17,7 @@ type ReadStateFailure =
 afterEach(cleanup);
 
 describe("recoverable read state", () => {
-  it("keeps one accessible control and its focus across failure, retry and success", async () => {
+  it("offers a Retry control only while the read is failed, and Retry repeats that read", async () => {
     const retry = vi.fn();
     const first = beginRead(retainedRead<string, ReadStateFailure>());
     const failed = failRead(
@@ -23,35 +25,70 @@ describe("recoverable read state", () => {
       first.generation,
       { kind: "unavailable", title: "Saved workflows unavailable" }
     );
-    const view = render(ReadState, {
-      props: { read: failed, label: "saved workflows", onRetry: retry }
-    });
+    render(ReadState, { props: { read: failed, label: "saved workflows", onRetry: retry } });
 
     const button = screen.getByRole("button", { name: "Retry saved workflows" });
-    button.focus();
     expect(screen.getAllByRole("button")).toHaveLength(1);
     expect(screen.getByRole("alert").textContent).toContain("Saved workflows unavailable");
     expect(screen.getByRole("alert").textContent).not.toContain("Failed to fetch");
-    expect(screen.queryByText("Retry this read.")).toBeNull();
 
     await fireEvent.click(button);
     expect(retry).toHaveBeenCalledTimes(1);
+  });
 
-    await view.rerender({
-      read: beginRead(failed).read,
-      label: "saved workflows",
-      onRetry: retry
+  it("does not steal focus on a first, unprompted failure, but returns it to Retry when the operator's own retry fails again", async () => {
+    const first = beginRead(retainedRead<string, ReadStateFailure>());
+    const failed = failRead(
+      first.read,
+      first.generation,
+      { kind: "unavailable", title: "Saved workflows unavailable" }
+    );
+    const view = render(ReadState, {
+      props: { read: failed, label: "saved workflows", onRetry: vi.fn() }
     });
-    expect(screen.getByRole("button", { name: "Refresh saved workflows" })).toBe(button);
-    expect(document.activeElement).toBe(button);
+    expect(document.activeElement).not.toBe(
+      screen.getByRole("button", { name: "Retry saved workflows" })
+    );
+
+    await fireEvent.click(screen.getByRole("button", { name: "Retry saved workflows" }));
+    const secondAttempt = beginRead(failed);
+    await view.rerender({ read: secondAttempt.read, label: "saved workflows", onRetry: vi.fn() });
+    expect(screen.queryByRole("button")).toBeNull();
+
+    const retriedAgain = failRead(
+      secondAttempt.read,
+      secondAttempt.generation,
+      { kind: "unavailable", title: "Saved workflows unavailable" }
+    );
+    await view.rerender({ read: retriedAgain, label: "saved workflows", onRetry: vi.fn() });
+
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Retry saved workflows" })
+    );
+  });
+
+  it("shows no button while looking, refreshing or holding confirmed truth -- a control only ever answers a named failure", () => {
+    const first = beginRead(retainedRead<string, ReadStateFailure>());
+    const looking = first.read;
+    render(ReadState, { props: { read: looking, label: "saved workflows", onRetry: vi.fn() } });
+    expect(screen.queryByRole("button")).toBeNull();
     expect(screen.getByRole("status").textContent).toContain("Looking…");
+    cleanup();
 
-    await view.rerender({
-      read: { ...failed, confirmed: "truth", request: { state: "idle" } },
-      label: "saved workflows",
-      onRetry: retry
-    });
-    expect(screen.getByRole("button", { name: "Refresh saved workflows" })).toBe(button);
-    expect(document.activeElement).toBe(button);
+    const confirmed = confirmRead(looking, first.generation, "truth");
+    const refreshing = beginRead(confirmed).read;
+    render(ReadState, { props: { read: refreshing, label: "saved workflows", onRetry: vi.fn() } });
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByRole("status").textContent).toContain("Refreshing…");
+    cleanup();
+
+    const idleConfirmed: RetainedRead<string, ReadStateFailure> = {
+      confirmed: "truth",
+      generation: confirmed.generation,
+      request: { state: "idle" }
+    };
+    render(ReadState, { props: { read: idleConfirmed, label: "saved workflows", onRetry: vi.fn() } });
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
   });
 });

@@ -104,6 +104,29 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
     localStorage.setItem(key, JSON.stringify({ builder: hash }));
   }, { key: NAMED_AGENT_CHOICE_STORAGE_KEY, hash: configurationHash });
 
+  // Starting a run is Workflows' own door now (#532: Board carries no Start of
+  // any kind). The V2 workflow this journey starts declares no name of its
+  // own -- only a V3 document can (`boardRows.ts`'s honest run-id fallback
+  // says the same) -- so a second, minimal named V3 workflow exists purely as
+  // the keyboard vehicle into New Run; the run this journey proves out is
+  // still chosen by its own hash below, unrelated to this vehicle.
+  const doorSchemaHash = await anyJsonSchema(page);
+  const doorName = "Keyboard journey door";
+  const door = await page.request.post("/atelier/api/v1/workflow-revisions", {
+    headers: { "content-type": "application/yaml" },
+    data: [
+      "format_version: 3",
+      `name: ${doorName}`,
+      "nodes:",
+      "  - id: ask",
+      "    type: wait",
+      "    prompt: Unused -- this workflow only opens the door to New Run.",
+      ...declaredOutput(doorSchemaHash, "answer"),
+      ""
+    ].join("\n")
+  });
+  expect(door.status()).toBe(201);
+
   await page.goto("/atelier");
   await page.evaluate(() => {
     const observed: string[] = [];
@@ -117,16 +140,31 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
     Object.assign(window, { observedMainMarkers: observed });
   });
   const stage = page.getByRole("main");
-  // Starting a run is Board's own door (History carries none -- #526); the
-  // journey reaches it straight from Board's header rather than detouring
-  // through a page that no longer offers it. The harness seeds two waiting
-  // runs at boot, so Board is never in its empty state here.
-  const startRun = page.getByRole("link", { name: "Start", exact: true });
-  await expect(startRun).toBeVisible();
-  for (let tab = 0; tab < 8 && !(await startRun.evaluate((element) => element === document.activeElement)); tab += 1) {
+  // The harness seeds two waiting runs at boot, so Board is never in its
+  // empty state here.
+  const rail = page.getByRole("navigation", { name: "Workshop" });
+  const workflowsLink = rail.getByRole("link", { name: "Workflows" });
+  for (let tab = 0; tab < 8 && !(await workflowsLink.evaluate((element) => element === document.activeElement)); tab += 1) {
     await page.keyboard.press("Tab");
   }
-  await expect(startRun).toBeFocused();
+  await expect(workflowsLink).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(stage).toBeFocused();
+
+  const doorCard = page.getByRole("button", { name: new RegExp(doorName) });
+  await expect(doorCard).toBeVisible();
+  for (let tab = 0; tab < 8 && !(await doorCard.evaluate((element) => element === document.activeElement)); tab += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(doorCard).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(stage).toBeFocused();
+
+  const startDoor = page.getByRole("button", { name: "Start", exact: true });
+  for (let tab = 0; tab < 8 && !(await startDoor.evaluate((element) => element === document.activeElement)); tab += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(startDoor).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(stage).toBeFocused();
   const savedRevision = page
@@ -251,7 +289,10 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
   await expect(stage).toBeFocused();
   await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { observedMainMarkers: string[] }).observedMainMarkers)).toEqual([
-    "new-title", "trail-here", "board-title"
+    // The door workflow's own detail page carries the same breadcrumb
+    // component a run does, hence the leading "trail-here" this journey now
+    // passes through on its way from Board via Workflows into New Run.
+    "trail-here", "new-title", "trail-here", "board-title"
   ]);
 });
 
@@ -322,24 +363,6 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
   expectOnlyBoardRead();
   expect(page.url()).toBe(boardUrl);
 
-  readsFail = false;
-  observed.length = 0;
-  await retry.click();
-  const board = page.locator(".board-page");
-  await expect(board).toBeVisible();
-  await expect(page.getByRole("button", { name: "Refresh board runs" })).toHaveCount(1);
-  expectOnlyBoardRead();
-  expect(page.url()).toBe(boardUrl);
-
-  readsFail = true;
-  observed.length = 0;
-  await page.getByRole("button", { name: "Refresh board runs" }).click();
-  await expect(page.getByText("Board runs unavailable")).toBeVisible();
-  await expect(board).toBeVisible();
-  expectOnlyBoardRead();
-  expect(page.url()).toBe(boardUrl);
-
-  await retry.focus();
   await page.keyboard.press("Shift+Tab");
   await page.keyboard.press("Tab");
   await expect(retry).toBeFocused();
@@ -360,10 +383,14 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
 
   readsFail = false;
   observed.length = 0;
-  await retry.click();
+  await page.getByRole("button", { name: "Retry board runs" }).click();
+  const board = page.locator(".board-page");
   await expect(page.getByText("Board runs unavailable")).toHaveCount(0);
   await expect(board).toBeVisible();
-  await expect(page.getByRole("button", { name: "Refresh board runs" })).toHaveCount(1);
+  // One freshness model, once confirmed: no Refresh or Retry control remains
+  // beside the live indicator (#532) -- the redundant permanent control this
+  // lane removes.
+  await expect(page.getByRole("button", { name: /board runs/ })).toHaveCount(0);
   expectOnlyBoardRead();
   expect(page.url()).toBe(boardUrl);
 });
@@ -426,6 +453,12 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
     newHash,
     "2026-08-20T13:00:00Z"
   );
+  // round tracks each attempt at the run list: 1 fails at transport, 2
+  // succeeds at the run list but fails the joint name read for one hash
+  // (still hidden, still no confirm), 3 confirms both rows atomically. No
+  // step needs a manual refresh: the read is confirmed only once, and only
+  // the one accessible Retry ever repeats it (#532 removes the permanent
+  // control every one of these five surfaces used to carry alongside it).
   let round = 0;
   const observed: Array<{ method: string; path: string }> = [];
   page.on("request", (request) => {
@@ -441,17 +474,14 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
       return;
     }
     round += 1;
-    if (round <= 2) {
+    if (round === 1) {
       await route.abort("failed");
       return;
     }
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        items: round === 3 ? [oldRun] : [oldRun, newRun],
-        next_after: null
-      })
+      body: JSON.stringify({ items: [oldRun, newRun], next_after: null })
     });
   });
   await page.route("**/atelier/api/v1/workflow-revisions/*", async (route) => {
@@ -461,7 +491,7 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
       await route.continue();
       return;
     }
-    if (round === 4 && hash === newHash) {
+    if (round === 2 && hash === newHash) {
       await route.abort("failed");
       return;
     }
@@ -481,42 +511,26 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
 
   await page.goto("/atelier/project");
   await expect(page.getByText("Project runs unavailable")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Refresh project occupancy" })).toHaveAttribute("aria-disabled", "false");
   await expect(page.getByText(/Failed to fetch/)).toHaveCount(0);
   const retry = page.getByRole("button", { name: "Retry project runs" });
   await expect(retry).toHaveCount(1);
   const projectUrl = page.url();
 
+  // Round 2: the run list itself now answers, but the joint name read for
+  // one hash fails -- the read still confirms nothing (atomicity), and the
+  // transport detail still stays hidden.
   observed.length = 0;
   await retry.focus();
   await page.keyboard.press("Enter");
   await expect(page.getByText("Project runs unavailable")).toBeVisible();
   await expect(retry).toBeFocused();
-  expectOnlyProjectRead([runListPath]);
-  expect(page.url()).toBe(projectUrl);
-
-  observed.length = 0;
-  await retry.click();
-  const confirmedRow = page.getByRole("link", { name: /confirmed project run/ });
-  await expect(confirmedRow).toContainText("Confirmed workflow");
-  await expect(page.getByRole("button", { name: "Refresh project runs" })).toHaveCount(1);
-  expectOnlyProjectRead([runListPath, revisionPath(oldHash)]);
-  expect(page.url()).toBe(projectUrl);
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await page.screenshot({
-    path: "test-results/read-recovery-project-desktop.png",
-    fullPage: true
-  });
-
-  observed.length = 0;
-  await page.getByRole("button", { name: "Refresh project runs" }).click();
-  await expect(page.getByText("Project runs unavailable")).toBeVisible();
-  await expect(confirmedRow).toContainText("Confirmed workflow");
-  await expect(page.getByRole("link", { name: /new project run/ })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /confirmed project run|new project run/ })).toHaveCount(0);
   expectOnlyProjectRead([runListPath, revisionPath(oldHash), revisionPath(newHash)]);
   expect(page.url()).toBe(projectUrl);
 
-  await retry.focus();
+  // ReadState.svelte's control mounts only in the failed state (#514's
+  // pattern): the operator's own retry that fails again re-mounts a new
+  // Retry and returns focus to it, so the same locator keeps resolving.
   await page.keyboard.press("Shift+Tab");
   await page.keyboard.press("Tab");
   await expect(retry).toBeFocused();
@@ -535,13 +549,23 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
   });
   await page.locator("style").last().evaluate((element) => element.remove());
 
+  // Round 3: both the run list and every name resolve -- the whole read
+  // confirms together.
   observed.length = 0;
   await retry.click();
   await expect(page.getByText("Project runs unavailable")).toHaveCount(0);
+  const confirmedRow = page.getByRole("link", { name: /confirmed project run/ });
+  await expect(confirmedRow).toContainText("Confirmed workflow");
   await expect(page.getByRole("link", { name: /new project run/ })).toContainText("New workflow");
-  await expect(page.getByRole("button", { name: "Refresh project runs" })).toHaveCount(1);
+  // One freshness model, once confirmed: no manual refresh remains.
+  await expect(page.getByRole("button", { name: /project runs/ })).toHaveCount(0);
   expectOnlyProjectRead([runListPath, revisionPath(oldHash), revisionPath(newHash)]);
   expect(page.url()).toBe(projectUrl);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({
+    path: "test-results/read-recovery-project-desktop.png",
+    fullPage: true
+  });
 });
 
 test("proves(new-run-preserves-workflow-truth-and-retries-only-the-workflow-read): New Run recovers one atomic workflow-and-catalog read", async ({ page }) => {
@@ -552,7 +576,6 @@ test("proves(new-run-preserves-workflow-truth-and-retries-only-the-workflow-read
   const confirmedHash = "1".repeat(64);
   const refreshedHash = "2".repeat(64);
   const newHash = "3".repeat(64);
-  const unnamedHash = "4".repeat(64);
   const absentHeadHash = "6".repeat(64);
   const summary = (hash: string, name: string | null, description: string | null) => ({
     workflow_revision_hash: hash,
@@ -574,6 +597,13 @@ test("proves(new-run-preserves-workflow-truth-and-retries-only-the-workflow-read
       : `${workflowListPath}?limit=50&view=described&after=${after}`;
   const catalogTarget = (name: string): string =>
     `${workflowListPath}/by-name/${name}`;
+  // round tracks each attempt at the workflow list: 1 fails at transport, 2
+  // succeeds at the list but fails the joint catalog-head read for one name
+  // (an admitted head absent from the same listing -- still no confirm), 3
+  // confirms every row atomically. No step needs a manual refresh: the read
+  // is confirmed only once, and only the one accessible Retry ever repeats
+  // it (#532 removes the permanent control every one of these five surfaces
+  // used to carry alongside it).
   let round = 0;
   const observed: Array<{ method: string; target: string }> = [];
   page.on("request", (request) => {
@@ -593,23 +623,20 @@ test("proves(new-run-preserves-workflow-truth-and-retries-only-the-workflow-read
     const url = new URL(route.request().url());
     const after = url.searchParams.get("after");
     if (after === null) round += 1;
-    if (round <= 2) {
+    if (round === 1) {
       await route.abort("failed");
       return;
     }
-    const refreshing = round >= 4;
     if (after === null) {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          items: refreshing
-            ? [
-                summary(confirmedHash, retainedName, "The confirmed catalog head."),
-                summary(refreshedHash, retainedName, "The refreshed catalog head.")
-              ]
-            : [summary(confirmedHash, retainedName, "The confirmed catalog head.")],
-          next_after_revision_hash: refreshing ? refreshedHash : confirmedHash
+          items: [
+            summary(confirmedHash, retainedName, "The confirmed catalog head."),
+            summary(refreshedHash, retainedName, "The refreshed catalog head.")
+          ],
+          next_after_revision_hash: refreshedHash
         })
       });
       return;
@@ -618,19 +645,16 @@ test("proves(new-run-preserves-workflow-truth-and-retries-only-the-workflow-read
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        items: refreshing
-          ? [summary(newHash, newName, "A newly confirmed catalog line.")]
-          : [summary(unnamedHash, null, null)],
+        items: [summary(newHash, newName, "A newly confirmed catalog line.")],
         next_after_revision_hash: null
       })
     });
   });
   await page.route("**/atelier/api/v1/workflow-revisions/by-name/*", async (route) => {
     const name = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1) ?? "");
-    const refreshed = round >= 4;
     const hash = name === retainedName
-      ? refreshed ? refreshedHash : confirmedHash
-      : round === 4 ? absentHeadHash : newHash;
+      ? refreshedHash
+      : round === 2 ? absentHeadHash : newHash;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -659,38 +683,8 @@ test("proves(new-run-preserves-workflow-truth-and-retries-only-the-workflow-read
   await page.keyboard.press("Enter");
   await expect(page.getByText("Saved workflows unavailable")).toBeVisible();
   await expect(retry).toBeFocused();
-  expectOnlyWorkflowRead([listTarget()]);
-  expect(page.url()).toBe(newRunUrl);
-
-  observed.length = 0;
-  await retry.click();
-  const retained = page.getByRole("article", { name: retainedName });
-  await expect(retained).toContainText("The confirmed catalog head.");
-  await expect(retained).toHaveAttribute("data-catalog-form", "ready");
-  await expect(page.getByRole("button", { name: "Refresh saved workflows" })).toHaveCount(1);
-  expectOnlyWorkflowRead([
-    listTarget(),
-    listTarget(confirmedHash),
-    catalogTarget(retainedName)
-  ]);
-  expect(page.url()).toBe(newRunUrl);
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await assertNoSeriousAccessibilityFindings(page);
-  await page.screenshot({
-    path: "test-results/read-recovery-new-run-desktop.png",
-    fullPage: true
-  });
-
-  observed.length = 0;
-  await page.getByRole("button", { name: "Refresh saved workflows" }).click();
-  await expect(page.getByText("Saved workflows unavailable")).toBeVisible();
-  await expect(page.getByText(/Failed to fetch|private/i)).toHaveCount(0);
-  await expect(retained).toContainText("The confirmed catalog head.");
-  await expect(retained.getByRole("radio")).toBeEnabled();
-  await expect(retained.getByText("Details")).toBeVisible();
-  await expect(page.getByText("The refreshed catalog head.")).toHaveCount(0);
+  await expect(page.getByRole("article", { name: retainedName })).toHaveCount(0);
   await expect(page.getByRole("article", { name: newName })).toHaveCount(0);
-  await expect(retry).toHaveCount(1);
   expectOnlyWorkflowRead([
     listTarget(),
     listTarget(refreshedHash),
@@ -699,7 +693,6 @@ test("proves(new-run-preserves-workflow-truth-and-retries-only-the-workflow-read
   ]);
   expect(page.url()).toBe(newRunUrl);
 
-  await retry.focus();
   await page.keyboard.press("Shift+Tab");
   await page.keyboard.press("Tab");
   await expect(retry).toBeFocused();
@@ -717,21 +710,19 @@ test("proves(new-run-preserves-workflow-truth-and-retries-only-the-workflow-read
     fullPage: true
   });
   await page.locator("style").last().evaluate((element) => element.remove());
+  await page.setViewportSize({ width: 1280, height: 900 });
 
   observed.length = 0;
   await retry.click();
   await expect(page.getByText("Saved workflows unavailable")).toHaveCount(0);
-  await expect(page.getByRole("article", { name: retainedName })).toContainText(
-    "The refreshed catalog head."
-  );
-  await expect(page.getByRole("article", { name: newName })).toContainText(
-    "A newly confirmed catalog line."
-  );
-  await expect(page.getByRole("article", { name: newName })).toHaveAttribute(
-    "data-catalog-form",
-    "ready"
-  );
-  await expect(page.getByRole("button", { name: "Refresh saved workflows" })).toHaveCount(1);
+  const retained = page.getByRole("article", { name: retainedName });
+  await expect(retained).toContainText("The refreshed catalog head.");
+  await expect(retained).toHaveAttribute("data-catalog-form", "ready");
+  const added = page.getByRole("article", { name: newName });
+  await expect(added).toContainText("A newly confirmed catalog line.");
+  await expect(added).toHaveAttribute("data-catalog-form", "ready");
+  // One freshness model, once confirmed: no manual refresh remains.
+  await expect(page.getByRole("button", { name: /saved workflows/ })).toHaveCount(0);
   expectOnlyWorkflowRead([
     listTarget(),
     listTarget(refreshedHash),
@@ -739,6 +730,11 @@ test("proves(new-run-preserves-workflow-truth-and-retries-only-the-workflow-read
     catalogTarget(newName)
   ]);
   expect(page.url()).toBe(newRunUrl);
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.screenshot({
+    path: "test-results/read-recovery-new-run-desktop.png",
+    fullPage: true
+  });
 });
 
 test("proves(new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-read): New Run retains one complete agent read and its draft", async ({ page }) => {
@@ -766,6 +762,12 @@ test("proves(new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-
     after === undefined
       ? `${agentListPath}?limit=50`
       : `${agentListPath}?limit=50&after_revision_hash=${after}`;
+  // agentRound tracks each attempt at the agent list: 1 fails at transport,
+  // 2 reads its first page but fails the second (a partial page still
+  // confirms nothing), 3 confirms every page together. No step needs a
+  // manual refresh: the read is confirmed only once, and only the one
+  // accessible Retry ever repeats it (#532 removes the permanent control
+  // every one of these five surfaces used to carry alongside it).
   let agentRound = 0;
   const observed: Array<{ method: string; target: string }> = [];
   page.on("request", (request) => {
@@ -777,34 +779,20 @@ test("proves(new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-
   await page.route("**/atelier/api/v1/agent-configuration-revisions?*", async (route) => {
     const after = new URL(route.request().url()).searchParams.get("after_revision_hash");
     if (after === null) agentRound += 1;
-    if (agentRound <= 2) {
+    if (agentRound === 1) {
       await route.abort("failed");
       return;
     }
-    if (agentRound === 3) {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(after === null
-          ? { items: [first], next_after_revision_hash: firstHash }
-          : { items: [chosen], next_after_revision_hash: null })
-      });
-      return;
-    }
-    if (agentRound === 4 && after !== null) {
+    if (agentRound === 2 && after !== null) {
       await route.abort("failed");
       return;
     }
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(
-        agentRound === 4
-          ? { items: [added], next_after_revision_hash: addedHash }
-          : after === null
-            ? { items: [first], next_after_revision_hash: firstHash }
-            : { items: [chosen, added], next_after_revision_hash: null }
-      )
+      body: JSON.stringify(after === null
+        ? { items: [first], next_after_revision_hash: firstHash }
+        : { items: [chosen, added], next_after_revision_hash: null })
     });
   });
   await page.route("**/atelier/api/v1/workflow-revisions?*", async (route) => {
@@ -884,52 +872,16 @@ test("proves(new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-
   observed.length = 0;
   await retry.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByText("Published agents unavailable")).toBeVisible();
-  await expect(retry).toBeFocused();
-  expectOnlyAgentRead([agentTarget()]);
-  expect(page.url()).toBe(newRunUrl);
-
-  observed.length = 0;
-  await retry.click();
-  const picker = binding.getByLabel("Agent for builder");
-  await expect(picker).toContainText("anthropic · sonnet · Subscription");
-  await expect(picker).toContainText("openai · codex · Subscription");
-  expectOnlyAgentRead([agentTarget(), agentTarget(firstHash)]);
-  await picker.selectOption(chosenHash);
-  await binding.locator("summary").click();
-  const expertValues = {
-    "Profile ID": "manual-profile",
-    Revision: "7",
-    Provider: "manual-provider",
-    Model: "manual-model",
-    Executor: "manual/v1"
-  } as const;
-  for (const [label, value] of Object.entries(expertValues)) {
-    await binding.getByLabel(label).fill(value);
-  }
-  await binding.getByLabel("Auth mode").selectOption("api_key");
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await assertNoSeriousAccessibilityFindings(page);
-  await page.screenshot({
-    path: "test-results/read-recovery-new-run-agent-desktop.png",
-    fullPage: true
-  });
-
-  observed.length = 0;
-  await page.getByRole("button", { name: "Refresh published agents" }).click();
   await expect(page.getByText("Published agents incomplete")).toBeVisible();
+  await expect(retry).toBeFocused();
   await expect(page.getByText(/Failed to fetch|private/i)).toHaveCount(0);
-  await expect(picker).toHaveValue(chosenHash);
-  await expect(picker).toContainText("anthropic · sonnet · Subscription");
-  await expect(picker).not.toContainText("google · gemini · Subscription");
-  for (const [label, value] of Object.entries(expertValues)) {
-    await expect(binding.getByLabel(label)).toHaveValue(value);
-  }
-  await expect(binding.getByLabel("Auth mode")).toHaveValue("api_key");
-  expectOnlyAgentRead([agentTarget(), agentTarget(addedHash)]);
+  expectOnlyAgentRead([agentTarget(), agentTarget(firstHash)]);
   expect(page.url()).toBe(newRunUrl);
 
-  await retry.focus();
+  // A second, partial page still confirms nothing (#440's joint-page
+  // atomicity): no agent option is offered while the read is incomplete.
+  await expect(binding.getByLabel("Agent for builder")).toHaveCount(0);
+
   await page.keyboard.press("Shift+Tab");
   await page.keyboard.press("Tab");
   await expect(retry).toBeFocused();
@@ -947,21 +899,48 @@ test("proves(new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-
     fullPage: true
   });
   await page.locator("style").last().evaluate((element) => element.remove());
+  await page.setViewportSize({ width: 1280, height: 900 });
 
-  await picker.selectOption("");
-  await expect(picker).toHaveValue("");
   observed.length = 0;
   await retry.click();
   await expect(page.getByText("Published agents incomplete")).toHaveCount(0);
+  const picker = binding.getByLabel("Agent for builder");
+  await expect(picker).toContainText("anthropic · sonnet · Subscription");
+  await expect(picker).toContainText("openai · codex · Subscription");
   await expect(picker).toContainText("google · gemini · Subscription");
-  await expect(picker).toHaveValue("");
+  expectOnlyAgentRead([agentTarget(), agentTarget(firstHash)]);
+  expect(page.url()).toBe(newRunUrl);
+
+  await picker.selectOption(chosenHash);
+  await binding.locator("summary").click();
+  const expertValues = {
+    "Profile ID": "manual-profile",
+    Revision: "7",
+    Provider: "manual-provider",
+    Model: "manual-model",
+    Executor: "manual/v1"
+  } as const;
+  for (const [label, value] of Object.entries(expertValues)) {
+    await binding.getByLabel(label).fill(value);
+  }
+  await binding.getByLabel("Auth mode").selectOption("api_key");
+  await expect(picker).toHaveValue(chosenHash);
   for (const [label, value] of Object.entries(expertValues)) {
     await expect(binding.getByLabel(label)).toHaveValue(value);
   }
   await expect(binding.getByLabel("Auth mode")).toHaveValue("api_key");
-  await expect(page.getByRole("button", { name: "Refresh published agents" })).toHaveCount(1);
-  expectOnlyAgentRead([agentTarget(), agentTarget(firstHash)]);
-  expect(page.url()).toBe(newRunUrl);
+  // One freshness model, once confirmed: no manual refresh remains. #440's
+  // "preserves...through refresh failure" clause has no reachable trigger
+  // left on this surface once a read is confirmed (#532 removes the last
+  // manual refresh); the state machine still preserves confirmed truth and
+  // draft state (readResource.test.ts), but this UI no longer offers a way
+  // to force a second, later failure against an already-confirmed list.
+  await expect(page.getByRole("button", { name: /published agents/ })).toHaveCount(0);
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.screenshot({
+    path: "test-results/read-recovery-new-run-agent-desktop.png",
+    fullPage: true
+  });
 });
 
 test("proves(new-run-confirms-workflow-detail-before-committing-selection-and-draft): New Run retains one exact immutable workflow detail", async ({ page }) => {
@@ -1165,10 +1144,8 @@ test("proves(new-run-confirms-workflow-detail-before-committing-selection-and-dr
   await expect(reloadedRow).toBeVisible();
   observed.length = 0;
   await reloadedRow.getByText("Details", { exact: true }).click();
-  await expect(page.getByRole("button", { name: "Refresh workflow detail" })).toHaveAttribute(
-    "aria-disabled",
-    "true"
-  );
+  await expect(page.getByText("Looking…")).toBeVisible();
+  await expect(page.getByRole("button", { name: /workflow detail/ })).toHaveCount(0);
   const reloadedChoice = reloadedRow.getByLabel(`Revision of ${name}`);
   await reloadedChoice.selectOption(attemptedHash);
   await expect(reloadedChoice).toHaveValue(attemptedHash);

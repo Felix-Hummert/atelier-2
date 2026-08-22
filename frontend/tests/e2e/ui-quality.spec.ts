@@ -168,7 +168,9 @@ test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio keep
     await page.evaluate(() => window.scrollTo(0, 0));
     await expect(page.getByText("[[[ Atelier ]]]", { exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "[[[ Board ]]]" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "[[[ Start ]]]" })).toBeVisible();
+    // Starting a workflow lives in Workflows, not the Board head (#532): no
+    // Start control of any kind sits beside the live indicator.
+    await expect(page.getByRole("link", { name: /Start/ })).toHaveCount(0);
     await expectStudioCopyFits(page, viewport.width === 1280);
     await page.screenshot({ path: `test-results/studio-common-${viewport.width}.png`, fullPage: true });
   }
@@ -184,7 +186,7 @@ test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio keep
     await expect(page.getByRole("heading", { name: "[[[ Board ]]]" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "[[[ Nothing is running ]]]" })).toBeVisible();
     await expect(page.getByText("[[[ A run appears here the moment a workflow starts. ]]]", { exact: true })).toBeVisible();
-    await expect(page.getByRole("link", { name: "[[[ Start a run ]]]" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "[[[ Start your first workflow ]]]" })).toBeVisible();
     await expectStudioCopyFits(page, viewport.width === 1280);
     await page.screenshot({ path: `test-results/studio-empty-${viewport.width}.png`, fullPage: true });
   }
@@ -224,14 +226,21 @@ test("Project keeps work, absence, loading, and retained failure readable", asyn
       loading.release();
       await expect(page.getByRole("region", { name: "Running" })).toBeVisible();
 
+      // No manual refresh exists once a read is confirmed (#532): the only
+      // reachable failure a fresh navigation can show is its own read
+      // failing outright, recovered by the one accessible Retry.
       reply = "retained-error";
-      loading.retainedReads = 0;
+      loading.retainedReads = 1;
       await page.goto(`/atelier/project${suffix}`);
-      await expect(page.getByRole("region", { name: "Running" })).toBeVisible();
-      await page.getByRole("button", { name: "Refresh project runs" }).click();
       await expect(page.getByText("Project runs unavailable")).toBeVisible();
+      const retry = page.getByRole("button", { name: "Retry project runs" });
+      await expect(retry).toBeVisible();
+      await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-unavailable.png`, fullPage: true });
+
+      reply = "common";
+      await retry.click();
       await expect(page.getByRole("region", { name: "Running" })).toBeVisible();
-      await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-retained-error.png`, fullPage: true });
+      await expect(page.getByRole("button", { name: /project runs/ })).toHaveCount(0);
     }
   }
 });
