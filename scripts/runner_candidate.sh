@@ -38,12 +38,14 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$root"/{issuer,core-identity,peer,handoff,offer,issuer-output}
-printf '%064d\n' 0 >"$root/handoff/manifest-id"
 uv run --locked python tests/witness/runner_candidate_issuer.py core --state "$root/issuer" --identity "$root/core-identity"
 cp "$root/core-identity/ca.crt" "$root/handoff/ca.crt"
 cp "$root/core-identity/core.crt" "$root/handoff/core.crt"
 docker build -q -f tests/witness/Dockerfile.runner-core -t atelier2-301a-core . >/dev/null
 docker build -q -f tests/witness/Dockerfile.runner -t atelier2-301a-runner . >/dev/null
+image_digest=$(docker image inspect -f '{{.Id}}' atelier2-301a-runner)
+source_commit=$(git rev-parse HEAD)
+uv run --locked python tests/witness/runner_candidate_issuer.py manifest --source-commit "$source_commit" --image-digest "$image_digest" --output "$root/handoff"
 docker network create --internal --label "$label" "$network" >/dev/null
 identity_volume="atelier2-301a-identity-$network"
 /usr/bin/docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=uid=10001,gid=10001,mode=0700,size=65536 --label "$label" "$identity_volume" >/dev/null
@@ -58,7 +60,9 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 [[ -f "$root/handoff/bootstrap.json" ]]
-runner_id=$(docker run -d --name "$runner" --label "$label" --network "$network" --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 64 --memory 256m --cpus 1 --tmpfs /journal:rw,noexec,nosuid,size=1m,mode=1777 --tmpfs /offer:rw,noexec,nosuid,size=1m,mode=1777 --mount type=volume,src="$identity_volume",dst=/run/atelier2-identity,readonly,volume-nocopy -v "$root/handoff:/handoff:ro" atelier2-301a-runner)
+runner_id=$(docker run -d --name "$runner" --label "$label" --network "$network" --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 64 --memory 268435456 --cpu-period 100000 --cpu-quota 100000 --tmpfs /workspace:rw,noexec,nosuid,size=67108864,mode=1777 --tmpfs /journal:rw,noexec,nosuid,size=1048576,mode=1777 --tmpfs /offer:rw,noexec,nosuid,size=1048576,mode=1777 --mount type=volume,src="$identity_volume",dst=/run/atelier2-identity,readonly,volume-nocopy -v "$root/handoff:/handoff:ro" atelier2-301a-runner)
+docker inspect "$runner_id" >"$root/runner-inspect.json"
+uv run --locked python tests/witness/runner_candidate_issuer.py attest-inspect --inspect "$root/runner-inspect.json" --manifest "$root/handoff/manifest" --output "$root/handoff/inspect-attested"
 offer="$root/offer/invocation.json"
 offer_error="$root/offer/error.log"
 for _ in $(seq 1 100); do

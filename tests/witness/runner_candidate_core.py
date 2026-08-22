@@ -30,6 +30,7 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.free_runner_executor import (
+    FreeRunnerAuthorizationResolver,
     FreeRunnerExecutorFactory,
     refuse_unbound_runner_a_request,
 )
@@ -40,12 +41,14 @@ from atelier2.adapters.runner_tls import (
     core_uri_for_certificate,
     validate_peer_certificate,
 )
-from atelier2.application.run_runner_session import CoreRunnerSession
+from atelier2.application.run_runner_session import (
+    CoreRunnerSession,
+    encode_runner_prepare_payload,
+)
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     RunnerGenerationBinding,
     RunnerGenerationId,
-    RunnerManifestId,
 )
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -65,6 +68,10 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_bindings import RunV3
+from atelier2.contracts.runner_manifests import (
+    decode_runner_manifest,
+    runner_manifest_id,
+)
 from atelier2.contracts.runner_session_codec import (
     decode_runner_session_frame,
     encode_runner_session_frame,
@@ -113,9 +120,7 @@ def _write_frame(connection: ssl.SSLSocket, frame: RunnerSessionFrame) -> None:
     connection.sendall(encode_runner_session_frame(frame))
 
 
-def _bootstrap(
-    root: Path, handoff: Path, scenario: str
-) -> tuple[AgentAttemptExecution, RunnerGenerationBinding, DbosAgentAttemptStore]:
+def _bootstrap(root: Path, handoff: Path, scenario: str):
     database = root / "core.sqlite3"
     workspace = root / "workspace"
     workspace.mkdir(mode=0o700, exist_ok=True)
@@ -194,14 +199,16 @@ def _bootstrap(
         )
         store = DbosAgentAttemptStore(runtime.engine)
         store.prepare(execution)
-        manifest_id = RunnerManifestId(
-            handoff.joinpath("manifest-id").read_text(encoding="ascii").strip()
-        )
+        manifest = decode_runner_manifest((handoff / "manifest").read_bytes())
+        identity = runner_manifest_id(manifest)
+        stated = handoff.joinpath("manifest-id").read_text(encoding="ascii").strip()
+        if identity.value != stated:
+            raise ValueError("runner-manifest-mismatch")
         binding = RunnerGenerationBinding(
             execution.attempt_id,
             request.request_hash,
             RunnerGenerationId(secrets.token_urlsafe(32)),
-            manifest_id,
+            identity,
         )
         store.bind_runner_generation(execution, binding)
         bootstrap = {
@@ -213,7 +220,10 @@ def _bootstrap(
         if scenario == "cancel":
             bootstrap["scenario"] = "cancel"
         _write_json(handoff / "bootstrap.json", bootstrap)
-        return execution, binding, store
+        reference = FreeRunnerAuthorizationResolver().reference_for(
+            request.resolved_binding.auth_profile
+        )
+        return execution, binding, store, request, manifest, reference
     except BaseException:
         runtime.close()
         raise
@@ -244,7 +254,9 @@ def main(arguments: list[str] | None = None) -> int:
     root = Path("/var/lib/atelier2-candidate")
     handoff = Path("/handoff")
     identity = Path("/run/atelier2-core-identity")
-    execution, binding, store = _bootstrap(root, handoff, parsed.scenario)
+    execution, binding, store, request, manifest, reference = _bootstrap(
+        root, handoff, parsed.scenario
+    )
     certificate_pem = identity.joinpath("core.crt").read_bytes()
     certificate = x509.load_pem_x509_certificate(certificate_pem)
     core_uri = core_uri_for_certificate(
@@ -267,6 +279,13 @@ def main(arguments: list[str] | None = None) -> int:
     peer_directory = Path("/run/atelier2-peer-authorization")
     invocation_offer = handoff / "invocation.json"
     peer_leaf = peer_directory / "client.crt"
+    inspect_attested = handoff / "inspect-attested"
+    _wait_for(inspect_attested)
+    if (
+        inspect_attested.read_text(encoding="ascii").strip()
+        != binding.manifest_id.value
+    ):
+        raise RuntimeError("runner-attestation-mismatch")
     _wait_for(invocation_offer)
     _wait_for(peer_leaf)
     invocation = json.loads(invocation_offer.read_text(encoding="utf-8"))[
@@ -306,6 +325,9 @@ def main(arguments: list[str] | None = None) -> int:
                 store,
                 secrets.token_urlsafe(32),
             ),
+            encode_runner_prepare_payload(request, reference),
+            manifest,
+            reference,
         )
         while True:
             frame = _read_frame(connection)

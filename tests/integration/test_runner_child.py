@@ -102,3 +102,34 @@ def test_cancel_reap_kills_a_child_that_ignores_term(tmp_path: Path) -> None:
         if child.poll() is None:
             child.kill()
             child.wait(timeout=2)
+
+
+@pytest.mark.proves("runner-child-landlock")
+def test_started_child_landlock_denies_identity(tmp_path: Path) -> None:
+    identity = tmp_path / "identity"
+    identity.mkdir()
+    key = identity / "client.key"
+    key.write_text("not-for-child", encoding="utf-8")
+    allowed = tuple(
+        path
+        for path in (
+            Path("/usr"),
+            Path("/lib"),
+            Path("/lib64"),
+            Path("/proc"),
+            Path("/dev"),
+            Path(sys.prefix),
+            Path(sys.base_prefix),
+        )
+        if path.exists()
+    )
+    child = start_runner_child(
+        (
+            sys.executable,
+            "-c",
+            "import sys\nfrom pathlib import Path\ntry:\n    Path(sys.argv[1]).read_bytes()\nexcept PermissionError:\n    raise SystemExit(0)\nraise SystemExit(23)",
+            str(key),
+        ),
+        allowed,
+    )
+    assert child.wait(timeout=5) == 0, child.stderr.read() if child.stderr else b""

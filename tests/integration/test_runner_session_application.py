@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import struct
+
 import pytest
 
 from atelier2.adapters.free_runner_executor import (
@@ -10,6 +12,9 @@ from atelier2.application.run_runner_session import (
     CoreRunnerSession,
     RunnerSessionRefusal,
     cancellation_refusal_code,
+    decode_runner_prepare_payload,
+    encode_runner_prepare_payload,
+    encode_runner_ready_payload,
 )
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
@@ -37,6 +42,9 @@ from atelier2.contracts.agents import (
     ResolvedAgentBinding,
 )
 from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.runner_manifests import (
+    candidate_runner_manifest,
+)
 from atelier2.contracts.runner_sessions import (
     RUNNER_SESSION_REFUSAL_CODES,
     RunnerSessionFrame,
@@ -135,16 +143,51 @@ def _frame(
     )
 
 
+def _candidate_manifest():
+    return candidate_runner_manifest(
+        source_commit="a" * 40,
+        image_digest="sha256:" + "b" * 64,
+        required_landlock_abi=1,
+        executor_revision="fake-free/v1",
+        executor_operational_identity="free-runner-candidate",
+        provider_id="fake-free",
+        auth_mode="api_key",
+        requested_capability="headless",
+    )
+
+
+def _session(core: _Core | None = None) -> CoreRunnerSession:
+    request = _free_request()
+    reference = FreeRunnerAuthorizationResolver().reference_for(
+        request.resolved_binding.auth_profile
+    )
+    return CoreRunnerSession(
+        _binding(),
+        core if core is not None else _Core(),
+        encode_runner_prepare_payload(request, reference),
+        _candidate_manifest(),
+        reference,
+    )
+
+
+def _ready_payload() -> tuple[bytes, ...]:
+    request = _free_request()
+    reference = FreeRunnerAuthorizationResolver().reference_for(
+        request.resolved_binding.auth_profile
+    )
+    return encode_runner_ready_payload(_candidate_manifest(), reference)
+
+
 def test_core_session_arms_once_then_commits_acknowledges_and_releases_in_order() -> (
     None
 ):
     core = _Core()
-    session = CoreRunnerSession(_binding(), core)
+    session = _session(core)
 
     offer = session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
     assert offer is not None
     assert offer.message is RunnerSessionMessage.PREPARE
-    launch = session.accept(_frame(RunnerSessionMessage.READY, 2, (b"x",) * 11))
+    launch = session.accept(_frame(RunnerSessionMessage.READY, 2, _ready_payload()))
     assert launch is not None
     assert launch.message is RunnerSessionMessage.LAUNCH
     assert (
@@ -172,7 +215,7 @@ def test_core_session_arms_once_then_commits_acknowledges_and_releases_in_order(
 
 def test_core_session_refuses_a_launch_before_ready_without_arming() -> None:
     core = _Core()
-    session = CoreRunnerSession(_binding(), core)
+    session = _session(core)
 
     with pytest.raises(RunnerSessionRefusal, match="out-of-order"):
         session.accept(_frame(RunnerSessionMessage.LAUNCH, 1))
@@ -183,11 +226,12 @@ def test_core_session_refuses_a_launch_before_ready_without_arming() -> None:
 @pytest.mark.proves("runner-cancel-none")
 def test_core_session_persists_one_none_replacement_cancel_before_signalling() -> None:
     core = _Core()
-    session = CoreRunnerSession(_binding(), core)
+    session = _session(core)
 
     assert session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1)) is not None
     assert (
-        session.accept(_frame(RunnerSessionMessage.READY, 2, (b"x",) * 11)) is not None
+        session.accept(_frame(RunnerSessionMessage.READY, 2, _ready_payload()))
+        is not None
     )
     assert (
         session.accept(_frame(RunnerSessionMessage.STARTED, 3, (b"\x00" * 8,))) is None
@@ -210,12 +254,12 @@ def test_core_session_persists_one_none_replacement_cancel_before_signalling() -
 
 def test_core_session_refuses_cancel_before_runner_started() -> None:
     with pytest.raises(RunnerSessionRefusal, match="runner-cancel-conflict"):
-        CoreRunnerSession(_binding(), _Core()).cancel()
+        _session().cancel()
 
 
 def test_core_session_duplicate_offer_is_idempotent_without_a_second_arm() -> None:
     core = _Core()
-    session = CoreRunnerSession(_binding(), core)
+    session = _session(core)
     offer = _frame(RunnerSessionMessage.INVOCATION_OFFER, 1)
 
     first = session.accept(offer)
@@ -226,7 +270,7 @@ def test_core_session_duplicate_offer_is_idempotent_without_a_second_arm() -> No
 
 
 def test_core_session_refuses_replayed_bytes_at_the_same_sequence() -> None:
-    session = CoreRunnerSession(_binding(), _Core())
+    session = _session()
     session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
 
     with pytest.raises(RunnerSessionRefusal, match="runner-session-replay"):
@@ -234,14 +278,14 @@ def test_core_session_refuses_replayed_bytes_at_the_same_sequence() -> None:
 
 
 def test_core_session_refuses_a_sequence_gap() -> None:
-    session = CoreRunnerSession(_binding(), _Core())
+    session = _session()
 
     with pytest.raises(RunnerSessionRefusal, match="runner-session-sequence-mismatch"):
         session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 2))
 
 
 def test_core_session_refuses_a_binding_mismatch() -> None:
-    session = CoreRunnerSession(_binding(), _Core())
+    session = _session()
     other = RunnerSessionFrame(
         RunnerSessionMessage.INVOCATION_OFFER,
         1,
@@ -267,18 +311,18 @@ def test_core_session_maps_arm_conflict_without_launch() -> None:
             raise RunnerBindingConflict("runner invocation retry differs")
 
     core = _ArmConflict()
-    session = CoreRunnerSession(_binding(), core)
+    session = _session(core)
     session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
 
     with pytest.raises(RunnerSessionRefusal, match="runner-arm-conflict"):
-        session.accept(_frame(RunnerSessionMessage.READY, 2, (b"x",) * 11))
+        session.accept(_frame(RunnerSessionMessage.READY, 2, _ready_payload()))
     assert core.armed == 0
 
 
 def test_core_session_refuses_cancel_after_terminal_evidence() -> None:
-    session = CoreRunnerSession(_binding(), _Core())
+    session = _session()
     session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
-    session.accept(_frame(RunnerSessionMessage.READY, 2, (b"x",) * 11))
+    session.accept(_frame(RunnerSessionMessage.READY, 2, _ready_payload()))
     session.accept(_frame(RunnerSessionMessage.STARTED, 3, (b"\x00" * 8,)))
     session.accept(_frame(RunnerSessionMessage.TERMINAL_AVAILABLE, 4, (b"d" * 64,)))
 
@@ -300,9 +344,9 @@ class _ReplacementOneCore(_Core):
 
 def test_core_session_refuses_replacement_one_without_a_cancel_frame() -> None:
     core = _ReplacementOneCore()
-    session = CoreRunnerSession(_binding(), core)
+    session = _session(core)
     session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
-    session.accept(_frame(RunnerSessionMessage.READY, 2, (b"x",) * 11))
+    session.accept(_frame(RunnerSessionMessage.READY, 2, _ready_payload()))
     session.accept(_frame(RunnerSessionMessage.STARTED, 3, (b"\x00" * 8,)))
 
     with pytest.raises(
@@ -414,3 +458,38 @@ def test_a_request_subset_refuses_a_different_hash_bound_executor() -> None:
                 )
             )
         )
+
+
+def test_prepare_payload_round_trips_the_bound_request() -> None:
+    request = _free_request()
+    reference = FreeRunnerAuthorizationResolver().reference_for(
+        request.resolved_binding.auth_profile
+    )
+    payload = encode_runner_prepare_payload(request, reference)
+
+    assert decode_runner_prepare_payload(payload, request.request_hash) == request
+    assert payload[18] == reference.encode("ascii")
+
+
+def test_core_session_refuses_attestation_mismatch_without_arming() -> None:
+    core = _Core()
+    session = _session(core)
+    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+    payload = list(_ready_payload())
+    payload[2] = struct.pack(">Q", 1)
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-attestation-mismatch"):
+        session.accept(_frame(RunnerSessionMessage.READY, 2, tuple(payload)))
+    assert core.armed == 0
+
+
+def test_core_session_refuses_manifest_mismatch_without_arming() -> None:
+    core = _Core()
+    session = _session(core)
+    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+    payload = list(_ready_payload())
+    payload[0] = b"not-the-selected-executor"
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-manifest-mismatch"):
+        session.accept(_frame(RunnerSessionMessage.READY, 2, tuple(payload)))
+    assert core.armed == 0

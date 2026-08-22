@@ -14,7 +14,19 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
+from atelier2.adapters.runner_child import REQUIRED_LANDLOCK_ABI
 from atelier2.adapters.runner_tls import CORE_DNS_NAME, core_uri_for_certificate
+from atelier2.contracts.agents import AgentExecutionCapability, AuthMode
+from atelier2.contracts.runner_manifests import (
+    CANDIDATE_CPU_PERIOD,
+    CANDIDATE_JOURNAL_BYTES,
+    CANDIDATE_WORKSPACE_BYTES,
+    candidate_runner_manifest,
+    decode_runner_manifest,
+    encode_runner_manifest,
+    runner_manifest_id,
+)
 
 
 def _private(path: Path, key: rsa.RSAPrivateKey) -> None:
@@ -154,6 +166,75 @@ def issue_runner(
     return 0
 
 
+def write_candidate_manifest(
+    output: Path, source_commit: str, image_digest: str
+) -> int:
+    factory = FreeRunnerExecutorFactory()
+    manifest = candidate_runner_manifest(
+        source_commit=source_commit,
+        image_digest=image_digest,
+        required_landlock_abi=REQUIRED_LANDLOCK_ABI,
+        executor_revision=factory.key.executor_revision.value,
+        executor_operational_identity=factory.operational_identity.value,
+        provider_id=factory.key.provider_id.value,
+        auth_mode=AuthMode.API_KEY.value,
+        requested_capability=AgentExecutionCapability.HEADLESS.value,
+    )
+    encoded = encode_runner_manifest(manifest)
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "manifest").write_bytes(encoded)
+    (output / "manifest-id").write_text(
+        runner_manifest_id(manifest).value + "\n", encoding="ascii"
+    )
+    return 0
+
+
+def _tmpfs_size(options: str) -> int:
+    for part in options.split(","):
+        if part.startswith("size="):
+            raw = part.removeprefix("size=")
+            if raw[-1:] in {"m", "M"}:
+                return int(raw[:-1]) * 1024 * 1024
+            if raw[-1:] in {"k", "K"}:
+                return int(raw[:-1]) * 1024
+            return int(raw)
+    raise ValueError("runner-attestation-mismatch")
+
+
+def attest_runner_inspect(inspect_path: Path, manifest_path: Path, output: Path) -> int:
+    document = json.loads(inspect_path.read_text(encoding="utf-8"))
+    if isinstance(document, list):
+        document = document[0]
+    host = document["HostConfig"]
+    config = document["Config"]
+    manifest = decode_runner_manifest(manifest_path.read_bytes())
+    tmpfs = host.get("Tmpfs") or {}
+    security = host.get("SecurityOpt") or []
+    cap_drop = host.get("CapDrop") or []
+    user = config.get("User") or ""
+    expected_user = f"{manifest.effective_uid}:{manifest.effective_gid}"
+    nnp = any(
+        option == "no-new-privileges:true" or option.startswith("no-new-privileges")
+        for option in security
+    )
+    if (
+        document.get("Image") != manifest.image_digest
+        or user != expected_user
+        or host.get("ReadonlyRootfs") is not True
+        or "ALL" not in cap_drop
+        or not nnp
+        or int(host.get("PidsLimit") or 0) != manifest.process_limit
+        or int(host.get("Memory") or 0) != manifest.memory_bytes
+        or int(host.get("CpuQuota") or 0) != manifest.cpu_quota_microseconds
+        or int(host.get("CpuPeriod") or 0) != CANDIDATE_CPU_PERIOD
+        or _tmpfs_size(tmpfs.get("/workspace", "")) != CANDIDATE_WORKSPACE_BYTES
+        or _tmpfs_size(tmpfs.get("/journal", "")) != CANDIDATE_JOURNAL_BYTES
+    ):
+        raise ValueError("runner-attestation-mismatch")
+    output.write_text(runner_manifest_id(manifest).value + "\n", encoding="ascii")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
@@ -168,9 +249,23 @@ def main() -> int:
     runner.add_argument("--core-peer", type=Path, required=True)
     record = commands.add_parser("receiver-record")
     record.add_argument("--identity", type=Path, required=True)
+    manifest = commands.add_parser("manifest")
+    manifest.add_argument("--source-commit", required=True)
+    manifest.add_argument("--image-digest", required=True)
+    manifest.add_argument("--output", type=Path, required=True)
+    inspect = commands.add_parser("attest-inspect")
+    inspect.add_argument("--inspect", type=Path, required=True)
+    inspect.add_argument("--manifest", type=Path, required=True)
+    inspect.add_argument("--output", type=Path, required=True)
     parsed = parser.parse_args()
     if parsed.command == "core":
         return issue_core(parsed.state, parsed.identity)
+    if parsed.command == "manifest":
+        return write_candidate_manifest(
+            parsed.output, parsed.source_commit, parsed.image_digest
+        )
+    if parsed.command == "attest-inspect":
+        return attest_runner_inspect(parsed.inspect, parsed.manifest, parsed.output)
     if parsed.command == "runner":
         return issue_runner(
             parsed.state,

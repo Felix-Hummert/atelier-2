@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import errno
+import hashlib
 import json
+import os
 import secrets
 import socket
 import ssl
@@ -13,14 +16,24 @@ from pathlib import Path
 
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
+from atelier2.adapters.free_runner_executor import (
+    FreeRunnerAuthorizationResolver,
+    refuse_unbound_runner_a_request,
+)
 from atelier2.adapters.runner_child import (
+    REQUIRED_LANDLOCK_ABI,
     LandlockUnavailable,
     install_landlock_guard,
+    landlock_kernel_abi,
     reap_cancelled_runner_child,
     start_runner_child,
 )
 from atelier2.adapters.runner_journal import RunnerJournal
 from atelier2.adapters.runner_tls import CORE_DNS_NAME, validate_peer_certificate
+from atelier2.application.run_runner_session import (
+    decode_runner_prepare_payload,
+    require_ready_matches_manifest,
+)
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     RunnerCancellation,
@@ -33,6 +46,10 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceHash,
 )
 from atelier2.contracts.agents import AgentExecutionRequestHash, AgentExecutionResult
+from atelier2.contracts.runner_manifests import (
+    decode_runner_manifest,
+    runner_manifest_id,
+)
 from atelier2.contracts.runner_session_codec import (
     decode_runner_session_frame,
     encode_runner_session_frame,
@@ -100,6 +117,83 @@ def _wait_for_client_identity(identity: Path) -> None:
         )
 
 
+def _status_field(name: str) -> str:
+    for line in Path("/proc/self/status").read_text(encoding="ascii").splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key == name:
+            return value.strip()
+    raise RuntimeError(f"runner status {name} is missing")
+
+
+def _pid_limit() -> int:
+    candidates = [Path("/sys/fs/cgroup/pids.max"), Path("/sys/fs/cgroup/pids/pids.max")]
+    cgroup = Path("/proc/self/cgroup")
+    if cgroup.is_file():
+        for line in cgroup.read_text(encoding="ascii").splitlines():
+            relative = line.split(":", 2)[-1].lstrip("/")
+            if relative:
+                candidates.append(Path("/sys/fs/cgroup") / relative / "pids.max")
+    for path in candidates:
+        if path.is_file():
+            raw = path.read_text(encoding="ascii").strip()
+            if raw != "max":
+                return int(raw)
+    raise RuntimeError("runner pid limit is unreadable")
+
+
+def _read_only_root() -> bool:
+    probe = Path("/.runner-root-write-probe")
+    try:
+        descriptor = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC)
+    except OSError as error:
+        return error.errno in {errno.EROFS, errno.EACCES, errno.EPERM}
+    os.close(descriptor)
+    probe.unlink()
+    return False
+
+
+def _identity_mount_denied(identity: Path) -> bool:
+    probe = identity / ".write-probe"
+    try:
+        descriptor = os.open(
+            probe,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+    except OSError as error:
+        return error.errno in {errno.EROFS, errno.EACCES, errno.EPERM}
+    os.close(descriptor)
+    probe.unlink()
+    return False
+
+
+def _child_allowlist() -> tuple[Path, ...]:
+    paths = [Path("/usr"), Path("/lib"), Path("/proc"), Path("/dev")]
+    for extra in (Path("/lib64"), Path("/workspace")):
+        if extra.exists():
+            paths.append(extra)
+    return tuple(paths)
+
+
+def _measured_ready_payload(manifest, auth_reference: str, identity: Path):
+    if landlock_kernel_abi() < REQUIRED_LANDLOCK_ABI:
+        raise LandlockUnavailable("runner-child-boundary-unavailable")
+    payload = (
+        manifest.executor_revision.encode("utf-8"),
+        manifest.executor_operational_identity.encode("utf-8"),
+        struct.pack(">Q", os.getuid()),
+        struct.pack(">Q", os.getgid()),
+        _status_field("CapEff").lower().encode("ascii"),
+        b"1" if _status_field("NoNewPrivs") == "1" else b"0",
+        b"1" if _read_only_root() else b"0",
+        struct.pack(">Q", _pid_limit()),
+        struct.pack(">Q", REQUIRED_LANDLOCK_ABI),
+        b"DENIED" if _identity_mount_denied(identity) else b"WRITABLE",
+        hashlib.sha256(auth_reference.encode("ascii")).hexdigest().encode("ascii"),
+    )
+    require_ready_matches_manifest(payload, manifest, auth_reference)
+    return payload
+
+
 def _control_or_child_exit(
     connection: ssl.SSLSocket, child: subprocess.Popen[bytes]
 ) -> RunnerSessionFrame | None:
@@ -161,6 +255,17 @@ def _run_candidate_session(
         prepare = _read_frame(connection)
         if prepare.message is not RunnerSessionMessage.PREPARE:
             raise RuntimeError("Core did not prepare the exact candidate invocation")
+        request = decode_runner_prepare_payload(prepare.payload, binding.request_hash)
+        refuse_unbound_runner_a_request(request)
+        resolver = FreeRunnerAuthorizationResolver()
+        auth = request.resolved_binding.auth_profile
+        reference = resolver.reference_for(auth)
+        if prepare.payload[18] != reference.encode("ascii"):
+            raise RuntimeError("auth-profile-unresolvable")
+        resolver.resolve(auth, reference)
+        manifest = decode_runner_manifest(handoff.joinpath("manifest").read_bytes())
+        if runner_manifest_id(manifest) != binding.manifest_id:
+            raise RuntimeError("runner-manifest-mismatch")
         sequence += 1
         _write_frame(
             connection,
@@ -169,31 +274,21 @@ def _run_candidate_session(
                 sequence,
                 binding,
                 invocation,
-                (
-                    b"fake-free/v1",
-                    b"free-runner-candidate",
-                    struct.pack(">Q", 10001),
-                    struct.pack(">Q", 10001),
-                    b"0000000000000000",
-                    b"1",
-                    b"1",
-                    struct.pack(">Q", 64),
-                    struct.pack(">Q", 1),
-                    b"DENIED",
-                    b"0" * 64,
-                ),
+                _measured_ready_payload(manifest, reference, identity),
             ),
         )
         if _read_frame(connection).message is not RunnerSessionMessage.LAUNCH:
             raise RuntimeError("Core did not durably arm the candidate invocation")
         sequence += 1
+        allowlist = _child_allowlist()
         if bootstrap.get("scenario") == "cancel":
             child = start_runner_child(
                 (
                     sys.executable,
                     "-c",
                     "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)",
-                )
+                ),
+                allowlist,
             )
         else:
             child = start_runner_child(
@@ -201,7 +296,8 @@ def _run_candidate_session(
                     sys.executable,
                     "-c",
                     "import json; print(json.dumps('runner candidate'))",
-                )
+                ),
+                allowlist,
             )
         _write_frame(
             connection,
@@ -326,7 +422,7 @@ def main(arguments: list[str] | None = None) -> int:
     if not parsed.landlock_probe:
         parser.error("the candidate Runner needs an explicit handoff mode")
     try:
-        install_landlock_guard((Path("/usr"), Path("/lib"), Path("/lib64")))
+        install_landlock_guard(_child_allowlist())
     except LandlockUnavailable as error:
         parser.error(f"Landlock is unavailable: {error}")
     return 0

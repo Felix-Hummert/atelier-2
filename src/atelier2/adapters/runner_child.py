@@ -4,6 +4,7 @@ import ctypes
 import os
 import signal
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -18,23 +19,8 @@ _PR_SET_NO_NEW_PRIVS = 38
 _ACCESS_EXECUTE = 1 << 0
 _ACCESS_READ_FILE = 1 << 2
 _ACCESS_READ_DIR = 1 << 3
-_HANDLED_ACCESS = (
-    _ACCESS_EXECUTE
-    | (1 << 1)
-    | _ACCESS_READ_FILE
-    | _ACCESS_READ_DIR
-    | (1 << 4)
-    | (1 << 5)
-    | (1 << 6)
-    | (1 << 7)
-    | (1 << 8)
-    | (1 << 9)
-    | (1 << 10)
-    | (1 << 11)
-    | (1 << 12)
-    | (1 << 13)
-    | (1 << 14)
-)
+REQUIRED_LANDLOCK_ABI = 1
+_HANDLED_ACCESS = (1 << 13) - 1
 _ALLOWED_READ_ONLY_ACCESS = _ACCESS_EXECUTE | _ACCESS_READ_FILE | _ACCESS_READ_DIR
 _LIBC = ctypes.CDLL(None, use_errno=True)
 
@@ -59,10 +45,27 @@ class RunnerChildReapFailed(RuntimeError):
     """TERM then KILL did not reap the candidate child."""
 
 
-def start_runner_child(command: tuple[str, ...]) -> subprocess.Popen[bytes]:
+def start_runner_child(
+    command: tuple[str, ...],
+    allowed_read_only_paths: tuple[Path, ...] | None = None,
+) -> subprocess.Popen[bytes]:
     """Start the one free child in its own session with identity descriptors closed."""
+    launched = command
+    if allowed_read_only_paths is not None:
+        allowed = (
+            "(" + ", ".join(repr(str(path)) for path in allowed_read_only_paths) + ")"
+        )
+        launcher = (
+            "import os, signal, sys\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "from pathlib import Path\n"
+            "from atelier2.adapters.runner_child import install_landlock_guard\n"
+            f"install_landlock_guard(tuple(Path(path) for path in {allowed}))\n"
+            "os.execvp(sys.argv[1], sys.argv[1:])\n"
+        )
+        launched = (sys.executable, "-c", launcher, *command)
     return subprocess.Popen(
-        command,
+        launched,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         close_fds=True,
@@ -106,7 +109,7 @@ def reap_cancelled_runner_child(
 def install_landlock_guard(allowed_read_only_paths: tuple[Path, ...]) -> int:
     """Install a deny-by-default filesystem guard and return its kernel ABI."""
     abi = _landlock_abi()
-    if abi < 1:
+    if abi < REQUIRED_LANDLOCK_ABI:
         raise LandlockUnavailable("the kernel does not provide Landlock ABI 1")
     if not allowed_read_only_paths:
         raise LandlockUnavailable("the child has no Landlock allowlist")
@@ -126,6 +129,10 @@ def install_landlock_guard(allowed_read_only_paths: tuple[Path, ...]) -> int:
     finally:
         os.close(ruleset_descriptor)
     return abi
+
+
+def landlock_kernel_abi() -> int:
+    return _landlock_abi()
 
 
 def _landlock_abi() -> int:

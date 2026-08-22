@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import struct
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -10,7 +12,26 @@ from atelier2.contracts.agent_attempts import (
     RunnerInvocationId,
     RunnerTerminalEvidenceHash,
 )
+from atelier2.contracts.agents import (
+    AgentConfigurationRevision,
+    AgentConfigurationRevisionFormatVersion,
+    AgentConfigurationRevisionHash,
+    AgentExecutionCapability,
+    AgentExecutionRequestHash,
+    AgentExecutionRequestV2,
+    AgentExecutorOperationalIdentity,
+    AgentExecutorRevision,
+    AgentRole,
+    AuthMode,
+    AuthProfileRevision,
+    AuthProfileRevisionHash,
+    ProviderId,
+    ResolvedAgentBinding,
+)
+from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.runner_manifests import RunnerManifestV1
 from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSessionMessage
+from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationResult,
@@ -41,12 +62,139 @@ def cancellation_refusal_code(result: AgentAttemptCancellationResult) -> str:
     return "runner-cancel-conflict"
 
 
+def encode_runner_prepare_payload(
+    request: AgentExecutionRequestV2, auth_reference: str
+) -> tuple[bytes, ...]:
+    binding = request.resolved_binding
+    auth = binding.auth_profile
+    configuration = binding.configuration
+    reference = auth_reference.encode("ascii")
+    if not 1 <= len(reference) <= 128:
+        raise RunnerSessionRefusal("auth-profile-unresolvable")
+    return (
+        request.node_execution_id.value.encode("ascii"),
+        request.run_id.value.encode("utf-8"),
+        request.workflow_revision_hash.value.encode("ascii"),
+        request.node_id.encode("utf-8"),
+        binding.role.value.encode("utf-8"),
+        configuration.revision_hash.value.encode("ascii"),
+        auth.revision_hash.value.encode("ascii"),
+        auth.profile_id.encode("utf-8"),
+        struct.pack(">Q", auth.revision_number),
+        auth.provider_id.value.encode("ascii"),
+        auth.auth_mode.value.encode("ascii"),
+        configuration.model.encode("utf-8"),
+        configuration.executor_revision.value.encode("utf-8"),
+        configuration.requested_capability.value.encode("ascii"),
+        struct.pack(">Q", int(configuration.revision_format_version)),
+        request.executor_operational_identity.value.encode("utf-8"),
+        request.job_bytes,
+        struct.pack(">Q", request.round_ordinal),
+        reference,
+    )
+
+
+def decode_runner_prepare_payload(
+    payload: tuple[bytes, ...], expected_request_hash: AgentExecutionRequestHash
+) -> AgentExecutionRequestV2:
+    if len(payload) != 19:
+        raise RunnerSessionRefusal("runner-session-noncanonical")
+    try:
+        auth = AuthProfileRevision(
+            payload[7].decode("utf-8"),
+            _uint64(payload[8]),
+            ProviderId(_ascii(payload[9])),
+            AuthMode(_ascii(payload[10])),
+        )
+        if auth.revision_hash != AuthProfileRevisionHash(_ascii(payload[6])):
+            raise RunnerSessionRefusal("runner-request-hash-mismatch")
+        configuration = AgentConfigurationRevision(
+            payload[11].decode("utf-8"),
+            auth.revision_hash,
+            AgentExecutorRevision(payload[12].decode("utf-8")),
+            AgentExecutionCapability(_ascii(payload[13])),
+            AgentConfigurationRevisionFormatVersion(_uint64(payload[14])),
+        )
+        if configuration.revision_hash != AgentConfigurationRevisionHash(
+            _ascii(payload[5])
+        ):
+            raise RunnerSessionRefusal("runner-request-hash-mismatch")
+        request = AgentExecutionRequestV2(
+            NodeExecutionId(_ascii(payload[0])),
+            RunId(payload[1].decode("utf-8")),
+            WorkflowRevisionHash(_ascii(payload[2])),
+            payload[3].decode("utf-8"),
+            ResolvedAgentBinding(
+                AgentRole(payload[4].decode("utf-8")), configuration, auth
+            ),
+            AgentExecutorOperationalIdentity(payload[15].decode("utf-8")),
+            payload[16],
+            round_ordinal=_uint64(payload[17]),
+        )
+    except RunnerSessionRefusal:
+        raise
+    except (TypeError, UnicodeDecodeError, ValueError) as error:
+        raise RunnerSessionRefusal("runner-session-noncanonical") from error
+    if request.request_hash != expected_request_hash:
+        raise RunnerSessionRefusal("runner-request-hash-mismatch")
+    return request
+
+
+def encode_runner_ready_payload(
+    manifest: RunnerManifestV1, auth_reference: str
+) -> tuple[bytes, ...]:
+    return (
+        manifest.executor_revision.encode("utf-8"),
+        manifest.executor_operational_identity.encode("utf-8"),
+        struct.pack(">Q", manifest.effective_uid),
+        struct.pack(">Q", manifest.effective_gid),
+        manifest.effective_capabilities.encode("ascii"),
+        b"1" if manifest.no_new_privileges else b"0",
+        b"1" if manifest.read_only_root else b"0",
+        struct.pack(">Q", manifest.process_limit),
+        struct.pack(">Q", manifest.required_landlock_abi),
+        b"DENIED",
+        hashlib.sha256(auth_reference.encode("ascii")).hexdigest().encode("ascii"),
+    )
+
+
+def require_ready_matches_manifest(
+    payload: tuple[bytes, ...],
+    manifest: RunnerManifestV1,
+    auth_reference: str,
+) -> None:
+    expected = encode_runner_ready_payload(manifest, auth_reference)
+    if len(payload) != 11:
+        raise RunnerSessionRefusal("runner-session-noncanonical")
+    if payload[5] != b"1" or payload[6] != b"1" or payload[9] != b"DENIED":
+        raise RunnerSessionRefusal("runner-attestation-mismatch")
+    if payload[10] != expected[10]:
+        raise RunnerSessionRefusal("auth-profile-unresolvable")
+    if payload[0] != expected[0] or payload[1] != expected[1]:
+        raise RunnerSessionRefusal("runner-manifest-mismatch")
+    if payload[2:9] != expected[2:9]:
+        raise RunnerSessionRefusal("runner-attestation-mismatch")
+
+
+def _uint64(field: bytes) -> int:
+    if len(field) != 8:
+        raise RunnerSessionRefusal("runner-session-noncanonical")
+    return struct.unpack(">Q", field)[0]
+
+
+def _ascii(value: bytes) -> str:
+    return value.decode("ascii")
+
+
 @dataclass
 class CoreRunnerSession:
     """The one-shot Core-side ordering fence for one authenticated invocation."""
 
     binding: RunnerGenerationBinding
     core: RunnerSessionCore
+    prepare_payload: tuple[bytes, ...]
+    manifest: RunnerManifestV1
+    auth_reference: str
     _phase: _CorePhase = _CorePhase.OFFER
     _next_runner_sequence: int = 1
     _next_core_sequence: int = 1
@@ -112,9 +260,12 @@ class CoreRunnerSession:
                 self._invocation = frame.invocation_id
                 self._phase = _CorePhase.READY
                 return self._core_frame(
-                    RunnerSessionMessage.PREPARE, (b"",) * 19, frame
+                    RunnerSessionMessage.PREPARE, self.prepare_payload, frame
                 )
             case _CorePhase.READY:
+                require_ready_matches_manifest(
+                    frame.payload, self.manifest, self.auth_reference
+                )
                 try:
                     self.core.arm(self.binding, frame.invocation_id)
                 except RunnerBindingConflict as error:

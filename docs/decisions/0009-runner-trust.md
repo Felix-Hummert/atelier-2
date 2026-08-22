@@ -546,13 +546,15 @@ this record borrows that owner rather than opening a second vocabulary.
   and external cleanup proof SHA-256
   `7eaf668be6129fcf78fe46eb25d58e18e14a3b0df14cc0f83cb73edc842eef0f`.
 - A disposable #301-A candidate (`scripts/runner_candidate.sh`) on this host
-  proved one success Attempt `SUCCEEDED`/`ACKNOWLEDGED` with generation and
-  invocation bound, and one cancel Attempt `CANCELLED`/`ACKNOWLEDGED` with
-  `replacement=NONE` and `REAPED_AFTER_KILL`. Witness directories
-  `/var/tmp/atelier2-301a-runner-witness.6ZYyis` (success Core store SHA-256
-  `4519cfd6e06894266a189785dba5134534214d056fb9caf6b9cd4b19d3194035`) and
-  `/var/tmp/atelier2-301a-runner-witness.zAP3aP` (cancel Core store SHA-256
-  `0100986aaafe4cbc581453fb10fee3feda344cf236ea39654d833f562120c155`). Exact
+  proved one success Attempt `SUCCEEDED`/`ACKNOWLEDGED` with a real manifest
+  content identity, launcher inspect equality, measured READY matching that
+  manifest, and Landlock on the free child exec; and one cancel Attempt
+  `CANCELLED`/`ACKNOWLEDGED` with `replacement=NONE` and `REAPED_AFTER_KILL`.
+  Witness directories `/var/tmp/atelier2-301a-runner-witness.CWbaEM` (success
+  Core store SHA-256
+  `f67e8432b2e95b9e3e3694f74adf87e2c8cd8cbe70c302204cfd80b2c5618078`) and
+  `/var/tmp/atelier2-301a-runner-witness.9XCUEP` (cancel Core store SHA-256
+  `93adb383c43825d018d0d7fe0477c3bbc682ada76295789504cc56a5adfa9b0a`). Exact
   labelled Docker objects were empty after `RELEASED`. It does not prove live
   A.1 availability, restart/reconnect, cancel races, replacement `ONE`, a
   wrong-CA live refusal, or packaged cutover. Focused tests cover peer

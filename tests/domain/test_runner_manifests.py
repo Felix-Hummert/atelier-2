@@ -6,6 +6,8 @@ import pytest
 
 from atelier2.contracts.runner_manifests import (
     RunnerManifestV1,
+    decode_runner_manifest,
+    encode_runner_manifest,
     runner_manifest_id,
 )
 
@@ -58,3 +60,11 @@ def test_manifest_identity_binds_every_attested_runner_fact() -> None:
 def test_manifest_refuses_an_unattestable_fact(change: dict[str, object]) -> None:
     with pytest.raises(ValueError):
         replace(_manifest(), **change)
+
+
+def test_manifest_round_trips_as_one_canonical_identity() -> None:
+    manifest = _manifest()
+    encoded = encode_runner_manifest(manifest)
+
+    assert decode_runner_manifest(encoded) == manifest
+    assert runner_manifest_id(manifest).value != "0" * 64
