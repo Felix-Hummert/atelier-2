@@ -110,6 +110,8 @@ def test_a_wait_sink_run_streams_its_events_over_the_real_sse_route(
 
     assert response.status_code == 200, response.text
     events = _parse_sse_events(response.text)
-    assert [
-        cast(dict[str, object], event["data"])["event"] for event in events
-    ] == ["AGENT_COMPLETED", "WAITING_INPUT", "WAIT_ANSWERED"]
+    assert [cast(dict[str, object], event["data"])["event"] for event in events] == [
+        "AGENT_COMPLETED",
+        "WAITING_INPUT",
+        "WAIT_ANSWERED",
+    ]
