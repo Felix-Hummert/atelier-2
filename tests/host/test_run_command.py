@@ -1707,6 +1707,61 @@ def test_an_illegal_catalog_name_still_starts_and_founds_nothing(
     assert capsysbinary.readouterr().out == AGENT_OUTPUT
 
 
+def test_an_admission_invalid_request_is_a_named_refusal_and_starts_nothing(
+    v3_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    """A founding invalid-request is not the catalog-name skip.
+
+    The grammar skip happens locally before POST. Any other invalid-request
+    from the admission door is the service naming a refusal, and starting
+    by hash would hide it.
+    """
+    problem = problem_resource(
+        "invalid-request", "activated_at is not a catalog activation instant"
+    )
+    answers = v3_serving_answers()
+    answers[("POST", LINEAGES_URL_PATH)] = [
+        Answer(
+            problem.model_dump_json().encode(),
+            status=HTTPStatus(problem.status),
+            media_type=PROBLEM_MEDIA_TYPE,
+        )
+    ]
+    with ScriptedService(answers) as service:
+        exit_code = run_command(v3_order, service)
+        founded = service.sent("POST", LINEAGES_URL_PATH)
+        started = service.sent("POST", RUNS_URL_PATH)
+
+    printed = capsysbinary.readouterr()
+    reported = printed.err.decode()
+    assert founded
+    assert (exit_code, started, printed.out) == (1, [], b"")
+    assert problem.type in reported
+    assert problem.detail in reported
+
+
+def test_an_already_owned_revision_skips_founding_and_still_starts(
+    v3_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    problem = problem_resource("catalog-revision-owned")
+    answers = v3_serving_answers()
+    answers[("POST", LINEAGES_URL_PATH)] = [
+        Answer(
+            problem.model_dump_json().encode(),
+            status=HTTPStatus(problem.status),
+            media_type=PROBLEM_MEDIA_TYPE,
+        )
+    ]
+    with ScriptedService(answers) as service:
+        exit_code = run_command(v3_order, service)
+        started = service.sent("POST", RUNS_URL_PATH)
+        members = service.sent("POST", MEMBERS_URL_PATH)
+
+    assert (exit_code, members) == (0, [])
+    assert started
+    assert capsysbinary.readouterr().out == AGENT_OUTPUT
+
+
 def test_a_held_name_admits_the_new_revision_into_that_lineage(
     v3_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
 ) -> None:

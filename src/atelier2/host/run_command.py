@@ -589,7 +589,7 @@ def _admit_published_v3(
         return
     except ServiceRefused as refused:
         code = _problem_code(refused)
-        if code in {"catalog-revision-owned", "invalid-request"}:
+        if code == "catalog-revision-owned":
             return
         if code != "catalog-name-held":
             raise
