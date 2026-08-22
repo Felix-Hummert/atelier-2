@@ -13,7 +13,12 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 from atelier2.adapters.free_runner_executor import (
-    FreeRunnerAuthorizationResolver,
+    FreeRunnerCandidateExecutor,
+    FreeRunnerHoldJob,
+    FreeRunnerJobRefused,
+    FreeRunnerPrintJob,
+    decode_free_runner_job,
+    encode_free_runner_job,
     refuse_unbound_runner_a_request,
 )
 from atelier2.adapters.runner_tls import runner_uri_for_invocation
@@ -75,6 +80,12 @@ from atelier2.runner.__main__ import (
     _invocation_for_session,
     _load_verified_client_identity,
 )
+from atelier2.runner.authorization import (
+    AuthReference,
+    free_runner_auth_reference,
+    resolve_free_runner_authorization,
+)
+from atelier2.runner.executors import RunnerExecutorUnavailable, select_runner_executor
 from atelier2.runner.session import _CoreFrameFence
 
 
@@ -91,13 +102,12 @@ def test_free_runner_auth_reference_is_a_secret_free_function_of_the_bound_revis
     None
 ):
     profile = _profile()
-    resolver = FreeRunnerAuthorizationResolver()
-    reference = resolver.reference_for(profile)
+    reference = free_runner_auth_reference(profile)
 
-    authorization = resolver.resolve(profile, reference)
+    authorization = resolve_free_runner_authorization(profile, reference)
 
     assert authorization.__class__.__name__ == "FreeRunnerAuthorization"
-    assert reference.endswith(profile.revision_hash.value)
+    assert reference.value.endswith(profile.revision_hash.value)
 
 
 @pytest.mark.parametrize(
@@ -105,7 +115,77 @@ def test_free_runner_auth_reference_is_a_secret_free_function_of_the_bound_revis
 )
 def test_free_runner_auth_refuses_changed_or_unbound_references(reference: str) -> None:
     with pytest.raises(ValueError, match="auth-profile-unresolvable"):
-        FreeRunnerAuthorizationResolver().resolve(_profile(), reference)
+        resolve_free_runner_authorization(_profile(), AuthReference(reference))
+
+
+@pytest.mark.parametrize(
+    "document", (FreeRunnerPrintJob("runner candidate"), FreeRunnerHoldJob(5.0))
+)
+def test_free_runner_job_round_trips_through_its_wire_form(
+    document: FreeRunnerPrintJob | FreeRunnerHoldJob,
+) -> None:
+    assert decode_free_runner_job(encode_free_runner_job(document)) == document
+
+
+@pytest.mark.parametrize(
+    "data",
+    (
+        b"not-json",
+        b"[]",
+        b'{"kind": "surprise"}',
+        b'{"kind": "print"}',
+        b'{"kind": "print", "text": 1}',
+        b'{"kind": "print", "text": ""}',
+        b'{"kind": "hold"}',
+        b'{"kind": "hold", "hold_seconds": "five"}',
+        b'{"kind": "hold", "hold_seconds": true}',
+        b'{"kind": "hold", "hold_seconds": -1}',
+    ),
+    ids=(
+        "not-json",
+        "not-an-object",
+        "unknown-kind",
+        "print-missing-text",
+        "print-text-not-a-string",
+        "print-text-empty",
+        "hold-missing-seconds",
+        "hold-seconds-not-a-number",
+        "hold-seconds-a-bool",
+        "hold-seconds-not-positive",
+    ),
+)
+def test_free_runner_job_refuses_every_document_but_its_two(data: bytes) -> None:
+    with pytest.raises(FreeRunnerJobRefused, match="free-runner-job-refused"):
+        decode_free_runner_job(data)
+
+
+def test_select_runner_executor_returns_the_fake_free_candidate_executor() -> None:
+    executor = select_runner_executor(_candidate_manifest())
+
+    assert isinstance(executor, FreeRunnerCandidateExecutor)
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "executor_revision"),
+    (("unknown-provider", "fake-free/v1"), ("fake-free", "fake-free/v2")),
+    ids=("unknown-provider", "unknown-revision"),
+)
+def test_select_runner_executor_refuses_an_unknown_provider_and_revision_combination(
+    provider_id: str, executor_revision: str
+) -> None:
+    manifest = candidate_runner_manifest(
+        source_commit="a" * 40,
+        image_digest="sha256:" + "b" * 64,
+        required_landlock_abi=1,
+        executor_revision=executor_revision,
+        executor_operational_identity="free-runner-candidate",
+        provider_id=provider_id,
+        auth_mode="api_key",
+        requested_capability="headless",
+    )
+
+    with pytest.raises(RunnerExecutorUnavailable, match="runner-executor-unavailable"):
+        select_runner_executor(manifest)
 
 
 _INVOCATION = RunnerInvocationId("B" * 43)
@@ -182,9 +262,7 @@ def _candidate_manifest():
 
 def _session(core: _Core | None = None) -> CoreRunnerSession:
     request = _free_request()
-    reference = FreeRunnerAuthorizationResolver().reference_for(
-        request.resolved_binding.auth_profile
-    )
+    reference = free_runner_auth_reference(request.resolved_binding.auth_profile).value
     return CoreRunnerSession(
         _binding(),
         core if core is not None else _Core(),
@@ -197,9 +275,7 @@ def _session(core: _Core | None = None) -> CoreRunnerSession:
 
 def _ready_payload() -> tuple[bytes, ...]:
     request = _free_request()
-    reference = FreeRunnerAuthorizationResolver().reference_for(
-        request.resolved_binding.auth_profile
-    )
+    reference = free_runner_auth_reference(request.resolved_binding.auth_profile).value
     return encode_runner_ready_payload(_candidate_manifest(), reference)
 
 
@@ -701,9 +777,7 @@ def test_a_request_subset_refuses_a_different_hash_bound_executor() -> None:
 
 def test_prepare_payload_round_trips_the_bound_request() -> None:
     request = _free_request()
-    reference = FreeRunnerAuthorizationResolver().reference_for(
-        request.resolved_binding.auth_profile
-    )
+    reference = free_runner_auth_reference(request.resolved_binding.auth_profile).value
     payload = encode_runner_prepare_payload(request, reference)
 
     assert decode_runner_prepare_payload(payload, request.request_hash) == request

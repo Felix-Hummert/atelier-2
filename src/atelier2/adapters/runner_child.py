@@ -48,8 +48,21 @@ class RunnerChildReapFailed(RuntimeError):
 def start_runner_child(
     command: tuple[str, ...],
     allowed_read_only_paths: tuple[Path, ...] | None = None,
+    *,
+    environment: tuple[tuple[str, str], ...] = (),
+    standard_input: bytes = b"",
 ) -> subprocess.Popen[bytes]:
-    """Start the one free child in its own session with identity descriptors closed."""
+    """Start the one free child in its own session with identity descriptors closed.
+
+    `environment` is the child's complete environment when given, never an
+    overlay on this process's own -- the same contract `AgentProcessCommand`
+    declares. An empty tuple, the default, inherits this process's own
+    environment exactly as before this parameter existed, so every existing
+    caller that never named one is unaffected. `standard_input` is written and
+    the pipe closed before this call returns; every job document this
+    candidate consumes today is small enough that the write completes without
+    the child needing to already be draining it.
+    """
     launched = command
     if allowed_read_only_paths is not None:
         allowed = (
@@ -64,13 +77,25 @@ def start_runner_child(
             "os.execvp(sys.argv[1], sys.argv[1:])\n"
         )
         launched = (sys.executable, "-c", launcher, *command)
-    return subprocess.Popen(
+    process = subprocess.Popen(
         launched,
+        env=dict(environment) if environment else None,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         close_fds=True,
         start_new_session=True,
     )
+    assert process.stdin is not None
+    try:
+        if standard_input:
+            process.stdin.write(standard_input)
+        process.stdin.close()
+    except OSError:
+        process.kill()
+        process.wait()
+        raise
+    return process
 
 
 def reap_cancelled_runner_child(
