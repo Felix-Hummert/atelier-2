@@ -107,6 +107,23 @@ type PublishAgentConfigurationRevisionResult = (
 )
 
 
+class AgentConfigurationBindingReads(Protocol):
+    """The one read `resolve_start_bindings` needs, and nothing a decision does not.
+
+    Narrower than `AgentConfigurationCatalog` on purpose: binding a role never
+    writes and never pages, so it depends on nothing that could. An
+    implementation raises `AuthProfileMissingForConfiguration`
+    (`atelier2.application.resolve_start_bindings`) for a configuration whose
+    own auth profile the store no longer holds -- that is the store
+    disagreeing with itself, not an absent configuration -- and otherwise
+    answers `None` for "no such configuration" or the resolved pair.
+    """
+
+    def agent_configuration_revision(
+        self, revision_hash: AgentConfigurationRevisionHash
+    ) -> tuple[AgentConfigurationRevision, AuthProfileRevision] | None: ...
+
+
 class AgentConfigurationCatalog(Protocol):
     def publish_auth_profile_revision(
         self, revision: AuthProfileRevision
