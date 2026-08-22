@@ -69,7 +69,7 @@ wörtlich destilliert in the item body @ 92d5e087):
 > Spaß machen."
 
 The nine sentences under Quality are the desk's named criteria and
-verifications for that standard. Mockup v4 remains the Gestalt owner.
+verifications for that standard. Mockup v5 remains the Gestalt owner.
 
 ## Rules
 
@@ -224,7 +224,7 @@ Offen:
 ### REQ-UI-18: Mockups sind Entwurfs-Vorlagen.
 Status:     DRAFT
 Quelle:     DESK — 5302769095, das dies als „Mockups sind Design-VORLAGEN (Operator ausdrücklich)" schreibt — eine Klammer-Zuschreibung, kein zitierter Satz, weshalb die Regel `DESK` ist, obwohl derselbe Kommentar ihn für REQ-UI-01 zitiert; 5302066517 Schluss (Regel 18)
-Begründung: Die gebaute Oberfläche darf besser oder anders aussehen; bindend sind die Informationshierarchie von REQ-UI-01 und dass jede Anzeige quittierte Wahrheit zeigt. Der aktuelle Stand der Vorlage ist Mockup v4 und liegt als [0003-ziel-ui-mockup-v4.html](0003-ziel-ui-mockup-v4.html) in diesem Repository — im Browser zu öffnen, klickbar, damit jeder Kopf sieht, wie die Ziel-UI aussehen soll (Operator-Auftrag 18.08.2026). Das lebende Original bleibt beim Operator unter derselben Artefakt-URL wie v1 bis v3; ändert er es dort, wird die Datei hier regeneriert, nie unabhängig editiert.
+Begründung: Die gebaute Oberfläche darf besser oder anders aussehen; bindend sind die Informationshierarchie von REQ-UI-01 und dass jede Anzeige quittierte Wahrheit zeigt. Der aktuelle Stand der Vorlage ist Mockup v5 und liegt als [0003-ziel-ui-mockup-v5.html](0003-ziel-ui-mockup-v5.html) in diesem Repository — im Browser zu öffnen, klickbar, damit jeder Kopf sieht, wie die Ziel-UI aussehen soll (Operator-Iteration 22.08.2026, Fassung 6.2). Das lebende Original bleibt beim Operator unter derselben Artefakt-URL wie v1 bis v4; ändert er es dort, wird die Datei hier regeneriert, nie unabhängig editiert. Neu gegenüber v4 legt v5 fest: die vier Flächen Chat · Board · Workflows · History mit einer linken Leiste (Settings/Profile als späterer Slot) und einen einzigen Graph-Renderer in drei Zeitformen — still, lebendig, eingefroren —, in dem Form den Knotentyp und Farbe den Zustand trägt, dazu die vollständige Knoten-Geschichte in Tabs (Result/Input/Prompt/Log/Evidence). Weiter neu: das Ergebnis steht in Klartext auf dem Board, die UI-Sprache ist Englisch, Ruhe ist der Standardzustand, und es gibt keinen Workflow-Editor — Agenten erstellen den Workflow, der Operator segnet ihn als Board-Karte ab. Mockup v4 bleibt als Vorgängerfassung im Repository liegen; dieser Text verweist ab hier nur noch auf v5.
 Journeys:
 Beweis:     UNGEBUNDEN
 Offen:
@@ -314,11 +314,11 @@ Quelle:     OPERATOR — #336 body @ 92d5e087, wörtlich:
 
             > „es darf trotzdem geil aussehen und Spaß machen"
 
-            Die Verifikation — Screenshot-Review gegen Mockup v4 — ist Desk-Detail.
+            Die Verifikation — Screenshot-Review gegen Mockup v5 — ist Desk-Detail.
 Begründung: Bewusst subjektiv. Der Operator-Maßstab unter Intent („simple, intuitiv, Spaß, cool") bleibt das Kriterium; kein Maschinen-Gate spricht das letzte Wort.
 Journeys:
 Beweis:     UNGEBUNDEN
-Offen:      - Screenshot-Review-Ritual gegen Mockup v4 (Eigentümer: Operator, Ziel: späterer Prüfer)
+Offen:      - Screenshot-Review-Ritual gegen Mockup v5 (Eigentümer: Operator, Ziel: späterer Prüfer)
 
 ## Open questions
 
