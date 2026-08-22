@@ -108,8 +108,10 @@ is the declaring node's decision: a V2 node bounds them and nothing else, while 
 V3 node's answer is read against the schema its own output pins before any of
 that transition is written.
 
-Schema V27 stages the Core half of the external Runner handoff; no runtime or
-codec calls it yet. One attempt can instead bind one manifest and Runner
+Schema V27 stages the Core half of the external Runner handoff. A disposable
+#301-A witness candidate now exercises a real codec against it end to end
+outside any deployment; no deployed runtime composes or calls it. One attempt
+can instead bind one manifest and Runner
 generation, arm one invocation, and accept one of six typed terminal evidence
 variants under a semantic hash. The product result and that evidence hash commit
 in one transaction, retries of the same evidence are idempotent, and different
@@ -129,9 +131,12 @@ reads terminal evidence, commits it, acknowledges it outside the Core
 transaction, and recovers Runner GC from the typed ACK tombstone. A canonical,
 bounded, self-checking V1 record now carries the envelope or its payload-free
 tombstone; missing, corrupt, oversized and unavailable-ACK outcomes remain
-distinct without inventing evidence. This is proven only against a byte-backed
-test Fake: no production journal reader, Runner adapter, transport, runtime
-caller, carrier, or live execution path exists yet.
+distinct without inventing evidence. This is proven against a byte-backed test
+Fake and, for the #301-A disposable witness candidate (`src/atelier2/runner/`,
+its adapters, and `application/run_runner_session.py`), a real session codec,
+TLS-authenticated transport, journal, and Landlock-confined child; no deployed
+runtime composes it, and it remains a disposable proof, not a packaged,
+deployed Runner.
 
 Every attempt is started in a scratch working directory of its own. The operator
 declares one provider-neutral scratch root, and the runtime leases from it a
