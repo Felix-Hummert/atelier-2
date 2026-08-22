@@ -86,7 +86,7 @@
       if (readings.some((reading) => !reading.complete)) {
         home = failRead(home, begun.generation, {
           kind: "incomplete",
-          title: "Studio runs incomplete"
+          title: wrapDisplayCopy(studioPageCopy.runsIncomplete)
         });
         return;
       }
@@ -101,7 +101,7 @@
     } catch {
       home = failRead(home, begun.generation, {
         kind: "unavailable",
-        title: "Studio runs unavailable"
+        title: wrapDisplayCopy(studioPageCopy.runsUnavailable)
       });
     }
   }
@@ -224,6 +224,7 @@
     hold.connection === "live" &&
     !streamStopped(hold);
   $: canStart = !attentionStopped(hold) && projectionFailure === null;
+  $: streamTitle = protocolTitle(hold);
 </script>
 
 <section class="studio-home" aria-labelledby="studio-title">
@@ -244,12 +245,12 @@
       role="status"
     >
       <span aria-hidden="true">{streamStopped(hold) ? "◇" : hold.connection === "live" ? "●" : "↻"}</span>
-      {connectionLabel(hold)}
+      {wrapDisplayCopy(connectionLabel(hold))}
     </p>
     {#if hold.stream_failure !== null}
       <ProblemNotice problem={hold.stream_failure} />
-    {:else if protocolTitle(hold) !== null}
-      <ProblemNotice title={protocolTitle(hold) ?? "Event invalid"} message={protocolDetail(hold) ?? ""} />
+    {:else if streamTitle !== null}
+      <ProblemNotice title={wrapDisplayCopy(streamTitle)} message={protocolDetail(hold) ?? ""} />
     {/if}
 
     {#if projectionFailure !== null}
@@ -273,7 +274,7 @@
           {/if}
         </div>
       {:else if runningCount > 0 || waitingRuns.length > 0 || failedCount > 0 || landedCount > 0}
-        <h2 class="section-title">Projects</h2>
+        <h2 class="section-title">{wrapDisplayCopy(studioPageCopy.projects)}</h2>
         <ProjectCard
           running={runningCount}
           waiting={waitingRuns.length}
@@ -287,7 +288,7 @@
   </div>
 
   <section class="chat-status" aria-labelledby="chat-title">
-    <h2 id="chat-title">Chat</h2>
-    <p role="status"><span aria-hidden="true">◇</span> Unavailable</p>
+    <h2 id="chat-title">{wrapDisplayCopy(studioPageCopy.chat)}</h2>
+    <p role="status"><span aria-hidden="true">◇</span> {wrapDisplayCopy(studioPageCopy.chatUnavailable)}</p>
   </section>
 </section>
