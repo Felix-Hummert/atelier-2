@@ -441,7 +441,16 @@ def register_durable_run_workflow(
                 ):
                     accepted = agent_attempt_store.request_cancellation(cleanup_request)
                     if not isinstance(accepted, AgentAttemptCancellationAccepted):
-                        return RunState.STARTED.value
+                        DBOS.sleep(
+                            CANCELLATION_REDRIVE_SECONDS[
+                                min(
+                                    redrive_index,
+                                    len(CANCELLATION_REDRIVE_SECONDS) - 1,
+                                )
+                            ]
+                        )
+                        redrive_index += 1
+                        continue
                     terminal = continue_agent_attempt_cancellation(
                         cleanup_request,
                         agent_attempt_store,

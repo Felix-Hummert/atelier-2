@@ -95,6 +95,7 @@ from atelier2.contracts.runs import (
 )
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
+    AgentAttemptCancellationStale,
     AgentAttemptClaimedByThisCall,
     AgentExecutorBindingRefusalFenced,
     AgentExecutorBindingRefusalNeedsPreparedCleanup,
@@ -1270,6 +1271,104 @@ def test_prepared_v2_attempt_is_cleaned_before_unavailable_executor_refusal(
         )
     finally:
         seeded.close()
+
+
+@pytest.mark.proves("a-bound-unstarted-run-refuses-when-its-executor-is-unavailable")
+def test_prepared_v2_attempt_is_cleaned_through_durable_node_when_executor_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seeded_factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "seed", b"unused"
+    )
+    seeded = _runtime(tmp_path, (seeded_factory,))
+    run_id = RunId("unavailable-executor/prepared-durable-node")
+    try:
+        seeded.initialize_storage()
+        workflow, bindings = _publish_single_capability(
+            seeded, AgentExecutionCapability.HEADLESS
+        )
+        started = DbosDurableRunStarter(
+            seeded.engine, seeded.settings, seeded.agent_executor_registry
+        ).start_published(
+            StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
+        )
+        assert isinstance(started, DurableRunCreated)
+        auth = AuthProfileRevision(
+            "max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION
+        )
+        configuration = AgentConfigurationRevision(
+            "opus",
+            auth.revision_hash,
+            AgentExecutorRevision("claude-cli/v1"),
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        request = _replayed_request(
+            _encoded_binding(configuration, auth, include_contract=True),
+            run_id,
+            workflow.revision_hash,
+            "build",
+            seeded_factory.operational_identity,
+            seeded_factory.declared_capabilities,
+        )
+        prepared = DbosAgentAttemptStore(
+            seeded.engine, seeded.settings.application_version
+        ).prepare(agent_attempt_execution(request))
+        assert prepared.state.value == "PREPARED"
+    finally:
+        seeded.close()
+
+    cancel_calls = {"count": 0}
+    original_request_cancellation = DbosAgentAttemptStore.request_cancellation
+
+    def request_cancellation(
+        self: DbosAgentAttemptStore, cleanup_request: CancelAgentAttemptRequest
+    ) -> object:
+        cancel_calls["count"] += 1
+        if cancel_calls["count"] == 1:
+            return AgentAttemptCancellationStale()
+        return original_request_cancellation(self, cleanup_request)
+
+    monkeypatch.setattr(
+        DbosAgentAttemptStore, "request_cancellation", request_cancellation
+    )
+    unavailable_factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "seed", b"must-not-run"
+    )
+    restarted = _runtime(
+        tmp_path, (AgentExecutorRegistration.unavailable(unavailable_factory),)
+    )
+    try:
+        restarted.launch()
+        failed = _wait_failed(restarted, run_id)
+
+        assert cancel_calls["count"] >= 2
+        assert unavailable_factory.opens == 0
+        assert failed.terminal_hash is not None
+        with restarted.engine.connect() as connection:
+            attempt = connection.execute(sa.select(agent_attempts)).mappings().one()
+            events = tuple(
+                connection.execute(
+                    sa.select(run_events)
+                    .where(run_events.c.run_id == run_id.value)
+                    .order_by(run_events.c.event_sequence)
+                ).mappings()
+            )
+        assert attempt["state"] == "CANCELLED"
+        assert attempt["process_phase"] == "CLEANUP_ATTESTED"
+        assert attempt["cancellation_disposition"] == "NEVER_LAUNCHED"
+        assert tuple(event["event_kind"] for event in events) == (
+            "AGENT_CANCEL_REQUESTED",
+            "AGENT_CANCELLED",
+            "AGENT_FAILED",
+        )
+        assert events[-1]["payload"] == (
+            AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii")
+        )
+        assert events[-1]["agent_attempt_id"] is None
+        assert events[-1]["attempt_ordinal"] is None
+    finally:
+        restarted.close()
 
 
 @pytest.mark.parametrize(
