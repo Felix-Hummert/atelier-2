@@ -94,6 +94,7 @@ function listedV3Revision(
           depends_on: []
         }
       ],
+      loops: [],
       name,
       description: null
     }

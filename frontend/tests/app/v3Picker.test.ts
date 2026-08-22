@@ -38,6 +38,7 @@ function v3Revision(hash: string, documentBase64: string) {
           depends_on: ["implement"]
         }
       ],
+      loops: [],
       name: "Seen from the picker",
       description: null
     }

@@ -107,6 +107,7 @@ function namedGraph() {
         depends_on: ["implement"]
       }
     ],
+    loops: [],
     name: "Implement a candidate, then review it for defects",
     description: "Builds the candidate, then reviews it for defects."
   };
@@ -987,6 +988,7 @@ describe("the picker groups revisions that share a published name", () => {
                 depends_on: []
               }
             ],
+            loops: [],
             name: first,
             description: null
           }

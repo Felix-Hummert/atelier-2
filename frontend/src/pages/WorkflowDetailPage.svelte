@@ -53,6 +53,7 @@
    * checks rather than assumes.
    */
   $: previews = graph !== null && graph.workflow_format_version === 3 ? graph.node_previews : null;
+  $: loops = graph !== null && graph.workflow_format_version === 3 ? graph.loops : [];
   $: selectedPreview = previews?.find((preview) => preview.id === selectedNodeId) ?? null;
 
   /**
@@ -168,7 +169,7 @@
     {/if}
 
     {#if previews !== null}
-      <WorkflowGraphDrawing {previews} showLegend={true} onSelect={selectNode} {selectedNodeId} />
+      <WorkflowGraphDrawing {previews} {loops} showLegend={true} onSelect={selectNode} {selectedNodeId} />
     {:else}
       <p class="muted">{wrapDisplayCopy(workflowsPageCopy.graphUnavailable)}</p>
     {/if}

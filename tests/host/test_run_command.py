@@ -1571,6 +1571,7 @@ def published_v3_workflow_revision(name: str = V3_WORKFLOW_NAME) -> Answer:
                         depends_on=(),
                     ),
                 ),
+                loops=(),
                 name=name,
                 description="Review a bound diff."
                 if name == V3_WORKFLOW_NAME

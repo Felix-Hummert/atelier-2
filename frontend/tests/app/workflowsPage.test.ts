@@ -71,6 +71,7 @@ function namedDetail(graphOverrides: Partial<V3Graph> = {}, hash = NAMED_HASH): 
       { id: "build", kind: "agent", role: "builder", instruction_start: "Write the change.", depends_on: [] },
       { id: "review", kind: "agent", role: "reviewer", instruction_start: "Check the diff.", depends_on: ["build"] }
     ],
+    loops: [],
     name: WORKFLOW_NAME,
     description: "build, then review",
     ...graphOverrides

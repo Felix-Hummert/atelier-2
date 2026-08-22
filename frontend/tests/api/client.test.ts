@@ -80,6 +80,48 @@ export type ProblemVariantIsExact = Assert<
 const digest = "a".repeat(64);
 const publicReference = "run1.cnVuLTE";
 
+/** A published V3 revision whose two-node body is declared as a bounded, verdict-exited loop. */
+function v3RevisionWithLoop() {
+  return {
+    workflow_revision_hash: digest,
+    document_base64: "YQ==",
+    graph: {
+      workflow_format_version: 3 as const,
+      executable: true as const,
+      not_executable_reason: null,
+      node_count: 2,
+      agent_roles: ["builder"],
+      orders: [],
+      node_previews: [
+        {
+          id: "implement",
+          kind: "agent" as const,
+          role: "builder",
+          instruction_start: "Do the one thing this chain is for.",
+          depends_on: []
+        },
+        {
+          id: "review",
+          kind: "agent" as const,
+          role: "builder",
+          instruction_start: "Check what the node before you did.",
+          depends_on: ["implement"]
+        }
+      ],
+      loops: [
+        {
+          id: "until_reviewed",
+          member_node_ids: ["implement", "review"],
+          maximum_rounds: 3,
+          repeat_while: { node: "review", verdict: "revise" as const }
+        }
+      ],
+      name: "Build and review until the review says it is done",
+      description: null
+    }
+  };
+}
+
 function event(event: string, fields: Record<string, unknown> = {}) {
   return {
     cursor: `event1.cnVuLTE.${fields.sequence ?? 1}`,
@@ -124,6 +166,44 @@ describe("closed API decoders", () => {
       "subworkflow"
     ]);
     expect(() => decodeWorkflowRevisionDetail({ ...decoded, invented: true })).toThrow();
+  });
+
+  it("decodes a declared loop's body, bound, and verdict exit", () => {
+    const decoded = decodeWorkflowRevisionDetail(v3RevisionWithLoop());
+
+    if (decoded.graph.workflow_format_version !== 3) throw new Error("the V3 fixture changed");
+    expect(decoded.graph.loops).toEqual([
+      {
+        id: "until_reviewed",
+        member_node_ids: ["implement", "review"],
+        maximum_rounds: 3,
+        repeat_while: { node: "review", verdict: "revise" }
+      }
+    ]);
+  });
+
+  it("decodes a graph that declares no loop as an empty loop list", () => {
+    const decoded = decodeWorkflowRevisionDetail(workflowRevision());
+
+    expect(executableGraph(decoded.graph)).toBeTruthy();
+    expect(decoded.graph.workflow_format_version === 1).toBe(true);
+  });
+
+  it("refuses a loop verdict outside the closed vocabulary", () => {
+    const revision = v3RevisionWithLoop();
+    if (revision.graph.workflow_format_version !== 3) throw new Error("the V3 fixture changed");
+    const [loop] = revision.graph.loops;
+    if (loop === undefined) throw new Error("the loop fixture changed");
+
+    expect(() =>
+      decodeWorkflowRevisionDetail({
+        ...revision,
+        graph: {
+          ...revision.graph,
+          loops: [{ ...loop, repeat_while: { node: "review", verdict: "maybe" } }]
+        }
+      })
+    ).toThrow();
   });
 
   it.each([
@@ -874,6 +954,7 @@ describe("the graph a run is allowed to hold", () => {
           depends_on: []
         }
       ],
+      loops: [],
       name: "Nightly regression sweep",
       description: null
     };

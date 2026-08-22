@@ -415,6 +415,12 @@
     return graph?.workflow_format_version === 3 ? graph.node_previews : null;
   }
 
+  function publishedLoops(
+    graph: WorkflowRevisionDetail["graph"] | undefined
+  ): Extract<WorkflowRevisionDetail["graph"], { workflow_format_version: 3 }>["loops"] {
+    return graph?.workflow_format_version === 3 ? graph.loops : [];
+  }
+
   function publishedAgentRoles(graph: WorkflowRevisionDetail["graph"] | undefined): string[] | null {
     return graph?.workflow_format_version === 3 ? [...graph.agent_roles] : null;
   }
@@ -1158,6 +1164,7 @@
               {#if publishedNodePreviews(published) !== null}
                 <WorkflowGraphDrawing
                   previews={publishedNodePreviews(published) ?? []}
+                  loops={publishedLoops(published)}
                   showExcerpt={true}
                 />
               {/if}

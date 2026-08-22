@@ -37,6 +37,7 @@ function v3Revision() {
           depends_on: ["implement"]
         }
       ],
+      loops: [],
       name: "Two agents in a line",
       description: null
     }

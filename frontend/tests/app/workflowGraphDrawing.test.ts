@@ -83,4 +83,92 @@ describe("the V3 graph drawing", () => {
     expect(graph.querySelector('[data-node-id="only"]')?.getAttribute("data-layer")).toBe("0");
     expect(within(graph).getByText("only").isConnected).toBe(true);
   });
+
+  it("draws a dashed box around a declared loop's body, naming its round bound", () => {
+    render(WorkflowGraphDrawing, {
+      props: {
+        previews: chain,
+        loops: [
+          {
+            id: "until_reviewed",
+            member_node_ids: ["implement", "review"],
+            maximum_rounds: 3,
+            repeat_while: null
+          }
+        ]
+      }
+    });
+
+    const graph = screen.getByRole("region", { name: "Workflow" });
+    const box = within(graph).getByRole("group", { name: "↻ max 3" });
+
+    expect(within(box).getByText("implement").isConnected).toBe(true);
+    expect(within(box).getByText("review").isConnected).toBe(true);
+  });
+
+  it("names the earlier verdict exit beside the round bound when the document declares one", () => {
+    render(WorkflowGraphDrawing, {
+      props: {
+        previews: chain,
+        loops: [
+          {
+            id: "until_reviewed",
+            member_node_ids: ["implement", "review"],
+            maximum_rounds: 3,
+            repeat_while: { node: "review", verdict: "revise" }
+          }
+        ]
+      }
+    });
+
+    const graph = screen.getByRole("region", { name: "Workflow" });
+
+    expect(within(graph).getByRole("group", { name: "↻ until revise · max 3" })).toBeTruthy();
+  });
+
+  it("names the loop marker in the legend beside the node shapes", () => {
+    render(WorkflowGraphDrawing, { props: { previews: chain, showLegend: true } });
+
+    const legend = screen.getByRole("list", { name: "Node shapes and the loop marker" });
+
+    expect(within(legend).getByText("Loop").isConnected).toBe(true);
+  });
+
+  it("draws no loop box when the document declares no loop", () => {
+    render(WorkflowGraphDrawing, { props: { previews: chain } });
+
+    const graph = screen.getByRole("region", { name: "Workflow" });
+
+    expect(within(graph).queryByRole("group")).toBeNull();
+  });
+
+  it("leaves a node outside every box once its layer mixes an unrelated node", () => {
+    render(WorkflowGraphDrawing, {
+      props: {
+        previews: [
+          ...chain,
+          {
+            id: "unrelated",
+            kind: "agent" as const,
+            role: "builder",
+            instruction_start: "An entry node the loop does not repeat.",
+            depends_on: []
+          }
+        ],
+        loops: [
+          {
+            id: "until_reviewed",
+            member_node_ids: ["implement", "review"],
+            maximum_rounds: 3,
+            repeat_while: null
+          }
+        ]
+      }
+    });
+
+    const graph = screen.getByRole("region", { name: "Workflow" });
+
+    expect(within(graph).queryByRole("group")).toBeNull();
+    expect(within(graph).getByText("unrelated").isConnected).toBe(true);
+  });
 });
