@@ -295,12 +295,19 @@ def _run_ending_event_predicate(
     A V3 line ends on the node it stands on -- #194 H1b lifted the terminal
     condition off the subworkflow node onto the run -- and there neither half
     identifies it alone. The kind cannot, because every agent node completes or
-    fails with the same pair, and a linear Action completes with its own kind.
-    The execution cannot either, and that is the less obvious half: an attempt
-    event can advance the run's head without moving it. What ends a V3 run is
-    the **completion or failure** of the exact execution it stands on, so both
-    halves are asked. Exact identity also keeps an earlier round's completion
-    at the same looped node from posing as the current round's ending.
+    fails with the same pair, a linear Action completes with its own kind, and a
+    Wait node's answer completes with a third. The execution cannot either, and
+    that is the less obvious half: an attempt event can advance the run's head
+    without moving it. What ends a V3 run is the **completion or failure** of
+    the exact execution it stands on, so both halves are asked. Exact identity
+    also keeps an earlier round's completion at the same looped node from
+    posing as the current round's ending.
+
+    The four kinds below are exhaustive for every V3 node the runtime can
+    currently stand a run's sink on -- Agent (two kinds), Action and Wait
+    (#510). A Deterministic or Subworkflow V3 node has no execution path yet
+    (`bind_node` refuses one before any event could be written for it), so
+    neither belongs here until that gap is closed with its own runtime wiring.
 
     Asking the run row rather than parsing its document keeps this cheap: it is a
     pre-flight before stream headers and a check beside a page read, never a
@@ -312,6 +319,7 @@ def _run_ending_event_predicate(
             RunEventKind.AGENT_COMPLETED.value,
             RunEventKind.AGENT_FAILED.value,
             RunEventKind.ACTION_COMPLETED.value,
+            RunEventKind.WAIT_ANSWERED.value,
         }
         return lambda endpoint: (
             endpoint[0] in ending and endpoint[1] == current_node_execution_id
