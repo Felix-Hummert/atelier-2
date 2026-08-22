@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { studioQuestions } from "../lib/studioQuestions";
   import { ageLabel, exactLocal } from "../lib/when";
   import InfoHint from "./InfoHint.svelte";
 
@@ -22,7 +23,7 @@
 {#if label !== null && exact !== null}
   <span class="when">
     <span>{label}</span>
-    <InfoHint label="Exact time" {exact} />
+    <InfoHint label={studioQuestions.lastLandingTime.hintLabel} {exact} />
   </span>
 {/if}
 

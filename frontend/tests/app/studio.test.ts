@@ -193,7 +193,7 @@ describe("the studio is the level the workshop opens on", () => {
     expect(within(card).getByText("1 waiting for you").isConnected).toBe(true);
     expect(within(card).getByText("1 failed").isConnected).toBe(true);
     expect(within(card).getByText(standingMarks.failed).isConnected).toBe(true);
-    expect(within(card).getByText("1 landed").isConnected).toBe(true);
+    expect(within(card).getByText("1 done").isConnected).toBe(true);
     expect(within(card).getAllByRole("link")).toHaveLength(1);
   });
 
@@ -371,7 +371,7 @@ describe("an empty studio teaches the one next action", () => {
     response = "completed";
     await fireEvent.click(screen.getByRole("button", { name: "Retry studio runs" }));
 
-    await waitFor(() => expect(within(card).getByText("1 landed").isConnected).toBe(true));
+    await waitFor(() => expect(within(card).getByText("1 done").isConnected).toBe(true));
     expect(within(card).queryByText("1 running")).toBeNull();
   });
 
@@ -442,7 +442,7 @@ describe("the studio holds GET /events", () => {
     const card = await screen.findByRole("article", { name: "This workshop" });
     expect(within(card).getByText("1 failed").isConnected).toBe(true);
     expect(within(card).getByText(standingMarks.failed).isConnected).toBe(true);
-    expect(within(card).queryByText("1 landed")).toBeNull();
+    expect(within(card).queryByText("1 done")).toBeNull();
     expect(getRun).toHaveBeenCalledWith(publicReference);
     expect(screen.queryByRole("region", { name: "Waiting for you" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
@@ -516,7 +516,7 @@ describe("the studio holds GET /events", () => {
     releaseCompleted({ items: [newerCompleted], next_after: null });
     const card = await screen.findByRole("article", { name: "This workshop" });
     await waitFor(() => {
-      expect(within(card).getByText("1 landed").isConnected).toBe(true);
+      expect(within(card).getByText("1 done").isConnected).toBe(true);
     });
     expect(within(card).queryByText("1 waiting for you")).toBeNull();
     expect(screen.queryByRole("region", { name: "Waiting for you" })).toBeNull();
@@ -632,7 +632,7 @@ describe("every Studio control answers a named user question", () => {
       })
     ]);
     await screen.findByRole("article", { name: "This workshop" });
-    await screen.findByRole("button", { name: "Exact time" });
+    await screen.findByRole("button", { name: studioQuestions.lastLandingTime.hintLabel });
     expectStudioControlsAnswerNamedQuestions([
       studioQuestions.start.id,
       studioQuestions.inboxRun.id,
