@@ -163,32 +163,23 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
   ).toString();
 
   const working = page.getByRole("article", { name: "build — Working" });
-  const refresh = page.getByRole("button", { name: "Refresh" });
   await expect(working).toContainText("e2e · test-model");
   await expect(working).toContainText("Subscription · blocking/v1");
   await expect(working).toHaveAttribute("data-live", "true");
   await expect(page.getByText("Process log stays in the lease.")).toBeVisible();
   await expect(page.getByRole("progressbar")).toHaveCount(0);
-  for (let tab = 0; tab < 24 && !(await refresh.evaluate((element) => element === document.activeElement)); tab += 1) {
-    await page.keyboard.press("Tab");
-  }
-  await expect(refresh).toBeFocused();
-  const firstRefresh = page.waitForResponse(
-    (response) => response.url() === runRead && response.request().method() === "GET"
-  );
-  await page.keyboard.press("Enter");
-  expect((await firstRefresh).status()).toBe(200);
-  await expect(working).toContainText("possibly ran");
+  // The header carries no manual refresh (#506): the live stream, already
+  // open, is the one honest freshness model for a run that is neither
+  // stopped nor failed. The fake process this run drives still needs the
+  // durable run read more than once before it lets go of the attempt it is
+  // holding open (a fixture concern, not a UI one), so the test reads it
+  // out of band here instead of through a page action that no longer exists.
+  await expect(page.getByRole("button", { name: "Refresh" })).toHaveCount(0);
+  const secondRead = await page.request.get(runRead);
+  expect(secondRead.status()).toBe(200);
+  const thirdRead = await page.request.get(runRead);
+  expect(thirdRead.status()).toBe(200);
   const completed = page.getByRole("article", { name: "build — Done" });
-  for (let tab = 0; tab < 24 && !(await refresh.evaluate((element) => element === document.activeElement)); tab += 1) {
-    await page.keyboard.press("Tab");
-  }
-  await expect(refresh).toBeFocused();
-  const secondRefresh = page.waitForResponse(
-    (response) => response.url() === runRead && response.request().method() === "GET"
-  );
-  await page.keyboard.press("Enter");
-  expect((await secondRefresh).status()).toBe(200);
   await expect(completed).toBeVisible({ timeout: 8_000 });
   await expect(completed).toContainText("Provider terminal evidence:");
   await expect(completed).toContainText("Grüße 東京 — durable agent output remains readable after completion.");
@@ -1202,7 +1193,9 @@ test("walks the whole workshop: studio into the project, project into the run, a
     .getByRole("link")
     .first()
     .click();
-  await expect(page.getByRole("heading", { name: /^Run / })).toBeVisible();
+  // This V1 fixture declares no workflow name; the title says that honestly
+  // instead of leading with the raw run id (#506).
+  await expect(page.getByRole("heading", { name: "Unnamed workflow" })).toBeVisible();
   const trail = page.getByRole("navigation", { name: "Where you are" });
   await expect(trail.getByRole("link", { name: "Studio" })).toBeVisible();
   await expect(trail.getByRole("link", { name: "This workshop" })).toBeVisible();
@@ -1458,7 +1451,10 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
   await page.goto(`/atelier/runs/${reference}`);
 
   await expect(page.getByRole("heading", { level: 1, name: "Two agents in a line" })).toBeVisible();
-  await expect(page.getByLabel("Run identity")).toHaveText("v3/seen-in-the-browser");
+  const identity = page.getByRole("button", { name: "Run id" });
+  await expect(page.getByText("v3/seen-in-the-browser")).toHaveCount(0);
+  await identity.click();
+  await expect(page.getByText("v3/seen-in-the-browser")).toBeVisible();
   const graph = page.getByRole("region", { name: "Workflow" });
   await expect(graph.getByRole("button", { name: "implement — Done" })).toBeVisible();
   await expect(graph.getByRole("button", { name: "review — Done" })).toBeVisible();
@@ -2447,7 +2443,9 @@ test("a node whose answer its own contract refuses never reports success", async
 
   await page.goto(`/atelier/runs/${reference}`);
   await expect(page.getByRole("heading", { level: 1, name: "the chain the operator watched" })).toBeVisible();
-  await expect(page.getByLabel("Run identity")).toHaveText("v3/the-silent-one");
+  await expect(page.getByText("v3/the-silent-one")).toHaveCount(0);
+  await page.getByRole("button", { name: "Run id" }).click();
+  await expect(page.getByText("v3/the-silent-one")).toBeVisible();
   await expect(page.getByLabel("Where this run stands")).toContainText("Failed");
   await expect(page.getByLabel("Where this run stands")).not.toContainText("Done");
   await expect(page.getByRole("button", { name: "implement — Failed" })).toBeVisible();
@@ -2547,7 +2545,9 @@ test("clicking a finished node shows its whole log", async ({ page }) => {
 
   await page.goto(`/atelier/runs/${reference}`);
   await expect(page.getByRole("heading", { level: 1, name: "the chain the operator read" })).toBeVisible();
-  await expect(page.getByLabel("Run identity")).toHaveText("v3/the-read-one");
+  await expect(page.getByText("v3/the-read-one")).toHaveCount(0);
+  await page.getByRole("button", { name: "Run id" }).click();
+  await expect(page.getByText("v3/the-read-one")).toBeVisible();
 
   await page.getByRole("button", { name: /implement/ }).click();
   await expect(page.getByRole("region", { name: "Prompt" })).toContainText(
@@ -3035,7 +3035,9 @@ test("a waiting V3 run is answerable on its own run page", async ({ page }) => {
 
   await page.goto(`/atelier/runs/${reference}`);
   await expect(page.getByRole("heading", { level: 1, name: "answer-card-194" })).toBeVisible();
-  await expect(page.getByLabel("Run identity")).toHaveText(runId);
+  await expect(page.getByText(runId)).toHaveCount(0);
+  await page.getByRole("button", { name: "Run id" }).click();
+  await expect(page.getByText(runId)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Answer needed" })).toBeVisible();
   await expect(page.getByText("Approve this, or name the blocking defect.")).toBeVisible();
   const card = page.getByRole("region", { name: "Answer needed" });

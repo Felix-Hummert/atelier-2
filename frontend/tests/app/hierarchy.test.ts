@@ -38,14 +38,14 @@ function open(pathname: string, overrides: Partial<CockpitApi> = {}) {
 describe("the run knows where it sits", () => {
   it("proves(the-deepest-level-shows-the-whole-way-it-sits-on): shows the whole trail from the run, and walks every step of it", async () => {
     open(RUN_PATH);
-    await screen.findByRole("heading", { name: "Run run" });
+    await screen.findByRole("heading", { name: "Unnamed workflow" });
 
     const trail = screen.getByRole("navigation", { name: "Where you are" });
     expect(within(trail).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
       "Studio",
       "This workshop"
     ]);
-    expect(within(trail).getByText("Run run").isConnected).toBe(true);
+    expect(within(trail).getByText("Unnamed workflow").isConnected).toBe(true);
 
     await fireEvent.click(within(trail).getByRole("link", { name: "This workshop" }));
     expect((await screen.findByRole("heading", { name: "This workshop" })).isConnected).toBe(true);

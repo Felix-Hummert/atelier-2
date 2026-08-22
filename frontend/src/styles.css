@@ -852,7 +852,11 @@ textarea {
 }
 
 .run-header h1 {
-  margin-bottom: 1rem;
+  margin-bottom: 0.4rem;
+}
+
+.run-identity {
+  margin: 0 0 0.75rem;
 }
 
 .compact-status {

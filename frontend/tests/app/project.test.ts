@@ -977,7 +977,7 @@ describe("every level names the way back up", () => {
       openRunEvents: feed.open,
       listRuns: vi.fn(async () => ({ items: [startedRun()], next_after: null }))
     });
-    await screen.findByRole("heading", { name: "Run run" });
+    await screen.findByRole("heading", { name: "Unnamed workflow" });
 
     const trail = screen.getByRole("navigation", { name: "Where you are" });
     await fireEvent.click(within(trail).getByRole("link", { name: "This workshop" }));

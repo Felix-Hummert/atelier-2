@@ -201,7 +201,7 @@ describe("core surfaces read owned display strings", () => {
 
   it("proves(core-surfaces-render-owned-display-strings-under-a-pseudo-locale): Run page rail uses the owner, not a hardcoded copy", async () => {
     open(`/atelier/runs/${publicReference}?pseudo-locale=1`);
-    await screen.findByRole("heading", { name: "Run run" });
+    await screen.findByRole("heading", { name: "Unnamed workflow" });
     await railShowsOwnedPseudoLocale();
   });
 

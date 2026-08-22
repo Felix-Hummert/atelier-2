@@ -197,7 +197,7 @@ describe("Wait control", () => {
   it("shows no Wait action unless the authoritative run is WAITING_INPUT", async () => {
     render(App, { props: { cockpitApi: api({ getRun: vi.fn(async () => startedRun()) }) } });
 
-    await screen.findByRole("heading", { name: "Run run" });
+    await screen.findByRole("heading", { name: "Unnamed workflow" });
     expect(screen.queryByLabelText("Integer answer")).toBeNull();
     expect(screen.queryByRole("button", { name: "Answer" })).toBeNull();
   });

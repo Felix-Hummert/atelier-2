@@ -225,7 +225,7 @@ describe("reconciliation control", () => {
     const first = render(App, {
       props: { cockpitApi: api({ getRun: vi.fn(async () => agentCompletedRun()) }) }
     });
-    await screen.findByRole("heading", { name: "Run run" });
+    await screen.findByRole("heading", { name: "Unnamed workflow" });
     expect(screen.queryByRole("heading", { name: /Decision/ })).toBeNull();
     expect(screen.queryByLabelText("Actor")).toBeNull();
 
