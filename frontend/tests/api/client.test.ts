@@ -318,6 +318,15 @@ describe("closed API decoders", () => {
     ).toThrow();
   });
 
+  it("decodes the attempt-less executor refusal and refuses a forged attempt", () => {
+    const refusal = { reason: "agent-executor-binding-unavailable" as const };
+
+    expect(decodeRunEvent(v2Event("AGENT_FAILED", refusal))).toMatchObject(refusal);
+    expect(decodeRunEvent(v3Event("AGENT_FAILED", refusal))).toMatchObject(refusal);
+    expect(() => decodeRunEvent(v2Event("AGENT_FAILED", { ...refusal, ...v2Attempt }))).toThrow();
+    expect(() => decodeRunEvent(v3Event("AGENT_FAILED", { ...refusal, ...v2Attempt }))).toThrow();
+  });
+
   it("refuses an unknown durable event kind", () => {
     expect(() => decodeRunEvent(event("NODE_PROGRESS", { percent: 50 }))).toThrow();
   });
@@ -799,7 +808,9 @@ describe("the published agent-configuration listing", () => {
       provider_id: "anthropic",
       auth_mode: "subscription",
       requested_capability: "headless",
-      agent_configuration_revision_hash: digest
+      agent_configuration_revision_hash: digest,
+      startable: true,
+      not_startable_reason: null
     };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ items: [item], next_after_revision_hash: null }), {
@@ -814,6 +825,34 @@ describe("the published agent-configuration listing", () => {
       "/atelier/api/v1/agent-configuration-revisions?limit=50"
     );
     expect(page.items).toEqual([item]);
+  });
+
+  it("refuses a list item whose startability and reason disagree", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              model: "sonnet",
+              auth_profile_revision_hash: digest,
+              executor_revision: "claude-subscription/v1",
+              provider_id: "anthropic",
+              auth_mode: "subscription",
+              requested_capability: "headless",
+              agent_configuration_revision_hash: digest,
+              startable: false,
+              not_startable_reason: null
+            }
+          ],
+          next_after_revision_hash: null
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+
+    await expect(createCockpitApi(fetcher).listAgentConfigurationRevisions()).rejects.toThrow(
+      "response did not match the durable wire contract"
+    );
   });
 });
 

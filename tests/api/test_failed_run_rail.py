@@ -45,3 +45,23 @@ def test_list_and_events_name_the_same_failed_node_rail() -> None:
     assert listed[0].attempt is not None
     assert listed[0].attempt.ordinal == 1
     assert listed[0].attempt.state == PublicAgentAttemptState.FAILED
+
+
+@pytest.mark.proves("a-bound-unstarted-run-refuses-when-its-executor-is-unavailable")
+def test_attemptless_failure_keeps_the_failed_rail_free_of_an_invented_attempt() -> (
+    None
+):
+    projection = v3_failed_projection()
+    event = v3_agent_event(RunEventKind.AGENT_FAILED, attempt_ordinal=None)
+
+    listed = run_resource(projection)
+    assert isinstance(listed, RunResourceV3)
+    streamed = node_rail_resources(project_node_rail(projection, (event,)))
+
+    assert [
+        (entry.node_id, entry.state, entry.attempt) for entry in listed.node_rail
+    ] == [
+        ("implement", NodeState.FAILED, None),
+        ("review", NodeState.QUEUED, None),
+    ]
+    assert streamed == listed.node_rail

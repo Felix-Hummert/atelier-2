@@ -574,14 +574,17 @@ def v3_failed_projection(
 
 
 def v3_agent_event(
-    kind: RunEventKind, sequence: int = 1, node_id: str = "implement"
+    kind: RunEventKind,
+    sequence: int = 1,
+    node_id: str = "implement",
+    attempt_ordinal: int | None = 1,
 ) -> PersistedRunEvent:
     return durable_event(
         sequence,
         node_id,
         kind,
         workflow_format_version=WorkflowFormatVersion.V3,
-        attempt_ordinal=1,
+        attempt_ordinal=attempt_ordinal,
     )
 
 

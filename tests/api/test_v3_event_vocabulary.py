@@ -22,6 +22,7 @@ from atelier2.api.wire.events import (
 )
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.executions import (
+    AgentExecutionRefusal,
     NodeExecutionId,
     RunEvent,
     RunEventAgentAttemptBinding,
@@ -57,6 +58,19 @@ def v3_projection(kind: RunEventKind, payload: bytes) -> PersistedRunEvent:
         kind,
         payload,
         attempt_binding=attempt_binding,
+    )
+    return PersistedRunEvent(event, None, WorkflowFormatVersion.V3)
+
+
+def unavailable_v3_projection() -> PersistedRunEvent:
+    event = RunEvent(
+        RUN_ID,
+        REVISION_HASH,
+        1,
+        NODE_ID,
+        NodeExecutionId.for_node(RUN_ID, REVISION_HASH, NODE_ID),
+        RunEventKind.AGENT_FAILED,
+        AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii"),
     )
     return PersistedRunEvent(event, None, WorkflowFormatVersion.V3)
 
@@ -108,6 +122,19 @@ def test_format_3_agent_failed_is_a_v3_failure_not_the_v1_cannot_carry_path(
         entry.model_dump(mode="json") for entry in SERVED_RAIL
     ]
     assert type(resource).__name__ == "AgentFailedEventResourceV3"
+
+
+@pytest.mark.proves("a-bound-unstarted-run-refuses-when-its-executor-is-unavailable")
+def test_format_3_pre_attempt_executor_refusal_has_no_attempt_failure_shape() -> None:
+    dumped = run_event_resource(unavailable_v3_projection(), SERVED_RAIL).model_dump(
+        mode="json"
+    )
+
+    assert dumped["event"] == "AGENT_FAILED"
+    assert dumped["reason"] == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value
+    assert "failure_code" not in dumped
+    assert "attempt_id" not in dumped
+    assert "attempt_ordinal" not in dumped
 
 
 @pytest.mark.proves("an-agent-failed-event-carries-the-stored-receipt-reason")

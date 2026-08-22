@@ -1,4 +1,4 @@
-import type { AgentConfigurationRevision } from "../api/client";
+import type { AgentConfigurationRevisionListItem } from "../api/client";
 
 /**
  * Last named-agent pick per role, operator-local.
@@ -9,11 +9,11 @@ import type { AgentConfigurationRevision } from "../api/client";
  */
 export const NAMED_AGENT_CHOICE_STORAGE_KEY = "atelier.named-agent-choice";
 
-export function authModeLabel(mode: AgentConfigurationRevision["auth_mode"]): string {
+export function authModeLabel(mode: AgentConfigurationRevisionListItem["auth_mode"]): string {
   return mode === "api_key" ? "API key" : "Subscription";
 }
 
-export function namedAgentLabel(item: AgentConfigurationRevision): string {
+export function namedAgentLabel(item: AgentConfigurationRevisionListItem): string {
   return `${item.provider_id} · ${item.model} · ${authModeLabel(item.auth_mode)}`;
 }
 

@@ -21,6 +21,7 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
     AgentConfigurationRevisionHash,
+    AgentConfigurationRevisionListItem,
     AgentExecutionCapability,
     AgentExecutionRequestHash,
     AgentExecutorRevision,
@@ -496,7 +497,9 @@ def test_auth_list_maps_every_read_refusal(
 def test_list_answers_with_the_published_item_form_and_no_secrets() -> None:
     catalog = RecordingCatalog(
         object(),
-        list_result=AgentConfigurationRevisionPage(((CONFIGURATION, AUTH),), None),
+        list_result=AgentConfigurationRevisionPage(
+            (AgentConfigurationRevisionListItem(CONFIGURATION, AUTH, True),), None
+        ),
     )
 
     response = _client(catalog).get(API_PREFIX + "/agent-configuration-revisions")
@@ -512,6 +515,8 @@ def test_list_answers_with_the_published_item_form_and_no_secrets() -> None:
                 "auth_mode": "subscription",
                 "requested_capability": "headless",
                 "agent_configuration_revision_hash": CONFIGURATION.revision_hash.value,
+                "startable": True,
+                "not_startable_reason": None,
             }
         ],
         "next_after_revision_hash": None,
@@ -527,7 +532,8 @@ def test_list_pages_with_the_workflow_revision_cursor() -> None:
     catalog = RecordingCatalog(
         object(),
         list_result=AgentConfigurationRevisionPage(
-            ((CONFIGURATION, AUTH),), CONFIGURATION.revision_hash
+            (AgentConfigurationRevisionListItem(CONFIGURATION, AUTH, True),),
+            CONFIGURATION.revision_hash,
         ),
     )
 
@@ -544,6 +550,27 @@ def test_list_pages_with_the_workflow_revision_cursor() -> None:
     assert isinstance(after, AgentConfigurationRevisionHash)
     assert after.value == "a" * 64
     assert limit == 1
+
+
+def test_list_marks_a_declared_but_unstartable_configuration_without_diagnostics() -> (
+    None
+):
+    catalog = RecordingCatalog(
+        object(),
+        list_result=AgentConfigurationRevisionPage(
+            (AgentConfigurationRevisionListItem(CONFIGURATION, AUTH, False),), None
+        ),
+    )
+
+    response = _client(catalog).get(API_PREFIX + "/agent-configuration-revisions")
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["startable"] is False
+    assert (
+        response.json()["items"][0]["not_startable_reason"]
+        == "agent-executor-binding-unavailable"
+    )
+    assert "diagnostic" not in response.text.lower()
 
 
 def test_list_empty_is_an_empty_page() -> None:
@@ -782,8 +809,13 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_v3_one_of() -> None:
         ]
     }
     v2 = schema["components"]["schemas"]["RunEventResourceV2"]
-    assert len(v2["oneOf"]) == 11
-    assert set(v2["discriminator"]["mapping"]) == {kind.value for kind in RunEventKind}
+    assert len(v2["oneOf"]) == 12
+    assert "discriminator" not in v2
+    assert v2["description"] == (
+        "The AGENT_FAILED forms are closed by their required shape: an "
+        "attempt failure names failure_code and an attempt; a pre-claim "
+        "executor refusal names only its product reason."
+    )
     common = {
         "workflow_format_version",
         "cursor",
@@ -833,32 +865,85 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_v3_one_of() -> None:
         "WAIT_ANSWERED": {"answer", "answer_hash"},
         "SUBWORKFLOW_COMPLETED": {"result", "result_hash"},
     }
-    for event, reference in v2["discriminator"]["mapping"].items():
-        component = schema["components"]["schemas"][reference.rsplit("/", 1)[-1]]
+    v2_components = {reference["$ref"].rsplit("/", 1)[-1] for reference in v2["oneOf"]}
+    assert v2_components == {
+        "AgentCompletedEventResourceV2",
+        "AgentFailedEventResourceV2",
+        "AgentExecutorBindingUnavailableEventResourceV2",
+        "AgentCancelRequestedEventResourceV2",
+        "AgentCancelledEventResourceV2",
+        "AgentInterruptedEventResourceV2",
+        "ActionReconciliationRequiredEventResourceV2",
+        "ActionReconciliationResolvedEventResourceV2",
+        "ActionCompletedEventResourceV2",
+        "WaitingInputEventResourceV2",
+        "WaitAnsweredEventResourceV2",
+        "SubworkflowCompletedEventResourceV2",
+    }
+    for event, component_name in {
+        "AGENT_COMPLETED": "AgentCompletedEventResourceV2",
+        "AGENT_FAILED": "AgentFailedEventResourceV2",
+        "AGENT_CANCEL_REQUESTED": "AgentCancelRequestedEventResourceV2",
+        "AGENT_CANCELLED": "AgentCancelledEventResourceV2",
+        "AGENT_INTERRUPTED": "AgentInterruptedEventResourceV2",
+        "ACTION_RECONCILIATION_REQUIRED": "ActionReconciliationRequiredEventResourceV2",
+        "ACTION_RECONCILIATION_RESOLVED": "ActionReconciliationResolvedEventResourceV2",
+        "ACTION_COMPLETED": "ActionCompletedEventResourceV2",
+        "WAITING_INPUT": "WaitingInputEventResourceV2",
+        "WAIT_ANSWERED": "WaitAnsweredEventResourceV2",
+        "SUBWORKFLOW_COMPLETED": "SubworkflowCompletedEventResourceV2",
+    }.items():
+        component = schema["components"]["schemas"][component_name]
         expected_fields = common | payloads[event]
         assert set(component["properties"]) == expected_fields
         assert set(component["required"]) == expected_fields
         assert component["additionalProperties"] is False
+    unavailable_v2 = schema["components"]["schemas"][
+        "AgentExecutorBindingUnavailableEventResourceV2"
+    ]
+    assert set(unavailable_v2["properties"]) == common | {"reason"}
+    assert set(unavailable_v2["required"]) == common | {"reason"}
+    assert unavailable_v2["additionalProperties"] is False
     v3 = schema["components"]["schemas"]["RunEventResourceV3"]
-    assert len(v3["oneOf"]) == 8
-    assert set(v3["discriminator"]["mapping"]) == {
-        "AGENT_COMPLETED",
-        "AGENT_FAILED",
-        "AGENT_CANCEL_REQUESTED",
-        "AGENT_CANCELLED",
-        "AGENT_INTERRUPTED",
-        "ACTION_RECONCILIATION_REQUIRED",
-        "ACTION_RECONCILIATION_RESOLVED",
-        "ACTION_COMPLETED",
+    assert len(v3["oneOf"]) == 9
+    assert "discriminator" not in v3
+    assert v3["description"] == v2["description"]
+    v3_components = {reference["$ref"].rsplit("/", 1)[-1] for reference in v3["oneOf"]}
+    assert v3_components == {
+        "AgentCompletedEventResourceV3",
+        "AgentFailedEventResourceV3",
+        "AgentExecutorBindingUnavailableEventResourceV3",
+        "AgentCancelRequestedEventResourceV3",
+        "AgentCancelledEventResourceV3",
+        "AgentInterruptedEventResourceV3",
+        "ActionReconciliationRequiredEventResourceV3",
+        "ActionReconciliationResolvedEventResourceV3",
+        "ActionCompletedEventResourceV3",
     }
-    for event, reference in v3["discriminator"]["mapping"].items():
-        component = schema["components"]["schemas"][reference.rsplit("/", 1)[-1]]
+    for event, component_name in {
+        "AGENT_COMPLETED": "AgentCompletedEventResourceV3",
+        "AGENT_FAILED": "AgentFailedEventResourceV3",
+        "AGENT_CANCEL_REQUESTED": "AgentCancelRequestedEventResourceV3",
+        "AGENT_CANCELLED": "AgentCancelledEventResourceV3",
+        "AGENT_INTERRUPTED": "AgentInterruptedEventResourceV3",
+        "ACTION_RECONCILIATION_REQUIRED": "ActionReconciliationRequiredEventResourceV3",
+        "ACTION_RECONCILIATION_RESOLVED": "ActionReconciliationResolvedEventResourceV3",
+        "ACTION_COMPLETED": "ActionCompletedEventResourceV3",
+    }.items():
+        component = schema["components"]["schemas"][component_name]
         extra = {"reason"} if event == "AGENT_FAILED" else set()
         expected_fields = common | payloads[event] | extra
         assert set(component["properties"]) == expected_fields
         assert set(component["required"]) == expected_fields
         assert component["additionalProperties"] is False
         assert component["properties"]["workflow_format_version"]["const"] == 3
+    unavailable_v3 = schema["components"]["schemas"][
+        "AgentExecutorBindingUnavailableEventResourceV3"
+    ]
+    assert set(unavailable_v3["properties"]) == common | {"reason"}
+    assert set(unavailable_v3["required"]) == common | {"reason"}
+    assert unavailable_v3["additionalProperties"] is False
+    assert unavailable_v3["properties"]["workflow_format_version"]["const"] == 3
 
 
 def test_openapi_has_no_private_credential_channel() -> None:

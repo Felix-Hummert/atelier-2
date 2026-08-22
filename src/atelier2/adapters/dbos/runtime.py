@@ -67,6 +67,7 @@ from atelier2.ports.agent_executions import (
     AgentExecutorFactoryV2,
     AgentExecutorKey,
     AgentExecutorManifestEntry,
+    AgentExecutorRegistration,
     AgentExecutorRegistry,
     AgentExecutorV2,
 )
@@ -417,9 +418,10 @@ def _open_binding(
             )
         agent_executor = agent_factory.open()
         for registry_entry in agent_registry.entries:
-            agent_executors_v2.append(
-                (registry_entry.manifest_entry, registry_entry.factory.open())
-            )
+            if registry_entry.factory is not None:
+                agent_executors_v2.append(
+                    (registry_entry.manifest_entry, registry_entry.factory.open())
+                )
         adapter = effect_factory.open()
         datasource = SQLAlchemyDatasource.create(
             sqlite_url(settings.database_path), engine=engine
@@ -440,17 +442,20 @@ def _open_binding(
             # abandoned workspace from a live one, so it is where the workspaces
             # of attempts that ended before the restart are removed.
             agent_workspace_owner.reconcile(attempt_store)
+        opened_agent_executors = {
+            entry.key: executor for entry, executor in agent_executors_v2
+        }
         register_durable_run_workflow(
             datasource,
             agent_executor,
             agent_binding,
             {
-                entry.key: (
-                    executor,
-                    entry.operational_identity,
-                    agent_registry.declared_capabilities(entry.key),
+                registry_entry.key: (
+                    opened_agent_executors.get(registry_entry.key),
+                    registry_entry.manifest_entry.operational_identity,
+                    registry_entry.manifest_entry.declared_capabilities,
                 )
-                for entry, executor in agent_executors_v2
+                for registry_entry in agent_registry.entries
             },
             attempt_store,
             agent_process_supervisor,
@@ -560,14 +565,14 @@ class _DbosProcessOwner:
             elif (
                 self._bound.settings.binding(
                     self._bound.agent_executor_binding,
-                    tuple(entry for entry, _executor in self._bound.agent_executors_v2),
+                    self._bound.agent_executor_registry.manifest,
                     self._bound.effect_adapter_binding,
                 )
                 != requested_binding
             ):
                 raise DbosRuntimeBindingConflict(
                     "this process already owns "
-                    f"{self._bound.settings.binding(self._bound.agent_executor_binding, tuple(entry for entry, _executor in self._bound.agent_executors_v2), self._bound.effect_adapter_binding)}; "
+                    f"{self._bound.settings.binding(self._bound.agent_executor_binding, self._bound.agent_executor_registry.manifest, self._bound.effect_adapter_binding)}; "
                     f"refusing {requested_binding}"
                 )
             self._bound.leases += 1
@@ -702,7 +707,9 @@ class DbosRuntime:
         settings: DbosRuntimeSettings,
         effect_adapter_factory: EffectAdapterFactory,
         agent_executor_factory: AgentExecutorFactory,
-        agent_executor_factories_v2: tuple[AgentExecutorFactoryV2, ...] = (),
+        agent_executor_factories_v2: tuple[
+            AgentExecutorFactoryV2 | AgentExecutorRegistration, ...
+        ] = (),
     ) -> None:
         self._close_lock = threading.Lock()
         registry = AgentExecutorRegistry(agent_executor_factories_v2)

@@ -6,6 +6,7 @@ from typing import Protocol
 from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionHash,
+    AgentConfigurationRevisionListItem,
     AuthProfileRevision,
     AuthProfileRevisionHash,
 )
@@ -14,7 +15,7 @@ from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavail
 
 @dataclass(frozen=True)
 class AgentConfigurationRevisionPage:
-    items: tuple[tuple[AgentConfigurationRevision, AuthProfileRevision], ...]
+    items: tuple[AgentConfigurationRevisionListItem, ...]
     next_after: AgentConfigurationRevisionHash | None
 
 

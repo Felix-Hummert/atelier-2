@@ -60,7 +60,10 @@ from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.pages import PageLimit
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT
 from atelier2.host.logging import configure_process_logging
-from atelier2.ports.agent_executions import AgentExecutorFactoryV2
+from atelier2.ports.agent_executions import (
+    AgentExecutorFactoryV2,
+    AgentExecutorRegistration,
+)
 
 # The edge must admit exactly the largest result the durable agent contract
 # accepts, and nothing larger: a tighter bound refuses work the store would
@@ -350,49 +353,74 @@ def _require_start_refusal(
         raise ValueError(f"a {name} start refusal must be nonempty")
 
 
-def _subscription_executor_factories(
+def _subscription_executor_registrations(
     settings: HostSettings,
-) -> tuple[AgentExecutorFactoryV2, ...]:
+) -> tuple[AgentExecutorRegistration, ...]:
     claude_subscription = settings.claude_subscription
     grok_subscription = settings.grok_subscription
     codex_subscription = settings.codex_subscription
     return (
         *(
-            ()
-            if claude_subscription is None or settings.claude_start_refusal is not None
-            else (ClaudeSubscriptionExecutorFactory(claude_subscription),)
-        ),
-        *(
-            (ClaudeWorkspaceToolExecutorFactory(claude_subscription),)
-            if (
-                claude_subscription is not None
-                and settings.claude_workspace_tools
-                and settings.claude_start_refusal is None
-                and settings.claude_workspace_tools_start_refusal is None
+            (
+                _subscription_registration(
+                    ClaudeSubscriptionExecutorFactory(claude_subscription),
+                    settings.claude_start_refusal is not None,
+                ),
             )
+            if claude_subscription is not None
             else ()
         ),
         *(
-            ()
-            if grok_subscription is None or settings.grok_start_refusal is not None
-            else (GrokSubscriptionExecutorFactory(grok_subscription),)
-        ),
-        *(
-            (GrokWorkspaceToolExecutorFactory(grok_subscription),)
-            if (
-                grok_subscription is not None
-                and settings.grok_workspace_tools
-                and settings.grok_start_refusal is None
-                and settings.grok_workspace_tools_start_refusal is None
+            (
+                _subscription_registration(
+                    ClaudeWorkspaceToolExecutorFactory(claude_subscription),
+                    settings.claude_start_refusal is not None
+                    or settings.claude_workspace_tools_start_refusal is not None,
+                ),
             )
+            if (claude_subscription is not None and settings.claude_workspace_tools)
             else ()
         ),
         *(
-            ()
-            if codex_subscription is None or settings.codex_start_refusal is not None
-            else (CodexSubscriptionExecutorFactory(codex_subscription),)
+            (
+                _subscription_registration(
+                    GrokSubscriptionExecutorFactory(grok_subscription),
+                    settings.grok_start_refusal is not None,
+                ),
+            )
+            if grok_subscription is not None
+            else ()
+        ),
+        *(
+            (
+                _subscription_registration(
+                    GrokWorkspaceToolExecutorFactory(grok_subscription),
+                    settings.grok_start_refusal is not None
+                    or settings.grok_workspace_tools_start_refusal is not None,
+                ),
+            )
+            if (grok_subscription is not None and settings.grok_workspace_tools)
+            else ()
+        ),
+        *(
+            (
+                _subscription_registration(
+                    CodexSubscriptionExecutorFactory(codex_subscription),
+                    settings.codex_start_refusal is not None,
+                ),
+            )
+            if codex_subscription is not None
+            else ()
         ),
     )
+
+
+def _subscription_registration(
+    factory: AgentExecutorFactoryV2, unavailable: bool
+) -> AgentExecutorRegistration:
+    if unavailable:
+        return AgentExecutorRegistration.unavailable(factory)
+    return AgentExecutorRegistration.startable(factory)
 
 
 def _log_unstartable_executors(settings: HostSettings) -> None:
@@ -411,7 +439,7 @@ def _log_unstartable_executors(settings: HostSettings) -> None:
 
 
 def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
-    subscription_executors = _subscription_executor_factories(settings)
+    subscription_executors = _subscription_executor_registrations(settings)
     runtime = DbosRuntime(
         settings.runtime_settings(),
         LoopbackEffectAdapterFactory(

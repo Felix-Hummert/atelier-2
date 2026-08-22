@@ -745,6 +745,25 @@ textarea {
   color: var(--warning);
 }
 
+.binding-startability {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.75rem 0 0;
+  color: var(--warning);
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.binding-startability > span {
+  display: inline-grid;
+  width: 1.35rem;
+  height: 1.35rem;
+  place-items: center;
+  border: 2px solid currentColor;
+  line-height: 1;
+}
+
 .named-agent {
   display: grid;
   gap: 0.25rem;

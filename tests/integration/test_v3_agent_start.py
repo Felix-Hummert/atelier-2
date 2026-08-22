@@ -16,6 +16,7 @@ is the public one. What happens after it is `test_v3_self_driving_run`.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
@@ -29,7 +30,9 @@ from atelier2.adapters.dbos.node_binding_codec import EncodedAgentBindingV2
 from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
+    agent_attempts,
     run_configuration_revisions,
+    run_events,
     runs,
 )
 from atelier2.adapters.dbos.starter import (
@@ -55,6 +58,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.budgets_v3 import BudgetField
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.executions import AgentExecutionRefusal
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_bindings import RunBindingConflict, RunV3
 from atelier2.contracts.run_configuration_v3 import (
@@ -74,6 +78,7 @@ from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
 )
+from atelier2.ports.agent_executions import AgentExecutorRegistration
 from atelier2.ports.durable_runs import (
     DurableRunCreated,
     DurableRunExisting,
@@ -257,6 +262,71 @@ def test_a_started_v3_run_reads_back_as_its_own_shape(runtime: DbosRuntime) -> N
     assert isinstance(run, RunV3)
     assert [binding.role.value for binding in run.agent_bindings] == ["builder"]
     assert run.binding_set_hash == bindings.binding_set_hash
+
+
+@pytest.mark.proves("a-bound-unstarted-run-refuses-when-its-executor-is-unavailable")
+def test_a_bound_v3_run_refuses_before_an_attempt_when_its_executor_is_unavailable(
+    runtime: DbosRuntime,
+    tmp_path: Path,
+) -> None:
+    """A restart keeps a declared V3 binding but honestly declines to launch it."""
+    workflow, bindings = publish(runtime)
+    started = DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
+    assert isinstance(started, DurableRunCreated)
+    settings = runtime.settings
+    runtime.close()
+
+    unavailable_factory = failing_agent_executor_factory("exact", [])
+    restarted = DbosRuntime(
+        settings,
+        LoopbackEffectAdapterFactory(
+            tmp_path / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+        ExactOutputAgentExecutorFactory(),
+        (AgentExecutorRegistration.unavailable(unavailable_factory),),
+    )
+    try:
+        restarted.launch()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            found = durable_queries(restarted.engine).get_run(RUN)
+            if (
+                isinstance(found, RunFound)
+                and found.projection.run.state is RunState.FAILED
+            ):
+                break
+            time.sleep(0.025)
+        else:
+            raise AssertionError("V3 run did not refuse its unavailable executor")
+
+        assert unavailable_factory.opens == 0
+        with restarted.engine.connect() as connection:
+            events = tuple(
+                connection.execute(
+                    sa.select(run_events)
+                    .where(run_events.c.run_id == RUN.value)
+                    .order_by(run_events.c.event_sequence)
+                ).mappings()
+            )
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(agent_attempts)
+                )
+                == 0
+            )
+        assert len(events) == 1
+        assert events[0]["event_kind"] == "AGENT_FAILED"
+        assert events[0]["payload"] == (
+            AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii")
+        )
+        assert events[0]["agent_attempt_id"] is None
+        assert events[0]["attempt_ordinal"] is None
+    finally:
+        restarted.close()
 
 
 @pytest.mark.proves("a-node-binding-is-decided-where-no-store-can-be-reached")

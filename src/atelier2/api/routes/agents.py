@@ -16,6 +16,7 @@ from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import ApiProblem
 from atelier2.api.projection.agents import (
+    agent_configuration_revision_list_item_resource,
     agent_configuration_revision_resource,
     auth_profile_revision_resource,
 )
@@ -204,8 +205,8 @@ async def list_agent_configuration_revisions_route(
         case AgentConfigurationRevisionsListed(items, next_after):
             return AgentConfigurationRevisionPageResource(
                 items=tuple(
-                    agent_configuration_revision_resource(revision, auth_profile)
-                    for revision, auth_profile in items
+                    agent_configuration_revision_list_item_resource(item)
+                    for item in items
                 ),
                 next_after_revision_hash=(
                     None if next_after is None else next_after.value

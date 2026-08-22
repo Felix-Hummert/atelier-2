@@ -3,7 +3,7 @@
 
   import {
     isRunV3,
-    type AgentConfigurationRevision,
+    type AgentConfigurationRevisionListItem,
     type AnyRun,
     CockpitRequestError,
     type CockpitApi,
@@ -49,7 +49,7 @@
     workflows: WorkflowRevisionSummary[];
     newestByName: Record<string, string>;
     catalogByName: Record<string, CatalogNameState>;
-    agents: AgentConfigurationRevision[];
+    agents: AgentConfigurationRevisionListItem[];
   }
 
   interface SelectedOccupancy {

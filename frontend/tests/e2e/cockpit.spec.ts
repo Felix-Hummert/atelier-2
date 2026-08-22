@@ -762,7 +762,9 @@ test("proves(new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-
     provider_id: provider,
     auth_mode: "subscription",
     requested_capability: "headless",
-    agent_configuration_revision_hash: hash
+    agent_configuration_revision_hash: hash,
+    startable: true,
+    not_startable_reason: null
   });
   const first = agent(firstHash, "anthropic", "sonnet");
   const chosen = agent(chosenHash, "openai", "codex");
@@ -1546,6 +1548,179 @@ test("starts a published V3 workflow by picking a named agent", async ({ page })
   await expect(page.getByRole("heading", { level: 1, name: "Started with a named agent" })).toBeVisible();
   await assertMobileSurface(page);
   await page.screenshot({ path: "test-results/named-agent-run-390x844.png", fullPage: true });
+});
+
+test("proves(a-listed-agent-configuration-names-current-startability): keeps a remembered listed-unavailable agent visible until keyboard recovery", async ({ page }) => {
+  const api = "/atelier/api/v1";
+  const workflowName = "unavailable-named-agent";
+  const schemaHash = await anyJsonSchema(page);
+  const workflow = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: [
+      "format_version: 3",
+      `name: ${workflowName}`,
+      "nodes:",
+      "  - id: implement",
+      "    type: agent",
+      "    role: builder",
+      "    mode: headless",
+      "    instruction: Choose a working executor.",
+      ...declaredOutput(schemaHash),
+      ""
+    ].join("\n")
+  });
+  expect(workflow.status()).toBe(201);
+  const workflowHash = (await workflow.json()).workflow_revision_hash as string;
+  const founded = await page.request.post(`${api}/workflow-lineages`, {
+    data: {
+      workflow_revision_hash: workflowHash,
+      actor: "e2e",
+      activated_at: "2026-08-22T00:00:00Z"
+    }
+  });
+  expect(founded.status()).toBe(201);
+  const auth = await page.request.post(`${api}/auth-profile-revisions`, {
+    data: {
+      profile_id: "unavailable-picker",
+      revision_number: 1,
+      provider_id: "e2e-v3",
+      auth_mode: "subscription"
+    }
+  });
+  expect(auth.status()).toBe(201);
+  const authHash = (await auth.json()).auth_profile_revision_hash as string;
+  const publishConfiguration = async (model: string, capability: "headless" | "headless_with_tools") => {
+    const response = await page.request.post(`${api}/agent-configuration-revisions`, {
+      data: {
+        model,
+        auth_profile_revision_hash: authHash,
+        executor_revision: "immediate/v1",
+        requested_capability: capability
+      }
+    });
+    expect(response.status()).toBe(201);
+    return await response.json() as Record<string, unknown>;
+  };
+  const unavailable = await publishConfiguration("remembered-unavailable", "headless_with_tools");
+  const healthy = await publishConfiguration("keyboard-healthy", "headless");
+  const unavailableHash = unavailable.agent_configuration_revision_hash as string;
+  const healthyHash = healthy.agent_configuration_revision_hash as string;
+  const listedItems: Array<{
+    agent_configuration_revision_hash: string;
+    startable: boolean;
+    not_startable_reason: string | null;
+  }> = [];
+  let after: string | null = null;
+  do {
+    const listed = await page.request.get(
+      after === null
+        ? `${api}/agent-configuration-revisions?limit=100`
+        : `${api}/agent-configuration-revisions?limit=100&after_revision_hash=${after}`
+    );
+    expect(listed.status()).toBe(200);
+    const pageBody = await listed.json() as {
+      items: typeof listedItems;
+      next_after_revision_hash: string | null;
+    };
+    listedItems.push(...pageBody.items);
+    after = pageBody.next_after_revision_hash;
+  } while (after !== null);
+  expect(listedItems.find((item) => item.agent_configuration_revision_hash === unavailableHash)).toEqual(
+    expect.objectContaining({
+      startable: false,
+      not_startable_reason: "agent-executor-binding-unavailable"
+    })
+  );
+  expect(listedItems.find((item) => item.agent_configuration_revision_hash === healthyHash)).toEqual(
+    expect.objectContaining({
+      startable: true,
+      not_startable_reason: null
+    })
+  );
+  await page.addInitScript(
+    ([key, hash]) => localStorage.setItem(key, JSON.stringify({ builder: hash })),
+    [NAMED_AGENT_CHOICE_STORAGE_KEY, unavailableHash] as const
+  );
+  const starts: Array<Record<string, unknown>> = [];
+  const occupancyWrites: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (request.method() === "POST" && url.pathname === `${api}/runs`) {
+      starts.push(request.postDataJSON() as Record<string, unknown>);
+    }
+    if (request.method() === "PUT" && url.pathname.includes("/occupancy/")) {
+      occupancyWrites.push(url.pathname);
+    }
+  });
+
+  await page.goto("/atelier/new");
+  await page.getByRole("radio", { name: new RegExp(workflowName) }).click();
+  const binding = page.getByRole("article", { name: "Binding builder" });
+  const picker = binding.getByLabel("Agent for builder");
+  await expect(picker).toHaveValue(unavailableHash);
+  await expect(binding.getByLabel("Binding source: Remembered")).toBeVisible();
+  await expect(binding.getByRole("status")).toContainText("◇ Unavailable");
+  const unavailableHint = binding.getByRole("button", { name: "Why builder is unavailable" });
+  await unavailableHint.focus();
+  await unavailableHint.press("Enter");
+  await expect(unavailableHint).toHaveAttribute("aria-expanded", "true");
+  await expect(binding.locator(".info-popover code")).toHaveText(
+    "This deployment cannot start this executor. Choose another agent or repair its startup check."
+  );
+  expect(
+    await picker
+      .getByRole("option", { name: /remembered-unavailable.*Unavailable/ })
+      .evaluate((option) => (option as HTMLOptionElement).disabled)
+  ).toBe(true);
+  await expect(page.getByRole("button", { name: "Start" })).toHaveCount(0);
+  expect(starts).toEqual([]);
+  await picker.focus();
+  await expect(picker).toBeFocused();
+  await expectVisibleFocus(picker);
+  await assertNoSeriousAccessibilityFindings(page);
+  await page.screenshot({ path: "test-results/unavailable-agent-picker-desktop.png", fullPage: true });
+  await page.addStyleTag({ content: "html { filter: grayscale(1); }" });
+  await page.screenshot({ path: "test-results/unavailable-agent-picker-grayscale-desktop.png", fullPage: true });
+  await page.locator("style").last().evaluate((element) => element.remove());
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertMobileSurface(page);
+  await page.screenshot({
+    path: "test-results/unavailable-agent-picker-unavailable-390x844.png",
+    fullPage: true
+  });
+
+  await expect(picker.getByRole("option", { name: /keyboard-healthy/ })).toHaveCount(1);
+  await picker.focus();
+  await page.keyboard.press("Home");
+  const enabledCount = await picker.locator("option:not([disabled])").count();
+  for (let step = 0; step < enabledCount; step += 1) {
+    if ((await picker.inputValue()) === healthyHash) break;
+    await page.keyboard.press("ArrowDown");
+  }
+  await expect(picker).toHaveValue(healthyHash);
+  await expect(binding.getByLabel("Binding source: Remembered")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start" })).toBeVisible();
+  await assertMobileSurface(page);
+  await page.screenshot({
+    path: "test-results/unavailable-agent-picker-recovered-390x844.png",
+    fullPage: true
+  });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.screenshot({ path: "test-results/unavailable-agent-picker-reduced-motion.png", fullPage: true });
+
+  await page.getByRole("button", { name: "Start" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: workflowName })).toBeVisible({
+    timeout: 20_000
+  });
+  await expect(page.getByLabel("Where this run stands")).toContainText("Done", {
+    timeout: 20_000
+  });
+  expect(starts).toHaveLength(1);
+  expect((starts[0]?.agent_bindings as Array<{ agent_configuration_revision_hash: string }>)).toEqual([
+    { role: "builder", agent_configuration_revision_hash: healthyHash }
+  ]);
+  expect(occupancyWrites).toEqual([]);
 });
 
 test("proves(new-run-prefers-project-occupancy-before-local-memory-and-empty): starts the visible project bindings", async ({ page }) => {

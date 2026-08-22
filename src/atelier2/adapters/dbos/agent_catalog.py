@@ -17,6 +17,7 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
     AgentConfigurationRevisionHash,
+    AgentConfigurationRevisionListItem,
     AgentExecutionCapability,
     AgentExecutorRevision,
     AuthMode,
@@ -255,7 +256,7 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
                 )
                 has_more = len(records) > limit
                 page = records[:limit]
-                items: list[tuple[AgentConfigurationRevision, AuthProfileRevision]] = []
+                items: list[AgentConfigurationRevisionListItem] = []
                 for record in page:
                     configuration = agent_configuration_from_record(record)
                     auth_record = (
@@ -272,10 +273,23 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
                         raise ValueError(
                             "agent configuration references a missing auth profile"
                         )
-                    items.append((configuration, auth_profile_from_record(auth_record)))
+                    auth = auth_profile_from_record(auth_record)
+                    items.append(
+                        AgentConfigurationRevisionListItem(
+                            configuration,
+                            auth,
+                            self._registry.is_startable(
+                                AgentExecutorKey(
+                                    auth.provider_id,
+                                    configuration.executor_revision,
+                                ),
+                                configuration.requested_capability,
+                            ),
+                        )
+                    )
                 return AgentConfigurationRevisionPage(
                     tuple(items),
-                    items[-1][0].revision_hash if has_more and items else None,
+                    items[-1].revision.revision_hash if has_more and items else None,
                 )
         except (OperationalError, PoolTimeoutError):
             return CatalogReadUnavailable()

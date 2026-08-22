@@ -130,16 +130,27 @@ class AgentConfigurationRevisionResource(ApiModel):
     agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
+class AgentConfigurationRevisionListItemResource(AgentConfigurationRevisionResource):
+    """A listed configuration plus the host's current startability decision."""
+
+    startable: bool
+    not_startable_reason: Literal["agent-executor-binding-unavailable"] | None
+
+    @model_validator(mode="after")
+    def validates_startability_pair(self) -> AgentConfigurationRevisionListItemResource:
+        if self.startable != (self.not_startable_reason is None):
+            raise ValueError("agent configuration startability and reason disagree")
+        return self
+
+
 class AgentConfigurationRevisionPageResource(ApiModel):
     """One page of published agent configurations, in the item form already spoken.
 
-    The items are the existing revision resource, not a slimmer twin: a picker
-    needs the same display facts the publication already answers with. The
-    cursor is the item's own identity, named the same way the workflow list
-    names its cursor.
+    Publication and listing intentionally use distinct items: listing adds the
+    host's current startability decision while POST keeps its immutable item.
     """
 
-    items: tuple[AgentConfigurationRevisionResource, ...]
+    items: tuple[AgentConfigurationRevisionListItemResource, ...]
     next_after_revision_hash: str | None = Field(pattern=REVISION_HASH_PATTERN)
 
 

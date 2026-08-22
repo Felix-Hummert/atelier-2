@@ -46,6 +46,8 @@ from atelier2.api.wire.events import (
     AgentCompletedEventResource,
     AgentCompletedEventResourceV2,
     AgentCompletedEventResourceV3,
+    AgentExecutorBindingUnavailableEventResourceV2,
+    AgentExecutorBindingUnavailableEventResourceV3,
     AgentFailedEventResourceV2,
     AgentFailedEventResourceV3,
     AgentInterruptedEventResourceV2,
@@ -100,6 +102,7 @@ EVENT_MODELS = (
 EVENT_MODELS_V2 = (
     AgentCompletedEventResourceV2,
     AgentFailedEventResourceV2,
+    AgentExecutorBindingUnavailableEventResourceV2,
     AgentCancelRequestedEventResourceV2,
     AgentCancelledEventResourceV2,
     AgentInterruptedEventResourceV2,
@@ -113,6 +116,7 @@ EVENT_MODELS_V2 = (
 EVENT_MODELS_V3 = (
     AgentCompletedEventResourceV3,
     AgentFailedEventResourceV3,
+    AgentExecutorBindingUnavailableEventResourceV3,
     AgentCancelRequestedEventResourceV3,
     AgentCancelledEventResourceV3,
     AgentInterruptedEventResourceV3,
@@ -122,17 +126,6 @@ EVENT_MODELS_V3 = (
 )
 EVENT_NAMES = tuple(
     kind.value for kind in RunEventKind if kind not in KINDS_NO_V1_RUN_CARRIES
-)
-EVENT_NAMES_V2 = tuple(kind.value for kind in RunEventKind)
-EVENT_NAMES_V3 = (
-    RunEventKind.AGENT_COMPLETED.value,
-    RunEventKind.AGENT_FAILED.value,
-    RunEventKind.AGENT_CANCEL_REQUESTED.value,
-    RunEventKind.AGENT_CANCELLED.value,
-    RunEventKind.AGENT_INTERRUPTED.value,
-    RunEventKind.ACTION_RECONCILIATION_REQUIRED.value,
-    RunEventKind.ACTION_RECONCILIATION_RESOLVED.value,
-    RunEventKind.ACTION_COMPLETED.value,
 )
 
 OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
@@ -653,13 +646,11 @@ def _install_event_components(schema: dict[str, Any]) -> None:
             {"$ref": f"#/components/schemas/{model.__name__}"}
             for model in EVENT_MODELS_V2
         ],
-        "discriminator": {
-            "propertyName": "event",
-            "mapping": {
-                name: f"#/components/schemas/{model.__name__}"
-                for name, model in zip(EVENT_NAMES_V2, EVENT_MODELS_V2, strict=True)
-            },
-        },
+        "description": (
+            "The AGENT_FAILED forms are closed by their required shape: an "
+            "attempt failure names failure_code and an attempt; a pre-claim "
+            "executor refusal names only its product reason."
+        ),
     }
     for model in EVENT_MODELS_V3:
         generated = model.model_json_schema(
@@ -673,13 +664,11 @@ def _install_event_components(schema: dict[str, Any]) -> None:
             {"$ref": f"#/components/schemas/{model.__name__}"}
             for model in EVENT_MODELS_V3
         ],
-        "discriminator": {
-            "propertyName": "event",
-            "mapping": {
-                name: f"#/components/schemas/{model.__name__}"
-                for name, model in zip(EVENT_NAMES_V3, EVENT_MODELS_V3, strict=True)
-            },
-        },
+        "description": (
+            "The AGENT_FAILED forms are closed by their required shape: an "
+            "attempt failure names failure_code and an attempt; a pre-claim "
+            "executor refusal names only its product reason."
+        ),
     }
     components["VersionedRunEventResource"] = {
         "oneOf": [

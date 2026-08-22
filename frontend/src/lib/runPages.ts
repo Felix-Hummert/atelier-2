@@ -1,5 +1,5 @@
 import type {
-  AgentConfigurationRevision,
+  AgentConfigurationRevisionListItem,
   AgentConfigurationRevisionPage,
   AnyRun,
   RunPage,
@@ -34,8 +34,12 @@ export type RevisionReading =
   | { complete: false; revisions: WorkflowRevisionSummary[]; unreadable: string };
 
 export type AgentConfigurationReading =
-  | { complete: true; configurations: AgentConfigurationRevision[] }
-  | { complete: false; configurations: AgentConfigurationRevision[]; unreadable: string };
+  | { complete: true; configurations: AgentConfigurationRevisionListItem[] }
+  | {
+      complete: false;
+      configurations: AgentConfigurationRevisionListItem[];
+      unreadable: string;
+    };
 
 export async function readEveryRun(
   listRuns: (after?: string) => Promise<RunPage>

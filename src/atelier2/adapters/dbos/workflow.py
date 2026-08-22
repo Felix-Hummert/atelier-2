@@ -83,6 +83,7 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
+    AgentExecutionRequestV2,
     AgentExecutorBinding,
     AgentExecutorOperationalIdentity,
 )
@@ -131,7 +132,14 @@ from atelier2.contracts.workflows_v3 import (
     AnyWorkflowDocument,
     AnyWorkflowDocumentNode,
 )
-from atelier2.ports.agent_attempts import AgentAttemptStore, AgentAttemptSucceeded
+from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationAccepted,
+    AgentAttemptStore,
+    AgentAttemptSucceeded,
+    AgentExecutorBindingRefusalFenced,
+    AgentExecutorBindingRefusalNeedsPreparedCleanup,
+    AgentExecutorBindingRefusalWritten,
+)
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceOwner,
     AgentExecutor,
@@ -389,7 +397,7 @@ def register_durable_run_workflow(
     agent_executors_v2: Mapping[
         AgentExecutorKey,
         tuple[
-            AgentExecutorV2,
+            AgentExecutorV2 | None,
             AgentExecutorOperationalIdentity,
             frozenset[AgentExecutionCapability],
         ],
@@ -420,6 +428,42 @@ def register_durable_run_workflow(
             DBOS.start_workflow(
                 durable_node, run_id.value, revision_hash.value, node_id
             )
+
+    def refuse_unavailable_executor(request: AgentExecutionRequestV2) -> str:
+        redrive_index = 0
+        while True:
+            refusal = agent_attempt_store.refuse_unavailable_executor(request)
+            match refusal:
+                case AgentExecutorBindingRefusalWritten():
+                    return RunState.FAILED.value
+                case AgentExecutorBindingRefusalNeedsPreparedCleanup(
+                    _attempt, cleanup_request
+                ):
+                    accepted = agent_attempt_store.request_cancellation(cleanup_request)
+                    if not isinstance(accepted, AgentAttemptCancellationAccepted):
+                        return RunState.STARTED.value
+                    terminal = continue_agent_attempt_cancellation(
+                        cleanup_request,
+                        agent_attempt_store,
+                        _declared_process_runner(agent_process_runner),
+                        _declared_workspace_owner(agent_workspace_owner),
+                    )
+                    if terminal is None:
+                        DBOS.sleep(
+                            CANCELLATION_REDRIVE_SECONDS[
+                                min(
+                                    redrive_index,
+                                    len(CANCELLATION_REDRIVE_SECONDS) - 1,
+                                )
+                            ]
+                        )
+                        redrive_index += 1
+                        continue
+                    continue
+                case AgentExecutorBindingRefusalFenced():
+                    return RunState.STARTED.value
+                case _ as unreachable:
+                    assert_never(unreachable)
 
     @DBOS.workflow(name=WORKFLOW_NAME, max_recovery_attempts=None)
     def durable_run(run_id: str, revision_hash: str) -> str:
@@ -486,6 +530,8 @@ def register_durable_run_workflow(
         executor, operational_identity, declared_capabilities = agent_executors_v2[
             _executor_key(binding)
         ]
+        if executor is None:
+            return RunState.STARTED.value
         request = agent_execution_request_v2(
             binding,
             replacement.run_id,
@@ -573,6 +619,8 @@ def register_durable_run_workflow(
                 ),
                 1,
             )
+            if executor is None:
+                return refuse_unavailable_executor(execution_request_v2)
             outcome = execute_agent_attempt(
                 attempt_execution,
                 executor,

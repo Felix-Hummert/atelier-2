@@ -115,7 +115,9 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
           provider_id: "exact",
           auth_mode: "subscription" as const,
           requested_capability: "headless" as const,
-          agent_configuration_revision_hash: configurationHash
+          agent_configuration_revision_hash: configurationHash,
+          startable: true,
+          not_startable_reason: null
         }
       ],
       next_after_revision_hash: null
