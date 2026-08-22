@@ -383,7 +383,12 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    min-width: 0;
     gap: var(--space-3);
+  }
+
+  .board-group {
+    min-width: 0;
   }
 
   .eyebrow {
@@ -432,16 +437,23 @@
 
   .board-rows {
     display: grid;
+    min-width: 0;
     gap: var(--space-2);
     margin: 0;
     padding: 0;
     list-style: none;
   }
 
+  .board-rows li {
+    min-width: 0;
+  }
+
   .board-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-3);
+    min-width: 0;
+    gap: var(--space-2) var(--space-3);
     min-height: 44px;
     padding: var(--space-3) var(--space-4);
     border: 1px solid var(--line);
