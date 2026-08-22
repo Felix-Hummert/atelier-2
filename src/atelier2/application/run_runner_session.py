@@ -44,6 +44,14 @@ class RunnerSessionRefusal(ValueError):
     """A peer's otherwise valid frame cannot advance this single-use exchange."""
 
 
+# The runner's closed REFUSE answer to a CANCEL that crossed its already-sent
+# TERMINAL_AVAILABLE: the same conflict code `cancel()` itself raises when a
+# caller asks to cancel after Core has already accepted that frame locally.
+# One protocol token shared by both ends of the wire, not two literals that
+# could drift apart.
+CROSSING_CANCEL_REFUSAL_CODE = "runner-cancel-conflict"
+
+
 class _CorePhase(StrEnum):
     OFFER = "OFFER"
     READY = "READY"
@@ -59,7 +67,7 @@ def cancellation_refusal_code(result: AgentAttemptCancellationResult) -> str:
         raise TypeError("accepted cancellation is not a refusal")
     if isinstance(result, AgentAttemptReplacementNotAllowed):
         return "runner-replacement-not-supported-a"
-    return "runner-cancel-conflict"
+    return CROSSING_CANCEL_REFUSAL_CODE
 
 
 def encode_runner_prepare_payload(
@@ -239,7 +247,7 @@ class CoreRunnerSession:
         if self._cancellation is not None:
             return self._cancellation
         if self._phase is not _CorePhase.TERMINAL_AVAILABLE:
-            raise RunnerSessionRefusal("runner-cancel-conflict")
+            raise RunnerSessionRefusal(CROSSING_CANCEL_REFUSAL_CODE)
         command = self.core.cancel()
         if command.replacement is not AgentAttemptReplacement.NONE:
             raise RunnerSessionRefusal("runner-replacement-not-supported-a")
@@ -259,6 +267,11 @@ class CoreRunnerSession:
         return self._cancellation
 
     def _advance(self, frame: RunnerSessionFrame) -> RunnerSessionFrame | None:
+        if (
+            self._phase is _CorePhase.TERMINAL_RECORD
+            and frame.message is RunnerSessionMessage.REFUSE
+        ):
+            return self._accept_crossing_cancel_refusal(frame)
         expected = {
             _CorePhase.OFFER: RunnerSessionMessage.INVOCATION_OFFER,
             _CorePhase.READY: RunnerSessionMessage.READY,
@@ -305,6 +318,29 @@ class CoreRunnerSession:
             case _CorePhase.RELEASED:
                 return None
         raise AssertionError("runner session phase must be closed")
+
+    def _accept_crossing_cancel_refusal(
+        self, frame: RunnerSessionFrame
+    ) -> RunnerSessionFrame | None:
+        """A CANCEL this session sent crossed the runner's TERMINAL_AVAILABLE.
+
+        The runner already fixed its one evidence envelope before offering it
+        and refused the crossing cancel instead of desynchronizing; this
+        session only reaches that refusal after it legally issued the cancel
+        itself, while `_phase` was still `TERMINAL_AVAILABLE`. The readback
+        flow continues unchanged with the evidence the runner already
+        retained -- success or an earlier cancel, whichever the runner's
+        journal fixed first.
+        """
+        if self._cancellation is None:
+            raise RunnerSessionRefusal("runner-session-out-of-order")
+        if frame.payload[0] != CROSSING_CANCEL_REFUSAL_CODE.encode("ascii"):
+            raise RunnerSessionRefusal("runner-session-noncanonical")
+        try:
+            RunnerTerminalEvidenceHash(_ascii(frame.payload[1]))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise RunnerSessionRefusal("runner-session-noncanonical") from error
+        return None
 
     def accept_terminal_record(self, frame: RunnerSessionFrame) -> RunnerSessionFrame:
         if (

@@ -385,6 +385,73 @@ def test_core_session_maps_arm_conflict_without_launch() -> None:
     assert core.armed == 0
 
 
+def test_core_session_absorbs_a_cancel_that_crossed_terminal_available() -> None:
+    core = _Core()
+    session = _session(core)
+    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+    session.accept(_frame(RunnerSessionMessage.READY, 2, _ready_payload()))
+    session.accept(_frame(RunnerSessionMessage.STARTED, 3, (b"\x00" * 8,)))
+
+    cancel = session.cancel()
+    readback = session.accept(
+        _frame(RunnerSessionMessage.TERMINAL_AVAILABLE, 4, (b"d" * 64,))
+    )
+    absorbed = session.accept(
+        _frame(
+            RunnerSessionMessage.REFUSE,
+            5,
+            (b"runner-cancel-conflict", b"d" * 64),
+        )
+    )
+    acknowledgement = session.accept_terminal_record(
+        _frame(RunnerSessionMessage.TERMINAL_RECORD, 6, (b"record",))
+    )
+
+    assert cancel.message is RunnerSessionMessage.CANCEL
+    assert readback is not None
+    assert readback.message is RunnerSessionMessage.READBACK
+    assert absorbed is None
+    assert acknowledgement.message is RunnerSessionMessage.ACK
+    assert (core.cancelled, core.committed) == (1, 1)
+
+
+def test_core_session_refuses_a_crossing_refusal_with_the_wrong_code() -> None:
+    core = _Core()
+    session = _session(core)
+    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+    session.accept(_frame(RunnerSessionMessage.READY, 2, _ready_payload()))
+    session.accept(_frame(RunnerSessionMessage.STARTED, 3, (b"\x00" * 8,)))
+    session.cancel()
+    session.accept(_frame(RunnerSessionMessage.TERMINAL_AVAILABLE, 4, (b"d" * 64,)))
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-session-noncanonical"):
+        session.accept(
+            _frame(
+                RunnerSessionMessage.REFUSE,
+                5,
+                (b"runner-arm-conflict", b"d" * 64),
+            )
+        )
+
+
+def test_core_session_refuses_an_unsolicited_crossing_refusal() -> None:
+    core = _Core()
+    session = _session(core)
+    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+    session.accept(_frame(RunnerSessionMessage.READY, 2, _ready_payload()))
+    session.accept(_frame(RunnerSessionMessage.STARTED, 3, (b"\x00" * 8,)))
+    session.accept(_frame(RunnerSessionMessage.TERMINAL_AVAILABLE, 4, (b"d" * 64,)))
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-session-out-of-order"):
+        session.accept(
+            _frame(
+                RunnerSessionMessage.REFUSE,
+                5,
+                (b"runner-cancel-conflict", b"d" * 64),
+            )
+        )
+
+
 def test_core_session_refuses_cancel_after_terminal_evidence() -> None:
     session = _session()
     session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))

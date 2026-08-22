@@ -33,6 +33,7 @@ from atelier2.adapters.runner_child import (
 )
 from atelier2.adapters.runner_journal import RunnerJournal
 from atelier2.application.run_runner_session import (
+    CROSSING_CANCEL_REFUSAL_CODE,
     decode_runner_prepare_payload,
     require_matching_evidence_hash,
     require_ready_matches_manifest,
@@ -275,6 +276,39 @@ def _measured_ready_payload(
     return payload
 
 
+def _decline_crossing_cancel(
+    channel: RunnerFrameChannel,
+    fence: _CoreFrameFence,
+    binding: RunnerGenerationBinding,
+    invocation: RunnerInvocationId,
+    sequence: int,
+    evidence_hash: RunnerTerminalEvidenceHash,
+) -> tuple[RunnerSessionFrame, int]:
+    """Answer a CANCEL that crossed the already-sent TERMINAL_AVAILABLE.
+
+    This invocation's one evidence envelope is already published to the
+    journal before it is ever offered, so a cancellation racing that offer
+    cannot change the outcome. REFUSE closes the race by naming it instead of
+    silently dropping Core's frame or killing the session; the caller then
+    keeps waiting for the READBACK that was always coming.
+    """
+    sequence += 1
+    _write_frame(
+        channel,
+        _frame(
+            RunnerSessionMessage.REFUSE,
+            sequence,
+            binding,
+            invocation,
+            (
+                CROSSING_CANCEL_REFUSAL_CODE.encode("ascii"),
+                evidence_hash.value.encode("ascii"),
+            ),
+        ),
+    )
+    return fence.read_frame(), sequence
+
+
 def run_candidate_session(
     channel: RunnerFrameChannel,
     binding: RunnerGenerationBinding,
@@ -380,7 +414,12 @@ def run_candidate_session(
             (evidence_hash.value.encode("ascii"),),
         ),
     )
-    if fence.read_frame().message is not RunnerSessionMessage.READBACK:
+    readback = fence.read_frame()
+    if readback.message is RunnerSessionMessage.CANCEL:
+        readback, sequence = _decline_crossing_cancel(
+            channel, fence, binding, invocation, sequence, evidence_hash
+        )
+    if readback.message is not RunnerSessionMessage.READBACK:
         raise RuntimeError("Core did not request retained evidence")
     sequence += 1
     encoded = encode_runner_terminal_evidence_record(envelope)
