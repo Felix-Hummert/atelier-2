@@ -84,12 +84,21 @@ function populatedRuns(): RunV1[] {
   ];
 }
 
-/** Real, moving timestamps: the Board's "Done today" group compares a row's
- * real V3 end stamp against the page's own wall-clock `now`, so a fixture
- * anchored to a fixed past date would drift out of "today" as the calendar
- * advances. Same convention as historyPage.test.ts's own `minutesAgo`. */
+/**
+ * A frozen noon, not the real wall clock: the Board's "Done today" group
+ * compares a row's real V3 end stamp against the page's own `new Date()`,
+ * so a `minutesAgo` fixture anchored to the real clock could cross local
+ * midnight between this Node-side computation and the browser's read of
+ * "today" -- or simply drift a fixture meant to stay "today" onto
+ * yesterday -- whenever the suite happens to run within a couple of hours
+ * of midnight (CI runs in UTC with no TZ pin). `page.clock.setFixedTime`
+ * pins the browser's `Date` to the same instant this fixture is computed
+ * against, removing the hour of the day as a variable entirely.
+ */
+const FROZEN_NOON = new Date(2026, 0, 15, 12, 0, 0);
+
 function minutesAgo(minutes: number): string {
-  return new Date(Date.now() - minutes * 60_000).toISOString();
+  return new Date(FROZEN_NOON.getTime() - minutes * 60_000).toISOString();
 }
 
 function questionMapRuns(): Array<RunV1 | RunV3> {
@@ -207,6 +216,9 @@ test("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Studio 
 
 test("proves(studio-elements-answer-named-questions): every interactive Studio control answers one named user question on populated and empty Studio", async ({ page }) => {
   expect(runPageSchema.safeParse({ items: questionMapRuns(), next_after: null }).success).toBe(true);
+  // Pins the browser's own `Date` to the same frozen instant `minutesAgo`
+  // computed the "Done today" fixture against (see FROZEN_NOON above).
+  await page.clock.setFixedTime(FROZEN_NOON);
   await mockAttentionOpen(page);
   let reply: StudioReadReply = "questions";
   await routeStudioReads(page, () => reply);

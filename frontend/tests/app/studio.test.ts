@@ -33,32 +33,39 @@ import {
   waitingReconciliationRun
 } from "../support/workflowV1";
 
+/**
+ * A frozen noon, not the real wall clock: the Board's "Done today" group
+ * compares a row's real V3 end stamp against the page's own `new Date()`,
+ * so a `minutesAgo`/`daysAgoLocal` fixture anchored to the real clock could
+ * cross local midnight between its own computation and the component's read
+ * of "today" -- or simply drift a fixture meant to stay "today" onto
+ * yesterday -- whenever the suite happens to run within a couple of hours of
+ * midnight. Faking only `Date` (never the timers `waitFor`/`findBy*` need)
+ * to a fixed noon removes that hour of the day as a variable entirely, the
+ * same way `vi.setSystemTime` is used elsewhere in this codebase.
+ */
+const FROZEN_NOON = new Date(2026, 0, 15, 12, 0, 0);
+
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(FROZEN_NOON);
   sessionStorage.clear();
   boardBadgeCounts.set(null);
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   cleanup();
 });
 
-/**
- * Real, moving timestamps rather than a fixed calendar date: the Board's
- * "Done today" group compares a row's real V3 end stamp against the page's
- * own wall-clock `now`, so a fixture anchored to a fixed past date would
- * drift in and out of "today" as the calendar advances. Same convention as
- * historyPage.test.ts's own `minutesAgo`.
- */
-const NOW_MS = Date.now();
-
 function minutesAgo(minutes: number): string {
-  return new Date(NOW_MS - minutes * 60_000).toISOString();
+  return new Date(Date.now() - minutes * 60_000).toISOString();
 }
 
 /** A local calendar day before today, immune to the hour the suite runs at. */
 function daysAgoLocal(days: number): string {
-  const today = new Date(NOW_MS);
+  const today = new Date();
   return new Date(today.getFullYear(), today.getMonth(), today.getDate() - days, 12, 0, 0).toISOString();
 }
 
