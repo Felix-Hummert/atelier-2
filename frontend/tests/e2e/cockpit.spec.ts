@@ -437,6 +437,7 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
           depends_on: []
         }
       ],
+      loops: [],
       name,
       description: null
     }
@@ -845,6 +846,7 @@ test("proves(new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-
             instruction_start: "Build the candidate.",
             depends_on: []
           }],
+          loops: [],
           name: workflowName,
           description: "Choose an agent without losing the draft."
         }
@@ -974,6 +976,7 @@ test("proves(new-run-confirms-workflow-detail-before-committing-selection-and-dr
         instruction_start: null,
         depends_on: []
       }],
+      loops: [],
       name,
       description
     }

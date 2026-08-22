@@ -61,6 +61,7 @@ function v3Revision(name = "Two agents in a line", hash = revisionHash): Workflo
       node_previews: [
         { id: "final", kind: "agent", role: "builder", instruction_start: "Do the one thing.", depends_on: [] }
       ],
+      loops: [],
       name,
       description: null
     }
