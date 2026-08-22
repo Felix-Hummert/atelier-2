@@ -185,6 +185,10 @@ if [[ "$scenario" == "crash-after-publish" ]]; then
       "$runner_status" "$crash_after_publish_exit_code" "$root" >&2
     exit 1
   fi
+  # The literal "terminal-record" must match `_RECORD_NAME` in
+  # `src/atelier2/adapters/runner_journal.py` -- the one filename fact this
+  # shell probe and that Python module can only share by declared, matching
+  # literal, the same way `crash_after_publish_exit_code` above does.
   journal_record=$(docker run --rm --user root --mount "type=volume,src=$journal_volume,dst=/journal,volume-nocopy" --entrypoint sh atelier2-301a-runner -c '[ -f /journal/terminal-record ] && echo present || echo absent')
   if [[ "$journal_record" != "present" ]]; then
     printf 'journal did not retain a terminal record across the crash: root=%s\n' "$root" >&2

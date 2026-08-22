@@ -397,10 +397,7 @@ def run_candidate_session(
 
     `journal_directory` must survive a caller's own crash and restart for
     `retained_terminal_record` to ever find anything -- a tmpfs mount, which
-    a Docker restart wipes, cannot carry that guarantee (`#15-B5`). Named,
-    deferred gap: `RunnerJournal` itself does not yet bound how many bytes it
-    will write there; a tmpfs mount used to enforce that implicitly, and a
-    durable volume does not.
+    a Docker restart wipes, cannot carry that guarantee (`#15-B5`).
     """
     fence = _CoreFrameFence(channel, binding, invocation)
     journal = RunnerJournal(journal_directory)
@@ -510,7 +507,7 @@ def run_candidate_session(
             if child.poll() is None:
                 _reap_child(child, manifest)
             raise
-        journal.publish(envelope)
+        journal.publish(envelope, manifest.journal_bytes)
         _after_terminal_evidence_published()
         if scenario is CandidateScenario.CRASH_AFTER_PUBLISH:
             # A declared witness scenario, not a test seam: this lifetime

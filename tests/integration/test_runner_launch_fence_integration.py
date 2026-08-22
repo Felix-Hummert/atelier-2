@@ -67,6 +67,7 @@ from atelier2.contracts.agent_attempts import (
 from atelier2.contracts.agents import AgentExecutionRequestHash, AgentExecutionResult
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.run_projections import PublicAgentAttemptState
+from atelier2.contracts.runner_manifests import CANDIDATE_JOURNAL_BYTES
 from atelier2.contracts.runner_sessions import RunnerSessionMessage
 from atelier2.ports.agent_attempts import RunnerTerminalEvidenceCommitted
 from atelier2.ports.run_queries import RunFound
@@ -277,7 +278,7 @@ def test_c2_counterpart_a_retained_journal_replaces_possibly_ran_with_real_evide
         RunnerProviderResult(AgentExecutionResult(b"b4-boundary-result")),
     )
     retained_journal = RunnerJournal(tmp_path / "journal-retained")
-    retained_journal.publish(envelope)
+    retained_journal.publish(envelope, CANDIDATE_JOURNAL_BYTES)
 
     assert retained_terminal_record(retained_journal, binding) == envelope
 

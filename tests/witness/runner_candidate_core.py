@@ -124,12 +124,23 @@ def _write_frame(connection: ssl.SSLSocket, frame: RunnerSessionFrame) -> None:
     connection.sendall(encode_runner_session_frame(frame))
 
 
-# One connection for a normal lifetime, one more for a resumed reconnect after
-# the declared `CRASH_AFTER_PUBLISH` scenario's real process death restarts
-# this exact Runner container (`#15-B5`). A third would mean the resumed
-# candidate itself failed to reach RELEASED, which stays a loud failure
-# rather than a silent extra retry.
-_MAXIMUM_RUNNER_CONNECTIONS = 2
+# Bounds every accept() so an unreachable or crashed-and-never-restarted
+# Runner fails this witness loudly instead of hanging Core -- and the
+# launcher's `docker wait` on it -- forever.
+_ACCEPT_TIMEOUT_SECONDS = 30.0
+
+
+def _maximum_runner_connections(scenario: CandidateScenario) -> int:
+    """One connection for a normal lifetime; only the declared
+    `CRASH_AFTER_PUBLISH` scenario's real process death ever legitimately
+    reconnects, restarting this exact Runner container (`#15-B5`). Any other
+    scenario reaching a second `accept()` means its one connection dropped
+    unexpectedly -- a loud failure from the bound below, not a silent extra
+    retry that could hang forever on a Runner that will never come back.
+    """
+    if scenario is CandidateScenario.CRASH_AFTER_PUBLISH:
+        return 2
+    return 1
 
 
 def _drive_until_released_or_dropped(
@@ -352,13 +363,18 @@ def main(arguments: list[str] | None = None) -> int:
         expected_eku=ExtendedKeyUsageOID.CLIENT_AUTH,
     )
     server = socket.create_server(("0.0.0.0", 8443), reuse_port=False)
+    server.settimeout(_ACCEPT_TIMEOUT_SECONDS)
     released = False
     session: CoreRunnerSession | None = None
     with server:
-        for _ in range(_MAXIMUM_RUNNER_CONNECTIONS):
-            with context.wrap_socket(
-                server.accept()[0], server_side=True
-            ) as connection:
+        for _ in range(_maximum_runner_connections(scenario)):
+            try:
+                raw_connection, _peer_address = server.accept()
+            except TimeoutError as error:
+                raise RuntimeError(
+                    "Core did not see the Runner connect within the accept bound"
+                ) from error
+            with context.wrap_socket(raw_connection, server_side=True) as connection:
                 presented = connection.getpeercert(binary_form=True)
                 if presented is None:
                     raise RuntimeError(

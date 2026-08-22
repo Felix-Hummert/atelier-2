@@ -260,10 +260,12 @@ def attest_runner_inspect(inspect_path: Path, manifest_path: Path, output: Path)
     expected_user = f"{manifest.effective_uid}:{manifest.effective_gid}"
     nnp = "no-new-privileges:true" in security
     identity_mount = _mount(document, "/run/atelier2-identity")
-    # The journal must outlive this exact container's own restart (`#15-B5`),
-    # which a tmpfs mount cannot -- it is attested as a durable named volume
-    # instead of a bounded tmpfs size, the same way identity's own volume
-    # mount is attested below.
+    # `docker inspect` reports "volume" for both a tmpfs-backed and a
+    # disk-backed named volume, so this attests only the mount's type and
+    # writability -- the same shape identity's own volume mount is attested
+    # below. It cannot itself prove the journal will survive this exact
+    # container's own restart (`#15-B5`); the `resume` witness leg proves
+    # that live, by actually restarting the container and resuming from it.
     journal_mount = _mount(document, "/journal")
     if (
         document.get("Image") != manifest.image_digest
