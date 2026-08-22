@@ -1,3 +1,5 @@
+import { writable, type Writable } from "svelte/store";
+
 import type { CockpitRoute } from "./route";
 
 /**
@@ -56,3 +58,16 @@ export function activeWorkshopDestination(
   }
   return null;
 }
+
+export type BoardBadgeCounts = { needsYou: number; running: number };
+
+/**
+ * The rail's Board badges, as the Board page's own reads last confirmed them.
+ *
+ * The rail is mounted for every page, but only the Board page reads runs. A
+ * page that is not Board still shows the badges from the Board's last
+ * confirmed read rather than nothing -- but never a number this shell cannot
+ * trace to that read. Before the Board has read once, this is `null` and the
+ * rail shows no badge, honestly, instead of a fabricated zero.
+ */
+export const boardBadgeCounts: Writable<BoardBadgeCounts | null> = writable(null);

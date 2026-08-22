@@ -101,12 +101,11 @@ async function routeProjectReads(page: Page, read: () => ProjectRunReply, loadin
 
 async function expectStudioCopyFits(page: Page, desktop: boolean): Promise<void> {
   const heading = page.getByRole("heading", { name: "[[[ Board ]]]" });
-  const board = page.locator(".studio-board");
-  const home = page.locator(".studio-home");
+  const board = page.locator(".board-page");
   expect(await heading.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
   expect(await board.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
   if (desktop) {
-    expect(await home.evaluate((element) => {
+    expect(await board.evaluate((element) => {
       const parent = element.parentElement!;
       const style = getComputedStyle(parent); return element.clientWidth === parent.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
     })).toBe(true);
@@ -156,7 +155,6 @@ test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio keep
     await expect(page.getByText("[[[ Atelier ]]]", { exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "[[[ Board ]]]" })).toBeVisible();
     await expect(page.getByRole("link", { name: "[[[ Start ]]]" })).toBeVisible();
-    await expect(page.getByRole("article", { name: THE_ONE_PROJECT })).toBeVisible();
     await expectStudioCopyFits(page, viewport.width === 1280);
     await page.screenshot({ path: `test-results/studio-common-${viewport.width}.png`, fullPage: true });
   }
@@ -171,7 +169,7 @@ test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio keep
     await expect(page.getByText("[[[ Atelier ]]]", { exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "[[[ Board ]]]" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "[[[ Nothing is running ]]]" })).toBeVisible();
-    await expect(page.getByText("[[[ A workflow becomes a run, and a run is what this workshop shows. ]]]", { exact: true })).toBeVisible();
+    await expect(page.getByText("[[[ A run appears here the moment a workflow starts. ]]]", { exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "[[[ Start a run ]]]" })).toBeVisible();
     await expectStudioCopyFits(page, viewport.width === 1280);
     await page.screenshot({ path: `test-results/studio-empty-${viewport.width}.png`, fullPage: true });

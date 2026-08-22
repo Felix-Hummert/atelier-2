@@ -6,6 +6,7 @@
   import {
     WORKSHOP_DESTINATIONS,
     activeWorkshopDestination,
+    boardBadgeCounts,
     destinationIsReachable
   } from "../lib/workshop";
 
@@ -45,6 +46,14 @@
         >
           <span class="nav-destination-mark" aria-hidden="true">{destinationMarks[destination.id]}</span>
           <span class="nav-destination-label">{wrapDisplayCopy(destination.label)}</span>
+          {#if destination.id === "board" && $boardBadgeCounts !== null}
+            {#if $boardBadgeCounts.running > 0}
+              <span class="rail-badge rail-badge-running" aria-label={`${$boardBadgeCounts.running} ${railCopy.runningBadgeSuffix}`}>{$boardBadgeCounts.running}</span>
+            {/if}
+            {#if $boardBadgeCounts.needsYou > 0}
+              <span class="rail-badge rail-badge-needs-you" aria-label={`${$boardBadgeCounts.needsYou} ${railCopy.needsYouBadgeSuffix}`}>{$boardBadgeCounts.needsYou}</span>
+            {/if}
+          {/if}
         </a>
       {:else}
         <span class="nav-destination unavailable" aria-disabled="true" title={wrapDisplayCopy(destination.vision)}>
@@ -75,3 +84,23 @@
     <slot />
   </main>
 </div>
+
+<style>
+  .rail-badge {
+    margin-left: 0;
+    border-radius: var(--r-pill);
+    padding: 0.02rem 0.4rem;
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    color: var(--accent-ink);
+  }
+
+  .rail-badge-running {
+    margin-left: auto;
+    background: var(--blue);
+  }
+
+  .rail-badge-needs-you {
+    background: var(--amber);
+  }
+</style>

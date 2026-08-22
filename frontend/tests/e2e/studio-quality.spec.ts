@@ -1,8 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 import { encodePublicRunReference, runPageSchema, type RunV1, type RunV3 } from "../../src/api/client";
-import { THE_ONE_PROJECT } from "../../src/lib/project";
-import { humanMove, standingWords } from "../../src/lib/runState";
+import { humanMove } from "../../src/lib/runState";
 import { connectionLabels } from "../../src/lib/streamStatus";
 import { studioPageCopy } from "../../src/lib/studioPageCopy";
 import {
@@ -117,28 +116,25 @@ async function routeStudioReads(page: Page, read: () => StudioReadReply): Promis
 
 async function expectStudioCopyFits(page: Page): Promise<void> {
   const heading = page.getByRole("heading", { name: wrapped(studioPageCopy.title) });
-  const board = page.locator(".studio-board");
+  const board = page.locator(".board-page");
   expect(await heading.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
   expect(await board.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
 }
 
 async function expectPopulatedCopy(page: Page): Promise<void> {
-  const inbox = page.getByRole("region", { name: wrapped(standingWords.waiting) });
-  await expect(inbox).toBeVisible();
-  await expect(inbox.getByText(`2 ${wrapped(studioPageCopy.needYou)}`)).toBeVisible();
-  await expect(inbox.getByText(wrapped(studioPageCopy.needsYou)).first()).toBeVisible();
-  await expect(inbox.getByText(wrapped(requiredMove("WAITING_INPUT")))).toBeVisible();
-  await expect(inbox.getByText(wrapped(requiredMove("WAITING_RECONCILIATION")))).toBeVisible();
+  const needsYou = page.getByRole("region", { name: `${wrapped(studioPageCopy.needsYou)} · 2` });
+  await expect(needsYou).toBeVisible();
+  await expect(needsYou.getByText(`${wrapped(requiredMove("WAITING_INPUT"))} →`)).toBeVisible();
+  await expect(needsYou.getByText(`${wrapped(requiredMove("WAITING_RECONCILIATION"))} →`)).toBeVisible();
 
-  await expect(page.getByRole("heading", { name: wrapped(studioPageCopy.projects) })).toBeVisible();
-  const card = page.getByRole("article", { name: THE_ONE_PROJECT });
-  await expect(card.getByText(`2 ${wrapped(studioPageCopy.runningCount)}`)).toBeVisible();
-  await expect(card.getByText(`2 ${wrapped(studioPageCopy.waitingCount)}`)).toBeVisible();
-  await expect(card.getByText(`1 ${wrapped(studioPageCopy.failedCount)}`)).toBeVisible();
-  await expect(card.getByText(`1 ${wrapped(studioPageCopy.landedCount)}`)).toBeVisible();
+  const running = page.getByRole("region", { name: `${wrapped(studioPageCopy.running)} · 3` });
+  await expect(running).toBeVisible();
+  await expect(running.getByText(`${wrapped(studioPageCopy.why)} →`)).toBeVisible();
 
-  const chat = page.getByRole("region", { name: wrapped(studioPageCopy.chat) });
-  await expect(chat).toContainText(wrapped(studioPageCopy.chatUnavailable));
+  const done = page.getByRole("region", { name: `${wrapped(studioPageCopy.done)} · 1` });
+  await expect(done).toBeVisible();
+  await expect(done.getByText(wrapped(studioPageCopy.completedSentence))).toBeVisible();
+
   await expect(page.getByRole("status").filter({ hasText: wrapped(connectionLabels.live) })).toBeVisible();
 }
 
@@ -195,8 +191,6 @@ test("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Studio 
     await page.evaluate(() => window.scrollTo(0, 0));
     await expect(page.getByRole("heading", { name: wrapped(studioPageCopy.title) })).toBeVisible();
     await expect(page.getByText(wrapped(studioPageCopy.runsUnavailable))).toBeVisible();
-    await expect(page.getByRole("region", { name: wrapped(studioPageCopy.chat) })).toBeVisible();
-    await expect(page.getByRole("region", { name: wrapped(studioPageCopy.chat) })).toContainText(wrapped(studioPageCopy.chatUnavailable));
     await expect(page.getByRole("status").filter({ hasText: wrapped(connectionLabels.live) })).toBeVisible();
     await expectStudioCopyFits(page);
     await page.screenshot({ path: `test-results/studio-unavailable-${viewport.width}.png`, fullPage: true });
@@ -214,17 +208,11 @@ test("proves(studio-elements-answer-named-questions): every interactive Studio c
     reply = "questions";
     await page.goto("/atelier");
     await expect(page.getByRole("heading", { name: studioPageCopy.title })).toBeVisible();
-    await expect(page.getByRole("article", { name: THE_ONE_PROJECT })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Done · 2" })).toBeVisible();
     await expect(page.getByRole("link", { name: studioPageCopy.start })).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: studioQuestions.lastLandingTime.hintLabel })
-    ).toBeVisible();
     await expectStudioControlsAnswerNamedQuestions(page, [
       studioQuestions.start.id,
-      studioQuestions.inboxRun.id,
-      studioQuestions.project.id,
-      studioQuestions.whyOneProject.id,
-      studioQuestions.lastLandingTime.id,
+      studioQuestions.openRun.id,
       studioQuestions.reloadStudioRuns.id
     ]);
   }

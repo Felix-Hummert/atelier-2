@@ -1,6 +1,6 @@
 /**
- * The named user question each interactive Studio-stage control answers.
- * This is the Studio map only — not a workshop-wide registry.
+ * The named user question each interactive Board control answers.
+ * This is the Board map only — not a workshop-wide registry.
  */
 export const studioQuestions = {
   start: {
@@ -11,23 +11,9 @@ export const studioQuestions = {
     id: "empty-start",
     question: "What is the one next action when nothing is running?"
   },
-  inboxRun: {
-    id: "inbox-run",
-    question: "What waits for me, and can I go there?"
-  },
-  project: {
-    id: "project",
-    question: "What is happening in this workshop, and can I open it?"
-  },
-  whyOneProject: {
-    id: "why-one-project",
-    question: "Why is there only one project?",
-    hintLabel: "Why one project"
-  },
-  lastLandingTime: {
-    id: "last-landing-time",
-    question: "When exactly did the last run land?",
-    hintLabel: "Exact time"
+  openRun: {
+    id: "open-run",
+    question: "Can I open a run to see it or answer what it needs?"
   },
   reloadStudioRuns: {
     id: "reload-studio-runs",
@@ -37,6 +23,17 @@ export const studioQuestions = {
   retryProjection: {
     id: "retry-projection",
     question: "Can I apply the attention event that failed?"
+  },
+  /**
+   * Not a Board control: `When.svelte` reuses this hint label wherever it
+   * renders a relative time, on the run page as much as here. It stays on
+   * this map because that is the one place a relative-time label is named,
+   * not because the run page answers to the Board's question set.
+   */
+  lastLandingTime: {
+    id: "last-landing-time",
+    question: "When exactly did this happen?",
+    hintLabel: "Exact time"
   }
 } as const;
 
@@ -44,7 +41,7 @@ export type StudioQuestion = (typeof studioQuestions)[keyof typeof studioQuestio
 export type StudioQuestionId = StudioQuestion["id"];
 
 export const studioQuestionAttribute = "data-studio-question";
-export const studioStageSelector = ".studio-home";
+export const studioStageSelector = ".board-page";
 export const studioInteractiveSelector = 'a[href], button, [role="button"], [role="link"]';
 
 export type StudioControlFacts = {
@@ -76,12 +73,8 @@ export function questionForStudioControlFacts(facts: StudioControlFacts): Studio
   if (facts.questionId !== null) {
     return questionById(facts.questionId);
   }
-  if (facts.tag === "a" && facts.href !== null) {
-    if (facts.href.startsWith("/atelier/runs/")) return studioQuestions.inboxRun;
-    if (facts.href === "/atelier/project") return studioQuestions.project;
-  }
-  if (facts.tag === "button" && facts.ariaLabel === studioQuestions.whyOneProject.hintLabel) {
-    return studioQuestions.whyOneProject;
+  if (facts.tag === "a" && facts.href !== null && facts.href.startsWith("/atelier/runs/")) {
+    return studioQuestions.openRun;
   }
   if (facts.tag === "button" && facts.ariaLabel === studioQuestions.lastLandingTime.hintLabel) {
     return studioQuestions.lastLandingTime;
