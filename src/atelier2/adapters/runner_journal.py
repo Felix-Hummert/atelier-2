@@ -28,13 +28,26 @@ class RunnerJournal:
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._require_only_record()
 
-    def publish(self, envelope: RunnerTerminalEvidenceEnvelope) -> None:
+    def publish(
+        self, envelope: RunnerTerminalEvidenceEnvelope, bound_bytes: int
+    ) -> None:
+        """Publish the one terminal envelope this invocation ever gets.
+
+        `bound_bytes` is the caller's manifest-declared journal capacity
+        (`RunnerManifestV1.journal_bytes`). A tmpfs mount used to enforce that
+        capacity by refusing an oversized write at the filesystem layer; on a
+        durable volume nothing does, so this is the one place that fact is
+        still kept true.
+        """
         if self._record.exists():
             existing = self.readback(envelope.binding)
             if existing == envelope:
                 return
             raise ValueError("runner journal already holds different terminal evidence")
-        self._publish(encode_runner_terminal_evidence_record(envelope))
+        encoded = encode_runner_terminal_evidence_record(envelope)
+        if len(encoded) > bound_bytes:
+            raise ValueError("runner-journal-record-exceeds-bound")
+        self._publish(encoded)
 
     def readback(
         self, binding: RunnerGenerationBinding

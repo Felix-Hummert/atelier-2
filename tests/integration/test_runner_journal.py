@@ -21,6 +21,10 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceHash,
 )
 from atelier2.contracts.agents import AgentExecutionRequestHash, AgentExecutionResult
+from atelier2.contracts.runner_manifests import CANDIDATE_JOURNAL_BYTES
+from atelier2.contracts.runner_terminal_evidence_codec import (
+    encode_runner_terminal_evidence_record,
+)
 
 
 def _envelope() -> RunnerTerminalEvidenceEnvelope:
@@ -43,7 +47,7 @@ def test_journal_retains_one_envelope_then_only_its_ack_tombstone(
     journal = RunnerJournal(tmp_path)
     envelope = _envelope()
 
-    journal.publish(envelope)
+    journal.publish(envelope, CANDIDATE_JOURNAL_BYTES)
     evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
     tombstone = journal.acknowledge(envelope, evidence_hash)
 
@@ -54,7 +58,7 @@ def test_journal_retains_one_envelope_then_only_its_ack_tombstone(
 def test_wrong_ack_preserves_the_exact_envelope(tmp_path: Path) -> None:
     journal = RunnerJournal(tmp_path)
     envelope = _envelope()
-    journal.publish(envelope)
+    journal.publish(envelope, CANDIDATE_JOURNAL_BYTES)
 
     with pytest.raises(ValueError, match="runner-ack-hash-mismatch"):
         journal.acknowledge(envelope, RunnerTerminalEvidenceHash("d" * 64))
@@ -65,7 +69,7 @@ def test_wrong_ack_preserves_the_exact_envelope(tmp_path: Path) -> None:
 def test_release_removes_only_the_acknowledged_tombstone(tmp_path: Path) -> None:
     journal = RunnerJournal(tmp_path)
     envelope = _envelope()
-    journal.publish(envelope)
+    journal.publish(envelope, CANDIDATE_JOURNAL_BYTES)
     evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
     journal.acknowledge(envelope, evidence_hash)
 
@@ -77,7 +81,7 @@ def test_release_removes_only_the_acknowledged_tombstone(tmp_path: Path) -> None
 def test_release_before_ack_preserves_the_envelope(tmp_path: Path) -> None:
     journal = RunnerJournal(tmp_path)
     envelope = _envelope()
-    journal.publish(envelope)
+    journal.publish(envelope, CANDIDATE_JOURNAL_BYTES)
 
     with pytest.raises(TypeError, match="runner-release-before-ack"):
         journal.release(
@@ -90,7 +94,7 @@ def test_release_before_ack_preserves_the_envelope(tmp_path: Path) -> None:
 def test_ack_and_release_payload_mismatch_keeps_the_envelope(tmp_path: Path) -> None:
     journal = RunnerJournal(tmp_path)
     envelope = _envelope()
-    journal.publish(envelope)
+    journal.publish(envelope, CANDIDATE_JOURNAL_BYTES)
     retained = RunnerTerminalEvidenceHash.for_envelope(envelope)
 
     with pytest.raises(RunnerSessionRefusal, match="runner-ack-hash-mismatch"):
@@ -105,3 +109,32 @@ def test_ack_and_release_payload_mismatch_keeps_the_envelope(tmp_path: Path) -> 
     record = journal.readback(envelope.binding)
     assert isinstance(record, RunnerTerminalEvidenceAckTombstone)
     assert record.evidence_hash == retained
+
+
+def test_publish_accepts_a_record_exactly_at_its_declared_bound(
+    tmp_path: Path,
+) -> None:
+    journal = RunnerJournal(tmp_path)
+    envelope = _envelope()
+    exact_bound = len(encode_runner_terminal_evidence_record(envelope))
+
+    journal.publish(envelope, exact_bound)
+
+    assert journal.readback(envelope.binding) == envelope
+
+
+def test_publish_refuses_a_record_that_exceeds_its_declared_bound(
+    tmp_path: Path,
+) -> None:
+    """A tmpfs mount used to refuse an oversized write at the filesystem
+    layer; the durable volume `#15-B5` moved the journal onto does not, so
+    `publish` is the one remaining place that bound stays enforced."""
+    journal = RunnerJournal(tmp_path)
+    envelope = _envelope()
+    encoded_length = len(encode_runner_terminal_evidence_record(envelope))
+
+    with pytest.raises(ValueError, match="runner-journal-record-exceeds-bound"):
+        journal.publish(envelope, encoded_length - 1)
+
+    with pytest.raises(ValueError, match="runner-terminal-record-missing"):
+        journal.readback(envelope.binding)
