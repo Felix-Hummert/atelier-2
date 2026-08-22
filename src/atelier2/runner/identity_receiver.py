@@ -12,7 +12,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
-from atelier2.adapters.runner_tls import validate_peer_certificate
+from atelier2.adapters.runner_tls import sole_peer_uri, validate_peer_certificate
 from atelier2.contracts.runner_manifests import (
     CANDIDATE_EFFECTIVE_GID,
     CANDIDATE_EFFECTIVE_UID,
@@ -74,16 +74,11 @@ def _decode(record: tuple[bytes, bytes, bytes]) -> tuple[x509.Certificate, bytes
 
 
 def _validate(leaf: x509.Certificate, authority: bytes) -> None:
-    uris = leaf.extensions.get_extension_for_class(
-        x509.SubjectAlternativeName
-    ).value.get_values_for_type(x509.UniformResourceIdentifier)
-    if len(uris) != 1:
-        raise ValueError("runner-binding-san-mismatch")
     validate_peer_certificate(
         leaf.public_bytes(serialization.Encoding.PEM),
         authority,
         expected_dns_name=None,
-        expected_uri=uris[0],
+        expected_uri=sole_peer_uri(leaf),
         expected_eku=ExtendedKeyUsageOID.CLIENT_AUTH,
     )
 

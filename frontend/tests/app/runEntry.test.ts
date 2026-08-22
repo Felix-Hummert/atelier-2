@@ -34,7 +34,7 @@ afterEach(() => {
 });
 
 describe("mobile run entry", () => {
-  it("lists a bounded durable run page and keeps confirmed rows visible when refresh fails", async () => {
+  it("lists a bounded durable run page and offers no manual refresh once confirmed", async () => {
     const listRuns = vi.fn().mockResolvedValue({ items: [run()], next_after: null });
     const cockpitApi = api({
       listRuns,
@@ -45,12 +45,7 @@ describe("mobile run entry", () => {
     expect((await screen.findByRole("link", { name: /run-draft/i })).getAttribute("href")).toBe(
       `/atelier/runs/${publicReference}`
     );
-    listRuns.mockRejectedValueOnce(new Error("offline"));
-    await fireEvent.click(screen.getByRole("button", { name: "Refresh project runs" }));
-
-    expect((await screen.findByRole("alert")).textContent).toContain("Project runs unavailable");
-    expect(screen.queryByText(/offline/i)).toBeNull();
-    expect(screen.getByRole("link", { name: /run-draft/i }).isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: /project runs/ })).toBeNull();
   });
 
   it("says the durable run list is still loading instead of showing an empty one", async () => {
@@ -517,9 +512,8 @@ describe("mobile run entry", () => {
       props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
     });
     await fireEvent.click(await screen.findByRole("radio", { name: new RegExp(revisionHash) }));
-    expect((await screen.findByRole("button", {
-      name: "Refresh workflow detail"
-    })).getAttribute("aria-disabled")).toBe("true");
+    expect((await screen.findByText("Looking…")).isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: /workflow detail/ })).toBeNull();
     await fireEvent.click(screen.getByLabelText("Publish YAML"));
     await fireEvent.input(screen.getByLabelText("Exact workflow YAML"), {
       target: { value: "format_version: 1\nstart_node_id: agent\n" }

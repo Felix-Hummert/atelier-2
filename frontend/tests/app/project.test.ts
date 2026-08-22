@@ -179,22 +179,12 @@ describe("the project answers what is happening here", () => {
     expect(window.location.pathname).toBe(`/atelier/runs/${publicReference}`);
   });
 
-  it("keeps confirmed runs visible when a refresh fails, without exposing transport text", async () => {
-    const listRuns = vi
-      .fn()
-      .mockResolvedValue({ items: [startedRun()], next_after: null });
-    openProject([], { listRuns });
+  it("offers no manual refresh once the Project read is confirmed", async () => {
+    openProject([startedRun()]);
+
     await screen.findByRole("region", { name: "Running" });
 
-    listRuns.mockRejectedValueOnce(new Error("private transport detail"));
-    await fireEvent.click(screen.getByRole("button", { name: "Refresh project runs" }));
-
-    expect((await screen.findByRole("alert")).textContent).toContain(
-      "Project runs unavailable"
-    );
-    expect(screen.queryByText(/private transport detail|Failed to fetch/)).toBeNull();
-    expect(screen.getByRole("region", { name: "Running" }).isConnected).toBe(true);
-    expect(screen.getAllByRole("button", { name: "Retry project runs" })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /project runs/ })).toBeNull();
   });
 
   it("says it is still looking instead of showing a project with nothing in it", async () => {
@@ -213,86 +203,64 @@ describe("the project answers what is happening here", () => {
     openProject([], { listRuns });
 
     await screen.findByText("Project runs unavailable");
-    const retry = screen.getByRole("button", { name: "Retry project runs" });
-    await fireEvent.click(retry);
+    // A fresh query per click, never a held reference: Retry mounts its own
+    // control each failed round (ReadState.svelte's pattern for #514), so the
+    // operator clicks whatever Retry is on screen right now.
+    await fireEvent.click(screen.getByRole("button", { name: "Retry project runs" }));
     await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(2));
     expect(screen.queryByText(/private detail/)).toBeNull();
     expect(screen.getAllByRole("button", { name: "Retry project runs" })).toHaveLength(1);
 
-    await fireEvent.click(retry);
+    await fireEvent.click(screen.getByRole("button", { name: "Retry project runs" }));
 
     expect((await screen.findByRole("region", { name: "Running" })).isConnected).toBe(true);
     expect(listRuns).toHaveBeenCalledTimes(3);
-    expect(screen.getByRole("button", { name: "Refresh project runs" }).isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: /project runs/ })).toBeNull();
     expect(window.location.pathname).toBe("/atelier/project");
   });
 
-  it("does not confirm a partial page as the new Project truth", async () => {
-    const initial = startedRun({ run_id: "confirmed" });
+  it("does not confirm a partial page as Project truth, and Retry replaces it with the complete read", async () => {
     const partial = startedRun({
       public_run_reference: "run1.cGFydGlhbA",
       run_id: "partial"
     });
+    const complete = startedRun({ run_id: "complete" });
     const listRuns = vi
       .fn()
-      .mockResolvedValueOnce({ items: [initial], next_after: null })
       .mockResolvedValueOnce({ items: [partial], next_after: "more" })
       .mockRejectedValueOnce(new Error("private later-page detail"))
-      .mockResolvedValueOnce({ items: [partial], next_after: null });
+      .mockResolvedValueOnce({ items: [complete], next_after: null });
     openProject([], { listRuns });
-    await screen.findByText("confirmed");
-
-    await fireEvent.click(screen.getByRole("button", { name: "Refresh project runs" }));
 
     await screen.findByText("Project runs incomplete");
-    expect(screen.getByText("confirmed").isConnected).toBe(true);
     expect(screen.queryByText("partial")).toBeNull();
     expect(screen.queryByText(/private later-page detail/)).toBeNull();
-    expect(listRuns).toHaveBeenNthCalledWith(3, "more");
+    expect(listRuns).toHaveBeenNthCalledWith(2, "more");
 
     await fireEvent.click(screen.getByRole("button", { name: "Retry project runs" }));
 
-    expect((await screen.findByText("partial")).isConnected).toBe(true);
-    expect(screen.queryByText("confirmed")).toBeNull();
+    expect((await screen.findByText("complete")).isConnected).toBe(true);
+    expect(screen.queryByText("Project runs incomplete")).toBeNull();
   });
 
-  it("keeps runs and workflow names atomic across a name failure and later Retry", async () => {
-    const nextHash = "d".repeat(64);
-    const confirmedRun = listedV3Run({ run_id: "confirmed run" });
-    const nextRun = listedV3Run({
-      run_id: "new run",
-      public_run_reference: "run1.bmV3",
-      workflow_revision_hash: nextHash,
-      started_at: "2026-08-18T16:00:00Z"
-    });
-    const listRuns = vi
-      .fn()
-      .mockResolvedValueOnce({ items: [confirmedRun], next_after: null })
-      .mockResolvedValue({ items: [confirmedRun, nextRun], next_after: null });
-    let nextNameReads = 0;
+  it("keeps runs and workflow names atomic: a name-lookup failure confirms nothing, and Retry confirms both together", async () => {
+    const run = listedV3Run({ run_id: "confirmed run" });
+    let nameReads = 0;
     const getWorkflowRevision = vi.fn(async (hash: string) => {
-      if (hash === nextHash) {
-        nextNameReads += 1;
-        if (nextNameReads === 1) throw new Error("private name detail");
-        return listedV3Revision("New workflow", hash);
-      }
+      nameReads += 1;
+      if (nameReads === 1) throw new Error("private name detail");
       return listedV3Revision("Confirmed workflow", hash);
     });
-    openProject([], { listRuns, getWorkflowRevision });
-    const confirmedRow = await screen.findByRole("link", { name: /confirmed run/ });
-    expect(confirmedRow.textContent).toContain("Confirmed workflow");
-
-    await fireEvent.click(screen.getByRole("button", { name: "Refresh project runs" }));
+    openProject([run], { getWorkflowRevision });
 
     await screen.findByText("Project runs unavailable");
-    expect(confirmedRow.textContent).toContain("Confirmed workflow");
-    expect(screen.queryByRole("link", { name: /new run/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /confirmed run/ })).toBeNull();
     expect(screen.queryByText(/private name detail/)).toBeNull();
 
     await fireEvent.click(screen.getByRole("button", { name: "Retry project runs" }));
 
-    const nextRow = await screen.findByRole("link", { name: /new run/ });
-    expect(nextRow.textContent).toContain("New workflow");
+    const confirmedRow = await screen.findByRole("link", { name: /confirmed run/ });
+    expect(confirmedRow.textContent).toContain("Confirmed workflow");
     expect(screen.queryByText("Project runs unavailable")).toBeNull();
   });
 });

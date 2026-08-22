@@ -9,12 +9,22 @@
   export let label: string;
   export let onRetry: () => void;
 
-  $: loading = read.request.state === "loading";
-  $: retrying = read.request.state === "failed";
-  $: verb = retrying ? "Retry" : "Refresh";
+  // The control mounts only in the failed state, so an operator's own retry
+  // that fails again re-mounts a new button and would otherwise drop
+  // keyboard focus into the void between the two failures. Refocusing it
+  // exactly then -- never on a first, unprompted failure -- keeps the
+  // keyboard journey continuous without stealing focus the operator never
+  // asked this control for.
+  let retriedByOperator = false;
 
   function activate(): void {
-    if (!loading) onRetry();
+    retriedByOperator = true;
+    onRetry();
+  }
+
+  function focusIfRetried(node: HTMLButtonElement): void {
+    if (retriedByOperator) node.focus();
+    retriedByOperator = false;
   }
 </script>
 
@@ -32,13 +42,15 @@
       </span>
     {/if}
   </div>
-  <button
-    class="quiet"
-    type="button"
-    aria-label={`${verb} ${label}`}
-    aria-disabled={loading}
-    onclick={activate}
-  >{verb}</button>
+  {#if read.request.state === "failed"}
+    <button
+      class="quiet"
+      type="button"
+      aria-label={`Retry ${label}`}
+      onclick={activate}
+      use:focusIfRetried
+    >Retry</button>
+  {/if}
 </div>
 
 <style>
@@ -69,12 +81,6 @@
 
   .read-mark {
     font-size: 1.25rem;
-  }
-
-  button[aria-disabled="true"] {
-    cursor: wait;
-    border-color: transparent;
-    color: var(--muted);
   }
 
   @media (max-width: 32rem) {
