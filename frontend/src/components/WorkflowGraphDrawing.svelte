@@ -150,17 +150,33 @@
     return unboxIncompleteLoops(provisional);
   }
 
-  /** Every "loop" segment whose slots hold fewer nodes than the loop declares, unboxed. */
+  /**
+   * Every "loop" segment whose slots hold fewer nodes than the loop declares, unboxed.
+   *
+   * Coverage is keyed by loop id in a `Map`, the way every other id lookup in
+   * this file already is -- never a plain object, whose key is an authored
+   * string an author is free to write as `__proto__` and reach the prototype
+   * accessor instead of a data slot.
+   */
   function unboxIncompleteLoops(segments: readonly LayerSegment[]): LayerSegment[] {
-    const coveredNodeCounts: Record<string, number> = {};
-    for (const segment of segments) {
-      if (segment.kind !== "loop") continue;
-      const nodeCount = segment.slots.reduce((total, slot) => total + slot.nodes.length, 0);
-      coveredNodeCounts[segment.loop.id] = (coveredNodeCounts[segment.loop.id] ?? 0) + nodeCount;
-    }
+    const loopSegments = segments.filter(
+      (segment): segment is Extract<LayerSegment, { kind: "loop" }> => segment.kind === "loop"
+    );
+    const coveredNodeCounts = new Map(
+      [...new Set(loopSegments.map((segment) => segment.loop.id))].map((loopId) => [
+        loopId,
+        loopSegments
+          .filter((segment) => segment.loop.id === loopId)
+          .reduce(
+            (total, segment) =>
+              total + segment.slots.reduce((sum, slot) => sum + slot.nodes.length, 0),
+            0
+          )
+      ])
+    );
     return segments.flatMap((segment) => {
       if (segment.kind !== "loop") return [segment];
-      if (coveredNodeCounts[segment.loop.id] === segment.loop.member_node_ids.length) {
+      if (coveredNodeCounts.get(segment.loop.id) === segment.loop.member_node_ids.length) {
         return [segment];
       }
       return segment.slots.map(

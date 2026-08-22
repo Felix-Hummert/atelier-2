@@ -122,6 +122,19 @@ function v3RevisionWithLoop() {
   };
 }
 
+/** The same two-node V3 revision, with no loop declared over its body. */
+function v3RevisionWithoutLoop() {
+  const withLoop = v3RevisionWithLoop();
+  return {
+    ...withLoop,
+    graph: {
+      ...withLoop.graph,
+      loops: [],
+      name: "Implement, then review, with no declared loop"
+    }
+  };
+}
+
 function event(event: string, fields: Record<string, unknown> = {}) {
   return {
     cursor: `event1.cnVuLTE.${fields.sequence ?? 1}`,
@@ -183,10 +196,10 @@ describe("closed API decoders", () => {
   });
 
   it("decodes a graph that declares no loop as an empty loop list", () => {
-    const decoded = decodeWorkflowRevisionDetail(workflowRevision());
+    const decoded = decodeWorkflowRevisionDetail(v3RevisionWithoutLoop());
 
-    expect(executableGraph(decoded.graph)).toBeTruthy();
-    expect(decoded.graph.workflow_format_version === 1).toBe(true);
+    if (decoded.graph.workflow_format_version !== 3) throw new Error("the V3 fixture changed");
+    expect(decoded.graph.loops).toEqual([]);
   });
 
   it("refuses a loop verdict outside the closed vocabulary", () => {
