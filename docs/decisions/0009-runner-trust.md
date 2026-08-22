@@ -1,6 +1,6 @@
 # ADR 0009: One trust boundary separates the coordinating service from every worker
 
-- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-23; disposable #301-A candidate 2026-08-22 — no live Runner availability
+- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-22, 2026-08-23; disposable #301-A candidate 2026-08-22 — no live Runner availability
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
 - Decision authority: [Issue #21](https://github.com/FlexOr2/atelier-2/issues/21),
@@ -171,12 +171,15 @@ traffic across Attempts; the cross-Attempt unreachability proof stays a
 required witness case unchanged. A forward proxy was considered and rejected:
 it would mutate the measured Claude environment vector, which carries no
 `HTTPS_PROXY` entry, and would reopen an already-measured conformance surface
-rather than reuse it. Traffic outside HTTPS/DNS, and any inbound attempt, is
-refused at the network boundary as a loud, immediate connection failure the
+rather than reuse it. Traffic outside HTTPS/DNS, and any inbound attempt, must
+be refused at the network boundary as a loud, immediate connection failure the
 provider CLI's own error handling surfaces — never a silent stall the operator
-has to diagnose by timeout.
+has to diagnose by timeout; B-2's required proof includes demonstrating this
+failure shape for whatever concrete mechanism it selects, exactly as the
+disposable-witness paragraph above already withholds a provider-egress proof
+until then.
 
-**2026-08-23 amendment (Operator-Ruling, #301-Journal): read-only credential
+**2026-08-22 amendment (Operator-Ruling, #301-Journal): read-only credential
 ingress.** The host launcher's per-invocation-identity-only mount rule above
 gains one exact second permitted surface: each provider's credential
 directory may be bind-mounted into its Runner container **read-only**. This is
