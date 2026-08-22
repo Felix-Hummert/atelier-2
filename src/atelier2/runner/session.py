@@ -67,17 +67,27 @@ from atelier2.contracts.runner_terminal_evidence_codec import (
 
 _CONTROL_POLL_SECONDS = 0.05
 
+# Distinct from every reserved shell/signal exit code (0, 1, 2, 126-165) so
+# the disposable witness launcher can tell this declared crash apart from an
+# unrelated failure when it asserts on the exited container's reported exit
+# status. Never a promise the wire protocol makes to Core -- Core only ever
+# observes the dropped connection.
+_CRASH_AFTER_PUBLISH_EXIT_CODE = 92
+
 
 class CandidateScenario(StrEnum):
     """The session ending the witness Core declares in the public bootstrap.
 
-    The A candidate exists to prove two endings — a bounded child result and a
-    cancel that reaps the child — so the child it launches is a declared,
-    closed candidate fact rather than an implicit test key.
+    The A candidate exists to prove three endings — a bounded child result, a
+    cancel that reaps the child, and a real crash the Docker witness restarts
+    and resumes from (`CRASH_AFTER_PUBLISH`) — so the child it launches, and
+    the process death it may itself trigger, are declared, closed candidate
+    facts rather than an implicit test key.
     """
 
     SUCCESS = "success"
     CANCEL = "cancel"
+    CRASH_AFTER_PUBLISH = "crash-after-publish"
 
 
 class RunnerFrameChannel(Protocol):
@@ -341,8 +351,10 @@ def _after_terminal_evidence_published() -> None:
 
     A resume test replaces this with `os._exit` to model a candidate dying
     right after journaling its terminal fact but before telling Core
-    (`TERMINAL_AVAILABLE`) -- crash cut C3. This is never the shared
-    Docker-witness `CandidateScenario` surface B5 owns.
+    (`TERMINAL_AVAILABLE`) -- crash cut C3. The Docker-witness surface for
+    that same cut is `CandidateScenario.CRASH_AFTER_PUBLISH` below, which
+    exits for real from declared scenario data rather than a monkeypatched
+    seam; this hook stays a no-op for that scenario too.
     """
 
 
@@ -382,6 +394,10 @@ def run_candidate_session(
     until then, only a caller that can guarantee this exact container's
     previous lifetime never reached `start_runner_child` may safely resume it
     this way.
+
+    `journal_directory` must survive a caller's own crash and restart for
+    `retained_terminal_record` to ever find anything -- a tmpfs mount, which
+    a Docker restart wipes, cannot carry that guarantee (`#15-B5`).
     """
     fence = _CoreFrameFence(channel, binding, invocation)
     journal = RunnerJournal(journal_directory)
@@ -491,8 +507,15 @@ def run_candidate_session(
             if child.poll() is None:
                 _reap_child(child, manifest)
             raise
-        journal.publish(envelope)
+        journal.publish(envelope, manifest.journal_bytes)
         _after_terminal_evidence_published()
+        if scenario is CandidateScenario.CRASH_AFTER_PUBLISH:
+            # A declared witness scenario, not a test seam: this lifetime
+            # dies for real right after journaling its terminal fact but
+            # before telling Core (crash cut C3), so the Docker witness can
+            # restart this exact container and prove resume delivers the
+            # retained evidence through RELEASED (`#15-B5`).
+            os._exit(_CRASH_AFTER_PUBLISH_EXIT_CODE)
         terminal_record_source = envelope
         evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
     sequence += 1

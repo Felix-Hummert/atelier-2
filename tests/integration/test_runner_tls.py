@@ -23,7 +23,6 @@ from atelier2.adapters.runner_tls import (
 )
 from atelier2.contracts.runner_manifests import (
     CANDIDATE_CPU_PERIOD,
-    CANDIDATE_JOURNAL_BYTES,
     CANDIDATE_WORKSPACE_BYTES,
     candidate_runner_manifest,
     encode_runner_manifest,
@@ -286,6 +285,14 @@ def _issuer_module():
     return module
 
 
+_IDENTITY_MOUNT = {
+    "Destination": "/run/atelier2-identity",
+    "RW": False,
+    "Type": "volume",
+}
+_JOURNAL_MOUNT = {"Destination": "/journal", "RW": True, "Type": "volume"}
+
+
 def _inspect_document(manifest, security: list[str]) -> dict[str, object]:
     return {
         "Image": manifest.image_digest,
@@ -300,16 +307,9 @@ def _inspect_document(manifest, security: list[str]) -> dict[str, object]:
             "CpuPeriod": CANDIDATE_CPU_PERIOD,
             "Tmpfs": {
                 "/workspace": f"rw,noexec,nosuid,size={CANDIDATE_WORKSPACE_BYTES}",
-                "/journal": f"rw,noexec,nosuid,size={CANDIDATE_JOURNAL_BYTES}",
             },
         },
-        "Mounts": [
-            {
-                "Destination": "/run/atelier2-identity",
-                "RW": False,
-                "Type": "volume",
-            }
-        ],
+        "Mounts": [_IDENTITY_MOUNT, _JOURNAL_MOUNT],
     }
 
 
@@ -353,3 +353,45 @@ def test_attest_inspect_accepts_exact_no_new_privileges_true(tmp_path: Path) -> 
         _issuer_module().attest_runner_inspect(inspect_path, manifest_path, output) == 0
     )
     assert output.read_text(encoding="ascii").strip()
+
+
+@pytest.mark.parametrize(
+    "mounts",
+    (
+        pytest.param([_JOURNAL_MOUNT], id="identity-mount-missing"),
+        pytest.param(
+            [{**_IDENTITY_MOUNT, "RW": True}, _JOURNAL_MOUNT],
+            id="identity-mount-writable",
+        ),
+        pytest.param(
+            [{**_IDENTITY_MOUNT, "Type": "bind"}, _JOURNAL_MOUNT],
+            id="identity-mount-not-a-volume",
+        ),
+        pytest.param([_IDENTITY_MOUNT], id="journal-mount-missing"),
+        pytest.param(
+            [_IDENTITY_MOUNT, {**_JOURNAL_MOUNT, "RW": False}],
+            id="journal-mount-read-only",
+        ),
+        pytest.param(
+            [_IDENTITY_MOUNT, {**_JOURNAL_MOUNT, "Type": "tmpfs"}],
+            id="journal-mount-not-a-volume",
+        ),
+    ),
+)
+def test_attest_inspect_refuses_a_wrong_identity_or_journal_mount(
+    tmp_path: Path, mounts: list[dict[str, object]]
+) -> None:
+    """A tmpfs-backed `/journal` -- the shape `#15-B5` moved away from -- is
+    refused the same way a wrong identity mount always was."""
+    manifest = _candidate_manifest()
+    document = _inspect_document(manifest, ["no-new-privileges:true"])
+    document["Mounts"] = mounts
+    inspect_path = tmp_path / "inspect.json"
+    inspect_path.write_text(json.dumps(document), encoding="utf-8")
+    manifest_path = tmp_path / "manifest"
+    manifest_path.write_bytes(encode_runner_manifest(manifest))
+
+    with pytest.raises(ValueError, match="runner-attestation-mismatch"):
+        _issuer_module().attest_runner_inspect(
+            inspect_path, manifest_path, tmp_path / "out"
+        )

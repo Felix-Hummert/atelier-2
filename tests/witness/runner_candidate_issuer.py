@@ -38,7 +38,6 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.runner_manifests import (
     CANDIDATE_CPU_PERIOD,
-    CANDIDATE_JOURNAL_BYTES,
     CANDIDATE_WORKSPACE_BYTES,
     candidate_runner_manifest,
     decode_runner_manifest,
@@ -236,6 +235,17 @@ def _tmpfs_size(options: str) -> int:
     raise ValueError("runner-attestation-mismatch")
 
 
+def _mount(document, destination: str) -> dict[str, object] | None:
+    return next(
+        (
+            mount
+            for mount in document.get("Mounts") or ()
+            if mount.get("Destination") == destination
+        ),
+        None,
+    )
+
+
 def attest_runner_inspect(inspect_path: Path, manifest_path: Path, output: Path) -> int:
     document = json.loads(inspect_path.read_text(encoding="utf-8"))
     if isinstance(document, list):
@@ -249,14 +259,14 @@ def attest_runner_inspect(inspect_path: Path, manifest_path: Path, output: Path)
     user = config.get("User") or ""
     expected_user = f"{manifest.effective_uid}:{manifest.effective_gid}"
     nnp = "no-new-privileges:true" in security
-    identity_mount = next(
-        (
-            mount
-            for mount in document.get("Mounts") or ()
-            if mount.get("Destination") == "/run/atelier2-identity"
-        ),
-        None,
-    )
+    identity_mount = _mount(document, "/run/atelier2-identity")
+    # `docker inspect` reports "volume" for both a tmpfs-backed and a
+    # disk-backed named volume, so this attests only the mount's type and
+    # writability -- the same shape identity's own volume mount is attested
+    # below. It cannot itself prove the journal will survive this exact
+    # container's own restart (`#15-B5`); the `resume` witness leg proves
+    # that live, by actually restarting the container and resuming from it.
+    journal_mount = _mount(document, "/journal")
     if (
         document.get("Image") != manifest.image_digest
         or user != expected_user
@@ -268,10 +278,12 @@ def attest_runner_inspect(inspect_path: Path, manifest_path: Path, output: Path)
         or int(host.get("CpuQuota") or 0) != manifest.cpu_quota_microseconds
         or int(host.get("CpuPeriod") or 0) != CANDIDATE_CPU_PERIOD
         or _tmpfs_size(tmpfs.get("/workspace", "")) != CANDIDATE_WORKSPACE_BYTES
-        or _tmpfs_size(tmpfs.get("/journal", "")) != CANDIDATE_JOURNAL_BYTES
         or identity_mount is None
         or identity_mount.get("RW") is not False
         or identity_mount.get("Type") != "volume"
+        or journal_mount is None
+        or journal_mount.get("RW") is not True
+        or journal_mount.get("Type") != "volume"
     ):
         raise ValueError("runner-attestation-mismatch")
     output.write_text(runner_manifest_id(manifest).value + "\n", encoding="ascii")
