@@ -211,6 +211,6 @@
     font-size: 0.72rem;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--amber);
+    color: var(--warning);
   }
 </style>
