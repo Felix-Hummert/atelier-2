@@ -16,7 +16,7 @@ from atelier2.adapters.free_runner_executor import (
     FreeRunnerAuthorizationResolver,
     refuse_unbound_runner_a_request,
 )
-from atelier2.adapters.runner_journal import RunnerJournal
+from atelier2.adapters.runner_tls import runner_uri_for_invocation
 from atelier2.application.run_runner_session import (
     CoreRunnerSession,
     RunnerSessionRefusal,
@@ -35,8 +35,6 @@ from atelier2.contracts.agent_attempts import (
     RunnerGenerationId,
     RunnerInvocationId,
     RunnerManifestId,
-    RunnerProviderResult,
-    RunnerTerminalEvidenceEnvelope,
     RunnerTerminalEvidenceHash,
 )
 from atelier2.contracts.agents import (
@@ -45,7 +43,6 @@ from atelier2.contracts.agents import (
     AgentExecutionCapability,
     AgentExecutionRequestHash,
     AgentExecutionRequestV2,
-    AgentExecutionResult,
     AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
     AgentRole,
@@ -786,24 +783,64 @@ def test_runner_fence_refuses_a_core_sequence_gap() -> None:
             fence.read_frame()
 
 
-def test_invocation_for_session_mints_the_first_invocation_on_a_blank_journal(
+def _identity_leaf_for_uri(uri: str) -> bytes:
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "runner-candidate")])
+    now = datetime.now(UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(minutes=5))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.UniformResourceIdentifier(uri)]),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    return certificate.public_bytes(serialization.Encoding.PEM)
+
+
+def _published_identity_directory(
+    tmp_path: Path, invocation: RunnerInvocationId
+) -> Path:
+    """An identity volume an external issuer already finished publishing.
+
+    Only the two fields `_invocation_from_published_identity` reads --
+    `client.crt` and the `ready` marker -- exist; the private key and CA that
+    a real TLS handshake needs belong to `load_published_identity`'s own
+    tests, not this invocation-derivation one.
+    """
+    identity = tmp_path / "identity"
+    identity.mkdir()
+    (identity / "client.crt").write_bytes(
+        _identity_leaf_for_uri(runner_uri_for_invocation(_binding(), invocation))
+    )
+    (identity / "ready").write_bytes(b"")
+    return identity
+
+
+def test_invocation_for_session_mints_the_first_invocation_when_nothing_is_published(
     tmp_path: Path,
 ) -> None:
-    minted = _invocation_for_session(tmp_path, _binding())
+    unpublished = tmp_path / "identity"
+    unpublished.mkdir()
+
+    minted = _invocation_for_session(unpublished, _binding())
 
     assert minted.value
-    assert _invocation_for_session(tmp_path, _binding()).value != minted.value
+    assert _invocation_for_session(unpublished, _binding()).value != minted.value
 
 
-def test_invocation_for_session_reuses_a_retained_invocation(tmp_path: Path) -> None:
-    envelope = RunnerTerminalEvidenceEnvelope(
-        _binding(),
-        _INVOCATION,
-        RunnerProviderResult(AgentExecutionResult(b"resume-invocation-reuse")),
-    )
-    RunnerJournal(tmp_path).publish(envelope)
+def test_invocation_for_session_reuses_a_published_identitys_invocation(
+    tmp_path: Path,
+) -> None:
+    identity = _published_identity_directory(tmp_path, _INVOCATION)
 
-    assert _invocation_for_session(tmp_path, _binding()) == _INVOCATION
+    assert _invocation_for_session(identity, _binding()) == _INVOCATION
 
 
 def test_candidate_scenario_is_a_closed_declared_vocabulary() -> None:
