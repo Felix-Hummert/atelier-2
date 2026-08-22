@@ -10,6 +10,8 @@
 export const historyPageCopy = {
   eyebrow: "Atelier",
   title: "History",
+  looking: "Looking…",
+  retry: "Retry",
   listUnavailable: "History unavailable",
   listIncomplete: "History incomplete",
   emptyTitle: "No finished runs yet",

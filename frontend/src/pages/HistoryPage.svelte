@@ -2,7 +2,6 @@
   import { onMount } from "svelte";
 
   import type { AnyRun, CockpitApi } from "../api/client";
-  import ReadState from "../components/ReadState.svelte";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import {
     HISTORY_PERIOD_DAYS,
@@ -21,7 +20,6 @@
   import { runPath } from "../lib/route";
   import { workflowNamesOf } from "../lib/runList";
   import { readEveryRun } from "../lib/runPages";
-  import { standingMarks } from "../lib/runState";
   import { ageLabel } from "../lib/when";
 
   export let cockpitApi: CockpitApi;
@@ -95,7 +93,12 @@
     <span class="period-chip">{periodChipLabel(HISTORY_PERIOD_DAYS)}</span>
   </header>
 
-  <ReadState read={history} label="history" onRetry={() => { void load(); }} />
+  {#if history.confirmed === null && history.request.state === "loading"}
+    <p class="status" role="status">{wrapDisplayCopy(historyPageCopy.looking)}</p>
+  {:else if history.request.state === "failed"}
+    <p class="failure" role="alert">{history.request.failure.title}</p>
+    <button type="button" onclick={() => { void load(); }}>{wrapDisplayCopy(historyPageCopy.retry)}</button>
+  {/if}
 
   {#if history.confirmed !== null}
     {#if visibleRows.length === 0}
@@ -117,9 +120,6 @@
               href={runPath(row.run.public_run_reference)}
               onclick={open(row.run.public_run_reference)}
             >
-              <span class="row-mark" aria-hidden="true">
-                {row.result.kind === "failed" ? standingMarks.failed : standingMarks.done}
-              </span>
               <span class="row-name">{row.name}</span>
               <span class="row-result">
                 {#if row.result.kind === "failed"}
@@ -184,6 +184,16 @@
     font-size: var(--text-xs);
     color: var(--muted);
     background: var(--panel2);
+  }
+
+  .status {
+    margin: 0;
+    color: var(--muted);
+  }
+
+  .failure {
+    margin: 0;
+    color: var(--danger);
   }
 
   .history-empty {
@@ -257,18 +267,6 @@
     color: inherit;
     text-decoration: none;
     box-shadow: var(--shadow);
-  }
-
-  .row-mark {
-    flex: none;
-  }
-
-  .history-row-completed .row-mark {
-    color: var(--accent);
-  }
-
-  .history-row-failed .row-mark {
-    color: var(--danger);
   }
 
   .row-name {

@@ -105,7 +105,7 @@ describe("History shows only what has finished", () => {
     expect(screen.queryByText("No finished runs yet")).toBeNull();
   });
 
-  it("shows the silent 7 day period chip and no Start, Refresh or Queue affordance", async () => {
+  it("shows the silent 7 day period chip and no Start, permanent Refresh or Queue affordance", async () => {
     openHistory({ completed: [v3Run()] }, {
       getWorkflowRevision: vi.fn(async () => v3Revision())
     });
@@ -115,6 +115,26 @@ describe("History shows only what has finished", () => {
     expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Start a run" })).toBeNull();
     expect(screen.queryByRole("region", { name: "Queue" })).toBeNull();
+    // One freshness model: a loaded page carries no permanent Refresh control
+    // (mockup v5 §05 shows none) -- Retry appears only on a genuine read failure.
+    expect(screen.queryByRole("button", { name: /Refresh/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
+  it("offers Retry only after a genuine read failure, never permanently", async () => {
+    const listRuns = vi.fn().mockRejectedValue(new Error("private transport detail"));
+    openHistory({}, { listRuns });
+
+    expect((await screen.findByText("History unavailable")).isConnected).toBe(true);
+    expect(screen.queryByText(/private transport detail/)).toBeNull();
+    const retry = screen.getByRole("button", { name: "Retry" });
+
+    listRuns.mockResolvedValue({ items: [], next_after: null });
+    await fireEvent.click(retry);
+
+    expect((await screen.findByText("No finished runs yet")).isConnected).toBe(true);
+    expect(screen.queryByText("History unavailable")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
   it("names the resolved workflow, a plain Completed result and the real duration", async () => {
