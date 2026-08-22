@@ -12,10 +12,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from atelier2.adapters.free_runner_executor import (
-    FreeRunnerAuthorizationResolver,
-    refuse_unbound_runner_a_request,
-)
+from atelier2.adapters.free_runner_executor import refuse_unbound_runner_a_request
 from atelier2.adapters.runner_tls import runner_uri_for_invocation
 from atelier2.application.run_runner_session import (
     CoreRunnerSession,
@@ -75,6 +72,11 @@ from atelier2.runner.__main__ import (
     _invocation_for_session,
     _load_verified_client_identity,
 )
+from atelier2.runner.authorization import (
+    AuthReference,
+    free_runner_auth_reference,
+    resolve_free_runner_authorization,
+)
 from atelier2.runner.session import _CoreFrameFence
 
 
@@ -91,13 +93,12 @@ def test_free_runner_auth_reference_is_a_secret_free_function_of_the_bound_revis
     None
 ):
     profile = _profile()
-    resolver = FreeRunnerAuthorizationResolver()
-    reference = resolver.reference_for(profile)
+    reference = free_runner_auth_reference(profile)
 
-    authorization = resolver.resolve(profile, reference)
+    authorization = resolve_free_runner_authorization(profile, reference)
 
     assert authorization.__class__.__name__ == "FreeRunnerAuthorization"
-    assert reference.endswith(profile.revision_hash.value)
+    assert reference.value.endswith(profile.revision_hash.value)
 
 
 @pytest.mark.parametrize(
@@ -105,7 +106,7 @@ def test_free_runner_auth_reference_is_a_secret_free_function_of_the_bound_revis
 )
 def test_free_runner_auth_refuses_changed_or_unbound_references(reference: str) -> None:
     with pytest.raises(ValueError, match="auth-profile-unresolvable"):
-        FreeRunnerAuthorizationResolver().resolve(_profile(), reference)
+        resolve_free_runner_authorization(_profile(), AuthReference(reference))
 
 
 _INVOCATION = RunnerInvocationId("B" * 43)
@@ -182,9 +183,7 @@ def _candidate_manifest():
 
 def _session(core: _Core | None = None) -> CoreRunnerSession:
     request = _free_request()
-    reference = FreeRunnerAuthorizationResolver().reference_for(
-        request.resolved_binding.auth_profile
-    )
+    reference = free_runner_auth_reference(request.resolved_binding.auth_profile).value
     return CoreRunnerSession(
         _binding(),
         core if core is not None else _Core(),
@@ -197,9 +196,7 @@ def _session(core: _Core | None = None) -> CoreRunnerSession:
 
 def _ready_payload() -> tuple[bytes, ...]:
     request = _free_request()
-    reference = FreeRunnerAuthorizationResolver().reference_for(
-        request.resolved_binding.auth_profile
-    )
+    reference = free_runner_auth_reference(request.resolved_binding.auth_profile).value
     return encode_runner_ready_payload(_candidate_manifest(), reference)
 
 
@@ -701,9 +698,7 @@ def test_a_request_subset_refuses_a_different_hash_bound_executor() -> None:
 
 def test_prepare_payload_round_trips_the_bound_request() -> None:
     request = _free_request()
-    reference = FreeRunnerAuthorizationResolver().reference_for(
-        request.resolved_binding.auth_profile
-    )
+    reference = free_runner_auth_reference(request.resolved_binding.auth_profile).value
     payload = encode_runner_prepare_payload(request, reference)
 
     assert decode_runner_prepare_payload(payload, request.request_hash) == request

@@ -24,7 +24,10 @@ import pytest
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.runner_session_core import DbosRunnerSessionCore
 from atelier2.adapters.dbos.runtime import DbosRuntime
-from atelier2.adapters.free_runner_executor import FreeRunnerAuthorizationResolver
+from atelier2.adapters.free_runner_executor import (
+    FreeRunnerHoldJob,
+    encode_free_runner_job,
+)
 from atelier2.adapters.runner_journal import RunnerJournal
 from atelier2.application.run_runner_session import (
     CoreRunnerSession,
@@ -53,6 +56,7 @@ from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSession
 from atelier2.contracts.runner_terminal_evidence_codec import (
     encode_runner_terminal_evidence_record,
 )
+from atelier2.runner.authorization import free_runner_auth_reference
 from atelier2.runner.session import CandidateScenario
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.integration.test_runner_session_application import (
@@ -63,6 +67,7 @@ from tests.integration.test_runner_session_application import (
     _free_request as _application_free_request,
 )
 from tests.integration.test_runner_session_wire import (
+    _PRINT_JOB_BYTES,
     _STUBBED_PROCESS_LIMIT,
     _denied_identity_directory,
     _drive_core_session,
@@ -94,8 +99,8 @@ _PR_SET_NO_NEW_PRIVS = 38
 (
     fd, attempt_id, request_hash, generation_id, manifest_id, invocation_id,
     scenario_value, manifest_path, identity, journal_directory, process_limit,
-    crash_point,
-) = sys.argv[1:13]
+    crash_point, workspace_directory,
+) = sys.argv[1:14]
 
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
@@ -126,6 +131,7 @@ def _interpreter_reachable_allowlist():
 
 session_module.child_allowlist = _interpreter_reachable_allowlist
 session_module._pid_limit = lambda: int(process_limit)
+session_module._runner_workspace_directory = lambda: Path(workspace_directory)
 if crash_point == "after-publish":
     session_module._after_terminal_evidence_published = lambda: os._exit(9)
 elif crash_point == "after-ack-tombstone":
@@ -158,6 +164,7 @@ def _spawn_resumable_candidate(
     manifest_path: Path,
     identity: Path,
     journal_directory: Path,
+    workspace_directory: Path,
     crash_point: str = "",
 ) -> subprocess.Popen[bytes]:
     fd = candidate_side.fileno()
@@ -178,6 +185,7 @@ def _spawn_resumable_candidate(
             str(journal_directory),
             str(_STUBBED_PROCESS_LIMIT),
             crash_point,
+            str(workspace_directory),
         ),
         pass_fds=(fd,),
         close_fds=True,
@@ -200,19 +208,29 @@ class _ResumableFixture:
     manifest_path: Path
     identity: Path
     journal_directory: Path
+    workspace_directory: Path
 
 
-def _resumable_fixture(tmp_path: Path) -> _ResumableFixture:
+def _resumable_fixture(
+    tmp_path: Path, job_bytes: bytes = _PRINT_JOB_BYTES
+) -> _ResumableFixture:
     invocation = RunnerInvocationId("B" * 43)
     manifest = _host_manifest(**_RESUME_MANIFEST_TIMINGS)
     manifest_path = tmp_path / "manifest"
     manifest_path.write_bytes(encode_runner_manifest(manifest))
     identity = _denied_identity_directory(tmp_path)
     journal_directory = tmp_path / "journal"
-    request = _wire_free_request()
+    workspace_directory = tmp_path / "workspace"
+    workspace_directory.mkdir()
+    request = _wire_free_request(job_bytes)
     binding = _wire_binding(request.request_hash, runner_manifest_id(manifest))
     return _ResumableFixture(
-        binding, invocation, manifest_path, identity, journal_directory
+        binding,
+        invocation,
+        manifest_path,
+        identity,
+        journal_directory,
+        workspace_directory,
     )
 
 
@@ -220,12 +238,11 @@ def _fresh_core_session(
     binding: RunnerGenerationBinding,
     invocation: RunnerInvocationId,
     core: _FakeRunnerSessionCore,
+    job_bytes: bytes = _PRINT_JOB_BYTES,
 ) -> CoreRunnerSession:
-    request = _wire_free_request()
+    request = _wire_free_request(job_bytes)
     manifest = _host_manifest(**_RESUME_MANIFEST_TIMINGS)
-    reference = FreeRunnerAuthorizationResolver().reference_for(
-        request.resolved_binding.auth_profile
-    )
+    reference = free_runner_auth_reference(request.resolved_binding.auth_profile).value
     return CoreRunnerSession(
         binding,
         core,
@@ -246,9 +263,14 @@ def test_resume_delivers_retained_evidence_without_a_second_child(
     handshake using that fact instead of racing a second, minutes-long
     candidate child against it.
     """
-    fixture = _resumable_fixture(tmp_path)
+    hold_job_bytes = encode_free_runner_job(
+        FreeRunnerHoldJob(_RESUME_MANIFEST_TIMINGS["total_attempt_milliseconds"] / 1000)
+    )
+    fixture = _resumable_fixture(tmp_path, hold_job_bytes)
     first_core = _FakeRunnerSessionCore()
-    first_session = _fresh_core_session(fixture.binding, fixture.invocation, first_core)
+    first_session = _fresh_core_session(
+        fixture.binding, fixture.invocation, first_core, hold_job_bytes
+    )
     core_side, candidate_side = socket.socketpair()
     with core_side:
         candidate = _spawn_resumable_candidate(
@@ -259,6 +281,7 @@ def test_resume_delivers_retained_evidence_without_a_second_child(
             fixture.manifest_path,
             fixture.identity,
             fixture.journal_directory,
+            fixture.workspace_directory,
             crash_point="after-publish",
         )
         candidate_side.close()
@@ -275,7 +298,7 @@ def test_resume_delivers_retained_evidence_without_a_second_child(
 
     second_core = _FakeRunnerSessionCore()
     second_session = _fresh_core_session(
-        fixture.binding, fixture.invocation, second_core
+        fixture.binding, fixture.invocation, second_core, hold_job_bytes
     )
     core_side, candidate_side = socket.socketpair()
     with core_side:
@@ -287,6 +310,7 @@ def test_resume_delivers_retained_evidence_without_a_second_child(
             fixture.manifest_path,
             fixture.identity,
             fixture.journal_directory,
+            fixture.workspace_directory,
         )
         candidate_side.close()
         try:
@@ -329,6 +353,7 @@ def test_resume_completes_from_a_retained_ack_tombstone(tmp_path: Path) -> None:
             fixture.manifest_path,
             fixture.identity,
             fixture.journal_directory,
+            fixture.workspace_directory,
             crash_point="after-ack-tombstone",
         )
         candidate_side.close()
@@ -357,6 +382,7 @@ def test_resume_completes_from_a_retained_ack_tombstone(tmp_path: Path) -> None:
             fixture.manifest_path,
             fixture.identity,
             fixture.journal_directory,
+            fixture.workspace_directory,
         )
         candidate_side.close()
         try:
@@ -410,9 +436,9 @@ def _store_fixture(tmp_path: Path, run_name: str) -> _StoreFixture:
     )
     store.bind_runner_generation(execution, binding)
     free_request = _application_free_request()
-    reference = FreeRunnerAuthorizationResolver().reference_for(
+    reference = free_runner_auth_reference(
         free_request.resolved_binding.auth_profile
-    )
+    ).value
     return _StoreFixture(
         runtime,
         store,
