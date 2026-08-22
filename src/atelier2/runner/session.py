@@ -245,7 +245,7 @@ def _identity_mount_denied(identity: Path) -> bool:
     return False
 
 
-def _child_allowlist() -> tuple[Path, ...]:
+def child_allowlist() -> tuple[Path, ...]:
     paths = [Path("/usr"), Path("/lib"), Path("/proc"), Path("/dev")]
     for extra in (Path("/lib64"), Path("/workspace")):
         if extra.exists():
@@ -323,7 +323,7 @@ def run_candidate_session(
     if fence.read_frame().message is not RunnerSessionMessage.LAUNCH:
         raise RuntimeError("Core did not durably arm the candidate invocation")
     sequence += 1
-    child = start_runner_child(_child_command(scenario, manifest), _child_allowlist())
+    child = start_runner_child(_child_command(scenario, manifest), child_allowlist())
     try:
         _write_frame(
             channel,

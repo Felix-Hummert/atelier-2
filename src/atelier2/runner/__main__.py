@@ -32,7 +32,7 @@ from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.runner.identity_receiver import load_published_identity
 from atelier2.runner.session import (
     CandidateScenario,
-    _child_allowlist,
+    child_allowlist,
     run_candidate_session,
 )
 
@@ -195,7 +195,7 @@ def main(arguments: list[str] | None = None) -> int:
     if not parsed.landlock_probe:
         parser.error("the candidate Runner needs an explicit handoff mode")
     try:
-        install_landlock_guard(_child_allowlist())
+        install_landlock_guard(child_allowlist())
     except LandlockUnavailable as error:
         parser.error(f"Landlock is unavailable: {error}")
     return 0

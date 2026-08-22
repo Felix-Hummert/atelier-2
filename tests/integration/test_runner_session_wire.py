@@ -128,7 +128,7 @@ def _interpreter_reachable_allowlist():
     )
 
 
-session_module._child_allowlist = _interpreter_reachable_allowlist
+session_module.child_allowlist = _interpreter_reachable_allowlist
 run_candidate_session(
     socket.socket(fileno=int(fd)),
     RunnerGenerationBinding(
@@ -388,8 +388,14 @@ def test_runner_session_wire_completes_offer_to_released(
             journal_directory,
         )
         candidate_side.close()
-        _drive_core_session(core_side, core_session, scenario)
-        returncode = candidate.wait(timeout=10)
+        try:
+            _drive_core_session(core_side, core_session, scenario)
+            returncode = candidate.wait(timeout=10)
+        finally:
+            # A Core-side failure must not strand the candidate subprocess
+            # blocked on a read that will now never arrive.
+            candidate.kill()
+            candidate.wait(timeout=10)
 
     assert returncode == 0
     assert core.armed == 1
