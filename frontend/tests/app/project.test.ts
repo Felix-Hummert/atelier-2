@@ -12,6 +12,7 @@ import {
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
+import { studioQuestions } from "../../src/lib/studioQuestions";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import {
   completedRun,
@@ -331,7 +332,9 @@ describe("the project lists runs as the operator can scan them", () => {
 
     expect(stamp?.getAttribute("datetime")).toBe("2026-08-18T15:00:00Z");
     expect(stamp?.textContent).toContain("2026");
-    expect(screen.queryByRole("button", { name: "Exact time" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: studioQuestions.lastLandingTime.hintLabel })
+    ).toBeNull();
   });
 
   it("shows the project and the published workflow name on the row", async () => {
