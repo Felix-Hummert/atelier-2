@@ -1,6 +1,6 @@
 # ADR 0009: One trust boundary separates the coordinating service from every worker
 
-- Status: PROPOSED 2026-08-15; amended 2026-08-21 — decision only, nothing implemented
+- Status: PROPOSED 2026-08-15; amended 2026-08-21; disposable #301-A candidate 2026-08-22 — no live Runner availability
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
 - Decision authority: [Issue #21](https://github.com/FlexOr2/atelier-2/issues/21),
@@ -545,9 +545,19 @@ this record borrows that owner rather than opening a second vocabulary.
   `952eb84623cd20fcbb1dc555a255689f020d7644bd952f1872675c16ac3c73a9`
   and external cleanup proof SHA-256
   `7eaf668be6129fcf78fe46eb25d58e18e14a3b0df14cc0f83cb73edc842eef0f`.
-- The future #301-A implementation acceptance must prove wrong-CA and wrong-
-  server-identity refusal against its real per-Attempt boundary; the witness
-  above neither substitutes for that acceptance nor claims those cases executed.
+- A disposable #301-A candidate (`scripts/runner_candidate.sh`) on this host
+  proved one success Attempt `SUCCEEDED`/`ACKNOWLEDGED` with generation and
+  invocation bound, and one cancel Attempt `CANCELLED`/`ACKNOWLEDGED` with
+  `replacement=NONE` and `REAPED_AFTER_KILL`. Witness directories
+  `/var/tmp/atelier2-301a-runner-witness.6ZYyis` (success Core store SHA-256
+  `4519cfd6e06894266a189785dba5134534214d056fb9caf6b9cd4b19d3194035`) and
+  `/var/tmp/atelier2-301a-runner-witness.zAP3aP` (cancel Core store SHA-256
+  `0100986aaafe4cbc581453fb10fee3feda344cf236ea39654d833f562120c155`). Exact
+  labelled Docker objects were empty after `RELEASED`. It does not prove live
+  A.1 availability, restart/reconnect, cancel races, replacement `ONE`, a
+  wrong-CA live refusal, or packaged cutover. Focused tests cover peer
+  EKU/SAN/CA refusal, Landlock identity denial, journal ACK/RELEASE order,
+  and the A request-subset/refusal vocabulary.
 - A runner identity is not satisfied by a reused name: an identifier that
   outlives the runner it named never binds a later attempt.
 - A CI assertion with the wrong issuer, repository/project, workflow/config,
