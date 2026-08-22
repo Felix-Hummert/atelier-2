@@ -1,3 +1,5 @@
+import { standingWords } from "./runState";
+
 export const studioPageCopy = {
   eyebrow: "Atelier",
   title: "Studio",
@@ -13,7 +15,7 @@ export const studioPageCopy = {
   runningCount: "running",
   waitingCount: "waiting for you",
   failedCount: "failed",
-  landedCount: "landed",
+  landedCount: standingWords.done.toLowerCase(),
   runsIncomplete: "Studio runs incomplete",
   runsUnavailable: "Studio runs unavailable"
 } as const;

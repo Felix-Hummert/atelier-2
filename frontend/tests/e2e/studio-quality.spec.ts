@@ -215,7 +215,9 @@ test("proves(studio-elements-answer-named-questions): every interactive Studio c
     await expect(page.getByRole("heading", { name: studioPageCopy.title })).toBeVisible();
     await expect(page.getByRole("article", { name: "This workshop" })).toBeVisible();
     await expect(page.getByRole("link", { name: studioPageCopy.start })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Exact time" })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: studioQuestions.lastLandingTime.hintLabel })
+    ).toBeVisible();
     await expectStudioControlsAnswerNamedQuestions(page, [
       studioQuestions.start.id,
       studioQuestions.inboxRun.id,
