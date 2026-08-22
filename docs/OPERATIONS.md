@@ -71,6 +71,18 @@ from a read-only path. Core listens as
 external CA hook is `tests/witness/runner_candidate_issuer.py`; it is never
 copied into an image.
 
+```bash
+bash scripts/runner_candidate.sh clean
+bash scripts/runner_candidate.sh images
+```
+
+`clean` removes only witness directories whose run reached `RELEASED`: the
+absence of that run's recorded labelled network is the release proof. A
+directory with no recorded network, or whose network still exists, is left
+untouched — failure-analysis residue is never removed by `clean`. `images`
+removes the two candidate images explicitly and is never run implicitly by
+`success` or `cancel`, so a normal run keeps reusing Docker's build cache.
+
 ## Stable local Serve installation
 
 From a clean committed checkout, install the one stable provider-free console:
