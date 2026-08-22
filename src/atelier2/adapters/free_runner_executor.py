@@ -6,7 +6,10 @@ import sys
 import time
 from dataclasses import dataclass
 
-from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
+from atelier2.contracts.agent_attempts import (
+    MAXIMUM_RUNNER_STANDARD_ERROR_BYTES,
+    AgentAttemptFailureCode,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentExecutionCapability,
@@ -144,6 +147,18 @@ _FREE_RUNNER_PROGRAM_SOURCE = (
 
 _UNUSABLE_FREE_RUNNER_ANSWER = AgentExecutionFailure(
     AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
+)
+
+# `prepare_process` below deliberately declares its stdout frame bound as
+# `MAXIMUM_AGENT_OUTPUT_BYTES_V2` rather than importing this bound directly,
+# so the runner session can reuse that one number as the shared read bound
+# for both this candidate's stdout and stderr (see the comment on
+# `standard_output_frame_bytes` there). If either bound's owner ever moves
+# it, this assertion breaks the import loudly instead of silently widening
+# or narrowing what stderr may carry.
+assert MAXIMUM_AGENT_OUTPUT_BYTES_V2 == MAXIMUM_RUNNER_STANDARD_ERROR_BYTES, (
+    "the fake-free candidate's declared output bound and the runner's "
+    "standard-error bound have drifted apart"
 )
 
 

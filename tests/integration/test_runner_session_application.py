@@ -12,7 +12,15 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from atelier2.adapters.free_runner_executor import refuse_unbound_runner_a_request
+from atelier2.adapters.free_runner_executor import (
+    FreeRunnerCandidateExecutor,
+    FreeRunnerHoldJob,
+    FreeRunnerJobRefused,
+    FreeRunnerPrintJob,
+    decode_free_runner_job,
+    encode_free_runner_job,
+    refuse_unbound_runner_a_request,
+)
 from atelier2.adapters.runner_tls import runner_uri_for_invocation
 from atelier2.application.run_runner_session import (
     CoreRunnerSession,
@@ -77,6 +85,7 @@ from atelier2.runner.authorization import (
     free_runner_auth_reference,
     resolve_free_runner_authorization,
 )
+from atelier2.runner.executors import RunnerExecutorUnavailable, select_runner_executor
 from atelier2.runner.session import _CoreFrameFence
 
 
@@ -107,6 +116,76 @@ def test_free_runner_auth_reference_is_a_secret_free_function_of_the_bound_revis
 def test_free_runner_auth_refuses_changed_or_unbound_references(reference: str) -> None:
     with pytest.raises(ValueError, match="auth-profile-unresolvable"):
         resolve_free_runner_authorization(_profile(), AuthReference(reference))
+
+
+@pytest.mark.parametrize(
+    "document", (FreeRunnerPrintJob("runner candidate"), FreeRunnerHoldJob(5.0))
+)
+def test_free_runner_job_round_trips_through_its_wire_form(
+    document: FreeRunnerPrintJob | FreeRunnerHoldJob,
+) -> None:
+    assert decode_free_runner_job(encode_free_runner_job(document)) == document
+
+
+@pytest.mark.parametrize(
+    "data",
+    (
+        b"not-json",
+        b"[]",
+        b'{"kind": "surprise"}',
+        b'{"kind": "print"}',
+        b'{"kind": "print", "text": 1}',
+        b'{"kind": "print", "text": ""}',
+        b'{"kind": "hold"}',
+        b'{"kind": "hold", "hold_seconds": "five"}',
+        b'{"kind": "hold", "hold_seconds": true}',
+        b'{"kind": "hold", "hold_seconds": -1}',
+    ),
+    ids=(
+        "not-json",
+        "not-an-object",
+        "unknown-kind",
+        "print-missing-text",
+        "print-text-not-a-string",
+        "print-text-empty",
+        "hold-missing-seconds",
+        "hold-seconds-not-a-number",
+        "hold-seconds-a-bool",
+        "hold-seconds-not-positive",
+    ),
+)
+def test_free_runner_job_refuses_every_document_but_its_two(data: bytes) -> None:
+    with pytest.raises(FreeRunnerJobRefused, match="free-runner-job-refused"):
+        decode_free_runner_job(data)
+
+
+def test_select_runner_executor_returns_the_fake_free_candidate_executor() -> None:
+    executor = select_runner_executor(_candidate_manifest())
+
+    assert isinstance(executor, FreeRunnerCandidateExecutor)
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "executor_revision"),
+    (("unknown-provider", "fake-free/v1"), ("fake-free", "fake-free/v2")),
+    ids=("unknown-provider", "unknown-revision"),
+)
+def test_select_runner_executor_refuses_an_unknown_provider_and_revision_combination(
+    provider_id: str, executor_revision: str
+) -> None:
+    manifest = candidate_runner_manifest(
+        source_commit="a" * 40,
+        image_digest="sha256:" + "b" * 64,
+        required_landlock_abi=1,
+        executor_revision=executor_revision,
+        executor_operational_identity="free-runner-candidate",
+        provider_id=provider_id,
+        auth_mode="api_key",
+        requested_capability="headless",
+    )
+
+    with pytest.raises(RunnerExecutorUnavailable, match="runner-executor-unavailable"):
+        select_runner_executor(manifest)
 
 
 _INVOCATION = RunnerInvocationId("B" * 43)
