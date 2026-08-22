@@ -24,6 +24,7 @@ export type CockpitRoute =
   | { page: "new" }
   | { page: "workflows" }
   | { page: "workflow"; name: string }
+  | { page: "history" }
   | { page: "run"; publicReference: string }
   | { page: "not-found" };
 
@@ -43,6 +44,9 @@ export function cockpitRoute(pathname: string): CockpitRoute {
   }
   if (pathname === "/atelier/workflows" || pathname === "/atelier/workflows/") {
     return { page: "workflows" };
+  }
+  if (pathname === "/atelier/history" || pathname === "/atelier/history/") {
+    return { page: "history" };
   }
   const workflowMatch = /^\/atelier\/workflows\/([^/]+)$/.exec(pathname);
   if (workflowMatch?.[1] !== undefined) {

@@ -1,16 +1,19 @@
 /**
- * Named axe-core exceptions for the four core surfaces.
+ * Named axe-core exceptions for the core surfaces.
  *
  * A violation that is not in this list fails CI. A row without an owning
  * GitHub issue is not a baseline entry — it is a swallowed finding.
  *
- * The checked-in list is empty: the Chromium scan of Studio, Project,
- * New Run, and the seeded Run page under wcag2a / wcag2aa / wcag22aa
- * (66 axe rules) reported no violations. A later finding is a new row
- * with an issue URL, or it is red.
+ * Workflows and History join the Chromium scan (Studio, Project, New Run,
+ * the seeded Run page) together under wcag2a / wcag2aa / wcag22aa (66 axe
+ * rules) in #526: the Workflows catalog (#527) shipped without ever being
+ * added here, and this closes that gap rather than carrying it forward a
+ * third time. Widening the scan surfaced one pre-existing Workflows finding
+ * outside this change's fence (#534, `axeBaseline.json`); every other
+ * surface, including History, reported none.
  */
 
-export const CORE_SURFACES = ["studio", "project", "new-run", "run"] as const;
+export const CORE_SURFACES = ["studio", "project", "new-run", "run", "workflows", "history"] as const;
 
 export type CoreSurface = (typeof CORE_SURFACES)[number];
 

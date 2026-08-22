@@ -50,6 +50,20 @@ const surfaces: readonly { surface: CoreSurface; path: string; ready: (page: Pag
         await expect(page.getByRole("navigation", { name: "Where you are" })).toBeVisible();
         await expect(page.getByRole("heading", { name: "Unnamed workflow" })).toBeVisible();
       }
+    },
+    {
+      surface: "workflows",
+      path: "/atelier/workflows",
+      ready: async (page) => {
+        await expect(page.getByRole("heading", { name: "Workflows" })).toBeVisible();
+      }
+    },
+    {
+      surface: "history",
+      path: "/atelier/history",
+      ready: async (page) => {
+        await expect(page.getByRole("heading", { name: "History" })).toBeVisible();
+      }
     }
   ];
 

@@ -51,8 +51,8 @@ test("the target-UI shell names today's doors and does not fake the rest", async
   await expect(rail.getByText("(later)", { exact: true })).toHaveCount(2);
 
   await rail.getByRole("link", { name: "History" }).click();
-  await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
-  await expect(page).toHaveURL(/\/atelier\/project$/);
+  await expect(page.getByRole("heading", { name: "History" })).toBeVisible();
+  await expect(page).toHaveURL(/\/atelier\/history$/);
 
   await rail.getByRole("link", { name: "Workflows" }).click();
   await expect(page.getByRole("heading", { name: "Workflows" })).toBeVisible();
@@ -109,24 +109,20 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
     const observed: string[] = [];
     document.addEventListener("focusin", (event) => {
       if (event.target !== document.querySelector("main.workshop-stage")) return;
-      const marker = ["#project-title", "#new-title", "#board-title", ".trail-here"]
+      const marker = ["#new-title", "#board-title", ".trail-here"]
         .map((selector) => document.querySelector(selector))
         .find((candidate) => candidate !== null);
       if (marker instanceof HTMLElement) observed.push(marker.id || marker.className);
     });
     Object.assign(window, { observedMainMarkers: observed });
   });
-  const project = page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: "History" });
-  for (let tab = 0; tab < 6 && !(await project.evaluate((element) => element === document.activeElement)); tab += 1) {
-    await page.keyboard.press("Tab");
-  }
-  await expect(project).toBeFocused();
-  await page.keyboard.press("Enter");
   const stage = page.getByRole("main");
-  await expect(stage).toBeFocused();
-  await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
-
-  const startRun = page.getByRole("link", { name: "Start a run" });
+  // Starting a run is Board's own door (History carries none -- #526); the
+  // journey reaches it straight from Board's header rather than detouring
+  // through a page that no longer offers it. The harness seeds two waiting
+  // runs at boot, so Board is never in its empty state here.
+  const startRun = page.getByRole("link", { name: "Start", exact: true });
+  await expect(startRun).toBeVisible();
   for (let tab = 0; tab < 8 && !(await startRun.evaluate((element) => element === document.activeElement)); tab += 1) {
     await page.keyboard.press("Tab");
   }
@@ -255,7 +251,7 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
   await expect(stage).toBeFocused();
   await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { observedMainMarkers: string[] }).observedMainMarkers)).toEqual([
-    "project-title", "new-title", "trail-here", "board-title"
+    "new-title", "trail-here", "board-title"
   ]);
 });
 
@@ -1188,17 +1184,12 @@ test("proves(new-run-confirms-workflow-detail-before-committing-selection-and-dr
   expect(page.url()).toBe(newRunUrl);
 });
 
-test("walks the whole workshop: board into the project, project into the run, and the trail back up", async ({ page }) => {
+test("walks the whole workshop: board into the run, and the trail back up through the project", async ({ page }) => {
   await page.goto("/atelier");
   await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
-  await page
-    .getByRole("navigation", { name: "Workshop" })
-    .getByRole("link", { name: "History" })
-    .click();
-  await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
 
   await page
-    .getByRole("region", { name: "Waiting for you" })
+    .getByRole("region", { name: "Needs you" })
     .getByRole("link")
     .first()
     .click();
