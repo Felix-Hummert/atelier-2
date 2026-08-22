@@ -38,8 +38,14 @@
   export let mutationJournal: MutationJournal;
   export let projection: StreamProjection | null = null;
   export let onRunRead: (run: RunV3) => void = () => {};
-  /** Lets the page's breadcrumb share the same header truth (#506). */
-  export let onWorkflowName: (name: string | null) => void = () => {};
+  /**
+   * Lets the page's breadcrumb share the header's exact truth (#506).
+   *
+   * This carries the same three-state resolved string the `<h1>` shows --
+   * never a bare present-or-absent name, which cannot tell "still arriving"
+   * from "read and found none" and would call both "Unnamed".
+   */
+  export let onHeaderTitle: (title: string) => void = () => {};
   export let onRetryStream: () => void = () => {};
 
   $: liveWatch = runShowsLiveWork(run);
@@ -142,8 +148,6 @@
       }
     | { state: "failed"; message: string };
 
-  $: workflowName = graphRequest.state === "ready" ? graphRequest.name : null;
-  $: onWorkflowName(workflowName);
   /**
    * A V3 document always declares a name once read (the graph schema requires
    * one), so this view never has a permanently unnamed workflow to fall back
@@ -157,6 +161,7 @@
       : graphRequest.state === "loading"
         ? "Looking…"
         : "Workflow unavailable";
+  $: onHeaderTitle(headerTitle);
 
   let graphRequest: GraphRequest = { state: "loading" };
 

@@ -229,7 +229,7 @@ describe("read-only run cockpit", () => {
     expect(writeText).toHaveBeenLastCalledWith(digest);
   });
 
-  it("proves(a-run-header-names-the-workflow-not-the-id): the title is the workflow's honest state, with the run id anchored beside it", async () => {
+  it("names the header with the workflow's honest state, with the run id anchored beside it", async () => {
     const writeText = vi.fn(async () => undefined);
     Object.assign(globalThis.navigator, { clipboard: { writeText } });
     render(App, {

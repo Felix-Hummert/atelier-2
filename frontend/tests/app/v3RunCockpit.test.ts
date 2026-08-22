@@ -219,6 +219,10 @@ describe("a version 3 run in the cockpit", () => {
     await screen.findByRole("heading", { level: 1, name: "Looking…" });
     expect(screen.getByRole("status").textContent).toBe("Looking…");
     expect(screen.queryByRole("region", { name: "Workflow" })).toBeNull();
+    // The breadcrumb mirrors the same title truth as the h1 (#506): one
+    // owner, not a second guess that would call this "Unnamed" instead.
+    const trail = screen.getByRole("navigation", { name: "Where you are" });
+    expect(within(trail).getByText("Looking…").isConnected).toBe(true);
   });
 
   it("names a graph that could not be read instead of inventing a line from the rail", async () => {
@@ -243,6 +247,10 @@ describe("a version 3 run in the cockpit", () => {
     expect(
       screen.getByRole("heading", { level: 1, name: "Workflow unavailable" }).isConnected
     ).toBe(true);
+    // The breadcrumb mirrors the same title truth as the h1 (#506): one
+    // owner, not a second guess that would call this "Unnamed" instead.
+    const trail = screen.getByRole("navigation", { name: "Where you are" });
+    expect(within(trail).getByText("Workflow unavailable").isConnected).toBe(true);
   });
 });
 

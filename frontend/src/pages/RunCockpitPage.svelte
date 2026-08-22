@@ -840,10 +840,11 @@
       ? snapshot.confirmed.revision.graph.name
       : null;
   $: headerTitle = runHeaderTitle(workflowName);
-  let v3WorkflowName: string | null = null;
+  /** Mirrors V3RunView's own three-state title (#506): one owner, not a second guess. */
+  let v3HeaderTitle: string | null = null;
   $: trailHere =
     v3Run !== null
-      ? runHeaderTitle(v3WorkflowName)
+      ? v3HeaderTitle ?? "Run"
       : snapshot.confirmed === null
         ? "Run"
         : headerTitle;
@@ -865,8 +866,8 @@
       onRunRead={(read) => {
         v3Run = read;
       }}
-      onWorkflowName={(name) => {
-        v3WorkflowName = name;
+      onHeaderTitle={(title) => {
+        v3HeaderTitle = title;
       }}
       onRetryStream={retryStream}
     />
