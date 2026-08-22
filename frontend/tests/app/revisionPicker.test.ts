@@ -168,16 +168,18 @@ describe("the saved-workflow picker", () => {
     });
 
     await screen.findByText("Saved workflows unavailable");
-    const retry = screen.getByRole("button", { name: "Retry saved workflows" });
+    // A fresh query per click, never a held reference: Retry mounts its own
+    // control each failed round (ReadState.svelte's pattern for #514), so the
+    // operator clicks whatever Retry is on screen right now.
     expect(screen.queryByText(/private workflow detail|Failed to fetch/)).toBeNull();
     expect(screen.getAllByRole("button", { name: "Retry saved workflows" })).toHaveLength(1);
 
-    await fireEvent.click(retry);
+    await fireEvent.click(screen.getByRole("button", { name: "Retry saved workflows" }));
     await waitFor(() => expect(listWorkflowRevisions).toHaveBeenCalledTimes(2));
     expect(screen.getAllByRole("button", { name: "Retry saved workflows" })).toHaveLength(1);
     expect(screen.queryByText(/private workflow detail|Failed to fetch/)).toBeNull();
 
-    await fireEvent.click(retry);
+    await fireEvent.click(screen.getByRole("button", { name: "Retry saved workflows" }));
 
     expect((await screen.findByRole("radio", { name: /unnamed/i })).isConnected).toBe(true);
     expect(listWorkflowRevisions).toHaveBeenCalledTimes(3);
@@ -186,9 +188,7 @@ describe("the saved-workflow picker", () => {
     expect(cockpitApi.getWorkflowRevision).not.toHaveBeenCalled();
     expect(cockpitApi.publish).not.toHaveBeenCalled();
     expect(cockpitApi.start).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "Refresh saved workflows" }).isConnected).toBe(
-      true
-    );
+    expect(screen.queryByRole("button", { name: /saved workflows/ })).toBeNull();
     expect(window.location.pathname).toBe("/atelier/new");
   });
 
@@ -329,16 +329,17 @@ describe("the saved-workflow picker", () => {
     await fireEvent.click(screen.getByText("Details"));
     expect(await screen.findByText("Workflow detail unavailable")).toBeTruthy();
     expect(screen.queryByText(/private detail|Failed to fetch/)).toBeNull();
-    const retry = screen.getByRole("button", { name: "Retry workflow detail" });
     expect(screen.getAllByRole("button", { name: "Retry workflow detail" })).toHaveLength(1);
     expect(getWorkflowRevision).toHaveBeenCalledTimes(1);
 
-    await fireEvent.click(retry);
+    // A fresh query per click, never a held reference: Retry mounts its own
+    // control each failed round (ReadState.svelte's pattern for #514).
+    await fireEvent.click(screen.getByRole("button", { name: "Retry workflow detail" }));
     await waitFor(() => expect(getWorkflowRevision).toHaveBeenCalledTimes(2));
     expect(screen.getAllByRole("button", { name: "Retry workflow detail" })).toHaveLength(1);
     expect(screen.queryByText(/private detail|Failed to fetch/)).toBeNull();
 
-    await fireEvent.click(retry);
+    await fireEvent.click(screen.getByRole("button", { name: "Retry workflow detail" }));
     await waitFor(() => expect(screen.getByText("Details").closest("details")?.textContent).toContain("builder"));
     await fireEvent.click(screen.getByRole("button", { name: "Edit" }));
 
@@ -693,78 +694,41 @@ describe("the picker groups revisions that share a published name", () => {
     expect(vi.mocked(cockpitApi.getRevisionByName).mock.calls).toEqual([[lineageName]]);
   });
 
-  it("retains rows, head ordering and catalog forms until the whole refresh confirms", async () => {
-    const retainedName = "retained-line";
-    const newName = "new-line";
-    const confirmedHash = "1".repeat(64);
-    const refreshedHash = "2".repeat(64);
-    const newHash = "3".repeat(64);
-    const absentHeadHash = "4".repeat(64);
-    const confirmed = savedRevision(
-      confirmedHash,
-      retainedName,
-      "The confirmed catalog head."
-    );
-    const refreshed = savedRevision(
-      refreshedHash,
-      retainedName,
-      "The refreshed catalog head."
-    );
-    const added = savedRevision(newHash, newName, "A newly read catalog line.");
-    const listWorkflowRevisions = vi
-      .fn()
-      .mockResolvedValueOnce({ items: [confirmed], next_after_revision_hash: null })
-      .mockResolvedValue({
-        items: [confirmed, refreshed, added],
-        next_after_revision_hash: null
-      });
-    let newNameReads = 0;
+  it("confirms every row's catalog head only together -- one name's failed head read confirms none, and Retry confirms all", async () => {
+    const readyName = "ready-line";
+    const failingName = "failing-line";
+    const readyHash = "1".repeat(64);
+    const failingHash = "2".repeat(64);
+    const ready = savedRevision(readyHash, readyName, "A catalog head that always reads.");
+    const failing = savedRevision(failingHash, failingName, "A catalog head that fails once.");
+    const listWorkflowRevisions = vi.fn(async () => ({
+      items: [ready, failing],
+      next_after_revision_hash: null
+    }));
+    let failingNameReads = 0;
     const getRevisionByName = vi.fn(async (name: string) => {
-      if (name === retainedName) {
-        const hash = listWorkflowRevisions.mock.calls.length === 1
-          ? confirmedHash
-          : refreshedHash;
-        return catalogHead(name, hash, hash === confirmedHash ? 1 : 2);
-      }
-      newNameReads += 1;
-      if (newNameReads === 1) return catalogHead(name, absentHeadHash, 2);
-      return catalogHead(name, newHash, 1);
+      if (name === readyName) return catalogHead(name, readyHash, 1);
+      failingNameReads += 1;
+      if (failingNameReads === 1) throw new Error("private catalog head detail");
+      return catalogHead(name, failingHash, 1);
     });
     const cockpitApi = cockpitApiStub({ listWorkflowRevisions, getRevisionByName });
     render(App, {
       props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
     });
-    const retained = await screen.findByRole("article", { name: retainedName });
-    expect(retained.textContent).toContain("The confirmed catalog head.");
-    expect(retained.getAttribute("data-catalog-form")).toBe("ready");
-
-    await fireEvent.click(screen.getByRole("button", { name: "Refresh saved workflows" }));
 
     await screen.findByText("Saved workflows unavailable");
-    expect(screen.getByRole("article", { name: retainedName }).textContent).toContain(
-      "The confirmed catalog head."
-    );
-    expect(screen.queryByText("The refreshed catalog head.")).toBeNull();
-    expect(screen.queryByRole("article", { name: newName })).toBeNull();
+    expect(screen.queryByRole("article", { name: readyName })).toBeNull();
+    expect(screen.queryByText(/private catalog head detail/)).toBeNull();
     expect(screen.getAllByRole("button", { name: "Retry saved workflows" })).toHaveLength(1);
 
     await fireEvent.click(screen.getByRole("button", { name: "Retry saved workflows" }));
 
-    await waitFor(() => {
-      expect(screen.getByRole("article", { name: retainedName }).textContent).toContain(
-        "The refreshed catalog head."
-      );
-    });
-    expect(screen.getByRole("article", { name: newName }).getAttribute("data-catalog-form")).toBe(
-      "ready"
-    );
-    expect(vi.mocked(getRevisionByName).mock.calls.map(([name]) => name)).toEqual([
-      retainedName,
-      retainedName,
-      newName,
-      retainedName,
-      newName
-    ]);
+    const readyRow = await screen.findByRole("article", { name: readyName });
+    expect(readyRow.getAttribute("data-catalog-form")).toBe("ready");
+    expect(
+      screen.getByRole("article", { name: failingName }).getAttribute("data-catalog-form")
+    ).toBe("ready");
     expect(cockpitApi.listAgentConfigurationRevisions).toHaveBeenCalledTimes(1);
     expect(cockpitApi.getWorkflowRevision).not.toHaveBeenCalled();
     expect(cockpitApi.publish).not.toHaveBeenCalled();

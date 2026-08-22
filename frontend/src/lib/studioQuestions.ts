@@ -3,10 +3,6 @@
  * This is the Board map only — not a workshop-wide registry.
  */
 export const studioQuestions = {
-  start: {
-    id: "start",
-    question: "How do I start a run?"
-  },
   emptyStart: {
     id: "empty-start",
     question: "What is the one next action when nothing is running?"

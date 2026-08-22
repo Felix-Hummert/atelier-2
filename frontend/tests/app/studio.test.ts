@@ -43,6 +43,25 @@ afterEach(() => {
   cleanup();
 });
 
+/**
+ * Real, moving timestamps rather than a fixed calendar date: the Board's
+ * "Done today" group compares a row's real V3 end stamp against the page's
+ * own wall-clock `now`, so a fixture anchored to a fixed past date would
+ * drift in and out of "today" as the calendar advances. Same convention as
+ * historyPage.test.ts's own `minutesAgo`.
+ */
+const NOW_MS = Date.now();
+
+function minutesAgo(minutes: number): string {
+  return new Date(NOW_MS - minutes * 60_000).toISOString();
+}
+
+/** A local calendar day before today, immune to the hour the suite runs at. */
+function daysAgoLocal(days: number): string {
+  const today = new Date(NOW_MS);
+  return new Date(today.getFullYear(), today.getMonth(), today.getDate() - days, 12, 0, 0).toISOString();
+}
+
 function listRunsByState(runs: AnyRun[]) {
   return vi.fn(async (_after?: string, state?: string) => ({
     items: state === undefined ? runs : runs.filter((run) => run.state === state),
@@ -310,7 +329,7 @@ describe("Running holds what moves and what needs a look, never a landed result"
   });
 });
 
-describe("Done shows every landed run in plain language, newest first", () => {
+describe("Done today shows every run that landed today in plain language, newest first", () => {
   it("orders by the real V3 landing time, and keeps a run with no timestamp after the timestamped ones", async () => {
     const older = listedV3Run({
       run_id: "older",
@@ -318,7 +337,7 @@ describe("Done shows every landed run in plain language, newest first", () => {
       state: "COMPLETED",
       terminal_hash: revisionHash,
       node_rail: [{ node_id: "final", state: "succeeded", attempt: null }],
-      ended_at: "2026-08-18T10:00:00Z"
+      ended_at: minutesAgo(90)
     });
     const newer = listedV3Run({
       run_id: "newer",
@@ -326,12 +345,12 @@ describe("Done shows every landed run in plain language, newest first", () => {
       state: "COMPLETED",
       terminal_hash: revisionHash,
       node_rail: [{ node_id: "final", state: "succeeded", attempt: null }],
-      ended_at: "2026-08-18T12:00:00Z"
+      ended_at: minutesAgo(5)
     });
     const untimed = completedRun({ public_run_reference: "run1.dW50aW1lZA" });
     openStudio([older, newer, untimed]);
 
-    const done = await screen.findByRole("region", { name: "Done · 3" });
+    const done = await screen.findByRole("region", { name: "Done today · 3" });
     const names = within(done).getAllByRole("link").map((link) => link.textContent ?? "");
     expect(names[0]).toContain("newer");
     expect(names[1]).toContain("older");
@@ -341,8 +360,35 @@ describe("Done shows every landed run in plain language, newest first", () => {
   it("names a completed run plainly, with no fabricated result text", async () => {
     openStudio([completedRun()]);
 
-    const done = await screen.findByRole("region", { name: "Done · 1" });
+    const done = await screen.findByRole("region", { name: "Done today · 1" });
     expect(within(done).getByText("Completed").isConnected).toBe(true);
+  });
+
+  it("moves a run that landed on an earlier local day into History, while a run with no end timestamp stays visible", async () => {
+    const landedToday = listedV3Run({
+      run_id: "landed today",
+      public_run_reference: encodePublicRunReference("landed today"),
+      state: "COMPLETED",
+      terminal_hash: revisionHash,
+      node_rail: [{ node_id: "final", state: "succeeded", attempt: null }],
+      ended_at: minutesAgo(10)
+    });
+    const landedEarlier = listedV3Run({
+      run_id: "landed two days ago",
+      public_run_reference: encodePublicRunReference("landed two days ago"),
+      state: "COMPLETED",
+      terminal_hash: revisionHash,
+      node_rail: [{ node_id: "final", state: "succeeded", attempt: null }],
+      ended_at: daysAgoLocal(2)
+    });
+    const untimed = completedRun({ public_run_reference: "run1.dW50aW1lZA" });
+    openStudio([landedToday, landedEarlier, untimed]);
+
+    const done = await screen.findByRole("region", { name: "Done today · 2" });
+    expect(within(done).getByRole("link", { name: /landed today/ }).isConnected).toBe(true);
+    expect(within(done).getByRole("link", { name: /run/ }).isConnected).toBe(true);
+    expect(within(done).queryByRole("link", { name: /landed two days ago/ })).toBeNull();
+    expect(screen.queryByText(/landed two days ago/)).toBeNull();
   });
 });
 
@@ -414,11 +460,11 @@ describe("an empty board teaches the one next action", () => {
     expect(empty.isConnected).toBe(true);
     expect(screen.getByText("Live").isConnected).toBe(true);
     expect(screen.queryByText("Connecting")).toBeNull();
-    expect(screen.getAllByRole("link", { name: "Start a run" })).toHaveLength(1);
+    expect(screen.getAllByRole("link", { name: "Start your first workflow" })).toHaveLength(1);
 
-    await fireEvent.click(screen.getByRole("link", { name: "Start a run" }));
+    await fireEvent.click(screen.getByRole("link", { name: "Start your first workflow" }));
 
-    expect((await screen.findByRole("heading", { name: "Choose a workflow" })).isConnected).toBe(true);
+    expect((await screen.findByRole("heading", { name: "Workflows" })).isConnected).toBe(true);
   });
 
   it("tells the truth while it is still looking, and names the failed read without raw transport text", async () => {
@@ -458,19 +504,20 @@ describe("an empty board teaches the one next action", () => {
     openStudio([], { listRuns });
 
     await screen.findByText("Board runs unavailable");
-    const retry = screen.getByRole("button", { name: "Retry board runs" });
-    await fireEvent.click(retry);
+    // A fresh query per click, never a held reference: each failed round
+    // mounts its own Retry control (ReadState.svelte's pattern for #514),
+    // so the operator sees and clicks whatever Retry is on screen right now.
+    await fireEvent.click(screen.getByRole("button", { name: "Retry board runs" }));
     await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(10));
     await screen.findByRole("button", { name: "Retry board runs" });
     expect(screen.getAllByRole("button", { name: "Retry board runs" })).toHaveLength(1);
     expect(screen.queryByText(/socket detail/)).toBeNull();
 
-    await fireEvent.click(retry);
+    await fireEvent.click(screen.getByRole("button", { name: "Retry board runs" }));
 
     expect((await screen.findByRole("region", { name: "Running · 1" })).isConnected).toBe(true);
     expect(listRuns).toHaveBeenCalledTimes(15);
-    expect(screen.queryByRole("button", { name: "Retry board runs" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Refresh board runs" }).isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: /board runs/ })).toBeNull();
     expect(window.location.pathname).toBe("/atelier");
   });
 
@@ -491,26 +538,12 @@ describe("an empty board teaches the one next action", () => {
     expect(screen.queryByText(/later catalog page detail/)).toBeNull();
   });
 
-  it("keeps confirmed Board truth through a failed refresh and confirms newer truth after Retry", async () => {
-    let response: "started" | "failed" | "completed" = "started";
-    const listRuns = vi.fn(async (_after?: string, state?: string) => {
-      if (response === "failed") throw new Error("wire detail");
-      const run = response === "started" ? startedRun() : completedRun();
-      return { items: state === run.state ? [run] : [], next_after: null };
-    });
-    openStudio([], { listRuns });
+  it("offers no manual refresh once the Board read is confirmed -- only the live indicator names the read's freshness", async () => {
+    openStudio([startedRun()]);
+
     await screen.findByRole("region", { name: "Running · 1" });
 
-    response = "failed";
-    await fireEvent.click(screen.getByRole("button", { name: "Refresh board runs" }));
-
-    await screen.findByText("Board runs unavailable");
-    expect(screen.getByRole("region", { name: "Running · 1" }).isConnected).toBe(true);
-    response = "completed";
-    await fireEvent.click(screen.getByRole("button", { name: "Retry board runs" }));
-
-    await waitFor(() => expect(screen.getByRole("region", { name: "Done · 1" }).isConnected).toBe(true));
-    expect(screen.queryByRole("region", { name: /Running/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /board runs/ })).toBeNull();
   });
 
   it("does not confirm a partial initial five-list reading", async () => {
@@ -647,7 +680,7 @@ describe("the board holds GET /events", () => {
 
     releaseCompleted({ items: [newerCompleted], next_after: null });
     await waitFor(() => {
-      expect(screen.getByRole("region", { name: "Done · 1" }).isConnected).toBe(true);
+      expect(screen.getByRole("region", { name: "Done today · 1" }).isConnected).toBe(true);
     });
     expect(screen.queryByRole("region", { name: /Needs you/ })).toBeNull();
   });
@@ -759,25 +792,18 @@ describe("every Board control answers a named user question", () => {
         state: "COMPLETED",
         terminal_hash: revisionHash,
         node_rail: [{ node_id: "review", state: "succeeded", attempt: null }],
-        ended_at: "2026-08-18T12:00:00Z"
+        ended_at: minutesAgo(15)
       })
     ]);
-    await screen.findByRole("region", { name: "Done · 2" });
-    expectStudioControlsAnswerNamedQuestions([
-      studioQuestions.start.id,
-      studioQuestions.openRun.id,
-      studioQuestions.reloadStudioRuns.id
-    ]);
+    await screen.findByRole("region", { name: "Done today · 2" });
+    expectStudioControlsAnswerNamedQuestions([studioQuestions.openRun.id]);
 
     cleanup();
     const { feed } = openStudioHolding([]);
     await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
-    await screen.findByRole("link", { name: "Start a run" });
-    expectStudioControlsAnswerNamedQuestions([
-      studioQuestions.emptyStart.id,
-      studioQuestions.reloadStudioRuns.id
-    ]);
+    await screen.findByRole("link", { name: "Start your first workflow" });
+    expectStudioControlsAnswerNamedQuestions([studioQuestions.emptyStart.id]);
 
     cleanup();
     openStudio([], {
@@ -798,9 +824,6 @@ describe("every Board control answers a named user question", () => {
       )
     );
     expect((await screen.findByText("run missing")).isConnected).toBe(true);
-    expectStudioControlsAnswerNamedQuestions([
-      studioQuestions.retryProjection.id,
-      studioQuestions.reloadStudioRuns.id
-    ]);
+    expectStudioControlsAnswerNamedQuestions([studioQuestions.retryProjection.id]);
   });
 });
