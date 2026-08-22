@@ -1,6 +1,6 @@
 # ADR 0009: One trust boundary separates the coordinating service from every worker
 
-- Status: PROPOSED 2026-08-15; amended 2026-08-21; disposable #301-A candidate 2026-08-22 — no live Runner availability
+- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-22, 2026-08-23; disposable #301-A candidate 2026-08-22 — no live Runner availability
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
 - Decision authority: [Issue #21](https://github.com/FlexOr2/atelier-2/issues/21),
@@ -161,6 +161,40 @@ or running privileged systemd in a container is not an admissible placeholder.
 The first CI proof hosts one Atelier Runner job for one AgentAttempt; it does not
 compile the Atelier DAG into native CI jobs. A later Effect Worker remains a
 separately authorized job.
+
+**2026-08-23 amendment (Operator-Ruling, #301-Journal): controlled egress.**
+The per-Attempt private network gains bounded outbound Internet reach —
+outgoing HTTPS and DNS only — so a provider CLI reaches its API in the
+invocation form §7's observed-version-pin proof already measures. Inbound
+connections into a Runner container stay blocked, and so does Runner-to-Runner
+traffic across Attempts; the cross-Attempt unreachability proof stays a
+required witness case unchanged. A forward proxy was considered and rejected:
+it would mutate the measured Claude environment vector, which carries no
+`HTTPS_PROXY` entry, and would reopen an already-measured conformance surface
+rather than reuse it. Traffic outside HTTPS/DNS, and any inbound attempt, must
+be refused at the network boundary as a loud, immediate connection failure the
+provider CLI's own error handling surfaces — never a silent stall the operator
+has to diagnose by timeout; B-2's required proof includes demonstrating this
+failure shape for whatever concrete mechanism it selects, exactly as the
+disposable-witness paragraph above already withholds a provider-egress proof
+until then.
+
+**2026-08-22 amendment (Operator-Ruling, #301-Journal): read-only credential
+ingress.** The host launcher's per-invocation-identity-only mount rule above
+gains one exact second permitted surface: each provider's credential
+directory may be bind-mounted into its Runner container **read-only**. This is
+the only host surface added beyond that identity material; no other host,
+project, home, or workspace path is admitted. Read-write access to the
+original credential directory stays forbidden, because a live operator
+session may hold that directory open and a Runner-side write risks corrupting
+it underneath the operator. A write-capable form — a per-Attempt copy,
+destroyed after RELEASE — is not decided here; it waits on a fresh
+operator-ruling question, raised only once a measured token-refresh failure
+under read-only actually occurs. Until then, a provider CLI whose token
+refresh needs to write its credential store fails loud and visibly under the
+read-only mount: the run breaks with a named, observable error rather than
+hanging silently, and no credential data is lost, because nothing was ever
+writable to lose.
 
 ### 3. Operator authentication gates every exposure beyond this machine
 

@@ -53,6 +53,7 @@ function v3Revision(
           depends_on: []
         }
       ],
+      loops: [],
       name,
       description: null
     }

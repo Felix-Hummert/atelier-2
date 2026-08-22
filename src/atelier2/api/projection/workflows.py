@@ -27,6 +27,8 @@ from atelier2.api.wire.resources import (
     WorkflowGraphResource,
     WorkflowGraphResourceV2,
     WorkflowGraphResourceV3,
+    WorkflowLoopResourceV3,
+    WorkflowLoopVerdictResourceV3,
     WorkflowNodePreviewResourceV3,
     WorkflowRevisionDetailResource,
     WorkflowRevisionSummaryResourceV2,
@@ -54,6 +56,7 @@ from atelier2.contracts.workflows import (
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     AnyWorkflowDocument,
+    LoopDeclaration,
     WorkflowGraphV3,
     WorkflowNodeV3,
     what_a_v3_document_still_waits_for,
@@ -142,6 +145,22 @@ def _node_preview(node: WorkflowNodeV3) -> WorkflowNodePreviewResourceV3:
     )
 
 
+def _loop_resource(loop: LoopDeclaration) -> WorkflowLoopResourceV3:
+    return WorkflowLoopResourceV3(
+        id=loop.id,
+        member_node_ids=loop.body,
+        maximum_rounds=loop.maximum_rounds,
+        repeat_while=(
+            None
+            if loop.repeat_while is None
+            else WorkflowLoopVerdictResourceV3(
+                node=loop.repeat_while.node,
+                verdict=loop.repeat_while.verdict.value,
+            )
+        ),
+    )
+
+
 def graph_resource(
     graph: AnyWorkflowDocument,
 ) -> WorkflowGraphResource | WorkflowGraphResourceV2 | WorkflowGraphResourceV3:
@@ -168,6 +187,7 @@ def graph_resource(
                 for entry in graph.graph_inputs
             ),
             node_previews=tuple(_node_preview(node) for node in graph.nodes),
+            loops=tuple(_loop_resource(loop) for loop in graph.loops),
             name=graph.name,
             description=graph.description,
         )

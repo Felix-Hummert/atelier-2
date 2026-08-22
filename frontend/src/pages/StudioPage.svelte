@@ -39,7 +39,7 @@
     protocolTitle,
     streamStopped
   } from "../lib/streamStatus";
-  import { ageLabel } from "../lib/when";
+  import { ageLabel, parseUtc } from "../lib/when";
   import { boardBadgeCounts } from "../lib/workshop";
 
   export let cockpitApi: CockpitApi;
@@ -243,7 +243,16 @@
   }
 
   $: snapshot = home.confirmed;
-  $: groups = snapshot === null ? null : projectBoardGroups(snapshot.runs, snapshot.workflowNames);
+  $: rawGroups = snapshot === null ? null : projectBoardGroups(snapshot.runs, snapshot.workflowNames);
+  // The mockup's "Done today" group is an honest day boundary, not the raw
+  // Done group boardRows.ts computes: a landed run older than the local
+  // calendar day belongs to History, not the Board. A run with no end
+  // timestamp stays visible -- hiding it without evidence it landed today
+  // would be a lie the board cannot back up.
+  $: groups = rawGroups === null ? null : {
+    ...rawGroups,
+    done: rawGroups.done.filter((row) => row.endedAt === null || endedToday(row.endedAt, now))
+  };
   $: empty =
     groups !== null &&
     groups.needsYou.length === 0 &&
@@ -251,8 +260,20 @@
     groups.done.length === 0 &&
     hold.connection === "live" &&
     !streamStopped(hold);
+  // Gates the empty state's one action: a projection the board could not
+  // apply (a wait it never confirmed) makes "nothing is running" unproven,
+  // so the board withholds the next action rather than act on a guess.
   $: canStart = !attentionStopped(hold) && projectionFailure === null;
   $: streamTitle = protocolTitle(hold);
+
+  function endedToday(iso: string, today: Date): boolean {
+    const ended = parseUtc(iso);
+    return (
+      ended.getFullYear() === today.getFullYear() &&
+      ended.getMonth() === today.getMonth() &&
+      ended.getDate() === today.getDate()
+    );
+  }
 </script>
 
 <section class="board-page" aria-labelledby="board-title">
@@ -261,14 +282,6 @@
       <p class="eyebrow">{wrapDisplayCopy(studioPageCopy.eyebrow)}</p>
       <h1 id="board-title">{wrapDisplayCopy(studioPageCopy.title)}</h1>
     </div>
-    {#if snapshot !== null && !empty && canStart}
-      <a
-        class="button primary"
-        href="/atelier/new"
-        data-studio-question={studioQuestions.start.id}
-        onclick={open("/atelier/new")}
-      >{wrapDisplayCopy(studioPageCopy.start)}</a>
-    {/if}
   </header>
 
   <p
@@ -313,9 +326,9 @@
         {#if canStart}
           <a
             class="button primary empty-start"
-            href="/atelier/new"
+            href="/atelier/workflows"
             data-studio-question={studioQuestions.emptyStart.id}
-            onclick={open("/atelier/new")}
+            onclick={open("/atelier/workflows")}
           >{wrapDisplayCopy(studioPageCopy.emptyStart)}</a>
         {/if}
       </div>

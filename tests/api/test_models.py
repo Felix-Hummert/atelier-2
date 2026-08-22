@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
+from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.api.projection.workflows import graph_resource
 from atelier2.api.wire.events import AgentCompletedEventResource, RunEventResource
 from atelier2.api.wire.resources import (
     ActionNodeResource,
@@ -16,7 +18,13 @@ from atelier2.api.wire.resources import (
     WaitingReconciliationResource,
     WaitNodeResource,
     WorkflowGraphResourceV3,
+    WorkflowLoopVerdictResourceV3,
     WorkflowNodePreviewResourceV3,
+)
+from tests.scenarios.workflows import (
+    V3_DOCUMENT,
+    VERDICT_LOOP_DOCUMENT,
+    VERDICT_LOOP_MAXIMUM_ROUNDS,
 )
 
 HASH = "0" * 64
@@ -246,6 +254,7 @@ def test_v3_graph_accepts_depends_on_that_names_a_sibling_preview() -> None:
             _agent_preview("implement"),
             _agent_preview("review", depends_on=("implement",)),
         ),
+        loops=(),
         name="Two agents in a line",
         description=None,
     )
@@ -262,6 +271,7 @@ def test_v3_graph_accepts_an_entry_preview_with_no_edges() -> None:
         agent_roles=("builder",),
         orders=(),
         node_previews=(_agent_preview("implement"),),
+        loops=(),
         name="One agent",
         description=None,
     )
@@ -279,9 +289,35 @@ def test_v3_graph_refuses_a_depends_on_that_names_no_preview() -> None:
             agent_roles=("builder",),
             orders=(),
             node_previews=(_agent_preview("review", depends_on=("implement",)),),
+            loops=(),
             name="Broken edge",
             description=None,
         )
+
+
+def test_v3_graph_projection_carries_a_declared_loop_and_its_verdict() -> None:
+    graph = parse_workflow_document(VERDICT_LOOP_DOCUMENT)
+
+    resource = graph_resource(graph)
+
+    assert isinstance(resource, WorkflowGraphResourceV3)
+    assert len(resource.loops) == 1
+    loop = resource.loops[0]
+    assert loop.id == "until_reviewed"
+    assert loop.member_node_ids == ("implement", "review")
+    assert loop.maximum_rounds == VERDICT_LOOP_MAXIMUM_ROUNDS
+    assert loop.repeat_while == WorkflowLoopVerdictResourceV3(
+        node="review", verdict="revise"
+    )
+
+
+def test_v3_graph_projection_carries_no_loops_when_the_document_declares_none() -> None:
+    graph = parse_workflow_document(V3_DOCUMENT)
+
+    resource = graph_resource(graph)
+
+    assert isinstance(resource, WorkflowGraphResourceV3)
+    assert resource.loops == ()
 
 
 def test_models_are_frozen_strict_and_forbid_extra_fields() -> None:

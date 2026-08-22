@@ -49,6 +49,7 @@ function graph(orders: Array<typeof portionsOrder>, name: string) {
         depends_on: []
       }
     ],
+    loops: [],
     name,
     description: null
   };

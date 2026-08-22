@@ -145,6 +145,7 @@
         state: "ready";
         name: string;
         previews: Extract<WorkflowRevisionDetail["graph"], { workflow_format_version: 3 }>["node_previews"];
+        loops: Extract<WorkflowRevisionDetail["graph"], { workflow_format_version: 3 }>["loops"];
       }
     | { state: "failed"; message: string };
 
@@ -387,7 +388,8 @@
       graphRequest = {
         state: "ready",
         name: revision.graph.name,
-        previews: revision.graph.node_previews
+        previews: revision.graph.node_previews,
+        loops: revision.graph.loops
       };
     } catch (error) {
       graphRequest = {
@@ -528,6 +530,7 @@
   {:else}
     <WorkflowGraphDrawing
       previews={graphRequest.previews}
+      loops={graphRequest.loops}
       {rail}
       nodeReasons={failedReasons}
       currentNodeId={run.current_node_id}
