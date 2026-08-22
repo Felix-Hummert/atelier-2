@@ -45,6 +45,7 @@
     type RetainedRead
   } from "../lib/readResource";
   import { runPageCopy } from "../lib/runPageCopy";
+  import { runHeaderCopy, runHeaderTitle } from "../lib/runPages";
   import {
     decodeAndApplyDurableEvent,
     markComplete,
@@ -209,6 +210,22 @@
       failureMessage = error instanceof Error ? error.message : "The durable event stream could not start.";
       if (projection !== null) projection = markConnecting(projection, true);
     }
+  }
+
+  /**
+   * The one honest case the live stream cannot heal by itself.
+   *
+   * A dropped connection needs no button: the browser's own EventSource
+   * retries it on its own, which is why "Reconnecting" carries none. A
+   * protocol violation or an explicit STREAM_FAILED closes the stream for
+   * good instead, and nothing reopens it without this deliberate act -- so
+   * this is the one place a manual affordance stays, named for what it does
+   * and shown only in that stopped state, not permanently in the header.
+   */
+  function retryStream(): void {
+    if (projection === null || !streamStopped(projection)) return;
+    projection = markConnecting(projection);
+    void load();
   }
 
   function applyEvent(rawData: string): void {
@@ -817,12 +834,20 @@
     region.tabIndex = 0;
   }
 
+  /** Only a V3 document declares a name (#506): a V1 or V2 revision has none to read. */
+  $: workflowName =
+    snapshot.confirmed !== null && snapshot.confirmed.revision.graph.workflow_format_version === 3
+      ? snapshot.confirmed.revision.graph.name
+      : null;
+  $: headerTitle = runHeaderTitle(workflowName);
+  /** Mirrors V3RunView's own three-state title (#506): one owner, not a second guess. */
+  let v3HeaderTitle: string | null = null;
   $: trailHere =
     v3Run !== null
-      ? `Run ${v3Run.run_id}`
+      ? v3HeaderTitle ?? "Run"
       : snapshot.confirmed === null
         ? "Run"
-        : `Run ${snapshot.confirmed.run.run_id}`;
+        : headerTitle;
 </script>
 
 <section aria-labelledby={v3Run !== null ? "v3-run-title" : "run-title"}>
@@ -841,6 +866,10 @@
       onRunRead={(read) => {
         v3Run = read;
       }}
+      onHeaderTitle={(title) => {
+        v3HeaderTitle = title;
+      }}
+      onRetryStream={retryStream}
     />
   {:else if snapshot.request.state === "failed"}
     <ProblemNotice problem={snapshot.request.failure} />
@@ -852,9 +881,16 @@
     <header class="run-header">
       <div>
         <p class="eyebrow">Durable run</p>
-        <h1 id="run-title">Run {snapshot.confirmed.run.run_id}</h1>
+        <h1 id="run-title">{headerTitle}</h1>
+        <p class="run-identity">
+          <ProofAnchor
+            compact
+            label={runHeaderCopy.runIdLabel}
+            seals={runHeaderCopy.sealsRunId}
+            value={snapshot.confirmed.run.run_id}
+          />
+        </p>
       </div>
-      <button class="quiet" type="button" disabled={snapshot.request.state === "loading"} onclick={load}>Refresh</button>
     </header>
 
     {#if snapshot.request.state === "loading"}<p class="status compact-status" role="status">Refreshing</p>{/if}
@@ -864,6 +900,14 @@
         <span aria-hidden="true">{streamStopped(projection) ? "◇" : projection.connection === "complete" ? "✓" : projection.connection === "live" ? "●" : "↻"}</span>
         {connectionLabel(projection)}
       </p>
+      {#if streamStopped(projection)}
+        <button
+          class="quiet"
+          type="button"
+          disabled={snapshot.request.state === "loading"}
+          onclick={retryStream}
+        >Retry</button>
+      {/if}
       {#if projection.stream_failure !== null}
         <ProblemNotice problem={projection.stream_failure} />
       {:else if protocolTitle(projection) !== null}

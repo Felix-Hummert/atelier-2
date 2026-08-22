@@ -852,7 +852,11 @@ textarea {
 }
 
 .run-header h1 {
-  margin-bottom: 1rem;
+  margin-bottom: 0.4rem;
+}
+
+.run-identity {
+  margin: 0 0 0.75rem;
 }
 
 .compact-status {
@@ -1183,6 +1187,17 @@ textarea {
   background: var(--panel2);
   box-shadow: var(--shadow);
   overflow-wrap: anywhere;
+}
+
+/*
+ * The run header's proof anchor sits near the page's left edge, under the
+ * title. A right-anchored popover opens away from that edge and off-screen
+ * (cut off on desktop, entirely invisible at 390px); left-anchoring it opens
+ * toward the content instead, which fits the viewport at both widths.
+ */
+.run-identity .info-popover {
+  right: auto;
+  left: 0;
 }
 
 .event-log {

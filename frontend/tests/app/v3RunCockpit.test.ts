@@ -214,9 +214,15 @@ describe("a version 3 run in the cockpit", () => {
       }
     });
 
-    await screen.findByRole("heading", { level: 1, name: "Run v3/two-agents" });
-    expect(screen.getByText("Looking…").isConnected).toBe(true);
+    // A V3 graph always declares a name once read; while it is still arriving
+    // the title says that honestly instead of falling back to the raw run id.
+    await screen.findByRole("heading", { level: 1, name: "Looking…" });
+    expect(screen.getByRole("status").textContent).toBe("Looking…");
     expect(screen.queryByRole("region", { name: "Workflow" })).toBeNull();
+    // The breadcrumb mirrors the same title truth as the h1 (#506): one
+    // owner, not a second guess that would call this "Unnamed" instead.
+    const trail = screen.getByRole("navigation", { name: "Where you are" });
+    expect(within(trail).getByText("Looking…").isConnected).toBe(true);
   });
 
   it("names a graph that could not be read instead of inventing a line from the rail", async () => {
@@ -236,9 +242,15 @@ describe("a version 3 run in the cockpit", () => {
     expect(screen.queryByRole("region", { name: "Workflow" })).toBeNull();
     expect(screen.getByRole("button", { name: /implement/ }).isConnected).toBe(true);
     expect(screen.getByRole("button", { name: /review/ }).isConnected).toBe(true);
-    expect(screen.getByRole("heading", { level: 1, name: "Run v3/two-agents" }).isConnected).toBe(
-      true
-    );
+    // A graph that could not be read still has no name to show; the title
+    // names that state rather than falling back to the raw run id.
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Workflow unavailable" }).isConnected
+    ).toBe(true);
+    // The breadcrumb mirrors the same title truth as the h1 (#506): one
+    // owner, not a second guess that would call this "Unnamed" instead.
+    const trail = screen.getByRole("navigation", { name: "Where you are" });
+    expect(within(trail).getByText("Workflow unavailable").isConnected).toBe(true);
   });
 });
 
@@ -309,6 +321,16 @@ describe("a started run shows the working node live", () => {
     expect(screen.getByLabelText("Where this run stands").textContent).toContain("Stopped");
     expect(screen.getByLabelText("Where this run stands").textContent).not.toContain("Following live");
     expect(screen.getByText("Process log stays in the lease.").isConnected).toBe(true);
+
+    // A STREAM_FAILED frame closes the stream for good; nothing but this
+    // named, in-place affordance reopens it (#506).
+    const retry = screen.getByRole("button", { name: "Retry" });
+    await fireEvent.click(retry);
+    await waitFor(() => expect(feed.open).toHaveBeenCalledTimes(2));
+    feed.handlers?.opened();
+    await waitFor(() =>
+      expect(screen.getByLabelText("Where this run stands").textContent).toContain("Following live")
+    );
   });
 
   it("proves(a-started-run-shows-the-working-node-live): a corrupt event is named as itself", async () => {
@@ -1025,7 +1047,9 @@ describe("the run page speaking the target words", () => {
     expect(screen.queryByText("As it happened")).toBeNull();
   });
 
-  it("proves(a-run-page-leads-with-the-workflow-name): the name is the title and the run id is the identity detail", async () => {
+  it("proves(a-run-page-leads-with-the-workflow-name): the name is the title and the run id is a proof anchor beside it", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.assign(globalThis.navigator, { clipboard: { writeText } });
     render(App, {
       props: { cockpitApi: api(v3Run()), mutationJournal: new MutationJournal(sessionStorage) }
     });
@@ -1033,7 +1057,11 @@ describe("the run page speaking the target words", () => {
     expect(
       (await screen.findByRole("heading", { level: 1, name: "Two agents in a line" })).isConnected
     ).toBe(true);
-    expect(screen.getByLabelText("Run identity").textContent).toBe("v3/two-agents");
     expect(screen.queryByRole("heading", { level: 1, name: "Run v3/two-agents" })).toBeNull();
+    const identity = screen.getByRole("button", { name: "Run id" });
+    expect(identity.textContent).not.toContain("v3/two-agents");
+    await fireEvent.click(identity);
+    expect(writeText).toHaveBeenCalledWith("v3/two-agents");
+    await waitFor(() => expect(screen.getByText("Copied").isConnected).toBe(true));
   });
 });

@@ -23,6 +23,7 @@
   import type { StreamProjection } from "../lib/runProjection";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { runPageCopy } from "../lib/runPageCopy";
+  import { runHeaderCopy } from "../lib/runPages";
   import { protocolDetail, protocolTitle, streamStopped } from "../lib/streamStatus";
   import NodeDetailPanel from "./NodeDetailPanel.svelte";
   import ProblemNotice from "./ProblemNotice.svelte";
@@ -37,6 +38,15 @@
   export let mutationJournal: MutationJournal;
   export let projection: StreamProjection | null = null;
   export let onRunRead: (run: RunV3) => void = () => {};
+  /**
+   * Lets the page's breadcrumb share the header's exact truth (#506).
+   *
+   * This carries the same three-state resolved string the `<h1>` shows --
+   * never a bare present-or-absent name, which cannot tell "still arriving"
+   * from "read and found none" and would call both "Unnamed".
+   */
+  export let onHeaderTitle: (title: string) => void = () => {};
+  export let onRetryStream: () => void = () => {};
 
   $: liveWatch = runShowsLiveWork(run);
   $: workingId = workingNodeId(run);
@@ -138,7 +148,20 @@
       }
     | { state: "failed"; message: string };
 
-  $: workflowName = graphRequest.state === "ready" ? graphRequest.name : null;
+  /**
+   * A V3 document always declares a name once read (the graph schema requires
+   * one), so this view never has a permanently unnamed workflow to fall back
+   * to the way a V1 or V2 revision does. What it has instead is a name still
+   * arriving or a graph that could not be read -- and the title says which,
+   * rather than calling either one "Unnamed".
+   */
+  $: headerTitle =
+    graphRequest.state === "ready"
+      ? graphRequest.name
+      : graphRequest.state === "loading"
+        ? "Looking…"
+        : "Workflow unavailable";
+  $: onHeaderTitle(headerTitle);
 
   let graphRequest: GraphRequest = { state: "loading" };
 
@@ -379,10 +402,15 @@
   <header class="run-header">
     <div>
       <p class="eyebrow">Durable run</p>
-      <h1 id="v3-run-title">{workflowName ?? `Run ${run.run_id}`}</h1>
-      {#if workflowName !== null}
-        <p class="run-identity" aria-label="Run identity">{run.run_id}</p>
-      {/if}
+      <h1 id="v3-run-title">{headerTitle}</h1>
+      <p class="run-identity">
+        <ProofAnchor
+          compact
+          label={runHeaderCopy.runIdLabel}
+          seals={runHeaderCopy.sealsRunId}
+          value={run.run_id}
+        />
+      </p>
     </div>
     <p class="standing" aria-label="Where this run stands">
       <StateMark
@@ -410,6 +438,9 @@
         endedAt={run.ended_at ?? null}
         kind={run.ended_at == null ? "for" : "ago"}
       />
+      {#if projection !== null && streamStopped(projection)}
+        <button type="button" class="quiet" onclick={onRetryStream}>Retry</button>
+      {/if}
     </p>
   </header>
 
@@ -480,7 +511,7 @@
             class="node-button"
             data-live={entry.state === "working" ? "true" : undefined}
             aria-expanded={openNodeId === entry.node_id}
-            on:click={() => void openNode(entry.node_id)}
+            onclick={() => void openNode(entry.node_id)}
           >
             <StateMark state={entry.state} />
             <span class="node-id">{entry.node_id}</span>

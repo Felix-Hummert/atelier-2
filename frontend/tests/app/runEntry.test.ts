@@ -643,7 +643,9 @@ describe("mobile run entry", () => {
     first.unmount();
     render(App, { props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) } });
 
-    expect((await screen.findByRole("heading", { name: "Run run-draft" })).isConnected).toBe(true);
+    expect(
+      (await screen.findByRole("heading", { name: "Unnamed workflow" })).isConnected
+    ).toBe(true);
     expect(cockpitApi.getRun).toHaveBeenLastCalledWith(publicReference);
   });
 });

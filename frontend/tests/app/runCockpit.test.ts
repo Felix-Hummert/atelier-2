@@ -62,7 +62,7 @@ describe("read-only run cockpit", () => {
 
     render(App, { props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) } });
 
-    expect((await screen.findByRole("heading", { name: "Run run" })).isConnected).toBe(true);
+    expect((await screen.findByRole("heading", { name: "Unnamed workflow" })).isConnected).toBe(true);
     expect(cockpitApi.getWorkflowRevision).toHaveBeenCalledWith(digest);
     expect(feed.open).toHaveBeenCalledWith(publicReference, expect.any(Object));
     expect(screen.getByRole("article", { name: "agent — Done" }).textContent).toContain("Build it");
@@ -72,32 +72,29 @@ describe("read-only run cockpit", () => {
     expect(screen.getByText("No durable events yet.").isConnected).toBe(true);
   });
 
-  it("retains confirmed nodes and events through disconnect and a later typed API failure", async () => {
+  it("retains confirmed nodes and events through a disconnect the live stream heals on its own", async () => {
     const feed = new FakeRunEventFeed();
-    const getRun = vi.fn().mockResolvedValueOnce(startedRun());
-    const cockpitApi = api({ openRunEvents: feed.open, getRun });
-    render(App, { props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) } });
-    await screen.findByRole("heading", { name: "Run run" });
+    render(App, {
+      props: {
+        cockpitApi: api({ openRunEvents: feed.open, getRun: vi.fn(async () => startedRun()) }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { name: "Unnamed workflow" });
     feed.handlers?.opened();
     feed.handlers?.event(JSON.stringify(agentCompleted(1)));
     feed.handlers?.disconnected();
 
     expect(await screen.findByText("Reconnecting")).toBeTruthy();
     await waitFor(() => expect(screen.getAllByText("AGENT COMPLETED")).toHaveLength(2));
-    getRun.mockRejectedValueOnce(
-      new CockpitRequestError("Read failed", {
-        type: "urn:atelier2:problem:v1:temporarily-unavailable",
-        title: "Temporarily unavailable",
-        status: 503,
-        detail: "The durable store cannot be read right now."
-      })
-    );
-    await fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    // A dropped connection is the browser's own EventSource retrying: a second,
+    // manual freshness control here would just compete with that one honest
+    // model (#506), so none is offered while it is merely reconnecting.
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
 
-    expect(await screen.findByText("Temporarily unavailable")).toBeTruthy();
-    expect(screen.getByText("The durable store cannot be read right now.").isConnected).toBe(true);
+    feed.handlers?.opened();
+    await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
     expect(screen.getByRole("article", { name: "agent — Done" }).isConnected).toBe(true);
-    expect(screen.getAllByText("AGENT COMPLETED")).toHaveLength(2);
   });
 
   it("stops a gapped stream without replacing the last confirmed event", async () => {
@@ -108,7 +105,7 @@ describe("read-only run cockpit", () => {
         mutationJournal: new MutationJournal(sessionStorage)
       }
     });
-    await screen.findByRole("heading", { name: "Run run" });
+    await screen.findByRole("heading", { name: "Unnamed workflow" });
     feed.handlers?.event(JSON.stringify(agentCompleted(1)));
     feed.handlers?.event(JSON.stringify(actionCompleted(3)));
 
@@ -130,7 +127,7 @@ describe("read-only run cockpit", () => {
         mutationJournal: new MutationJournal(sessionStorage)
       }
     });
-    await screen.findByRole("heading", { name: "Run run" });
+    await screen.findByRole("heading", { name: "Unnamed workflow" });
 
     feed.handlers?.event(JSON.stringify(agentCompleted(1)));
     feed.handlers?.event(JSON.stringify(actionCompleted(2)));
@@ -146,7 +143,7 @@ describe("read-only run cockpit", () => {
     expect(screen.getByRole("article", { name: "final — Working" }).isConnected).toBe(true);
   });
 
-  it("refreshes a failed stream without ever clearing its confirmed event truth", async () => {
+  it("retries a stopped stream without ever clearing its confirmed event truth", async () => {
     const feed = new FakeRunEventFeed();
     let resolveRefresh!: (run: Run) => void;
     const getRun = vi
@@ -159,13 +156,16 @@ describe("read-only run cockpit", () => {
         mutationJournal: new MutationJournal(sessionStorage)
       }
     });
-    await screen.findByRole("heading", { name: "Run run" });
+    await screen.findByRole("heading", { name: "Unnamed workflow" });
     const raw = JSON.stringify(agentCompleted(1));
     feed.handlers?.event(raw);
     feed.handlers?.event(JSON.stringify(actionCompleted(3)));
     await screen.findByText("Event gap");
 
-    await fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    // A protocol violation is the one honest case the live stream cannot heal
+    // on its own (#506): the named "Retry" affordance beside the stopped
+    // status is what reopens it.
+    await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expectOneConfirmedAgentEvent();
     resolveRefresh(agentCompletedRun());
     await waitFor(() => expect(feed.open).toHaveBeenCalledTimes(2));
@@ -201,7 +201,7 @@ describe("read-only run cockpit", () => {
 
     expect((await screen.findByText("Run not found")).isConnected).toBe(true);
     expect(screen.getByText("No durable run has this reference.").isConnected).toBe(true);
-    expect(screen.queryByRole("heading", { name: "Run run" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Unnamed workflow" })).toBeNull();
   });
 
   it("proves(a-run-page-hash-is-a-named-proof-anchor): a V1 summary hash leads with its name and copies on click", async () => {
@@ -214,7 +214,7 @@ describe("read-only run cockpit", () => {
       }
     });
 
-    await screen.findByRole("heading", { name: "Run run" });
+    await screen.findByRole("heading", { name: "Unnamed workflow" });
     expect(screen.queryByText(digest)).toBeNull();
     const workflow = screen.getByRole("button", { name: "Workflow revision" });
     expect(workflow.textContent).not.toContain(digest);
@@ -227,6 +227,28 @@ describe("read-only run cockpit", () => {
     const terminal = screen.getByRole("button", { name: "Terminal hash" });
     await fireEvent.click(terminal);
     expect(writeText).toHaveBeenLastCalledWith(digest);
+  });
+
+  it("names the header with the workflow's honest state, with the run id anchored beside it", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.assign(globalThis.navigator, { clipboard: { writeText } });
+    render(App, {
+      props: {
+        cockpitApi: api({ getRun: vi.fn(async () => completedRun()) }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    // Only a V3 document declares a workflow name; this V1 run has none to
+    // read, so the header says that honestly rather than titling itself with
+    // the raw run id (the Constitution's law 8 counterexample).
+    const title = await screen.findByRole("heading", { level: 1, name: "Unnamed workflow" });
+    expect(title.isConnected).toBe(true);
+    const identity = screen.getByRole("button", { name: "Run id" });
+    expect(identity.textContent).not.toContain("run");
+    await fireEvent.click(identity);
+    expect(writeText).toHaveBeenCalledWith("run");
+    await waitFor(() => expect(screen.getByText("Copied").isConnected).toBe(true));
   });
 
   it("does not open event history for a run whose current node disagrees with its revision", async () => {
