@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from cryptography import x509
@@ -128,3 +131,52 @@ def test_tls_peer_validation_refuses_a_wrong_ca_before_a_session_operation() -> 
             expected_uri=uri,
             expected_eku=ExtendedKeyUsageOID.SERVER_AUTH,
         )
+
+
+def test_issuer_identity_read_refuses_extra_entries(tmp_path: Path) -> None:
+    identity = tmp_path / "issuer-output"
+    identity.mkdir(mode=0o700)
+    (identity / "client.crt").write_bytes(b"not-a-cert")
+    (identity / "client.crt").chmod(0o644)
+    (identity / "client.key").write_bytes(b"not-a-key")
+    (identity / "client.key").chmod(0o600)
+    (identity / "ca.crt").write_bytes(b"not-a-ca")
+    (identity / "ca.crt").chmod(0o644)
+    (identity / "extra").write_bytes(b"no")
+    result = subprocess.run(
+        (
+            sys.executable,
+            "tests/witness/runner_candidate_issuer.py",
+            "receiver-record",
+            "--identity",
+            str(identity),
+        ),
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+
+
+def test_issuer_identity_read_refuses_wrong_key_mode(tmp_path: Path) -> None:
+    identity = tmp_path / "issuer-output"
+    identity.mkdir(mode=0o700)
+    (identity / "client.crt").write_bytes(b"not-a-cert")
+    (identity / "client.crt").chmod(0o644)
+    (identity / "client.key").write_bytes(b"not-a-key")
+    (identity / "client.key").chmod(0o644)
+    (identity / "ca.crt").write_bytes(b"not-a-ca")
+    (identity / "ca.crt").chmod(0o644)
+    result = subprocess.run(
+        (
+            sys.executable,
+            "tests/witness/runner_candidate_issuer.py",
+            "receiver-record",
+            "--identity",
+            str(identity),
+        ),
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0

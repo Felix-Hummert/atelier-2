@@ -133,3 +133,31 @@ def test_started_child_landlock_denies_identity(tmp_path: Path) -> None:
         allowed,
     )
     assert child.wait(timeout=5) == 0, child.stderr.read() if child.stderr else b""
+
+
+def test_landlocked_child_reaps_after_term() -> None:
+    allowed = tuple(
+        path
+        for path in (
+            Path("/usr"),
+            Path("/lib"),
+            Path("/lib64"),
+            Path("/proc"),
+            Path("/dev"),
+            Path(sys.prefix),
+            Path(sys.base_prefix),
+        )
+        if path.exists()
+    )
+    child = start_runner_child(
+        (sys.executable, "-c", "import time; time.sleep(60)"), allowed
+    )
+    try:
+        assert (
+            reap_cancelled_runner_child(child, 1, 5)
+            is RunnerCancellationObservation.REAPED_AFTER_TERM
+        )
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=2)

@@ -14,6 +14,8 @@ import sys
 import time
 from pathlib import Path
 
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
 from atelier2.adapters.free_runner_executor import (
@@ -53,11 +55,13 @@ from atelier2.contracts.runner_manifests import (
 from atelier2.contracts.runner_session_codec import (
     decode_runner_session_frame,
     encode_runner_session_frame,
+    runner_session_body_length,
 )
 from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSessionMessage
 from atelier2.contracts.runner_terminal_evidence_codec import (
     encode_runner_terminal_evidence_record,
 )
+from atelier2.runner.identity_receiver import load_published_identity
 
 
 def _read_exact(connection: ssl.SSLSocket, length: int) -> bytes:
@@ -74,9 +78,8 @@ def _read_exact(connection: ssl.SSLSocket, length: int) -> bytes:
 
 def _read_frame(connection: ssl.SSLSocket) -> RunnerSessionFrame:
     prefix = _read_exact(connection, 4)
-    return decode_runner_session_frame(
-        prefix + _read_exact(connection, struct.unpack(">I", prefix)[0])
-    )
+    length = runner_session_body_length(prefix)
+    return decode_runner_session_frame(prefix + _read_exact(connection, length))
 
 
 def _write_frame(connection: ssl.SSLSocket, frame: RunnerSessionFrame) -> None:
@@ -224,6 +227,11 @@ def _run_candidate_session(
         encoding="utf-8",
     )
     _wait_for_client_identity(identity)
+    expected_runner_uri = (
+        "urn:atelier2:runner:v1:"
+        f"{binding.attempt_id.value}:{binding.request_hash.value}:"
+        f"{binding.generation_id.value}:{invocation.value}:{binding.manifest_id.value}"
+    )
     peer = json.loads(handoff.joinpath("core-peer.json").read_text(encoding="utf-8"))
     core_certificate = handoff.joinpath("core.crt").read_bytes()
     ca_certificate = handoff.joinpath("ca.crt").read_bytes()
@@ -234,10 +242,11 @@ def _run_candidate_session(
         expected_uri=peer["uri"],
         expected_eku=ExtendedKeyUsageOID.SERVER_AUTH,
     )
-    if identity.joinpath("ca.crt").read_bytes() != ca_certificate:
-        raise RuntimeError("Runner volume CA differs from bootstrap CA")
+    volume_ca = load_published_identity(
+        identity, expected_uri=expected_runner_uri, expected_ca=ca_certificate
+    )[2]
     context = ssl.create_default_context(
-        ssl.Purpose.SERVER_AUTH, cafile=str(identity / "ca.crt")
+        ssl.Purpose.SERVER_AUTH, cadata=volume_ca.decode("ascii")
     )
     context.load_cert_chain(identity / "client.crt", identity / "client.key")
     context.check_hostname = False
@@ -245,6 +254,21 @@ def _run_candidate_session(
         socket.create_connection((CORE_DNS_NAME, 8443), 5) as raw,
         context.wrap_socket(raw, server_hostname=CORE_DNS_NAME) as connection,
     ):
+        presented = connection.getpeercert(binary_form=True)
+        if presented is None:
+            raise RuntimeError("Core did not present an authenticated leaf")
+        presented_pem = x509.load_der_x509_certificate(presented).public_bytes(
+            serialization.Encoding.PEM
+        )
+        validate_peer_certificate(
+            presented_pem,
+            ca_certificate,
+            expected_dns_name=CORE_DNS_NAME,
+            expected_uri=peer["uri"],
+            expected_eku=ExtendedKeyUsageOID.SERVER_AUTH,
+        )
+        if hashlib.sha256(presented).hexdigest() != peer["fingerprint"]:
+            raise RuntimeError("runner-peer-unverified")
         sequence = 1
         _write_frame(
             connection,

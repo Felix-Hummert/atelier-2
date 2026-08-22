@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 import struct
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -158,9 +161,22 @@ def issue_runner(
         [x509.UniformResourceIdentifier(uri)],
         ExtendedKeyUsageOID.CLIENT_AUTH,
     )
-    _private(runner_identity / "client.key", key)
-    _public(runner_identity / "client.crt", certificate)
-    _public(runner_identity / "ca.crt", authority)
+    runner_identity.mkdir(mode=0o700, parents=True, exist_ok=True)
+    directory = os.open(
+        runner_identity, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
+    try:
+        before = os.fstat(directory)
+        if os.listdir(directory):
+            raise ValueError("issuer identity destination is not empty")
+        _private(runner_identity / "client.key", key)
+        _public(runner_identity / "client.crt", certificate)
+        _public(runner_identity / "ca.crt", authority)
+        after = os.fstat(directory)
+        if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError("issuer identity directory identity changed")
+    finally:
+        os.close(directory)
     core_peer.mkdir(mode=0o700, parents=True, exist_ok=True)
     _public(core_peer / "client.crt", certificate)
     return 0
@@ -217,6 +233,14 @@ def attest_runner_inspect(inspect_path: Path, manifest_path: Path, output: Path)
         option == "no-new-privileges:true" or option.startswith("no-new-privileges")
         for option in security
     )
+    identity_mount = next(
+        (
+            mount
+            for mount in document.get("Mounts") or ()
+            if mount.get("Destination") == "/run/atelier2-identity"
+        ),
+        None,
+    )
     if (
         document.get("Image") != manifest.image_digest
         or user != expected_user
@@ -229,10 +253,57 @@ def attest_runner_inspect(inspect_path: Path, manifest_path: Path, output: Path)
         or int(host.get("CpuPeriod") or 0) != CANDIDATE_CPU_PERIOD
         or _tmpfs_size(tmpfs.get("/workspace", "")) != CANDIDATE_WORKSPACE_BYTES
         or _tmpfs_size(tmpfs.get("/journal", "")) != CANDIDATE_JOURNAL_BYTES
+        or identity_mount is None
+        or identity_mount.get("RW") is not False
+        or identity_mount.get("Type") != "volume"
     ):
         raise ValueError("runner-attestation-mismatch")
     output.write_text(runner_manifest_id(manifest).value + "\n", encoding="ascii")
     return 0
+
+
+_ISSUER_NAMES = ("client.crt", "client.key", "ca.crt")
+_ISSUER_MODES = (0o644, 0o600, 0o644)
+_ISSUER_FIELD_BYTES = 8_192
+
+
+def _read_issuer_identity(directory: Path) -> bytes:
+    dir_fd = os.open(
+        directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
+    try:
+        before = os.fstat(dir_fd)
+        if not stat.S_ISDIR(before.st_mode) or stat.S_IMODE(before.st_mode) != 0o700:
+            raise ValueError("issuer identity directory mode differs")
+        if set(os.listdir(dir_fd)) != set(_ISSUER_NAMES):
+            raise ValueError("issuer identity directory entries differ")
+        fields: list[bytes] = []
+        for name, mode in zip(_ISSUER_NAMES, _ISSUER_MODES, strict=True):
+            descriptor = os.open(
+                name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd
+            )
+            try:
+                info = os.fstat(descriptor)
+                if (
+                    info.st_nlink != 1
+                    or not stat.S_ISREG(info.st_mode)
+                    or stat.S_IMODE(info.st_mode) != mode
+                ):
+                    raise ValueError("issuer identity file type or mode differs")
+                if not 1 <= info.st_size <= _ISSUER_FIELD_BYTES:
+                    raise ValueError("issuer identity field exceeds receiver bound")
+                payload = os.read(descriptor, info.st_size)
+                if len(payload) != info.st_size:
+                    raise ValueError("issuer identity field differs")
+                fields.append(payload)
+            finally:
+                os.close(descriptor)
+        after = os.fstat(dir_fd)
+        if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError("issuer identity directory identity changed")
+        return b"".join(struct.pack(">I", len(field)) + field for field in fields)
+    finally:
+        os.close(dir_fd)
 
 
 def main() -> int:
@@ -274,17 +345,7 @@ def main() -> int:
             parsed.runner_identity,
             parsed.core_peer,
         )
-    fields = tuple(
-        parsed.identity.joinpath(name).read_bytes()
-        for name in ("client.crt", "client.key", "ca.crt")
-    )
-    if any(not field or len(field) > 8_192 for field in fields):
-        raise ValueError("issuer identity field exceeds receiver bound")
-    import sys
-
-    sys.stdout.buffer.write(
-        b"".join(struct.pack(">I", len(field)) + field for field in fields)
-    )
+    sys.stdout.buffer.write(_read_issuer_identity(parsed.identity))
     return 0
 
 

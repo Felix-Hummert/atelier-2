@@ -8,7 +8,6 @@ import os
 import secrets
 import socket
 import ssl
-import struct
 import time
 from pathlib import Path
 from typing import cast
@@ -75,6 +74,7 @@ from atelier2.contracts.runner_manifests import (
 from atelier2.contracts.runner_session_codec import (
     decode_runner_session_frame,
     encode_runner_session_frame,
+    runner_session_body_length,
 )
 from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSessionMessage
 from atelier2.contracts.runs import RunId, WorkflowRevision
@@ -100,7 +100,7 @@ nodes:
 
 def _read_frame(connection: ssl.SSLSocket) -> RunnerSessionFrame:
     prefix = _read_exact(connection, 4)
-    length = struct.unpack(">I", prefix)[0]
+    length = runner_session_body_length(prefix)
     return decode_runner_session_frame(prefix + _read_exact(connection, length))
 
 
@@ -280,12 +280,6 @@ def main(arguments: list[str] | None = None) -> int:
     invocation_offer = handoff / "invocation.json"
     peer_leaf = peer_directory / "client.crt"
     inspect_attested = handoff / "inspect-attested"
-    _wait_for(inspect_attested)
-    if (
-        inspect_attested.read_text(encoding="ascii").strip()
-        != binding.manifest_id.value
-    ):
-        raise RuntimeError("runner-attestation-mismatch")
     _wait_for(invocation_offer)
     _wait_for(peer_leaf)
     invocation = json.loads(invocation_offer.read_text(encoding="utf-8"))[
@@ -318,6 +312,12 @@ def main(arguments: list[str] | None = None) -> int:
             serialization.Encoding.DER
         ):
             raise RuntimeError("Runner peer leaf differs from the issuer handoff")
+        _wait_for(inspect_attested)
+        if (
+            inspect_attested.read_text(encoding="ascii").strip()
+            != binding.manifest_id.value
+        ):
+            raise RuntimeError("runner-attestation-mismatch")
         session = CoreRunnerSession(
             binding,
             DbosRunnerSessionCore(

@@ -22,6 +22,16 @@ class RunnerSessionCodecError(ValueError):
     """The peer supplied no canonical, bounded session frame."""
 
 
+def runner_session_body_length(prefix: bytes) -> int:
+    """Refuse a zero or over-limit length before the body is allocated."""
+    if len(prefix) != 4:
+        raise RunnerSessionCodecError("runner-session-truncated")
+    body_length = struct.unpack(">I", prefix)[0]
+    if body_length == 0 or body_length > MAXIMUM_RUNNER_SESSION_BODY_BYTES:
+        raise RunnerSessionCodecError("runner-session-oversized")
+    return body_length
+
+
 def encode_runner_session_frame(session: RunnerSessionFrame) -> bytes:
     body = frame("runner-session/v1", *session.fields())
     if len(body) > MAXIMUM_RUNNER_SESSION_BODY_BYTES:
@@ -32,9 +42,7 @@ def encode_runner_session_frame(session: RunnerSessionFrame) -> bytes:
 def decode_runner_session_frame(wire: bytes) -> RunnerSessionFrame:
     if len(wire) < 4:
         raise RunnerSessionCodecError("runner-session-truncated")
-    body_length = struct.unpack(">I", wire[:4])[0]
-    if body_length == 0 or body_length > MAXIMUM_RUNNER_SESSION_BODY_BYTES:
-        raise RunnerSessionCodecError("runner-session-oversized")
+    body_length = runner_session_body_length(wire[:4])
     if len(wire) != body_length + 4:
         raise RunnerSessionCodecError("runner-session-truncated")
     fields = _decode_frame_body(wire[4:])

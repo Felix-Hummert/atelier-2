@@ -57,10 +57,10 @@ def start_runner_child(
         )
         launcher = (
             "import os, signal, sys\n"
-            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
             "from pathlib import Path\n"
             "from atelier2.adapters.runner_child import install_landlock_guard\n"
             f"install_landlock_guard(tuple(Path(path) for path in {allowed}))\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_DFL)\n"
             "os.execvp(sys.argv[1], sys.argv[1:])\n"
         )
         launched = (sys.executable, "-c", launcher, *command)

@@ -18,6 +18,7 @@ from atelier2.contracts.runner_session_codec import (
     RunnerSessionCodecError,
     decode_runner_session_frame,
     encode_runner_session_frame,
+    runner_session_body_length,
 )
 from atelier2.contracts.runner_sessions import (
     RUNNER_SESSION_REFUSAL_CODES,
@@ -111,3 +112,15 @@ def test_cancel_frame_round_trips_with_none_replacement() -> None:
 
 def test_refusal_vocabulary_is_closed() -> None:
     assert "runner-session-message-unknown" in RUNNER_SESSION_REFUSAL_CODES
+
+
+@pytest.mark.proves("runner-session-bounded")
+def test_session_length_prefix_is_refused_before_the_body_is_read() -> None:
+    with pytest.raises(RunnerSessionCodecError, match="runner-session-oversized"):
+        runner_session_body_length(b"\x00\x00\x00\x00")
+    with pytest.raises(RunnerSessionCodecError, match="runner-session-oversized"):
+        runner_session_body_length(
+            struct.pack(">I", MAXIMUM_RUNNER_SESSION_BODY_BYTES + 1)
+        )
+    with pytest.raises(RunnerSessionCodecError, match="runner-session-truncated"):
+        runner_session_body_length(b"\x00")

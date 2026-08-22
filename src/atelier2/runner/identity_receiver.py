@@ -84,6 +84,71 @@ def _validate(leaf: x509.Certificate, authority: bytes) -> None:
     )
 
 
+def load_published_identity(
+    destination: Path, *, expected_uri: str, expected_ca: bytes
+) -> tuple[bytes, bytes, bytes]:
+    """Reread the volume identity through a directory FD before any socket."""
+    directory = os.open(
+        destination, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
+    try:
+        directory_info = os.fstat(directory)
+        if (
+            directory_info.st_uid != 10001
+            or directory_info.st_gid != 10001
+            or not stat.S_ISDIR(directory_info.st_mode)
+            or stat.S_IMODE(directory_info.st_mode) != 0o700
+        ):
+            raise ValueError("runner identity directory owner or mode differs")
+        present = set(os.listdir(directory))
+        if present != {"ready", *_NAMES}:
+            raise ValueError("runner identity destination entries differ")
+        payloads: dict[str, bytes] = {}
+        for name, mode in zip(("ready", *_NAMES), (0o600, *_MODES), strict=True):
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=directory,
+            )
+            try:
+                info = os.fstat(descriptor)
+                if (
+                    info.st_uid != 10001
+                    or info.st_gid != 10001
+                    or info.st_nlink != 1
+                    or not stat.S_ISREG(info.st_mode)
+                    or stat.S_IMODE(info.st_mode) != mode
+                ):
+                    raise ValueError("runner identity file owner or mode differs")
+                if name == "ready":
+                    if info.st_size != 0:
+                        raise ValueError("runner identity ready record differs")
+                    continue
+                if not 1 <= info.st_size <= _MAXIMUM_FIELD_BYTES:
+                    raise ValueError("runner identity record field differs")
+                payload = os.read(descriptor, info.st_size)
+                if len(payload) != info.st_size:
+                    raise ValueError("runner identity record field differs")
+                payloads[name] = payload
+            finally:
+                os.close(descriptor)
+        record = payloads["client.crt"], payloads["client.key"], payloads["ca.crt"]
+        if record[2] != expected_ca:
+            raise ValueError("Runner volume CA differs from bootstrap CA")
+        leaf, authority = _decode(record)
+        _validate(leaf, authority)
+        validate_peer_certificate(
+            leaf.public_bytes(serialization.Encoding.PEM),
+            authority,
+            expected_dns_name=None,
+            expected_uri=expected_uri,
+            expected_eku=ExtendedKeyUsageOID.CLIENT_AUTH,
+        )
+        return record
+    finally:
+        os.close(directory)
+
+
 def _write_identity(destination: Path, record: tuple[bytes, bytes, bytes]) -> None:
     directory = os.open(
         destination, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
