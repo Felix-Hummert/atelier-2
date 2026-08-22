@@ -1,16 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-scenario="${1:-success}"
-case "$scenario" in
+witness_root_prefix="/var/tmp/atelier2-301a-runner-witness"
+candidate_images=(atelier2-301a-core atelier2-301a-runner)
+
+mode="${1:-success}"
+case "$mode" in
   success | cancel) ;;
+  clean)
+    removed=0
+    shopt -s nullglob
+    for root in "$witness_root_prefix".*; do
+      [[ -f "$root/network" ]] || continue
+      network=$(<"$root/network")
+      docker network inspect "$network" >/dev/null 2>&1 && continue
+      # The core container runs as root, so root-owns its bind-mounted
+      # core-store; only a root-privileged container can clear it.
+      docker run --rm -v "$root:/cleanup" --entrypoint rm atelier2-301a-core -rf -- /cleanup/core-store
+      rm -rf -- "$root"
+      removed=$((removed + 1))
+    done
+    printf 'removed %d released witness directories\n' "$removed"
+    exit 0
+    ;;
+  images)
+    docker image rm -f "${candidate_images[@]}"
+    exit 0
+    ;;
   *)
-    printf 'usage: %s [success|cancel]\n' "$0" >&2
+    printf 'usage: %s [success|cancel|clean|images]\n' "$0" >&2
     exit 1
     ;;
 esac
+scenario="$mode"
 
-root=$(mktemp -d /var/tmp/atelier2-301a-runner-witness.XXXXXX)
+root=$(mktemp -d "$witness_root_prefix.XXXXXX")
 released=false
 identity_volume=""
 handoff_volume=""
