@@ -44,6 +44,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerGenerationBinding,
     RunnerInvocationId,
     RunnerProviderResult,
+    RunnerTerminalEvidenceAckTombstone,
     RunnerTerminalEvidenceEnvelope,
     RunnerTerminalEvidenceHash,
 )
@@ -309,6 +310,51 @@ def _decline_crossing_cancel(
     return fence.read_frame(), sequence
 
 
+# The exact message `RunnerJournal.readback` raises when nothing is retained
+# yet for a binding -- the one legal "first lifetime" case a resumed
+# candidate must tell apart from real journal corruption (a foreign binding,
+# or unreadable bytes), which stays a loud failure.
+_JOURNAL_RECORD_MISSING = "runner-terminal-record-missing"
+
+
+def retained_terminal_record(
+    journal: RunnerJournal, binding: RunnerGenerationBinding
+) -> RunnerTerminalEvidenceEnvelope | RunnerTerminalEvidenceAckTombstone | None:
+    """What a prior lifetime already fixed for this exact binding, if anything.
+
+    A crashed candidate may have already published -- or even had Core
+    acknowledge -- its one terminal fact before dying. Resume always replays
+    the full OFFER-to-RELEASED handshake (no new message, no phase-derived
+    session); this is only what lets it reuse a prior lifetime's fact instead
+    of racing a second child against it.
+    """
+    try:
+        return journal.readback(binding)
+    except ValueError as error:
+        if str(error) != _JOURNAL_RECORD_MISSING:
+            raise
+        return None
+
+
+def _after_terminal_evidence_published() -> None:
+    """No-op in production; a deterministic pytest crash-cut seam only.
+
+    A resume test replaces this with `os._exit` to model a candidate dying
+    right after journaling its terminal fact but before telling Core
+    (`TERMINAL_AVAILABLE`) -- crash cut C3. This is never the shared
+    Docker-witness `CandidateScenario` surface B5 owns.
+    """
+
+
+def _after_ack_tombstone_published() -> None:
+    """No-op in production; the deterministic pytest crash-cut counterpart.
+
+    A resume test replaces this with `os._exit` to model a candidate dying
+    right after telling Core its evidence was acknowledged (`ACK_TOMBSTONE`)
+    but before `RELEASE` arrives -- crash cut C5.
+    """
+
+
 def run_candidate_session(
     channel: RunnerFrameChannel,
     binding: RunnerGenerationBinding,
@@ -321,9 +367,14 @@ def run_candidate_session(
     """Drive one authenticated candidate session from OFFER to RELEASED.
 
     `channel` is already connected and peer-verified by the caller; this
-    function never resolves a name, opens a socket, or negotiates TLS.
+    function never resolves a name, opens a socket, or negotiates TLS. A
+    prior lifetime's retained journal record, if any, decides whether this
+    call launches a real child or replays the fact that lifetime already
+    fixed -- see `retained_terminal_record`.
     """
     fence = _CoreFrameFence(channel, binding, invocation)
+    journal = RunnerJournal(journal_directory)
+    retained = retained_terminal_record(journal, binding)
     sequence = 1
     _write_frame(
         channel,
@@ -357,8 +408,12 @@ def run_candidate_session(
     if fence.read_frame().message is not RunnerSessionMessage.LAUNCH:
         raise RuntimeError("Core did not durably arm the candidate invocation")
     sequence += 1
-    child = start_runner_child(_child_command(scenario, manifest), child_allowlist())
-    try:
+    if retained is not None:
+        # A prior lifetime already fixed this invocation's one terminal fact
+        # (published, or even acknowledged) before it died. Starting a second
+        # child now would race a real result against the retained one for no
+        # reason; the wire handshake still replays in full, just without the
+        # child.
         _write_frame(
             channel,
             _frame(
@@ -369,40 +424,66 @@ def run_candidate_session(
                 (struct.pack(">Q", 1),),
             ),
         )
-        control = _control_or_child_exit(fence, child, manifest)
-        if control is not None and control.message is not RunnerSessionMessage.CANCEL:
-            raise RuntimeError("Core sent an unexpected post-start control frame")
-        if control is not None:
-            if control.payload[3] != b"NONE":
-                raise RuntimeError("runner-replacement-not-supported-a")
-            envelope = RunnerTerminalEvidenceEnvelope(
-                binding,
-                invocation,
-                RunnerCancellation(
-                    control.payload[1].decode("utf-8"),
-                    _reap_child(child, manifest),
+        terminal_record_source: (
+            RunnerTerminalEvidenceEnvelope | RunnerTerminalEvidenceAckTombstone
+        ) = retained
+        if isinstance(retained, RunnerTerminalEvidenceEnvelope):
+            evidence_hash = RunnerTerminalEvidenceHash.for_envelope(retained)
+        else:
+            evidence_hash = retained.evidence_hash
+    else:
+        child = start_runner_child(
+            _child_command(scenario, manifest), child_allowlist()
+        )
+        try:
+            _write_frame(
+                channel,
+                _frame(
+                    RunnerSessionMessage.STARTED,
+                    sequence,
+                    binding,
+                    invocation,
+                    (struct.pack(">Q", 1),),
                 ),
             )
-        else:
-            if child.poll() is None:
-                raise RuntimeError("candidate child outlived the attempt")
-            output, _error = child.communicate()
-            if child.returncode != 0:
-                raise RuntimeError(
-                    "free candidate child did not return its bounded result"
+            control = _control_or_child_exit(fence, child, manifest)
+            if (
+                control is not None
+                and control.message is not RunnerSessionMessage.CANCEL
+            ):
+                raise RuntimeError("Core sent an unexpected post-start control frame")
+            if control is not None:
+                if control.payload[3] != b"NONE":
+                    raise RuntimeError("runner-replacement-not-supported-a")
+                envelope = RunnerTerminalEvidenceEnvelope(
+                    binding,
+                    invocation,
+                    RunnerCancellation(
+                        control.payload[1].decode("utf-8"),
+                        _reap_child(child, manifest),
+                    ),
                 )
-            envelope = RunnerTerminalEvidenceEnvelope(
-                binding,
-                invocation,
-                RunnerProviderResult(AgentExecutionResult(output.strip())),
-            )
-    except BaseException:
-        if child.poll() is None:
-            _reap_child(child, manifest)
-        raise
-    journal = RunnerJournal(journal_directory)
-    journal.publish(envelope)
-    evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
+            else:
+                if child.poll() is None:
+                    raise RuntimeError("candidate child outlived the attempt")
+                output, _error = child.communicate()
+                if child.returncode != 0:
+                    raise RuntimeError(
+                        "free candidate child did not return its bounded result"
+                    )
+                envelope = RunnerTerminalEvidenceEnvelope(
+                    binding,
+                    invocation,
+                    RunnerProviderResult(AgentExecutionResult(output.strip())),
+                )
+        except BaseException:
+            if child.poll() is None:
+                _reap_child(child, manifest)
+            raise
+        journal.publish(envelope)
+        _after_terminal_evidence_published()
+        terminal_record_source = envelope
+        evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
     sequence += 1
     _write_frame(
         channel,
@@ -422,7 +503,7 @@ def run_candidate_session(
     if readback.message is not RunnerSessionMessage.READBACK:
         raise RuntimeError("Core did not request retained evidence")
     sequence += 1
-    encoded = encode_runner_terminal_evidence_record(envelope)
+    encoded = encode_runner_terminal_evidence_record(terminal_record_source)
     _write_frame(
         channel,
         _frame(
@@ -437,7 +518,12 @@ def run_candidate_session(
     if acknowledgement.message is not RunnerSessionMessage.ACK:
         raise RuntimeError("Core did not acknowledge durable evidence")
     accepted = require_matching_evidence_hash(acknowledgement.payload, evidence_hash)
-    tombstone = journal.acknowledge(envelope, accepted)
+    if isinstance(terminal_record_source, RunnerTerminalEvidenceAckTombstone):
+        # This exact lifetime already collected this ACK before it died --
+        # the journal still holds nothing else to re-tombstone.
+        tombstone = terminal_record_source
+    else:
+        tombstone = journal.acknowledge(terminal_record_source, accepted)
     sequence += 1
     _write_frame(
         channel,
@@ -449,6 +535,7 @@ def run_candidate_session(
             (encode_runner_terminal_evidence_record(tombstone),),
         ),
     )
+    _after_ack_tombstone_published()
     release = fence.read_frame()
     if release.message is not RunnerSessionMessage.RELEASE:
         raise RuntimeError("Core did not release acknowledged evidence")

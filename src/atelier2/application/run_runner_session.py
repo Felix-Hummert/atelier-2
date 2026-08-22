@@ -354,16 +354,20 @@ class CoreRunnerSession:
         return None
 
     def accept_terminal_record(self, frame: RunnerSessionFrame) -> RunnerSessionFrame:
+        duplicate = self._accepted.get(frame.sequence)
+        if duplicate is not None:
+            previous, response = duplicate
+            if previous != frame or response is None:
+                raise RunnerSessionRefusal("runner-session-replay")
+            return response
         if (
             self._phase is not _CorePhase.TERMINAL_RECORD
             or frame.message is not RunnerSessionMessage.TERMINAL_RECORD
         ):
             raise RunnerSessionRefusal("runner-session-out-of-order")
-        if (
-            frame.sequence != self._next_runner_sequence
-            or frame.binding != self.binding
-            or frame.invocation_id != self.invocation_id
-        ):
+        if frame.sequence != self._next_runner_sequence:
+            raise RunnerSessionRefusal("runner-session-sequence-mismatch")
+        if frame.binding != self.binding or frame.invocation_id != self.invocation_id:
             raise RunnerSessionRefusal("runner-session-binding-mismatch")
         self._terminal_hash = self.core.commit_terminal_record(
             self.binding, frame.payload[0]
