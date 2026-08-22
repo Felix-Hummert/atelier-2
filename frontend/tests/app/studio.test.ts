@@ -12,6 +12,7 @@ import {
   type RunV3
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { standingMarks } from "../../src/lib/runState";
 import {
   describeStudioControl,
@@ -159,7 +160,7 @@ describe("the studio is the level the workshop opens on", () => {
   it("proves(the-workshop-opens-in-the-studio): opens the bare atelier path in the Studio instead of a list of runs", async () => {
     openStudio();
 
-    expect((await screen.findByRole("heading", { name: "Studio" })).isConnected).toBe(true);
+    expect((await screen.findByRole("heading", { name: "Board" })).isConnected).toBe(true);
     expect(screen.queryByRole("heading", { name: "Runs" })).toBeNull();
     expect(window.location.pathname).toBe("/atelier");
   });
@@ -167,7 +168,7 @@ describe("the studio is the level the workshop opens on", () => {
   it("asks the durable list by the states the card and inbox can name", async () => {
     const listRuns = listRunsByState([startedRun()]);
     openStudio([startedRun()], { listRuns });
-    await screen.findByRole("article", { name: "This workshop" });
+    await screen.findByRole("article", { name: THE_ONE_PROJECT });
 
     expect(listRuns.mock.calls.map(([, state]) => state).sort()).toEqual([
       "COMPLETED",
@@ -187,7 +188,7 @@ describe("the studio is the level the workshop opens on", () => {
       completedRun({ public_run_reference: "run1.ZA" })
     ]);
 
-    const card = await screen.findByRole("article", { name: "This workshop" });
+    const card = await screen.findByRole("article", { name: THE_ONE_PROJECT });
 
     expect(within(card).getByText("2 running").isConnected).toBe(true);
     expect(within(card).getByText("1 waiting for you").isConnected).toBe(true);
@@ -199,20 +200,20 @@ describe("the studio is the level the workshop opens on", () => {
 
   it("leads from the one project card down into the project level", async () => {
     openStudio([startedRun()]);
-    const card = await screen.findByRole("article", { name: "This workshop" });
+    const card = await screen.findByRole("article", { name: THE_ONE_PROJECT });
 
     await fireEvent.click(within(card).getByRole("link"));
 
     expect(window.location.pathname).toBe("/atelier/project");
-    expect((await screen.findByRole("heading", { name: "This workshop" })).isConnected).toBe(true);
-    expect(screen.queryByRole("heading", { name: "Studio" })).toBeNull();
+    expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
+    expect(screen.queryByRole("heading", { name: "Board" })).toBeNull();
   });
 
   it("keeps real workshop work ahead of an unavailable chat", async () => {
     openStudio([waitingInputRun(), startedRun({ public_run_reference: "run1.YQ" })]);
 
     const inbox = await screen.findByRole("region", { name: "Waiting for you" });
-    const card = await screen.findByRole("article", { name: "This workshop" });
+    const card = await screen.findByRole("article", { name: THE_ONE_PROJECT });
     const chat = await screen.findByRole("region", { name: "Chat" });
 
     expect(inbox.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
@@ -266,7 +267,7 @@ describe("the inbox names what waits for a human", () => {
   it("stays silent when nothing waits for a human", async () => {
     openStudio([startedRun(), completedRun({ public_run_reference: "run1.Yg" })]);
 
-    await screen.findByRole("article", { name: "This workshop" });
+    await screen.findByRole("article", { name: THE_ONE_PROJECT });
 
     expect(screen.queryByRole("region", { name: "Waiting for you" })).toBeNull();
   });
@@ -284,7 +285,7 @@ describe("the inbox names what waits for a human", () => {
 describe("an empty studio teaches the one next action", () => {
   it("proves(an-empty-area-names-the-one-next-action): names starting a run as the one action possible today, and offers it once", async () => {
     const { feed } = openStudioHolding([]);
-    await screen.findByRole("heading", { name: "Studio" });
+    await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
 
     const empty = await screen.findByRole("heading", { name: "Nothing is running" });
@@ -318,10 +319,10 @@ describe("an empty studio teaches the one next action", () => {
       )
     });
 
-    expect((await screen.findByText("Studio runs unavailable")).isConnected).toBe(true);
+    expect((await screen.findByText("Board runs unavailable")).isConnected).toBe(true);
     expect(screen.queryByText(/raw transport failure|private adapter failure|Failed to fetch/))
       .toBeNull();
-    expect(screen.getAllByRole("button", { name: "Retry studio runs" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Retry board runs" })).toHaveLength(1);
   });
 
   it("repeats only the failed Studio read until a successful retry replaces the error", async () => {
@@ -335,20 +336,20 @@ describe("an empty studio teaches the one next action", () => {
     });
     openStudio([], { listRuns });
 
-    await screen.findByText("Studio runs unavailable");
-    const retry = screen.getByRole("button", { name: "Retry studio runs" });
+    await screen.findByText("Board runs unavailable");
+    const retry = screen.getByRole("button", { name: "Retry board runs" });
     await fireEvent.click(retry);
     await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(10));
-    await screen.findByRole("button", { name: "Retry studio runs" });
-    expect(screen.getAllByRole("button", { name: "Retry studio runs" })).toHaveLength(1);
+    await screen.findByRole("button", { name: "Retry board runs" });
+    expect(screen.getAllByRole("button", { name: "Retry board runs" })).toHaveLength(1);
     expect(screen.queryByText(/socket detail/)).toBeNull();
 
     await fireEvent.click(retry);
 
-    expect((await screen.findByRole("article", { name: "This workshop" })).isConnected).toBe(true);
+    expect((await screen.findByRole("article", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
     expect(listRuns).toHaveBeenCalledTimes(15);
-    expect(screen.queryByRole("button", { name: "Retry studio runs" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Refresh studio runs" }).isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: "Retry board runs" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Refresh board runs" }).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier");
   });
 
@@ -360,16 +361,16 @@ describe("an empty studio teaches the one next action", () => {
       return { items: state === run.state ? [run] : [], next_after: null };
     });
     openStudio([], { listRuns });
-    const card = await screen.findByRole("article", { name: "This workshop" });
+    const card = await screen.findByRole("article", { name: THE_ONE_PROJECT });
     expect(within(card).getByText("1 running").isConnected).toBe(true);
 
     response = "failed";
-    await fireEvent.click(screen.getByRole("button", { name: "Refresh studio runs" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Refresh board runs" }));
 
-    await screen.findByText("Studio runs unavailable");
+    await screen.findByText("Board runs unavailable");
     expect(within(card).getByText("1 running").isConnected).toBe(true);
     response = "completed";
-    await fireEvent.click(screen.getByRole("button", { name: "Retry studio runs" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Retry board runs" }));
 
     await waitFor(() => expect(within(card).getByText("1 done").isConnected).toBe(true));
     expect(within(card).queryByText("1 running")).toBeNull();
@@ -385,8 +386,8 @@ describe("an empty studio teaches the one next action", () => {
     });
     openStudio([], { listRuns });
 
-    expect((await screen.findByText("Studio runs incomplete")).isConnected).toBe(true);
-    expect(screen.queryByRole("article", { name: "This workshop" })).toBeNull();
+    expect((await screen.findByText("Board runs incomplete")).isConnected).toBe(true);
+    expect(screen.queryByRole("article", { name: THE_ONE_PROJECT })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
     expect(screen.queryByText(/later page detail/)).toBeNull();
   });
@@ -396,7 +397,7 @@ describe("the studio holds GET /events", () => {
   it("holds the attention stream when the studio opens", async () => {
     const { feed } = openStudioHolding([]);
 
-    await screen.findByRole("heading", { name: "Studio" });
+    await screen.findByRole("heading", { name: "Board" });
 
     expect(feed.openAttention).toHaveBeenCalledWith(expect.any(Object));
   });
@@ -413,7 +414,7 @@ describe("the studio holds GET /events", () => {
     const waiting = waitingInputRun({ public_run_reference: "run1.YQ" });
     const getRun = vi.fn(async () => waiting);
     const { feed } = openStudioHolding([], { getRun });
-    await screen.findByRole("heading", { name: "Studio" });
+    await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
     await screen.findByRole("heading", { name: "Nothing is running" });
 
@@ -427,19 +428,19 @@ describe("the studio holds GET /events", () => {
     expect(within(inbox).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
     expect(getRun).toHaveBeenCalledWith("run1.YQ");
     expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
-    expect(within(await screen.findByRole("article", { name: "This workshop" })).getByText("1 waiting for you").isConnected).toBe(true);
+    expect(within(await screen.findByRole("article", { name: THE_ONE_PROJECT })).getByText("1 waiting for you").isConnected).toBe(true);
   });
 
   it("applies an AGENT_FAILED from the stream without already listing the run", async () => {
     const getRun = vi.fn(async () => failedRun());
     const { feed } = openStudioHolding([], { getRun });
-    await screen.findByRole("heading", { name: "Studio" });
+    await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
     await screen.findByRole("heading", { name: "Nothing is running" });
 
     feed.handlers?.event(JSON.stringify(agentFailedEvent()));
 
-    const card = await screen.findByRole("article", { name: "This workshop" });
+    const card = await screen.findByRole("article", { name: THE_ONE_PROJECT });
     expect(within(card).getByText("1 failed").isConnected).toBe(true);
     expect(within(card).getByText(standingMarks.failed).isConnected).toBe(true);
     expect(within(card).queryByText("1 done")).toBeNull();
@@ -464,7 +465,7 @@ describe("the studio holds GET /events", () => {
     });
     const getRun = vi.fn(async () => waiting);
     const { feed } = openStudioHolding([], { listRuns, getRun });
-    await screen.findByRole("heading", { name: "Studio" });
+    await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
 
     feed.handlers?.event(
@@ -477,7 +478,7 @@ describe("the studio holds GET /events", () => {
     expect(within(inbox).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
 
     releaseStarted({ items: [staleStarted, otherStarted], next_after: null });
-    const card = await screen.findByRole("article", { name: "This workshop" });
+    const card = await screen.findByRole("article", { name: THE_ONE_PROJECT });
     await waitFor(() => {
       expect(within(card).getByText("1 running").isConnected).toBe(true);
     });
@@ -501,7 +502,7 @@ describe("the studio holds GET /events", () => {
     });
     const getRun = vi.fn(async () => waiting);
     const { feed } = openStudioHolding([], { listRuns, getRun });
-    await screen.findByRole("heading", { name: "Studio" });
+    await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
 
     feed.handlers?.event(
@@ -514,7 +515,7 @@ describe("the studio holds GET /events", () => {
     expect(within(inbox).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
 
     releaseCompleted({ items: [newerCompleted], next_after: null });
-    const card = await screen.findByRole("article", { name: "This workshop" });
+    const card = await screen.findByRole("article", { name: THE_ONE_PROJECT });
     await waitFor(() => {
       expect(within(card).getByText("1 done").isConnected).toBe(true);
     });
@@ -529,7 +530,7 @@ describe("the studio holds GET /events", () => {
       .mockRejectedValueOnce(new Error("run missing"))
       .mockResolvedValueOnce(waiting);
     const { feed } = openStudioHolding([], { getRun });
-    await screen.findByRole("heading", { name: "Studio" });
+    await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
     await screen.findByRole("heading", { name: "Nothing is running" });
 
@@ -563,7 +564,7 @@ describe("the studio holds GET /events", () => {
       .mockRejectedValueOnce(new Error("run missing"))
       .mockResolvedValueOnce(waiting);
     const { feed } = openStudioHolding([], { getRun });
-    await screen.findByRole("heading", { name: "Studio" });
+    await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
     await screen.findByRole("heading", { name: "Nothing is running" });
 
@@ -593,7 +594,7 @@ describe("the studio holds GET /events", () => {
 
   it("names a failed attention stream as itself, not as an empty workshop", async () => {
     const { feed } = openStudioHolding([]);
-    await screen.findByRole("heading", { name: "Studio" });
+    await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
     await screen.findByRole("heading", { name: "Nothing is running" });
 
@@ -631,7 +632,7 @@ describe("every Studio control answers a named user question", () => {
         ended_at: "2026-08-18T12:00:00Z"
       })
     ]);
-    await screen.findByRole("article", { name: "This workshop" });
+    await screen.findByRole("article", { name: THE_ONE_PROJECT });
     await screen.findByRole("button", { name: studioQuestions.lastLandingTime.hintLabel });
     expectStudioControlsAnswerNamedQuestions([
       studioQuestions.start.id,
@@ -644,7 +645,7 @@ describe("every Studio control answers a named user question", () => {
 
     cleanup();
     const { feed } = openStudioHolding([]);
-    await screen.findByRole("heading", { name: "Studio" });
+    await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
     await screen.findByRole("link", { name: "Start a run" });
     expectStudioControlsAnswerNamedQuestions([
@@ -656,13 +657,13 @@ describe("every Studio control answers a named user question", () => {
     openStudio([], {
       listRuns: vi.fn().mockRejectedValue(new Error("wire detail"))
     });
-    await screen.findByRole("button", { name: "Retry studio runs" });
+    await screen.findByRole("button", { name: "Retry board runs" });
     expectStudioControlsAnswerNamedQuestions([studioQuestions.reloadStudioRuns.id]);
 
     cleanup();
     const getRun = vi.fn().mockRejectedValueOnce(new Error("run missing"));
     const projection = openStudioHolding([], { getRun });
-    await screen.findByRole("heading", { name: "Studio" });
+    await screen.findByRole("heading", { name: "Board" });
     projection.feed.handlers?.opened();
     await screen.findByRole("heading", { name: "Nothing is running" });
     projection.feed.handlers?.event(

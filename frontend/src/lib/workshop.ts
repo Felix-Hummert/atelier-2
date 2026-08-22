@@ -1,18 +1,19 @@
 import type { CockpitRoute } from "./route";
 
 /**
- * The five destinations the target-UI rail names. A reachable one opens a page
- * this cockpit already serves. A deferred one is named and disabled, with the
- * vision sentence that owns it — never a dead click and never a fake page.
+ * The four destinations the target-UI rail names (mockup v5): Chat, Board,
+ * Workflows, History. A reachable one opens a page this cockpit already
+ * serves. A deferred one is named and disabled, with the vision sentence
+ * that owns it — never a dead click and never a fake page.
  */
 export type ReachableWorkshopDestination = {
-  id: "studio" | "projects";
+  id: "board" | "history";
   label: string;
   path: "/atelier" | "/atelier/project";
 };
 
 export type DeferredWorkshopDestination = {
-  id: "runs" | "library" | "settings";
+  id: "chat" | "workflows";
   label: string;
   vision: string;
   visionRef: string;
@@ -21,26 +22,20 @@ export type DeferredWorkshopDestination = {
 export type WorkshopDestination = ReachableWorkshopDestination | DeferredWorkshopDestination;
 
 export const WORKSHOP_DESTINATIONS: readonly WorkshopDestination[] = [
-  { id: "studio", label: "Studio", path: "/atelier" },
-  { id: "projects", label: "Projekte", path: "/atelier/project" },
   {
-    id: "runs",
-    label: "Runs",
-    vision: "Cross-project run list — not built yet. REQ-UI-13.",
-    visionRef: "REQ-UI-13"
+    id: "chat",
+    label: "Chat",
+    vision: "The conductor door — not built yet. Vision #7.",
+    visionRef: "#7"
   },
+  { id: "board", label: "Board", path: "/atelier" },
   {
-    id: "library",
-    label: "Library",
-    vision: "Names, never hashes — not built yet. REQ-UI-05.",
+    id: "workflows",
+    label: "Workflows",
+    vision: "Workflow catalog, names never hashes — not built yet. REQ-UI-05.",
     visionRef: "REQ-UI-05"
   },
-  {
-    id: "settings",
-    label: "Settings",
-    vision: "Professional settings surface — not built yet. REQ-UI-15.",
-    visionRef: "REQ-UI-15"
-  }
+  { id: "history", label: "History", path: "/atelier/project" }
 ];
 
 export function destinationIsReachable(
@@ -54,10 +49,10 @@ export function activeWorkshopDestination(
   route: CockpitRoute
 ): ReachableWorkshopDestination["id"] | null {
   if (route.page === "studio") {
-    return "studio";
+    return "board";
   }
   if (route.page === "project" || route.page === "new" || route.page === "run") {
-    return "projects";
+    return "history";
   }
   return null;
 }
