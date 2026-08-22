@@ -14,6 +14,7 @@ from urllib.error import HTTPError
 from urllib.request import urlopen
 
 import pytest
+import sqlalchemy as sa
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
@@ -21,7 +22,6 @@ import atelier2.adapters.dbos.runtime as dbos_runtime
 from atelier2.adapters.claude_subscription import (
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
     CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY,
-    ClaudeSubscriptionExecutorFactory,
     ClaudeSubscriptionSettings,
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
@@ -37,6 +37,7 @@ from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
 )
+from atelier2.adapters.dbos.schema import agent_attempts, runs
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -79,9 +80,9 @@ from atelier2.host.serving import (
 )
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
+    AgentConfigurationRevisionPage,
     AuthProfileRevisionCreated,
 )
-from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.durable_runs import (
     DurableAgentExecutorBindingUnavailable,
     StartPublishedRunRequestV2,
@@ -822,12 +823,14 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
             assert health.status_code == 200
             assert health.json()["status"] == "serving"
         assert runtime.agent_executor_registry.keys == frozenset(
-            {GROK_SUBSCRIPTION_EXECUTOR_KEY}
+            {CLAUDE_SUBSCRIPTION_EXECUTOR_KEY, GROK_SUBSCRIPTION_EXECUTOR_KEY}
         )
-        seed = AgentExecutorRegistry(
-            (ClaudeSubscriptionExecutorFactory(declared.settings),)
+        assert not runtime.agent_executor_registry.is_startable(
+            CLAUDE_SUBSCRIPTION_EXECUTOR_KEY, AgentExecutionCapability.HEADLESS
         )
-        catalog = DbosAgentConfigurationCatalog(runtime.engine, seed)
+        catalog = DbosAgentConfigurationCatalog(
+            runtime.engine, runtime.agent_executor_registry
+        )
         auth = AuthProfileRevision(
             "claude-unstartable", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION
         )
@@ -845,14 +848,11 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
             catalog.publish_agent_configuration_revision(configuration),
             AgentConfigurationRevisionCreated,
         )
-        grok_catalog = DbosAgentConfigurationCatalog(
-            runtime.engine, runtime.agent_executor_registry
-        )
         grok_auth = AuthProfileRevision(
             "grok-healthy", 1, ProviderId("xai"), AuthMode.SUBSCRIPTION
         )
         assert isinstance(
-            grok_catalog.publish_auth_profile_revision(grok_auth),
+            catalog.publish_auth_profile_revision(grok_auth),
             AuthProfileRevisionCreated,
         )
         grok_configuration = AgentConfigurationRevision(
@@ -863,8 +863,15 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
             AgentConfigurationRevisionFormatVersion.V2,
         )
         assert isinstance(
-            grok_catalog.publish_agent_configuration_revision(grok_configuration),
+            catalog.publish_agent_configuration_revision(grok_configuration),
             AgentConfigurationRevisionCreated,
+        )
+        listed = catalog.list_agent_configuration_revisions(None, 50)
+        assert isinstance(listed, AgentConfigurationRevisionPage)
+        startability = {item.revision.model: item.startable for item in listed.items}
+        assert startability == {"claude-opus-4-1": False, "grok-4": True}
+        assert runtime.agent_executor_registry.is_startable(
+            GROK_SUBSCRIPTION_EXECUTOR_KEY, AgentExecutionCapability.HEADLESS
         )
         workflow = WorkflowRevision(HOST_DOCUMENT)
         DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
@@ -881,6 +888,14 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
             )
         )
         assert isinstance(refused, DurableAgentExecutorBindingUnavailable)
+        with runtime.engine.connect() as connection:
+            assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(agent_attempts)
+                )
+                == 0
+            )
     finally:
         runtime.close()
 

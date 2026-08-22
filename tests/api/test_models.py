@@ -7,6 +7,7 @@ from atelier2.api.wire.events import AgentCompletedEventResource, RunEventResour
 from atelier2.api.wire.resources import (
     ActionNodeResource,
     AgentAttemptResourceV2,
+    AgentConfigurationRevisionListItemResource,
     AgentNodeResource,
     NoWaitingResource,
     RunResource,
@@ -20,6 +21,37 @@ from atelier2.api.wire.resources import (
 
 HASH = "0" * 64
 EXECUTION = "1" * 64
+
+
+def test_listed_agent_configuration_requires_an_honest_startability_pair() -> None:
+    item = {
+        "model": "model",
+        "auth_profile_revision_hash": HASH,
+        "executor_revision": "executor/v1",
+        "provider_id": "provider",
+        "auth_mode": "subscription",
+        "requested_capability": "headless",
+        "agent_configuration_revision_hash": EXECUTION,
+    }
+
+    assert AgentConfigurationRevisionListItemResource.model_validate(
+        {**item, "startable": True, "not_startable_reason": None}
+    ).startable
+    assert not AgentConfigurationRevisionListItemResource.model_validate(
+        {
+            **item,
+            "startable": False,
+            "not_startable_reason": "agent-executor-binding-unavailable",
+        }
+    ).startable
+    for startable, reason in (
+        (True, "agent-executor-binding-unavailable"),
+        (False, None),
+    ):
+        with pytest.raises(ValidationError):
+            AgentConfigurationRevisionListItemResource.model_validate(
+                {**item, "startable": startable, "not_startable_reason": reason}
+            )
 
 
 def test_agent_attempt_resource_rejects_incongruent_failure_shape() -> None:

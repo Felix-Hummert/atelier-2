@@ -27,6 +27,8 @@ from atelier2.api.wire.events import (
     AgentCompletedEventResource,
     AgentCompletedEventResourceV2,
     AgentCompletedEventResourceV3,
+    AgentExecutorBindingUnavailableEventResourceV2,
+    AgentExecutorBindingUnavailableEventResourceV3,
     AgentFailedEventResourceV2,
     AgentFailedEventResourceV3,
     AgentInterruptedEventResourceV2,
@@ -47,6 +49,7 @@ from atelier2.api.wire.resources import CancellationDispositionName, NodeRailRes
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.executions import (
     KINDS_NO_V1_RUN_CARRIES,
+    AgentExecutionRefusal,
     RunEventCancellationBinding,
     RunEventKind,
     is_canonical_integer_bytes,
@@ -164,6 +167,17 @@ def _run_event_resource_v2(
             **common,
         )
     if event.event_kind is RunEventKind.AGENT_FAILED:
+        if (
+            event.payload
+            == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii")
+        ):
+            if event.attempt_binding is not None:
+                raise ValueError("unavailable executor event has an attempt binding")
+            return AgentExecutorBindingUnavailableEventResourceV2(
+                event=event.event_kind.value,
+                reason=AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value,
+                **common,
+            )
         failure_code = event.payload.decode("ascii")
         if failure_code not in {
             AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY.value,
@@ -310,6 +324,17 @@ def _run_event_resource_v3(
             **common,
         )
     if event.event_kind is RunEventKind.AGENT_FAILED:
+        if (
+            event.payload
+            == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii")
+        ):
+            if event.attempt_binding is not None:
+                raise ValueError("unavailable executor event has an attempt binding")
+            return AgentExecutorBindingUnavailableEventResourceV3(
+                event=event.event_kind.value,
+                reason=AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value,
+                **common,
+            )
         failure_code = event.payload.decode("ascii")
         if failure_code not in {code.value for code in AgentAttemptFailureCode}:
             raise ValueError("durable agent failure payload is not canonical")

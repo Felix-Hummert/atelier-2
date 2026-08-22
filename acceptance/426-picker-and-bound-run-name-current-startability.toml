@@ -1,0 +1,10 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/426"
+
+[[sentence]]
+id = "a-listed-agent-configuration-names-current-startability"
+text = "The published agent-configuration list names each configuration's current startability without exposing host diagnostics; New Run keeps a known unavailable Project or Remembered binding selected, marks it Unavailable, and lets the operator choose a healthy configuration without rewriting project occupancy."
+
+[[sentence]]
+id = "a-bound-unstarted-run-refuses-when-its-executor-is-unavailable"
+text = "When a declared but currently unstartable executor is reached by a bound unstarted run, Serve stays up and the run ends with exactly one attempt-less agent-executor-binding-unavailable refusal before any provider process starts; states that may have launched remain untouched."

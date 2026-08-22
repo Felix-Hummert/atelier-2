@@ -12,12 +12,14 @@ from typing import assert_never
 
 from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
 from atelier2.contracts.agents import (
-    AgentConfigurationRevision,
     AgentConfigurationRevisionHash,
+    AgentConfigurationRevisionListItem,
     AuthProfileRevision,
     AuthProfileRevisionHash,
 )
-from atelier2.ports.agent_configurations import AgentConfigurationCatalog
+from atelier2.ports.agent_configurations import (
+    AgentConfigurationCatalog,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionPage as PortAgentConfigurationRevisionPage,
 )
@@ -34,7 +36,7 @@ from atelier2.ports.durable_runs import (
 
 @dataclass(frozen=True)
 class AgentConfigurationRevisionsListed:
-    items: tuple[tuple[AgentConfigurationRevision, AuthProfileRevision], ...]
+    items: tuple[AgentConfigurationRevisionListItem, ...]
     next_after: AgentConfigurationRevisionHash | None
 
 

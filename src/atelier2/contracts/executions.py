@@ -111,6 +111,12 @@ class RunEventKind(StrEnum):
     SUBWORKFLOW_COMPLETED = "SUBWORKFLOW_COMPLETED"
 
 
+class AgentExecutionRefusal(StrEnum):
+    """The product-level reason an Agent node could not start."""
+
+    EXECUTOR_BINDING_UNAVAILABLE = "agent-executor-binding-unavailable"
+
+
 KINDS_NO_V1_RUN_CARRIES: frozenset[RunEventKind] = frozenset(
     {
         RunEventKind.AGENT_FAILED,

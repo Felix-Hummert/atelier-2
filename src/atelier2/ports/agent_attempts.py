@@ -20,7 +20,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceReadback,
     WatchdogGenerationId,
 )
-from atelier2.contracts.agents import AgentExecutionResult
+from atelier2.contracts.agents import AgentExecutionRequestV2, AgentExecutionResult
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.runner_terminal_evidence_codec import (
@@ -62,6 +62,33 @@ type AgentAttemptClaimResult = (
 )
 type AgentAttemptExecutionOutcome = (
     AgentAttemptSucceeded | AgentAttemptFailed | AgentAttemptPossiblyRan
+)
+
+
+@dataclass(frozen=True)
+class AgentExecutorBindingRefusalWritten:
+    """The run closed with its attempt-less unavailable-executor event."""
+
+
+@dataclass(frozen=True)
+class AgentExecutorBindingRefusalNeedsPreparedCleanup:
+    """Ordinal one is safe to clean through the existing cancellation path."""
+
+    attempt: AgentAttempt
+    cleanup_request: CancelAgentAttemptRequest
+
+
+@dataclass(frozen=True)
+class AgentExecutorBindingRefusalFenced:
+    """This attempt may have crossed a launch boundary; #426 leaves it alone."""
+
+    attempt: AgentAttempt
+
+
+type AgentExecutorBindingRefusalResult = (
+    AgentExecutorBindingRefusalWritten
+    | AgentExecutorBindingRefusalNeedsPreparedCleanup
+    | AgentExecutorBindingRefusalFenced
 )
 
 
@@ -231,6 +258,10 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         ...
 
     def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt: ...
+
+    def refuse_unavailable_executor(
+        self, request: AgentExecutionRequestV2
+    ) -> AgentExecutorBindingRefusalResult: ...
 
     def claim(self, execution: AgentAttemptExecution) -> AgentAttemptClaimResult: ...
 

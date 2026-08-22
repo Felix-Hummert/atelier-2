@@ -71,6 +71,7 @@ from atelier2.contracts.effects import (
     ReconcileCommandState,
 )
 from atelier2.contracts.executions import (
+    AgentExecutionRefusal,
     NodeExecutionId,
     RunEventKind,
     logical_effect_key_for,
@@ -92,6 +93,7 @@ from atelier2.contracts.run_projections import (
     NodeAnswer,
     NodeDetail,
     NodeProvenance,
+    PublicAgentAttemptState,
     RunPage,
     RunProjection,
     WaitingReconciliationProjection,
@@ -344,6 +346,16 @@ def _event_endpoint(record: Mapping[Any, Any]) -> tuple[str, NodeExecutionId]:
     return str(record["event_kind"]), execution_id
 
 
+def _is_never_launched_cleanup(attempt: AgentAttemptProjection) -> bool:
+    cancellation = attempt.cancellation
+    return (
+        attempt.state is PublicAgentAttemptState.CANCELLED
+        and cancellation is not None
+        and cancellation.disposition
+        is AgentAttemptCancellationDisposition.NEVER_LAUNCHED
+    )
+
+
 def _durable_attempt_state(persisted_value: Any) -> AgentAttemptState:
     try:
         return AgentAttemptState(str(persisted_value))
@@ -511,6 +523,34 @@ def _node_receipt_refusal(
         str(record.reason)
     )
     return reason
+
+
+def _unavailable_executor_refusal(
+    connection: Connection,
+    execution_id: NodeExecutionId,
+) -> str | None:
+    """Read the terminal pre-attempt refusal written for a declared binding.
+
+    This durable terminal event deliberately has no node receipt or attempt:
+    the executor was known to be unavailable before a provider invocation could
+    begin. Its product reason is nevertheless part of the run's own record,
+    rather than a fresh current-host recomputation.
+    """
+    event = connection.execute(
+        sa.select(run_events.c.payload).where(
+            run_events.c.node_execution_id == execution_id.value,
+            run_events.c.event_kind == RunEventKind.AGENT_FAILED.value,
+            run_events.c.agent_attempt_id.is_(None),
+            run_events.c.attempt_ordinal.is_(None),
+        )
+    ).one_or_none()
+    if event is None:
+        return None
+    if event.payload != AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode(
+        "ascii"
+    ):
+        return None
+    return AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value
 
 
 def _node_job_and_refusal(
@@ -891,7 +931,9 @@ class DbosQueries:
                 job, job_hash, refusal = _node_job_and_refusal(
                     connection, projection, node, round_ordinal
                 )
-                durable_refusal = _node_receipt_refusal(connection, execution_id)
+                durable_refusal = _node_receipt_refusal(
+                    connection, execution_id
+                ) or _unavailable_executor_refusal(connection, execution_id)
                 started_at, ended_at = _node_instants(connection, execution_id)
                 return NodeDetailFound(
                     NodeDetail(
@@ -1341,6 +1383,9 @@ class DbosQueries:
                 # would refuse the read. COMPLETED is that case. FAILED is
                 # not: the attempt is still the current one, and the rail
                 # needs it so a list read does not pose the node as working.
+                # NEVER_LAUNCHED cleanup on a FAILED run is the exception: it
+                # is control evidence for an attempt-less refusal, not the
+                # public node ending.
                 if records_for_execution and run.state is not RunState.COMPLETED:
                     graph = graphs[run.revision_hash]
                     if not isinstance(graph, (WorkflowGraphV2, WorkflowGraphV3)):
@@ -1354,6 +1399,12 @@ class DbosQueries:
                         )
                         for attempt_record in records_for_execution
                     )
+                    if run.state is RunState.FAILED:
+                        attempt_projections = tuple(
+                            attempt
+                            for attempt in attempt_projections
+                            if not _is_never_launched_cleanup(attempt)
+                        )
             instant = instants.get(run.run_id.value)
             projections.append(
                 RunProjection(
@@ -1614,13 +1665,20 @@ class DbosQueries:
         ):
             raise RunTransitionConflict("V1 run carries an agent failure event")
         if event.event_kind is RunEventKind.AGENT_FAILED and event.payload not in {
-            code.value.encode("ascii") for code in AgentAttemptFailureCode
+            *(code.value.encode("ascii") for code in AgentAttemptFailureCode),
+            AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii"),
         }:
             raise RunTransitionConflict("agent failure event payload is not canonical")
         node_receipt_reason = (
-            _node_receipt_refusal(connection, event.node_execution_id)
+            AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value
             if event.event_kind is RunEventKind.AGENT_FAILED
-            else None
+            and event.payload
+            == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii")
+            else (
+                _node_receipt_refusal(connection, event.node_execution_id)
+                if event.event_kind is RunEventKind.AGENT_FAILED
+                else None
+            )
         )
         if event.event_kind not in {
             RunEventKind.ACTION_RECONCILIATION_RESOLVED,

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App.svelte";
 import {
   agentConfigurationRevisionPageSchema,
-  type AgentConfigurationRevision,
+  type AgentConfigurationRevisionListItem,
   type CockpitApi,
   type RunV3
 } from "../../src/api/client";
@@ -26,20 +26,26 @@ const servedDocument = JSON.parse(
   readFileSync(resolve(process.cwd(), "..", "tests", "api", "openapi_frozen.json"), "utf8")
 ) as { components: { schemas: Record<string, { properties?: Record<string, unknown> }> } };
 
-function publishedAgent(changes: Partial<AgentConfigurationRevision> = {}): AgentConfigurationRevision {
-  const item = {
+function publishedAgent(
+  changes: Partial<AgentConfigurationRevisionListItem> = {}
+): AgentConfigurationRevisionListItem {
+  const publication = {
     model: "sonnet",
     auth_profile_revision_hash: authHash,
     executor_revision: "claude-subscription/v1",
     provider_id: "anthropic",
     auth_mode: "subscription" as const,
     requested_capability: "headless" as const,
-    agent_configuration_revision_hash: configurationHash,
-    ...changes
+    agent_configuration_revision_hash: configurationHash
   };
   const served = servedDocument.components.schemas.AgentConfigurationRevisionResource;
-  expect(Object.keys(item).sort()).toEqual(Object.keys(served?.properties ?? {}).sort());
-  return item;
+  expect(Object.keys(publication).sort()).toEqual(Object.keys(served?.properties ?? {}).sort());
+  return {
+    ...publication,
+    startable: true,
+    not_startable_reason: null,
+    ...changes
+  };
 }
 
 function v3Revision(hash: string, documentBase64: string) {
@@ -314,6 +320,60 @@ describe("named agent picker", () => {
 
     await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
     expect(cockpitApi.publishAuthProfile).not.toHaveBeenCalled();
+  });
+
+  it("keeps a remembered unavailable choice visible and requires a healthy manual switch", async () => {
+    const healthyHash = "d".repeat(64);
+    localStorage.setItem(
+      NAMED_AGENT_CHOICE_STORAGE_KEY,
+      JSON.stringify({ builder: configurationHash })
+    );
+    const unavailable = publishedAgent({
+      startable: false,
+      not_startable_reason: "agent-executor-binding-unavailable"
+    });
+    const healthy = publishedAgent({
+      agent_configuration_revision_hash: healthyHash,
+      provider_id: "openai",
+      model: "codex"
+    });
+    const cockpitApi = api({
+      listAgentConfigurationRevisions: vi.fn(async () => ({
+        items: [unavailable, healthy],
+        next_after_revision_hash: null
+      }))
+    });
+
+    await publishWorkflow(cockpitApi);
+
+    const binding = await screen.findByRole("article", { name: "Binding builder" });
+    const picker = within(binding).getByLabelText("Agent for builder") as HTMLSelectElement;
+    expect(picker.value).toBe(configurationHash);
+    expect(
+      within(binding).getByLabelText("Binding source: Remembered").isConnected
+    ).toBe(true);
+    expect(within(binding).getByText("Unavailable").isConnected).toBe(true);
+    expect(
+      (within(binding).getByRole("option", { name: /sonnet.*Unavailable/ }) as HTMLOptionElement)
+        .disabled
+    ).toBe(true);
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+    await fireEvent.click(within(binding).getByRole("button", { name: "Why builder is unavailable" }));
+    expect(
+      within(binding).getByText(
+        "This deployment cannot start this executor. Choose another agent or repair its startup check."
+      ).isConnected
+    ).toBe(true);
+    expect(cockpitApi.start).not.toHaveBeenCalled();
+
+    await fireEvent.change(picker, { target: { value: healthyHash } });
+    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(globalThis.atob(vi.mocked(cockpitApi.start).mock.calls[0]?.[0].body_base64 ?? ""));
+    expect(body.agent_bindings).toEqual([
+      { role: "builder", agent_configuration_revision_hash: healthyHash }
+    ]);
   });
 
   it("decodes the published listing as the frozen page", () => {

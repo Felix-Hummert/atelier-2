@@ -411,7 +411,7 @@ describe("project occupancy editor", () => {
       })),
       getRevisionByName: vi.fn(async () => ({ display_name: "occupancy-proof", lineage_id: lineageId, workflow_revision_hash: workflowHash, revision_number: 1 })),
       listAgentConfigurationRevisions: vi.fn(async () => ({
-        items: [{ model: "operator", auth_profile_revision_hash: "f".repeat(64), executor_revision: "v1", provider_id: "fake", auth_mode: "api_key" as const, requested_capability: "headless" as const, agent_configuration_revision_hash: knownHash }],
+        items: [{ model: "operator", auth_profile_revision_hash: "f".repeat(64), executor_revision: "v1", provider_id: "fake", auth_mode: "api_key" as const, requested_capability: "headless" as const, agent_configuration_revision_hash: knownHash, startable: true, not_startable_reason: null }],
         next_after_revision_hash: null
       })),
       getWorkflowRevision: vi.fn(async () => listedV3Revision("occupancy-proof", workflowHash)),
@@ -584,8 +584,8 @@ describe("project occupancy editor", () => {
       ),
       listAgentConfigurationRevisions: vi.fn(async () => ({
         items: [
-          { model: "operator", auth_profile_revision_hash: "f".repeat(64), executor_revision: "v1", provider_id: "fake", auth_mode: "api_key" as const, requested_capability: "headless" as const, agent_configuration_revision_hash: knownHash },
-          { model: "reviewer", auth_profile_revision_hash: "a".repeat(64), executor_revision: "v1", provider_id: "fake", auth_mode: "api_key" as const, requested_capability: "headless" as const, agent_configuration_revision_hash: foreignHash }
+          { model: "operator", auth_profile_revision_hash: "f".repeat(64), executor_revision: "v1", provider_id: "fake", auth_mode: "api_key" as const, requested_capability: "headless" as const, agent_configuration_revision_hash: knownHash, startable: true, not_startable_reason: null },
+          { model: "reviewer", auth_profile_revision_hash: "a".repeat(64), executor_revision: "v1", provider_id: "fake", auth_mode: "api_key" as const, requested_capability: "headless" as const, agent_configuration_revision_hash: foreignHash, startable: true, not_startable_reason: null }
         ],
         next_after_revision_hash: null
       }))
@@ -785,8 +785,8 @@ describe("project occupancy editor", () => {
       putProjectOccupancy,
       listAgentConfigurationRevisions: vi.fn(async () => ({
         items: [
-          { model: "operator", auth_profile_revision_hash: "f".repeat(64), executor_revision: "v1", provider_id: "fake", auth_mode: "api_key" as const, requested_capability: "headless" as const, agent_configuration_revision_hash: knownHash },
-          { model: "reviewer", auth_profile_revision_hash: "a".repeat(64), executor_revision: "v1", provider_id: "fake", auth_mode: "api_key" as const, requested_capability: "headless" as const, agent_configuration_revision_hash: foreignHash }
+          { model: "operator", auth_profile_revision_hash: "f".repeat(64), executor_revision: "v1", provider_id: "fake", auth_mode: "api_key" as const, requested_capability: "headless" as const, agent_configuration_revision_hash: knownHash, startable: true, not_startable_reason: null },
+          { model: "reviewer", auth_profile_revision_hash: "a".repeat(64), executor_revision: "v1", provider_id: "fake", auth_mode: "api_key" as const, requested_capability: "headless" as const, agent_configuration_revision_hash: foreignHash, startable: true, not_startable_reason: null }
         ],
         next_after_revision_hash: null
       }))

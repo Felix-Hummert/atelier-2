@@ -567,6 +567,10 @@ class DbosDurableRunStarter:
                             )
                         ):
                             return DurableAgentExecutorCapabilityUnavailable()
+                        if not self._agent_executor_registry.is_startable(
+                            executor_key, configuration.requested_capability
+                        ):
+                            return DurableAgentExecutorBindingUnavailable()
                         resolved.append(
                             ResolvedAgentBinding(binding.role, configuration, auth)
                         )

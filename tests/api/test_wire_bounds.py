@@ -86,6 +86,13 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     ),
     "AgentConfigurationRevisionResource.model": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentConfigurationRevisionResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
+    "AgentConfigurationRevisionListItemResource.executor_revision": (
+        MAXIMUM_AGENT_FIELD_CHARACTERS
+    ),
+    "AgentConfigurationRevisionListItemResource.model": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "AgentConfigurationRevisionListItemResource.provider_id": (
+        MAXIMUM_PROVIDER_ID_CHARACTERS
+    ),
     "AgentReceiptResource.executor_operational_identity": (
         MAXIMUM_AGENT_FIELD_CHARACTERS
     ),

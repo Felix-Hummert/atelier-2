@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Never, cast
@@ -47,6 +48,16 @@ from atelier2.api.context import ApiPorts
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import encode_public_run_reference
 from atelier2.application.bind_node import agent_execution_request_v2
+from atelier2.application.cancel_agent_attempt import (
+    continue_agent_attempt_cancellation,
+)
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptReplacement,
+    CancelAgentAttemptRequest,
+    RunnerGenerationBinding,
+    RunnerGenerationId,
+    RunnerManifestId,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     AgentBinding,
@@ -66,7 +77,11 @@ from atelier2.contracts.agents import (
     ResolvedAgentBinding,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.executions import (
+    AgentExecutionRefusal,
+    NodeExecutionId,
+    SubmitWaitAnswerRequest,
+)
 from atelier2.contracts.node_bindings import AgentNodeBindingV2
 from atelier2.contracts.run_bindings import RunBindingConflict, RunV2
 from atelier2.contracts.run_projections import (
@@ -78,16 +93,29 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationAccepted,
+    AgentAttemptCancellationStale,
+    AgentAttemptClaimedByThisCall,
+    AgentExecutorBindingRefusalFenced,
+    AgentExecutorBindingRefusalNeedsPreparedCleanup,
+    AgentExecutorBindingRefusalWritten,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AgentConfigurationRevisionPage,
     AuthProfileRevisionCreated,
     AuthProfileRevisionPage,
 )
-from atelier2.ports.agent_executions import AgentExecutorRegistry
+from atelier2.ports.agent_executions import (
+    AgentExecutorKey,
+    AgentExecutorRegistration,
+    AgentExecutorRegistry,
+)
 from atelier2.ports.durable_runs import (
     DurableAgentExecutorBindingUnavailable,
     DurableAgentExecutorCapabilityUnavailable,
+    DurableAnswerCreated,
     DurableRunCreated,
     StartPublishedRunRequestV2,
 )
@@ -98,6 +126,7 @@ from atelier2.ports.published_revisions import (
 from atelier2.ports.run_queries import (
     RunFound,
 )
+from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_attempt_execution,
@@ -124,7 +153,8 @@ def _effect_factory(root: Path) -> LoopbackEffectAdapterFactory:
 
 
 def _runtime(
-    root: Path, factories: tuple[RecordingAgentExecutorFactoryV2, ...]
+    root: Path,
+    factories: tuple[RecordingAgentExecutorFactoryV2 | AgentExecutorRegistration, ...],
 ) -> DbosRuntime:
     return DbosRuntime(
         DbosRuntimeSettings(
@@ -808,6 +838,652 @@ def _wait_completed(runtime: DbosRuntime, run_id: RunId) -> RunV2:
     raise AssertionError("V2 run did not complete")
 
 
+def _wait_failed(runtime: DbosRuntime, run_id: RunId) -> RunV2:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        result = durable_queries(runtime.engine).get_run(run_id)
+        if (
+            isinstance(result, RunFound)
+            and result.projection.run.state is RunState.FAILED
+        ):
+            assert isinstance(result.projection.run, RunV2)
+            return result.projection.run
+        time.sleep(0.025)
+    raise AssertionError("V2 run did not fail")
+
+
+def _wait_for_state(runtime: DbosRuntime, run_id: RunId, state: RunState) -> RunV2:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        result = durable_queries(runtime.engine).get_run(run_id)
+        if isinstance(result, RunFound) and result.projection.run.state is state:
+            assert isinstance(result.projection.run, RunV2)
+            return result.projection.run
+        time.sleep(0.025)
+    raise AssertionError(f"V2 run did not reach {state.value}")
+
+
+def test_registry_startability_is_one_declared_factory_and_capability_decision() -> (
+    None
+):
+    startable = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "startable", b"ok"
+    )
+    unavailable = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli-unstartable/v1", "unavailable", b"must-not-run"
+    )
+    registry = AgentExecutorRegistry(
+        (startable, AgentExecutorRegistration.unavailable(unavailable))
+    )
+    startable_key = startable.key
+    unavailable_key = unavailable.key
+    missing_key = AgentExecutorKey(
+        ProviderId("missing"), AgentExecutorRevision("missing/v1")
+    )
+
+    assert registry.contains(startable_key)
+    assert registry.contains(unavailable_key)
+    assert not registry.contains(missing_key)
+    assert registry.is_startable(startable_key, AgentExecutionCapability.HEADLESS)
+    assert not registry.is_startable(
+        startable_key, AgentExecutionCapability.HEADLESS_WITH_TOOLS
+    )
+    assert not registry.is_startable(unavailable_key, AgentExecutionCapability.HEADLESS)
+    assert not registry.is_startable(missing_key, AgentExecutionCapability.HEADLESS)
+    assert startable.opens == 0
+    assert unavailable.opens == 0
+
+
+@pytest.mark.proves("a-listed-agent-configuration-names-current-startability")
+def test_list_publication_and_start_share_the_current_registry_decision(
+    tmp_path: Path,
+) -> None:
+    unavailable = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "unavailable", b"must-not-run"
+    )
+    sibling = RecordingAgentExecutorFactoryV2(
+        "openai", "codex-cli/v1", "sibling", b"review"
+    )
+    runtime = _runtime(
+        tmp_path,
+        (AgentExecutorRegistration.unavailable(unavailable), sibling),
+    )
+    runtime.initialize_storage()
+    client = _api_client(runtime)
+    try:
+        catalog = DbosAgentConfigurationCatalog(
+            runtime.engine, runtime.agent_executor_registry
+        )
+        claude_auth = AuthProfileRevision(
+            "max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION
+        )
+        sibling_auth = AuthProfileRevision(
+            "codex", 1, ProviderId("openai"), AuthMode.SUBSCRIPTION
+        )
+        assert isinstance(
+            catalog.publish_auth_profile_revision(claude_auth),
+            AuthProfileRevisionCreated,
+        )
+        assert isinstance(
+            catalog.publish_auth_profile_revision(sibling_auth),
+            AuthProfileRevisionCreated,
+        )
+        claude = AgentConfigurationRevision(
+            "opus",
+            claude_auth.revision_hash,
+            AgentExecutorRevision("claude-cli/v1"),
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        sibling_configuration = AgentConfigurationRevision(
+            "gpt-5.6",
+            sibling_auth.revision_hash,
+            AgentExecutorRevision("codex-cli/v1"),
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        assert isinstance(
+            catalog.publish_agent_configuration_revision(claude),
+            AgentConfigurationRevisionCreated,
+        )
+        assert isinstance(
+            catalog.publish_agent_configuration_revision(sibling_configuration),
+            AgentConfigurationRevisionCreated,
+        )
+        workflow = WorkflowRevision(
+            b"""format_version: 2
+start: build
+nodes:
+  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
+  - {id: build, type: agent, role: builder, job: build, next: done}
+"""
+        )
+        DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
+
+        listed = client.get(API_PREFIX + "/agent-configuration-revisions")
+        assert listed.status_code == 200
+        by_model = {item["model"]: item for item in listed.json()["items"]}
+        assert by_model["opus"]["startable"] is False
+        assert (
+            by_model["opus"]["not_startable_reason"]
+            == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value
+        )
+        assert by_model["gpt-5.6"]["startable"] is True
+        assert by_model["gpt-5.6"]["not_startable_reason"] is None
+
+        refused = client.post(
+            API_PREFIX + "/runs",
+            json={
+                "workflow_format_version": 2,
+                "run_id": "unavailable-new-draft",
+                "workflow_revision_hash": workflow.revision_hash.value,
+                "agent_bindings": [
+                    {
+                        "role": "builder",
+                        "agent_configuration_revision_hash": claude.revision_hash.value,
+                    }
+                ],
+            },
+        )
+        assert refused.status_code == 409
+        assert refused.json()["type"].endswith(":agent-executor-binding-unavailable")
+        assert unavailable.opens == 0
+        with runtime.engine.connect() as connection:
+            assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(agent_attempts)
+                )
+                == 0
+            )
+    finally:
+        runtime.close()
+
+
+@pytest.mark.proves("a-bound-unstarted-run-refuses-when-its-executor-is-unavailable")
+def test_bound_unstarted_v2_run_fails_without_an_attempt_when_executor_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    seeded_factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "seed", b"unused"
+    )
+    seeded = _runtime(tmp_path, (seeded_factory,))
+    run_id = RunId("unavailable-executor/bound-run")
+    try:
+        seeded.initialize_storage()
+        workflow, bindings = _publish_single_capability(
+            seeded, AgentExecutionCapability.HEADLESS
+        )
+        started = DbosDurableRunStarter(
+            seeded.engine, seeded.settings, seeded.agent_executor_registry
+        ).start_published(
+            StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
+        )
+        assert isinstance(started, DurableRunCreated)
+    finally:
+        seeded.close()
+
+    unavailable_factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "unavailable", b"must-not-run"
+    )
+    restarted = _runtime(
+        tmp_path, (AgentExecutorRegistration.unavailable(unavailable_factory),)
+    )
+    try:
+        with restarted.engine.connect() as connection:
+            restart_head = connection.execute(
+                sa.select(
+                    runs.c.state,
+                    runs.c.current_node_id,
+                    runs.c.state_version,
+                    runs.c.last_event_sequence,
+                ).where(runs.c.run_id == run_id.value)
+            ).one()
+        assert tuple(restart_head) == ("STARTED", "build", 0, 0)
+        restarted.launch()
+        failed = _wait_failed(restarted, run_id)
+
+        assert unavailable_factory.opens == 0
+        assert failed.terminal_hash is not None
+        with restarted.engine.connect() as connection:
+            events = tuple(
+                connection.execute(
+                    sa.select(run_events).where(run_events.c.run_id == run_id.value)
+                ).mappings()
+            )
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(agent_attempts)
+                )
+                == 0
+            )
+        assert len(events) == 1
+        assert events[0]["event_kind"] == "AGENT_FAILED"
+        assert events[0]["payload"] == (
+            AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii")
+        )
+        assert events[0]["agent_attempt_id"] is None
+        assert events[0]["attempt_ordinal"] is None
+        response = _api_client(restarted).get(
+            API_PREFIX + "/runs/" + encode_public_run_reference(run_id) + "/events"
+        )
+        assert response.status_code == 200
+        event = json.loads(
+            next(
+                line.removeprefix("data: ")
+                for line in response.text.splitlines()
+                if line.startswith("data: ")
+            )
+        )
+        assert event["event"] == "AGENT_FAILED"
+        assert (
+            event["reason"] == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value
+        )
+        assert "failure_code" not in event
+        assert "attempt_id" not in event
+        assert "attempt_ordinal" not in event
+        detail = _api_client(restarted).get(
+            API_PREFIX + "/runs/" + encode_public_run_reference(run_id) + "/nodes/build"
+        )
+        assert detail.status_code == 200
+        assert (
+            detail.json()["refusal"]
+            == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value
+        )
+    finally:
+        restarted.close()
+
+
+@pytest.mark.proves("a-bound-unstarted-run-refuses-when-its-executor-is-unavailable")
+def test_wait_predecessor_stays_intact_until_it_reaches_an_unavailable_executor(
+    tmp_path: Path,
+) -> None:
+    wait_then_agent = b"""format_version: 2
+start: ask
+nodes:
+  - {id: done, type: subworkflow, operation: add, operands: [2, 3], next: null}
+  - {id: build, type: agent, role: builder, job: build, next: done}
+  - {id: ask, type: wait, answer_type: integer, next: build}
+"""
+    seeded_factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "seed", b"unused"
+    )
+    run_id = RunId("unavailable-executor/wait-predecessor")
+    seeded = _runtime(tmp_path, (seeded_factory,))
+    try:
+        seeded.initialize_storage()
+        workflow, bindings = _publish_single_capability(
+            seeded,
+            AgentExecutionCapability.HEADLESS,
+            document=wait_then_agent,
+        )
+        assert isinstance(
+            DbosDurableRunStarter(
+                seeded.engine, seeded.settings, seeded.agent_executor_registry
+            ).start_published(
+                StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
+            ),
+            DurableRunCreated,
+        )
+        seeded.launch()
+        assert (
+            _wait_for_state(seeded, run_id, RunState.WAITING_INPUT).current_node_id
+            == "ask"
+        )
+    finally:
+        seeded.close()
+
+    unavailable_factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "unavailable", b"must-not-run"
+    )
+    restarted = _runtime(
+        tmp_path, (AgentExecutorRegistration.unavailable(unavailable_factory),)
+    )
+    try:
+        restarted.launch()
+        assert (
+            _wait_for_state(restarted, run_id, RunState.WAITING_INPUT).current_node_id
+            == "ask"
+        )
+
+        answer = DbosWaitAnswerer(
+            restarted.engine, restarted.settings.application_version
+        ).submit_result(
+            SubmitWaitAnswerRequest(run_id, workflow.revision_hash, "ask", b"5")
+        )
+        assert isinstance(answer, DurableAnswerCreated)
+        _wait_failed(restarted, run_id)
+
+        assert unavailable_factory.opens == 0
+        with restarted.engine.connect() as connection:
+            assert tuple(
+                connection.scalars(
+                    sa.select(run_events.c.event_kind)
+                    .where(run_events.c.run_id == run_id.value)
+                    .order_by(run_events.c.event_sequence)
+                )
+            ) == ("WAITING_INPUT", "WAIT_ANSWERED", "AGENT_FAILED")
+    finally:
+        restarted.close()
+
+
+@pytest.mark.proves("a-bound-unstarted-run-refuses-when-its-executor-is-unavailable")
+def test_prepared_v2_attempt_is_cleaned_before_unavailable_executor_refusal(
+    tmp_path: Path,
+) -> None:
+    seeded_factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "seed", b"unused"
+    )
+    seeded = _runtime(tmp_path, (seeded_factory,))
+    run_id = RunId("unavailable-executor/prepared-run")
+    try:
+        seeded.initialize_storage()
+        workflow, bindings = _publish_single_capability(
+            seeded, AgentExecutionCapability.HEADLESS
+        )
+        started = DbosDurableRunStarter(
+            seeded.engine, seeded.settings, seeded.agent_executor_registry
+        ).start_published(
+            StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
+        )
+        assert isinstance(started, DurableRunCreated)
+        auth = AuthProfileRevision(
+            "max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION
+        )
+        configuration = AgentConfigurationRevision(
+            "opus",
+            auth.revision_hash,
+            AgentExecutorRevision("claude-cli/v1"),
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        request = _replayed_request(
+            _encoded_binding(configuration, auth, include_contract=True),
+            run_id,
+            workflow.revision_hash,
+            "build",
+            seeded_factory.operational_identity,
+            seeded_factory.declared_capabilities,
+        )
+        execution = agent_attempt_execution(request)
+        prepared = DbosAgentAttemptStore(
+            seeded.engine, seeded.settings.application_version
+        ).prepare(execution)
+        assert prepared.state.value == "PREPARED"
+        with seeded.engine.connect() as connection:
+            run_head = connection.execute(
+                sa.select(
+                    runs.c.state,
+                    runs.c.current_node_id,
+                    runs.c.state_version,
+                    runs.c.last_event_sequence,
+                ).where(runs.c.run_id == run_id.value)
+            ).one()
+        assert tuple(run_head) == ("STARTED", "build", 0, 0)
+        store = DbosAgentAttemptStore(
+            seeded.engine, seeded.settings.application_version
+        )
+        requested_cleanup = store.refuse_unavailable_executor(request)
+        assert isinstance(
+            requested_cleanup, AgentExecutorBindingRefusalNeedsPreparedCleanup
+        )
+        accepted = store.request_cancellation(requested_cleanup.cleanup_request)
+        assert isinstance(accepted, AgentAttemptCancellationAccepted)
+        in_progress = store.refuse_unavailable_executor(request)
+        assert isinstance(in_progress, AgentExecutorBindingRefusalNeedsPreparedCleanup)
+        assert in_progress.cleanup_request == requested_cleanup.cleanup_request
+        workspace_owner = seeded.agent_workspace_owner
+        assert workspace_owner is not None
+        terminal = continue_agent_attempt_cancellation(
+            requested_cleanup.cleanup_request,
+            store,
+            seeded.agent_process_supervisor,
+            workspace_owner,
+        )
+        assert terminal is not None
+        assert isinstance(
+            store.refuse_unavailable_executor(request),
+            AgentExecutorBindingRefusalWritten,
+        )
+        assert isinstance(
+            store.refuse_unavailable_executor(request),
+            AgentExecutorBindingRefusalWritten,
+        )
+        failed = durable_queries(seeded.engine).get_run(run_id)
+        assert isinstance(failed, RunFound)
+        assert failed.projection.run.state is RunState.FAILED
+        with seeded.engine.connect() as connection:
+            attempt = connection.execute(sa.select(agent_attempts)).mappings().one()
+            event_kinds = tuple(
+                connection.scalars(
+                    sa.select(run_events.c.event_kind)
+                    .where(run_events.c.run_id == run_id.value)
+                    .order_by(run_events.c.event_sequence)
+                )
+            )
+        assert attempt["state"] == "CANCELLED"
+        assert attempt["process_phase"] == "CLEANUP_ATTESTED"
+        assert attempt["cancellation_disposition"] == "NEVER_LAUNCHED"
+        assert event_kinds == (
+            "AGENT_CANCEL_REQUESTED",
+            "AGENT_CANCELLED",
+            "AGENT_FAILED",
+        )
+    finally:
+        seeded.close()
+
+
+@pytest.mark.proves("a-bound-unstarted-run-refuses-when-its-executor-is-unavailable")
+def test_prepared_v2_attempt_is_cleaned_through_durable_node_when_executor_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seeded_factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "seed", b"unused"
+    )
+    seeded = _runtime(tmp_path, (seeded_factory,))
+    run_id = RunId("unavailable-executor/prepared-durable-node")
+    try:
+        seeded.initialize_storage()
+        workflow, bindings = _publish_single_capability(
+            seeded, AgentExecutionCapability.HEADLESS
+        )
+        started = DbosDurableRunStarter(
+            seeded.engine, seeded.settings, seeded.agent_executor_registry
+        ).start_published(
+            StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
+        )
+        assert isinstance(started, DurableRunCreated)
+        auth = AuthProfileRevision(
+            "max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION
+        )
+        configuration = AgentConfigurationRevision(
+            "opus",
+            auth.revision_hash,
+            AgentExecutorRevision("claude-cli/v1"),
+            AgentExecutionCapability.HEADLESS,
+            AgentConfigurationRevisionFormatVersion.V2,
+        )
+        request = _replayed_request(
+            _encoded_binding(configuration, auth, include_contract=True),
+            run_id,
+            workflow.revision_hash,
+            "build",
+            seeded_factory.operational_identity,
+            seeded_factory.declared_capabilities,
+        )
+        prepared = DbosAgentAttemptStore(
+            seeded.engine, seeded.settings.application_version
+        ).prepare(agent_attempt_execution(request))
+        assert prepared.state.value == "PREPARED"
+    finally:
+        seeded.close()
+
+    cancel_calls = {"count": 0}
+    original_request_cancellation = DbosAgentAttemptStore.request_cancellation
+
+    def request_cancellation(
+        self: DbosAgentAttemptStore, cleanup_request: CancelAgentAttemptRequest
+    ) -> object:
+        cancel_calls["count"] += 1
+        if cancel_calls["count"] == 1:
+            return AgentAttemptCancellationStale()
+        return original_request_cancellation(self, cleanup_request)
+
+    monkeypatch.setattr(
+        DbosAgentAttemptStore, "request_cancellation", request_cancellation
+    )
+    unavailable_factory = RecordingAgentExecutorFactoryV2(
+        "anthropic", "claude-cli/v1", "seed", b"must-not-run"
+    )
+    restarted = _runtime(
+        tmp_path, (AgentExecutorRegistration.unavailable(unavailable_factory),)
+    )
+    try:
+        restarted.launch()
+        failed = _wait_failed(restarted, run_id)
+
+        assert cancel_calls["count"] >= 2
+        assert unavailable_factory.opens == 0
+        assert failed.terminal_hash is not None
+        with restarted.engine.connect() as connection:
+            attempt = connection.execute(sa.select(agent_attempts)).mappings().one()
+            events = tuple(
+                connection.execute(
+                    sa.select(run_events)
+                    .where(run_events.c.run_id == run_id.value)
+                    .order_by(run_events.c.event_sequence)
+                ).mappings()
+            )
+        assert attempt["state"] == "CANCELLED"
+        assert attempt["process_phase"] == "CLEANUP_ATTESTED"
+        assert attempt["cancellation_disposition"] == "NEVER_LAUNCHED"
+        assert tuple(event["event_kind"] for event in events) == (
+            "AGENT_CANCEL_REQUESTED",
+            "AGENT_CANCELLED",
+            "AGENT_FAILED",
+        )
+        assert events[-1]["payload"] == (
+            AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii")
+        )
+        assert events[-1]["agent_attempt_id"] is None
+        assert events[-1]["attempt_ordinal"] is None
+        client = _api_client(restarted)
+        public_ref = encode_public_run_reference(run_id)
+        listed = client.get(API_PREFIX + "/runs/" + public_ref)
+        assert listed.status_code == 200
+        listed_body = listed.json()
+        failed_rail = [
+            ("build", "failed", None),
+            ("done", "queued", None),
+        ]
+        assert [
+            (entry["node_id"], entry["state"], entry["attempt"])
+            for entry in listed_body["node_rail"]
+        ] == failed_rail
+        assert listed_body["agent_attempts"] == []
+        detail = client.get(API_PREFIX + "/runs/" + public_ref + "/nodes/build")
+        assert detail.status_code == 200
+        assert detail.json()["state"] == "failed"
+        assert (
+            detail.json()["refusal"]
+            == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value
+        )
+        events_response = client.get(API_PREFIX + "/runs/" + public_ref + "/events")
+        assert events_response.status_code == 200
+        streamed = [
+            json.loads(line.removeprefix("data: "))
+            for line in events_response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert streamed[-1]["event"] == "AGENT_FAILED"
+        assert (
+            streamed[-1]["reason"]
+            == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value
+        )
+        assert "attempt_id" not in streamed[-1]
+        assert [
+            (entry["node_id"], entry["state"], entry["attempt"])
+            for entry in streamed[-1]["node_rail"]
+        ] == failed_rail
+    finally:
+        restarted.close()
+
+
+@pytest.mark.parametrize(
+    "predecessor",
+    ("launch-armed", "cancel-requested", "runner-bound"),
+)
+@pytest.mark.proves("a-bound-unstarted-run-refuses-when-its-executor-is-unavailable")
+def test_unavailable_executor_refusal_leaves_launch_and_runner_fences_unchanged(
+    tmp_path: Path, predecessor: str
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, f"unavailable-executor/fence/{predecessor}")
+        )
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        prepared = store.prepare(execution)
+        match predecessor:
+            case "launch-armed":
+                assert isinstance(store.claim(execution), AgentAttemptClaimedByThisCall)
+            case "cancel-requested":
+                assert isinstance(
+                    store.request_cancellation(
+                        CancelAgentAttemptRequest(
+                            execution.request.run_id,
+                            execution.attempt_id,
+                            "existing-cancel",
+                            prepared.state_version,
+                            AgentAttemptReplacement.NONE,
+                        )
+                    ),
+                    AgentAttemptCancellationAccepted,
+                )
+            case "runner-bound":
+                store.bind_runner_generation(
+                    execution,
+                    RunnerGenerationBinding(
+                        execution.attempt_id,
+                        execution.request.request_hash,
+                        RunnerGenerationId("existing-runner-generation"),
+                        RunnerManifestId.of(b"existing-runner-manifest"),
+                    ),
+                )
+            case _ as unreachable:
+                raise AssertionError(f"unexpected fence predecessor: {unreachable}")
+
+        before = store.load(execution.attempt_id)
+        with runtime.engine.connect() as connection:
+            events_before = tuple(
+                connection.execute(
+                    sa.select(run_events.c.event_kind, run_events.c.event_hash)
+                    .where(run_events.c.run_id == execution.request.run_id.value)
+                    .order_by(run_events.c.event_sequence)
+                )
+            )
+
+        fenced = store.refuse_unavailable_executor(execution.request)
+
+        assert isinstance(fenced, AgentExecutorBindingRefusalFenced)
+        assert fenced.attempt == before
+        assert store.load(execution.attempt_id) == before
+        with runtime.engine.connect() as connection:
+            events_after = tuple(
+                connection.execute(
+                    sa.select(run_events.c.event_kind, run_events.c.event_hash)
+                    .where(run_events.c.run_id == execution.request.run_id.value)
+                    .order_by(run_events.c.event_sequence)
+                )
+            )
+        assert events_after == events_before
+    finally:
+        runtime.close()
+
+
 def test_completed_v2_history_reopens_without_process_supervision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1207,6 +1883,8 @@ def test_published_configurations_are_listed_over_the_api(tmp_path: Path) -> Non
         for item in first_page["items"] + second_page.json()["items"]:
             assert item["provider_id"] == "anthropic"
             assert item["auth_mode"] in {"subscription", "api_key"}
+            assert item["startable"] is True
+            assert item["not_startable_reason"] is None
             assert "secret" not in str(item).lower()
     finally:
         runtime.close()

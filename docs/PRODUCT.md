@@ -243,13 +243,16 @@ run. The same startup proves the composed profile resolves the credential
 directory it was given, loads no user configuration, and configures no MCP
 server, so the operator's own Codex trust — including the per-project trust its
 configuration records — is never inherited by a served agent. For Claude,
-Grok, and Codex alike, pin and attest still run. A failure names
-`start_refusal` and omits the factory; serve stays up. A run that binds the
-refused executor is the same binding-unavailable refusal as a missing one,
-before any process starts. Two leftovers: the picker has no startability field
-yet, so an unstartable executor is simply absent rather than badged; and a
-nonterminal run already bound to that executor still raises
-`DbosRuntimeBindingConflict` at compose if the factory is omitted.
+Grok, and Codex alike, pin and attest still run. A failed deployment remains a
+declared registry entry without a factory, so Serve stays up and the current
+configuration list answers the closed startability pair without a host
+diagnostic. New Run retains a known unavailable Project or Remembered binding,
+marks it `◇ Unavailable`, and permits an explicit healthy draft choice without
+rewriting project occupancy. When an already bound, unstarted run reaches that
+entry, it writes one attempt-less `agent-executor-binding-unavailable` terminal
+refusal before a provider process starts. A missing declaration or capability
+mismatch remains the loud runtime binding conflict, and every attempt that may
+have crossed its launch fence remains #15 recovery work.
 
 The raw frame a provider writes has its own bound, distinct from the durable
 output bound, because the durable answer travels inside a JSON envelope. The

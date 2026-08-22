@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from atelier2.api.wire.resources import (
+    AgentConfigurationRevisionListItemResource,
     AgentConfigurationRevisionResource,
     AuthProfileRevisionResource,
 )
 from atelier2.contracts.agents import (
     AgentConfigurationRevision,
+    AgentConfigurationRevisionListItem,
     AuthProfileRevision,
 )
 
@@ -36,4 +38,17 @@ def agent_configuration_revision_resource(
         auth_mode=auth_profile.auth_mode.value,
         requested_capability=revision.requested_capability.value,
         agent_configuration_revision_hash=revision.revision_hash.value,
+    )
+
+
+def agent_configuration_revision_list_item_resource(
+    item: AgentConfigurationRevisionListItem,
+) -> AgentConfigurationRevisionListItemResource:
+    revision = agent_configuration_revision_resource(item.revision, item.auth_profile)
+    return AgentConfigurationRevisionListItemResource(
+        **revision.model_dump(),
+        startable=item.startable,
+        not_startable_reason=(
+            None if item.startable else "agent-executor-binding-unavailable"
+        ),
     )

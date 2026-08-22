@@ -198,6 +198,19 @@ class AgentConfigurationRevision:
 
 
 @dataclass(frozen=True)
+class AgentConfigurationRevisionListItem:
+    """A listed immutable configuration with the host's current startability."""
+
+    revision: AgentConfigurationRevision
+    auth_profile: AuthProfileRevision
+    startable: bool
+
+    def __post_init__(self) -> None:
+        if type(self.startable) is not bool:
+            raise TypeError("agent configuration startability must be a bool")
+
+
+@dataclass(frozen=True)
 class AgentBinding:
     role: AgentRole
     agent_configuration_revision_hash: AgentConfigurationRevisionHash

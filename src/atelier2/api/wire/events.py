@@ -121,6 +121,13 @@ class AgentFailedEventResourceV2(RunEventBaseResourceV2):
     attempt_ordinal: Literal[1, 2]
 
 
+class AgentExecutorBindingUnavailableEventResourceV2(RunEventBaseResourceV2):
+    """An Agent node stopped before any provider attempt could be claimed."""
+
+    event: Literal["AGENT_FAILED"]
+    reason: Literal["agent-executor-binding-unavailable"]
+
+
 class AgentCancelRequestedEventResourceV2(RunEventBaseResourceV2):
     event: Literal["AGENT_CANCEL_REQUESTED"]
     attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
@@ -182,9 +189,10 @@ class SubworkflowCompletedEventResourceV2(RunEventBaseResourceV2):
     result_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
-RunEventResourceV2 = Annotated[
+RunEventResourceV2 = (
     AgentCompletedEventResourceV2
     | AgentFailedEventResourceV2
+    | AgentExecutorBindingUnavailableEventResourceV2
     | AgentCancelRequestedEventResourceV2
     | AgentCancelledEventResourceV2
     | AgentInterruptedEventResourceV2
@@ -193,9 +201,8 @@ RunEventResourceV2 = Annotated[
     | ActionCompletedEventResourceV2
     | WaitingInputEventResourceV2
     | WaitAnsweredEventResourceV2
-    | SubworkflowCompletedEventResourceV2,
-    Field(discriminator="event"),
-]
+    | SubworkflowCompletedEventResourceV2
+)
 
 
 class RunEventBaseResourceV3(ApiModel):
@@ -247,6 +254,13 @@ class AgentFailedEventResourceV3(RunEventBaseResourceV3):
     reason: str | None
     attempt_id: str = Field(pattern=SHA256_HASH_PATTERN)
     attempt_ordinal: Literal[1, 2]
+
+
+class AgentExecutorBindingUnavailableEventResourceV3(RunEventBaseResourceV3):
+    """An Agent node stopped before any provider attempt could be claimed."""
+
+    event: Literal["AGENT_FAILED"]
+    reason: Literal["agent-executor-binding-unavailable"]
 
 
 class AgentCancelRequestedEventResourceV3(RunEventBaseResourceV3):
@@ -319,9 +333,10 @@ class WaitAnsweredEventResourceV3(RunEventBaseResourceV3):
     answer_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
-RunEventResourceV3 = Annotated[
+RunEventResourceV3 = (
     AgentCompletedEventResourceV3
     | AgentFailedEventResourceV3
+    | AgentExecutorBindingUnavailableEventResourceV3
     | AgentCancelRequestedEventResourceV3
     | AgentCancelledEventResourceV3
     | AgentInterruptedEventResourceV3
@@ -329,8 +344,7 @@ RunEventResourceV3 = Annotated[
     | ActionReconciliationResolvedEventResourceV3
     | ActionCompletedEventResourceV3
     | WaitingInputEventResourceV3
-    | WaitAnsweredEventResourceV3,
-    Field(discriminator="event"),
-]
+    | WaitAnsweredEventResourceV3
+)
 
 AnyRunEventResource = RunEventResource | RunEventResourceV2 | RunEventResourceV3

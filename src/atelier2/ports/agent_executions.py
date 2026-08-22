@@ -282,35 +282,78 @@ class AgentExecutorFactoryV2(Protocol):
 
 @dataclass(frozen=True)
 class AgentExecutorRegistryEntry:
-    object_identity: int
+    object_identity: int | None
     manifest_entry: AgentExecutorManifestEntry
-    factory: AgentExecutorFactoryV2
+    factory: AgentExecutorFactoryV2 | None
 
     @property
     def key(self) -> AgentExecutorKey:
         return self.manifest_entry.key
 
 
-class AgentExecutorRegistry:
-    """Immutable host registry for exact provider/executor factories."""
+@dataclass(frozen=True)
+class AgentExecutorRegistration:
+    """One declared executor and the factory that can currently start it."""
 
-    def __init__(self, factories: tuple[AgentExecutorFactoryV2, ...] = ()) -> None:
-        object_identities = tuple(id(factory) for factory in factories)
+    manifest_entry: AgentExecutorManifestEntry
+    factory: AgentExecutorFactoryV2 | None
+
+    @classmethod
+    def startable(cls, factory: AgentExecutorFactoryV2) -> AgentExecutorRegistration:
+        return cls(
+            AgentExecutorManifestEntry(
+                factory.key,
+                factory.operational_identity,
+                frozenset(factory.declared_capabilities),
+            ),
+            factory,
+        )
+
+    @classmethod
+    def unavailable(cls, factory: AgentExecutorFactoryV2) -> AgentExecutorRegistration:
+        return cls(
+            AgentExecutorManifestEntry(
+                factory.key,
+                factory.operational_identity,
+                frozenset(factory.declared_capabilities),
+            ),
+            None,
+        )
+
+
+class AgentExecutorRegistry:
+    """Immutable host registry for declared executors and current startability."""
+
+    def __init__(
+        self,
+        registrations: tuple[
+            AgentExecutorFactoryV2 | AgentExecutorRegistration, ...
+        ] = (),
+    ) -> None:
+        factories = tuple(
+            registration.factory
+            if isinstance(registration, AgentExecutorRegistration)
+            else registration
+            for registration in registrations
+        )
+        object_identities = tuple(
+            id(factory) for factory in factories if factory is not None
+        )
         if len(set(object_identities)) != len(object_identities):
             raise ValueError("agent executor registry factory objects must be unique")
+        captured_registrations = tuple(
+            registration
+            if isinstance(registration, AgentExecutorRegistration)
+            else AgentExecutorRegistration.startable(registration)
+            for registration in registrations
+        )
         captured = tuple(
             AgentExecutorRegistryEntry(
-                object_identity,
-                AgentExecutorManifestEntry(
-                    factory.key,
-                    factory.operational_identity,
-                    frozenset(factory.declared_capabilities),
-                ),
-                factory,
+                (None if registration.factory is None else id(registration.factory)),
+                registration.manifest_entry,
+                registration.factory,
             )
-            for object_identity, factory in zip(
-                object_identities, factories, strict=True
-            )
+            for registration in captured_registrations
         )
         if any(
             not all(
@@ -364,3 +407,13 @@ class AgentExecutorRegistry:
         self, key: AgentExecutorKey
     ) -> frozenset[AgentExecutionCapability]:
         return self._by_key[key].manifest_entry.declared_capabilities
+
+    def is_startable(
+        self, key: AgentExecutorKey, capability: AgentExecutionCapability
+    ) -> bool:
+        entry = self._by_key.get(key)
+        return (
+            entry is not None
+            and entry.factory is not None
+            and capability in entry.manifest_entry.declared_capabilities
+        )

@@ -4,7 +4,7 @@
   import {
     CockpitRequestError,
     decodeCanonicalBase64,
-    type AgentConfigurationRevision,
+    type AgentConfigurationRevisionListItem,
     type AuthProfileInput,
     type CockpitApi,
     type OccupancyRevision,
@@ -132,13 +132,13 @@
 
   let revisions: RetainedRead<SavedWorkflowSnapshot, ReadFailure> =
     retainedRead<SavedWorkflowSnapshot, ReadFailure>();
-  let configurations: RetainedRead<AgentConfigurationRevision[], ReadFailure> =
-    retainedRead<AgentConfigurationRevision[], ReadFailure>();
+  let configurations: RetainedRead<AgentConfigurationRevisionListItem[], ReadFailure> =
+    retainedRead<AgentConfigurationRevisionListItem[], ReadFailure>();
   let projectOccupancy: RetainedRead<ProjectOccupancySnapshot, ReadFailure> =
     retainedRead<ProjectOccupancySnapshot, ReadFailure>();
   let activeOccupancyLineageId: string | null = null;
   let occupancyDraftGeneration = 0;
-  let publishedConfigurations: AgentConfigurationRevision[] = [];
+  let publishedConfigurations: AgentConfigurationRevisionListItem[] = [];
   let mode: "saved" | "publish" = "saved";
   let exactYaml = "";
   let draft: RunDraft | null = null;
@@ -155,6 +155,8 @@
   $: catalogByName = revisions.confirmed?.catalogByName ?? {};
   $: savedRows = groupSavedWorkflows(revisions.confirmed?.items ?? [], newestByName);
   $: publishedConfigurations = configurations.confirmed ?? [];
+  $: draftHasUnavailableBinding =
+    draft !== null && draft.bindings.some((binding) => bindingHasUnavailableExecutor(binding));
   $: visibleRows =
     chosenRowKey === null
       ? savedRows
@@ -570,6 +572,7 @@
   async function startDraft(): Promise<void> {
     if (draft === null) return;
     const selected = draft;
+    if (selected.bindings.some((binding) => bindingHasUnavailableExecutor(binding))) return;
     let mutation: StartMutation | null = null;
     if (selected.orders.length > 0 && !validateOrders(selected.orders)) return;
     if (bindsAgentRoles(selected.revision.graph)) {
@@ -792,6 +795,18 @@
     if (source === "looking") return "↻";
     if (source === "unavailable") return "◇";
     return "○";
+  }
+
+  function selectedConfiguration(
+    binding: BindingDraft
+  ): AgentConfigurationRevisionListItem | undefined {
+    return publishedConfigurations.find(
+      (item) => item.agent_configuration_revision_hash === binding.selectedHash
+    );
+  }
+
+  function bindingHasUnavailableExecutor(binding: BindingDraft): boolean {
+    return selectedConfiguration(binding)?.startable === false;
   }
 
   function setOrderValue(name: string, value: string): void {
@@ -1317,6 +1332,16 @@
                 {bindingSourceLabel(binding.source)}
               </span>
             </header>
+            {#if bindingHasUnavailableExecutor(binding)}
+              <p class="binding-startability" role="status">
+                <span aria-hidden="true">◇</span>
+                Unavailable
+                <InfoHint
+                  label={`Why ${binding.role} is unavailable`}
+                  exact="This deployment cannot start this executor. Choose another agent or repair its startup check."
+                />
+              </p>
+            {/if}
             {#if publishedConfigurations.length > 0 || binding.selectedHash.length > 0}
               <label class="named-agent">Agent
                 <select
@@ -1335,7 +1360,10 @@
                     </option>
                   {/if}
                   {#each publishedConfigurations as item (item.agent_configuration_revision_hash)}
-                    <option value={item.agent_configuration_revision_hash}>{namedAgentLabel(item)}</option>
+                    <option
+                      value={item.agent_configuration_revision_hash}
+                      disabled={!item.startable}
+                    >{namedAgentLabel(item)}{item.startable ? "" : " — Unavailable"}</option>
                   {/each}
                 </select>
               </label>
@@ -1358,13 +1386,21 @@
     {/if}
     <!-- Only a version 3 revision can be unexecutable: the older formats carry no
          such field, because everything they can express this build runs. -->
-    {#if draft.revision.graph.workflow_format_version === 3 && !draft.revision.graph.executable}
+    {#if (draft.revision.graph.workflow_format_version === 3 && !draft.revision.graph.executable) || draftHasUnavailableBinding}
       <section class="start-card unstartable" aria-labelledby="start-title">
         <div>
-          <p class="eyebrow">Published</p>
-          <h2 id="start-title">{draft.revision.graph.name}</h2>
-          {#if draft.revision.graph.description !== null}<p class="muted">{draft.revision.graph.description}</p>{/if}
-          <p class="revision-refusal">{cannotBeStarted(draft.revision.graph.not_executable_reason)}</p>
+          {#if draftHasUnavailableBinding}
+            <p class="eyebrow">Unavailable</p>
+            <h2 id="start-title">This run cannot start</h2>
+            <p class="revision-refusal">Choose a startable agent before starting this run.</p>
+          {:else}
+            {#if draft.revision.graph.workflow_format_version === 3}
+              <p class="eyebrow">Published</p>
+              <h2 id="start-title">{draft.revision.graph.name}</h2>
+              {#if draft.revision.graph.description !== null}<p class="muted">{draft.revision.graph.description}</p>{/if}
+              <p class="revision-refusal">{cannotBeStarted(draft.revision.graph.not_executable_reason)}</p>
+            {/if}
+          {/if}
         </div>
       </section>
     {:else}

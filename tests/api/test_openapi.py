@@ -537,6 +537,33 @@ def test_openapi_offers_the_capability_and_demands_it_back() -> None:
         assert echoed["additionalProperties"] is False
 
 
+def test_openapi_list_item_names_the_closed_startability_pair() -> None:
+    schema = served_app().openapi()
+    listing = schema["paths"][API_PREFIX + "/agent-configuration-revisions"]["get"]
+    page = _referenced_schema(schema, listing["responses"]["200"]["content"])
+    item_ref = page["properties"]["items"]["items"]["$ref"]
+    assert item_ref.endswith("AgentConfigurationRevisionListItemResource")
+    item = schema["components"]["schemas"]["AgentConfigurationRevisionListItemResource"]
+    properties = item.get("properties", {})
+    if "allOf" in item:
+        properties = {}
+        for part in item["allOf"]:
+            if "$ref" in part:
+                parent = schema["components"]["schemas"][
+                    part["$ref"].rsplit("/", 1)[-1]
+                ]
+                properties.update(parent.get("properties", {}))
+            properties.update(part.get("properties", {}))
+    assert "startable" in properties
+    assert properties["startable"]["type"] == "boolean"
+    assert properties["not_startable_reason"]["anyOf"] == [
+        {"type": "string", "const": "agent-executor-binding-unavailable"},
+        {"type": "null"},
+    ]
+    publication = schema["components"]["schemas"]["AgentConfigurationRevisionResource"]
+    assert "startable" not in publication.get("properties", {})
+
+
 def test_invalid_openapi_fails_during_app_construction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -3,9 +3,8 @@ story = "https://github.com/FlexOr2/atelier-2/issues/297"
 
 # The pin and the attest stay. What moved is the boundary: one unstartable
 # executor is a named refusal at its own start/bind seam, not a death sentence
-# for serve. Two leftovers: the picker badge until a startability field exists,
-# and a nonterminal run already bound to that executor still raising
-# DbosRuntimeBindingConflict at compose if the factory is omitted.
+# for serve. #426 closes the remaining list/picker and already-bound-run
+# seams; #15 still owns every state that may have crossed a launch boundary.
 
 [[sentence]]
 id = "an-unstartable-executor-does-not-kill-serve"

@@ -228,6 +228,33 @@ describe("the served vocabulary", () => {
     );
   });
 
+  it("decodes only the closed startability pair on a listed configuration", () => {
+    const sample = {
+      model: "sonnet",
+      auth_profile_revision_hash: "a".repeat(64),
+      executor_revision: "claude-subscription/v1",
+      provider_id: "anthropic",
+      auth_mode: "subscription" as const,
+      requested_capability: "headless" as const,
+      agent_configuration_revision_hash: "b".repeat(64),
+      startable: false,
+      not_startable_reason: "agent-executor-binding-unavailable" as const
+    };
+
+    expect(
+      agentConfigurationRevisionPageSchema.parse({
+        items: [sample],
+        next_after_revision_hash: null
+      }).items
+    ).toEqual([sample]);
+    expect(() =>
+      agentConfigurationRevisionPageSchema.parse({
+        items: [{ ...sample, startable: true }],
+        next_after_revision_hash: null
+      })
+    ).toThrow();
+  });
+
   it("decodes exactly the fields the auth-profile listing serves", () => {
     const served = servedDocument.components.schemas.AuthProfileRevisionPageResource;
 

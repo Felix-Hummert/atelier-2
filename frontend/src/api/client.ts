@@ -350,13 +350,29 @@ const agentConfigurationRevisionSchema = agentConfigurationInputSchema
   })
   .strict();
 
+const agentConfigurationRevisionListItemSchema = agentConfigurationRevisionSchema
+  .extend({
+    startable: z.boolean(),
+    not_startable_reason: z.literal("agent-executor-binding-unavailable").nullable()
+  })
+  .strict()
+  .superRefine((item, context) => {
+    if (item.startable !== (item.not_startable_reason === null)) {
+      context.addIssue({
+        code: "custom",
+        message: "agent configuration startability and reason disagree"
+      });
+    }
+  });
+
 /**
- * The listing of published agent configurations, in the item form publication
- * already answers with. Held to the frozen document by servedVocabulary.
+ * Listing adds the deployment's current startability decision. Publication
+ * remains its immutable resource, so the browser never mistakes a host fact
+ * for revision identity.
  */
 export const agentConfigurationRevisionPageSchema = z
   .object({
-    items: z.array(agentConfigurationRevisionSchema),
+    items: z.array(agentConfigurationRevisionListItemSchema),
     next_after_revision_hash: sha256.nullable()
   })
   .strict();
@@ -788,9 +804,10 @@ const runEventV1Schema = z
   .superRefine(validateEventCursor);
 
 const runEventV2Schema = z
-  .discriminatedUnion("event", [
+  .union([
     z.object({ ...v2EventBase, ...v2AttemptEvent, event: z.literal("AGENT_COMPLETED"), output_base64: standardBase64, output_hash: sha256 }).strict(),
     z.object({ ...v2EventBase, ...v2AttemptEvent, event: z.literal("AGENT_FAILED"), failure_code: z.enum(["PROCESS_EXITED_UNSUCCESSFULLY", "PROCESS_OUTPUT_LIMIT_EXCEEDED", "PROCESS_SUPERVISION_FAILED"]) }).strict(),
+    z.object({ ...v2EventBase, event: z.literal("AGENT_FAILED"), reason: z.literal("agent-executor-binding-unavailable") }).strict(),
     z.object({ ...v2EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCEL_REQUESTED") }).strict(),
     z.object({ ...v2EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCELLED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
     z.object({ ...v2EventBase, ...v2CancellationEvent, event: z.literal("AGENT_INTERRUPTED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
@@ -824,9 +841,10 @@ const v3EventBase = {
 };
 
 const runEventV3Schema = z
-  .discriminatedUnion("event", [
+  .union([
     z.object({ ...v3EventBase, ...v2AttemptEvent, event: z.literal("AGENT_COMPLETED"), output_base64: standardBase64, output_hash: sha256 }).strict(),
     z.object({ ...v3EventBase, ...v2AttemptEvent, event: z.literal("AGENT_FAILED"), failure_code: z.enum(["PROCESS_EXITED_UNSUCCESSFULLY", "PROCESS_OUTPUT_LIMIT_EXCEEDED", "PROCESS_SUPERVISION_FAILED", "OUTPUT_SCHEMA_REFUSED", "AGENT_REFUSED", "PROJECT_VERIFICATION_FAILED"]), reason: z.string().min(1).nullable() }).strict(),
+    z.object({ ...v3EventBase, event: z.literal("AGENT_FAILED"), reason: z.literal("agent-executor-binding-unavailable") }).strict(),
     z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCEL_REQUESTED") }).strict(),
     z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_CANCELLED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
     z.object({ ...v3EventBase, ...v2CancellationEvent, event: z.literal("AGENT_INTERRUPTED"), disposition: v2Disposition, replacement_attempt_id: sha256.nullable() }).strict(),
@@ -1131,6 +1149,9 @@ export type AuthProfileInput = z.infer<typeof authProfileInputSchema>;
 export type AuthProfileRevision = z.infer<typeof authProfileRevisionSchema>;
 export type AgentConfigurationInput = z.infer<typeof agentConfigurationInputSchema>;
 export type AgentConfigurationRevision = z.infer<typeof agentConfigurationRevisionSchema>;
+export type AgentConfigurationRevisionListItem = z.infer<
+  typeof agentConfigurationRevisionListItemSchema
+>;
 export type AgentConfigurationRevisionPage = z.infer<
   typeof agentConfigurationRevisionPageSchema
 >;

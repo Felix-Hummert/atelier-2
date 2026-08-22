@@ -25,6 +25,7 @@ from atelier2.contracts.agent_attempts import (
     WatchdogGenerationId,
 )
 from atelier2.contracts.agents import (
+    AgentExecutionRequestV2,
     AgentExecutionResult,
 )
 from atelier2.contracts.executions import AgentAttemptExecution
@@ -37,6 +38,7 @@ from atelier2.ports.agent_attempts import (
     AgentAttemptClaimedByThisCall,
     AgentAttemptFailed,
     AgentAttemptSucceeded,
+    AgentExecutorBindingRefusalResult,
 )
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceLease,
@@ -292,6 +294,11 @@ class _FailingAttemptStore:
     def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
         del execution
         return self._attempt
+
+    def refuse_unavailable_executor(
+        self, request: AgentExecutionRequestV2
+    ) -> AgentExecutorBindingRefusalResult:
+        raise AssertionError(request)
 
     def claim(self, execution: AgentAttemptExecution) -> AgentAttemptClaimedByThisCall:
         del execution

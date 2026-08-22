@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App.svelte";
 import {
   CockpitRequestError,
-  type AgentConfigurationRevision,
+  type AgentConfigurationRevisionListItem,
   type CockpitApi,
   type Problem,
   type WorkflowRevisionDetail,
@@ -83,8 +83,9 @@ function detail(
 function agent(
   hash: string,
   provider: string,
-  model: string
-): AgentConfigurationRevision {
+  model: string,
+  startable = true
+): AgentConfigurationRevisionListItem {
   return {
     model,
     auth_profile_revision_hash: "a".repeat(64),
@@ -92,7 +93,9 @@ function agent(
     provider_id: provider,
     auth_mode: "subscription",
     requested_capability: "headless",
-    agent_configuration_revision_hash: hash
+    agent_configuration_revision_hash: hash,
+    startable,
+    not_startable_reason: startable ? null : "agent-executor-binding-unavailable"
   };
 }
 
@@ -223,6 +226,43 @@ describe("project occupancy in the New Run picker", () => {
     ]);
   });
 
+  it("proves(a-listed-agent-configuration-names-current-startability): keeps a listed unavailable project binding selected until the operator switches it", async () => {
+    const cockpitApi = pickerApi(
+      vi.fn(async () =>
+        occupancy([{ role: "builder", agent_configuration_revision_hash: projectHash }])
+      ),
+      {
+        listAgentConfigurationRevisions: vi.fn(async () => ({
+          items: [
+            agent(projectHash, "project-provider", "project-model", false),
+            agent(otherHash, "other-provider", "other-model")
+          ],
+          next_after_revision_hash: null
+        }))
+      }
+    );
+
+    await openDraft(cockpitApi);
+
+    const selected = picker("builder");
+    expect(selected.value).toBe(projectHash);
+    expect(source("builder", "Project").isConnected).toBe(true);
+    expect(within(binding("builder")).getByText("Unavailable").isConnected).toBe(true);
+    expect(
+      (within(binding("builder")).getByRole("option", {
+        name: /project-model.*Unavailable/
+      }) as HTMLOptionElement).disabled
+    ).toBe(true);
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+
+    await fireEvent.change(selected, { target: { value: otherHash } });
+
+    expect(selected.value).toBe(otherHash);
+    expect(source("builder", "Remembered").isConnected).toBe(true);
+    expect(screen.getByRole("button", { name: "Start" }).isConnected).toBe(true);
+    expect(cockpitApi.putProjectOccupancy).not.toHaveBeenCalled();
+  });
+
   it("does not turn an unknown project binding into a remembered choice", async () => {
     localStorage.setItem(
       NAMED_AGENT_CHOICE_STORAGE_KEY,
@@ -270,11 +310,11 @@ describe("project occupancy in the New Run picker", () => {
 
   it("waits for a complete agent list before proving a project hash unavailable", async () => {
     let releaseAgents!: (value: {
-      items: AgentConfigurationRevision[];
+      items: AgentConfigurationRevisionListItem[];
       next_after_revision_hash: null;
     }) => void;
     const delayedAgents = new Promise<{
-      items: AgentConfigurationRevision[];
+      items: AgentConfigurationRevisionListItem[];
       next_after_revision_hash: null;
     }>((resolve) => {
       releaseAgents = resolve;
