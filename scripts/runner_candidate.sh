@@ -14,6 +14,10 @@ case "$mode" in
       [[ -f "$root/network" ]] || continue
       network=$(<"$root/network")
       docker network inspect "$network" >/dev/null 2>&1 && continue
+      if ! docker image inspect atelier2-301a-core >/dev/null 2>&1; then
+        printf 'clean requires the atelier2-301a-core image; run a witness or rebuild before clean\n' >&2
+        exit 1
+      fi
       # The core container runs as root, so root-owns its bind-mounted
       # core-store; only a root-privileged container can clear it.
       docker run --rm -v "$root:/cleanup" --entrypoint rm atelier2-301a-core -rf -- /cleanup/core-store
@@ -24,7 +28,14 @@ case "$mode" in
     exit 0
     ;;
   images)
-    docker image rm -f "${candidate_images[@]}"
+    present=()
+    for image in "${candidate_images[@]}"; do
+      docker image inspect "$image" >/dev/null 2>&1 && present+=("$image")
+    done
+    if [[ ${#present[@]} -gt 0 ]]; then
+      docker image rm -f "${present[@]}"
+    fi
+    printf 'removed %d candidate images\n' "${#present[@]}"
     exit 0
     ;;
   *)
@@ -43,7 +54,6 @@ network="atelier2-301a-${RANDOM}${RANDOM}"
 core="${network}-core"
 runner="${network}-runner"
 printf '%s\n' "$label" >"$root/label"
-printf '%s\n' "$network" >"$root/network"
 printf '%s\n' "$runner" >"$root/runner-container"
 printf '%s\n' "$scenario" >"$root/scenario"
 
@@ -76,6 +86,10 @@ image_digest=$(docker image inspect -f '{{.Id}}' atelier2-301a-runner)
 source_commit=$(git rev-parse HEAD)
 uv run --locked python tests/witness/runner_candidate_issuer.py manifest --source-commit "$source_commit" --image-digest "$image_digest" --output "$root/handoff"
 docker network create --internal --label "$label" "$network" >/dev/null
+# Recorded only after the network exists, so a concurrent `clean` never
+# mistakes a still-being-created witness for a released one (see the "no
+# recorded network" case in `clean`).
+printf '%s\n' "$network" >"$root/network"
 identity_volume="atelier2-301a-identity-$network"
 handoff_volume="atelier2-301a-handoff-$network"
 /usr/bin/docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=uid=10001,gid=10001,mode=0700,size=65536 --label "$label" "$identity_volume" >/dev/null
