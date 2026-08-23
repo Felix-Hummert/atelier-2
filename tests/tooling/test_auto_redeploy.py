@@ -75,7 +75,11 @@ if os.environ.get("ATELIER2_TEST_UPDATE_UNHEALTHY") == "1":
     print("container live: updated container is not healthy", file=sys.stderr)
     raise SystemExit(1)
 
-served_path.write_text(new_commit, encoding="utf-8")
+# Exit 0 (like a real successful update) without advancing the served commit:
+# proves auto_redeploy.sh's own post-update health re-poll, not just that it
+# propagates update's own exit code.
+if os.environ.get("ATELIER2_TEST_POST_UPDATE_HEALTH_STALE") != "1":
+    served_path.write_text(new_commit, encoding="utf-8")
 print("container live: cockpit -> http://127.0.0.1:8422/atelier/")
 """,
     )
@@ -222,6 +226,32 @@ def test_a_red_health_check_after_update_leaves_the_previous_commit_served(
         encoding="utf-8"
     ).strip() == old_commit
     assert container_live_invocations(tmp_path) == ["update"]
+
+
+def test_an_update_that_exits_clean_but_does_not_advance_health_is_caught(
+    tmp_path: Path,
+) -> None:
+    """update itself can report success while the serve it actually left
+    running still answers with the previous commit (a stale rollout, a race,
+    a lying exit code somewhere downstream) -- the post-update health re-poll,
+    not update's own exit code, is what must catch that.
+    """
+    origin, deploy = deploy_repository_pair(tmp_path)
+    old_commit = run_git(origin, "rev-parse", "HEAD")
+    seed_served_commit(tmp_path, old_commit)
+    new_commit = commit_file(origin, "payload.txt", "v2\n")
+
+    completed = run_auto_redeploy(
+        deploy, tmp_path, ATELIER2_TEST_POST_UPDATE_HEALTH_STALE="1"
+    )
+
+    assert completed.returncode != 0
+    assert f"did not advance to {new_commit}" in completed.stderr
+    assert (tmp_path / "served-commit.txt").read_text(
+        encoding="utf-8"
+    ).strip() == old_commit
+    assert container_live_invocations(tmp_path) == ["update"]
+    assert run_git(deploy, "rev-parse", "HEAD") == new_commit
 
 
 def test_an_unreachable_health_check_refuses_without_touching_the_checkout(
