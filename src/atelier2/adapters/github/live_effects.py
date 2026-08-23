@@ -60,10 +60,17 @@ GITHUB_TOKEN_CREDENTIAL_ENTRY = "token"
 
 # A pull request search that returns nothing is eventually consistent and
 # never an authoritative negative for a create (ADR 0010 §5). A ref that
-# already exists is the one create-branch failure this adapter treats as
-# "the earlier attempt won the race" rather than a refusal, because it is the
-# crash-then-retry case the readback-then-create rule exists for.
+# already exists is one of two create-time failures this adapter treats as
+# "a concurrent execute already won this race" rather than a refusal, because
+# it is the crash-then-retry case the readback-then-create rule exists for.
 _GIT_REFERENCE_ALREADY_EXISTS_STATUS = 422
+
+# GitHub's own head+base uniqueness constraint on pull requests: the second of
+# the two create-time races. A concurrent execute can create both the branch
+# and the pull request between this adapter's search and its own create calls,
+# and this is the status that create then answers with -- the create-branch
+# race's exact counterpart, and equally not a refusal.
+_PULL_REQUEST_ALREADY_EXISTS_STATUS = 422
 
 # GitHub does not document a hard title length limit; this is a defensive
 # bound well under every limit third-party clients have observed, so a very
@@ -293,11 +300,24 @@ class LiveGitHubEffectAdapter:
             "base": self._repository.base_branch,
             "body": body,
         }
-        response = self._client.rest.pulls.create(
-            self._repository.owner,
-            self._repository.name,
-            data=create_body,
-        )
+        try:
+            response = self._client.rest.pulls.create(
+                self._repository.owner,
+                self._repository.name,
+                data=create_body,
+            )
+        except githubkit.exception.RequestFailed as error:
+            if error.response.status_code != _PULL_REQUEST_ALREADY_EXISTS_STATUS:
+                raise
+            # A concurrent execute created the pull request between this
+            # attempt's search and this create; the same marker search
+            # converges on its result rather than this attempt raising or
+            # creating a twin GitHub's own constraint would have refused
+            # anyway.
+            found = self._find_recorded_pull_request(intent)
+            if found is None:
+                raise
+            return found
         created = response.raw_response.json()
         if not isinstance(created, dict):
             raise GitHubUnexpectedResponse(

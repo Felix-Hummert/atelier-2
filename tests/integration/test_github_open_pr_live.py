@@ -52,10 +52,13 @@ CANARY_TOKEN = "gho_atelier2_canary_token_must_not_appear"
 class _FakeGitHubServer:
     """The smallest stand-in for real GitHub these tests need.
 
-    State lives in memory for one test only, and answers exactly the three
+    State lives in memory for one test only, and answers exactly the four
     calls the live adapter makes: the base branch's commit, listing pull
     requests by head branch, creating a branch ref, and creating a pull
-    request.
+    request. It enforces GitHub's own head+base uniqueness constraint on pull
+    requests -- a second create for the same head answers `422`, the same
+    status a duplicate branch ref answers with -- because that is exactly the
+    race the concurrent-execute test below exercises.
     """
 
     owner: str
@@ -65,6 +68,7 @@ class _FakeGitHubServer:
     pull_requests: list[dict[str, Any]] = field(default_factory=list)
     branches: set[str] = field(default_factory=set)
     branch_ref_attempts: int = 0
+    suppress_next_pull_request_search: bool = False
     _next_number: int = 1
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -75,6 +79,9 @@ class _FakeGitHubServer:
                 200, json={"name": self.base_branch, "commit": {"sha": self.base_sha}}
             )
         if request.method == "GET" and path == f"{prefix}/pulls":
+            if self.suppress_next_pull_request_search:
+                self.suppress_next_pull_request_search = False
+                return httpx.Response(200, json=[])
             head = request.url.params.get("head")
             matches = [
                 pr
@@ -104,12 +111,25 @@ class _FakeGitHubServer:
             )
         if request.method == "POST" and path == f"{prefix}/pulls":
             payload = json.loads(request.content)
+            head_label = f"{self.owner}:{payload['head']}"
+            if any(
+                pr["head"]["label"] == head_label
+                and pr["base"]["ref"] == payload["base"]
+                for pr in self.pull_requests
+            ):
+                return httpx.Response(
+                    422,
+                    json={
+                        "message": f"A pull request already exists for {payload['head']}."
+                    },
+                )
             number = self._next_number
             self._next_number += 1
             pull_request = {
                 "number": number,
                 "body": payload.get("body", ""),
-                "head": {"label": f"{self.owner}:{payload['head']}"},
+                "head": {"label": head_label},
+                "base": {"ref": payload["base"]},
             }
             self.pull_requests.append(pull_request)
             return httpx.Response(201, json=pull_request)
@@ -194,6 +214,35 @@ def test_a_second_execute_finds_the_same_pull_request_and_does_not_create_a_twin
     assert isinstance(read, EffectReceipt)
     assert read.effect_id == first.effect_id
     assert read.confirmation_source is ConfirmationSource.ADAPTER_READBACK
+
+
+def test_execute_converges_on_a_concurrently_created_pull_request_instead_of_raising(
+    factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
+) -> None:
+    """A concurrent execute can win both the branch-ref and the pull-request
+    race between this attempt's own search and its own create calls. GitHub's
+    head+base uniqueness constraint refuses the twin create with the same 422
+    status a duplicate branch ref answers with, and this attempt must
+    converge on the concurrent winner's pull request rather than raising or
+    creating a twin.
+    """
+    intent = effect_intent()
+    adapter = factory.open()
+    try:
+        winner = adapter.execute(intent)
+
+        # This attempt's own search misses the pull request the "concurrent"
+        # execute above already created -- the eventually-consistent search
+        # ADR 0010 §5 names -- so it proceeds to create, and hits both races.
+        server.suppress_next_pull_request_search = True
+        loser = adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert loser.effect_id == winner.effect_id
+    assert loser.result == winner.result
+    assert len(server.pull_requests) == 1
+    assert len(server.branches) == 1
 
 
 def test_readback_before_any_execute_is_unknown_never_an_authoritative_absence(
