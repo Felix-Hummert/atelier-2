@@ -701,6 +701,58 @@ def commit_reconciliation_required(
     )
 
 
+def lift_started_run(
+    connection: Any,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    expected_state_version: int,
+    expected_last_event_sequence: int,
+    target_state: RunState,
+) -> bool:
+    """Close a STARTED run at its exact current head, without writing an event.
+
+    The lift itself never invents an event: whatever left the run with nowhere
+    to go -- a node's own terminal receipt, a cancellation's attestation --
+    already wrote the last entry the run's terminal hash folds over. This is
+    the one owner both `uncontinuable_runs`' serve-start inventory and an
+    attempt store's own in-transaction cancel lift call (#439 Bauplan P3):
+    the target word differs by caller and by why the run stopped, but the
+    CAS and the terminal hash it stamps do not.
+
+    `False` on a lost CAS or an empty event log means exactly what it always
+    has -- the caller's snapshot of the run no longer names its live row, or
+    a run with no event yet has nothing a terminal hash could fold over.
+    """
+    event_hashes = tuple(
+        Sha256Hash(str(value))
+        for value in connection.execute(
+            sa.select(run_events.c.event_hash)
+            .where(run_events.c.run_id == run_id.value)
+            .order_by(run_events.c.event_sequence)
+        ).scalars()
+    )
+    if not event_hashes:
+        return False
+    terminal_hash = terminal_hash_for(revision_hash, event_hashes)
+    updated = connection.execute(
+        runs.update()
+        .where(
+            runs.c.run_id == run_id.value,
+            runs.c.state == RunState.STARTED.value,
+            runs.c.state_version == expected_state_version,
+            runs.c.last_event_sequence == expected_last_event_sequence,
+        )
+        .values(
+            state=target_state.value,
+            state_version=expected_state_version + 1,
+            terminal_hash=terminal_hash.value,
+        )
+    )
+    if updated.rowcount == 1:
+        record_run_ended(connection, run_id.value)
+    return updated.rowcount == 1
+
+
 def commit_reconciliation_resolved(
     session: Any,
     run_id: RunId,

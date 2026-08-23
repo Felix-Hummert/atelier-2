@@ -80,10 +80,10 @@
   .rail-badge {
     margin-left: auto;
     border-radius: var(--r-pill);
-    padding: 0.02rem 0.4rem;
+    padding: 0 var(--space-2);
     font-size: var(--text-2xs);
-    font-weight: 700;
-    color: var(--accent-ink);
+    font-weight: var(--weight-heavy);
+    color: var(--signal-ink);
   }
 
   /* Only the first rendered badge pushes the group right; a second sits beside it. */
@@ -92,10 +92,10 @@
   }
 
   .rail-badge-running {
-    background: var(--blue);
+    background: var(--signal-live);
   }
 
   .rail-badge-needs-you {
-    background: var(--amber);
+    background: var(--signal-attention);
   }
 </style>

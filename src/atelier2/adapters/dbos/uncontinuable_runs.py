@@ -8,9 +8,9 @@ from typing import Any
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-from atelier2.adapters.dbos.instants import record_run_ended
 from atelier2.adapters.dbos.node_records import keep_node_receipt
-from atelier2.adapters.dbos.schema import agent_attempts, run_events, runs
+from atelier2.adapters.dbos.run_transitions import lift_started_run
+from atelier2.adapters.dbos.schema import agent_attempts, runs
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow_ids import (
     node_workflow_id_for,
@@ -21,11 +21,12 @@ from atelier2.contracts.agent_attempts import (
     STOP_AFTER_DRIVER_LOSS,
     TERMINAL_AGENT_ATTEMPT_STATES,
     AgentAttemptId,
+    AgentAttemptReplacement,
     AgentAttemptState,
 )
-from atelier2.contracts.executions import NodeExecutionId, terminal_hash_for
-from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.node_records_v3 import PersistedReceiptDisposition
+from atelier2.contracts.run_cancellations import is_operator_run_cancel
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
@@ -33,10 +34,14 @@ _UNCONTINUABLE_ATTEMPT_STATES = (
     AgentAttemptState.FAILED,
     AgentAttemptState.INTERRUPTED,
 )
-"""The two current-node endings that leave a STARTED run with nowhere to go.
+"""The current-node endings that leave a STARTED run with nowhere to go, under
+no command this inventory itself has to identify.
 
-CANCELLED is not one of them: a replacement may still be in flight, and this
-slice does not own cancel or shutdown edges.
+CANCELLED stays out of this tuple on purpose, and so does an INTERRUPTED
+attempt carrying an operator run-cancel command: both close the run under
+`RunState.CANCELLED`, not `RunState.FAILED`, and only when the command is
+identifiably the operator's own (#439 Bauplan P3) -- `_attempt_family_target_state`
+decides that, this tuple only ever names the plain word.
 """
 
 # DBOS owns this table and these tokens; the store only reads them, and only
@@ -86,18 +91,39 @@ class DbosUncontinuableRunStore:
                 return False
             if int(record["workflow_format_version"]) == int(WorkflowFormatVersion.V1):
                 return False
-            attempt_family = _current_node_has_uncontinuable_attempt(connection, record)
+            attempt_family_target = _attempt_family_target_state(connection, record)
             gap_family = _current_node_is_a_dead_gap(
                 connection, record, self._application_version
             )
-            if not attempt_family and not gap_family:
+            if attempt_family_target is None and not gap_family:
                 return False
             if gap_family:
                 _name_gap_ending(connection, record)
-            return _lift_started_run(connection, record, run_id)
+            target_state = (
+                RunState.FAILED
+                if attempt_family_target is None
+                else attempt_family_target
+            )
+            return lift_started_run(
+                connection,
+                run_id,
+                WorkflowRevisionHash(str(record["revision_hash"])),
+                int(record["state_version"]),
+                int(record["last_event_sequence"]),
+                target_state,
+            )
 
 
 def _attempt_family_run_ids(connection: Any) -> tuple[RunId, ...]:
+    """List candidates only; `_attempt_family_target_state` decides precisely.
+
+    The `CANCELLED`-with-no-replacement arm here is deliberately loose: it
+    lists any such attempt, operator command or not, rather than repeat
+    `is_operator_run_cancel`'s namespace check in SQL. `end_uncontinuable_run`
+    reopens the exact row inside its own write transaction and answers `False`
+    for a listed run that turns out not to qualify -- a wider candidate set
+    costs one extra read, never a wrong ending.
+    """
     terminal_attempt = tuple(state.value for state in TERMINAL_AGENT_ATTEMPT_STATES)
     uncontinuable_attempt = tuple(
         state.value for state in _UNCONTINUABLE_ATTEMPT_STATES
@@ -113,7 +139,14 @@ def _attempt_family_run_ids(connection: Any) -> tuple[RunId, ...]:
                 .where(
                     agent_attempts.c.run_id == runs.c.run_id,
                     agent_attempts.c.node_id == runs.c.current_node_id,
-                    agent_attempts.c.state.in_(uncontinuable_attempt),
+                    sa.or_(
+                        agent_attempts.c.state.in_(uncontinuable_attempt),
+                        sa.and_(
+                            agent_attempts.c.state == AgentAttemptState.CANCELLED.value,
+                            agent_attempts.c.replacement
+                            == AgentAttemptReplacement.NONE.value,
+                        ),
+                    ),
                 )
             ),
             ~sa.exists(
@@ -177,21 +210,67 @@ def _gap_store_predicates() -> tuple[Any, ...]:
     )
 
 
-def _current_node_has_uncontinuable_attempt(
+def _attempt_family_target_state(
     connection: Any, record: Mapping[Any, Any]
-) -> bool:
-    found = connection.scalar(
-        sa.select(agent_attempts.c.attempt_id)
-        .where(
-            agent_attempts.c.run_id == str(record["run_id"]),
-            agent_attempts.c.node_id == str(record["current_node_id"]),
-            agent_attempts.c.state.in_(
-                tuple(state.value for state in _UNCONTINUABLE_ATTEMPT_STATES)
-            ),
+) -> RunState | None:
+    """The word the current node's own terminal attempt earns the run, if any.
+
+    An `INTERRUPTED` or `CANCELLED` attempt under an operator run-cancel
+    command with no replacement in flight lifts the run to `CANCELLED` --
+    the same command-identity gate an attempt store's own in-transaction
+    cancel lift uses (#439 Bauplan P3), not the disposition that happened to
+    end the process. Every other `FAILED`/`INTERRUPTED` ending in
+    `_UNCONTINUABLE_ATTEMPT_STATES` still lifts to `FAILED`, unchanged. A
+    `CANCELLED` attempt under any other command names a replacement that may
+    still be in flight or a cancel this inventory does not own, and answers
+    `None`.
+
+    Ordered by `attempt_ordinal` descending, not merely limited to one row:
+    a superseded ordinal-1 (`replacement=ONE` under a foreign or legacy
+    command) can sit beside a live ordinal-2 on the exact same node, and an
+    unordered pick could read the superseded row's foreign command instead of
+    the live one's operator command -- the same current-attempt-by-ordinal
+    read `request_run_cancellation`'s own current-record lookup already uses
+    in `agent_attempt_store.py`.
+    """
+    row = (
+        connection.execute(
+            sa.select(
+                agent_attempts.c.state,
+                agent_attempts.c.cancellation_command_id,
+                agent_attempts.c.replacement,
+            )
+            .where(
+                agent_attempts.c.run_id == str(record["run_id"]),
+                agent_attempts.c.node_id == str(record["current_node_id"]),
+                sa.or_(
+                    agent_attempts.c.state.in_(
+                        tuple(state.value for state in _UNCONTINUABLE_ATTEMPT_STATES)
+                    ),
+                    agent_attempts.c.state == AgentAttemptState.CANCELLED.value,
+                ),
+            )
+            .order_by(agent_attempts.c.attempt_ordinal.desc())
+            .limit(1)
         )
-        .limit(1)
+        .mappings()
+        .one_or_none()
     )
-    return found is not None
+    if row is None:
+        return None
+    state = AgentAttemptState(str(row["state"]))
+    command_id = row["cancellation_command_id"]
+    is_operator_command = (
+        state in {AgentAttemptState.CANCELLED, AgentAttemptState.INTERRUPTED}
+        and command_id is not None
+        and is_operator_run_cancel(str(command_id))
+        and str(row["replacement"]) == AgentAttemptReplacement.NONE.value
+    )
+    if is_operator_command:
+        return RunState.CANCELLED
+    if state in _UNCONTINUABLE_ATTEMPT_STATES:
+        return RunState.FAILED
+    return None
 
 
 def _current_node_is_a_dead_gap(
@@ -275,39 +354,3 @@ def _name_gap_ending(connection: Any, record: Mapping[Any, Any]) -> None:
         PersistedReceiptDisposition.FAILED,
         STOP_AFTER_DRIVER_LOSS,
     )
-
-
-def _lift_started_run(
-    connection: Any, record: Mapping[Any, Any], run_id: RunId
-) -> bool:
-    event_hashes = tuple(
-        Sha256Hash(str(value))
-        for value in connection.execute(
-            sa.select(run_events.c.event_hash)
-            .where(run_events.c.run_id == run_id.value)
-            .order_by(run_events.c.event_sequence)
-        ).scalars()
-    )
-    if not event_hashes:
-        return False
-    terminal_hash = terminal_hash_for(
-        WorkflowRevisionHash(str(record["revision_hash"])),
-        event_hashes,
-    )
-    updated = connection.execute(
-        runs.update()
-        .where(
-            runs.c.run_id == run_id.value,
-            runs.c.state == RunState.STARTED.value,
-            runs.c.state_version == int(record["state_version"]),
-            runs.c.last_event_sequence == int(record["last_event_sequence"]),
-        )
-        .values(
-            state=RunState.FAILED.value,
-            state_version=int(record["state_version"]) + 1,
-            terminal_hash=terminal_hash.value,
-        )
-    )
-    if updated.rowcount == 1:
-        record_run_ended(connection, run_id.value)
-    return updated.rowcount == 1

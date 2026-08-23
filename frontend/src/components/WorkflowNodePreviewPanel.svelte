@@ -58,9 +58,9 @@
 <style>
   .node-preview-panel {
     display: grid;
-    gap: 0.9rem;
-    padding: 1rem;
-    border-radius: 0.5rem;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border-radius: var(--r-lg);
     background: color-mix(in srgb, currentColor 5%, transparent);
   }
 
@@ -68,7 +68,7 @@
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 0.75rem;
+    gap: var(--space-3);
   }
 
   h2 {
@@ -77,25 +77,25 @@
 
   .node-kind {
     display: inline-block;
-    margin-top: 0.2rem;
-    color: var(--muted);
-    font-size: 0.8rem;
+    margin-top: var(--space-1);
+    color: var(--ink-dim);
+    font-size: var(--text-2xs);
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: var(--tracking-label);
   }
 
   h3 {
-    margin: 0 0 0.3rem;
-    font-size: 0.85rem;
+    margin: 0 0 var(--space-1);
+    color: var(--ink-dim);
+    font-size: var(--text-2xs);
     text-transform: uppercase;
-    letter-spacing: 0.04em;
-    opacity: 0.75;
+    letter-spacing: var(--tracking-label);
   }
 
   .close {
     border: 0;
     background: transparent;
-    font-size: 1.25rem;
+    font-size: var(--text-lg);
     line-height: 1;
     cursor: pointer;
     color: inherit;
@@ -103,14 +103,14 @@
 
   .exact {
     margin: 0;
-    padding: 0.6rem;
-    border-radius: 0.4rem;
+    padding: var(--space-3);
+    border-radius: var(--r);
     background: color-mix(in srgb, currentColor 7%, transparent);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
 
   .muted {
-    opacity: 0.7;
+    color: var(--ink-dim);
   }
 </style>

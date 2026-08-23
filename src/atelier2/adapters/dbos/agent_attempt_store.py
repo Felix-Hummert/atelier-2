@@ -30,6 +30,7 @@ from atelier2.adapters.dbos.run_transitions import (
     RunTransitionConflict,
     _commit_event,
     _insert_event,
+    lift_started_run,
     load_graph,
     load_run,
 )
@@ -110,7 +111,11 @@ from atelier2.contracts.node_records_v3 import (
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_bindings import RunV2, RunV3
-from atelier2.contracts.run_cancellations import CancelRunRequest, RunCancelCommandId
+from atelier2.contracts.run_cancellations import (
+    CancelRunRequest,
+    RunCancelCommandId,
+    is_operator_run_cancel,
+)
 from atelier2.contracts.runs import (
     TERMINAL_RUN_STATES,
     RunId,
@@ -656,6 +661,64 @@ def _insert_attempt_event(
     if updated.rowcount != 1:
         raise RunTransitionConflict("agent attempt event lost the run-head CAS")
     _insert_event(connection, event)
+
+
+def _lift_run_under_operator_cancel(connection: Any, terminal: AgentAttempt) -> None:
+    """Close the run under its own operator cancel, in the same TX as its receipt.
+
+    `CANCELLED` and `INTERRUPTED` are the two words a cleanup attestation can
+    leave an attempt in, and #439 Bauplan P3 lifts the run the same way under
+    both: the run's own ending follows the *command's* identity, not which of
+    the two the disposition happened to be (the two-axis doctrine -- the node
+    says how its own work ended, the run says why it stood still). A
+    driver-loss or unavailable-executor cleanup reaches these same attempt
+    words through a command of its own, never the operator's --
+    `is_operator_run_cancel` is what tells the two apart, so neither of those
+    two other callers of this cleanup path is touched here, and their runs
+    stay exactly as unlifted and receipt-less as before this method existed.
+
+    A replacement is never in flight here: `request_run_cancellation` always
+    submits `AgentAttemptReplacement.NONE` (D2, #439 Bauplan P2/P3), so an
+    operator command reaching this point never shares its node execution with
+    a second attempt.
+    """
+    cancellation = terminal.cancellation
+    if (
+        cancellation is None
+        or not is_operator_run_cancel(cancellation.command_id)
+        or cancellation.replacement is not AgentAttemptReplacement.NONE
+        or terminal.state
+        not in {AgentAttemptState.CANCELLED, AgentAttemptState.INTERRUPTED}
+    ):
+        return
+    run = load_run(connection, terminal.run_id)
+    if run.state is not RunState.STARTED:
+        return
+    live_node_execution_id = NodeExecutionId.for_node(
+        run.run_id, run.revision_hash, run.current_node_id, run.current_round_ordinal
+    )
+    if live_node_execution_id != terminal.node_execution_id:
+        return
+    if cancellation.disposition is None:
+        raise RunTransitionConflict(
+            "a terminal cancellation lifts its run only with an attested disposition"
+        )
+    keep_node_receipt(
+        connection,
+        terminal.node_execution_id,
+        PersistedReceiptDisposition.CANCELLED,
+        node_receipt_reason(
+            NodeReceiptReason.CANCELLED_BY_OPERATOR, cancellation.disposition.value
+        ),
+    )
+    lift_started_run(
+        connection,
+        run.run_id,
+        run.revision_hash,
+        run.state_version,
+        run.last_event_sequence,
+        RunState.CANCELLED,
+    )
 
 
 def _run_cancellation_from_event_log(
@@ -1671,6 +1734,7 @@ class DbosAgentAttemptStore:
             RunEventKind.AGENT_CANCELLED,
             command=terminal.cancellation,
         )
+        _lift_run_under_operator_cancel(connection, terminal)
         return RunnerTerminalEvidenceCommitted(terminal, evidence_hash)
 
     def mark_runner_evidence_acknowledged(
@@ -2321,6 +2385,7 @@ class DbosAgentAttemptStore:
                 command=terminal_cancellation,
                 replacement_attempt_id=replacement_attempt_id,
             )
+            _lift_run_under_operator_cancel(connection, terminal)
             return AgentAttemptCancellationAccepted(
                 terminal, True, replacement_attempt_id
             )

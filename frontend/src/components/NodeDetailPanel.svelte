@@ -327,7 +327,7 @@
     display: grid;
     gap: var(--space-3);
     padding: var(--space-4);
-    border: 1px solid var(--line);
+    border: var(--edge) solid var(--line);
     border-radius: var(--r-lg);
     background: var(--panel2);
   }
@@ -341,7 +341,7 @@
 
   .node-facts {
     margin: 0;
-    color: var(--muted);
+    color: var(--ink-dim);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
   }
@@ -364,31 +364,38 @@
     margin: 0 0 var(--space-1);
     font-size: var(--text-2xs);
     text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: var(--muted);
+    letter-spacing: var(--tracking-label);
+    color: var(--ink-dim);
   }
 
+  /* One line that scrolls, never a second line: a tab that wraps below the
+     rule reads as a heading for what follows it, not as a tab. */
   .node-tabs {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: var(--space-1);
-    border-bottom: 1px solid var(--line);
+    overflow-x: auto;
+    border-bottom: var(--edge) solid var(--line);
+  }
+
+  .node-tab {
+    flex: none;
   }
 
   .node-tab {
     border: 0;
     border-radius: 0;
     padding: var(--space-2) var(--space-3);
-    color: var(--muted);
+    color: var(--ink-dim);
     background: transparent;
     font-size: var(--text-xs);
-    font-weight: 600;
+    font-weight: var(--weight-strong);
   }
 
   .node-tab.on {
     color: var(--ink);
-    border-bottom: 2px solid var(--accent);
-    margin-bottom: -1px;
+    border-bottom: var(--edge-strong) solid var(--accent);
+    margin-bottom: calc(var(--edge) * -1);
   }
 
   .node-tabpanel {
@@ -400,15 +407,15 @@
     margin: 0;
     padding: var(--space-3) var(--space-4);
     border-radius: var(--r);
-    border-left: 4px solid var(--warning);
-    background: color-mix(in srgb, var(--warning) 12%, transparent);
-    color: var(--warning);
-    font-weight: 500;
+    border-left: var(--edge-mark) solid var(--signal-attention-mark);
+    background: color-mix(in srgb, var(--signal-attention-mark) var(--wash), var(--panel2));
+    color: var(--signal-attention);
+    font-weight: var(--weight-medium);
   }
 
   .waiting {
     margin: 0;
-    color: var(--muted);
+    color: var(--ink-dim);
   }
 
   .wait-answer-gap {
@@ -417,17 +424,17 @@
     align-items: center;
     gap: var(--space-2);
     margin: 0;
-    color: var(--muted);
+    color: var(--ink-dim);
   }
 
   /* The same quiet origin pill the chat transcript uses for a house line that
      names the vision or issue behind it -- one look reads as one owner. */
   .result-source {
     justify-self: start;
-    border: 1px solid var(--line);
+    border: var(--edge) solid var(--line);
     border-radius: var(--r-pill);
     padding: 0 var(--space-2);
-    color: var(--muted);
+    color: var(--ink-dim);
     background: var(--chip);
     font-size: var(--text-2xs);
   }
@@ -468,20 +475,18 @@
   }
 
   .reads-from-label {
-    color: var(--muted);
-    font-size: var(--text-2xs);
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
+    color: var(--ink-dim);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-strong);
   }
 
   .reads-from-node {
-    border: 1px solid var(--line);
+    border: var(--edge) solid var(--line);
     border-radius: var(--r);
     padding: 0 var(--space-2);
     background: var(--chip);
     font-size: var(--text-xs);
-    font-weight: 600;
+    font-weight: var(--weight-strong);
   }
 
   .who {
@@ -499,7 +504,7 @@
 
   .muted {
     margin: 0;
-    color: var(--muted);
+    color: var(--ink-dim);
     font-size: var(--text-xs);
   }
 </style>

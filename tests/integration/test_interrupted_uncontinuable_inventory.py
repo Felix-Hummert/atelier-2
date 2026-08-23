@@ -7,6 +7,16 @@ the current node — and the two shapes the #339 guardians already protect. A
 silent successor whose node workflow is still pending under the running
 application version is named, not invented. This file prepares those rows
 and asks serve start to end only what it can name.
+
+#439 P3 adds one more family under the same net: a `CANCELLED` or
+`INTERRUPTED` current-node attempt under an operator run-cancel command with
+no replacement in flight lifts its run to `RunState.CANCELLED`, not
+`RunState.FAILED` -- the command's identity decides the word, not which of
+the two the cleanup disposition happened to leave the attempt in. The normal
+store path lifts that run in the same transaction as its own attestation
+(`agent_attempt_store.py`), so reaching this net's own leftover shape needs
+the exact revert `leftover_failed` already uses below, standing in for a row
+a store from before that in-transaction lift existed would leave behind.
 """
 
 from __future__ import annotations
@@ -83,6 +93,7 @@ from atelier2.contracts.node_records_v3 import (
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_bindings import RunV3
+from atelier2.contracts.run_cancellations import RunCancelCommandId
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
     RunId,
@@ -315,6 +326,119 @@ def leftover_failed(runtime: DbosRuntime, run_id: RunId) -> AgentAttemptExecutio
         connection.commit()
     assert _run_state(runtime, run_id) == RunState.STARTED.value
     return execution
+
+
+def leftover_operator_cancelled(
+    runtime: DbosRuntime, run_id: RunId
+) -> AgentAttemptExecution:
+    """A run an operator cancel already lifted, reverted to look leftover.
+
+    #439 P3's in-transaction lift closes this exact shape the moment
+    `attest_cancellation_cleanup` attests it, so this net's own leftover
+    inventory only ever sees the shape through the same revert
+    `leftover_failed` uses above.
+    """
+
+    execution = armed_attempt(runtime, run_id)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    armed = store.load(execution.attempt_id)
+    command = CancelAgentAttemptRequest(
+        run_id,
+        execution.attempt_id,
+        RunCancelCommandId.for_key(f"operator-{run_id.value}").value,
+        armed.state_version,
+        AgentAttemptReplacement.NONE,
+    )
+    accepted = store.request_cancellation(command)
+    assert isinstance(accepted, AgentAttemptCancellationAccepted), accepted
+    terminal = store.attest_cancellation_cleanup(
+        command,
+        AgentAttemptCancellationDisposition.EXITED_BEFORE_SIGNAL,
+        OWNER,
+        GENERATION,
+    )
+    assert terminal.attempt.state is AgentAttemptState.CANCELLED
+    assert _run_state(runtime, run_id) == RunState.CANCELLED.value
+    with runtime.engine.connect() as connection:
+        reverted = connection.execute(
+            runs.update()
+            .where(runs.c.run_id == run_id.value)
+            .values(state=RunState.STARTED.value, terminal_hash=None)
+        )
+        assert reverted.rowcount == 1
+        connection.commit()
+    assert _run_state(runtime, run_id) == RunState.STARTED.value
+    return execution
+
+
+def leftover_operator_cancelled_behind_a_superseded_ordinal(
+    runtime: DbosRuntime, run_id: RunId
+) -> AgentAttemptExecution:
+    """A foreign, superseded ordinal-1 sits beside the live, operator-cancelled ordinal-2.
+
+    Ordinal 1 is cancelled under a foreign command with `replacement=ONE` and
+    superseded; ordinal 2 -- the node's live attempt -- is the one the
+    operator actually cancels, reverted to look leftover exactly like
+    `leftover_operator_cancelled` above. `_attempt_family_target_state` must
+    read the live ordinal's own command, not whichever of the two rows an
+    unordered scan happens to return first.
+    """
+
+    first = armed_attempt(runtime, run_id)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    armed = store.load(first.attempt_id)
+    replace_command = CancelAgentAttemptRequest(
+        run_id,
+        first.attempt_id,
+        "foreign-replace-command",
+        armed.state_version,
+        AgentAttemptReplacement.ONE,
+    )
+    accepted = store.request_cancellation(replace_command)
+    assert isinstance(accepted, AgentAttemptCancellationAccepted), accepted
+    superseded = store.attest_cancellation_cleanup(
+        replace_command,
+        AgentAttemptCancellationDisposition.EXITED_BEFORE_SIGNAL,
+        OWNER,
+        GENERATION,
+    )
+    assert superseded.attempt.state is AgentAttemptState.CANCELLED
+    assert superseded.replacement_attempt_id is not None
+    replacement_id = superseded.replacement_attempt_id
+
+    second = AgentAttemptExecution(first.request, replacement_id, 2)
+    store.bind_watchdog(second, OWNER, GENERATION)
+    store.claim(second)
+    live = store.load(replacement_id)
+    operator_command = CancelAgentAttemptRequest(
+        run_id,
+        replacement_id,
+        RunCancelCommandId.for_key(f"operator-{run_id.value}").value,
+        live.state_version,
+        AgentAttemptReplacement.NONE,
+    )
+    accepted_operator = store.request_cancellation(operator_command)
+    assert isinstance(accepted_operator, AgentAttemptCancellationAccepted), (
+        accepted_operator
+    )
+    terminal = store.attest_cancellation_cleanup(
+        operator_command,
+        AgentAttemptCancellationDisposition.EXITED_BEFORE_SIGNAL,
+        OWNER,
+        GENERATION,
+    )
+    assert terminal.attempt.state is AgentAttemptState.CANCELLED
+    assert _run_state(runtime, run_id) == RunState.CANCELLED.value
+    with runtime.engine.connect() as connection:
+        reverted = connection.execute(
+            runs.update()
+            .where(runs.c.run_id == run_id.value)
+            .values(state=RunState.STARTED.value, terminal_hash=None)
+        )
+        assert reverted.rowcount == 1
+        connection.commit()
+    assert _run_state(runtime, run_id) == RunState.STARTED.value
+    return second
 
 
 def silent_successor(runtime: DbosRuntime, run_id: RunId) -> AgentAttemptExecution:
@@ -601,6 +725,108 @@ def test_an_interrupted_leftover_ends_as_failed_under_driver_loss(
         RunEventKind.AGENT_CANCEL_REQUESTED.value,
         RunEventKind.AGENT_INTERRUPTED.value,
     )
+
+
+def test_an_operator_cancelled_leftover_ends_cancelled_not_failed(
+    runtime: DbosRuntime,
+) -> None:
+    """#439 P3: the command's identity, not the driver-loss word, wins here too.
+
+    The attempt reached `CANCELLED` under an operator run-cancel command, not
+    `atelier2-driver-lost` -- `_attempt_family_target_state` reads that
+    identity off the durable row and lifts this leftover to
+    `RunState.CANCELLED`, the same word the in-transaction lift would have
+    used had this row not been reverted to look leftover.
+    """
+    run_id = RunId("inventory/operator-cancelled")
+    leftover_operator_cancelled(runtime, run_id)
+    before_events = _event_kinds(runtime, run_id)
+
+    ended = converge_uncontinuable_runs(
+        DbosUncontinuableRunStore(runtime.engine, runtime.settings.application_version)
+    )
+
+    assert ended == (run_id,)
+    assert _run_state(runtime, run_id) == RunState.CANCELLED.value
+    assert _terminal_hash(runtime, run_id) is not None
+    assert _attempt_state(runtime, run_id) == AgentAttemptState.CANCELLED.value
+    assert _event_kinds(runtime, run_id) == before_events
+
+
+def test_an_operator_cancelled_leftover_ends_cancelled_behind_a_superseded_ordinal(
+    runtime: DbosRuntime,
+) -> None:
+    """A foreign, superseded ordinal-1 must not hide the live ordinal-2's word.
+
+    `_attempt_family_target_state` orders its current-node lookup by
+    `attempt_ordinal` descending: an unordered read could return the
+    superseded ordinal-1's foreign command instead of the live ordinal-2's
+    operator command, answering `None` (or `FAILED`) for a run the operator
+    genuinely cancelled and leaving it `STARTED` forever.
+    """
+    run_id = RunId("inventory/operator-cancelled-superseded")
+    execution = leftover_operator_cancelled_behind_a_superseded_ordinal(runtime, run_id)
+    assert execution.ordinal == 2
+    before_events = _event_kinds(runtime, run_id)
+
+    ended = converge_uncontinuable_runs(
+        DbosUncontinuableRunStore(runtime.engine, runtime.settings.application_version)
+    )
+
+    assert ended == (run_id,)
+    assert _run_state(runtime, run_id) == RunState.CANCELLED.value
+    assert _terminal_hash(runtime, run_id) is not None
+    with runtime.engine.connect() as connection:
+        live_state = connection.scalar(
+            sa.select(agent_attempts.c.state).where(
+                agent_attempts.c.attempt_id == execution.attempt_id.value
+            )
+        )
+    assert live_state == AgentAttemptState.CANCELLED.value
+    assert _event_kinds(runtime, run_id) == before_events
+
+
+def test_converge_does_not_end_a_run_whose_cancelled_attempt_is_not_the_operators(
+    runtime: DbosRuntime,
+) -> None:
+    """A `CANCELLED` attempt under a foreign command is not this net's to close.
+
+    The attempt route (#15) can cancel with no replacement too, and reaches
+    the exact same `CANCELLED` attempt state -- but its command id was never
+    minted by `RunCancelCommandId.for_key`. `uncontinuable_runs()` lists the
+    run anyway (its own `CANCELLED` arm is deliberately loose, precision is
+    `end_uncontinuable_run`'s job); dropping the `is_operator_run_cancel`
+    check there instead ends this run, and this test dies.
+    """
+    run_id = RunId("inventory/foreign-cancelled")
+    execution = armed_attempt(runtime, run_id)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    armed = store.load(execution.attempt_id)
+    command = CancelAgentAttemptRequest(
+        run_id,
+        execution.attempt_id,
+        "attempt-route-command",
+        armed.state_version,
+        AgentAttemptReplacement.NONE,
+    )
+    accepted = store.request_cancellation(command)
+    assert isinstance(accepted, AgentAttemptCancellationAccepted), accepted
+    terminal = store.attest_cancellation_cleanup(
+        command,
+        AgentAttemptCancellationDisposition.EXITED_BEFORE_SIGNAL,
+        OWNER,
+        GENERATION,
+    )
+    assert terminal.attempt.state is AgentAttemptState.CANCELLED
+    # Not the operator's command, so #439 P3's own lift never touched this run.
+    assert _run_state(runtime, run_id) == RunState.STARTED.value
+
+    inventory = DbosUncontinuableRunStore(
+        runtime.engine, runtime.settings.application_version
+    )
+    assert inventory.uncontinuable_runs() == (run_id,)
+    assert converge_uncontinuable_runs(inventory) == ()
+    assert _run_state(runtime, run_id) == RunState.STARTED.value
 
 
 def test_converge_does_not_end_an_interrupted_run_that_can_still_continue(
