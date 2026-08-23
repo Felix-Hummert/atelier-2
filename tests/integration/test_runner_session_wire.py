@@ -20,12 +20,19 @@ from __future__ import annotations
 
 import os
 import socket
+import ssl
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from atelier2.adapters.claude_subscription import CLAUDE_SUBSCRIPTION_EXECUTOR_KEY
 from atelier2.adapters.free_runner_executor import (
@@ -35,6 +42,18 @@ from atelier2.adapters.free_runner_executor import (
     free_runner_auth_reference,
 )
 from atelier2.adapters.runner_cli_pins import runner_executor_cli_pin
+from atelier2.adapters.runner_core_transport import (
+    RunnerPeerPin,
+    accept_and_drive_session,
+    accept_pinned_runner,
+    bind_session_listener,
+)
+from atelier2.adapters.runner_tls import (
+    CORE_DNS_NAME,
+    core_uri_for_certificate,
+    pin_tls_13,
+    runner_uri_for_invocation,
+)
 from atelier2.application.run_runner_session import (
     CoreRunnerSession,
     RunnerSessionRefusal,
@@ -753,3 +772,449 @@ def test_runner_session_wire_declines_a_cancel_that_crosses_terminal_available(
     assert prepared.core.acknowledged == 1
     assert prepared.core.cancelled == 1
     assert not (prepared.journal_directory / "terminal-record").exists()
+
+
+# ---------------------------------------------------------------------------
+# `atelier2.adapters.runner_core_transport` -- the production Core-side
+# transport owner, pinned here over a genuine loopback TLS connection rather
+# than the plain `socket.socketpair()` the tests above use. These are the
+# transport's own accept/reconnect bound and peer fence, plus one full
+# end-to-end run of the real candidate session driven through it; the wire
+# protocol itself is already pinned above.
+# ---------------------------------------------------------------------------
+
+
+def _self_signed_ca() -> tuple[rsa.RSAPrivateKey, x509.Certificate]:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "wire-test-ca")])
+    now = datetime.now(UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(minutes=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    return key, certificate
+
+
+def _private_key_pem(key: rsa.RSAPrivateKey) -> bytes:
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    )
+
+
+def _leaf_identity(
+    ca_key: rsa.RSAPrivateKey,
+    ca: x509.Certificate,
+    key: rsa.RSAPrivateKey,
+    *,
+    dns_name: str | None,
+    uri: str,
+    eku: x509.ObjectIdentifier,
+) -> bytes:
+    """One leaf certificate PEM under `ca`, for the already-generated `key`."""
+    names: list[x509.GeneralName] = [] if dns_name is None else [x509.DNSName(dns_name)]
+    names.append(x509.UniformResourceIdentifier(uri))
+    now = datetime.now(UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(
+            x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "wire-test-leaf")])
+        )
+        .issuer_name(ca.subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(minutes=1))
+        .add_extension(x509.SubjectAlternativeName(names), critical=False)
+        .add_extension(x509.ExtendedKeyUsage([eku]), critical=False)
+        .sign(ca_key, hashes.SHA256())
+    )
+    return certificate.public_bytes(serialization.Encoding.PEM)
+
+
+@dataclass
+class _LoopbackAuthority:
+    """A throwaway CA plus one Core server identity under it, for a real TLS
+    loopback accept -- the same shape a real issuer's mTLS handoff carries."""
+
+    ca_key: rsa.RSAPrivateKey
+    ca: x509.Certificate
+    ca_pem: bytes
+    ca_path: Path
+    core_context: ssl.SSLContext
+
+
+def _loopback_authority(tmp_path: Path) -> _LoopbackAuthority:
+    ca_key, ca = _self_signed_ca()
+    ca_pem = ca.public_bytes(serialization.Encoding.PEM)
+    ca_path = tmp_path / "ca.crt"
+    ca_path.write_bytes(ca_pem)
+    core_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    core_uri = core_uri_for_certificate(core_key.public_key())
+    core_cert_path = tmp_path / "core.crt"
+    core_cert_path.write_bytes(
+        _leaf_identity(
+            ca_key,
+            ca,
+            core_key,
+            dns_name=CORE_DNS_NAME,
+            uri=core_uri,
+            eku=ExtendedKeyUsageOID.SERVER_AUTH,
+        )
+    )
+    core_key_path = tmp_path / "core.key"
+    core_key_path.write_bytes(_private_key_pem(core_key))
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    pin_tls_13(context)
+    context.load_cert_chain(core_cert_path, core_key_path)
+    context.load_verify_locations(cafile=ca_path)
+    context.verify_mode = ssl.CERT_REQUIRED
+    return _LoopbackAuthority(ca_key, ca, ca_pem, ca_path, context)
+
+
+def _runner_identity(
+    tmp_path: Path, authority: _LoopbackAuthority, uri: str, name: str = "runner"
+) -> tuple[Path, Path, bytes]:
+    """A Runner client identity under `authority`, as (cert path, key path, leaf DER)."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    leaf_pem = _leaf_identity(
+        authority.ca_key,
+        authority.ca,
+        key,
+        dns_name=None,
+        uri=uri,
+        eku=ExtendedKeyUsageOID.CLIENT_AUTH,
+    )
+    cert_path = tmp_path / f"{name}.crt"
+    cert_path.write_bytes(leaf_pem)
+    key_path = tmp_path / f"{name}.key"
+    key_path.write_bytes(_private_key_pem(key))
+    leaf_der = x509.load_pem_x509_certificate(leaf_pem).public_bytes(
+        serialization.Encoding.DER
+    )
+    return cert_path, key_path, leaf_der
+
+
+def _client_tls_context(
+    authority: _LoopbackAuthority, cert_path: Path, key_path: Path
+) -> ssl.SSLContext:
+    context = ssl.create_default_context(
+        ssl.Purpose.SERVER_AUTH, cafile=authority.ca_path
+    )
+    pin_tls_13(context)
+    context.load_cert_chain(cert_path, key_path)
+    return context
+
+
+_TLS_CANDIDATE_DRIVER = """
+import ctypes
+import socket
+import ssl
+import sys
+from pathlib import Path
+
+_PR_SET_NO_NEW_PRIVS = 38
+
+(
+    fd, attempt_id, request_hash, generation_id, manifest_id, invocation_id,
+    scenario_value, manifest_path, identity, journal_directory, process_limit,
+    workspace_directory, runner_cert, runner_key, ca_cert, server_hostname,
+) = sys.argv[1:17]
+
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptId,
+    RunnerGenerationBinding,
+    RunnerGenerationId,
+    RunnerInvocationId,
+    RunnerManifestId,
+)
+from atelier2.contracts.agents import AgentExecutionRequestHash
+from atelier2.runner import session as session_module
+from atelier2.runner.session import CandidateScenario, run_candidate_session
+
+libc = ctypes.CDLL(None, use_errno=True)
+if libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+    raise OSError(ctypes.get_errno(), "prctl(NO_NEW_PRIVS) failed")
+
+session_module._pid_limit = lambda: int(process_limit)
+session_module._runner_workspace_directory = lambda: Path(workspace_directory)
+
+context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=ca_cert)
+context.minimum_version = ssl.TLSVersion.TLSv1_3
+context.maximum_version = ssl.TLSVersion.TLSv1_3
+context.load_cert_chain(runner_cert, runner_key)
+connection = context.wrap_socket(
+    socket.socket(fileno=int(fd)), server_hostname=server_hostname
+)
+run_candidate_session(
+    connection,
+    RunnerGenerationBinding(
+        AgentAttemptId(attempt_id),
+        AgentExecutionRequestHash(request_hash),
+        RunnerGenerationId(generation_id),
+        RunnerManifestId(manifest_id),
+    ),
+    RunnerInvocationId(invocation_id),
+    CandidateScenario(scenario_value),
+    Path(manifest_path),
+    Path(identity),
+    Path(journal_directory),
+)
+"""
+
+
+def _spawn_tls_candidate_session(
+    raw_client: socket.socket,
+    prepared: _PreparedSession,
+    scenario: CandidateScenario,
+    runner_cert_path: Path,
+    runner_key_path: Path,
+    ca_path: Path,
+    server_hostname: str,
+) -> subprocess.Popen[bytes]:
+    fd = raw_client.fileno()
+    return subprocess.Popen(
+        (
+            sys.executable,
+            "-c",
+            _TLS_CANDIDATE_DRIVER,
+            str(fd),
+            prepared.binding.attempt_id.value,
+            prepared.binding.request_hash.value,
+            prepared.binding.generation_id.value,
+            prepared.binding.manifest_id.value,
+            prepared.invocation.value,
+            scenario.value,
+            str(prepared.manifest_path),
+            str(prepared.identity),
+            str(prepared.journal_directory),
+            str(_STUBBED_PROCESS_LIMIT),
+            str(prepared.workspace_directory),
+            str(runner_cert_path),
+            str(runner_key_path),
+            str(ca_path),
+            server_hostname,
+        ),
+        pass_fds=(fd,),
+        close_fds=True,
+    )
+
+
+def test_runner_core_transport_drives_a_real_candidate_session_to_released_over_tls(
+    tmp_path: Path,
+) -> None:
+    """The production transport (`accept_and_drive_session`), not a hand-rolled
+    stand-in, drives the real Runner subprocess from INVOCATION_OFFER to
+    RELEASED over a genuine TLS loopback connection -- the transport the
+    witness Core (`tests/witness/runner_candidate_core.py`) is now the first
+    caller of."""
+    prepared = _prepared_session(tmp_path)
+    authority = _loopback_authority(tmp_path)
+    runner_uri = runner_uri_for_invocation(prepared.binding, prepared.invocation)
+    runner_cert_path, runner_key_path, runner_leaf_der = _runner_identity(
+        tmp_path, authority, runner_uri
+    )
+    server = bind_session_listener(0, accept_timeout_seconds=10.0)
+    port = server.getsockname()[1]
+    pin = RunnerPeerPin(
+        authority.ca_pem, runner_uri, ExtendedKeyUsageOID.CLIENT_AUTH, runner_leaf_der
+    )
+
+    with server:
+        raw_client = socket.create_connection(("127.0.0.1", port), timeout=10)
+        candidate = _spawn_tls_candidate_session(
+            raw_client,
+            prepared,
+            CandidateScenario.SUCCESS,
+            runner_cert_path,
+            runner_key_path,
+            authority.ca_path,
+            CORE_DNS_NAME,
+        )
+        raw_client.close()
+        try:
+            accept_and_drive_session(
+                server,
+                authority.core_context,
+                pin,
+                lambda: prepared.core_session,
+                1,
+            )
+            returncode = candidate.wait(timeout=10)
+        finally:
+            candidate.kill()
+            candidate.wait(timeout=10)
+
+    assert returncode == 0
+    assert prepared.core.armed == 1
+    assert prepared.core.committed == 1
+    assert prepared.core.acknowledged == 1
+
+
+def test_runner_core_transport_raises_when_no_runner_connects_within_the_accept_bound() -> (
+    None
+):
+    server = bind_session_listener(0, accept_timeout_seconds=0.05)
+    with (
+        server,
+        pytest.raises(RuntimeError, match="accept bound"),
+    ):
+        accept_and_drive_session(
+            server,
+            ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER),
+            RunnerPeerPin(
+                b"", "urn:test:unreachable", ExtendedKeyUsageOID.CLIENT_AUTH, b""
+            ),
+            lambda: pytest.fail("no connection should ever have been accepted"),
+            1,
+        )
+
+
+def test_runner_core_transport_accept_pinned_runner_refuses_a_leaf_foreign_to_the_pin(
+    tmp_path: Path,
+) -> None:
+    """The pinned-leaf fence: a certificate that passes the CA/SAN/EKU check
+    (same claimed identity) but is not byte-for-byte the pinned leaf is still
+    refused -- the fingerprint half of the fence `validate_peer_certificate`
+    alone cannot provide."""
+    authority = _loopback_authority(tmp_path)
+    uri = "urn:atelier2:runner:v1:peer-fence-test"
+    _pinned_cert_path, _pinned_key_path, pinned_leaf_der = _runner_identity(
+        tmp_path, authority, uri, name="pinned"
+    )
+    presenting_cert_path, presenting_key_path, _presenting_leaf_der = _runner_identity(
+        tmp_path, authority, uri, name="presenting"
+    )
+    client_context = _client_tls_context(
+        authority, presenting_cert_path, presenting_key_path
+    )
+    server = bind_session_listener(0, accept_timeout_seconds=5.0)
+    port = server.getsockname()[1]
+    pin = RunnerPeerPin(
+        authority.ca_pem, uri, ExtendedKeyUsageOID.CLIENT_AUTH, pinned_leaf_der
+    )
+
+    def _connect() -> None:
+        with (
+            socket.create_connection(("127.0.0.1", port), timeout=5) as raw,
+            client_context.wrap_socket(raw, server_hostname=CORE_DNS_NAME),
+        ):
+            pass
+
+    with server:
+        connector = threading.Thread(target=_connect)
+        connector.start()
+        try:
+            with pytest.raises(RuntimeError, match="Runner peer leaf differs"):
+                accept_pinned_runner(server, authority.core_context, pin)
+        finally:
+            connector.join(timeout=5)
+
+
+def test_runner_core_transport_accepts_a_second_connection_after_the_first_drops(
+    tmp_path: Path,
+) -> None:
+    """`accept_and_drive_session`'s own reconnect bound: a first connection
+    that drops before RELEASED does not fail the call so long as a second,
+    equally pinned connection reaches RELEASED -- and the session factory
+    runs exactly once, against the first connection, never rebuilt for the
+    reconnect. A minimal fake session stands in here (structurally satisfying
+    `RunnerSessionAdvancer`) to pin the transport's own mechanics apart from
+    the real `CoreRunnerSession` protocol state machine, which the end-to-end
+    test above already exercises."""
+    authority = _loopback_authority(tmp_path)
+    uri = "urn:atelier2:runner:v1:reconnect-test"
+    runner_cert_path, runner_key_path, runner_leaf_der = _runner_identity(
+        tmp_path, authority, uri
+    )
+    client_context = _client_tls_context(authority, runner_cert_path, runner_key_path)
+    server = bind_session_listener(0, accept_timeout_seconds=5.0)
+    port = server.getsockname()[1]
+    pin = RunnerPeerPin(
+        authority.ca_pem, uri, ExtendedKeyUsageOID.CLIENT_AUTH, runner_leaf_der
+    )
+    binding = _binding(AgentExecutionRequestHash("a" * 64), RunnerManifestId("b" * 64))
+    invocation = RunnerInvocationId("B" * 43)
+
+    def _connect_and_drop() -> None:
+        with (
+            socket.create_connection(("127.0.0.1", port), timeout=5) as raw,
+            client_context.wrap_socket(raw, server_hostname=CORE_DNS_NAME),
+        ):
+            pass
+
+    def _connect_and_release() -> None:
+        with (
+            socket.create_connection(("127.0.0.1", port), timeout=5) as raw,
+            client_context.wrap_socket(
+                raw, server_hostname=CORE_DNS_NAME
+            ) as connection,
+        ):
+            connection.sendall(
+                encode_runner_session_frame(
+                    RunnerSessionFrame(
+                        RunnerSessionMessage.RELEASED,
+                        1,
+                        binding,
+                        invocation,
+                        (b"released",),
+                    )
+                )
+            )
+
+    build_count = 0
+
+    def _session_factory() -> _FakeSessionAdvancer:
+        nonlocal build_count
+        build_count += 1
+        return _FakeSessionAdvancer()
+
+    errors: list[BaseException] = []
+
+    def _run_server() -> None:
+        try:
+            accept_and_drive_session(
+                server, authority.core_context, pin, _session_factory, 2
+            )
+        except BaseException as error:  # noqa: BLE001 -- surfaced to the test thread
+            errors.append(error)
+
+    with server:
+        server_thread = threading.Thread(target=_run_server)
+        server_thread.start()
+        try:
+            dropper = threading.Thread(target=_connect_and_drop)
+            dropper.start()
+            dropper.join(timeout=5)
+            releaser = threading.Thread(target=_connect_and_release)
+            releaser.start()
+            releaser.join(timeout=5)
+        finally:
+            server_thread.join(timeout=5)
+
+    assert not errors
+    assert build_count == 1
+
+
+class _FakeSessionAdvancer:
+    """Answers nothing and is never asked to cancel -- see
+    `test_runner_core_transport_accepts_a_second_connection_after_the_first_drops`."""
+
+    def accept(self, frame: RunnerSessionFrame) -> RunnerSessionFrame | None:
+        return None
+
+    def accept_terminal_record(
+        self, frame: RunnerSessionFrame
+    ) -> RunnerSessionFrame | None:
+        return None
+
+    def cancel(self) -> RunnerSessionFrame:
+        raise NotImplementedError
