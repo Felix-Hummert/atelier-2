@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.application.run_runner_session import (
@@ -24,6 +24,7 @@ from atelier2.contracts.runner_terminal_evidence_codec import (
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     RunnerTerminalEvidenceCommitRefused,
+    RunnerTerminalEvidenceCommitted,
 )
 
 
@@ -34,6 +35,24 @@ class DbosRunnerSessionCore:
     execution: AgentAttemptExecution
     store: DbosAgentAttemptStore
     cancellation_command_id: str
+    # A single-item box, not a plain attribute: the dataclass is frozen (its
+    # wire-facing fields must never be reassigned mid-session), but the one
+    # commit `commit_terminal_record` ever durably wins still has to reach a
+    # caller driving this session -- `#540` C-3.4's own Core-side driver reads
+    # `committed_evidence` once RELEASED, for the `NodeCompletion`
+    # `commit_runner_terminal_evidence` already computed and this class used
+    # to discard along with the rest of the store's answer.
+    _committed: list[RunnerTerminalEvidenceCommitted | None] = field(
+        default_factory=lambda: [None], repr=False, compare=False
+    )
+
+    @property
+    def committed_evidence(self) -> RunnerTerminalEvidenceCommitted | None:
+        """What this session's one terminal-record commit durably won, once it
+        has happened -- `None` before `commit_terminal_record` is ever called,
+        or on the resumed-tombstone replay `_require_already_acknowledged`
+        answers without a fresh store commit."""
+        return self._committed[0]
 
     def arm(
         self, binding: RunnerGenerationBinding, invocation: RunnerInvocationId
@@ -53,6 +72,7 @@ class DbosRunnerSessionCore:
         committed = self.store.commit_runner_terminal_evidence(self.execution, decoded)
         if isinstance(committed, RunnerTerminalEvidenceCommitRefused):
             raise TypeError("runner-terminal-record-refused")
+        self._committed[0] = committed
         return committed.evidence_hash
 
     def _require_already_acknowledged(
