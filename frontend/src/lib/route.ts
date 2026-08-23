@@ -19,6 +19,7 @@ export const PUBLIC_REFERENCE_PLACEHOLDER = "{public_ref}";
 export const WORKFLOW_NAME_PLACEHOLDER = "{workflow_name}";
 
 export type CockpitRoute =
+  | { page: "chat" }
   | { page: "studio" }
   | { page: "project" }
   | { page: "new" }
@@ -38,6 +39,9 @@ export function cockpitRoute(pathname: string): CockpitRoute {
   // has a backend identity and "every run" and "this project" can differ.
   if (pathname === "/atelier/project" || pathname === "/atelier/runs") {
     return { page: "project" };
+  }
+  if (pathname === "/atelier/chat" || pathname === "/atelier/chat/") {
+    return { page: "chat" };
   }
   if (pathname === "/atelier/new") {
     return { page: "new" };

@@ -50,15 +50,15 @@ describe("cockpit navigation", () => {
     openAt("/atelier/project");
     await screen.findByRole("heading", { name: THE_ONE_PROJECT });
 
-    await fireEvent.click(screen.getByRole("link", { name: "Start a run" }));
-    expect((await screen.findByRole("heading", { name: "Choose a workflow" })).isConnected).toBe(true);
-    expect(window.location.pathname).toBe("/atelier/new");
+    await fireEvent.click(screen.getByRole("link", { name: "Workflows" }));
+    expect((await screen.findByRole("heading", { name: "Workflows" })).isConnected).toBe(true);
+    expect(window.location.pathname).toBe("/atelier/workflows");
 
     window.history.back();
 
     await waitFor(() => expect(window.location.pathname).toBe("/atelier/project"));
     expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
-    expect(screen.queryByRole("heading", { name: "Choose a workflow" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Workflows" })).toBeNull();
   });
 
   it("names the rail's project slot honestly — shown, not a live switcher", async () => {
@@ -72,7 +72,7 @@ describe("cockpit navigation", () => {
     expect(within(rail).queryByRole("button", { name: new RegExp(THE_ONE_PROJECT) })).toBeNull();
   });
 
-  it("walks Board, Workflows and History on the rail and leaves Chat unclickable", async () => {
+  it("walks all four rail destinations, none of them a dead click", async () => {
     openAt("/atelier");
     await screen.findByRole("heading", { name: "Board" });
 
@@ -80,18 +80,25 @@ describe("cockpit navigation", () => {
     expect(within(rail).getByRole("link", { name: "Board" }).getAttribute("aria-current")).toBe(
       "page"
     );
+    expect(within(rail).getByRole("link", { name: "Chat" }).getAttribute("href")).toBe(
+      "/atelier/chat"
+    );
     expect(within(rail).getByRole("link", { name: "Workflows" }).getAttribute("href")).toBe(
       "/atelier/workflows"
     );
     expect(within(rail).getByRole("link", { name: "History" }).getAttribute("href")).toBe(
       "/atelier/history"
     );
-    expect(within(rail).queryByRole("link", { name: "Chat" })).toBeNull();
-    expect(within(rail).getByText("Chat").closest("[aria-disabled='true']")?.getAttribute("title")).toContain(
-      "#7"
-    );
 
-    await fireEvent.click(within(rail).getByRole("link", { name: "Workflows" }));
+    await fireEvent.click(within(rail).getByRole("link", { name: "Chat" }));
+    expect((await screen.findByRole("heading", { name: "Chat" })).isConnected).toBe(true);
+    expect(window.location.pathname).toBe("/atelier/chat");
+
+    await fireEvent.click(
+      within(screen.getByRole("navigation", { name: "Workshop" })).getByRole("link", {
+        name: "Workflows"
+      })
+    );
     expect((await screen.findByRole("heading", { name: "Workflows" })).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier/workflows");
 
@@ -105,16 +112,16 @@ describe("cockpit navigation", () => {
     expect(window.location.pathname).toBe("/atelier");
   });
 
-  it("names the new-run trail with the same project the other levels use", async () => {
+  it("marks the rail destination a page belongs to, so the operator is never lost", async () => {
     openAt("/atelier/new");
     await screen.findByRole("heading", { name: "Choose a workflow" });
 
-    const trail = screen.getByRole("navigation", { name: "Where you are" });
-    expect(within(trail).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
-      "Board",
-      THE_ONE_PROJECT
-    ]);
-    expect(within(trail).getByText("New run").isConnected).toBe(true);
-    expect(screen.queryByRole("link", { name: "← Project" })).toBeNull();
+    const rail = screen.getByRole("navigation", { name: "Workshop" });
+
+    // Starting a run is a Workflows-owned act, not a History one.
+    expect(within(rail).getByRole("link", { name: "Workflows" }).getAttribute("aria-current")).toBe(
+      "page"
+    );
+    expect(within(rail).getByRole("link", { name: "History" }).getAttribute("aria-current")).toBeNull();
   });
 });

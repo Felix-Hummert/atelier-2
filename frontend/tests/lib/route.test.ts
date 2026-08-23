@@ -18,6 +18,7 @@ const SAMPLE_WORKFLOW_NAME = "iterate-code";
  * dies on a reload -- the defect this file exists for, one edge further out.
  */
 const REACHED_COLD: Record<CockpitRoute["page"], boolean> = {
+  chat: true,
   studio: true,
   project: true,
   new: true,
