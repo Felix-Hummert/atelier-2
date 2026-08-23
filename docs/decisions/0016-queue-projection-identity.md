@@ -63,10 +63,12 @@ message.
 `QueueAdmissionRationale`. Binding to a lineage rather than one revision lets
 the workflow a lineage names keep publishing later members without re-admitting
 every already-queued item -- the same reasoning that lets a catalog name resolve
-to `head`. Resolving *which* lineage a workflow query names is the
-application layer's job (`admit_queue_item`), through the existing
-`CatalogResolver`; the projection itself accepts only an already-resolved
-`CatalogLineageId` and never interprets a query.
+to `head`. Resolving *which* lineage a workflow query names is deliberately not
+this slice's job: it is an application-layer read through the existing
+`CatalogResolver`, and it lands together with the platform door that first
+gives it a production caller (see "Named and not built"). The projection
+itself accepts only an already-resolved `CatalogLineageId` and never
+interprets a query.
 
 ### The store: one table, a derived-identity CAS row, immutable history
 
@@ -107,6 +109,15 @@ named, later edge.
 
 ## Named and not built
 
+- **The application layer that resolves a workflow query.** A first `admit_queue_item`
+  use case (resolve a workflow query to its head `CatalogLineageId` through the
+  existing `CatalogResolver`, then hand the projection an admission) was
+  written for this slice and removed before landing: it named the two
+  application-level refusals for an unknown or retired lineage, but it had no
+  production caller, and a caller-less application module is deadweight this
+  slice does not need to carry. Its code stays in this PR's history; the same
+  use case lands with the platform door that gives it its first real caller,
+  in a later slice.
 - **Observation as its own durable write.** This slice's `OBSERVED` row is
   established only as a side effect of the first admission attempt. A real
   ingestion pipeline that observes a tracker item before anyone tries to admit
@@ -118,6 +129,12 @@ named, later edge.
   collision this record deliberately stays behind.
 - **Write-set exclusion.** Named above -- a distinct invariant with its own
   later table, not a field squeezed into this one.
+- **A caller-error refusal for an unfounded workflow lineage.** The store's
+  foreign key on `workflow_lineage_id` refuses an admission naming a lineage
+  no founding ever created, and today that refusal surfaces as
+  `DurableStateCorrupt` -- honest for state a sequence of writes could not have
+  produced, dishonest for a caller's bad reference. A typed refusal that tells
+  the two apart is later work; `ports/queue_projection.py` names the gap.
 
 ## Consequences
 

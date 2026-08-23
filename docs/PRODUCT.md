@@ -982,15 +982,16 @@ V29 gives the queue projection ([ADR 0016](decisions/0016-queue-projection-ident
 its durable admission row: one item identified by a project id and an opaque
 tracker reference, whose id a caller never supplies -- it is a SHA-256 digest
 framed from both fields, exactly as a catalog lineage id is framed from its
-kind and founding revision. `admit_queue_item` resolves the named workflow
-through the existing `CatalogResolver`, then hands the projection an admission
-that already names an exact `CatalogLineageId` and a durable rationale. The one
-CAS-guarded transition an item's row admits is OBSERVED to ADMITTED: a stale
-revision or an admission that would replace a different one already recorded
-is refused with the row provably unchanged, and repeating the exact same
-admission again succeeds without a second write. The first admission attempt
-for one derived identity also establishes that identity's row; there is no
-separate durable "observed" write yet. No dependency edge, no readiness, no
+kind and founding revision. An admission names an exact, already-founded
+`CatalogLineageId` and a durable rationale; the one CAS-guarded transition an
+item's row admits is OBSERVED to ADMITTED: a stale revision or an admission
+that would replace a different one already recorded is refused with the row
+provably unchanged, and repeating the exact same admission again succeeds
+without a second write. The first admission attempt for one derived identity
+also establishes that identity's row; there is no separate durable "observed"
+write yet. Resolving which lineage a workflow query names -- reading the
+catalog above this projection -- has no production caller yet; it lands with
+the platform door in a later slice. No dependency edge, no readiness, no
 priority, and no HTTP door exist for this projection yet, and nothing in it
 holds a tracker item's title, description, or comments -- REQ-QUEUE-14 keeps
 those with the tracker.

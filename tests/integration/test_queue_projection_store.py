@@ -53,21 +53,15 @@ def harness(tmp_path: Path) -> Iterator[QueueHarness]:
         engine.dispose()
 
 
-_LINEAGE_NAME_COUNTER = iter(range(1_000_000))
-
-
-def _founded_workflow_lineage(engine: Engine) -> CatalogLineage:
+def _founded_workflow_lineage(engine: Engine, name: str) -> CatalogLineage:
     catalog = DbosCatalogStore(engine)
     published = PublishedRevision(
-        RevisionKind.WORKFLOW,
-        f"queue-workflow-document-{next(_LINEAGE_NAME_COUNTER)}".encode(),
+        RevisionKind.WORKFLOW, f"queue-workflow-document-{name}".encode()
     )
     catalog.publish_revision(published)
     result = catalog.found_lineage(
         published,
-        CatalogLineageDisplayName(
-            f"queue-triage-workflow-{next(_LINEAGE_NAME_COUNTER)}"
-        ),
+        CatalogLineageDisplayName(f"queue-workflow-{name}"),
         CatalogActor("operator"),
         CatalogActivatedAt("2026-08-23T09:00:00Z"),
     )
@@ -87,11 +81,18 @@ def _row(engine: Engine, item_id: str) -> tuple[object, ...] | None:
         return None if record is None else tuple(record)
 
 
+def _row_count(engine: Engine) -> int:
+    with engine.connect() as connection:
+        return int(
+            connection.scalar(sa.select(sa.func.count()).select_from(queue_items)) or 0
+        )
+
+
 @pytest.mark.proves("a-work-item-is-admitted-into-the-queue")
 def test_admitting_a_fresh_item_writes_its_durable_admission(
     harness: QueueHarness,
 ) -> None:
-    lineage = _founded_workflow_lineage(harness.engine)
+    lineage = _founded_workflow_lineage(harness.engine, "triage")
     reference = _reference()
     admission = QueueAdmission(
         lineage.lineage_id, QueueAdmissionRationale("matches the triage rule")
@@ -117,7 +118,7 @@ def test_admitting_a_fresh_item_writes_its_durable_admission(
 def test_a_stale_revision_is_refused_leaving_the_row_byte_identical(
     harness: QueueHarness,
 ) -> None:
-    lineage = _founded_workflow_lineage(harness.engine)
+    lineage = _founded_workflow_lineage(harness.engine, "triage")
     reference = _reference()
     with harness.engine.connect() as connection:
         connection.execute(
@@ -147,10 +148,64 @@ def test_a_stale_revision_is_refused_leaving_the_row_byte_identical(
 
 
 @pytest.mark.proves("a-work-item-is-admitted-into-the-queue")
+def test_a_refused_first_admission_still_durably_establishes_the_observed_row(
+    harness: QueueHarness,
+) -> None:
+    """The one path where a refusal writes: it establishes identity, not admission.
+
+    Nothing durable named this item before this call. The store's
+    insert-or-ignore establishes its `OBSERVED` row within the same
+    transaction the CAS decision refuses in -- ADR 0016 names this design;
+    this test pins it. A second refusal against the same wrong revision adds
+    nothing further.
+    """
+
+    lineage = _founded_workflow_lineage(harness.engine, "triage")
+    reference = _reference()
+    admission = QueueAdmission(
+        lineage.lineage_id, QueueAdmissionRationale("matches the triage rule")
+    )
+    wrong_command = AdmitQueueItem(reference, admission, QueueProjectionRevision(5))
+
+    outcome = harness.store.admit(wrong_command)
+
+    assert outcome == QueueAdmissionRevisionConflict(
+        QueueProjectionRevision(5), QueueProjectionRevision(0)
+    )
+    established_row = _row(harness.engine, reference.item_id.value)
+    assert established_row is not None
+    (
+        item_id,
+        project_id,
+        tracker_item_reference,
+        state,
+        state_version,
+        workflow_lineage_id,
+        admission_rationale,
+    ) = established_row
+    assert item_id == reference.item_id.value
+    assert project_id == "project1"
+    assert tracker_item_reference == "gh:79"
+    assert state == QueueItemState.OBSERVED.value
+    assert state_version == 0
+    assert workflow_lineage_id is None
+    assert admission_rationale is None
+    assert _row_count(harness.engine) == 1
+
+    second_outcome = harness.store.admit(wrong_command)
+
+    assert second_outcome == QueueAdmissionRevisionConflict(
+        QueueProjectionRevision(5), QueueProjectionRevision(0)
+    )
+    assert _row(harness.engine, reference.item_id.value) == established_row
+    assert _row_count(harness.engine) == 1
+
+
+@pytest.mark.proves("a-work-item-is-admitted-into-the-queue")
 def test_repeating_the_same_admission_succeeds_without_mutating_the_row(
     harness: QueueHarness,
 ) -> None:
-    lineage = _founded_workflow_lineage(harness.engine)
+    lineage = _founded_workflow_lineage(harness.engine, "triage")
     reference = _reference()
     admission = QueueAdmission(
         lineage.lineage_id, QueueAdmissionRationale("matches the triage rule")
@@ -174,8 +229,8 @@ def test_repeating_the_same_admission_succeeds_without_mutating_the_row(
 def test_admitting_under_a_different_workflow_binding_is_refused_unaltered(
     harness: QueueHarness,
 ) -> None:
-    lineage = _founded_workflow_lineage(harness.engine)
-    other_lineage = _founded_workflow_lineage(harness.engine)
+    lineage = _founded_workflow_lineage(harness.engine, "triage")
+    other_lineage = _founded_workflow_lineage(harness.engine, "escalation")
     reference = _reference()
     original = QueueAdmission(
         lineage.lineage_id, QueueAdmissionRationale("matches the triage rule")
@@ -244,7 +299,7 @@ def test_an_admission_survives_a_process_restart(tmp_path: Path) -> None:
     database_path = tmp_path / "atelier.sqlite"
     engine = create_canonical_engine(database_path)
     initialize_schema(engine)
-    lineage = _founded_workflow_lineage(engine)
+    lineage = _founded_workflow_lineage(engine, "triage")
     reference = _reference()
     admission = QueueAdmission(
         lineage.lineage_id, QueueAdmissionRationale("matches the triage rule")

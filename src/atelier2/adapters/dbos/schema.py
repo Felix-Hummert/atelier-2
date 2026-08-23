@@ -2709,7 +2709,7 @@ def _added_table_step(
 ) -> Callable[[sqlite3.Connection], None]:
     """One additive hop: a table this version introduces, its triggers, the CAS.
 
-    Two published steps add exactly one immutable table, so the hop is written
+    Five published steps add exactly one immutable table, so the hop is written
     once rather than copied per version; what differs between them is only the
     table, its triggers, and the two version numbers.
     """
