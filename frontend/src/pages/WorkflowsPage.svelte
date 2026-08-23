@@ -154,28 +154,32 @@
   }
 
   .muted {
-    color: var(--muted);
+    color: var(--ink-dim);
   }
 
   .failure {
-    color: var(--danger);
+    color: var(--signal-failure);
   }
 
   .workflow-cards {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(var(--card-min), 1fr));
     gap: var(--space-3);
     margin: 0;
     padding: 0;
     list-style: none;
   }
 
+  /* The base button skin centres its content; a card is not a control label,
+     so it takes the surface's own left edge back. */
   .workflow-card {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    justify-content: start;
     gap: var(--space-1);
     width: 100%;
     padding: var(--space-4) var(--space-5);
-    border: 1px solid var(--line);
+    border: var(--edge) solid var(--line);
     border-radius: var(--r-lg);
     background: var(--panel2);
     color: inherit;
@@ -192,21 +196,21 @@
   .workflow-card-head {
     display: flex;
     align-items: baseline;
-    gap: 0.4rem;
+    gap: var(--space-2);
   }
 
   .workflow-card strong {
-    font-size: 0.95rem;
+    font-size: var(--text-sm);
   }
 
   .workflow-card span {
-    font-size: 0.85rem;
+    font-size: var(--text-xs);
   }
 
   .note {
-    font-size: 0.72rem;
+    font-size: var(--text-2xs);
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--warning);
+    letter-spacing: var(--tracking-label);
+    color: var(--signal-attention);
   }
 </style>

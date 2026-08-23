@@ -25,6 +25,7 @@ from atelier2.api.routes import (
     events,
     health,
     occupancy,
+    project_root,
     projects,
     revisions,
     runs,
@@ -41,6 +42,10 @@ from atelier2.application.occupancy import (
     publish_occupancy_revision,
 )
 from atelier2.application.prepare_run_events import prepare_run_events
+from atelier2.application.project_root import (
+    get_project_root_revision,
+    publish_project_root_revision,
+)
 from atelier2.application.publish_adapter_operation_revision import (
     publish_adapter_operation_revision,
 )
@@ -259,6 +264,19 @@ def bound_use_cases(
                 )
             )
         ),
+        get_project_root_revision=lambda project_id: get_project_root_revision(
+            project_id, ports.host_configuration_channel
+        ),
+        publish_project_root_revision=(
+            lambda project_id, revision_number, root_path: (
+                publish_project_root_revision(
+                    project_id,
+                    revision_number,
+                    root_path,
+                    ports.host_configuration_channel,
+                )
+            )
+        ),
     )
 
 
@@ -338,6 +356,7 @@ def create_app(
     app.include_router(revisions.router)
     app.include_router(projects.router)
     app.include_router(occupancy.router)
+    app.include_router(project_root.router)
     app.include_router(runs.router)
     app.include_router(events.router)
 

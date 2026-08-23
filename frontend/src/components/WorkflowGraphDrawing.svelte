@@ -361,7 +361,7 @@
     align-items: flex-start;
     gap: var(--pipe-link);
     position: relative;
-    border: 1.5px dashed var(--line);
+    border: var(--edge) dashed var(--line);
     border-radius: var(--r-lg);
     padding: var(--space-5) var(--space-2) var(--space-2);
   }
@@ -373,7 +373,7 @@
     background: var(--ground);
     padding: 0 var(--space-2);
     font-size: var(--text-2xs);
-    color: var(--muted);
+    color: var(--ink-dim);
     white-space: nowrap;
   }
 
@@ -390,7 +390,7 @@
     padding: 0;
     border: 0;
     border-radius: var(--r);
-    color: var(--queued);
+    color: var(--signal-quiet);
     background: transparent;
     font: inherit;
     text-align: center;
@@ -411,7 +411,7 @@
     background: var(--panel2);
     color: inherit;
     font-size: var(--text-sm);
-    font-weight: 700;
+    font-weight: var(--weight-heavy);
   }
 
   .pipe-stage[data-node-kind="action"] .pipe-shape {
@@ -444,32 +444,30 @@
 
   .pipe-name {
     margin-top: var(--space-2);
-    color: var(--ink);
+    color: var(--ink-dim);
     font-size: var(--text-xs);
-    font-weight: 600;
+    font-weight: var(--weight-strong);
     overflow-wrap: anywhere;
   }
 
   .pipe-stage[data-state="working"] {
-    color: var(--working);
+    color: var(--signal-live);
   }
 
   .pipe-stage[data-state="needs_you"] {
-    color: var(--danger);
-  }
-
-  .pipe-stage[data-state="succeeded"] {
-    color: var(--accent);
+    color: var(--signal-attention-mark);
   }
 
   .pipe-stage[data-state="failed"],
   .pipe-stage[data-state="interrupted"] {
-    color: var(--warning);
+    color: var(--signal-failure);
   }
 
+  /* Where the run stands is said in ink and weight. An underline means a
+     link everywhere else in the house, and may not mean a second thing here. */
   .pipe-stage.current .pipe-name {
-    text-decoration: underline;
-    text-underline-offset: 0.2em;
+    color: var(--ink);
+    font-weight: var(--weight-heavy);
   }
 
   .pipe-stage.live-work .pipe-shape::after {
@@ -496,9 +494,9 @@
 
   .kind-mark {
     display: inline-block;
-    width: 0.7rem;
-    height: 0.7rem;
-    border: 1.5px solid var(--muted);
+    width: var(--mark-sm);
+    height: var(--mark-sm);
+    border: var(--edge-strong) solid var(--ink-dim);
     background: transparent;
     flex: none;
   }
@@ -508,18 +506,21 @@
   }
 
   .kind-mark-action {
-    border-radius: 0.15rem;
+    border-radius: var(--r-sm);
   }
 
   .kind-mark-wait {
     border: none;
-    background: var(--muted);
+    background: var(--ink-dim);
     clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
   }
 
+  /* The legend's loop mark is the loop box itself in miniature: a dashed
+     frame around several nodes, not a second reading of the action square. */
   .kind-mark-loop {
+    width: calc(var(--mark-sm) * 1.75);
     border-style: dashed;
-    border-radius: 0.2rem;
+    border-radius: var(--r-sm);
   }
 
   .graph-legend {
@@ -530,7 +531,7 @@
     padding: 0;
     list-style: none;
     font-size: var(--text-xs);
-    color: var(--muted);
+    color: var(--ink-dim);
   }
 
   .graph-legend li {
@@ -540,6 +541,6 @@
   }
 
   .muted {
-    color: var(--muted);
+    color: var(--ink-dim);
   }
 </style>

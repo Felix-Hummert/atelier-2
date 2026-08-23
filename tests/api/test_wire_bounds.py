@@ -46,6 +46,7 @@ from atelier2.contracts.catalog_v3 import (
 from atelier2.contracts.host_configuration import (
     MAXIMUM_OCCUPANCY_BINDINGS,
     MAXIMUM_PROJECT_ID_CHARACTERS,
+    MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SERVED_PROJECTS,
 )
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
@@ -147,6 +148,14 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     ),
     "OccupancyRevisionResource.bindings": MAXIMUM_OCCUPANCY_BINDINGS,
     "PutOccupancyRevisionRequestResource.bindings": MAXIMUM_OCCUPANCY_BINDINGS,
+    "ProjectRootRevisionResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "ProjectRootRevisionResource.public_project_reference": (
+        MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS
+    ),
+    "ProjectRootRevisionResource.root_path": MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
+    "PutProjectRootRevisionRequestResource.root_path": (
+        MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS
+    ),
     "InvalidFieldResource.path": MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     "InvalidFieldResource.reason": MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
 }
