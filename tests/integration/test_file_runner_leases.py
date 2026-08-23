@@ -161,6 +161,31 @@ def test_a_crash_between_the_temporary_write_and_the_rename_never_reveals_the_le
     assert list((tmp_path / "leases" / "open").glob("*.json")) == []
 
 
+def test_a_material_fsync_failure_never_reveals_the_lease_either(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lease document `_reveal` fsyncs lives in a separately declared
+    tree from the Attempt's own material (`attempt_root`); a launcher that
+    bind-mounts the two apart gets no durability guarantee for one from an
+    fsync on the other. A crash that only ever loses the material -- never
+    the final rename -- must be refused exactly like one that loses the
+    rename itself.
+    """
+    from atelier2.adapters import file_runner_leases
+
+    publisher = _publisher(tmp_path)
+
+    def _dies(*_args: object, **_kwargs: object) -> None:
+        raise OSError("simulated fsync failure while the material was written")
+
+    monkeypatch.setattr(file_runner_leases.os, "fsync", _dies)
+
+    result = publisher.publish(_request())
+
+    assert result == DurableWriteUnavailable()
+    assert list((tmp_path / "leases" / "open").glob("*.json")) == []
+
+
 def test_a_second_publish_of_the_same_request_is_idempotent(tmp_path: Path) -> None:
     publisher = _publisher(tmp_path)
     request = _request()
@@ -204,6 +229,37 @@ def test_withdraw_is_idempotent_once_it_has_already_won(tmp_path: Path) -> None:
     result = publisher.withdraw(_LEASE_ID)
 
     assert result == RunnerLeaseWithdrawn(_LEASE_ID)
+
+
+def test_withdraw_racing_a_concurrent_withdraw_of_the_same_lease_reports_the_win(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two concurrent `withdraw` calls for the same still-open lease can both
+    pass the front `withdrawn` check before either renames anything; exactly
+    one wins the rename, and the other's `os.rename` then raises
+    `FileNotFoundError` for the same reason -- the document is already gone
+    from `open`. That loser is this call's own win too, not an unknown lease.
+    """
+    from atelier2.adapters import file_runner_leases
+
+    publisher = _publisher(tmp_path)
+    publisher.publish(_request())
+    real_rename = file_runner_leases.os.rename
+
+    def _a_concurrent_withdraw_wins_first(source: Path, destination: Path) -> None:
+        # What a second, truly concurrent `withdraw()` would have done to
+        # this exact document by the time this call's own rename runs.
+        real_rename(source, destination)
+        raise FileNotFoundError(source)
+
+    monkeypatch.setattr(
+        file_runner_leases.os, "rename", _a_concurrent_withdraw_wins_first
+    )
+
+    result = publisher.withdraw(_LEASE_ID)
+
+    assert result == RunnerLeaseWithdrawn(_LEASE_ID)
+    assert (tmp_path / "leases" / "withdrawn" / f"{_LEASE_ID.value}.json").is_file()
 
 
 def test_withdraw_loses_by_name_to_a_launcher_that_already_claimed_the_lease(

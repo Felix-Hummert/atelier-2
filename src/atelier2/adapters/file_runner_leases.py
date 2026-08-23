@@ -184,6 +184,12 @@ class FileRunnerLeasePublisher:
         try:
             os.rename(self._open / name, self._withdrawn / name)
         except FileNotFoundError:
+            if (self._withdrawn / name).is_file():
+                # A concurrent withdraw of this exact lease won the same race
+                # between this call's own two steps: it is gone from `open`
+                # for the same reason this call's rename just failed. That is
+                # this call's own win too, not an unknown lease.
+                return RunnerLeaseWithdrawn(lease_id)
             if (self._claimed / name).is_file():
                 return RunnerLeaseAlreadyClaimed(lease_id)
             if (self._released / name).is_file():
@@ -221,6 +227,19 @@ class FileRunnerLeasePublisher:
     def _write_material(
         self, paths: _AttemptPaths, request: RunnerLeaseRequest
     ) -> None:
+        """Every file and directory a published lease could ever name, made
+        durable before `_reveal` runs.
+
+        The lease document `_reveal` fsyncs lives in `lease_directory`, a
+        separately declared tree from `attempt_root` -- an operator may bind-
+        mount the two apart, so durability of one names nothing about the
+        other. A crash between this call and `_reveal` must therefore never
+        be able to leave a visible lease pointing at missing or half-written
+        material: every file this writes is fsynced on its own descriptor,
+        and every directory it creates is fsynced after everything that
+        belongs inside it exists, so the directory entry for each is durable
+        too.
+        """
         for directory in (
             paths.root,
             paths.handoff,
@@ -229,15 +248,38 @@ class FileRunnerLeasePublisher:
             paths.provider_credentials,
         ):
             directory.mkdir(mode=_STATE_MODE, exist_ok=True)
-        (paths.handoff / _BOOTSTRAP_NAME).write_bytes(
-            _encode_binding_document(request.binding)
+        self._write_file_durable(
+            paths.handoff / _BOOTSTRAP_NAME, _encode_binding_document(request.binding)
         )
-        (paths.handoff / _MANIFEST_NAME).write_bytes(
-            encode_runner_manifest(request.manifest)
+        self._write_file_durable(
+            paths.handoff / _MANIFEST_NAME, encode_runner_manifest(request.manifest)
         )
-        (paths.handoff / _CA_NAME).write_bytes(request.ca_certificate)
-        (paths.handoff / _CORE_NAME).write_bytes(request.core_certificate)
-        (paths.handoff / _CORE_PEER_NAME).write_bytes(request.core_peer_document)
+        self._write_file_durable(paths.handoff / _CA_NAME, request.ca_certificate)
+        self._write_file_durable(paths.handoff / _CORE_NAME, request.core_certificate)
+        self._write_file_durable(
+            paths.handoff / _CORE_PEER_NAME, request.core_peer_document
+        )
+        self._sync_directory(paths.handoff)
+        self._sync_directory(paths.peer)
+        self._sync_directory(paths.issuance)
+        self._sync_directory(paths.provider_credentials)
+        self._sync_directory(paths.root)
+
+    @staticmethod
+    def _write_file_durable(path: Path, payload: bytes) -> None:
+        """One file, written and fsynced whole -- overwritable, because a
+        retried publish of an already-material lease id writes exactly the
+        same bytes again rather than refusing a directory it built itself."""
+        descriptor = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC, 0o600
+        )
+        try:
+            offset = 0
+            while offset < len(payload):
+                offset += os.write(descriptor, payload[offset:])
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
     def _reveal(self, lease_id: RunnerLeaseId, encoded: bytes) -> None:
         """Make one lease document visible, whole, or not at all.
