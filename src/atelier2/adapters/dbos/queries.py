@@ -38,6 +38,7 @@ from atelier2.adapters.dbos.schema import (
     attempt_instants,
     effect_intents,
     effect_receipts,
+    event_instants,
     node_receipts_v3,
     reconcile_commands,
     run_events,
@@ -608,7 +609,13 @@ def _node_job_and_refusal(
 def _node_instants(
     connection: Connection, execution_id: NodeExecutionId
 ) -> tuple[RecordedAt | None, RecordedAt | None]:
-    """The first start and last end recorded for this node's attempts."""
+    """The first start and last end recorded for this node's attempts.
+
+    An Agent node's attempts carry that window in their own instants table. A
+    Wait node has no attempt row at all -- nothing runs between the run
+    reaching it and a person answering it -- so an empty attempt result falls
+    through to the single instant its answer was recorded at.
+    """
 
     rows = tuple(
         connection.execute(
@@ -624,12 +631,66 @@ def _node_instants(
         ).mappings()
     )
     if not rows:
-        return None, None
+        return _node_wait_answered_instant(connection, execution_id)
     started = RecordedAt(str(rows[0]["started_at"]))
     ended_values = [record["ended_at"] for record in rows]
     if any(value is None for value in ended_values):
         return started, None
     return started, RecordedAt(str(max(str(value) for value in ended_values)))
+
+
+def _node_wait_answered_instant(
+    connection: Connection, execution_id: NodeExecutionId
+) -> tuple[RecordedAt | None, RecordedAt | None]:
+    """A Wait node's window: the one instant its answer was recorded at.
+
+    Unlike an Agent attempt, a Wait node has no separate started/ended pair to
+    read -- the person's answer is the only thing that happened, so it stands
+    for both ends of the window. `event_instants` exists from V22 on; a run
+    answered before that build wrote no such row, and the honest read for it is
+    nothing, not a guess.
+    """
+
+    recorded_at = connection.execute(
+        sa.select(event_instants.c.recorded_at)
+        .select_from(
+            run_events.join(
+                event_instants,
+                sa.and_(
+                    event_instants.c.run_id == run_events.c.run_id,
+                    event_instants.c.event_sequence == run_events.c.event_sequence,
+                ),
+            )
+        )
+        .where(
+            run_events.c.node_execution_id == execution_id.value,
+            run_events.c.event_kind == RunEventKind.WAIT_ANSWERED.value,
+        )
+    ).scalar()
+    if recorded_at is None:
+        return None, None
+    instant = RecordedAt(str(recorded_at))
+    return instant, instant
+
+
+ANSWER_BEARING_EVENT_KINDS: frozenset[str] = frozenset(
+    kind.value
+    for kind in (
+        RunEventKind.AGENT_COMPLETED,
+        RunEventKind.WAIT_ANSWERED,
+        RunEventKind.ACTION_COMPLETED,
+        RunEventKind.SUBWORKFLOW_COMPLETED,
+    )
+)
+"""Every event kind whose payload is a node's produced value.
+
+This is its own set rather than a reuse of `_run_ending_event_predicate`'s V3
+ending kinds: that one names what closes a V3 run's current execution, scoped
+to the format that can stand a run's sink on a bare Action or Wait node. This
+one names what a value-bearing write looks like at all, read for V1, V2 and V3
+alike wherever a node's own answer is asked for -- the two sets share members
+by coincidence of what "finished" means, not by one owning the other's rule.
+"""
 
 
 def _node_answer(
@@ -641,7 +702,7 @@ def _node_answer(
     record = connection.execute(
         sa.select(run_events.c.payload, run_events.c.payload_hash).where(
             run_events.c.node_execution_id == execution_id.value,
-            run_events.c.event_kind == RunEventKind.AGENT_COMPLETED.value,
+            run_events.c.event_kind.in_(ANSWER_BEARING_EVENT_KINDS),
         )
     ).one_or_none()
     if record is None:
