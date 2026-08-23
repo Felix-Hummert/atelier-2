@@ -628,7 +628,7 @@
   }
 
   .run-standing-done {
-    color: var(--signal-done);
+    color: var(--signal-quiet);
   }
 
   .stopped {
@@ -636,7 +636,7 @@
     padding: var(--space-3) var(--space-4);
     border-left: var(--edge-mark) solid var(--signal-failure);
     border-radius: var(--r);
-    background: color-mix(in srgb, var(--signal-failure) var(--wash), transparent);
+    background: color-mix(in srgb, var(--signal-failure) var(--wash), var(--panel2));
     color: var(--signal-failure);
     overflow-wrap: anywhere;
   }

@@ -352,7 +352,7 @@
     padding: var(--space-2) var(--space-3);
     border-left: var(--edge-mark) solid var(--signal-failure);
     border-radius: var(--r);
-    background: color-mix(in srgb, var(--signal-failure) var(--wash), transparent);
+    background: color-mix(in srgb, var(--signal-failure) var(--wash), var(--panel2));
     font-size: var(--text-xs);
   }
 </style>

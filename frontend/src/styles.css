@@ -26,15 +26,21 @@
   --accent: #232821;
   --accent-ink: #fefdfa;
 
-  /* State. One hue per state, readable on ground, panel, and panel2 alike. */
-  --signal-idle: #4a5143;
+  /*
+   * State. Colour is for what wants something from you: a run that is live,
+   * one that needs you, one that failed. A run that is queued, cancelled, or
+   * done wants nothing, so it is drawn in the same quiet ink the body already
+   * uses -- finished work does not ask for attention (operator ruling 23.08.).
+   */
+  --signal-quiet: var(--ink-dim);
   --signal-live: #154c80;
-  --signal-attention: #704604;
-  --signal-failure: #882414;
-  --signal-done: #155636;
+  --signal-attention: #95421f;
+  --signal-failure: #8c2030;
   --signal-ink: #fefdfa;
-  /* How thinly a signal tints a surface: any denser and the signal's own
-     words stop clearing AA on the tint they sit in. */
+  /* How thinly a signal tints the card it marks. The tint is mixed into the
+     card surface rather than into whatever happens to sit behind it, so a wash
+     reads the same wherever it is placed, and the signal's own words keep
+     clearing AA on it. */
   --wash: 10%;
 
   /* Type */
@@ -126,11 +132,9 @@
     --scrim: rgb(0 0 0 / 60%);
     --accent: #ede9de;
     --accent-ink: #191a1d;
-    --signal-idle: #98a09c;
     --signal-live: #7fb0e8;
-    --signal-attention: #e3b25c;
-    --signal-failure: #ee8577;
-    --signal-done: #5fc194;
+    --signal-attention: #e78f62;
+    --signal-failure: #ef7f86;
     --signal-ink: #17181b;
   }
 }
@@ -887,9 +891,12 @@ textarea {
   font-weight: var(--weight-heavy);
 }
 
-.connection-live,
+.connection-live {
+  color: var(--signal-live);
+}
+
 .connection-complete {
-  color: var(--signal-done);
+  color: var(--signal-quiet);
 }
 
 .connection-reconnecting,
@@ -957,7 +964,7 @@ textarea {
 
 .node-queued {
   border-left-style: dashed;
-  border-left-color: var(--signal-idle);
+  border-left-color: var(--signal-quiet);
 }
 
 .node-working {
@@ -984,17 +991,14 @@ textarea {
   border-left-color: var(--signal-attention);
 }
 
-.node-succeeded {
-  border-left-color: var(--signal-done);
+.node-succeeded,
+.node-cancelled {
+  border-left-color: var(--signal-quiet);
 }
 
 .node-failed,
 .node-interrupted {
   border-left-color: var(--signal-failure);
-}
-
-.node-cancelled {
-  border-left-color: var(--signal-idle);
 }
 
 .node-header,
@@ -1037,8 +1041,10 @@ textarea {
   line-height: 1;
 }
 
-.state-queued {
-  color: var(--signal-idle);
+.state-queued,
+.state-succeeded,
+.state-cancelled {
+  color: var(--signal-quiet);
 }
 
 .state-queued .state-shape {
@@ -1069,10 +1075,6 @@ textarea {
   clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
 }
 
-.state-succeeded {
-  color: var(--signal-done);
-}
-
 .state-succeeded .state-shape {
   border-radius: 50%;
 }
@@ -1080,10 +1082,6 @@ textarea {
 .state-failed,
 .state-interrupted {
   color: var(--signal-failure);
-}
-
-.state-cancelled {
-  color: var(--signal-idle);
 }
 
 @keyframes working-pulse {
@@ -1145,7 +1143,7 @@ textarea {
 }
 
 .verified-output .context-row > strong {
-  color: var(--signal-done);
+  color: var(--signal-quiet);
 }
 
 .info-hint {

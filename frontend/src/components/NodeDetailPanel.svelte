@@ -401,7 +401,7 @@
     padding: var(--space-3) var(--space-4);
     border-radius: var(--r);
     border-left: var(--edge-mark) solid var(--signal-attention);
-    background: color-mix(in srgb, var(--signal-attention) var(--wash), transparent);
+    background: color-mix(in srgb, var(--signal-attention) var(--wash), var(--panel2));
     color: var(--signal-attention);
     font-weight: var(--weight-medium);
   }

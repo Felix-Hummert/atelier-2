@@ -390,7 +390,7 @@
     padding: 0;
     border: 0;
     border-radius: var(--r);
-    color: var(--signal-idle);
+    color: var(--signal-quiet);
     background: transparent;
     font: inherit;
     text-align: center;
@@ -456,10 +456,6 @@
 
   .pipe-stage[data-state="needs_you"] {
     color: var(--signal-attention);
-  }
-
-  .pipe-stage[data-state="succeeded"] {
-    color: var(--signal-done);
   }
 
   .pipe-stage[data-state="failed"],

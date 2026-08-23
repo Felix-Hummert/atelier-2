@@ -523,7 +523,7 @@
   }
 
   .project-count-done .project-count-mark {
-    color: var(--signal-done);
+    color: var(--signal-quiet);
   }
 
   .project-references {

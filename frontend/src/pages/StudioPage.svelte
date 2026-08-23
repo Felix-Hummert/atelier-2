@@ -466,7 +466,7 @@
   }
 
   .board-row-done .row-mark {
-    color: var(--signal-done);
+    color: var(--signal-quiet);
   }
 
   .row-name {
@@ -509,8 +509,10 @@
     border-radius: 50%;
   }
 
-  .pipe-dot-queued {
-    background: var(--signal-idle);
+  .pipe-dot-queued,
+  .pipe-dot-succeeded,
+  .pipe-dot-cancelled {
+    background: var(--signal-quiet);
   }
 
   .pipe-dot-working {
@@ -521,17 +523,9 @@
     background: var(--signal-attention);
   }
 
-  .pipe-dot-succeeded {
-    background: var(--signal-done);
-  }
-
   .pipe-dot-failed,
   .pipe-dot-interrupted {
     background: var(--signal-failure);
-  }
-
-  .pipe-dot-cancelled {
-    background: var(--signal-idle);
   }
 
   .row-time {
