@@ -10,6 +10,7 @@ dependencies = [
     "cryptography==50.0.0",
     "dbos==2.29.0",
     "fastapi==0.141.1",
+    "githubkit==0.16.1",
     "jsonschema==4.26.0",
     "pydantic==2.13.4",
     "pyyaml==6.0.3",
@@ -107,6 +108,22 @@ as_packages = true
 ignore_imports = [
     "atelier2.adapters.dbos.** -> dbos",
     "atelier2.adapters.dbos.** -> sqlalchemy",
+]
+unmatched_ignore_imports_alerting = "error"
+
+# ADR 0010 §1: the client library and every GitHub concept stay inside the
+# GitHub adapter, the same forbidden-import contract shape as `dbos-owner`.
+[[tool.importlinter.contracts]]
+id = "githubkit-owner"
+name = "githubkit stays inside the GitHub adapter"
+type = "forbidden"
+source_modules = ["atelier2"]
+forbidden_modules = ["githubkit", "githubkit_schemas"]
+allow_indirect_imports = true
+as_packages = true
+ignore_imports = [
+    "atelier2.adapters.github.** -> githubkit",
+    "atelier2.adapters.github.** -> githubkit_schemas",
 ]
 unmatched_ignore_imports_alerting = "error"
 
