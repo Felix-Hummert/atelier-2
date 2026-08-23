@@ -25,7 +25,7 @@ _GRANTS = (
     RunnerPathGrant(PurePosixPath("/proc"), RunnerPathRight.READ_ONLY),
     RunnerPathGrant(_CREDENTIALS, RunnerPathRight.READ_ONLY),
     RunnerPathGrant(PurePosixPath("/tmp"), RunnerPathRight.READ_WRITE),
-    RunnerPathGrant(PurePosixPath("/usr"), RunnerPathRight.READ_ONLY),
+    RunnerPathGrant(PurePosixPath("/usr"), RunnerPathRight.READ_AND_EXECUTE),
 )
 
 
@@ -78,7 +78,9 @@ def test_manifest_identity_binds_every_attested_runner_fact() -> None:
         {"child_path_grants": ()},
         {
             "child_path_grants": (
-                RunnerPathGrant(PurePosixPath("/usr"), RunnerPathRight.READ_ONLY),
+                RunnerPathGrant(
+                    PurePosixPath("/usr"), RunnerPathRight.READ_AND_EXECUTE
+                ),
                 RunnerPathGrant(_CREDENTIALS, RunnerPathRight.READ_ONLY),
             )
         },
@@ -97,6 +99,14 @@ def test_manifest_identity_binds_every_attested_runner_fact() -> None:
                 for grant in _GRANTS
             )
         },
+        {
+            "child_path_grants": tuple(
+                RunnerPathGrant(grant.path, RunnerPathRight.READ_AND_EXECUTE)
+                if grant.path == _CREDENTIALS
+                else grant
+                for grant in _GRANTS
+            )
+        },
     ),
     ids=(
         "image-digest",
@@ -109,6 +119,7 @@ def test_manifest_identity_binds_every_attested_runner_fact() -> None:
         "repeated-child-path",
         "credential-directory-outside-the-granted-surface",
         "credential-directory-granted-writable",
+        "credential-directory-granted-executable",
     ),
 )
 def test_manifest_refuses_an_unattestable_fact(change: dict[str, object]) -> None:

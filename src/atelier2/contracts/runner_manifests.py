@@ -33,8 +33,19 @@ CANDIDATE_SCRATCH_BYTES = 67_108_864
 
 
 class RunnerPathRight(StrEnum):
-    """What a Runner's provider child may do beneath one attested path."""
+    """What a Runner's provider child may do beneath one attested path.
 
+    Execution is its own right rather than a property of being readable,
+    because the two differ exactly where it matters: the image root holds the
+    interpreter and the provider CLI and must be executable, while a surface
+    that carries a provider's own configuration -- plugins, hooks, shell
+    snippets a real credential directory is full of -- must be readable and
+    never runnable. A mount option cannot carry that distinction here, because
+    the one host surface ADR 0009 sec. 2 admits is a bind mount and the
+    launcher cannot mount it `noexec`, so the right does.
+    """
+
+    READ_AND_EXECUTE = "read-and-execute"
     READ_ONLY = "read-only"
     READ_WRITE = "read-write"
 
@@ -57,22 +68,24 @@ class RunnerPathGrant:
 
 CANDIDATE_SCRATCH_DIRECTORY = PurePosixPath("/tmp")
 CANDIDATE_CREDENTIAL_DIRECTORY = PurePosixPath("/run/atelier2-provider-config")
-# The A candidate image's complete provider-child surface. Exactly one entry is
-# writable -- a `noexec,nosuid` tmpfs the launcher mounts and its own inspect
-# attestation re-reads -- so executable code stays in the read-only image root
-# and the scratch surface can hold data only. The credential directory is
-# read-only here because ADR 0009 sec. 2's 2026-08-22 amendment decided exactly
-# that form: the provider's credential directory is bind-mounted read-only, and
-# a write-capable per-Attempt copy waits on its own operator ruling.
+# The A candidate image's complete provider-child surface. Only the image root
+# is executable. Exactly one entry is writable -- a `noexec,nosuid` tmpfs the
+# launcher mounts and its own inspect attestation re-reads -- so executable code
+# stays in the read-only image root and the scratch surface can hold data only.
+# The credential directory is read-only, and specifically not executable: ADR
+# 0009 sec. 2's 2026-08-22 amendment decided the provider's credential directory
+# is bind-mounted read-only (a write-capable per-Attempt copy waits on its own
+# operator ruling), and a real one carries plugins, hooks and shell snippets
+# that this child must be able to read and must never be able to run.
 CANDIDATE_CHILD_PATH_GRANTS = (
     RunnerPathGrant(PurePosixPath("/dev"), RunnerPathRight.READ_ONLY),
-    RunnerPathGrant(PurePosixPath("/lib"), RunnerPathRight.READ_ONLY),
-    RunnerPathGrant(PurePosixPath("/lib64"), RunnerPathRight.READ_ONLY),
-    RunnerPathGrant(PurePosixPath("/opt"), RunnerPathRight.READ_ONLY),
+    RunnerPathGrant(PurePosixPath("/lib"), RunnerPathRight.READ_AND_EXECUTE),
+    RunnerPathGrant(PurePosixPath("/lib64"), RunnerPathRight.READ_AND_EXECUTE),
+    RunnerPathGrant(PurePosixPath("/opt"), RunnerPathRight.READ_AND_EXECUTE),
     RunnerPathGrant(PurePosixPath("/proc"), RunnerPathRight.READ_ONLY),
     RunnerPathGrant(CANDIDATE_CREDENTIAL_DIRECTORY, RunnerPathRight.READ_ONLY),
     RunnerPathGrant(CANDIDATE_SCRATCH_DIRECTORY, RunnerPathRight.READ_WRITE),
-    RunnerPathGrant(PurePosixPath("/usr"), RunnerPathRight.READ_ONLY),
+    RunnerPathGrant(PurePosixPath("/usr"), RunnerPathRight.READ_AND_EXECUTE),
     RunnerPathGrant(PurePosixPath("/workspace"), RunnerPathRight.READ_ONLY),
 )
 
@@ -236,13 +249,21 @@ class RunnerManifestV1:
         the same `RunnerManifestId`, and a repeated path could otherwise carry
         two different rights and let the wider one win silently.
 
-        The credential directory must be granted **read-only**. ADR 0009
-        sec. 2's 2026-08-22 amendment decided exactly one extra host surface
-        beyond the per-invocation identity material -- the provider's own
-        credential directory, bind-mounted read-only -- because a live operator
-        session may hold that directory open. A write-capable per-Attempt copy
-        is explicitly reserved for a later operator ruling, so this contract
-        keeps it unrepresentable rather than deciding it here.
+        The credential directory must be granted exactly `READ_ONLY`: readable,
+        never writable and never executable. ADR 0009 sec. 2's 2026-08-22
+        amendment decided exactly one extra host surface beyond the
+        per-invocation identity material -- the provider's own credential
+        directory, bind-mounted read-only -- because a live operator session may
+        hold that directory open. A write-capable per-Attempt copy is reserved
+        for a later operator ruling, so this contract keeps it unrepresentable.
+
+        Refusing `READ_AND_EXECUTE` here is the half a mount option cannot
+        carry. That surface is the one host bind in the container, and a bind
+        mount cannot be made `noexec` through the launcher, so a real
+        credential directory's plugins, hooks and shell snippets would be
+        runnable by the provider child unless the right itself forbids it.
+        Putting it in the right rather than in a convention is what makes the
+        property part of the manifest identity Core selected.
         """
         grants = self.child_path_grants
         if not grants:

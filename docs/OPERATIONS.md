@@ -99,10 +99,16 @@ the whole toolchain: node, the Claude CLI pinned to a release out of
 `CONFORMANT_CLAUDE_VERSIONS`, and bubblewrap. Exactly one path is writable —
 `/tmp` — and it is a `noexec,nosuid` tmpfs of an attested size, so the provider
 child may write data there and may never execute it or gain privilege from it.
-The provider's credential directory is **read-only**: ADR 0009 §2's 2026-08-22
-amendment admits exactly that one host bind beyond the per-invocation identity
-material, because a live operator session may hold that directory open, and a
-write-capable per-Attempt copy waits on its own operator ruling. Which paths a
+The provider's credential directory is **read-only and not executable**: ADR
+0009 §2's 2026-08-22 amendment admits exactly that one host bind beyond the
+per-invocation identity material, because a live operator session may hold that
+directory open, and a write-capable per-Attempt copy waits on its own operator
+ruling. Being a bind mount, it is the one surface the launcher cannot mount
+`noexec`, so the *grant* forbids execution instead — a real credential
+directory carries plugins, hooks and shell snippets the child must read and
+must never run, and putting that in the right rather than in a convention makes
+it part of the manifest identity Core selected. Execution is granted only where
+the image root's own code lives. Which paths a
 child may touch, and with which right, is a manifest fact: `RunnerManifestV1`
 carries the whole allowlist, the Runner installs exactly that as its Landlock
 ruleset, and the launcher's inspect attestation re-reads the mount flags and
@@ -123,10 +129,14 @@ itself carries no packet-filtering tool and no capability to alter what was
 left. The Runner may reach outbound DNS, outbound HTTPS, and its own Attempt
 subnet for Core. Core may reach nothing outbound beyond that subnet: it holds
 the private key and the only store of product truth and has no business on the
-Internet. Everything else, in either direction, is REJECTed — including IPv6,
-which gets the same reject chain — so a forbidden connection fails immediately
-with `Connection refused` and the provider CLI's own error handling surfaces
-it, rather than a silent DROP the operator would have to diagnose by timeout.
+Internet. Inbound, exactly one opening exists in an Attempt: Core accepts its
+own session port from its own subnet, because Core is the only container that
+serves anything. The Runner accepts nothing inbound at all — it dials out, and
+its answers return as established connections. Everything else, in either
+direction, is REJECTed — including IPv6, which gets the same reject chain — so
+a forbidden connection fails immediately with `Connection refused` and the
+provider CLI's own error handling surfaces it, rather than a silent DROP the
+operator would have to diagnose by timeout.
 
 Cross-Attempt unreachability is proven rather than assumed: a second Attempt
 probing the first is refused by its *own* outbound policy, because the other
@@ -135,7 +145,9 @@ loud and immediate, where the host's inter-network isolation alone would only
 drop the packet and make the operator wait out a timeout. `egress` measures all
 of it — a real name resolves, HTTPS connects, ports 80 and 25, every inbound
 attempt and every cross-Attempt attempt refuse in under a second, and the
-namespace is asserted to carry no global IPv6 path.
+namespace is asserted to carry no global IPv6 path. The probed Attempt really
+listens on the ports being probed, proven first over its own loopback, so the
+refusals measure the policy rather than an absent service.
 
 **What `toolchain` measures.** `claude --version` in the hardened container
 must report the pinned release; the runner-side pre-start attestation must

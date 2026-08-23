@@ -48,8 +48,19 @@ def _read_only_grant(path: Path) -> RunnerPathGrant:
     return RunnerPathGrant(PurePosixPath(path), RunnerPathRight.READ_ONLY)
 
 
+def _executable_grant(path: Path) -> RunnerPathGrant:
+    return RunnerPathGrant(PurePosixPath(path), RunnerPathRight.READ_AND_EXECUTE)
+
+
 def _read_only(path: Path) -> str:
     return f"RunnerPathGrant(PurePosixPath({str(path)!r}), RunnerPathRight.READ_ONLY)"
+
+
+def _executable(path: Path) -> str:
+    return (
+        "RunnerPathGrant("
+        f"PurePosixPath({str(path)!r}), RunnerPathRight.READ_AND_EXECUTE)"
+    )
 
 
 def _read_write(path: Path) -> str:
@@ -58,7 +69,7 @@ def _read_write(path: Path) -> str:
 
 def _interpreter_reachable_grants() -> tuple[RunnerPathGrant, ...]:
     return tuple(
-        _read_only_grant(path)
+        _executable_grant(path)
         for path in (
             Path("/usr"),
             Path("/lib"),
@@ -307,3 +318,47 @@ def test_landlocked_child_reaps_after_term() -> None:
         if child.poll() is None:
             child.kill()
             child.wait(timeout=2)
+
+
+@pytest.mark.proves("runner-child-landlock")
+def test_landlock_guard_denies_running_a_program_beneath_a_read_only_grant(
+    tmp_path: Path,
+) -> None:
+    """A readable surface is not a runnable one.
+
+    The one host surface ADR 0009 sec. 2 admits into a Runner is a bind mount
+    of the provider's own credential directory, which the launcher cannot mount
+    `noexec` the way it mounts a tmpfs. A real one carries plugins, hooks and
+    shell snippets, so the grant is what has to stop the child running them --
+    and that property lives in the manifest identity, not in a convention.
+    """
+    data = tmp_path / "credential-directory"
+    data.mkdir()
+    program = data / "hook.sh"
+    program.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    program.chmod(0o755)
+    interpreter = Path(sys.executable).resolve()
+    code = (
+        "import subprocess, sys\n"
+        f"{_GUARD_IMPORTS}"
+        "install_landlock_guard((\n"
+        f"    {_read_only(data)},\n"
+        + "".join(
+            f"    {_executable(path)},\n"
+            for path in (interpreter.parent.parent, Path("/usr"), Path("/lib"))
+            if path.exists()
+        )
+        + "))\n"
+        f"assert open({str(program)!r}).read().startswith('#!')\n"
+        "try:\n"
+        f"    subprocess.run(({str(program)!r},), check=False)\n"
+        "except PermissionError:\n"
+        "    raise SystemExit(0)\n"
+        "raise SystemExit(23)\n"
+    )
+
+    result = subprocess.run(
+        (sys.executable, "-c", code), capture_output=True, check=False, text=True
+    )
+
+    assert result.returncode == 0, result.stderr

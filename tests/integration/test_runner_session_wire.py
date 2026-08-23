@@ -273,24 +273,32 @@ def _host_child_grants() -> tuple[RunnerPathGrant, ...]:
     import atelier2
 
     installed_source_root = Path(atelier2.__file__).resolve().parent.parent
-    read_only = {
+    executable = {
         PurePosixPath(path)
         for path in (
             Path("/usr"),
             Path("/lib"),
             Path("/lib64"),
-            Path("/proc"),
-            Path("/dev"),
             Path(sys.prefix),
             Path(sys.base_prefix),
-            Path(_HOST_CREDENTIALS),
             installed_source_root,
         )
         if path.exists()
-    } - {_HOST_SCRATCH}
+    } - {_HOST_SCRATCH, _HOST_CREDENTIALS}
+    # `/proc` and `/dev` are data this child reads, and the credential stand-in
+    # is data it must never run -- the same shape the deployed image attests.
+    read_only = {
+        PurePosixPath(path)
+        for path in (Path("/proc"), Path("/dev"), Path(_HOST_CREDENTIALS))
+        if path.exists()
+    } - executable
     return tuple(
         sorted(
             (
+                *(
+                    RunnerPathGrant(path, RunnerPathRight.READ_AND_EXECUTE)
+                    for path in executable
+                ),
                 *(
                     RunnerPathGrant(path, RunnerPathRight.READ_ONLY)
                     for path in read_only

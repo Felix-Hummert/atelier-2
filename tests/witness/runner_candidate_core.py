@@ -38,6 +38,7 @@ from atelier2.adapters.free_runner_executor import (
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.runner_tls import (
     CORE_DNS_NAME,
+    CORE_SESSION_PORT,
     SupportedPublicKey,
     core_uri_for_certificate,
     invocation_from_runner_uri,
@@ -384,7 +385,7 @@ def main(arguments: list[str] | None = None) -> int:
         expected_uri=expected_runner_uri,
         expected_eku=ExtendedKeyUsageOID.CLIENT_AUTH,
     )
-    server = socket.create_server(("0.0.0.0", 8443), reuse_port=False)
+    server = socket.create_server(("0.0.0.0", CORE_SESSION_PORT), reuse_port=False)
     server.settimeout(_ACCEPT_TIMEOUT_SECONDS)
     released = False
     session: CoreRunnerSession | None = None

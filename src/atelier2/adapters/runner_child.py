@@ -29,14 +29,21 @@ _ACCESS_MAKE_FIFO = 1 << 10
 _ACCESS_MAKE_SYMLINK = 1 << 12
 REQUIRED_LANDLOCK_ABI = 1
 _HANDLED_ACCESS = (1 << 13) - 1
-# A read-only grant is the standard form and keeps `EXECUTE`, because the
-# provider CLI and its interpreter live beneath one. A writable grant
-# deliberately drops `EXECUTE` and both device-node rights: the writable
-# surface exists to hold data, and code a child could first write and then run
-# is exactly the widening the manifest attestation and the `noexec` mount are
-# there to stop -- two independent fences rather than one.
+# `EXECUTE` is granted only where the image root's own code lives. Neither
+# other right carries it, and both drop the device-node rights as well:
+#
+#   * a read-only grant is data the child reads and must never run. It is what
+#     the one admitted host bind -- the provider's credential directory --
+#     receives, and the right is the only fence available there, because the
+#     launcher cannot mount a bind `noexec` the way it mounts a tmpfs.
+#   * a writable grant is data the child produces. Code it could first write
+#     and then run is exactly the widening the manifest attestation and the
+#     `noexec` tmpfs are there to stop -- two independent fences, not one.
 _GRANTED_ACCESS = {
-    RunnerPathRight.READ_ONLY: _ACCESS_EXECUTE | _ACCESS_READ_FILE | _ACCESS_READ_DIR,
+    RunnerPathRight.READ_AND_EXECUTE: (
+        _ACCESS_EXECUTE | _ACCESS_READ_FILE | _ACCESS_READ_DIR
+    ),
+    RunnerPathRight.READ_ONLY: _ACCESS_READ_FILE | _ACCESS_READ_DIR,
     RunnerPathRight.READ_WRITE: (
         _ACCESS_READ_FILE
         | _ACCESS_READ_DIR

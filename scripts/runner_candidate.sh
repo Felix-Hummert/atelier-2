@@ -23,9 +23,10 @@ runner_hardening=(
 )
 # Every size and path below is read out of the manifest contract, so the
 # launcher, the attested manifest and the inspect fence share one source.
-read -r scratch_directory scratch_bytes credential_directory workspace_bytes < <(
+read -r scratch_directory scratch_bytes credential_directory workspace_bytes core_port < <(
   uv run --locked python -c \
-    'from atelier2.contracts.runner_manifests import (
+    'from atelier2.adapters.runner_tls import CORE_SESSION_PORT
+from atelier2.contracts.runner_manifests import (
     CANDIDATE_CREDENTIAL_DIRECTORY,
     CANDIDATE_SCRATCH_BYTES,
     CANDIDATE_SCRATCH_DIRECTORY,
@@ -36,6 +37,7 @@ print(
     CANDIDATE_SCRATCH_BYTES,
     CANDIDATE_CREDENTIAL_DIRECTORY,
     CANDIDATE_WORKSPACE_BYTES,
+    CORE_SESSION_PORT,
 )'
 )
 # The one writable surface `CANDIDATE_CHILD_PATH_GRANTS` attests. It is
@@ -78,12 +80,20 @@ print(".".join(str(part) for part in max(CONFORMANT_CLAUDE_VERSIONS)))')
 # amendment). The same REJECT chain is installed for IPv6, so enabling IPv6 on
 # a future Attempt network cannot silently open a second, unfiltered path.
 install_attempt_network_policy() {
-  local target="$1" subnet="$2" role="$3" internet_rules=""
+  local target="$1" subnet="$2" role="$3" internet_rules="" served_rule=""
   if [[ "$role" == runner ]]; then
     internet_rules='
 iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
 iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
 iptables -A OUTPUT -p tcp --dport 443 -j ACCEPT'
+  else
+    # Core is the only container in an Attempt that serves anything, and it
+    # serves exactly one port to exactly its own Attempt subnet. The Runner
+    # gets no inbound rule at all: it dials out, and its answers come back
+    # through the conntrack rule below. An inbound opening it does not need is
+    # an inbound opening it must not have (ADR 0009 sec. 2).
+    served_rule="
+iptables -A INPUT -s $subnet -p tcp --dport $core_port -j ACCEPT"
   fi
   docker run --rm --network "container:$target" --user 0 \
     --cap-drop ALL --cap-add NET_ADMIN --entrypoint sh atelier2-301a-egress -c "
@@ -93,8 +103,7 @@ iptables -A OUTPUT -d $subnet -j ACCEPT$internet_rules
 iptables -A OUTPUT -p tcp -j REJECT --reject-with tcp-reset
 iptables -A OUTPUT -j REJECT --reject-with icmp-port-unreachable
 iptables -A INPUT -i lo -j ACCEPT
-iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-iptables -A INPUT -s $subnet -j ACCEPT
+iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT$served_rule
 iptables -A INPUT -p tcp -j REJECT --reject-with tcp-reset
 iptables -A INPUT -j REJECT --reject-with icmp-port-unreachable
 ip6tables -A OUTPUT -o lo -j ACCEPT
@@ -233,9 +242,23 @@ run_egress_legs() {
   trap "docker rm -f '$first_host' '$second_host' >/dev/null 2>&1 || true; docker network rm '$first' '$second' >/dev/null 2>&1 || true" EXIT
   first_subnet=$(docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "$first")
   second_subnet=$(docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "$second")
+  # This Attempt really listens, on the port an Attempt's Core would serve and
+  # on one it never would. Probing a container that listens for nothing would
+  # make "Connection refused" prove the absent service rather than the policy,
+  # and would stay green with the INPUT chain wide open.
   start_policed_container "$first_host" "$first" "$first_subnet" runner \
     --label "$label" "${runner_hardening[@]}" "${runner_writable_surface[@]}" \
-    --entrypoint sleep atelier2-301a-runner 300
+    --entrypoint python atelier2-301a-runner -c "
+import socket, threading
+def serve(port):
+    listener = socket.create_server(('0.0.0.0', port), reuse_port=False)
+    while True:
+        connection, _peer = listener.accept()
+        connection.close()
+for port in ($core_port, 22):
+    threading.Thread(target=serve, args=(port,), daemon=True).start()
+threading.Event().wait(300)
+"
   start_policed_container "$second_host" "$second" "$second_subnet" runner \
     --label "$label" "${runner_hardening[@]}" "${runner_writable_surface[@]}" \
     --entrypoint sleep atelier2-301a-runner 300
@@ -273,14 +296,25 @@ echo "ipv6-default-route=${route:-NONE}"
 # what stands in front of it -- both are asserted, so neither can quietly stop
 # being true.
 [ -z "$global" ] && [ -z "$route" ] || { echo "UNEXPECTED: a global IPv6 path exists in the attempt namespace"; exit 1; }
-ip6tables -C OUTPUT -o lo -j ACCEPT || { echo "UNEXPECTED: no IPv6 policy is installed"; exit 1; }
+ip6tables -C OUTPUT -j REJECT || { echo "UNEXPECTED: no IPv6 reject rule is installed"; exit 1; }
 echo "ipv6-reject-chain=installed"
 '
+  printf -- '--- leg: the probed Attempt really serves both ports on its own loopback ---\n'
+  docker run --rm --network "container:$first_host" --entrypoint bash atelier2-301a-runner -c "
+set +e
+failed=0
+for port in $core_port 22; do
+  timeout 8 bash -c \"exec 3<>/dev/tcp/127.0.0.1/\$port\"; rc=\$?
+  echo \"listener-\$port-on-loopback-rc=\$rc\"
+  (( rc == 0 )) || { echo \"UNEXPECTED: no listener on port \$port; a refusal from outside would prove nothing\"; failed=1; }
+done
+exit \$failed
+"
   printf -- '--- leg: inbound into the Attempt container is refused immediately ---\n'
   docker run --rm --network "$first" --entrypoint bash atelier2-301a-runner -c "
 set +e
 failed=0
-for port in 8443 22; do
+for port in $core_port 22; do
   started=\$SECONDS; timeout 8 bash -c \"exec 3<>/dev/tcp/$address/\$port\"; rc=\$?
   elapsed=\$((SECONDS - started))
   echo \"inbound-\$port-rc=\$rc seconds=\$elapsed\"
@@ -292,7 +326,7 @@ exit \$failed
   docker run --rm --network "container:$second_host" --entrypoint bash atelier2-301a-runner -c "
 set +e
 failed=0
-for port in 8443 22; do
+for port in $core_port 22; do
   started=\$SECONDS; timeout 8 bash -c \"exec 3<>/dev/tcp/$address/\$port\"; rc=\$?
   elapsed=\$((SECONDS - started))
   echo \"cross-attempt-\$port-rc=\$rc seconds=\$elapsed\"

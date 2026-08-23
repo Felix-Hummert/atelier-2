@@ -16,6 +16,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID
 
 from atelier2.adapters.runner_tls import (
     CORE_DNS_NAME,
+    CORE_SESSION_PORT,
     invocation_from_runner_uri,
     pin_tls_13,
     runner_uri_for_invocation,
@@ -182,7 +183,7 @@ def _run_candidate_session(
     # comparison pins the exact presented leaf.
     context.check_hostname = False
     with (
-        socket.create_connection((CORE_DNS_NAME, 8443), 5) as raw,
+        socket.create_connection((CORE_DNS_NAME, CORE_SESSION_PORT), 5) as raw,
         context.wrap_socket(raw, server_hostname=CORE_DNS_NAME) as connection,
     ):
         presented = connection.getpeercert(binary_form=True)
