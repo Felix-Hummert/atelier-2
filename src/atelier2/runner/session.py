@@ -14,16 +14,13 @@ import hashlib
 import os
 import struct
 import subprocess
-import sys
 import time
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
-from atelier2.adapters.free_runner_executor import (
-    FreeRunnerAuthorizationResolver,
-    refuse_unbound_runner_a_request,
-)
+from atelier2.adapters.bounded_processes import bounded_process_streams
+from atelier2.adapters.free_runner_executor import refuse_unbound_runner_a_request
 from atelier2.adapters.runner_child import (
     REQUIRED_LANDLOCK_ABI,
     LandlockUnavailable,
@@ -39,16 +36,17 @@ from atelier2.application.run_runner_session import (
     require_ready_matches_manifest,
 )
 from atelier2.contracts.agent_attempts import (
+    ProcessExitSignature,
     RunnerCancellation,
     RunnerCancellationObservation,
     RunnerGenerationBinding,
     RunnerInvocationId,
+    RunnerProviderFailure,
     RunnerProviderResult,
     RunnerTerminalEvidenceAckTombstone,
     RunnerTerminalEvidenceEnvelope,
     RunnerTerminalEvidenceHash,
 )
-from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.runner_manifests import (
     RunnerManifestV1,
     decode_runner_manifest,
@@ -64,6 +62,17 @@ from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSession
 from atelier2.contracts.runner_terminal_evidence_codec import (
     encode_runner_terminal_evidence_record,
 )
+from atelier2.ports.agent_executions import (
+    AgentAttemptWorkspaceLease,
+    AgentExecutionFailure,
+    AgentProcessCompletion,
+    AgentProcessInvocation,
+)
+from atelier2.runner.authorization import (
+    free_runner_auth_reference,
+    resolve_free_runner_authorization,
+)
+from atelier2.runner.executors import select_runner_executor
 
 _CONTROL_POLL_SECONDS = 0.05
 
@@ -167,23 +176,6 @@ def _frame(
     return RunnerSessionFrame(message, sequence, binding, invocation, payload)
 
 
-def _child_command(
-    scenario: CandidateScenario, manifest: RunnerManifestV1
-) -> tuple[str, ...]:
-    if scenario is CandidateScenario.CANCEL:
-        hold_seconds = manifest.total_attempt_milliseconds / 1000
-        hold = (
-            "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-            f"time.sleep({hold_seconds})"
-        )
-        return (sys.executable, "-c", hold)
-    return (
-        sys.executable,
-        "-c",
-        "import json; print(json.dumps('runner candidate'))",
-    )
-
-
 def _reap_child(
     child: subprocess.Popen[bytes], manifest: RunnerManifestV1
 ) -> RunnerCancellationObservation:
@@ -263,6 +255,57 @@ def child_allowlist() -> tuple[Path, ...]:
         if extra.exists():
             paths.append(extra)
     return tuple(paths)
+
+
+def _runner_workspace_directory() -> Path:
+    """The one ephemeral workspace this container was given before it started.
+
+    A fresh tmpfs Docker provisions once per container in production
+    (`scripts/runner_candidate.sh`); nothing here creates it or ever releases
+    it -- see `AgentAttemptWorkspaceLease`, whose identity is entered rather
+    than minted.
+    """
+    return Path("/workspace")
+
+
+def _workspace_lease(
+    binding: RunnerGenerationBinding, workspace: Path
+) -> AgentAttemptWorkspaceLease:
+    """This container's one workspace, entered by an identity this call itself checks.
+
+    The descriptor is opened once; both the working directory and the device
+    and inode `decode_process_completion` needs come off that same descriptor,
+    so nothing between the open and the `fstat` can substitute what the path
+    names.
+    """
+    descriptor = os.open(
+        workspace, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
+    try:
+        status = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    return AgentAttemptWorkspaceLease(
+        binding.attempt_id, workspace, status.st_dev, status.st_ino
+    )
+
+
+def _drain_exited_child(
+    child: subprocess.Popen[bytes],
+    manifest: RunnerManifestV1,
+    maximum_output_bytes: int,
+) -> AgentProcessCompletion:
+    """Both bounded streams of a child that has already exited.
+
+    Reuses `bounded_processes` instead of a second read loop; the child is
+    already dead here (the caller only reaches this once `child.poll()` is no
+    longer `None`), so the deadline only bounds how long fully draining its
+    already-produced pipes may legitimately take.
+    """
+    return_code, standard_output, standard_error = bounded_process_streams(
+        child, manifest.reap_deadline_milliseconds / 1000, maximum_output_bytes
+    )
+    return AgentProcessCompletion(return_code, standard_output, standard_error)
 
 
 def _measured_ready_payload(
@@ -412,12 +455,14 @@ def run_candidate_session(
         raise RuntimeError("Core did not prepare the exact candidate invocation")
     request = decode_runner_prepare_payload(prepare.payload, binding.request_hash)
     refuse_unbound_runner_a_request(request)
-    resolver = FreeRunnerAuthorizationResolver()
     auth = request.resolved_binding.auth_profile
-    reference = resolver.reference_for(auth)
-    if prepare.payload[PREPARE_AUTH_REFERENCE_FIELD] != reference.encode("ascii"):
+    auth_reference = free_runner_auth_reference(auth)
+    if prepare.payload[PREPARE_AUTH_REFERENCE_FIELD] != auth_reference.value.encode(
+        "ascii"
+    ):
         raise RuntimeError("auth-profile-unresolvable")
-    resolver.resolve(auth, reference)
+    resolve_free_runner_authorization(auth, auth_reference)
+    reference = auth_reference.value
     manifest = decode_runner_manifest(manifest_path.read_bytes())
     if runner_manifest_id(manifest) != binding.manifest_id:
         raise RuntimeError("runner-manifest-mismatch")
@@ -459,54 +504,75 @@ def run_candidate_session(
         else:
             evidence_hash = retained.evidence_hash
     else:
-        child = start_runner_child(
-            _child_command(scenario, manifest), child_allowlist()
-        )
+        executor = select_runner_executor(manifest)
         try:
-            _write_frame(
-                channel,
-                _frame(
-                    RunnerSessionMessage.STARTED,
-                    sequence,
-                    binding,
-                    invocation,
-                    (struct.pack(">Q", 1),),
-                ),
+            command = executor.prepare_process(request)
+            child = start_runner_child(
+                command.arguments,
+                child_allowlist(),
+                environment=command.environment,
+                standard_input=command.standard_input,
             )
-            control = _control_or_child_exit(fence, child, manifest)
-            if (
-                control is not None
-                and control.message is not RunnerSessionMessage.CANCEL
-            ):
-                raise RuntimeError("Core sent an unexpected post-start control frame")
-            if control is not None:
-                if control.payload[3] != b"NONE":
-                    raise RuntimeError("runner-replacement-not-supported-a")
-                envelope = RunnerTerminalEvidenceEnvelope(
-                    binding,
-                    invocation,
-                    RunnerCancellation(
-                        control.payload[1].decode("utf-8"),
-                        _reap_child(child, manifest),
+            try:
+                _write_frame(
+                    channel,
+                    _frame(
+                        RunnerSessionMessage.STARTED,
+                        sequence,
+                        binding,
+                        invocation,
+                        (struct.pack(">Q", 1),),
                     ),
                 )
-            else:
-                if child.poll() is None:
-                    raise RuntimeError("candidate child outlived the attempt")
-                output, _error = child.communicate()
-                if child.returncode != 0:
+                control = _control_or_child_exit(fence, child, manifest)
+                if (
+                    control is not None
+                    and control.message is not RunnerSessionMessage.CANCEL
+                ):
                     raise RuntimeError(
-                        "free candidate child did not return its bounded result"
+                        "Core sent an unexpected post-start control frame"
                     )
-                envelope = RunnerTerminalEvidenceEnvelope(
-                    binding,
-                    invocation,
-                    RunnerProviderResult(AgentExecutionResult(output.strip())),
-                )
-        except BaseException:
-            if child.poll() is None:
-                _reap_child(child, manifest)
-            raise
+                if control is not None:
+                    if control.payload[3] != b"NONE":
+                        raise RuntimeError("runner-replacement-not-supported-a")
+                    envelope = RunnerTerminalEvidenceEnvelope(
+                        binding,
+                        invocation,
+                        RunnerCancellation(
+                            control.payload[1].decode("utf-8"),
+                            _reap_child(child, manifest),
+                        ),
+                    )
+                else:
+                    if child.poll() is None:
+                        raise RuntimeError("candidate child outlived the attempt")
+                    completion = _drain_exited_child(
+                        child, manifest, command.standard_output_frame_bytes
+                    )
+                    lease = _workspace_lease(binding, _runner_workspace_directory())
+                    outcome = executor.decode_process_completion(
+                        AgentProcessInvocation(command, lease), completion
+                    )
+                    evidence: RunnerProviderResult | RunnerProviderFailure = (
+                        RunnerProviderFailure(
+                            ProcessExitSignature(
+                                completion.return_code, completion.standard_error
+                            )
+                        )
+                        if isinstance(outcome, AgentExecutionFailure)
+                        else RunnerProviderResult(outcome)
+                    )
+                    envelope = RunnerTerminalEvidenceEnvelope(
+                        binding, invocation, evidence
+                    )
+            except BaseException:
+                if child.poll() is None:
+                    _reap_child(child, manifest)
+                raise
+            finally:
+                executor.release_credential_channel(command)
+        finally:
+            executor.close()
         journal.publish(envelope, manifest.journal_bytes)
         _after_terminal_evidence_published()
         if scenario is CandidateScenario.CRASH_AFTER_PUBLISH:
