@@ -437,6 +437,7 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
       node_count: 1,
       agent_roles: ["builder"],
       orders: [],
+      wait_answer_schemas: [],
       node_previews: [
         {
           id: "review",
@@ -846,6 +847,7 @@ test("proves(new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-
           node_count: 1,
           agent_roles: ["builder"],
           orders: [],
+          wait_answer_schemas: [],
           node_previews: [{
             id: "implement",
             kind: "agent",
@@ -976,6 +978,7 @@ test("proves(new-run-confirms-workflow-detail-before-committing-selection-and-dr
       node_count: 1,
       agent_roles: [],
       orders: [],
+      wait_answer_schemas: [],
       node_previews: [{
         id: "wait",
         kind: "wait",
@@ -3075,9 +3078,132 @@ test("a waiting V3 run is answerable on its own run page", async ({ page }) => {
   await expect(page.getByRole("heading", { level: 2, name: question })).toHaveCount(0);
   await expect(page.getByLabel("Where this run stands")).toContainText(standingWords.done);
   await expect(page.getByText(/not yet/)).toHaveCount(0);
+  // The run head's exact facts line (#553): started/ended/duration, in place
+  // of the "Exact time" reveal link it replaces.
+  await expect(page.getByText(/started .* · ended .* · duration/)).toBeVisible();
+  await expect(page.getByText("Exact time")).toHaveCount(0);
 
   await page.screenshot({
     path: "test-results/v3-answer-card-desktop.png",
     fullPage: true
   });
+
+  await page.getByRole("button", { name: `ask — ${standingWords.done}` }).click();
+  const panel = page.getByRole("complementary");
+  // The node panel's own facts line (#553) replaces the "Done" chip. This
+  // Wait node carries no started_at/ended_at yet -- #562, still open, is what
+  // will make an answered Wait's timestamps readable -- so the line honestly
+  // names only the state it has, no placeholder standing in for the rest.
+  await expect(panel.getByText("Done", { exact: true })).toBeVisible();
+
+  await page.screenshot({
+    path: "test-results/v3-run-done-meta-lines-desktop.png",
+    fullPage: true
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({
+    path: "test-results/v3-run-done-meta-lines-mobile.png",
+    fullPage: true
+  });
+  await page.setViewportSize({ width: 1280, height: 900 });
+});
+
+test("a waiting V3 run with a boolean answer schema offers decision buttons", async ({ page }) => {
+  const api = "/atelier/api/v1";
+  const booleanSchemaHash = await publishSchema(page, '{"type": "boolean"}');
+  const runId = "v3/decision-buttons";
+  const published = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: [
+      "format_version: 3",
+      "name: decision-buttons-553",
+      "nodes:",
+      "  - id: ship",
+      "    type: wait",
+      "    prompt: Ship it, or hold it back?",
+      ...declaredOutput(booleanSchemaHash, "decision"),
+      ""
+    ].join("\n")
+  });
+  expect(published.status()).toBe(201);
+  const revisionHash = (await published.json()).workflow_revision_hash as string;
+
+  const started = await page.request.post(`${api}/runs`, {
+    data: {
+      workflow_format_version: 3,
+      run_id: runId,
+      workflow_revision_hash: revisionHash,
+      agent_bindings: [],
+      orders: []
+    }
+  });
+  expect(started.status()).toBe(201);
+  const reference = (await started.json()).public_run_reference as string;
+
+  await expect(async () => {
+    const read = await page.request.get(`${api}/runs/${reference}`);
+    expect(read.status()).toBe(200);
+    expect((await read.json()).state).toBe("WAITING_INPUT");
+  }).toPass({ timeout: 15_000 });
+
+  /**
+   * #553 names the classification itself a use-case-layer gap the live API
+   * does not close yet: `GET workflow-revisions/{hash}` answers every wait's
+   * schema as `kind: "free"` today (the API layer may not match a port's own
+   * record to resolve and read a schema -- `api-port-record-problems`,
+   * `scripts/check_architecture.py` -- so that classification waits on the
+   * use case that will resolve it). This intercept stands in for that use
+   * case and proves the one contract already built end to end: what the
+   * composer renders once `kind`/`values` say `boolean` or `enum`, not how
+   * the server will one day decide them.
+   */
+  await page.route(`**/atelier/api/v1/workflow-revisions/${revisionHash}`, async (route) => {
+    const real = await page.request.get(`${api}/workflow-revisions/${revisionHash}`);
+    const body = await real.json();
+    body.graph.wait_answer_schemas = [
+      {
+        node_id: "ship",
+        schema: { ref: "decision-schema", revision: booleanSchemaHash },
+        kind: "boolean",
+        values: null
+      }
+    ];
+    await route.fulfill({
+      status: real.status(),
+      contentType: "application/json",
+      body: JSON.stringify(body)
+    });
+  });
+
+  await page.goto(`/atelier/runs/${reference}`);
+  const question = "Ship it, or hold it back?";
+  await expect(page.getByRole("heading", { level: 2, name: question })).toBeVisible();
+  const card = page.getByRole("region", { name: question });
+  await expect(card.getByRole("textbox")).toHaveCount(0);
+  const yes = card.getByRole("button", { name: runPageCopy.answerYes });
+  const no = card.getByRole("button", { name: runPageCopy.answerNo });
+  await expect(yes).toBeVisible();
+  await expect(no).toBeVisible();
+
+  await page.screenshot({
+    path: "test-results/v3-wait-decision-buttons-desktop.png",
+    fullPage: true
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({
+    path: "test-results/v3-wait-decision-buttons-mobile.png",
+    fullPage: true
+  });
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  await yes.click();
+  await expect(page.getByText(`${runPageCopy.answeredPrefix} ${runPageCopy.answerYes}`)).toBeVisible();
+
+  await expect(async () => {
+    const read = await page.request.get(`${api}/runs/${reference}`);
+    expect(read.status()).toBe(200);
+    const body = await read.json();
+    expect(body.state).toBe("COMPLETED");
+    expect(body.terminal_hash).toMatch(/^[0-9a-f]{64}$/);
+  }).toPass({ timeout: 20_000 });
 });

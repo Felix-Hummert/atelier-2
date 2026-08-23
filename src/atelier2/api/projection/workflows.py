@@ -21,6 +21,7 @@ from atelier2.api.wire.resources import (
     ReconciliationDeterminationResource,
     SubworkflowNodeResource,
     VersionedWorkflowRevisionPageResource,
+    WaitAnswerSchemaResourceV3,
     WaitNodeResource,
     WorkflowDeclaredOrderResourceV3,
     WorkflowDeclaredSchemaResourceV3,
@@ -57,6 +58,7 @@ from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     AnyWorkflowDocument,
     LoopDeclaration,
+    WaitNodeV3,
     WorkflowGraphV3,
     WorkflowNodeV3,
     what_a_v3_document_still_waits_for,
@@ -145,6 +147,33 @@ def _node_preview(node: WorkflowNodeV3) -> WorkflowNodePreviewResourceV3:
     )
 
 
+def _wait_answer_schema(node: WaitNodeV3) -> WaitAnswerSchemaResourceV3:
+    """One waiting node's answer schema hull -- `boolean`/`enum` classification is a named gap.
+
+    `orders` already echoes its own schema hull unresolved, and this excerpt
+    does the same: the wait node's own `ref`/`revision` pin, published exactly
+    as the document wrote it. Reading those bytes to say `boolean` where the
+    top level names `type: boolean`, or `enum` where it names `enum`, needs a
+    `PublishedRevisionResolver` read this projection cannot make: the API
+    layer may hold a port, but it may not name the record kind a port answers
+    with (`api-port-record-problems`, `scripts/check_architecture.py`) --
+    that match belongs to the application layer that already resolves
+    references at run-bind time (`atelier2.application.resolve_references`),
+    not to a wire projection built from the parsed document alone. Until a use
+    case exposes that resolved verdict to this projection, every entry answers
+    `free`, the honest excerpt a hull alone supports, rather than a guess.
+    """
+    output = node.outputs[0]
+    return WaitAnswerSchemaResourceV3(
+        node_id=node.id,
+        schema=WorkflowDeclaredSchemaResourceV3(
+            ref=output.schema_reference.ref, revision=output.schema_reference.revision
+        ),
+        kind="free",
+        values=None,
+    )
+
+
 def _loop_resource(loop: LoopDeclaration) -> WorkflowLoopResourceV3:
     return WorkflowLoopResourceV3(
         id=loop.id,
@@ -185,6 +214,11 @@ def graph_resource(
                     ),
                 )
                 for entry in graph.graph_inputs
+            ),
+            wait_answer_schemas=tuple(
+                _wait_answer_schema(node)
+                for node in graph.nodes
+                if isinstance(node, WaitNodeV3)
             ),
             node_previews=tuple(_node_preview(node) for node in graph.nodes),
             loops=tuple(_loop_resource(loop) for loop in graph.loops),

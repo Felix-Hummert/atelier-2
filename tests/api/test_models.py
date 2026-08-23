@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
@@ -14,9 +16,11 @@ from atelier2.api.wire.resources import (
     NoWaitingResource,
     RunResource,
     SubworkflowNodeResource,
+    WaitAnswerSchemaResourceV3,
     WaitingInputResource,
     WaitingReconciliationResource,
     WaitNodeResource,
+    WorkflowDeclaredSchemaResourceV3,
     WorkflowGraphResourceV3,
     WorkflowLoopVerdictResourceV3,
     WorkflowNodePreviewResourceV3,
@@ -28,6 +32,27 @@ from tests.scenarios.workflows import (
 )
 
 HASH = "0" * 64
+
+
+def _wait_preview(node_id: str) -> WorkflowNodePreviewResourceV3:
+    return WorkflowNodePreviewResourceV3(
+        id=node_id, kind="wait", role=None, instruction_start=None, depends_on=()
+    )
+
+
+def _wait_answer_schema(
+    node_id: str, kind: Literal["boolean", "enum", "free"] = "free"
+) -> WaitAnswerSchemaResourceV3:
+    return WaitAnswerSchemaResourceV3(
+        node_id=node_id,
+        schema=WorkflowDeclaredSchemaResourceV3(
+            ref="decision", revision="schema-decision"
+        ),
+        kind=kind,
+        values=("true", "false") if kind == "enum" else None,
+    )
+
+
 EXECUTION = "1" * 64
 
 
@@ -250,6 +275,7 @@ def test_v3_graph_accepts_depends_on_that_names_a_sibling_preview() -> None:
         node_count=2,
         agent_roles=("builder",),
         orders=(),
+        wait_answer_schemas=(),
         node_previews=(
             _agent_preview("implement"),
             _agent_preview("review", depends_on=("implement",)),
@@ -270,6 +296,7 @@ def test_v3_graph_accepts_an_entry_preview_with_no_edges() -> None:
         node_count=1,
         agent_roles=("builder",),
         orders=(),
+        wait_answer_schemas=(),
         node_previews=(_agent_preview("implement"),),
         loops=(),
         name="One agent",
@@ -288,6 +315,7 @@ def test_v3_graph_refuses_a_depends_on_that_names_no_preview() -> None:
             node_count=1,
             agent_roles=("builder",),
             orders=(),
+            wait_answer_schemas=(),
             node_previews=(_agent_preview("review", depends_on=("implement",)),),
             loops=(),
             name="Broken edge",
@@ -318,6 +346,92 @@ def test_v3_graph_projection_carries_no_loops_when_the_document_declares_none() 
 
     assert isinstance(resource, WorkflowGraphResourceV3)
     assert resource.loops == ()
+
+
+def test_v3_graph_projection_names_a_wait_nodes_schema_hull_unresolved() -> None:
+    """Reading the schema's own bytes to say `boolean` or `enum` is #553's named
+    gap: that read needs a `PublishedRevisionResolver` the API layer may not
+    match a port record against (`api-port-record-problems`,
+    `scripts/check_architecture.py`), so until a use case exposes a resolved
+    verdict to this projection, the excerpt echoes the hull unresolved, exactly
+    as `orders` already does, and classifies `free`."""
+    document = b"""format_version: 3
+name: Approve or send back
+nodes:
+  - id: approve
+    type: wait
+    prompt: Approve the candidate or send it back.
+    outputs:
+      - name: decision
+        schema: {ref: decision, revision: schema-decision}
+"""
+    graph = parse_workflow_document(document)
+
+    resource = graph_resource(graph)
+
+    assert isinstance(resource, WorkflowGraphResourceV3)
+    assert resource.wait_answer_schemas == (
+        WaitAnswerSchemaResourceV3(
+            node_id="approve",
+            schema=WorkflowDeclaredSchemaResourceV3(
+                ref="decision", revision="schema-decision"
+            ),
+            kind="free",
+            values=None,
+        ),
+    )
+
+
+def test_wait_answer_schema_requires_values_exactly_for_an_enum_kind() -> None:
+    with pytest.raises(ValidationError):
+        WaitAnswerSchemaResourceV3(
+            node_id="approve",
+            schema=WorkflowDeclaredSchemaResourceV3(ref="decision", revision="hash"),
+            kind="enum",
+            values=None,
+        )
+    with pytest.raises(ValidationError):
+        WaitAnswerSchemaResourceV3(
+            node_id="approve",
+            schema=WorkflowDeclaredSchemaResourceV3(ref="decision", revision="hash"),
+            kind="boolean",
+            values=("true",),
+        )
+
+
+def test_v3_graph_accepts_a_wait_preview_with_its_matching_answer_schema() -> None:
+    resource = WorkflowGraphResourceV3(
+        workflow_format_version=3,
+        executable=False,
+        not_executable_reason="waits for a runtime that binds waits",
+        node_count=1,
+        agent_roles=(),
+        orders=(),
+        wait_answer_schemas=(_wait_answer_schema("approve", kind="enum"),),
+        node_previews=(_wait_preview("approve"),),
+        loops=(),
+        name="One wait",
+        description=None,
+    )
+
+    assert resource.wait_answer_schemas[0].node_id == "approve"
+
+
+def test_v3_graph_refuses_a_wait_answer_schema_naming_no_wait_preview() -> None:
+    with pytest.raises(ValidationError, match="answer schema"):
+        WorkflowGraphResourceV3(
+            workflow_format_version=3,
+            executable=True,
+            not_executable_reason=None,
+            node_count=1,
+            agent_roles=("builder",),
+            orders=(),
+            wait_answer_schemas=(_wait_answer_schema("approve"),),
+            node_previews=(_agent_preview("other"),),
+            loops=(),
+            name="Mismatched wait answer schema",
+            description=None,
+        )
 
 
 def test_models_are_frozen_strict_and_forbid_extra_fields() -> None:

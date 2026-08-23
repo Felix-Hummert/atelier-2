@@ -67,6 +67,7 @@ function detail(
       node_count: roles.length,
       agent_roles: roles,
       orders: [],
+      wait_answer_schemas: [],
       node_previews: roles.map((role, index) => ({
         id: `node-${index}`,
         kind: "agent" as const,

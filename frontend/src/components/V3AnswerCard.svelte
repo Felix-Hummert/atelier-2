@@ -35,6 +35,18 @@
   export let onAnswer: (answer: string) => void;
   export let onRetry: () => void;
   export let onDiscard: () => void;
+  /**
+   * How the waiting node's own schema classifies its answer (#553).
+   *
+   * `boolean` and `enum` render as decision buttons that send an exact JSON
+   * value the click itself decides, never text a person typed; `free` is
+   * every other schema shape, including one this build has not yet resolved
+   * -- the composer falls back to the textarea it always had, so an
+   * unclassified wait is no worse than before.
+   */
+  export let answerKind: "boolean" | "enum" | "free" = "free";
+  /** The enum's own members, each already the exact JSON text a click sends. Present only when `answerKind` is `enum`. */
+  export let answerValues: readonly string[] = [];
 
   let answer = "";
   let answerInput: { focus(): void };
@@ -57,6 +69,23 @@
     event.preventDefault();
     onAnswer(answer);
   }
+
+  /** A schema-authored JSON value, read back the way a person means it. */
+  function decisionLabel(jsonEncoded: string): string {
+    const parsed = JSON.parse(jsonEncoded) as unknown;
+    return typeof parsed === "string" ? parsed : JSON.stringify(parsed);
+  }
+
+  $: confirmedDecision =
+    pendingAnswer === null
+      ? null
+      : answerKind === "boolean"
+        ? pendingAnswer === "true"
+          ? runPageCopy.answerYes
+          : runPageCopy.answerNo
+        : answerKind === "enum"
+          ? decisionLabel(pendingAnswer)
+          : null;
 </script>
 
 <section
@@ -74,7 +103,9 @@
         <span><strong>Send uncertain</strong><small>{failureMessage}</small></span>
       </div>
     {/if}
-    <output class="exact-answer" aria-label="Exact answer">{pendingAnswer}</output>
+    <output class="exact-answer" aria-label="Exact answer"
+      >{#if confirmedDecision !== null}{wrapDisplayCopy(runPageCopy.answeredPrefix)} {confirmedDecision}{:else}{pendingAnswer}{/if}</output
+    >
     {#if !accepted && !busy}
       <div class="actions">
         <button type="button" disabled={busy} onclick={onRetry} bind:this={retryButton}>Retry</button>
@@ -112,30 +143,55 @@
       {/if}
     </section>
 
-    <form class="wait-form" onsubmit={submit} novalidate>
-      <label for="v3-wait-answer">{wrapDisplayCopy(runPageCopy.answerLabel)}</label>
-      <textarea
-        id="v3-wait-answer"
-        rows="4"
-        spellcheck="false"
-        bind:value={answer}
-        aria-describedby={validationMessage === null ? undefined : "v3-wait-validation"}
-        aria-invalid={validationMessage === null ? undefined : "true"}
-        bind:this={answerInput}
-      ></textarea>
+    {#snippet sendFailedAlert()}
       {#if failureMessage !== null}
         <div class="wait-alert" role="alert" aria-label="Send failed">
           <span class="wait-alert-shape" aria-hidden="true">!</span>
           <span><strong>Send failed</strong><small>{failureMessage}</small></span>
         </div>
       {/if}
-      {#if validationMessage !== null}
-        <p id="v3-wait-validation" class="field-error" role="alert">{validationMessage}</p>
-      {/if}
-      <button class="primary" type="submit" disabled={busy}>
-        {wrapDisplayCopy(runPageCopy.answerSubmit)}
-      </button>
-    </form>
+    {/snippet}
+
+    {#if answerKind === "boolean"}
+      <div class="decision-buttons" role="group" aria-label={wrapDisplayCopy(runPageCopy.answerLabel)}>
+        <button class="primary" type="button" disabled={busy} onclick={() => onAnswer("true")}>
+          {wrapDisplayCopy(runPageCopy.answerYes)}
+        </button>
+        <button class="primary" type="button" disabled={busy} onclick={() => onAnswer("false")}>
+          {wrapDisplayCopy(runPageCopy.answerNo)}
+        </button>
+      </div>
+      {@render sendFailedAlert()}
+    {:else if answerKind === "enum"}
+      <div class="decision-buttons" role="group" aria-label={wrapDisplayCopy(runPageCopy.answerLabel)}>
+        {#each answerValues as value (value)}
+          <button class="primary" type="button" disabled={busy} onclick={() => onAnswer(value)}>
+            {decisionLabel(value)}
+          </button>
+        {/each}
+      </div>
+      {@render sendFailedAlert()}
+    {:else}
+      <form class="wait-form" onsubmit={submit} novalidate>
+        <label for="v3-wait-answer">{wrapDisplayCopy(runPageCopy.answerLabel)}</label>
+        <textarea
+          id="v3-wait-answer"
+          rows="4"
+          spellcheck="false"
+          bind:value={answer}
+          aria-describedby={validationMessage === null ? undefined : "v3-wait-validation"}
+          aria-invalid={validationMessage === null ? undefined : "true"}
+          bind:this={answerInput}
+        ></textarea>
+        {@render sendFailedAlert()}
+        {#if validationMessage !== null}
+          <p id="v3-wait-validation" class="field-error" role="alert">{validationMessage}</p>
+        {/if}
+        <button class="primary" type="submit" disabled={busy}>
+          {wrapDisplayCopy(runPageCopy.answerSubmit)}
+        </button>
+      </form>
+    {/if}
   {/if}
 </section>
 
@@ -213,5 +269,11 @@
     margin: 0;
     color: var(--muted);
     font-size: var(--text-sm);
+  }
+
+  .decision-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
   }
 </style>

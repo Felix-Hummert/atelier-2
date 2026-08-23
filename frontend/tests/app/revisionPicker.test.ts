@@ -92,6 +92,7 @@ function namedGraph() {
     node_count: 2,
     agent_roles: ["builder", "reviewer"],
     orders: [],
+    wait_answer_schemas: [],
     node_previews: [
       {
         id: "implement",
@@ -950,6 +951,7 @@ describe("the picker groups revisions that share a published name", () => {
             node_count: 1,
             agent_roles: [] as string[],
             orders: [],
+            wait_answer_schemas: [],
             node_previews: [
               {
                 id: "only",

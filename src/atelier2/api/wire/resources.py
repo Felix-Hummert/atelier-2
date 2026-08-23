@@ -363,6 +363,38 @@ class WorkflowDeclaredOrderResourceV3(ApiModel):
     schema_reference: WorkflowDeclaredSchemaResourceV3 = Field(alias="schema")
 
 
+class WaitAnswerSchemaResourceV3(ApiModel):
+    """One waiting node's answer schema, classified as far as an excerpt may.
+
+    This is an excerpt of the schema's own top level, never a second evaluator:
+    the real judgement of a submitted answer against this schema stays
+    `schemas_v3`'s alone (`atelier2.api.projection.workflows` reads only enough
+    of the top level to classify it). `kind` names only what that top level
+    itself says -- `boolean` where it names `type: boolean`, `enum` where it
+    names `enum` (`values` then carries the author's own members, each the
+    exact JSON text that member already is) -- and `free` for every other
+    shape this excerpt declines to guess at, including one it cannot resolve
+    or read at all. A schema a document names but this build cannot yet see
+    is not durable corruption: a document may name a schema published after
+    itself, exactly as `WorkflowDeclaredOrderResourceV3` echoes its own hull
+    unresolved, so an unreadable schema classifies `free` rather than refusing
+    the whole graph over a reference nothing has bound yet.
+    """
+
+    node_id: str = Field(min_length=1)
+    # Python cannot call this field `schema`: BaseModel already owns that name.
+    schema_reference: WorkflowDeclaredSchemaResourceV3 = Field(alias="schema")
+    kind: Literal["boolean", "enum", "free"]
+    values: tuple[str, ...] | None = None
+    """The author's own `enum` members, present exactly when `kind` is `enum`."""
+
+    @model_validator(mode="after")
+    def validate_values_shape(self) -> WaitAnswerSchemaResourceV3:
+        if (self.kind == "enum") != (self.values is not None):
+            raise ValueError("values names the enum's own members, and only those")
+        return self
+
+
 class WorkflowLoopVerdictResourceV3(ApiModel):
     """The node and verdict that close a round early, when the document names one.
 
@@ -439,6 +471,18 @@ class WorkflowGraphResourceV3(ApiModel):
     holds, and not an empty list dressed as a placeholder.
     """
 
+    wait_answer_schemas: tuple[WaitAnswerSchemaResourceV3, ...]
+    """One entry per wait node, naming its answer schema and this excerpt's own
+    classification of it.
+
+    A caller that wants to render a Wait node's answer as clickable decision
+    buttons instead of a free-form field has to know its schema's shape, and
+    until now this resource named no wait node's answer schema at all -- only
+    its prompt, which lives on the run rather than the graph. This is the same
+    class of answer `orders` already is for the material a start must supply:
+    the schema hull the document pinned, never the schema's own bytes.
+    """
+
     node_previews: tuple[WorkflowNodePreviewResourceV3, ...] = Field(min_length=1)
     loops: tuple[WorkflowLoopResourceV3, ...]
     """Every loop this document declares, in the order the author wrote them.
@@ -474,6 +518,10 @@ class WorkflowGraphResourceV3(ApiModel):
         names = tuple(order.name for order in self.orders)
         if len(set(names)) != len(names):
             raise ValueError("each declared order has one name")
+        wait_ids = tuple(node.id for node in self.node_previews if node.kind == "wait")
+        schema_ids = tuple(entry.node_id for entry in self.wait_answer_schemas)
+        if sorted(schema_ids) != sorted(wait_ids):
+            raise ValueError("every wait node preview names exactly one answer schema")
         preview_ids = {node.id for node in self.node_previews}
         if any(
             dependency not in preview_ids

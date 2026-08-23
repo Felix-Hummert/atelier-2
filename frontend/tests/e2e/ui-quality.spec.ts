@@ -52,6 +52,7 @@ async function stageNamedWorkflow(page: Page): Promise<void> {
     node_count: 3,
     agent_roles: ["builder", "reviewer"],
     orders: [],
+    wait_answer_schemas: [],
     node_previews: [
       { id: "build", kind: "agent", role: "builder", instruction_start: null, depends_on: [] },
       { id: "review", kind: "agent", role: "reviewer", instruction_start: null, depends_on: ["build"] },
