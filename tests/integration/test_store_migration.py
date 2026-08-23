@@ -46,6 +46,7 @@ from atelier2.adapters.dbos.schema import (
     V26_SCHEMA_HANDOFF,
     V27_SCHEMA_HANDOFF,
     V28_SCHEMA_HANDOFF,
+    V29_SCHEMA_HANDOFF,
     MigrationRequired,
     _rebuild_product_table,
     _require_product_shape,
@@ -1168,6 +1169,26 @@ def _create_exact_v28_store(database_path: Path) -> None:
         _require_product_shape(connection, V28_SCHEMA_HANDOFF.version)
 
 
+def _create_exact_v29_store(database_path: Path) -> None:
+    """A current store with the pre-CANCELLED runs CHECK: the published V29 shape.
+
+    Unlike V28's fixture, `queue_items` stays: it is the table V29 itself
+    added, and this store already carries every hop up to and including it.
+    """
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _revert_cancelled_run_state(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V29_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V29_SCHEMA_HANDOFF.version)
+
+
 def _v27_living_rows(database_path: Path) -> tuple[tuple[object, ...], ...]:
     with sqlite3.connect(database_path) as connection:
         return tuple(
@@ -1364,7 +1385,7 @@ def test_an_exact_v24_store_migrates_to_v25(
     engine.dispose()
 
 
-def test_an_exact_v28_store_migrates_to_v29(
+def test_an_exact_v28_store_migrates_through_v29_to_v30(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -1377,7 +1398,7 @@ def test_an_exact_v28_store_migrates_to_v29(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert "28" in shown.out and "29" in shown.out
+    assert "28" in shown.out and "29" in shown.out and "30" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -1393,7 +1414,55 @@ def test_an_exact_v28_store_migrates_to_v29(
     engine.dispose()
 
 
-def test_an_exact_v25_store_migrates_through_v27_and_v28_to_v29(
+def test_an_exact_v29_store_migrates_to_v30(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v29_store(database_path)
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 29"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+
+    shown = capsys.readouterr()
+    assert "29" in shown.out and "30" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
+        )
+        revision_hash = "cc" * 32
+        connection.execute(
+            workflow_revisions.insert().values(
+                revision_hash=revision_hash, document=b"post-v30-migration"
+            )
+        )
+        connection.execute(
+            runs.insert().values(
+                run_id="post-v30-run",
+                bootstrap_workflow_id="post-v30-workflow",
+                revision_hash=revision_hash,
+                workflow_format_version=1,
+                agent_binding_set_hash=None,
+                current_node_id="final",
+                current_round_ordinal=FIRST_ROUND_ORDINAL,
+                state="CANCELLED",
+                state_version=0,
+                last_event_sequence=0,
+                terminal_hash="0" * 64,
+            )
+        )
+        connection.commit()
+    engine.dispose()
+
+
+def test_an_exact_v25_store_migrates_through_v27_and_v28_and_v29_to_v30(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -1406,7 +1475,7 @@ def test_an_exact_v25_store_migrates_through_v27_and_v28_to_v29(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert all(step in shown.out for step in ("25", "26", "27", "28", "29"))
+    assert all(step in shown.out for step in ("25", "26", "27", "28", "29", "30"))
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -1431,7 +1500,7 @@ def test_an_exact_v25_store_migrates_through_v27_and_v28_to_v29(
     engine.dispose()
 
 
-def test_an_exact_v26_store_migrates_through_v27_and_v28_to_v29(
+def test_an_exact_v26_store_migrates_through_v27_and_v28_and_v29_to_v30(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -1444,7 +1513,7 @@ def test_an_exact_v26_store_migrates_through_v27_and_v28_to_v29(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert all(step in shown.out for step in ("26", "27", "28", "29"))
+    assert all(step in shown.out for step in ("26", "27", "28", "29", "30"))
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
     engine = create_canonical_engine(database_path)
     initialize_schema(engine)
