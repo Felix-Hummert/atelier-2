@@ -10,29 +10,29 @@
  */
 :root {
   /* Material */
-  --ground: #e9e5dc;
-  --panel: #f3f1ea;
-  --panel2: #fcfbf7;
-  --line: #d6d1c4;
-  --chip: #e6e2d7;
-  --ink: #1c1f21;
-  --ink-dim: #545b58;
-  --ink-faint: #868c87;
-  --shadow: 0 1px 2px rgb(28 31 33 / 6%);
-  --shadow-lift: 0 1rem 3rem rgb(28 31 33 / 18%);
-  --scrim: rgb(28 31 33 / 55%);
+  --ground: #d9d4c2;
+  --panel: #e7e3d5;
+  --panel2: #fefdfa;
+  --line: #c2bba6;
+  --chip: #ded9c8;
+  --ink: #1b1e1a;
+  --ink-dim: #4c5248;
+  --ink-faint: #7b8173;
+  --shadow: 0 1px 2px rgb(40 34 20 / 10%), 0 6px 18px rgb(40 34 20 / 10%);
+  --shadow-lift: 0 1rem 3rem rgb(40 34 20 / 24%);
+  --scrim: rgb(40 34 20 / 55%);
 
   /* Interaction. Ink, never a hue, so colour stays reserved for state. */
-  --accent: #22262b;
-  --accent-ink: #fcfbf7;
+  --accent: #232821;
+  --accent-ink: #fefdfa;
 
   /* State. One hue per state, readable on ground, panel, and panel2 alike. */
-  --signal-idle: #5d6763;
-  --signal-live: #1f5fa0;
-  --signal-attention: #8a5a0b;
-  --signal-failure: #9c3025;
-  --signal-done: #1d6b4b;
-  --signal-ink: #fcfbf7;
+  --signal-idle: #4a5143;
+  --signal-live: #154c80;
+  --signal-attention: #704604;
+  --signal-failure: #882414;
+  --signal-done: #155636;
+  --signal-ink: #fefdfa;
   /* How thinly a signal tints a surface: any denser and the signal's own
      words stop clearing AA on the tint they sit in. */
   --wash: 10%;
