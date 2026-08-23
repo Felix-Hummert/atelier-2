@@ -34,6 +34,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerGenerationId,
 )
 from atelier2.contracts.agents import AgentExecutionRequestHash
+from atelier2.contracts.runner_leases import RunnerLeaseId
 from atelier2.contracts.runner_manifests import (
     CANDIDATE_CPU_PERIOD,
     CANDIDATE_SCRATCH_BYTES,
@@ -276,7 +277,7 @@ def _lease(
 ) -> RunnerLease:
     _attempt_directories(root)
     return RunnerLease(
-        lease_id,
+        RunnerLeaseId(lease_id),
         binding if binding is not None else _binding(),
         runner_image,
         manifest if manifest is not None else _manifest(),
@@ -342,7 +343,7 @@ class OpenLeases:
         return None
 
     def release(self, lease: RunnerLease) -> None:
-        self.released.append(lease.lease_id)
+        self.released.append(lease.lease_id.value)
 
     def abandon_stale_claims(self) -> tuple[str, ...]:
         abandoned, self.stale = self.stale, ()
@@ -385,7 +386,7 @@ def test_a_lease_document_is_claimed_by_exactly_one_launcher(tmp_path: Path) -> 
     claimed = source.claim_open_lease()
 
     assert claimed is not None
-    assert claimed.lease_id == _LEASE_ID
+    assert claimed.lease_id == RunnerLeaseId(_LEASE_ID)
     assert claimed.binding == _binding()
     assert (
         FileRunnerLeaseSource(directory, _validation(tmp_path)).claim_open_lease()
@@ -691,8 +692,8 @@ def test_a_failed_attempt_does_not_end_a_watching_launcher(tmp_path: Path) -> No
         launcher.serve_open_leases(once=False, poll_seconds=0)
 
     assert [line for line in announced if line.startswith("attempt-failed=")]
-    assert announced.count(f"attempt-released={good.lease_id}") == 1
-    assert source.released == [good.lease_id]
+    assert announced.count(f"attempt-released={good.lease_id.value}") == 1
+    assert source.released == [good.lease_id.value]
 
 
 def test_a_minted_key_leaves_the_host_even_when_delivery_fails(

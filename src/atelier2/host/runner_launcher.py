@@ -133,18 +133,19 @@ class AttemptRefusal(Exception):
     """A named refusal of one Attempt, carrying which lease it was about."""
 
 
-def admitted_lease_id(named: str) -> str:
+def admitted_lease_id(named: str) -> RunnerLeaseId:
     """One lease's identity, in the only form a launcher acts on.
 
     Every container, volume, label and packet-filter chain of an Attempt is
-    derived from this value, and those names reach a Docker argument vector and
-    the Attempt policy's own `sh` program. A lease id is the identity of the
-    Attempt Core bound, so it has exactly one form (`RunnerLeaseId`), and a
-    name outside it is refused here -- at both entrances a name can arrive
-    through -- before a single object name is built from it (`#540` D-4).
+    derived from a lease id, and those names reach a Docker argument vector
+    and the Attempt policy's own `sh` program. `RunnerLease.lease_id` carries
+    `RunnerLeaseId`, so no other value can build them; this is the one place a
+    name a lease source read becomes one -- at both entrances a name can
+    arrive through -- and a name outside the form is answered for as that
+    document rather than as a `ValueError` out of a contract (`#540` D-4).
     """
     try:
-        return RunnerLeaseId(named).value
+        return RunnerLeaseId(named)
     except ValueError as malformed:
         raise AttemptRefusal(
             f"lease-name-is-not-a-lease-id-form: {named!r}"
@@ -266,7 +267,7 @@ class RunnerLeaseValidation:
         """
         if runner_manifest_id(lease.manifest) != lease.binding.manifest_id:
             raise AttemptRefusal(
-                f"lease-manifest-is-not-the-one-core-bound: {lease.lease_id}"
+                f"lease-manifest-is-not-the-one-core-bound: {lease.lease_id.value}"
             )
         self.bounds.admitted(lease.manifest)
         return lease.manifest
@@ -499,7 +500,7 @@ class FileRunnerLeaseSource:
         return None
 
     def release(self, lease: RunnerLease) -> None:
-        document = self._claimed / f"{lease.lease_id}.json"
+        document = self._claimed / f"{lease.lease_id.value}.json"
         document.rename(self._released / document.name)
 
     def abandon_stale_claims(self) -> tuple[str, ...]:
@@ -649,7 +650,7 @@ class RunnerLauncher:
         for named in self.leases.abandon_stale_claims():
             try:
                 lease_id = admitted_lease_id(named)
-                self.announce(f"reconciled-attempt={lease_id}")
+                self.announce(f"reconciled-attempt={lease_id.value}")
                 self._remove_attempt(lease_id)
             except (AttemptRefusal, CarrierRefusal) as refusal:
                 self.announce(f"reconcile-refused={refusal}")
@@ -717,10 +718,10 @@ class RunnerLauncher:
         the operator to read -- the next launcher start reconciles them.
         """
         lease = self.validation.validated(lease)
-        self.announce(f"attempt-lease={lease.lease_id}")
+        self.announce(f"attempt-lease={lease.lease_id.value}")
         network = self.carrier.create_attempt_network(lease.attempt_name, lease.label)
         self.announce(f"attempt-network={network.name}")
-        chains = attempt_chains(lease.lease_id)
+        chains = attempt_chains(lease.lease_id.value)
         self.carrier.attach_policed_container(
             lease.serve_container,
             AttemptAttachment(
@@ -738,7 +739,7 @@ class RunnerLauncher:
         self._await_release(lease, container, attachment, volumes)
         self._remove_attempt(lease.lease_id)
         self.leases.release(lease)
-        self.announce(f"attempt-released={lease.lease_id}")
+        self.announce(f"attempt-released={lease.lease_id.value}")
 
     def _create_volumes(self, lease: RunnerLease) -> AttemptVolumes:
         """This Attempt's three volumes, each in the form its content needs.
@@ -859,7 +860,7 @@ class RunnerLauncher:
             )
         except ValueError as mismatch:
             raise AttemptRefusal(
-                f"launcher-attempt-failed: {lease.lease_id} container does not "
+                f"launcher-attempt-failed: {lease.lease_id.value} container does not "
                 f"attest the manifest Core bound: {mismatch}"
             ) from mismatch
         (lease.handoff_directory / _ATTESTATION_NAME).write_text(
@@ -893,7 +894,7 @@ class RunnerLauncher:
         self.announce(f"journal-terminal-record={'present' if retained else 'absent'}")
         if not retained:
             raise AttemptRefusal(
-                f"launcher-attempt-failed: {lease.lease_id} runner exited "
+                f"launcher-attempt-failed: {lease.lease_id.value} runner exited "
                 f"{exit_code} with no retained terminal record"
             )
         self.carrier.restart_private_container(container)
@@ -904,11 +905,11 @@ class RunnerLauncher:
         self.announce(f"runner-exit={resumed}")
         if resumed != 0:
             raise AttemptRefusal(
-                f"launcher-attempt-failed: {lease.lease_id} resumed runner "
+                f"launcher-attempt-failed: {lease.lease_id.value} resumed runner "
                 f"exited {resumed}"
             )
 
-    def _remove_attempt(self, lease_id: str) -> None:
+    def _remove_attempt(self, lease_id: RunnerLeaseId) -> None:
         """Everything one Attempt left on this host, including in the console.
 
         The console outlives its Attempts, so its own namespace is the one
@@ -917,7 +918,7 @@ class RunnerLauncher:
         created follow.
         """
         self.carrier.remove_attempt_policy(
-            self.validation.console_container, attempt_chains(lease_id)
+            self.validation.console_container, attempt_chains(lease_id.value)
         )
         label = lease_label(lease_id)
         self.carrier.remove_containers(self.carrier.labelled_containers(label))

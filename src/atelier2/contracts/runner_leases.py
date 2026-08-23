@@ -53,15 +53,14 @@ class RunnerLeaseId(Sha256Hash):
     """One lease document's identity: the same 64 lowercase hex form as the
     `AgentAttemptId` it names.
 
-    A launcher derives every container, volume, and label name of an Attempt
-    from a lease's id (`RunnerLease.label`, `RunnerLease.attempt_name`), and
-    those names flow straight into a Docker CLI's own argument vector. A
-    value outside this character class is refused by this type's own
-    construction -- but this type is not yet what `RunnerLease.lease_id`
-    holds; see the field's own comment. `#540` C-3.3 V6 is what makes every
-    object name provably built from a value this class already accepted
-    (D-4); until then this class only fixes the form a future caller will
-    check against.
+    A launcher derives every container, volume, label, and packet-filter
+    chain name of an Attempt from a lease's id (`RunnerLease.label`,
+    `RunnerLease.attempt_name`), and those names flow straight into a Docker
+    CLI's own argument vector and into the Attempt policy's own shell
+    program. A value outside this character class is refused by this type's
+    own construction, and `RunnerLease.lease_id` holds this type -- so every
+    object name is built from a value this class already accepted, rather
+    than from whatever a lease source read (`#540` C-3.3 V6, D-4).
     """
 
 
@@ -74,13 +73,7 @@ class RunnerLease:
     directories this Attempt's material passes through.
     """
 
-    # Deliberately `str`, not `RunnerLeaseId`, for now: this value comes from
-    # a lease document's filename stem (`FileRunnerLeaseSource._decode`)
-    # unvalidated, and `#540` C-3.3 V6 is the phase that checks it against
-    # `RunnerLeaseId` at the launcher's entrance before typing this field --
-    # typing it here first would refuse leases this phase must stay inert
-    # for (`tests/host/test_runner_launcher.py` mints ids like `"lease-one"`).
-    lease_id: str
+    lease_id: RunnerLeaseId
     binding: RunnerGenerationBinding
     runner_image: str
     manifest: RunnerManifestV1
@@ -100,12 +93,12 @@ class RunnerLease:
     def attempt_name(self) -> str:
         """The one name every object of this Attempt is derived from, so an
         operator reading the host sees which lease each of them belongs to."""
-        return f"atelier2-attempt-{self.lease_id}"
+        return f"atelier2-attempt-{self.lease_id.value}"
 
 
-def lease_label(lease_id: str) -> str:
+def lease_label(lease_id: RunnerLeaseId) -> str:
     """The label an Attempt's objects carry, derived from the lease alone."""
-    return f"{_LEASE_LABEL}={lease_id}"
+    return f"{_LEASE_LABEL}={lease_id.value}"
 
 
 def decode_runner_binding(document: bytes) -> RunnerGenerationBinding:
