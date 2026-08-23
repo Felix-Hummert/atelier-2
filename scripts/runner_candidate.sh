@@ -56,6 +56,17 @@ print(
 runner_user="${runner_uid}:${runner_gid}"
 core_scratch_bytes=16777216
 handoff_deadline_seconds=10
+# The port the console's stand-in serves its own cockpit on, standing in for
+# compose's published 8422: it is what the base network keeps reaching while
+# Attempts come and go, and what an Attempt network must never reach.
+console_port=8422
+
+# A lease id is an Attempt's identity, and the launcher refuses any other form
+# before it builds a single object name from it (`#540` C-3.3 V6). Serve mints
+# it as the Attempt id; this witness mints one of the same shape.
+new_lease_id() {
+  od -An -tx1 -N32 /dev/urandom | tr -d ' \n'
+}
 
 # The exact hardening every Runner-image container in this witness runs under,
 # stated twice in two vocabularies for one reason: the probe legs speak the
@@ -207,9 +218,12 @@ PROBE
 run_egress_legs() {
   build_candidate_images >/dev/null
   local label first second first_subnet second_subnet first_host second_host address
+  local first_attempt second_attempt
   label="atelier2.runner-candidate=${RANDOM}${RANDOM}"
-  first="atelier2-301a-egress-${RANDOM}${RANDOM}"
-  second="atelier2-301a-egress-${RANDOM}${RANDOM}"
+  first_attempt=$(new_lease_id)
+  second_attempt=$(new_lease_id)
+  first="atelier2-301a-egress-${first_attempt:0:12}"
+  second="atelier2-301a-egress-${second_attempt:0:12}"
   first_host="${first}-probe"
   second_host="${second}-probe"
   # An EXIT trap, not a RETURN one: a failing assertion below leaves this
@@ -224,7 +238,7 @@ run_egress_legs() {
   # make "Connection refused" prove the absent service rather than the policy,
   # and would stay green with the INPUT chain wide open.
   carrier start-policed --name "$first_host" --image "$runner_image" --label "$label" \
-    --network "$first" --subnet "$first_subnet" --role runner \
+    --network "$first" --subnet "$first_subnet" --role runner --attempt "$first_attempt" \
     "${carrier_hardening[@]}" "${carrier_writable_surface[@]}" \
     --entrypoint python --argument=-c --argument "
 import socket, threading
@@ -238,7 +252,7 @@ for port in ($core_port, 22):
 threading.Event().wait(300)
 " >/dev/null
   carrier start-policed --name "$second_host" --image "$runner_image" --label "$label" \
-    --network "$second" --subnet "$second_subnet" --role runner \
+    --network "$second" --subnet "$second_subnet" --role runner --attempt "$second_attempt" \
     "${carrier_hardening[@]}" "${carrier_writable_surface[@]}" \
     --entrypoint sleep --argument=300 >/dev/null
   address=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$first\").IPAddress}}" "$first_host")
@@ -320,6 +334,113 @@ exit \$failed
 "
 }
 
+# The unbilled console legs: what a long-lived console really keeps and really
+# loses while Attempts come and go (`#540` C-3.3 D1). The console's stand-in is
+# started on a base network the way compose starts the real one, and every
+# Attempt is attached and released through the same carrier operations the
+# launcher performs -- so what these legs measure is the production policy, not
+# a second ruleset written for the probe.
+run_console_legs() {
+  build_candidate_images >/dev/null
+  local label base console console_address first second
+  label="atelier2.runner-candidate=${RANDOM}${RANDOM}"
+  first=$(new_lease_id)
+  second=$(new_lease_id)
+  base="atelier2-301a-base-${first:0:12}"
+  console="atelier2-301a-console-${first:0:12}"
+  trap "carrier remove --container '$console' --network '$base' --network 'atelier2-301a-attempt-${first:0:12}' --network 'atelier2-301a-attempt-${second:0:12}' >/dev/null 2>&1 || true" EXIT
+  carrier create-network --name "$base" --label "$label" >/dev/null
+  # The console listens on the cockpit port an operator uses and on the session
+  # port an Attempt's Core serves. Probing a container that listens for nothing
+  # would make "Connection refused" prove the absent service rather than the
+  # policy.
+  carrier start-private --name "$console" --image "$runner_image" --label "$label" \
+    "${carrier_hardening[@]}" "${carrier_writable_surface[@]}" \
+    --entrypoint python --argument=-c --argument "
+import socket, threading
+def serve(port):
+    listener = socket.create_server(('0.0.0.0', port), reuse_port=False)
+    while True:
+        connection, _peer = listener.accept()
+        connection.close()
+for port in ($console_port, $core_port):
+    threading.Thread(target=serve, args=(port,), daemon=True).start()
+threading.Event().wait(600)
+" >/dev/null
+  # Compose, not the launcher, puts the real console on its base network; this
+  # is the one engine call in these legs that stands in for that deployment
+  # step rather than for a launcher operation.
+  docker network disconnect none "$console" >/dev/null 2>&1 || true
+  docker network connect "$base" "$console"
+  console_address=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$base\").IPAddress}}" "$console")
+  printf 'console %s on base network %s address %s\n' "$console" "$base" "$console_address"
+  local attempt
+  for attempt in "$first" "$second"; do
+    console_attempt_leg "$label" "$base" "$console" "$console_address" "$attempt"
+  done
+}
+
+# One Attempt's whole life against a console that outlives it: attach, measure
+# what the console keeps and what the Attempt may reach, release, and prove the
+# namespace no longer names this Attempt at all.
+console_attempt_leg() {
+  local label="$1" base="$2" console="$3" console_address="$4" attempt="$5"
+  local network subnet probe chains_present chain
+  # The chains an Attempt's rules live in are named after the Attempt, in the
+  # bounded upper-case form `iptables` accepts (`attempt_chains`).
+  chain=$(printf 'ATELIER2-%s' "${attempt:0:12}" | tr 'a-f' 'A-F')
+  network="atelier2-301a-attempt-${attempt:0:12}"
+  probe="${network}-probe"
+  printf -- '--- leg: attempt %s attaches to the console that already served one ---\n' \
+    "${attempt:0:12}"
+  subnet=$(carrier create-network --name "$network" --label "$label")
+  carrier attach-policed --container "$console" --network "$network" --subnet "$subnet" \
+    --role core --attempt "$attempt" --base-network "$base"
+  carrier start-policed --name "$probe" --image "$runner_image" --label "$label" \
+    --network "$network" --subnet "$subnet" --role runner --attempt "$attempt" \
+    "${carrier_hardening[@]}" "${carrier_writable_surface[@]}" \
+    --entrypoint sleep --argument=600 >/dev/null
+  printf -- '--- leg: the console keeps answering on its own port, from the host and its base network ---\n'
+  docker run --rm --network host --entrypoint bash "$runner_image" -c "
+set +e
+timeout 8 bash -c \"exec 3<>/dev/tcp/$console_address/$console_port\"; rc=\$?
+echo \"host-to-console-$console_port-rc=\$rc\"
+(( rc == 0 )) || { echo 'UNEXPECTED: the host lost the console while an attempt ran'; exit 1; }
+"
+  docker run --rm --network "$base" --entrypoint bash "$runner_image" -c "
+set +e
+timeout 8 bash -c \"exec 3<>/dev/tcp/$console_address/$console_port\"; rc=\$?
+echo \"base-network-to-console-$console_port-rc=\$rc\"
+(( rc == 0 )) || { echo 'UNEXPECTED: the base network lost the console while an attempt ran'; exit 1; }
+"
+  printf -- '--- leg: the attempt network reaches the console on the session port and nowhere else ---\n'
+  local attempt_console_address
+  attempt_console_address=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$network\").IPAddress}}" "$console")
+  docker run --rm --network "container:$probe" --entrypoint bash "$runner_image" -c "
+set +e
+failed=0
+timeout 8 bash -c \"exec 3<>/dev/tcp/$attempt_console_address/$core_port\"; rc=\$?
+echo \"attempt-to-console-$core_port-rc=\$rc\"
+(( rc == 0 )) || { echo 'UNEXPECTED: the attempt cannot reach its own Core session port'; failed=1; }
+started=\$SECONDS; timeout 8 bash -c \"exec 3<>/dev/tcp/$attempt_console_address/$console_port\"; rc=\$?
+elapsed=\$((SECONDS - started))
+echo \"attempt-to-console-$console_port-rc=\$rc seconds=\$elapsed\"
+(( rc != 0 && elapsed < 2 )) || { echo 'UNEXPECTED: the attempt reached the cockpit port, or was not refused immediately'; failed=1; }
+exit \$failed
+"
+  printf -- '--- leg: releasing the attempt leaves no rule of it in the console ---\n'
+  carrier remove-policy --container "$console" --attempt "$attempt"
+  carrier remove --container "$probe" --network "$network" >/dev/null
+  chains_present=$(docker run --rm --network "container:$console" --user 0 --cap-drop ALL \
+    --cap-add NET_ADMIN --entrypoint sh "$policy_image" -c \
+    "iptables -S | grep -c -- '$chain' || true" | tr -d '[:space:]')
+  printf 'console rules naming attempt %s after release: %s\n' "$chain" "$chains_present"
+  if [[ "$chains_present" != "0" ]]; then
+    printf 'UNEXPECTED: the console still carries rules of a released attempt\n' >&2
+    exit 1
+  fi
+}
+
 mode="${1:-success}"
 case "$mode" in
   success | cancel)
@@ -334,6 +455,10 @@ case "$mode" in
     ;;
   egress)
     run_egress_legs
+    exit 0
+    ;;
+  console)
+    run_console_legs
     exit 0
     ;;
   clean)
@@ -369,7 +494,7 @@ case "$mode" in
     exit 0
     ;;
   *)
-    printf 'usage: %s [success|cancel|resume|toolchain|egress|clean|images]\n' "$0" >&2
+    printf 'usage: %s [success|cancel|resume|toolchain|egress|console|clean|images]\n' "$0" >&2
     exit 1
     ;;
 esac
@@ -378,8 +503,9 @@ root=$(mktemp -d "$witness_root_prefix.XXXXXX")
 released=false
 network=""
 label="atelier2.runner-candidate=${RANDOM}${RANDOM}"
-lease_id="301a${RANDOM}${RANDOM}"
-core="atelier2-301a-${lease_id}-core"
+lease_id=$(new_lease_id)
+core="atelier2-301a-${lease_id:0:12}-core"
+base_network="atelier2-301a-base-${lease_id:0:12}"
 printf '%s\n' "$label" >"$root/label"
 printf '%s\n' "$lease_id" >"$root/lease"
 printf '%s\n' "$scenario" >"$root/scenario"
@@ -387,12 +513,13 @@ printf '%s\n' "$scenario" >"$root/scenario"
 cleanup() {
   carrier logs --container "$core" --output "$root/core.log" >/dev/null 2>&1 || true
   if "$released"; then
-    # Everything the launcher created it removed itself; Core is the one
-    # container this witness owns, standing in for the console's own.
-    carrier remove --container "$core" >/dev/null 2>&1 || true
+    # Everything the launcher created it removed itself; Core and the base
+    # network it serves on are what this witness owns, standing in for the
+    # console's own container and the network compose starts it on.
+    carrier remove --container "$core" --network "$base_network" >/dev/null 2>&1 || true
   else
-    printf 'recovery left labelled objects: label=%s lease=%s core=%s network=%s root=%s\n' \
-      "$label" "$lease_id" "$core" "$network" "$root" >&2
+    printf 'recovery left labelled objects: label=%s lease=%s core=%s network=%s base=%s root=%s\n' \
+      "$label" "$lease_id" "$core" "$network" "$base_network" "$root" >&2
   fi
 }
 trap cleanup EXIT
@@ -404,17 +531,22 @@ attempt_root="$root/attempt"
 mkdir -p "$root"/{issuer,core-identity,core-store,leases/open} \
   "$attempt_root"/{peer,handoff,issuance,provider-credentials}
 chmod 0700 "$attempt_root/issuance" "$attempt_root/provider-credentials"
-uv run --locked python tests/witness/runner_candidate_issuer.py core --state "$root/issuer" --identity "$root/core-identity"
+# The console's own identity comes from the production command an operator runs
+# and re-runs to renew (`#540` C-3.3 D2), out of the same authority the launcher
+# below issues every Attempt's Runner identity from.
+uv run --locked python -m atelier2.host.runner_launcher issue-console-identity \
+  --certificate-authority-state "$root/issuer" --identity "$root/core-identity"
 cp "$root/core-identity/ca.crt" "$attempt_root/handoff/ca.crt"
 cp "$root/core-identity/core.crt" "$attempt_root/handoff/core.crt"
 build_candidate_images >/dev/null
 image_digest=$(docker image inspect -f '{{.Id}}' "$runner_image")
 source_commit=$(git rev-parse HEAD)
 uv run --locked python tests/witness/runner_candidate_issuer.py manifest --source-commit "$source_commit" --image-digest "$image_digest" --output "$attempt_root/handoff"
-# Core stands in for the console's own Serve container: it is started attached
-# to no network at all and reaches nothing until the launcher creates this
-# Attempt's network and attaches it. Its `/handoff` bind is read-only, which
-# the carrier reads back out of the container it created.
+# Core stands in for the console's own Serve container: the deployment starts
+# it on its own base network long before any Attempt exists, and it stays there
+# while Attempts come and go. Its `/handoff` bind is read-only, which the
+# carrier reads back out of the container it created.
+carrier create-network --name "$base_network" --label "$label" >/dev/null
 carrier start-private --name "$core" --image "$core_image" --label "$label" \
   --read-only --tmpfs "${scratch_directory}:${core_scratch_bytes}" \
   --bind "$root/core-identity:/run/atelier2-core-identity:ro" \
@@ -422,6 +554,11 @@ carrier start-private --name "$core" --image "$core_image" --label "$label" \
   --bind "$attempt_root/handoff:/handoff:ro" \
   --bind "$root/core-store:/var/lib/atelier2-candidate:rw" \
   --argument=--scenario --argument="$scenario" >/dev/null
+# Compose, not the launcher, puts the real console on its base network; these
+# two calls stand in for that deployment step rather than for any launcher
+# operation.
+docker network disconnect none "$core" >/dev/null 2>&1 || true
+docker network connect "$base_network" "$core"
 carrier copy-from --container "$core" \
   --source /var/lib/atelier2-candidate/bootstrap.json \
   --source /var/lib/atelier2-candidate/core-peer.json \
@@ -442,15 +579,20 @@ cat >"$root/leases/open/${lease_id}.json" <<LEASE
 }
 LEASE
 launcher_status=0
-# The launcher believes no lease: it admits only paths under the attempt root
-# and only the console container declared here, both of which this witness
-# passes as its own disposable directory and its own Core.
-uv run --locked python -m atelier2.host.runner_launcher \
+# The launcher believes no lease: it admits only paths under the attempt root,
+# only the console container, console network and Runner image declared here,
+# only a manifest whose identity is the one Core bound, and only one that stays
+# inside this host's declared resource bounds. Everything it is given here is
+# this witness's own disposable directory, network, image and Core.
+uv run --locked python -m atelier2.host.runner_launcher serve \
   --lease-directory "$root/leases" \
   --certificate-authority-state "$root/issuer" \
   --network-policy-image "$policy_image" \
   --attempt-root "$attempt_root" \
-  --console-container "$core" --once 2>&1 \
+  --console-container "$core" \
+  --console-network "$base_network" \
+  --console-identity "$root/core-identity" \
+  --runner-image "$runner_image" --once 2>&1 \
   | tee "$root/launcher.log" || launcher_status=$?
 network=$(sed -n 's/^attempt-network=//p' "$root/launcher.log")
 if [[ -n "$network" ]]; then

@@ -126,6 +126,7 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
 )
 from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
+from atelier2.contracts.run_cancellations import is_operator_run_cancel
 from atelier2.contracts.runs import RunId, RunState
 
 router = APIRouter()
@@ -358,6 +359,21 @@ async def cancel_agent_attempt_route(
     _media: None = Depends(require_json_media_dependency),
 ) -> JSONResponse:
     run_id = decode_public_reference(public_ref, context.limits)
+    if is_operator_run_cancel(body.command_id):
+        # #439's namespace invariant, closed from this side: an attempt-route
+        # command id from the reserved run-cancel namespace could never have
+        # been minted by an operator confirming *this* command (that mint
+        # only happens server-side, from a run-cancel idempotency key), so it
+        # names a command this route can never own.
+        raise ApiProblem(
+            "invalid-request",
+            invalid_fields=(
+                InvalidFieldResource(
+                    path="body/command_id",
+                    reason="belongs to the reserved run-cancel command namespace",
+                ),
+            ),
+        )
     try:
         context.limits.require_field(attempt_id)
         parsed_attempt_id = AgentAttemptId(attempt_id)

@@ -30,6 +30,7 @@ from atelier2.adapters.dbos.run_transitions import (
     RunTransitionConflict,
     _commit_event,
     _insert_event,
+    lift_started_run,
     load_graph,
     load_run,
 )
@@ -110,7 +111,17 @@ from atelier2.contracts.node_records_v3 import (
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_bindings import RunV2, RunV3
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.run_cancellations import (
+    CancelRunRequest,
+    RunCancelCommandId,
+    is_operator_run_cancel,
+)
+from atelier2.contracts.runs import (
+    TERMINAL_RUN_STATES,
+    RunId,
+    RunState,
+    WorkflowRevisionHash,
+)
 from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
 from atelier2.contracts.verdicts import Verdict, read_verdict
 from atelier2.contracts.workflows import (
@@ -145,11 +156,20 @@ from atelier2.ports.agent_attempts import (
     AgentExecutorBindingRefusalNeedsPreparedCleanup,
     AgentExecutorBindingRefusalResult,
     AgentExecutorBindingRefusalWritten,
+    RunCancellationAccepted,
+    RunCancellationCommandConflict,
+    RunCancellationNotCancellable,
+    RunCancellationOvertakenBySuccess,
+    RunCancellationRefusal,
+    RunCancellationResult,
+    RunCancellationRunMissing,
+    RunCancellationTerminalRetry,
     RunnerTerminalEvidenceCommitRefused,
     RunnerTerminalEvidenceCommitResult,
     RunnerTerminalEvidenceCommitted,
     RunnerTerminalEvidenceRefusal,
 )
+from atelier2.ports.durable_runs import DurableStateCorrupt
 
 # DBOS owns this table and these tokens; the store only reads them, and only to
 # answer whether a workflow it enqueued itself is still going to run. Reaching
@@ -641,6 +661,118 @@ def _insert_attempt_event(
     if updated.rowcount != 1:
         raise RunTransitionConflict("agent attempt event lost the run-head CAS")
     _insert_event(connection, event)
+
+
+def _lift_run_under_operator_cancel(connection: Any, terminal: AgentAttempt) -> None:
+    """Close the run under its own operator cancel, in the same TX as its receipt.
+
+    `CANCELLED` and `INTERRUPTED` are the two words a cleanup attestation can
+    leave an attempt in, and #439 Bauplan P3 lifts the run the same way under
+    both: the run's own ending follows the *command's* identity, not which of
+    the two the disposition happened to be (the two-axis doctrine -- the node
+    says how its own work ended, the run says why it stood still). A
+    driver-loss or unavailable-executor cleanup reaches these same attempt
+    words through a command of its own, never the operator's --
+    `is_operator_run_cancel` is what tells the two apart, so neither of those
+    two other callers of this cleanup path is touched here, and their runs
+    stay exactly as unlifted and receipt-less as before this method existed.
+
+    A replacement is never in flight here: `request_run_cancellation` always
+    submits `AgentAttemptReplacement.NONE` (D2, #439 Bauplan P2/P3), so an
+    operator command reaching this point never shares its node execution with
+    a second attempt.
+    """
+    cancellation = terminal.cancellation
+    if (
+        cancellation is None
+        or not is_operator_run_cancel(cancellation.command_id)
+        or cancellation.replacement is not AgentAttemptReplacement.NONE
+        or terminal.state
+        not in {AgentAttemptState.CANCELLED, AgentAttemptState.INTERRUPTED}
+    ):
+        return
+    run = load_run(connection, terminal.run_id)
+    if run.state is not RunState.STARTED:
+        return
+    live_node_execution_id = NodeExecutionId.for_node(
+        run.run_id, run.revision_hash, run.current_node_id, run.current_round_ordinal
+    )
+    if live_node_execution_id != terminal.node_execution_id:
+        return
+    if cancellation.disposition is None:
+        raise RunTransitionConflict(
+            "a terminal cancellation lifts its run only with an attested disposition"
+        )
+    keep_node_receipt(
+        connection,
+        terminal.node_execution_id,
+        PersistedReceiptDisposition.CANCELLED,
+        node_receipt_reason(
+            NodeReceiptReason.CANCELLED_BY_OPERATOR, cancellation.disposition.value
+        ),
+    )
+    lift_started_run(
+        connection,
+        run.run_id,
+        run.revision_hash,
+        run.state_version,
+        run.last_event_sequence,
+        RunState.CANCELLED,
+    )
+
+
+def _run_cancellation_from_event_log(
+    connection: Any, run_id: RunId, command_id: str
+) -> RunCancellationResult | None:
+    """One accepted run-cancel command's canonical answer once its attempt
+    row has moved on.
+
+    Only a runner-carried success ever clears an attempt's cancellation
+    columns (`_commit_success`), and it always does so in the very
+    transaction that also writes that attempt's `AGENT_COMPLETED` event -- so
+    by the time this command's row is gone, the event that decided its fate
+    is already durable too. `None` means this exact command was never
+    accepted at all: the caller is free to treat it as genuinely new.
+    """
+    requested = (
+        connection.execute(
+            sa.select(run_events.c.agent_attempt_id, run_events.c.event_sequence).where(
+                run_events.c.run_id == run_id.value,
+                run_events.c.cancellation_command_id == command_id,
+                run_events.c.event_kind == RunEventKind.AGENT_CANCEL_REQUESTED.value,
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if requested is None:
+        return None
+    terminal_kind = connection.scalar(
+        sa.select(run_events.c.event_kind)
+        .where(
+            run_events.c.run_id == run_id.value,
+            run_events.c.agent_attempt_id == requested["agent_attempt_id"],
+            run_events.c.event_sequence > requested["event_sequence"],
+            run_events.c.event_kind.in_(
+                (
+                    RunEventKind.AGENT_CANCELLED.value,
+                    RunEventKind.AGENT_INTERRUPTED.value,
+                    RunEventKind.AGENT_COMPLETED.value,
+                )
+            ),
+        )
+        .order_by(run_events.c.event_sequence)
+        .limit(1)
+    )
+    run = load_run(connection, run_id)
+    if terminal_kind == RunEventKind.AGENT_COMPLETED.value:
+        return RunCancellationOvertakenBySuccess(run)
+    if terminal_kind in (
+        RunEventKind.AGENT_CANCELLED.value,
+        RunEventKind.AGENT_INTERRUPTED.value,
+    ):
+        return RunCancellationTerminalRetry(run)
+    return DurableStateCorrupt()
 
 
 def _unavailable_executor_cleanup_command_id(attempt_id: AgentAttemptId) -> str:
@@ -1602,6 +1734,7 @@ class DbosAgentAttemptStore:
             RunEventKind.AGENT_CANCELLED,
             command=terminal.cancellation,
         )
+        _lift_run_under_operator_cancel(connection, terminal)
         return RunnerTerminalEvidenceCommitted(terminal, evidence_hash)
 
     def mark_runner_evidence_acknowledged(
@@ -1846,130 +1979,277 @@ class DbosAgentAttemptStore:
     def request_cancellation(
         self, request: CancelAgentAttemptRequest
     ) -> AgentAttemptCancellationResult:
-        client: DBOSClient | None = None
-        try:
-            with canonical_write_transaction(self._engine) as connection:
-                run_record = connection.scalar(
-                    sa.select(runs.c.run_id).where(
-                        runs.c.run_id == request.run_id.value
+        with canonical_write_transaction(self._engine) as connection:
+            run_record = connection.scalar(
+                sa.select(runs.c.run_id).where(runs.c.run_id == request.run_id.value)
+            )
+            if run_record is None:
+                return AgentAttemptCancellationRunMissing()
+            record = (
+                connection.execute(
+                    sa.select(agent_attempts).where(
+                        agent_attempts.c.attempt_id == request.attempt_id.value
                     )
                 )
-                if run_record is None:
-                    return AgentAttemptCancellationRunMissing()
-                record = (
-                    connection.execute(
-                        sa.select(agent_attempts).where(
-                            agent_attempts.c.attempt_id == request.attempt_id.value
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
+                .mappings()
+                .one_or_none()
+            )
+            if record is None:
+                return AgentAttemptCancellationTargetMissing()
+            attempt = _attempt_from_record(record)
+            if attempt.run_id != request.run_id:
+                return AgentAttemptCancellationTargetMissing()
+            existing = attempt.cancellation
+            if existing is not None:
+                if not existing.matches(request):
+                    return AgentAttemptCancellationCommandConflict()
+                return AgentAttemptCancellationAccepted(
+                    attempt,
+                    attempt.state
+                    in {AgentAttemptState.CANCELLED, AgentAttemptState.INTERRUPTED},
+                    self._replacement_attempt_id(connection, attempt),
                 )
-                if record is None:
-                    return AgentAttemptCancellationTargetMissing()
+            if attempt.state in {
+                AgentAttemptState.SUCCEEDED,
+                AgentAttemptState.FAILED,
+                AgentAttemptState.CANCELLED,
+                AgentAttemptState.INTERRUPTED,
+            }:
+                return AgentAttemptCancellationTerminalConflict()
+            if attempt.state_version != request.expected_attempt_state_version:
+                return AgentAttemptCancellationStale()
+            if (
+                attempt.runner_manifest_id is not None
+                and request.replacement is AgentAttemptReplacement.ONE
+            ):
+                return AgentAttemptReplacementNotAllowed()
+            if request.replacement is AgentAttemptReplacement.ONE and (
+                attempt.attempt_ordinal != 1
+            ):
+                return AgentAttemptReplacementNotAllowed()
+            current_ordinal = connection.scalar(
+                sa.select(sa.func.max(agent_attempts.c.attempt_ordinal)).where(
+                    agent_attempts.c.node_execution_id
+                    == attempt.node_execution_id.value
+                )
+            )
+            run = load_run(connection, request.run_id)
+            if (
+                run.state is not RunState.STARTED
+                or run.current_node_id != attempt.node_id
+                or int(current_ordinal or 0) != attempt.attempt_ordinal
+            ):
+                return AgentAttemptCancellationNotCurrent()
+            committed = self._commit_new_cancellation(connection, attempt, request)
+            if committed is None:
+                return AgentAttemptCancellationStale()
+            return AgentAttemptCancellationAccepted(committed, False)
+
+    def request_run_cancellation(
+        self, request: CancelRunRequest
+    ) -> RunCancellationResult:
+        """Resolve one operator run-cancel command against the store's own truth.
+
+        Ordering is load-bearing (#439 Bauplan P2), not incidental:
+
+        1. **A known command answers first, before any state gate.** The
+           attempt row carrying this exact command id -- whatever state it
+           reached -- is the canonical answer regardless of where the run
+           stands today; a retry after a lost response must never be told
+           "not cancellable" merely because the run moved on since the
+           command it already answered.
+        2. **The success-wins fallback.** A runner-carried success clears that
+           row's cancellation columns in the same transaction that writes
+           `AGENT_COMPLETED` (`_commit_success`), so the row this command
+           stamped can vanish out from under it. The command's own
+           `AGENT_CANCEL_REQUESTED` event survives that clearing -- events are
+           never rewritten -- so a retry that misses the row reads the event
+           log instead and answers from whichever terminal event followed.
+        3. **Only a genuinely new command reaches the cancellability gate:**
+           the run must be `STARTED`, and the node execution the operator's
+           confirmation named is recomputed from durable truth rather than
+           trusted, exactly like every other execution identity a CAS
+           transaction in this module already recomputes (D2, #439 Bauplan).
+        4. **The write itself is `request_cancellation`'s own CAS body** --
+           `_commit_new_cancellation` is the one place both make it.
+        """
+        command_id = RunCancelCommandId.for_key(request.idempotency_key).value
+        with canonical_write_transaction(self._engine) as connection:
+            record = (
+                connection.execute(
+                    sa.select(agent_attempts).where(
+                        agent_attempts.c.cancellation_command_id == command_id,
+                        agent_attempts.c.run_id == request.run_id.value,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if record is not None:
                 attempt = _attempt_from_record(record)
-                if attempt.run_id != request.run_id:
-                    return AgentAttemptCancellationTargetMissing()
-                existing = attempt.cancellation
-                if existing is not None:
-                    if not existing.matches(request):
-                        return AgentAttemptCancellationCommandConflict()
-                    return AgentAttemptCancellationAccepted(
-                        attempt,
-                        attempt.state
-                        in {
-                            AgentAttemptState.CANCELLED,
-                            AgentAttemptState.INTERRUPTED,
-                        },
-                        self._replacement_attempt_id(connection, attempt),
-                    )
+                if attempt.state is AgentAttemptState.CANCEL_REQUESTED:
+                    return RunCancellationAccepted(attempt)
                 if attempt.state in {
-                    AgentAttemptState.SUCCEEDED,
-                    AgentAttemptState.FAILED,
                     AgentAttemptState.CANCELLED,
                     AgentAttemptState.INTERRUPTED,
                 }:
-                    return AgentAttemptCancellationTerminalConflict()
-                if attempt.state_version != request.expected_attempt_state_version:
-                    return AgentAttemptCancellationStale()
-                if (
-                    attempt.runner_manifest_id is not None
-                    and request.replacement is AgentAttemptReplacement.ONE
-                ):
-                    return AgentAttemptReplacementNotAllowed()
-                if request.replacement is AgentAttemptReplacement.ONE and (
-                    attempt.attempt_ordinal != 1
-                ):
-                    return AgentAttemptReplacementNotAllowed()
-                current_ordinal = connection.scalar(
-                    sa.select(sa.func.max(agent_attempts.c.attempt_ordinal)).where(
-                        agent_attempts.c.node_execution_id
-                        == attempt.node_execution_id.value
+                    return RunCancellationTerminalRetry(
+                        load_run(connection, request.run_id)
                     )
+                return DurableStateCorrupt()
+
+            from_event_log = _run_cancellation_from_event_log(
+                connection, request.run_id, command_id
+            )
+            if from_event_log is not None:
+                return from_event_log
+
+            run_record = connection.scalar(
+                sa.select(runs.c.run_id).where(runs.c.run_id == request.run_id.value)
+            )
+            if run_record is None:
+                return RunCancellationRunMissing()
+            run = load_run(connection, request.run_id)
+            if run.state in TERMINAL_RUN_STATES:
+                return RunCancellationNotCancellable(
+                    RunCancellationRefusal.ALREADY_ENDED
                 )
-                run = load_run(connection, request.run_id)
-                if (
-                    run.state is not RunState.STARTED
-                    or run.current_node_id != attempt.node_id
-                    or int(current_ordinal or 0) != attempt.attempt_ordinal
-                ):
-                    return AgentAttemptCancellationNotCurrent()
-                workflow_id = cancellation_workflow_id_for(request)
-                updated = connection.execute(
-                    agent_attempts.update()
+            if run.state in {RunState.WAITING_INPUT, RunState.WAITING_RECONCILIATION}:
+                return RunCancellationNotCancellable(
+                    RunCancellationRefusal.WAITING_FOR_YOU
+                )
+
+            live_node_execution_id = NodeExecutionId.for_node(
+                run.run_id,
+                run.revision_hash,
+                run.current_node_id,
+                run.current_round_ordinal,
+            )
+            if live_node_execution_id != request.expected_node_execution_id:
+                return RunCancellationNotCancellable(
+                    RunCancellationRefusal.BETWEEN_NODES
+                )
+
+            graph = load_graph(connection, run.revision_hash)
+            current_node = graph.node(run.current_node_id)
+            if not isinstance(current_node, (AgentNodeV2, AgentNodeV3)):
+                return RunCancellationNotCancellable(
+                    RunCancellationRefusal.NODE_RUNS_NO_AGENT
+                )
+
+            current_record = (
+                connection.execute(
+                    sa.select(agent_attempts)
                     .where(
-                        agent_attempts.c.attempt_id == attempt.attempt_id.value,
-                        agent_attempts.c.state == attempt.state.value,
-                        agent_attempts.c.state_version == attempt.state_version,
-                        agent_attempts.c.cancellation_command_id.is_(None),
+                        agent_attempts.c.node_execution_id
+                        == live_node_execution_id.value
                     )
-                    .values(
-                        state=AgentAttemptState.CANCEL_REQUESTED.value,
-                        state_version=attempt.state_version + 1,
-                        cancellation_command_id=request.command_id,
-                        cancellation_expected_state_version=(
-                            request.expected_attempt_state_version
-                        ),
-                        replacement=request.replacement.value,
-                        redrive_state=AgentAttemptRedriveState.PENDING.value,
-                        cancellation_workflow_id=workflow_id,
-                    )
+                    .order_by(agent_attempts.c.attempt_ordinal.desc())
+                    .limit(1)
                 )
-                if updated.rowcount != 1:
-                    return AgentAttemptCancellationStale()
-                accepted = _load_attempt(connection, attempt.attempt_id)
-                _insert_attempt_event(
-                    connection,
-                    accepted,
-                    RunEventKind.AGENT_CANCEL_REQUESTED,
-                    command=accepted.cancellation,
+                .mappings()
+                .one_or_none()
+            )
+            if current_record is None:
+                return RunCancellationNotCancellable(
+                    RunCancellationRefusal.BETWEEN_NODES
                 )
-                if accepted.runner_manifest_id is not None:
-                    return AgentAttemptCancellationAccepted(accepted, False)
-                if self._application_version is None:
-                    raise RunTransitionConflict(
-                        "cancellation submission requires the runtime application version"
-                    )
-                client = DBOSClient(
-                    system_database_engine=self._engine, use_listen_notify=False
+            current_attempt = _attempt_from_record(current_record)
+            if current_attempt.state in TERMINAL_AGENT_ATTEMPT_STATES:
+                return RunCancellationNotCancellable(
+                    RunCancellationRefusal.ALREADY_ENDED
                 )
-                options: EnqueueOptions = {
-                    "workflow_name": CANCELLATION_WORKFLOW_NAME,
-                    "queue_name": QUEUE_NAME,
-                    "workflow_id": workflow_id,
-                    "app_version": self._application_version,
-                }
-                client.enqueue_in_transaction(
-                    connection,
-                    options,
-                    attempt.run_id.value,
-                    attempt.attempt_id.value,
-                    request.command_id,
-                )
-                return AgentAttemptCancellationAccepted(accepted, False)
+            if current_attempt.cancellation is not None:
+                # Some other command -- the attempt route, or an earlier
+                # idempotency key -- already owns this attempt's cancellation.
+                return RunCancellationCommandConflict()
+
+            cancel_request = CancelAgentAttemptRequest(
+                request.run_id,
+                current_attempt.attempt_id,
+                command_id,
+                current_attempt.state_version,
+                AgentAttemptReplacement.NONE,
+            )
+            committed = self._commit_new_cancellation(
+                connection, current_attempt, cancel_request
+            )
+            if committed is None:
+                return RunCancellationCommandConflict()
+            return RunCancellationAccepted(committed)
+
+    def _commit_new_cancellation(
+        self,
+        connection: Any,
+        attempt: AgentAttempt,
+        request: CancelAgentAttemptRequest,
+    ) -> AgentAttempt | None:
+        """Stamp `CANCEL_REQUESTED` under one command and enqueue its cleanup.
+
+        The CAS body `request_cancellation` and `request_run_cancellation`
+        share: both resolve which non-terminal attempt, at which version, a
+        genuinely new command targets before calling this, so from here the
+        write is the same either way. `None` means the CAS lost its race --
+        the two callers name that in their own, different vocabularies
+        (`Stale` for a client-supplied version; `CommandConflict` for a
+        server-resolved one), so the naming stays here.
+        """
+        workflow_id = cancellation_workflow_id_for(request)
+        updated = connection.execute(
+            agent_attempts.update()
+            .where(
+                agent_attempts.c.attempt_id == attempt.attempt_id.value,
+                agent_attempts.c.state == attempt.state.value,
+                agent_attempts.c.state_version == attempt.state_version,
+                agent_attempts.c.cancellation_command_id.is_(None),
+            )
+            .values(
+                state=AgentAttemptState.CANCEL_REQUESTED.value,
+                state_version=attempt.state_version + 1,
+                cancellation_command_id=request.command_id,
+                cancellation_expected_state_version=(
+                    request.expected_attempt_state_version
+                ),
+                replacement=request.replacement.value,
+                redrive_state=AgentAttemptRedriveState.PENDING.value,
+                cancellation_workflow_id=workflow_id,
+            )
+        )
+        if updated.rowcount != 1:
+            return None
+        accepted = _load_attempt(connection, attempt.attempt_id)
+        _insert_attempt_event(
+            connection,
+            accepted,
+            RunEventKind.AGENT_CANCEL_REQUESTED,
+            command=accepted.cancellation,
+        )
+        if accepted.runner_manifest_id is not None:
+            return accepted
+        if self._application_version is None:
+            raise RunTransitionConflict(
+                "cancellation submission requires the runtime application version"
+            )
+        client = DBOSClient(
+            system_database_engine=self._engine, use_listen_notify=False
+        )
+        try:
+            options: EnqueueOptions = {
+                "workflow_name": CANCELLATION_WORKFLOW_NAME,
+                "queue_name": QUEUE_NAME,
+                "workflow_id": workflow_id,
+                "app_version": self._application_version,
+            }
+            client.enqueue_in_transaction(
+                connection,
+                options,
+                attempt.run_id.value,
+                attempt.attempt_id.value,
+                request.command_id,
+            )
         finally:
-            if client is not None:
-                client.destroy()
+            client.destroy()
+        return accepted
 
     def attest_cancellation_cleanup(
         self,
@@ -2105,6 +2385,7 @@ class DbosAgentAttemptStore:
                 command=terminal_cancellation,
                 replacement_attempt_id=replacement_attempt_id,
             )
+            _lift_run_under_operator_cancel(connection, terminal)
             return AgentAttemptCancellationAccepted(
                 terminal, True, replacement_attempt_id
             )

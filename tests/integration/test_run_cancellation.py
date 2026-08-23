@@ -1,0 +1,700 @@
+"""#439 P2/P3: the durable run-cancel command, and the run it ends.
+
+The command a route never gets to send yet (#439 P4) already has a full
+answer at the store: `DbosAgentAttemptStore.request_run_cancellation` resolves
+one operator idempotency key against the run's live attempt, recomputing the
+node execution the operator's confirmation named rather than trusting it (D2).
+The P2 heads pin the ordering the bauplan requires -- a known command answers
+before any cancellability gate. The P3 heads pin what happens once the
+attempt this command targets actually ends: the cleanup attestation that
+closes it, on either carrier, also lifts the run terminal under the same
+command identity and writes the one `cancelled` receipt that names it -- never
+a second cancellation engine, and never for a command this store did not mint
+as the operator's own (`is_operator_run_cancel`).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+import sqlalchemy as sa
+
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.run_transitions import (
+    RunTransitionConflict,
+    load_run,
+    run_from_record_with_bindings,
+)
+from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.schema import node_receipts_v3, run_events, runs
+from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
+from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptCancellationDisposition,
+    AgentAttemptId,
+    AgentAttemptReplacement,
+    AgentAttemptState,
+    AgentProcessOwnerId,
+    CancelAgentAttemptRequest,
+    RunnerCancellation,
+    RunnerCancellationObservation,
+    RunnerProviderResult,
+    RunnerTerminalEvidenceEnvelope,
+    WatchdogGenerationId,
+)
+from atelier2.contracts.agents import (
+    AgentExecutionRequestV2,
+    AgentExecutionResult,
+    AgentExecutorOperationalIdentity,
+)
+from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.executions import (
+    AgentAttemptExecution,
+    NodeExecutionId,
+    RunEventKind,
+)
+from atelier2.contracts.node_records_v3 import (
+    PersistedReceiptDisposition,
+    read_stored_node_receipt_reason,
+)
+from atelier2.contracts.run_bindings import RunV3
+from atelier2.contracts.run_cancellations import CancelRunRequest
+from atelier2.contracts.runs import RunId, RunState
+from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationAccepted,
+    RunCancellationAccepted,
+    RunCancellationCommandConflict,
+    RunCancellationNotCancellable,
+    RunCancellationOvertakenBySuccess,
+    RunCancellationRefusal,
+    RunCancellationRunMissing,
+    RunCancellationTerminalRetry,
+    RunnerTerminalEvidenceCommitted,
+)
+from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
+from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
+from tests.integration.test_runner_terminal_evidence_store import _armed, _v3_armed
+from tests.integration.test_v3_agent_start import publish as publish_v3_workflow
+from tests.integration.test_v3_bounded_loop_run import RUN as LOOP_RUN
+from tests.integration.test_v3_bounded_loop_run import (
+    finish_gated_node,
+    gate_execution,
+    start_loop,
+    wait_for_state,
+)
+from tests.integration.test_v3_bounded_loop_run import (
+    runtime as _loop_runtime,
+)
+from tests.scenarios.agents import (
+    RecordingAgentExecutorFactoryV2,
+    agent_attempt_execution,
+    agent_scratch_root,
+    failing_agent_executor_factory,
+)
+
+runtime = _loop_runtime
+
+_LEGACY_OWNER = AgentProcessOwnerId("run-cancel-test-owner")
+_LEGACY_GENERATION = WatchdogGenerationId("run-cancel-test-generation")
+
+
+def _v3_prepared(
+    root: Path, run_name: str
+) -> tuple[DbosRuntime, DbosAgentAttemptStore, AgentAttemptExecution]:
+    """A single-node V3 run with its `implement` attempt legacy-armed.
+
+    `bind_watchdog` + `claim` reach `LAUNCH_ARMED` under a real owner
+    generation -- every cleanup disposition but `NEVER_LAUNCHED` requires one
+    (`AgentAttempt.__post_init__`), and cancellation itself never requires an
+    armed attempt, so this shape serves every #439 P3 store head below.
+    """
+    root_runtime = DbosRuntime(
+        DbosRuntimeSettings(
+            root / "atelier.sqlite",
+            "run-cancel-v3-test",
+            agent_scratch_root=agent_scratch_root(root),
+        ),
+        LoopbackEffectAdapterFactory(
+            root / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+        ExactOutputAgentExecutorFactory(),
+        (failing_agent_executor_factory("exact", []),),
+    )
+    root_runtime.initialize_storage()
+    workflow, bindings = publish_v3_workflow(root_runtime)
+    run_id = RunId(run_name)
+    started = DbosDurableRunStarter(
+        root_runtime.engine, root_runtime.settings, root_runtime.agent_executor_registry
+    ).start_published(
+        StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
+    )
+    assert isinstance(started, DurableRunCreated)
+    with root_runtime.engine.connect() as connection:
+        record = (
+            connection.execute(sa.select(runs).where(runs.c.run_id == run_id.value))
+            .mappings()
+            .one()
+        )
+        run = run_from_record_with_bindings(connection, record)
+    assert isinstance(run, RunV3)
+    request = AgentExecutionRequestV2(
+        NodeExecutionId.for_node(run_id, workflow.revision_hash, "implement"),
+        run_id,
+        workflow.revision_hash,
+        "implement",
+        run.agent_bindings[0],
+        AgentExecutorOperationalIdentity("exact-operation"),
+        b"Do the one thing this chain is for.",
+    )
+    execution = AgentAttemptExecution(
+        request,
+        AgentAttemptId.for_execution(request.node_execution_id, request.request_hash),
+        1,
+    )
+    store = DbosAgentAttemptStore(
+        root_runtime.engine, root_runtime.settings.application_version
+    )
+    store.prepare(execution)
+    store.bind_watchdog(execution, _LEGACY_OWNER, _LEGACY_GENERATION)
+    store.claim(execution)
+    return root_runtime, store, execution
+
+
+def _node_receipt(
+    engine: sa.Engine, node_execution_id: NodeExecutionId
+) -> tuple[str, str] | None:
+    with engine.connect() as connection:
+        stored = (
+            connection.execute(
+                sa.select(
+                    node_receipts_v3.c.disposition, node_receipts_v3.c.reason
+                ).where(node_receipts_v3.c.node_execution_id == node_execution_id.value)
+            )
+            .mappings()
+            .one_or_none()
+        )
+    if stored is None:
+        return None
+    reason, _schema, _value = read_stored_node_receipt_reason(str(stored["reason"]))
+    return str(stored["disposition"]), reason
+
+
+def _cancel_event_kinds(engine: sa.Engine) -> list[str]:
+    with engine.connect() as connection:
+        return [
+            str(kind)
+            for kind in connection.execute(
+                sa.select(run_events.c.event_kind).order_by(run_events.c.event_sequence)
+            ).scalars()
+        ]
+
+
+def test_duplicate_command_writes_exactly_one_requested_event(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "run-cancel/duplicate")
+        )
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        store.prepare(execution)
+        request = CancelRunRequest(
+            execution.request.run_id,
+            "operator-duplicate-1",
+            execution.request.node_execution_id,
+        )
+
+        first = store.request_run_cancellation(request)
+        second = store.request_run_cancellation(request)
+
+        assert isinstance(first, RunCancellationAccepted)
+        assert first.attempt.state is AgentAttemptState.CANCEL_REQUESTED
+        assert second == first
+        assert _cancel_event_kinds(runtime.engine) == [
+            RunEventKind.AGENT_CANCEL_REQUESTED.value
+        ]
+    finally:
+        runtime.close()
+
+
+def test_a_foreign_command_on_an_already_busy_attempt_is_a_command_conflict(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "run-cancel/foreign-key")
+        )
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        prepared = store.prepare(execution)
+        already_busy = store.request_cancellation(
+            CancelAgentAttemptRequest(
+                execution.request.run_id,
+                execution.attempt_id,
+                "attempt-route-command",
+                prepared.state_version,
+                AgentAttemptReplacement.NONE,
+            )
+        )
+        assert isinstance(already_busy, AgentAttemptCancellationAccepted)
+        assert already_busy.attempt.state is AgentAttemptState.CANCEL_REQUESTED
+
+        conflict = store.request_run_cancellation(
+            CancelRunRequest(
+                execution.request.run_id,
+                "operator-foreign-key-1",
+                execution.request.node_execution_id,
+            )
+        )
+
+        assert isinstance(conflict, RunCancellationCommandConflict)
+        assert _cancel_event_kinds(runtime.engine) == [
+            RunEventKind.AGENT_CANCEL_REQUESTED.value
+        ]
+    finally:
+        runtime.close()
+
+
+def test_a_stale_node_execution_id_is_refused_between_nodes(tmp_path: Path) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "run-cancel/stale-fence")
+        )
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        store.prepare(execution)
+        stale_fence = NodeExecutionId.for_node(
+            execution.request.run_id,
+            execution.request.workflow_revision_hash,
+            "done",
+        )
+
+        result = store.request_run_cancellation(
+            CancelRunRequest(execution.request.run_id, "operator-stale-1", stale_fence)
+        )
+
+        assert result == RunCancellationNotCancellable(
+            RunCancellationRefusal.BETWEEN_NODES
+        )
+        assert _cancel_event_kinds(runtime.engine) == []
+    finally:
+        runtime.close()
+
+
+def test_a_run_that_never_existed_is_named_missing(tmp_path: Path) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+
+        result = store.request_run_cancellation(
+            CancelRunRequest(
+                RunId("run-cancel/never-existed"),
+                "operator-missing-1",
+                NodeExecutionId("a" * 64),
+            )
+        )
+
+        assert result == RunCancellationRunMissing()
+    finally:
+        runtime.close()
+
+
+def test_a_stale_round_fence_is_refused_without_stopping_the_live_round(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """D2's fence binds the round: a command minted before a loop jump is stale.
+
+    The confirmation the operator read in round one names round one's
+    `implement`. After the loop turns to round two, that exact fence is no
+    longer the run's live execution -- refused as `BETWEEN_NODES`, not
+    accepted against the wrong round's attempt. Releasing the gate afterward
+    and watching the loop run to its declared end is the proof that the
+    refused command never touched round two's attempt at all.
+    """
+    started_runtime, recording = runtime
+    entered, release, command = gate_execution(LOOP_RUN, "implement", 2)
+    assert recording.opened is not None
+    recording.opened.command = command
+    workflow = start_loop(started_runtime)
+    started_runtime.launch()
+    assert entered.wait(timeout=10), "the loop never entered round two"
+
+    store = DbosAgentAttemptStore(
+        started_runtime.engine, started_runtime.settings.application_version
+    )
+    stale_round_fence = NodeExecutionId.for_node(
+        LOOP_RUN, workflow.revision_hash, "implement", 1
+    )
+    result = store.request_run_cancellation(
+        CancelRunRequest(LOOP_RUN, "operator-round-fence-1", stale_round_fence)
+    )
+    finish_gated_node(LOOP_RUN, workflow, "implement", 2, release)
+
+    assert result == RunCancellationNotCancellable(RunCancellationRefusal.BETWEEN_NODES)
+    wait_for_state(started_runtime, RunState.COMPLETED)
+
+
+def test_terminal_retry_is_canonical_and_writes_no_new_event(tmp_path: Path) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "run-cancel/terminal-retry")
+        )
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        store.prepare(execution)
+        request = CancelRunRequest(
+            execution.request.run_id,
+            "operator-terminal-retry-1",
+            execution.request.node_execution_id,
+        )
+        accepted = store.request_run_cancellation(request)
+        assert isinstance(accepted, RunCancellationAccepted)
+        cancellation = accepted.attempt.cancellation
+        assert cancellation is not None
+        cleanup_request = CancelAgentAttemptRequest(
+            execution.request.run_id,
+            accepted.attempt.attempt_id,
+            cancellation.command_id,
+            cancellation.expected_attempt_state_version,
+            cancellation.replacement,
+        )
+        terminal = store.attest_cancellation_cleanup(
+            cleanup_request,
+            AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
+            None,
+            None,
+        )
+        assert terminal.attempt.state is AgentAttemptState.CANCELLED
+
+        retry = store.request_run_cancellation(request)
+
+        with runtime.engine.connect() as connection:
+            canonical_run = load_run(connection, execution.request.run_id)
+        assert retry == RunCancellationTerminalRetry(canonical_run)
+        # #439 P3: the attestation that ended the attempt already lifted the
+        # run, in the same transaction -- the retry names that same ending.
+        assert canonical_run.state is RunState.CANCELLED
+        assert _cancel_event_kinds(runtime.engine) == [
+            RunEventKind.AGENT_CANCEL_REQUESTED.value,
+            RunEventKind.AGENT_CANCELLED.value,
+        ]
+    finally:
+        runtime.close()
+
+
+def test_runner_success_overtakes_an_accepted_run_cancel_command(
+    tmp_path: Path,
+) -> None:
+    runtime, store, execution, binding, invocation = _armed(
+        tmp_path, "run-cancel/runner-success-wins"
+    )
+    try:
+        request = CancelRunRequest(
+            execution.request.run_id,
+            "operator-runner-success-1",
+            execution.request.node_execution_id,
+        )
+        accepted = store.request_run_cancellation(request)
+        assert isinstance(accepted, RunCancellationAccepted)
+        assert accepted.attempt.state is AgentAttemptState.CANCEL_REQUESTED
+
+        committed = store.commit_runner_terminal_evidence(
+            execution,
+            RunnerTerminalEvidenceEnvelope(
+                binding,
+                invocation,
+                RunnerProviderResult(AgentExecutionResult(b"finished in hand")),
+            ),
+        )
+        assert isinstance(committed, RunnerTerminalEvidenceCommitted)
+        assert committed.attempt.state is AgentAttemptState.SUCCEEDED
+        assert committed.attempt.cancellation is None
+
+        retried = store.request_run_cancellation(request)
+
+        assert isinstance(retried, RunCancellationOvertakenBySuccess)
+        # The run kept going on the success; this command never ended it.
+        assert retried.run.state is RunState.STARTED
+        assert _cancel_event_kinds(runtime.engine) == [
+            RunEventKind.AGENT_CANCEL_REQUESTED.value,
+            RunEventKind.AGENT_COMPLETED.value,
+        ]
+    finally:
+        runtime.close()
+
+
+def test_the_legacy_carrier_lets_an_accepted_cancel_win_over_a_late_success(
+    tmp_path: Path,
+) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "run-cancel/legacy-cancel-wins")
+        )
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        store.prepare(execution)
+        request = CancelRunRequest(
+            execution.request.run_id,
+            "operator-legacy-wins-1",
+            execution.request.node_execution_id,
+        )
+
+        accepted = store.request_run_cancellation(request)
+        assert isinstance(accepted, RunCancellationAccepted)
+        assert accepted.attempt.state is AgentAttemptState.CANCEL_REQUESTED
+
+        with pytest.raises(RunTransitionConflict, match="armed current attempt"):
+            store.complete_success(execution, AgentExecutionResult(b"too late"))
+    finally:
+        runtime.close()
+
+
+def test_the_legacy_carrier_lifts_the_run_cancelled_with_its_operator_receipt(
+    tmp_path: Path,
+) -> None:
+    """#439 P3: the cleanup attestation that ends the attempt also ends the run.
+
+    Both write in the one transaction `attest_cancellation_cleanup` already
+    holds -- the `cancelled` receipt names the process disposition in words,
+    and the run's own terminal word is `CANCELLED`, not `FAILED`: it stood
+    still because the operator asked, not because anything failed.
+    """
+    runtime, store, execution = _v3_prepared(tmp_path, "run-cancel/legacy-receipt")
+    try:
+        request = CancelRunRequest(
+            execution.request.run_id,
+            "operator-legacy-receipt-1",
+            execution.request.node_execution_id,
+        )
+        accepted = store.request_run_cancellation(request)
+        assert isinstance(accepted, RunCancellationAccepted)
+        cancellation = accepted.attempt.cancellation
+        assert cancellation is not None
+
+        terminal = store.attest_cancellation_cleanup(
+            CancelAgentAttemptRequest(
+                execution.request.run_id,
+                accepted.attempt.attempt_id,
+                cancellation.command_id,
+                cancellation.expected_attempt_state_version,
+                cancellation.replacement,
+            ),
+            AgentAttemptCancellationDisposition.EXITED_BEFORE_SIGNAL,
+            _LEGACY_OWNER,
+            _LEGACY_GENERATION,
+        )
+        assert terminal.attempt.state is AgentAttemptState.CANCELLED
+
+        with runtime.engine.connect() as connection:
+            canonical_run = load_run(connection, execution.request.run_id)
+        assert canonical_run.state is RunState.CANCELLED
+        assert canonical_run.terminal_hash is not None
+        assert _node_receipt(runtime.engine, execution.request.node_execution_id) == (
+            PersistedReceiptDisposition.CANCELLED.value,
+            "cancelled-by-operator: EXITED_BEFORE_SIGNAL",
+        )
+    finally:
+        runtime.close()
+
+
+def test_a_parent_death_disposition_still_lifts_the_run_cancelled_not_failed(
+    tmp_path: Path,
+) -> None:
+    """Fenster (i): the attempt ends `INTERRUPTED`, the run still says `CANCELLED`.
+
+    `OWNER_LOST_AFTER_PARENT_DEATH` is the one disposition that leaves the
+    attempt `INTERRUPTED` rather than `CANCELLED` -- the two-axis doctrine
+    (#439 Bauplan P3) keeps the run's own word bound to the operator's command
+    identity regardless, so it never reads `FAILED` for a run the operator
+    itself stopped.
+    """
+    runtime, store, execution = _v3_prepared(tmp_path, "run-cancel/parent-death")
+    try:
+        request = CancelRunRequest(
+            execution.request.run_id,
+            "operator-parent-death-1",
+            execution.request.node_execution_id,
+        )
+        accepted = store.request_run_cancellation(request)
+        assert isinstance(accepted, RunCancellationAccepted)
+        cancellation = accepted.attempt.cancellation
+        assert cancellation is not None
+
+        terminal = store.attest_cancellation_cleanup(
+            CancelAgentAttemptRequest(
+                execution.request.run_id,
+                accepted.attempt.attempt_id,
+                cancellation.command_id,
+                cancellation.expected_attempt_state_version,
+                cancellation.replacement,
+            ),
+            AgentAttemptCancellationDisposition.OWNER_LOST_AFTER_PARENT_DEATH,
+            _LEGACY_OWNER,
+            _LEGACY_GENERATION,
+        )
+        assert terminal.attempt.state is AgentAttemptState.INTERRUPTED
+
+        with runtime.engine.connect() as connection:
+            canonical_run = load_run(connection, execution.request.run_id)
+        assert canonical_run.state is RunState.CANCELLED
+        assert _node_receipt(runtime.engine, execution.request.node_execution_id) == (
+            PersistedReceiptDisposition.CANCELLED.value,
+            "cancelled-by-operator: OWNER_LOST_AFTER_PARENT_DEATH",
+        )
+    finally:
+        runtime.close()
+
+
+def test_the_runner_carrier_lifts_the_run_cancelled_with_the_same_receipt(
+    tmp_path: Path,
+) -> None:
+    """The runner-bound cleanup path (`_commit_runner_cancellation`) lifts the
+    run exactly like the legacy carrier's own attestation does -- one command
+    identity, one run ending, on either carrier (#439 Bauplan P3).
+    """
+    runtime, store, execution, binding, invocation = _v3_armed(
+        tmp_path, "run-cancel/runner-receipt"
+    )
+    try:
+        request = CancelRunRequest(
+            execution.request.run_id,
+            "operator-runner-receipt-1",
+            execution.request.node_execution_id,
+        )
+        accepted = store.request_run_cancellation(request)
+        assert isinstance(accepted, RunCancellationAccepted)
+        cancellation = accepted.attempt.cancellation
+        assert cancellation is not None
+
+        committed = store.commit_runner_terminal_evidence(
+            execution,
+            RunnerTerminalEvidenceEnvelope(
+                binding,
+                invocation,
+                RunnerCancellation(
+                    cancellation.command_id,
+                    RunnerCancellationObservation.REAPED_AFTER_TERM,
+                ),
+            ),
+        )
+        assert isinstance(committed, RunnerTerminalEvidenceCommitted)
+        assert committed.attempt.state is AgentAttemptState.CANCELLED
+
+        with runtime.engine.connect() as connection:
+            canonical_run = load_run(connection, execution.request.run_id)
+        assert canonical_run.state is RunState.CANCELLED
+        assert _node_receipt(runtime.engine, execution.request.node_execution_id) == (
+            PersistedReceiptDisposition.CANCELLED.value,
+            "cancelled-by-operator: REAPED_AFTER_TERM",
+        )
+    finally:
+        runtime.close()
+
+
+def test_an_attempt_route_cancel_never_lifts_the_run(tmp_path: Path) -> None:
+    """The command's *identity*, not the resulting attempt state, gates the lift.
+
+    A cancellation submitted through the attempt route (#15) reaches the same
+    `CANCELLED` attempt state an operator run-cancel does, but its command id
+    was never minted by `RunCancelCommandId.for_key` -- `is_operator_run_cancel`
+    refuses it, so #439 P3's lift leaves this run exactly `STARTED` and this
+    node exactly receipt-less, unchanged from before P3 existed.
+    """
+    runtime, store, execution = _v3_prepared(tmp_path, "run-cancel/attempt-route")
+    try:
+        prepared = store.load(execution.attempt_id)
+        command = CancelAgentAttemptRequest(
+            execution.request.run_id,
+            execution.attempt_id,
+            "attempt-route-command",
+            prepared.state_version,
+            AgentAttemptReplacement.NONE,
+        )
+        accepted = store.request_cancellation(command)
+        assert isinstance(accepted, AgentAttemptCancellationAccepted)
+
+        terminal = store.attest_cancellation_cleanup(
+            command,
+            AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
+            _LEGACY_OWNER,
+            _LEGACY_GENERATION,
+        )
+        assert terminal.attempt.state is AgentAttemptState.CANCELLED
+
+        with runtime.engine.connect() as connection:
+            canonical_run = load_run(connection, execution.request.run_id)
+        assert canonical_run.state is RunState.STARTED
+        assert (
+            _node_receipt(runtime.engine, execution.request.node_execution_id) is None
+        )
+    finally:
+        runtime.close()
+
+
+def test_a_late_completion_after_the_lift_stays_loud_and_does_not_revive_the_run(
+    tmp_path: Path,
+) -> None:
+    """Absturzfenster (ii): the losing driver's late write ends loud, not silent.
+
+    By the time a driver whose node the operator already cancelled reaches
+    its own completion write, the run is no longer `STARTED` -- `complete_success`
+    refuses with `RunTransitionConflict` rather than writing a second event or
+    reopening the run #439 P3 already closed.
+    """
+    runtime, store, execution = _v3_prepared(tmp_path, "run-cancel/late-completion")
+    try:
+        request = CancelRunRequest(
+            execution.request.run_id,
+            "operator-late-completion-1",
+            execution.request.node_execution_id,
+        )
+        accepted = store.request_run_cancellation(request)
+        assert isinstance(accepted, RunCancellationAccepted)
+        cancellation = accepted.attempt.cancellation
+        assert cancellation is not None
+        store.attest_cancellation_cleanup(
+            CancelAgentAttemptRequest(
+                execution.request.run_id,
+                accepted.attempt.attempt_id,
+                cancellation.command_id,
+                cancellation.expected_attempt_state_version,
+                cancellation.replacement,
+            ),
+            AgentAttemptCancellationDisposition.EXITED_BEFORE_SIGNAL,
+            _LEGACY_OWNER,
+            _LEGACY_GENERATION,
+        )
+        before_events = _cancel_event_kinds(runtime.engine)
+
+        with pytest.raises(RunTransitionConflict, match="armed current attempt"):
+            store.complete_success(execution, AgentExecutionResult(b"too late"))
+
+        assert _cancel_event_kinds(runtime.engine) == before_events
+        with runtime.engine.connect() as connection:
+            canonical_run = load_run(connection, execution.request.run_id)
+        assert canonical_run.state is RunState.CANCELLED
+    finally:
+        runtime.close()
