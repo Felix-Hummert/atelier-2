@@ -3147,15 +3147,15 @@ test("a waiting V3 run with a boolean answer schema offers decision buttons", as
   }).toPass({ timeout: 15_000 });
 
   /**
-   * #553 names the classification itself a use-case-layer gap the live API
-   * does not close yet: `GET workflow-revisions/{hash}` answers every wait's
-   * schema as `kind: "free"` today (the API layer may not match a port's own
-   * record to resolve and read a schema -- `api-port-record-problems`,
-   * `scripts/check_architecture.py` -- so that classification waits on the
-   * use case that will resolve it). This intercept stands in for that use
-   * case and proves the one contract already built end to end: what the
-   * composer renders once `kind`/`values` say `boolean` or `enum`, not how
-   * the server will one day decide them.
+   * The real route now classifies a published boolean schema as `kind:
+   * "boolean"` on its own -- proven directly against
+   * `GET workflow-revisions/{hash}` by
+   * `test_a_published_wait_schema_reads_back_classified_over_the_real_route`
+   * (tests/integration/test_workflow_v3_publication.py), no intercept. This
+   * intercept stays here anyway, deliberately, so this UI-focused screenshot
+   * test asserts the composer's own contract -- what it renders once
+   * `kind`/`values` say `boolean` -- without depending on the real read
+   * route's timing or schema realism.
    */
   await page.route(`**/atelier/api/v1/workflow-revisions/${revisionHash}`, async (route) => {
     const real = await page.request.get(`${api}/workflow-revisions/${revisionHash}`);

@@ -588,8 +588,10 @@ async def get_revision(
         lambda: context.use_cases.get_workflow_revision(parsed),
     )
     match result:
-        case WorkflowRevisionRead(projection):
-            return workflow_revision_detail_resource(projection)
+        case WorkflowRevisionRead(projection, wait_answer_classifications):
+            return workflow_revision_detail_resource(
+                projection, wait_answer_classifications
+            )
         case WorkflowRevisionNotFound():
             raise ApiProblem("workflow-revision-not-found")
         case ReadUnavailable(detail):

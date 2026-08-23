@@ -25,6 +25,7 @@ from atelier2.api.wire.resources import (
     WorkflowLoopVerdictResourceV3,
     WorkflowNodePreviewResourceV3,
 )
+from atelier2.application.read_workflow_revisions import WaitAnswerClassification
 from tests.scenarios.workflows import (
     V3_DOCUMENT,
     VERDICT_LOOP_DOCUMENT,
@@ -349,12 +350,13 @@ def test_v3_graph_projection_carries_no_loops_when_the_document_declares_none() 
 
 
 def test_v3_graph_projection_names_a_wait_nodes_schema_hull_unresolved() -> None:
-    """Reading the schema's own bytes to say `boolean` or `enum` is #553's named
-    gap: that read needs a `PublishedRevisionResolver` the API layer may not
-    match a port record against (`api-port-record-problems`,
-    `scripts/check_architecture.py`), so until a use case exposes a resolved
-    verdict to this projection, the excerpt echoes the hull unresolved, exactly
-    as `orders` already does, and classifies `free`."""
+    """Reading the schema's own bytes to say `boolean` or `enum` needs a
+    `PublishedRevisionResolver` read the API layer may not make itself by
+    matching a port record (`api-port-record-problems`,
+    `scripts/check_architecture.py`) -- `atelier2.application.read_workflow_revisions`
+    does that read and hands this projection the plain verdict. A caller that
+    supplies none (or one that names no entry for this node) gets the hull
+    unresolved, exactly as `orders` already does, and classifies `free`."""
     document = b"""format_version: 3
 name: Approve or send back
 nodes:
@@ -380,6 +382,70 @@ nodes:
             values=None,
         ),
     )
+
+
+def test_v3_graph_projection_applies_a_supplied_wait_answer_classification() -> None:
+    """The projection never resolves a schema itself; it only ever matches an
+    already-resolved verdict by node id, one wait node classifying and the
+    other -- not named by any supplied verdict -- falling back to `free`."""
+    document = b"""format_version: 3
+name: Ship or hold, or say why
+nodes:
+  - id: ship
+    type: wait
+    prompt: Ship it?
+    outputs:
+      - name: decision
+        schema: {ref: decision, revision: schema-decision}
+  - id: reason
+    type: wait
+    prompt: Say why, freely.
+    outputs:
+      - name: note
+        schema: {ref: note, revision: schema-note}
+"""
+    graph = parse_workflow_document(document)
+
+    resource = graph_resource(
+        graph,
+        (WaitAnswerClassification(node_id="ship", kind="boolean"),),
+    )
+
+    assert isinstance(resource, WorkflowGraphResourceV3)
+    by_node_id = {entry.node_id: entry for entry in resource.wait_answer_schemas}
+    assert by_node_id["ship"].kind == "boolean"
+    assert by_node_id["ship"].values is None
+    assert by_node_id["reason"].kind == "free"
+
+
+def test_v3_graph_projection_applies_a_supplied_enum_classification_with_its_values() -> (
+    None
+):
+    document = b"""format_version: 3
+name: Approve or revise
+nodes:
+  - id: verdict
+    type: wait
+    prompt: Approve or revise?
+    outputs:
+      - name: decision
+        schema: {ref: decision, revision: schema-decision}
+"""
+    graph = parse_workflow_document(document)
+
+    resource = graph_resource(
+        graph,
+        (
+            WaitAnswerClassification(
+                node_id="verdict", kind="enum", values=('"approve"', '"revise"')
+            ),
+        ),
+    )
+
+    assert isinstance(resource, WorkflowGraphResourceV3)
+    entry = resource.wait_answer_schemas[0]
+    assert entry.kind == "enum"
+    assert entry.values == ('"approve"', '"revise"')
 
 
 def test_wait_answer_schema_requires_values_exactly_for_an_enum_kind() -> None:

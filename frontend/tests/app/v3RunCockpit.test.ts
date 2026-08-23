@@ -121,7 +121,7 @@ describe("a version 3 run in the cockpit", () => {
     expect(screen.queryByRole("button", { name: runPageCopy.readAgain })).toBeNull();
   });
 
-  it("shows the run's exact facts inline, honestly omitting a timestamp that has not arrived, with no Exact time reveal left to find", async () => {
+  it("proves(a-run-carries-when-it-started-and-ended): shows the run's exact facts inline, honestly omitting a timestamp that has not arrived, with no reveal to find them behind", async () => {
     render(App, {
       props: { cockpitApi: api(v3Run()), mutationJournal: new MutationJournal(sessionStorage) }
     });

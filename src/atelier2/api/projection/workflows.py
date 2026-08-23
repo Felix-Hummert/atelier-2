@@ -34,7 +34,10 @@ from atelier2.api.wire.resources import (
     WorkflowRevisionDetailResource,
     WorkflowRevisionSummaryResourceV2,
 )
-from atelier2.application.read_workflow_revisions import WorkflowRevisionsDescribed
+from atelier2.application.read_workflow_revisions import (
+    WaitAnswerClassification,
+    WorkflowRevisionsDescribed,
+)
 from atelier2.contracts.effects import (
     EffectReceipt,
     OperatorAuthoritativeAbsence,
@@ -147,30 +150,38 @@ def _node_preview(node: WorkflowNodeV3) -> WorkflowNodePreviewResourceV3:
     )
 
 
-def _wait_answer_schema(node: WaitNodeV3) -> WaitAnswerSchemaResourceV3:
-    """One waiting node's answer schema hull -- `boolean`/`enum` classification is a named gap.
+def _wait_answer_schema(
+    node: WaitNodeV3, classification: WaitAnswerClassification | None
+) -> WaitAnswerSchemaResourceV3:
+    """One waiting node's answer schema: its hull, plus a classification if one arrived.
 
-    `orders` already echoes its own schema hull unresolved, and this excerpt
-    does the same: the wait node's own `ref`/`revision` pin, published exactly
-    as the document wrote it. Reading those bytes to say `boolean` where the
-    top level names `type: boolean`, or `enum` where it names `enum`, needs a
-    `PublishedRevisionResolver` read this projection cannot make: the API
-    layer may hold a port, but it may not name the record kind a port answers
-    with (`api-port-record-problems`, `scripts/check_architecture.py`) --
-    that match belongs to the application layer that already resolves
-    references at run-bind time (`atelier2.application.resolve_references`),
-    not to a wire projection built from the parsed document alone. Until a use
-    case exposes that resolved verdict to this projection, every entry answers
-    `free`, the honest excerpt a hull alone supports, rather than a guess.
+    `orders` already echoes its own schema hull unresolved, and the hull half
+    of this excerpt does the same: the wait node's own `ref`/`revision` pin,
+    published exactly as the document wrote it. The `kind`/`values` half is
+    not this projection's own read -- reading a schema's bytes to say
+    `boolean` or `enum` needs a `PublishedRevisionResolver`, and the API layer
+    may hold a port but may not match the record kind a port answers with
+    (`api-port-record-problems`, `scripts/check_architecture.py`) -- so that
+    read happens once, in the application layer that already resolves
+    references at run-bind time (`atelier2.application.read_workflow_revisions`
+    beside `resolve_references`), and arrives here as `classification`. A
+    caller with nothing resolved (no resolver at hand, or this node simply
+    absent from what was resolved) passes `None`, and this excerpt answers the
+    honest little a hull alone supports: `free`, never a guess.
     """
     output = node.outputs[0]
+    hull = WorkflowDeclaredSchemaResourceV3(
+        ref=output.schema_reference.ref, revision=output.schema_reference.revision
+    )
+    if classification is None:
+        return WaitAnswerSchemaResourceV3(
+            node_id=node.id, schema=hull, kind="free", values=None
+        )
     return WaitAnswerSchemaResourceV3(
         node_id=node.id,
-        schema=WorkflowDeclaredSchemaResourceV3(
-            ref=output.schema_reference.ref, revision=output.schema_reference.revision
-        ),
-        kind="free",
-        values=None,
+        schema=hull,
+        kind=classification.kind,
+        values=classification.values,
     )
 
 
@@ -192,9 +203,14 @@ def _loop_resource(loop: LoopDeclaration) -> WorkflowLoopResourceV3:
 
 def graph_resource(
     graph: AnyWorkflowDocument,
+    wait_answer_classifications: tuple[WaitAnswerClassification, ...] = (),
 ) -> WorkflowGraphResource | WorkflowGraphResourceV2 | WorkflowGraphResourceV3:
     if isinstance(graph, WorkflowGraphV3):
         executable, not_executable_reason = _executability_of(graph)
+        classified_by_node_id = {
+            classification.node_id: classification
+            for classification in wait_answer_classifications
+        }
         return WorkflowGraphResourceV3(
             workflow_format_version=3,
             executable=executable,
@@ -216,7 +232,7 @@ def graph_resource(
                 for entry in graph.graph_inputs
             ),
             wait_answer_schemas=tuple(
-                _wait_answer_schema(node)
+                _wait_answer_schema(node, classified_by_node_id.get(node.id))
                 for node in graph.nodes
                 if isinstance(node, WaitNodeV3)
             ),
@@ -279,11 +295,12 @@ def workflow_revision_page_resource(
 
 def workflow_revision_detail_resource(
     projection: WorkflowRevisionProjection,
+    wait_answer_classifications: tuple[WaitAnswerClassification, ...] = (),
 ) -> WorkflowRevisionDetailResource:
     return WorkflowRevisionDetailResource(
         workflow_revision_hash=projection.revision.revision_hash.value,
         document_base64=encode_canonical_base64(projection.revision.document),
-        graph=graph_resource(projection.graph),
+        graph=graph_resource(projection.graph, wait_answer_classifications),
     )
 
 

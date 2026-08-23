@@ -418,16 +418,17 @@ nodes:
 
 
 @pytest.mark.proves("a-waiting-v3-run-is-answerable-on-its-run-page")
-def test_a_wait_node_publishes_its_answer_schema_hull_even_once_resolvable(
+def test_a_published_wait_schema_reads_back_classified_over_the_real_route(
     runtime: DbosRuntime,
 ) -> None:
-    """The live hole #553 closes: POST the schema, then read the wait node that pins it.
+    """The live hole #553 closes: POST the schema, then GET the wait node that pins it.
 
-    Naming `boolean` or `enum` needs the schema's own bytes -- a read the API
-    layer may not make by matching a port's record directly
-    (`api-port-record-problems`, `scripts/check_architecture.py`) -- so that
-    classification stays a named gap for the use case that will resolve it.
-    What this excerpt already carries, real hash and all, is the hull.
+    Naming `boolean` or `enum` needs the schema's own bytes, and the API layer
+    may not make that read itself by matching a port's record directly
+    (`api-port-record-problems`, `scripts/check_architecture.py`) -- so
+    `atelier2.application.read_workflow_revisions` reads and classifies, and
+    the projection only renders what it hands over. This is the real
+    `GET /workflow-revisions/{hash}` route, the real registry, no intercept.
     """
     client = _client(runtime)
     boolean_schema = client.post(
@@ -435,7 +436,14 @@ def test_a_wait_node_publishes_its_answer_schema_hull_even_once_resolvable(
         content=b'{"type": "boolean"}',
         headers={"content-type": "application/json"},
     ).json()["schema_revision_hash"]
-    document = f"""format_version: 3
+    enum_schema = client.post(
+        API_PREFIX + "/schema-revisions",
+        content=b'{"enum": ["approve", "revise"]}',
+        headers={"content-type": "application/json"},
+    ).json()["schema_revision_hash"]
+
+    def wait_document(schema_revision: str) -> bytes:
+        return f"""format_version: 3
 name: Ship it or hold it
 nodes:
   - id: go
@@ -443,20 +451,38 @@ nodes:
     prompt: Ship it?
     outputs:
       - name: decision
-        schema: {{ref: decision, revision: {boolean_schema}}}
+        schema: {{ref: decision, revision: {schema_revision}}}
 """.encode()
 
-    revision_hash = _publish(client, document).json()["workflow_revision_hash"]
-    graph = client.get(API_PREFIX + f"/workflow-revisions/{revision_hash}").json()[
-        "graph"
+    boolean_revision_hash = _publish(client, wait_document(boolean_schema)).json()[
+        "workflow_revision_hash"
     ]
+    boolean_graph = client.get(
+        API_PREFIX + f"/workflow-revisions/{boolean_revision_hash}"
+    ).json()["graph"]
 
-    assert graph["wait_answer_schemas"] == [
+    assert boolean_graph["wait_answer_schemas"] == [
         {
             "node_id": "go",
             "schema": {"ref": "decision", "revision": boolean_schema},
-            "kind": "free",
+            "kind": "boolean",
             "values": None,
+        }
+    ]
+
+    enum_revision_hash = _publish(client, wait_document(enum_schema)).json()[
+        "workflow_revision_hash"
+    ]
+    enum_graph = client.get(
+        API_PREFIX + f"/workflow-revisions/{enum_revision_hash}"
+    ).json()["graph"]
+
+    assert enum_graph["wait_answer_schemas"] == [
+        {
+            "node_id": "go",
+            "schema": {"ref": "decision", "revision": enum_schema},
+            "kind": "enum",
+            "values": ['"approve"', '"revise"'],
         }
     ]
 
