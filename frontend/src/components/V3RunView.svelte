@@ -588,13 +588,12 @@
 
   .run-head h1 {
     margin: 0;
-    font-size: clamp(1.6rem, 5vw, 2.4rem);
   }
 
   .run-description {
     margin: 0;
     max-width: var(--reading-width);
-    color: var(--muted);
+    color: var(--ink-dim);
   }
 
   .run-standing {
@@ -611,34 +610,34 @@
 
   .run-facts {
     margin: 0;
-    color: var(--muted);
+    color: var(--ink-dim);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
   }
 
   .run-standing-running {
-    color: var(--working);
+    color: var(--signal-live);
   }
 
   .run-standing-waiting {
-    color: var(--danger);
+    color: var(--signal-attention);
   }
 
   .run-standing-failed {
-    color: var(--warning);
+    color: var(--signal-failure);
   }
 
   .run-standing-done {
-    color: var(--accent);
+    color: var(--signal-done);
   }
 
   .stopped {
     margin: 0;
     padding: var(--space-3) var(--space-4);
-    border-left: 4px solid var(--warning);
+    border-left: var(--edge-mark) solid var(--signal-failure);
     border-radius: var(--r);
-    background: color-mix(in srgb, var(--warning) 12%, transparent);
-    color: var(--warning);
+    background: color-mix(in srgb, var(--signal-failure) var(--wash), transparent);
+    color: var(--signal-failure);
     overflow-wrap: anywhere;
   }
 
@@ -648,7 +647,7 @@
     align-items: center;
     gap: var(--space-3);
     margin: 0;
-    color: var(--muted);
+    color: var(--ink-dim);
     font-size: var(--text-sm);
   }
 
@@ -664,7 +663,7 @@
     display: flex;
     align-items: center;
     width: 100%;
-    border: 1px solid var(--line);
+    border: var(--edge) solid var(--line);
     background: var(--panel2);
     font: inherit;
     color: inherit;
@@ -672,6 +671,6 @@
   }
 
   .muted {
-    color: var(--muted);
+    color: var(--ink-dim);
   }
 </style>

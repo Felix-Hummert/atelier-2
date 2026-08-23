@@ -66,8 +66,8 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    gap: 0.75rem;
-    min-height: 3.25rem;
+    gap: var(--space-3);
+    min-height: var(--tap);
   }
 
   .read-truth {
@@ -78,16 +78,16 @@
   .read-failure {
     display: inline-flex;
     align-items: center;
-    gap: 0.55rem;
-    color: var(--muted);
+    gap: var(--space-2);
+    color: var(--ink-dim);
   }
 
   .read-failure {
-    color: var(--warning);
+    color: var(--signal-failure);
   }
 
   .read-mark {
-    font-size: 1.25rem;
+    font-size: var(--text-lg);
   }
 
   @media (max-width: 32rem) {

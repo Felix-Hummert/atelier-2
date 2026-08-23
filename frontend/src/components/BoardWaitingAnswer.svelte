@@ -310,11 +310,11 @@
 
   .board-answer-toggle {
     padding: var(--space-1) var(--space-2);
-    border: 1px solid var(--line);
+    border: var(--edge) solid var(--line);
     border-radius: var(--r);
     background: var(--panel2);
     font-size: var(--text-xs);
-    font-weight: 650;
+    font-weight: var(--weight-strong);
     color: inherit;
   }
 
@@ -323,14 +323,14 @@
     gap: var(--space-2);
     margin-top: var(--space-2);
     padding: var(--space-3);
-    border: 1px solid var(--line);
+    border: var(--edge) solid var(--line);
     border-radius: var(--r-lg);
     background: var(--panel2);
   }
 
   .board-answer-status {
     margin: 0;
-    color: var(--muted);
+    color: var(--ink-dim);
     font-size: var(--text-sm);
   }
 
@@ -350,9 +350,9 @@
     display: grid;
     gap: var(--space-1);
     padding: var(--space-2) var(--space-3);
-    border-left: 3px solid var(--danger);
+    border-left: var(--edge-mark) solid var(--signal-failure);
     border-radius: var(--r);
-    background: color-mix(in srgb, var(--danger) 10%, transparent);
+    background: color-mix(in srgb, var(--signal-failure) var(--wash), transparent);
     font-size: var(--text-xs);
   }
 </style>

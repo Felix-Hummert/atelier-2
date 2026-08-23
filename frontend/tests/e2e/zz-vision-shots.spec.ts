@@ -1,7 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
 /**
- * The mockup-comparison screenshots of every surface, at both widths.
+ * The mockup-comparison screenshots of every surface, at both widths and in
+ * both themes.
  *
  * Not a gate: an evidence run the operator asked for (REQ-UIQ-09's ritual).
  * It is skipped unless ATELIER2_SHOT_DIR names where the images go.
@@ -15,12 +16,22 @@ const widths = [
   { name: "390", width: 390, height: 844 }
 ] as const;
 
+/** Light and dark are skinned with one care, so both are photographed. */
+const themes = ["light", "dark"] as const;
+
 async function shoot(page: Page, name: string): Promise<void> {
-  for (const viewport of widths) {
-    await page.setViewportSize({ width: viewport.width, height: viewport.height });
-    await page.waitForTimeout(250);
-    await page.screenshot({ path: `${shotDir}/${name}-${viewport.name}.png`, fullPage: true });
+  for (const theme of themes) {
+    await page.emulateMedia({ colorScheme: theme });
+    for (const viewport of widths) {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await page.waitForTimeout(250);
+      await page.screenshot({
+        path: `${shotDir}/${theme}/${name}-${viewport.name}.png`,
+        fullPage: true
+      });
+    }
   }
+  await page.emulateMedia({ colorScheme: "light" });
 }
 
 async function anyJsonSchema(page: Page): Promise<string> {

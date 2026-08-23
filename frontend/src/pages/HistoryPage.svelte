@@ -168,22 +168,22 @@
 
   .period-chip {
     flex: none;
-    border: 1px solid var(--line);
+    border: var(--edge) solid var(--line);
     border-radius: var(--r-pill);
-    padding: 0.15rem 0.7rem;
+    padding: 0 var(--space-3);
     font-size: var(--text-xs);
-    color: var(--muted);
+    color: var(--ink-dim);
     background: var(--panel2);
   }
 
   .status {
     margin: 0;
-    color: var(--muted);
+    color: var(--ink-dim);
   }
 
   .failure {
     margin: 0;
-    color: var(--danger);
+    color: var(--signal-failure);
   }
 
   .history-empty h2 {
@@ -196,14 +196,14 @@
     gap: var(--space-2) var(--space-3);
     padding: 0 var(--space-4);
     font-size: var(--text-2xs);
-    letter-spacing: 0.12em;
+    letter-spacing: var(--tracking-label);
     text-transform: uppercase;
-    color: var(--muted);
+    color: var(--ink-dim);
   }
 
   .col-name {
     flex: none;
-    width: 16rem;
+    width: var(--name-column);
   }
 
   .col-result {
@@ -234,9 +234,9 @@
     align-items: center;
     min-width: 0;
     gap: var(--space-2) var(--space-3);
-    min-height: 44px;
+    min-height: var(--tap);
     padding: var(--space-3) var(--space-4);
-    border: 1px solid var(--line);
+    border: var(--edge) solid var(--line);
     border-radius: var(--r-lg);
     background: var(--panel2);
     color: inherit;
@@ -246,8 +246,8 @@
 
   .row-name {
     flex: none;
-    font-weight: 650;
-    max-width: 16rem;
+    font-weight: var(--weight-strong);
+    max-width: var(--name-column);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -256,7 +256,7 @@
   .row-result {
     flex: 1;
     min-width: 0;
-    color: var(--muted);
+    color: var(--ink-dim);
     font-size: var(--text-sm);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -264,19 +264,19 @@
   }
 
   .history-row-failed .row-result {
-    color: var(--danger);
+    color: var(--signal-failure);
   }
 
   .row-duration {
     flex: none;
-    color: var(--muted);
+    color: var(--ink-dim);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
   }
 
   .timestampless-hint {
     margin: 0;
-    color: var(--muted);
+    color: var(--ink-dim);
     font-size: var(--text-xs);
   }
 
@@ -300,11 +300,11 @@
 
   @media (max-width: 32rem) {
     .row-name {
-      max-width: 8rem;
+      max-width: var(--name-column-narrow);
     }
 
     .col-name {
-      width: 8rem;
+      width: var(--name-column-narrow);
     }
 
     .history-head-row {
