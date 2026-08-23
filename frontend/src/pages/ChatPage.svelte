@@ -2,12 +2,12 @@
   import { tick } from "svelte";
 
   import { chatPageCopy } from "../lib/chatPageCopy";
-  import { sendChatMessage, type ChatMessage } from "../lib/chatTranscript";
+  import { currentChatTranscript, sendChatTurn, type ChatMessage } from "../lib/chatTranscript";
   import { wrapDisplayCopy } from "../lib/displayCopy";
 
   export let navigate: (path: string) => void;
 
-  let transcript: readonly ChatMessage[] = [];
+  let transcript: readonly ChatMessage[] = currentChatTranscript();
   let typed = "";
   let composer: { focus(): void };
 
@@ -18,7 +18,7 @@
 
   async function send(event: Event): Promise<void> {
     event.preventDefault();
-    const sent = sendChatMessage(transcript, typed);
+    const sent = sendChatTurn(typed);
     if (sent === transcript) return;
     transcript = sent;
     typed = "";

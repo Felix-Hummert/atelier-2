@@ -41,3 +41,23 @@ export function sendChatMessage(
     }
   ];
 }
+
+/**
+ * The conversation as this module holds it, so it outlives the Chat page
+ * component being torn down and rebuilt by in-app rail navigation -- to the
+ * operator that is not "closing the page" the reply promises to keep talking
+ * about (Klarheitsvertrag Punkt 12, Epic #516). A reload starts a fresh
+ * module instance and empties this honestly; carrying a conversation across a
+ * reload is a durable-conversation door owned by #7, not built yet.
+ */
+let moduleTranscript: readonly ChatMessage[] = [];
+
+export function currentChatTranscript(): readonly ChatMessage[] {
+  return moduleTranscript;
+}
+
+/** Sends one turn against the module-owned conversation and returns the result. */
+export function sendChatTurn(typed: string): readonly ChatMessage[] {
+  moduleTranscript = sendChatMessage(moduleTranscript, typed);
+  return moduleTranscript;
+}
