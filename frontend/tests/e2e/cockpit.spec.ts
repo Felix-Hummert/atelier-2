@@ -2898,7 +2898,11 @@ test("Needs you names a run that is waiting for a person, by its catalog name", 
   const needsYou = page.getByRole("region", { name: /^Needs you/ });
   const row = needsYou.getByRole("link", { name: /Waiting in the studio/ });
   await expect(row).toBeVisible();
-  await expect(row).toContainText("Answer");
+  // A V3 wait carries its own inline "Answer here" disclosure inside this same
+  // card (#572, Leonardo-Gate 23.08.): the card names the deed, the row link
+  // itself stays the quiet door to the whole run.
+  const card = row.locator("xpath=ancestor::li[1]");
+  await expect(card.getByRole("button", { name: "Answer here" })).toBeVisible();
   const boardLink = page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: /Board/ });
   await expect(boardLink).toContainText(/[1-9]/);
 

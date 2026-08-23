@@ -30,5 +30,12 @@ export const studioPageCopy = {
   answerHereLooking: "Looking…",
   answerHereUnavailable: "This gate could not be read here.",
   needsWrittenAnswer: "This needs a written answer.",
-  openToAnswer: "Open the run to answer"
+  openToAnswer: "Open the run to answer",
+  /**
+   * The quiet, subordinate door to the whole run, shown beside a card that
+   * already offers its own inline "Answer here" -- distinct wording from
+   * `openToAnswer` on purpose, since this row never lacks an inline answer
+   * to name (Leonardo-Gate 23.08.).
+   */
+  openRun: "Open run"
 } as const;

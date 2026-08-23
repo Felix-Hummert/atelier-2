@@ -347,46 +347,56 @@
             </h2>
             <ul class="board-rows">
               {#each groups[group] as row (row.run.public_run_reference)}
+                {@const inlineAnswer = row.status.kind === "waitingInput" && isRunV3(row.run)}
                 <li>
-                  <a
-                    class="board-row board-row-{row.standing}"
-                    href={runPath(row.run.public_run_reference)}
-                    onclick={open(runPath(row.run.public_run_reference))}
-                  >
-                    <span class="row-mark" aria-hidden="true">{standingMarks[row.standing]}</span>
-                    <span class="row-name">{row.name}</span>
-                    <span class="row-status">
-                      {#if row.status.kind === "waitingInput" || row.status.kind === "waitingReconciliation"}{wrapDisplayCopy(standingWords.waiting)}
-                      {:else if row.status.kind === "running"}{wrapDisplayCopy(standingWords.running)} · {row.status.nodeId}
-                      {:else if row.status.kind === "failed"}{wrapDisplayCopy(standingWords.failed)} · {row.status.nodeId}
-                      {:else if row.status.kind === "cancelled"}{wrapDisplayCopy(standingWords.cancelled)}
-                      {:else}{wrapDisplayCopy(standingWords.done)}{/if}
-                    </span>
-                    {#if row.miniPipeline !== null}
-                      <span class="row-pipeline" aria-hidden="true">
-                        {#each row.miniPipeline as dot (dot.nodeId)}
-                          <i class="pipe-dot pipe-dot-{dot.state}"></i>
-                        {/each}
+                  <div class="board-row board-row-{row.standing}">
+                    <a
+                      class="board-row-link"
+                      href={runPath(row.run.public_run_reference)}
+                      onclick={open(runPath(row.run.public_run_reference))}
+                    >
+                      <span class="row-mark" aria-hidden="true">{standingMarks[row.standing]}</span>
+                      <span class="row-name">{row.name}</span>
+                      <span class="row-status">
+                        {#if row.status.kind === "waitingInput" || row.status.kind === "waitingReconciliation"}{wrapDisplayCopy(standingWords.waiting)}
+                        {:else if row.status.kind === "running"}{wrapDisplayCopy(standingWords.running)} · {row.status.nodeId}
+                        {:else if row.status.kind === "failed"}{wrapDisplayCopy(standingWords.failed)} · {row.status.nodeId}
+                        {:else if row.status.kind === "cancelled"}{wrapDisplayCopy(standingWords.cancelled)}
+                        {:else}{wrapDisplayCopy(standingWords.done)}{/if}
                       </span>
+                      {#if row.miniPipeline !== null}
+                        <span class="row-pipeline" aria-hidden="true">
+                          {#each row.miniPipeline as dot (dot.nodeId)}
+                            <i class="pipe-dot pipe-dot-{dot.state}"></i>
+                          {/each}
+                        </span>
+                      {/if}
+                      {#if row.endedAt !== null}
+                        <span class="row-time">{ageLabel(row.endedAt, now, "ago")}</span>
+                      {/if}
+                      {#if inlineAnswer}
+                        <!-- The inline "Answer here" toggle below is the primary
+                             decision door on this card; this quiet run-path link
+                             is the deliberately subordinate secondary door to the
+                             whole run, not a second equally-weighted answer
+                             control (Leonardo-Gate 23.08.). -->
+                        <span class="row-action row-action-quiet">{wrapDisplayCopy(studioPageCopy.openRun)} →</span>
+                      {:else if row.humanMove !== null}
+                        <span class="row-action">{wrapDisplayCopy(row.humanMove)} →</span>
+                      {:else if row.status.kind === "failed"}
+                        <span class="row-action row-action-bad">{wrapDisplayCopy(studioPageCopy.why)} →</span>
+                      {/if}
+                    </a>
+                    {#if row.status.kind === "waitingInput" && isRunV3(row.run)}
+                      <BoardWaitingAnswer
+                        run={row.run}
+                        {cockpitApi}
+                        {mutationJournal}
+                        onRunRead={(read) => upsertRuns([read])}
+                        {navigate}
+                      />
                     {/if}
-                    {#if row.endedAt !== null}
-                      <span class="row-time">{ageLabel(row.endedAt, now, "ago")}</span>
-                    {/if}
-                    {#if row.humanMove !== null}
-                      <span class="row-action">{wrapDisplayCopy(row.humanMove)} →</span>
-                    {:else if row.status.kind === "failed"}
-                      <span class="row-action row-action-bad">{wrapDisplayCopy(studioPageCopy.why)} →</span>
-                    {/if}
-                  </a>
-                  {#if row.status.kind === "waitingInput" && isRunV3(row.run)}
-                    <BoardWaitingAnswer
-                      run={row.run}
-                      {cockpitApi}
-                      {mutationJournal}
-                      onRunRead={(read) => upsertRuns([read])}
-                      {navigate}
-                    />
-                  {/if}
+                  </div>
                 </li>
               {/each}
             </ul>
@@ -433,7 +443,18 @@
     min-width: 0;
   }
 
+  /* The card frame: everything a row shows -- the navigable summary and, for
+     a boolean/enum wait, its inline answer -- lives inside this one bordered
+     box, never a control floating between cards (Leonardo-Gate 23.08.). */
   .board-row {
+    min-width: 0;
+    border: var(--edge) solid var(--line);
+    border-radius: var(--r-lg);
+    background: var(--panel2);
+    box-shadow: var(--shadow);
+  }
+
+  .board-row-link {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -441,12 +462,8 @@
     gap: var(--space-2) var(--space-3);
     min-height: var(--tap);
     padding: var(--space-3) var(--space-4);
-    border: var(--edge) solid var(--line);
-    border-radius: var(--r-lg);
-    background: var(--panel2);
     color: inherit;
     text-decoration: none;
-    box-shadow: var(--shadow);
   }
 
   .row-mark {
@@ -544,6 +561,15 @@
 
   .row-action-bad {
     color: var(--signal-failure);
+  }
+
+  /* The run-path door stays visible once a boolean/enum wait offers its own
+     inline "Answer here" -- but quiet and unbolded, so it reads as the
+     subordinate way to the whole run, not a second answer control of equal
+     weight (Leonardo-Gate 23.08.). */
+  .row-action-quiet {
+    font-weight: var(--weight-medium);
+    color: var(--ink-dim);
   }
 
   /* Below this width a row cannot hold its sentence beside its marks, so the
