@@ -182,30 +182,30 @@
 
 <style>
   .muted {
-    color: var(--muted);
+    color: var(--ink-dim);
   }
 
   .fact {
-    margin: 0.2rem 0 0;
-    color: var(--muted);
-    font-size: 0.85rem;
+    margin: var(--space-1) 0 0;
+    color: var(--ink-dim);
+    font-size: var(--text-xs);
   }
 
   .note {
-    margin: 0.15rem 0 0;
-    font-size: 0.72rem;
+    margin: var(--space-1) 0 0;
+    font-size: var(--text-2xs);
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--warning);
+    letter-spacing: var(--tracking-label);
+    color: var(--signal-attention);
   }
 
   .failure {
-    color: var(--danger);
+    color: var(--signal-failure);
   }
 
   .empty-title {
-    margin: 0 0 0.2rem;
-    font-weight: 600;
+    margin: 0 0 var(--space-1);
+    font-weight: var(--weight-strong);
   }
 
   .detail-head {
@@ -215,21 +215,15 @@
     gap: var(--space-5);
   }
 
+  /* Shape and colour come from the one `button.primary` skin; this button only
+     declares how it sits in the head row, and why it cannot be pressed. */
   .primary {
     flex: none;
-    padding: 0.4rem 1rem;
-    border: 1px solid var(--accent);
-    border-radius: 0.45rem;
-    background: var(--accent);
-    color: var(--accent-ink);
-    font: inherit;
-    font-weight: 600;
-    cursor: pointer;
   }
 
   .primary:disabled {
     background: transparent;
-    color: var(--muted);
+    color: var(--ink-dim);
     border-color: var(--line);
     cursor: not-allowed;
   }

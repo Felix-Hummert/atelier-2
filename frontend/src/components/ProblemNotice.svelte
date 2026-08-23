@@ -41,7 +41,7 @@
   .notice-technical summary {
     display: flex;
     align-items: center;
-    min-height: 44px;
+    min-height: var(--tap);
     cursor: pointer;
   }
 

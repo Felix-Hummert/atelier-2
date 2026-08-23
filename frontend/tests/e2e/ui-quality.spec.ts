@@ -186,7 +186,8 @@ const projectViewports = [
 
 type ProjectRunReply = "common" | "empty" | "loading" | "retained-error";
 
-function projectRuns() {
+/** One run in each standing a surface groups by. */
+function runsOfEveryStanding() {
   return [
     startedRun({ run_id: "running project", public_run_reference: "run1.cnVubmluZyBwcm9qZWN0" }),
     waitingInputRun({ run_id: "waiting project", public_run_reference: "run1.d2FpdGluZyBwcm9qZWN0", latest_event_cursor: null }),
@@ -199,14 +200,14 @@ async function routeProjectReads(page: Page, read: () => ProjectRunReply, loadin
     const reply = read();
     if (reply === "loading") {
       await new Promise<void>((resolve) => { loading.release = resolve; });
-      await route.fulfill({ json: { items: projectRuns(), next_after: null } });
+      await route.fulfill({ json: { items: runsOfEveryStanding(), next_after: null } });
       return;
     }
     if (reply === "retained-error" && loading.retainedReads++ > 0) {
       await route.abort();
       return;
     }
-    await route.fulfill({ json: { items: reply === "empty" ? [] : projectRuns(), next_after: null } });
+    await route.fulfill({ json: { items: reply === "empty" ? [] : runsOfEveryStanding(), next_after: null } });
   });
   await page.route("**/atelier/api/v1/projects", (route) => route.fulfill({ json: { items: [{ public_project_reference: "project1.dGVzdA" }] } }));
   await page.route("**/atelier/api/v1/workflow-revisions*", (route) => route.fulfill({ json: { items: [], next_after_revision_hash: null } }));
@@ -226,13 +227,20 @@ async function expectStudioCopyFits(page: Page, desktop: boolean): Promise<void>
   }
 }
 
+// The skin answers `prefers-color-scheme`, so a contrast that only holds in
+// light is only half a promise: both themes are scanned.
+const themes = ["light", "dark"] as const;
+
 test("proves(core-surfaces-have-no-unnamed-axe-violations): core surfaces have no unnamed axe-core violations", async ({ page }) => {
-  for (const { surface, path, ready, prepare } of surfaces) {
-    await prepare?.(page);
-    await page.goto(path);
-    await ready(page);
-    const unnamed = unnamedAxeViolations(surface, await scanSurface(page), baseline);
-    expect(unnamed, `${surface}: ${JSON.stringify(unnamed, null, 2)}`).toEqual([]);
+  for (const theme of themes) {
+    await page.emulateMedia({ colorScheme: theme });
+    for (const { surface, path, ready, prepare } of surfaces) {
+      await prepare?.(page);
+      await page.goto(path);
+      await ready(page);
+      const unnamed = unnamedAxeViolations(surface, await scanSurface(page), baseline);
+      expect(unnamed, `${surface} in ${theme}: ${JSON.stringify(unnamed, null, 2)}`).toEqual([]);
+    }
   }
 });
 
@@ -264,8 +272,23 @@ test("core surfaces render owned display strings under a pseudo-locale", async (
   }
 });
 
+/**
+ * The Board with work on it is staged, not inherited: the runs earlier specs
+ * start finish on their own clock, so a Board read straight from the fixture
+ * host is populated or empty depending on how long the spec before this one
+ * took.
+ */
+async function stageBoardWithWork(page: Page): Promise<void> {
+  await page.route("**/atelier/api/v1/runs*", (route) => {
+    const state = new URL(route.request().url()).searchParams.get("state");
+    const items = runsOfEveryStanding().filter((run) => run.state === state);
+    return route.fulfill({ json: { items, next_after: null } });
+  });
+}
+
 test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio keeps header and confirmed empty copy visible at desktop and 390px", async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(window, "EventSource", { value: class extends EventTarget { constructor() { super(); queueMicrotask(() => this.dispatchEvent(new Event("open"))); } close() {} } }));
+  await stageBoardWithWork(page);
   for (const viewport of studioViewports) {
     await page.setViewportSize(viewport);
     await page.goto("/atelier?pseudo-locale=1");
@@ -279,6 +302,7 @@ test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio keep
     await page.screenshot({ path: `test-results/studio-common-${viewport.width}.png`, fullPage: true });
   }
 
+  await page.unroute("**/atelier/api/v1/runs*");
   await page.route("**/atelier/api/v1/runs*", (route) => route.fulfill({ json: { items: [], next_after: null } }));
 
   for (const viewport of studioViewports) {
@@ -299,7 +323,7 @@ test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio keep
 });
 
 test("Project keeps work, absence, loading, and retained failure readable", async ({ page }) => {
-  expect(runPageSchema.safeParse({ items: projectRuns(), next_after: null }).success).toBe(true);
+  expect(runPageSchema.safeParse({ items: runsOfEveryStanding(), next_after: null }).success).toBe(true);
   let reply: ProjectRunReply = "common";
   const loading = { release: () => {}, retainedReads: 0 };
   await routeProjectReads(page, () => reply, loading);

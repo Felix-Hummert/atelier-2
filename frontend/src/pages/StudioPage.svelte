@@ -408,16 +408,16 @@
 
   .catalog-notice {
     margin: 0;
-    color: var(--muted);
+    color: var(--ink-dim);
     font-size: var(--text-xs);
   }
 
   .board-group-title {
     margin: var(--space-4) 0 var(--space-2);
     font-size: var(--text-2xs);
-    letter-spacing: 0.12em;
+    letter-spacing: var(--tracking-label);
     text-transform: uppercase;
-    color: var(--muted);
+    color: var(--ink-dim);
   }
 
   .board-rows {
@@ -439,9 +439,9 @@
     align-items: center;
     min-width: 0;
     gap: var(--space-2) var(--space-3);
-    min-height: 44px;
+    min-height: var(--tap);
     padding: var(--space-3) var(--space-4);
-    border: 1px solid var(--line);
+    border: var(--edge) solid var(--line);
     border-radius: var(--r-lg);
     background: var(--panel2);
     color: inherit;
@@ -454,25 +454,25 @@
   }
 
   .board-row-running .row-mark {
-    color: var(--blue);
+    color: var(--signal-live);
   }
 
   .board-row-waiting .row-mark {
-    color: var(--amber);
+    color: var(--signal-attention-mark);
   }
 
   .board-row-failed .row-mark {
-    color: var(--danger);
+    color: var(--signal-failure);
   }
 
   .board-row-done .row-mark {
-    color: var(--accent);
+    color: var(--signal-quiet);
   }
 
   .row-name {
     flex: none;
-    font-weight: 650;
-    max-width: 16rem;
+    font-weight: var(--weight-strong);
+    max-width: var(--name-column);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -481,7 +481,7 @@
   .row-status {
     flex: 1;
     min-width: 0;
-    color: var(--muted);
+    color: var(--ink-dim);
     font-size: var(--text-sm);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -489,13 +489,13 @@
   }
 
   .board-row-failed .row-status {
-    color: var(--danger);
+    color: var(--signal-failure);
   }
 
   .row-pipeline {
     display: inline-flex;
     flex: none;
-    gap: 0.26rem;
+    gap: var(--space-1);
     align-items: center;
   }
 
@@ -504,56 +504,60 @@
      on the run page itself -- one convention, not two. */
   .pipe-dot {
     display: inline-block;
-    width: 0.54rem;
-    height: 0.54rem;
+    width: var(--dot);
+    height: var(--dot);
     border-radius: 50%;
   }
 
-  .pipe-dot-queued {
-    background: var(--queued);
+  .pipe-dot-queued,
+  .pipe-dot-succeeded,
+  .pipe-dot-cancelled {
+    background: var(--signal-quiet);
   }
 
   .pipe-dot-working {
-    background: var(--warning);
+    background: var(--signal-live);
   }
 
   .pipe-dot-needs_you {
-    background: var(--danger);
-  }
-
-  .pipe-dot-succeeded {
-    background: var(--accent);
+    background: var(--signal-attention-mark);
   }
 
   .pipe-dot-failed,
   .pipe-dot-interrupted {
-    background: var(--warning);
-  }
-
-  .pipe-dot-cancelled {
-    background: var(--queued);
+    background: var(--signal-failure);
   }
 
   .row-time {
     flex: none;
-    color: var(--muted);
+    color: var(--ink-dim);
     font-size: var(--text-xs);
   }
 
   .row-action {
     flex: none;
-    font-weight: 650;
+    font-weight: var(--weight-strong);
     font-size: var(--text-xs);
     color: var(--accent);
   }
 
   .row-action-bad {
-    color: var(--danger);
+    color: var(--signal-failure);
   }
 
+  /* Below this width a row cannot hold its sentence beside its marks, so the
+     sentence takes its own line. What a run is doing is never the part that
+     gets cut (operator ruling 23.08.). */
   @media (max-width: 32rem) {
     .row-name {
-      max-width: 8rem;
+      max-width: var(--name-column-narrow);
+    }
+
+    .row-status {
+      flex-basis: 100%;
+      overflow: visible;
+      white-space: normal;
+      text-overflow: clip;
     }
   }
 </style>
