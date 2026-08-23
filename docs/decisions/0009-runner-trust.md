@@ -214,6 +214,68 @@ Serve becomes the writer — Serve is precisely the component this record refuse
 to trust with the carrier, and being able to ask must never become being able
 to command.
 
+**2026-08-23 amendment (Operator-Ruling, `#540` C-3.3): the launcher protects
+the host, and the console is long-lived.** Three sentences, each carrying a
+consequence this record's implementation must show.
+
+*(a) The boundary is the host, not the Attempt.* Serve writes into the attempt
+root the launcher mounts into Runner containers, so a compromised Serve chooses
+the resource limits and mount targets of **its own** Attempts. No launcher can
+prevent that, and Core-side checks are worthless against a compromised Serve
+because Serve *is* Core — Core-side checks protect against drift and mistakes,
+never against Serve itself. What the launcher's fences do protect is this host:
+the manifest a lease names must be the manifest identity Core bound, and every
+resource number it carries — memory, process limit, CPU quota, scratch size,
+the sum of the tmpfs grants that are host memory, and the journal capacity that
+is host disk — must stay inside bounds the operator declared at start. Both
+fences are therefore **launcher-side**, applied before the first engine call of
+an Attempt, together with the image the lease may start as root over that
+Attempt's volumes.
+
+With them, what a *lease* may ask of this host is bounded in every dimension it
+names. The journal is the one the engine does not enforce: it has to be a
+durable volume so a Runner's own restart finds it, and the local volume driver
+gives such a volume no size, so that capacity is kept by the Runner against its
+own manifest and bounded here by declaration instead. What stays outside this
+sentence is a **Runner image** that ignores its manifest — which is the image
+the operator declared, not one a lease chose.
+
+*(b) "Privately created, therefore policy before reachability" no longer holds
+for the console, and is replaced positively.* The console is started by the
+deployment, on its own base network, long before any Attempt exists; requiring
+a container created reachable by nothing would mean it could never be attached
+to an Attempt at all. The guarantee is restated as two positive sentences that
+are read back out of the engine: an Attempt's own packet-filter chain is
+installed **before** `network connect` puts that Attempt's network into the
+container, and the attachment attestation says the container is attached to the
+declared base network and to exactly one Attempt network — and to nothing else.
+A container the launcher itself creates is still created private and still
+reaches nothing until its Attempt exists; that is now a property of how Runner
+containers are started, not the fence itself. Each Attempt's rules live in a
+chain named after that Attempt, reached from a dispatch chain the base policy
+installs once, and removed whole at release — so a console carries exactly the
+Attempts it currently has, and a second Attempt neither accumulates behind the
+first nor is refused.
+
+*(c) Rejected, with reason.* A per-Attempt **published port** instead of
+attaching the console: it would put Core on an address every one of the host's
+own network neighbours can reach, moving a promise this record makes into the
+host's firewall configuration. A **fully private console behind a proxy**: a
+stronger promise, but one deployment component more, and the operator chose the
+declared base network plus the per-Attempt fence instead. IPv6 gets a blanket
+reject in the base policy and no per-Attempt chain, because Attempt networks
+are IPv4 and no Attempt ever opens an IPv6 path to widen.
+
+**Identity validity is bounded by what it identifies (`#540` C-3.3).** The
+installation's authority stands for about a year, the console's own leaf for
+about a quarter and is renewed by re-running the launcher's
+`issue-console-identity` command, and a Runner's leaf is minted for the attempt
+span the manifest Core selected declares — the same span the Runner's own
+session deadline runs on, so an invocation that is over holds a key that opens
+nothing. A launcher refuses to serve at all when the console identity it is
+pointed at has already expired, because that failure would otherwise appear
+inside every Attempt as an unreadable handshake.
+
 ### 3. Operator authentication gates every exposure beyond this machine
 
 The API gains an authenticated **operator principal** before any exposure that
