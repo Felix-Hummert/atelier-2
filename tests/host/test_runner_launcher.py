@@ -9,20 +9,24 @@ authority is real: identity is the one thing a fake would stop proving.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pytest
+from cryptography import x509
 
 from atelier2.adapters.docker_carrier import (
+    AttemptAttachment,
+    AttemptChains,
     AttemptNetwork,
     CarrierRefusal,
-    ContainerRole,
     ContainerSpec,
     MountRight,
     TmpfsVolumeOptions,
+    attempt_chains,
 )
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
@@ -32,6 +36,7 @@ from atelier2.contracts.agent_attempts import (
 from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.contracts.runner_manifests import (
     CANDIDATE_CPU_PERIOD,
+    CANDIDATE_SCRATCH_BYTES,
     CANDIDATE_WORKSPACE_BYTES,
     RunnerManifestV1,
     RunnerPathRight,
@@ -47,18 +52,24 @@ from atelier2.host.runner_launcher import (
     RunnerLauncher,
     RunnerLease,
     RunnerLeaseValidation,
+    RunnerManifestBounds,
     admitted_attempt_root,
+    admitted_console_identity,
+    main,
     runner_container_spec,
+    single_launcher,
 )
 
 _RUNNER_IMAGE = "atelier2-runner-candidate"
 _SERVE_CONTAINER = "atelier2-console"
+_CONSOLE_NETWORK = "atelier2-live_serve"
 _SUBNET = "10.244.9.0/24"
 _INVOCATION = "invocation-one"
-_LEASE_ID = "lease-one"
+_LEASE_ID = "a" * 64
+_SECOND_LEASE_ID = "b" * 64
 
 
-def _manifest() -> RunnerManifestV1:
+def _manifest(**overrides: Any) -> RunnerManifestV1:
     return candidate_runner_manifest(
         source_commit="a" * 40,
         image_digest="sha256:" + "b" * 64,
@@ -68,16 +79,16 @@ def _manifest() -> RunnerManifestV1:
         provider_id="fake-free",
         auth_mode="api_key",
         requested_capability="headless",
+        **overrides,
     )
 
 
-def _binding() -> RunnerGenerationBinding:
-    manifest = _manifest()
+def _binding(manifest: RunnerManifestV1 | None = None) -> RunnerGenerationBinding:
     return RunnerGenerationBinding(
         AgentAttemptId("a" * 64),
         AgentExecutionRequestHash("c" * 64),
         RunnerGenerationId("generation-one"),
-        runner_manifest_id(manifest),
+        runner_manifest_id(manifest if manifest is not None else _manifest()),
     )
 
 
@@ -135,16 +146,19 @@ class RecordingCarrier:
 
     document: dict[str, Any]
     runner_exits: list[int]
+    offer: bytes = json.dumps({"invocation_id": _INVOCATION}).encode("utf-8")
     journal_records: list[bool] = field(default_factory=list)
     delivery_refusal: Exception | None = None
+    policy_removal_refusal: Exception | None = None
     created: dict[str, list[str]] = field(
         default_factory=lambda: {"containers": [], "volumes": [], "networks": []}
     )
     removed: dict[str, list[str]] = field(
         default_factory=lambda: {"containers": [], "volumes": [], "networks": []}
     )
-    attached: list[tuple[str, str]] = field(default_factory=list)
+    attached: list[tuple[str, frozenset[str]]] = field(default_factory=list)
     policed: list[str] = field(default_factory=list)
+    unpoliced: list[tuple[str, AttemptChains]] = field(default_factory=list)
     handoffs: list[list[str]] = field(default_factory=list)
     owned: list[str] = field(default_factory=list)
     delivered_identity: bytes = b""
@@ -157,16 +171,17 @@ class RecordingCarrier:
         return AttemptNetwork(name, _SUBNET)
 
     def attach_policed_container(
-        self, container: str, network: AttemptNetwork, role: ContainerRole
+        self, container: str, attachment: AttemptAttachment
     ) -> None:
         self.operations.append("attach")
         self.policed.append(container)
-        self.attached.append((container, network.name))
+        self.attached.append((container, attachment.attached_networks()))
 
-    def install_attempt_policy(
-        self, container: str, subnet: str, role: ContainerRole
-    ) -> None:
-        self.policed.append(container)
+    def remove_attempt_policy(self, container: str, chains: AttemptChains) -> None:
+        if self.policy_removal_refusal is not None:
+            raise self.policy_removal_refusal
+        self.operations.append("remove-policy")
+        self.unpoliced.append((container, chains))
 
     def create_volume(
         self, name: str, label: str, tmpfs: TmpfsVolumeOptions | None = None
@@ -177,13 +192,13 @@ class RecordingCarrier:
         self.owned.append(name)
 
     def start_policed_container(
-        self, spec: ContainerSpec, network: AttemptNetwork, role: ContainerRole
+        self, spec: ContainerSpec, attachment: AttemptAttachment
     ) -> str:
         self.operations.append("start-policed")
         self.runner_specification = spec
         self.created["containers"].append(spec.name)
         self.policed.append(spec.name)
-        self.attached.append((spec.name, network.name))
+        self.attached.append((spec.name, attachment.attached_networks()))
         return str(self.document["Id"])
 
     def restart_private_container(self, container: str) -> None:
@@ -214,7 +229,7 @@ class RecordingCarrier:
         maximum_bytes: int,
         deadline_seconds: float,
     ) -> bytes:
-        return json.dumps({"invocation_id": _INVOCATION}).encode("utf-8")
+        return self.offer
 
     def run_receiving_stdin(self, spec: ContainerSpec, stdin: bytes) -> None:
         self.delivered_identity = stdin
@@ -253,13 +268,17 @@ def _attempt_directories(root: Path) -> Path:
 
 
 def _lease(
-    root: Path, manifest: RunnerManifestV1 | None = None, lease_id: str = _LEASE_ID
+    root: Path,
+    manifest: RunnerManifestV1 | None = None,
+    lease_id: str = _LEASE_ID,
+    runner_image: str = _RUNNER_IMAGE,
+    binding: RunnerGenerationBinding | None = None,
 ) -> RunnerLease:
     _attempt_directories(root)
     return RunnerLease(
         lease_id,
-        _binding(),
-        _RUNNER_IMAGE,
+        binding if binding is not None else _binding(),
+        runner_image,
         manifest if manifest is not None else _manifest(),
         _SERVE_CONTAINER,
         root / "handoff",
@@ -269,8 +288,16 @@ def _lease(
     )
 
 
-def _validation(root: Path) -> RunnerLeaseValidation:
-    return RunnerLeaseValidation(root, _SERVE_CONTAINER)
+def _validation(
+    root: Path, bounds: RunnerManifestBounds | None = None
+) -> RunnerLeaseValidation:
+    return RunnerLeaseValidation(
+        root,
+        _SERVE_CONTAINER,
+        _CONSOLE_NETWORK,
+        _RUNNER_IMAGE,
+        bounds if bounds is not None else RunnerManifestBounds(),
+    )
 
 
 def _launcher(
@@ -374,25 +401,71 @@ def test_a_lease_a_dead_launcher_left_claimed_is_abandoned_with_its_objects(
     tmp_path: Path,
 ) -> None:
     """An Attempt that may already have run is never silently run again: what
-    it left on the host is removed, and the lease goes back to its owner."""
+    it left on the host is removed -- including in the console, which outlives
+    it -- and the lease goes back to its owner."""
+    interrupted = "f" * 64
     directory = tmp_path / "leases"
     FileRunnerLeaseSource(directory, _validation(tmp_path))
-    (directory / "claimed" / "interrupted.json").write_text("{}", encoding="utf-8")
+    (directory / "claimed" / f"{interrupted}.json").write_text("{}", encoding="utf-8")
     carrier = RecordingCarrier(_attested_document(_manifest()), [])
-    carrier.created["containers"].append("atelier2-attempt-interrupted-runner")
-    carrier.created["volumes"].append("atelier2-attempt-interrupted-journal")
-    carrier.created["networks"].append("atelier2-attempt-interrupted")
+    carrier.created["containers"].append(f"atelier2-attempt-{interrupted}-runner")
+    carrier.created["volumes"].append(f"atelier2-attempt-{interrupted}-journal")
+    carrier.created["networks"].append(f"atelier2-attempt-{interrupted}")
     launcher, announced = _launcher(
         tmp_path, carrier, FileRunnerLeaseSource(directory, _validation(tmp_path))
     )
 
     launcher.reconcile_abandoned_attempts()
 
-    assert "reconciled-attempt=interrupted" in announced
-    assert carrier.removed["containers"] == ["atelier2-attempt-interrupted-runner"]
-    assert carrier.removed["volumes"] == ["atelier2-attempt-interrupted-journal"]
-    assert carrier.removed["networks"] == ["atelier2-attempt-interrupted"]
-    assert (directory / "released" / "interrupted.json").is_file()
+    assert f"reconciled-attempt={interrupted}" in announced
+    assert carrier.unpoliced == [(_SERVE_CONTAINER, attempt_chains(interrupted))]
+    assert carrier.removed["containers"] == [f"atelier2-attempt-{interrupted}-runner"]
+    assert carrier.removed["volumes"] == [f"atelier2-attempt-{interrupted}-journal"]
+    assert carrier.removed["networks"] == [f"atelier2-attempt-{interrupted}"]
+    assert (directory / "released" / f"{interrupted}.json").is_file()
+
+
+def test_a_claimed_document_nobody_named_a_lease_removes_nothing(
+    tmp_path: Path,
+) -> None:
+    """A lease directory is written by the same untrusted writer at both ends.
+    A claimed name that is not a lease id never named an object this launcher
+    created, and it never becomes a label or a chain name either."""
+    directory = tmp_path / "leases"
+    FileRunnerLeaseSource(directory, _validation(tmp_path))
+    (directory / "claimed" / "; rm -rf .json").write_text("{}", encoding="utf-8")
+    carrier = RecordingCarrier(_attested_document(_manifest()), [])
+    carrier.created["containers"].append("atelier2-console")
+    launcher, announced = _launcher(
+        tmp_path, carrier, FileRunnerLeaseSource(directory, _validation(tmp_path))
+    )
+
+    launcher.reconcile_abandoned_attempts()
+
+    assert any("lease-name-is-not-a-lease-id-form" in line for line in announced)
+    assert carrier.removed["containers"] == []
+    assert carrier.unpoliced == []
+
+
+def test_a_console_that_is_gone_does_not_stop_a_launcher_from_starting(
+    tmp_path: Path,
+) -> None:
+    """Residue from a previous deployment is reported and stepped over: a
+    launcher refusing to start over a console that no longer exists would turn
+    a leftover into an outage."""
+    interrupted = "e" * 64
+    directory = tmp_path / "leases"
+    FileRunnerLeaseSource(directory, _validation(tmp_path))
+    (directory / "claimed" / f"{interrupted}.json").write_text("{}", encoding="utf-8")
+    carrier = RecordingCarrier(_attested_document(_manifest()), [])
+    carrier.policy_removal_refusal = CarrierRefusal("carrier-command-refused: no such")
+    launcher, announced = _launcher(
+        tmp_path, carrier, FileRunnerLeaseSource(directory, _validation(tmp_path))
+    )
+
+    launcher.reconcile_abandoned_attempts()
+
+    assert any(line.startswith("reconcile-refused=") for line in announced)
 
 
 def test_an_established_attempt_leaves_nothing_behind(tmp_path: Path) -> None:
@@ -404,7 +477,11 @@ def test_an_established_attempt_leaves_nothing_behind(tmp_path: Path) -> None:
 
     launcher.establish(lease)
 
-    assert (_SERVE_CONTAINER, f"atelier2-attempt-{_LEASE_ID}") in carrier.attached
+    assert (
+        _SERVE_CONTAINER,
+        frozenset({_CONSOLE_NETWORK, f"atelier2-attempt-{_LEASE_ID}"}),
+    ) in carrier.attached
+    assert carrier.unpoliced == [(_SERVE_CONTAINER, attempt_chains(_LEASE_ID))]
     assert carrier.owned == [
         f"atelier2-attempt-{_LEASE_ID}-identity",
         f"atelier2-attempt-{_LEASE_ID}-journal",
@@ -533,7 +610,13 @@ def test_a_lease_may_not_name_a_path_outside_the_attempt_root(tmp_path: Path) ->
 def test_a_lease_may_not_name_another_console_container(tmp_path: Path) -> None:
     """Attaching a container to an Attempt network installs a packet filter in
     its namespace; naming a foreign container would aim that at a stranger."""
-    validation = RunnerLeaseValidation(tmp_path, "another-console")
+    validation = RunnerLeaseValidation(
+        tmp_path,
+        "another-console",
+        _CONSOLE_NETWORK,
+        _RUNNER_IMAGE,
+        RunnerManifestBounds(),
+    )
 
     with pytest.raises(AttemptRefusal, match="another-console-container"):
         validation.validated(_lease(tmp_path))
@@ -589,6 +672,7 @@ def test_the_resumed_runner_is_detached_before_it_is_started_again(
         "restart-private",
         "attach",
         "handoff",
+        "remove-policy",
     ]
 
 
@@ -599,7 +683,7 @@ def test_a_failed_attempt_does_not_end_a_watching_launcher(tmp_path: Path) -> No
         _attested_document(_manifest()), [1, 0], journal_records=[False]
     )
     failing = _lease(tmp_path)
-    good = _lease(tmp_path / "second", lease_id="lease-two")
+    good = _lease(tmp_path / "second", lease_id=_SECOND_LEASE_ID)
     source = OpenLeases([failing, good], exhausted=SourceExhausted)
     launcher, announced = _launcher(tmp_path, carrier, source)
 
@@ -698,7 +782,7 @@ def test_a_lease_document_nobody_can_read_does_not_end_the_launcher(
     lease has to be served."""
     directory = tmp_path / "leases"
     source = FileRunnerLeaseSource(directory, _validation(tmp_path))
-    _published(directory, "unreadable", published)
+    _published(directory, _SECOND_LEASE_ID, published)
     _published(directory, _LEASE_ID, json.dumps(_lease_document(tmp_path)))
     carrier = RecordingCarrier(_attested_document(_manifest()), [0, 0])
     launcher, announced = _launcher(tmp_path, carrier, UntilEmpty(source))
@@ -708,7 +792,30 @@ def test_a_lease_document_nobody_can_read_does_not_end_the_launcher(
 
     assert any(line.startswith("lease-refused=") for line in announced)
     assert f"attempt-released={_LEASE_ID}" in announced
-    assert (directory / "claimed" / "unreadable.json").is_file()
+    assert (directory / "claimed" / f"{_SECOND_LEASE_ID}.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "named",
+    (
+        pytest.param("lease,one", id="a-name-carrying-a-separator"),
+        pytest.param("lease one", id="a-name-carrying-a-space"),
+        pytest.param("-lease", id="a-name-that-would-read-as-a-flag"),
+    ),
+)
+def test_a_lease_document_whose_name_is_no_lease_id_is_never_acted_on(
+    tmp_path: Path, named: str
+) -> None:
+    """Every container, volume, label and chain name of an Attempt is built
+    from this value, and they reach a Docker argument vector and the policy's
+    own shell. A name outside the one lease-id form is refused before any of
+    them is built (`#540` D-4)."""
+    directory = tmp_path / "leases"
+    source = FileRunnerLeaseSource(directory, _validation(tmp_path))
+    _published(directory, named, json.dumps(_lease_document(tmp_path)))
+
+    with pytest.raises(AttemptRefusal, match="lease-name-is-not-a-lease-id-form"):
+        source.claim_open_lease()
 
 
 def test_a_lease_naming_a_foreign_path_does_not_end_the_launcher(
@@ -719,7 +826,7 @@ def test_a_lease_naming_a_foreign_path_does_not_end_the_launcher(
     source = FileRunnerLeaseSource(directory, _validation(tmp_path))
     _published(
         directory,
-        "hostile",
+        _SECOND_LEASE_ID,
         json.dumps(_lease_document(tmp_path, handoff_directory="/etc")),
     )
     _published(directory, _LEASE_ID, json.dumps(_lease_document(tmp_path)))
@@ -763,6 +870,195 @@ def test_the_attempt_root_may_not_contain_the_authority(tmp_path: Path) -> None:
         admitted_attempt_root(tmp_path / "attempts", tmp_path)
 
     assert admitted_attempt_root(tmp_path / "attempts", tmp_path / "authority")
+
+
+def _nothing_was_created(carrier: RecordingCarrier) -> bool:
+    return carrier.created == {"containers": [], "volumes": [], "networks": []}
+
+
+def _lease_naming_a_foreign_image(root: Path) -> RunnerLease:
+    return _lease(root, runner_image="a-stranger/root-shell")
+
+
+def _lease_whose_manifest_is_not_the_bound_one(root: Path) -> RunnerLease:
+    """A manifest document beside the identity of a different manifest."""
+    return _lease(root, binding=_binding(_manifest(scratch_bytes=4096)))
+
+
+def _lease_asking_for_more_of_the_host_than_declared(root: Path) -> RunnerLease:
+    oversized = _manifest(scratch_bytes=CANDIDATE_SCRATCH_BYTES * 4)
+    return _lease(root, manifest=oversized, binding=_binding(oversized))
+
+
+@pytest.mark.parametrize(
+    ("lease_of", "refusal"),
+    (
+        pytest.param(
+            _lease_naming_a_foreign_image,
+            "lease-names-another-runner-image",
+            id="an-image-the-operator-never-declared",
+        ),
+        pytest.param(
+            _lease_whose_manifest_is_not_the_bound_one,
+            "lease-manifest-is-not-the-one-core-bound",
+            id="a-manifest-that-is-not-the-one-core-bound",
+        ),
+        pytest.param(
+            _lease_asking_for_more_of_the_host_than_declared,
+            "lease-manifest-exceeds-a-declared-bound",
+            id="a-manifest-asking-for-more-of-the-host-than-declared",
+        ),
+    ),
+)
+def test_a_lease_this_host_will_not_carry_costs_no_object_at_all(
+    tmp_path: Path,
+    lease_of: Callable[[Path], RunnerLease],
+    refusal: str,
+) -> None:
+    """Every fence a lease has to pass sits before the first engine call. The
+    volume-owning container alone runs the lease's own image as root over the
+    Attempt's volumes, so an Attempt that is refused must never reach it."""
+    carrier = RecordingCarrier(_attested_document(_manifest()), [])
+    launcher, _announced = _launcher(tmp_path, carrier, OpenLeases([]))
+
+    with pytest.raises(AttemptRefusal, match=refusal):
+        launcher.establish(lease_of(tmp_path))
+
+    assert _nothing_was_created(carrier)
+    assert carrier.owned == []
+
+
+def test_a_manifest_within_the_declared_bounds_is_carried(tmp_path: Path) -> None:
+    """The bound is the operator's, not the candidate's: a host that declares a
+    larger Attempt carries the manifest a smaller one refuses."""
+    manifest = _manifest(scratch_bytes=CANDIDATE_SCRATCH_BYTES * 4)
+    lease = _lease(tmp_path, manifest=manifest, binding=_binding(manifest))
+    bounds = RunnerManifestBounds(
+        scratch_bytes=CANDIDATE_SCRATCH_BYTES * 4,
+        writable_surface_bytes=CANDIDATE_SCRATCH_BYTES * 4,
+    )
+
+    assert _validation(tmp_path, bounds).validated(lease).manifest == manifest
+
+
+def test_an_unreadable_runner_offer_costs_one_attempt(tmp_path: Path) -> None:
+    """The offer is written inside the Attempt's own Runner container, the
+    least trusted process on this host. One it got wrong is one failed Attempt,
+    and the launcher goes on serving the next lease."""
+    carrier = RecordingCarrier(_attested_document(_manifest()), [])
+    carrier.offer = b"{}"
+    lease = _lease(tmp_path)
+    source = OpenLeases([lease])
+    launcher, announced = _launcher(tmp_path, carrier, source)
+
+    failed = launcher.serve_open_leases(once=True, poll_seconds=0)
+
+    assert failed == 1
+    assert any("runner-offer-unreadable" in line for line in announced)
+    assert source.released == []
+
+
+def test_a_second_launcher_refuses_before_it_reconciles_anything(
+    tmp_path: Path,
+) -> None:
+    """Reconciliation reads a claimed lease as abandoned, which is exactly what
+    a working launcher's lease looks like. A second launcher beside a first
+    would tear a live Attempt down, so it refuses by name -- before it has
+    looked at a single lease."""
+    directory = tmp_path / "leases"
+    source = FileRunnerLeaseSource(directory, _validation(tmp_path))
+    claimed = directory / "claimed" / f"{_LEASE_ID}.json"
+    claimed.write_text("{}", encoding="utf-8")
+
+    with (
+        single_launcher(directory),
+        pytest.raises(AttemptRefusal, match="another-launcher-holds"),
+        single_launcher(directory),
+    ):
+        pass
+
+    assert claimed.is_file()
+    assert source.abandon_stale_claims() == (_LEASE_ID,)
+
+
+def test_the_lock_a_dead_launcher_held_is_free_for_the_next_one(
+    tmp_path: Path,
+) -> None:
+    """The claim is the kernel's, not a file whose content says who owns it, so
+    a launcher that was killed leaves nothing a human has to clear."""
+    directory = tmp_path / "leases"
+
+    with single_launcher(directory):
+        pass
+
+    with single_launcher(directory):
+        assert (directory / ".launcher.lock").is_file()
+
+
+def test_the_runner_leaf_covers_the_attempt_span_the_manifest_declares(
+    tmp_path: Path,
+) -> None:
+    """A Runner's identity stands for exactly as long as the Attempt it was
+    minted for may run -- the same span the Runner's own session deadline uses,
+    so an invocation that is over holds a key that opens nothing."""
+    carrier = RecordingCarrier(_attested_document(_manifest()), [0])
+    lease = _lease(tmp_path)
+    launcher, _announced = _launcher(tmp_path, carrier, OpenLeases([lease]))
+
+    launcher.establish(lease)
+
+    leaf = x509.load_pem_x509_certificate(
+        (lease.core_peer_directory / "client.crt").read_bytes()
+    )
+    span = timedelta(milliseconds=lease.manifest.total_attempt_milliseconds)
+    assert leaf.not_valid_after_utc - datetime.now(UTC) >= span
+
+
+def test_an_expired_console_identity_is_refused_by_name(tmp_path: Path) -> None:
+    """Core presents this leaf to every Runner of every Attempt. An expired one
+    fails deep inside each Attempt as an unreadable handshake, so the launcher
+    that owns the authority says so at start and names the renewal."""
+    identity = tmp_path / "console-identity"
+    RunnerIdentityAuthority(tmp_path / "authority").issue_core_identity(identity)
+    issued = datetime.now(UTC)
+
+    assert admitted_console_identity(identity, issued) > issued
+
+    with pytest.raises(AttemptRefusal, match="console-identity-expired"):
+        admitted_console_identity(identity, issued + timedelta(days=365))
+
+
+def test_a_console_identity_that_is_not_there_is_refused_by_name(
+    tmp_path: Path,
+) -> None:
+    """A directory holding no leaf is a deployment mistake, not a session to
+    start and watch fail."""
+    with pytest.raises(AttemptRefusal, match="console-identity-unreadable"):
+        admitted_console_identity(tmp_path / "nothing-here", datetime.now(UTC))
+
+
+def test_issuing_the_console_identity_is_its_own_command(tmp_path: Path) -> None:
+    """The console reads its identity from a directory the launcher's authority
+    writes; issuing into it again is the renewal."""
+    identity = tmp_path / "console-identity"
+
+    assert (
+        main(
+            [
+                "issue-console-identity",
+                "--certificate-authority-state",
+                str(tmp_path / "authority"),
+                "--identity",
+                str(identity),
+            ]
+        )
+        == 0
+    )
+
+    first = admitted_console_identity(identity, datetime.now(UTC))
+
+    assert (identity / "ca.crt").is_file()
+    assert first > datetime.now(UTC)
 
 
 def test_an_admitted_lease_carries_the_paths_that_were_checked(

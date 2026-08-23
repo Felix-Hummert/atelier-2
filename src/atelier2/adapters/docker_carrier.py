@@ -16,13 +16,16 @@ cannot decide who answers a carrier call.
 The one program text this module does render is the Attempt's packet-filtering
 ruleset, which runs inside a throwaway policy container's own `sh`. It is built
 from a typed policy record rather than assembled from caller strings, and the
-only values that reach it are this Attempt's own subnet and its served port.
+only values that reach it are this Attempt's own subnet, its served port, and
+the chain names `AttemptChains` has already refused unless they are bounded
+upper-case chain names.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -48,6 +51,9 @@ DOCKER_EXECUTABLE = Path("/usr/bin/docker")
 _PRIVATE_NETWORK = "none"
 _POLL_INTERVAL_SECONDS = 0.1
 _RUNNER_OWNED_VOLUME_MODE = 0o700
+_CHAIN_NAME = re.compile(r"[A-Z0-9-]{1,28}")
+_ATTEMPT_CHAIN_PREFIX = "ATELIER2-"
+_ATTEMPT_CHAIN_CHARACTERS = 12
 
 
 class CarrierRefusal(Exception):
@@ -141,6 +147,93 @@ class AttemptNetwork:
 
 
 @dataclass(frozen=True, slots=True)
+class AttemptChains:
+    """The two named chains one Attempt's rules live in, inside one container's
+    own network namespace.
+
+    A long-lived console outlives the Attempts it is attached to, so an
+    Attempt's rules may not be appended to the namespace's own chains: the next
+    Attempt's would sit behind the first Attempt's ACCEPTs and quietly widen
+    both. Each Attempt gets its own pair of chains instead, jumped to from the
+    dispatch chains the base policy installs once, and removed whole at
+    release -- which is what makes a console attachable to one Attempt after
+    another.
+
+    The names are the one caller-supplied value that reaches the policy
+    program's own `sh`, so anything but a bounded upper-case chain name is
+    refused here rather than rendered. `iptables` accepts no longer one anyway
+    (`XT_EXTENSION_MAXNAMELEN`).
+    """
+
+    inbound: str
+    outbound: str
+
+    def __post_init__(self) -> None:
+        for name in (self.inbound, self.outbound):
+            if _CHAIN_NAME.fullmatch(name) is None:
+                raise ValueError(f"carrier-chain-name-refused: {name}")
+
+
+def attempt_chains(attempt: str) -> AttemptChains:
+    """The chains one Attempt's rules live in, named after the Attempt itself.
+
+    A chain name is far shorter than an Attempt's own 64-hex identity, so it
+    carries a bounded prefix of it. That name is a label inside one container's
+    namespace and never an identity -- which objects belong to an Attempt is
+    its lease label. Two Attempts whose prefixes met would collide on one
+    chain, and the engine refuses to create a chain that exists rather than
+    silently sharing it.
+    """
+    prefix = attempt[:_ATTEMPT_CHAIN_CHARACTERS].upper()
+    return AttemptChains(
+        f"{_ATTEMPT_CHAIN_PREFIX}{prefix}-IN", f"{_ATTEMPT_CHAIN_PREFIX}{prefix}-OUT"
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptAttachment:
+    """One container's whole place in one Attempt, as the launcher asks for it.
+
+    `base_network` is the network a long-lived console keeps besides its
+    Attempts: the operator declared it, the console serves the cockpit on it,
+    and it stays attached there while Attempts come and go. A container that
+    has none -- every Runner -- is reachable on its one Attempt network and
+    nowhere else.
+    """
+
+    chains: AttemptChains
+    network: AttemptNetwork
+    role: ContainerRole
+    base_network: str | None = None
+
+    def __post_init__(self) -> None:
+        """A console has a base network; a Runner has none.
+
+        The base policy is written against the base network's subnet, and the
+        attestation against its name, so a console without one would render a
+        rule about a network nobody named. A Runner with one would be reachable
+        outside the Attempt it exists for.
+        """
+        if (self.role is ContainerRole.CORE) != (self.base_network is not None):
+            raise ValueError(
+                f"carrier-base-network-differs: {self.role.value} with "
+                f"base network {self.base_network}"
+            )
+
+    def attached_networks(self) -> frozenset[str]:
+        """Every network this container is reachable on once it is attached.
+
+        Positive by construction: this is what the attestation reads back out
+        of the engine, so "the declared base network and exactly one Attempt
+        network, and nothing else" is one sentence written once.
+        """
+        return frozenset(
+            {self.network.name}
+            | ({self.base_network} if self.base_network is not None else set())
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class TmpfsVolumeOptions:
     """A volume the engine backs with tmpfs, for content that must not reach
     disk and is reproducible from what the host already holds."""
@@ -151,72 +244,142 @@ class TmpfsVolumeOptions:
     mode: int
 
 
-# The first rule any Attempt policy installs, and therefore the one this asks
-# about to find out whether a namespace already carries one.
+# The first rule the base policy installs, and therefore the one this asks
+# about to find out whether a namespace already carries that policy.
 _POLICY_MARKER_RULE = "iptables -C OUTPUT -o lo -j ACCEPT"
-_ALREADY_POLICED = "carrier-attempt-policy-already-installed"
+_ATTEMPT_POLICY_REMAINS = "carrier-attempt-policy-remains"
+# Where every Attempt's own chain is jumped to from. They are installed once
+# per namespace, before the base policy's rejects, so an Attempt's chain can be
+# appended at any later time and still be reached.
+_INBOUND_DISPATCH = "ATELIER2-ATTEMPTS-IN"
+_OUTBOUND_DISPATCH = "ATELIER2-ATTEMPTS-OUT"
+# The Attempt networks this carrier creates are IPv4. IPv6 therefore carries a
+# blanket reject that no Attempt ever widens, and needs no chain of its own.
+_IPV6_RULES = (
+    "ip6tables -A OUTPUT -o lo -j ACCEPT",
+    "ip6tables -A OUTPUT -j REJECT",
+    "ip6tables -A INPUT -i lo -j ACCEPT",
+    "ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+    "ip6tables -A INPUT -j REJECT",
+)
 
 
-def _policy_program(subnet: str, role: ContainerRole) -> str:
-    """This Attempt's packet-filtering ruleset, for one container's namespace.
+def _base_rules(role: ContainerRole, base_subnet: str | None) -> list[str]:
+    """What one container may reach before any Attempt is added to it.
 
-    Everything not named here is REJECTed in both directions -- a loud,
-    immediate connection failure the provider CLI's own error handling
-    surfaces, never a silent DROP timeout. The same reject chain is installed
-    for IPv6, so enabling IPv6 on a future Attempt network cannot silently open
-    a second, unfiltered path.
+    Everything not named here or in an Attempt's own chain is REJECTed in both
+    directions -- a loud, immediate connection failure the provider CLI's own
+    error handling surfaces, never a silent DROP timeout.
 
-    The rules are appended to the namespace's own chains, which is only correct
-    for a namespace that carries no Attempt policy yet -- a second Attempt's
-    rules would sit behind the first Attempt's ACCEPTs and quietly widen both.
-    Every container an Attempt starts is created fresh, and a restarted one
-    comes back with an empty namespace, so that holds today for everything
-    except a container attached to a second Attempt in its lifetime. Rather
-    than accumulate silently, this refuses: `#540` A2 replaces the append with
-    one named chain per Attempt, removed at release, which is what a
-    long-lived console attached to many Attempts needs.
+    A console reaches its declared base network and answers on it, and nothing
+    else: it holds the private key and the only store of product truth and has
+    no business on the Internet, but it must keep serving the cockpit while
+    Attempts come and go. A Runner has no base network at all; it reaches
+    outbound DNS and HTTPS for its provider's API and accepts nothing inbound,
+    because it dials out and its answers return as established connections.
     """
-    rules = [
-        "iptables -A OUTPUT -o lo -j ACCEPT",
-        f"iptables -A OUTPUT -d {subnet} -j ACCEPT",
-    ]
-    if role is ContainerRole.RUNNER:
-        rules += [
-            "iptables -A OUTPUT -p udp --dport 53 -j ACCEPT",
-            "iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT",
-            "iptables -A OUTPUT -p tcp --dport 443 -j ACCEPT",
-        ]
-    rules += [
-        "iptables -A OUTPUT -p tcp -j REJECT --reject-with tcp-reset",
-        "iptables -A OUTPUT -j REJECT --reject-with icmp-port-unreachable",
+    outbound = ["iptables -A OUTPUT -o lo -j ACCEPT"]
+    inbound = [
         "iptables -A INPUT -i lo -j ACCEPT",
         "iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
     ]
     if role is ContainerRole.CORE:
-        # Core is the only container in an Attempt that serves anything, and it
-        # serves exactly one port to exactly its own Attempt subnet. The Runner
-        # gets no inbound rule at all: it dials out, and its answers come back
-        # through the conntrack rule above.
-        rules.append(
-            f"iptables -A INPUT -s {subnet} -p tcp --dport {CORE_SESSION_PORT} -j ACCEPT"
-        )
-    rules += [
+        outbound += [
+            "iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+            f"iptables -A OUTPUT -d {base_subnet} -j ACCEPT",
+        ]
+        inbound.append(f"iptables -A INPUT -s {base_subnet} -j ACCEPT")
+    else:
+        outbound += [
+            "iptables -A OUTPUT -p udp --dport 53 -j ACCEPT",
+            "iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT",
+            "iptables -A OUTPUT -p tcp --dport 443 -j ACCEPT",
+        ]
+    return [
+        f"iptables -N {_OUTBOUND_DISPATCH}",
+        f"iptables -N {_INBOUND_DISPATCH}",
+        *outbound,
+        f"iptables -A OUTPUT -j {_OUTBOUND_DISPATCH}",
+        "iptables -A OUTPUT -p tcp -j REJECT --reject-with tcp-reset",
+        "iptables -A OUTPUT -j REJECT --reject-with icmp-port-unreachable",
+        *inbound,
+        f"iptables -A INPUT -j {_INBOUND_DISPATCH}",
         "iptables -A INPUT -p tcp -j REJECT --reject-with tcp-reset",
         "iptables -A INPUT -j REJECT --reject-with icmp-port-unreachable",
-        "ip6tables -A OUTPUT -o lo -j ACCEPT",
-        "ip6tables -A OUTPUT -j REJECT",
-        "ip6tables -A INPUT -i lo -j ACCEPT",
-        "ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
-        "ip6tables -A INPUT -j REJECT",
+        *_IPV6_RULES,
     ]
+
+
+def _attempt_rules(attachment: AttemptAttachment) -> list[str]:
+    """What exactly one Attempt adds to a container that already has a policy.
+
+    Core is the only container in an Attempt that serves anything, and it
+    serves exactly one port to exactly this Attempt's subnet. The Runner's
+    inbound chain stays empty on purpose: this Attempt grants it nothing
+    inbound at all.
+
+    Creating the chains is also the fence against establishing the same Attempt
+    twice in one namespace -- the engine refuses a chain that already exists,
+    so a second install refuses loudly instead of appending a second copy.
+    """
+    chains, subnet = attachment.chains, attachment.network.subnet
+    rules = [
+        f"iptables -N {chains.outbound}",
+        f"iptables -N {chains.inbound}",
+        f"iptables -A {chains.outbound} -d {subnet} -j ACCEPT",
+    ]
+    if attachment.role is ContainerRole.CORE:
+        rules.append(
+            f"iptables -A {chains.inbound} -s {subnet} "
+            f"-p tcp --dport {CORE_SESSION_PORT} -j ACCEPT"
+        )
+    return [
+        *rules,
+        f"iptables -A {_OUTBOUND_DISPATCH} -j {chains.outbound}",
+        f"iptables -A {_INBOUND_DISPATCH} -j {chains.inbound}",
+    ]
+
+
+def _policy_program(attachment: AttemptAttachment, base_subnet: str | None) -> str:
+    """One container's base policy if it has none yet, and this Attempt's chains.
+
+    The base policy is installed once per namespace and says nothing about any
+    Attempt; a long-lived console that is attached to a second Attempt keeps
+    the one it already has. What each Attempt adds and removes is its own pair
+    of chains.
+    """
     return "\n".join(
         (
             "set -e",
-            f"if {_POLICY_MARKER_RULE} 2>/dev/null; then",
-            f"  echo {_ALREADY_POLICED} >&2",
+            f"if ! {_POLICY_MARKER_RULE} 2>/dev/null; then",
+            *(f"  {rule}" for rule in _base_rules(attachment.role, base_subnet)),
+            "fi",
+            *_attempt_rules(attachment),
+        )
+    )
+
+
+def _policy_removal_program(chains: AttemptChains) -> str:
+    """Take one Attempt's chains out of a namespace, and prove they are gone.
+
+    Every step tolerates a piece that is already gone, because removal runs
+    both at release and at reconciliation of an Attempt nobody finished. What
+    does not tolerate anything is the answer: a namespace still naming this
+    Attempt's chains keeps a grant for a subnet that no longer exists, so that
+    is refused rather than reported as a clean release.
+    """
+    return "\n".join(
+        (
+            f"iptables -D {_OUTBOUND_DISPATCH} -j {chains.outbound} 2>/dev/null",
+            f"iptables -D {_INBOUND_DISPATCH} -j {chains.inbound} 2>/dev/null",
+            f"iptables -F {chains.outbound} 2>/dev/null",
+            f"iptables -F {chains.inbound} 2>/dev/null",
+            f"iptables -X {chains.outbound} 2>/dev/null",
+            f"iptables -X {chains.inbound} 2>/dev/null",
+            f"if iptables -S | grep -q -e {chains.outbound} -e {chains.inbound}; then",
+            f"  echo {_ATTEMPT_POLICY_REMAINS} >&2",
             "  exit 3",
             "fi",
-            *rules,
         )
     )
 
@@ -310,11 +473,14 @@ class DockerCarrier:
         """One routed bridge network for one Attempt, and the subnet its policy
         is written against."""
         self._run(["network", "create", "--label", label, name])
+        return AttemptNetwork(name, self._network_subnet(name))
+
+    def _network_subnet(self, name: str) -> str:
         document = self._inspect("network", name)
         configurations = document["IPAM"]["Config"]
         if not configurations:
             raise CarrierRefusal(f"carrier-network-has-no-subnet: {name}")
-        return AttemptNetwork(name, str(configurations[0]["Subnet"]))
+        return str(configurations[0]["Subnet"])
 
     def create_volume(
         self, name: str, label: str, tmpfs: TmpfsVolumeOptions | None = None
@@ -386,33 +552,74 @@ class DockerCarrier:
             )
 
     def install_attempt_policy(
-        self, container: str, subnet: str, role: ContainerRole
+        self, container: str, attachment: AttemptAttachment
     ) -> None:
-        """Install this Attempt's policy inside one container's own network
+        """Install this Attempt's chains inside one container's own network
         namespace, from a throwaway container that exits immediately.
+
+        The base network's own subnet is read out of the engine rather than
+        taken from a caller: what a console may keep reaching is the network
+        the operator declared, as the engine really allocated it.
 
         The target container holds no packet-filtering tool and no
         `CAP_NET_ADMIN`, so it cannot alter what this leaves behind.
         """
-        self._run(
-            [
-                "run",
-                "--rm",
-                "--network",
-                f"container:{container}",
-                "--user",
-                "0",
-                "--cap-drop",
-                "ALL",
-                "--cap-add",
-                "NET_ADMIN",
-                "--entrypoint",
-                "sh",
-                self.network_policy_image,
-                "-c",
-                _policy_program(subnet, role),
-            ]
+        base_subnet = (
+            self._network_subnet(attachment.base_network)
+            if attachment.base_network is not None
+            else None
         )
+        self._run(
+            self._policy_arguments(container, _policy_program(attachment, base_subnet))
+        )
+
+    def remove_attempt_policy(self, container: str, chains: AttemptChains) -> None:
+        """Take one Attempt's chains back out of a container's namespace.
+
+        A Runner's namespace dies with its container, so this is about the one
+        container that outlives its Attempts: the console. What it grants after
+        a release must be exactly what it granted before the Attempt existed.
+
+        A namespace exists only while its container runs, and a console that
+        stopped took every rule in it along. That is the one failure this
+        tolerates, and it is decided by reading the container's state back --
+        never by the wording of what the engine said.
+        """
+        try:
+            self._run(
+                self._policy_arguments(container, _policy_removal_program(chains))
+            )
+        except CarrierRefusal:
+            if self._is_running(container):
+                raise
+
+    def _is_running(self, container: str) -> bool:
+        try:
+            document = self.inspect_container(container)
+        except CarrierRefusal:
+            # A container the engine does not know has no namespace, for the
+            # same reason a removal of an object that is already gone succeeds.
+            return False
+        return bool((document.get("State") or {}).get("Running"))
+
+    def _policy_arguments(self, container: str, program: str) -> list[str]:
+        return [
+            "run",
+            "--rm",
+            "--network",
+            f"container:{container}",
+            "--user",
+            "0",
+            "--cap-drop",
+            "ALL",
+            "--cap-add",
+            "NET_ADMIN",
+            "--entrypoint",
+            "sh",
+            self.network_policy_image,
+            "-c",
+            program,
+        ]
 
     def start_private_container(self, spec: ContainerSpec) -> str:
         """Start one container that can reach nothing at all.
@@ -429,7 +636,7 @@ class DockerCarrier:
         return self._attested_container_id(spec)
 
     def start_policed_container(
-        self, spec: ContainerSpec, network: AttemptNetwork, role: ContainerRole
+        self, spec: ContainerSpec, attachment: AttemptAttachment
     ) -> str:
         """Start one container that never runs for a single unfiltered packet.
 
@@ -439,49 +646,50 @@ class DockerCarrier:
         unable to reach anything rather than running wide open.
         """
         container_id = self.start_private_container(spec)
-        self.attach_policed_container(spec.name, network, role)
+        self.attach_policed_container(spec.name, attachment)
         return container_id
 
     def attach_policed_container(
-        self, container: str, network: AttemptNetwork, role: ContainerRole
+        self, container: str, attachment: AttemptAttachment
     ) -> None:
-        """Put one Attempt's policy into a private container, then attach it.
+        """Put one Attempt's chains into a container, then attach it to it.
 
-        The policy goes in while the container is still unreachable, so the
-        first packet it may ever send is already filtered. The engine refuses
-        to attach a container that is still in private mode, so the empty
-        namespace is released only once the policy is in it.
+        The Attempt's chains go in before the connect, so the first packet this
+        container may ever exchange with the Attempt is already filtered. A
+        container that was created private additionally reaches nothing at all
+        until this runs; the console, which the deployment started on its own
+        base network long before, keeps exactly what that network already gave
+        it (ADR 0009 sec. 2, 2026-08-23 amendment (b)).
         """
-        self.install_attempt_policy(container, network.subnet, role)
+        self.install_attempt_policy(container, attachment)
         # A container that was never in private mode has no empty namespace to
         # release, so this outcome is not asserted. What is asserted is the
         # connect below, which the engine refuses for a container still in it.
         self._succeeded(["network", "disconnect", _PRIVATE_NETWORK, container])
-        alias = ["--alias", CORE_DNS_NAME] if role is ContainerRole.CORE else []
-        self._run(["network", "connect", *alias, network.name, container])
-        self._attest_attachment(container, network.name)
+        alias = (
+            ["--alias", CORE_DNS_NAME] if attachment.role is ContainerRole.CORE else []
+        )
+        self._run(["network", "connect", *alias, attachment.network.name, container])
+        self._attest_attachment(container, attachment.attached_networks())
 
-    def _attest_attachment(self, container: str, network: str | None) -> None:
+    def _attest_attachment(self, container: str, expected: frozenset[str]) -> None:
         """Where this container can be reached, read back out of the engine.
 
-        Positive, not a list of refusals: the container must have been created
-        private -- which is what makes the policy-before-reachability order
-        possible at all -- and must now be attached to exactly the one network
-        it was attached to, or to none at all. Anything else, including the
-        host's own namespace or a second network nobody's policy speaks about,
-        is refused here rather than discovered by an Attempt that could reach
-        further than it should.
+        Positive, not a list of refusals: the container must be attached to
+        exactly the declared base network its policy keeps open and the one
+        Attempt network it was just given -- or, while it is being restarted,
+        to nothing at all. Anything else, including the host's own namespace or
+        a second network nobody's policy speaks about, is refused here rather
+        than discovered by an Attempt that could reach further than it should.
         """
         document = self.inspect_container(container)
-        mode = document["HostConfig"].get("NetworkMode")
         attached = set(
             (document.get("NetworkSettings") or {}).get("Networks") or {}
         ) - {_PRIVATE_NETWORK}
-        expected = {network} if network is not None else set()
-        if mode != _PRIVATE_NETWORK or attached != expected:
+        if attached != set(expected):
             raise CarrierRefusal(
-                f"carrier-attachment-differs: {container} runs as {mode} attached "
-                f"to {sorted(attached)}, expected {sorted(expected)}"
+                f"carrier-attachment-differs: {container} is attached to "
+                f"{sorted(attached)}, expected {sorted(expected)}"
             )
 
     def restart_private_container(self, container: str) -> None:
@@ -498,7 +706,7 @@ class DockerCarrier:
         for network in (document.get("NetworkSettings") or {}).get("Networks") or {}:
             self._run(["network", "disconnect", network, container])
         self._run(["start", container])
-        self._attest_attachment(container, None)
+        self._attest_attachment(container, frozenset())
 
     def run_receiving_stdin(self, spec: ContainerSpec, stdin: bytes) -> None:
         """Run one container to completion on a pipe, on no network at all.
@@ -994,6 +1202,23 @@ def _add_container_spec_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--argument", action="append", default=[])
 
 
+def _add_attachment_arguments(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--network", required=True)
+    command.add_argument("--subnet", required=True)
+    command.add_argument("--role", type=ContainerRole, required=True)
+    command.add_argument("--attempt", required=True)
+    command.add_argument("--base-network")
+
+
+def _attachment_from(parsed: argparse.Namespace) -> AttemptAttachment:
+    return AttemptAttachment(
+        attempt_chains(parsed.attempt),
+        AttemptNetwork(parsed.network, parsed.subnet),
+        parsed.role,
+        parsed.base_network,
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="The carrier operations a shell caller drives the engine through."
@@ -1010,9 +1235,15 @@ def _parser() -> argparse.ArgumentParser:
 
     started = commands.add_parser("start-policed")
     _add_container_spec_arguments(started)
-    started.add_argument("--network", required=True)
-    started.add_argument("--subnet", required=True)
-    started.add_argument("--role", type=ContainerRole, required=True)
+    _add_attachment_arguments(started)
+
+    attached = commands.add_parser("attach-policed")
+    attached.add_argument("--container", required=True)
+    _add_attachment_arguments(attached)
+
+    released = commands.add_parser("remove-policy")
+    released.add_argument("--container", required=True)
+    released.add_argument("--attempt", required=True)
 
     wait = commands.add_parser("wait")
     wait.add_argument("--container", required=True)
@@ -1044,11 +1275,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
     elif parsed.command == "start-policed":
         print(
             carrier.start_policed_container(
-                _spec_from(parsed),
-                AttemptNetwork(parsed.network, parsed.subnet),
-                parsed.role,
+                _spec_from(parsed), _attachment_from(parsed)
             )
         )
+    elif parsed.command == "attach-policed":
+        carrier.attach_policed_container(parsed.container, _attachment_from(parsed))
+    elif parsed.command == "remove-policy":
+        carrier.remove_attempt_policy(parsed.container, attempt_chains(parsed.attempt))
     elif parsed.command == "wait":
         print(carrier.wait_for_exit(parsed.container))
     elif parsed.command == "logs":

@@ -8,9 +8,12 @@ immediately afterwards. What a container ends up holding is the material this
 authority decided to hand one invocation, never the authority itself (ADR 0009
 sec. 2).
 
-Named gap (`#540`): a leaf is valid for `_LEAF_VALIDITY`, the disposable
-witness's own span. Deriving it from the attested manifest's attempt span is
-the honest production answer and waits for the first Attempt that outlives it.
+Each identity is valid for exactly as long as the thing it identifies lives
+(`#540` C-3.3 D2): the installation's authority for a year, the console's own
+leaf for a quarter and renewed by an operator command, and a Runner's leaf for
+the attempt span the manifest Core selected declares -- the same span the
+Runner's own session deadline runs on, so a leaf can never outlive the one
+invocation it was minted for.
 """
 
 from __future__ import annotations
@@ -42,8 +45,14 @@ _AUTHORITY_COMMON_NAME = "atelier2 runner candidate CA"
 _RUNNER_COMMON_NAME = "runner-candidate"
 _KEY_SIZE = 2048
 _PUBLIC_EXPONENT = 65537
-_AUTHORITY_VALIDITY = timedelta(minutes=10)
-_LEAF_VALIDITY = timedelta(minutes=5)
+# How long each identity this authority mints stands. The authority is an
+# installation's own root and is renewed as rarely as it is replaced; the
+# console's leaf is renewed while the console keeps running, so it is short
+# enough for a compromise to expire and long enough that renewal is a calendar
+# task rather than an outage. A Runner's leaf gets no constant at all -- it is
+# minted for the attempt span its manifest declares.
+_AUTHORITY_VALIDITY = timedelta(days=365)
+_CONSOLE_LEAF_VALIDITY = timedelta(days=90)
 _CLOCK_SKEW = timedelta(minutes=1)
 _IDENTITY_MODE = 0o700
 _PRIVATE_MODE = 0o600
@@ -122,6 +131,10 @@ class RunnerIdentityAuthority:
         The key is created before the certificate because the URI this leaf
         carries is bound to that key's public half, so there is exactly one
         leaf and no discarded intermediate.
+
+        Renewal is this same call: the console reads its identity from a
+        directory, and issuing into it again replaces the leaf the console
+        presents from its next session on.
         """
         authority_key, authority = self._authority()
         key = _generate_key()
@@ -135,7 +148,7 @@ class RunnerIdentityAuthority:
             .public_key(key.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - _CLOCK_SKEW)
-            .not_valid_after(now + _LEAF_VALIDITY)
+            .not_valid_after(now + _CONSOLE_LEAF_VALIDITY)
             .add_extension(
                 x509.SubjectAlternativeName(
                     [
@@ -163,6 +176,7 @@ class RunnerIdentityAuthority:
         invocation: RunnerInvocationId,
         destination: Path,
         peer_destination: Path,
+        attempt_span: timedelta,
     ) -> None:
         """Mint the client identity exactly one invocation may present.
 
@@ -172,6 +186,11 @@ class RunnerIdentityAuthority:
         symlink or replacement can steer the key somewhere else between the
         check and the write. Core's copy of the same leaf is what Core pins the
         session against.
+
+        It stands for the attempt span the manifest Core selected declares --
+        the same span the Runner's own session runs its deadline on -- plus the
+        skew both clocks are read with. An invocation that is over therefore
+        holds a key that no longer opens anything.
         """
         authority_key, authority = self._authority()
         key = _generate_key()
@@ -187,7 +206,7 @@ class RunnerIdentityAuthority:
             .public_key(key.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - _CLOCK_SKEW)
-            .not_valid_after(now + _LEAF_VALIDITY)
+            .not_valid_after(now + attempt_span + _CLOCK_SKEW)
             .add_extension(
                 x509.SubjectAlternativeName(
                     [
@@ -221,6 +240,19 @@ class RunnerIdentityAuthority:
             os.close(directory)
         peer_destination.mkdir(mode=_IDENTITY_MODE, parents=True, exist_ok=True)
         _write_public(peer_destination / "client.crt", certificate)
+
+
+def console_identity_expiry(identity_directory: Path) -> datetime:
+    """When the leaf the console serves its Attempt sessions under stops standing.
+
+    Read out of the certificate the console actually presents rather than
+    recomputed from when it was issued, so a directory holding an older leaf
+    than the authority last minted answers for the older one.
+    """
+    certificate = x509.load_pem_x509_certificate(
+        (identity_directory / "core.crt").read_bytes()
+    )
+    return certificate.not_valid_after_utc
 
 
 def receiver_record(directory: Path) -> bytes:

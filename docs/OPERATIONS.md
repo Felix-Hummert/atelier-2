@@ -59,37 +59,45 @@ bash scripts/runner_candidate.sh cancel
 bash scripts/runner_candidate.sh resume
 bash scripts/runner_candidate.sh toolchain
 bash scripts/runner_candidate.sh egress
+bash scripts/runner_candidate.sh console
 ```
 
-`success`, `cancel` and `resume` drive one full session each. `toolchain` and
-`egress` drive no session at all: they measure the deployed image and the
-Attempt network form, unbilled, with no credential and no provider call.
+`success`, `cancel` and `resume` drive one full session each. `toolchain`,
+`egress` and `console` drive no session at all: they measure the deployed
+image, the Attempt network form and the long-lived console's own policy,
+unbilled, with no credential and no provider call.
 
 A session scenario is not its own launcher. The script starts one disposable
-Core witness — the console's stand-in, attached to no network at all, so it can
-reach nothing — writes one lease document, and hands the rest to the real
-`atelier2-runner-launcher` described below. Everything a launcher does is
-therefore proven here by the same code an installation runs, against a Core
-this launcher did not start. Every engine operation the script itself still
-performs goes through the launcher's own typed owner,
+Core witness — the console's stand-in, started on its own base network exactly
+as compose starts the real console — writes one lease document, and hands the
+rest to the real `atelier2-runner-launcher` described below. Everything a
+launcher does is therefore proven here by the same code an installation runs,
+against a Core this launcher did not start. Every engine operation the script
+itself still performs goes through the launcher's own typed owner,
 `atelier2.adapters.docker_carrier`, in argument vectors rather than shell
 strings. What it calls the engine for directly is deliberately not a launcher
-operation: the image builds, the `toolchain` and `egress` probe legs, and
-`clean`'s own directory maintenance, which measure or tidy from the outside.
+operation: the image builds, the probe legs of `toolchain`, `egress` and
+`console`, putting a Core witness on its base network the way compose does, and
+`clean`'s own directory maintenance — all of which measure, deploy or tidy from
+the outside.
 
-Each session scenario ends with one labelled Attempt network, one disposable
-Core witness, one Runner, one handoff tmpfs volume, and one identity and one
-journal volume. The launcher removes every object it created once the Runner
-answers `RELEASED`. On failure they stay, named, plus the witness directory
-under `/var/tmp/atelier2-301a-runner-witness.*`. The launcher unlinks the
-client key as soon as the identity receiver has taken it, and the witness
-unlinks its own disposable authority and Core keys afterwards, through held
-directory FDs, keeping only public certificate metadata in that tree. Public
-bootstrap reaches the Runner by container copy; Core reads the launcher's
-inspect attestation from a read-only path. Core listens as
-`core.runner-candidate.internal:8443` on that Attempt network only. The witness
-CA hook is `tests/witness/runner_candidate_issuer.py`, a command line over the
-same host owners; it is never copied into an image.
+Each session scenario ends with one labelled Attempt network, one base network,
+one disposable Core witness, one Runner, one handoff tmpfs volume, and one
+identity and one journal volume. The launcher removes every object it created
+once the Runner answers `RELEASED`; the base network and the Core witness are
+the witness's own, standing in for the deployment's. On failure they stay,
+named, plus the witness directory under
+`/var/tmp/atelier2-301a-runner-witness.*`. The witness mints the console
+identity through the production command (`issue-console-identity` below). The
+launcher unlinks the client key as soon as the identity receiver has taken it,
+and the witness unlinks its own disposable authority and Core keys afterwards,
+through held directory FDs, keeping only public certificate metadata in that
+tree. Public bootstrap reaches the Runner by container copy; Core reads the
+launcher's inspect attestation from a read-only path. Core listens as
+`core.runner-candidate.internal:8443` on that Attempt network only. The
+witness's hook into the host owners is
+`tests/witness/runner_candidate_issuer.py`, a command line for the manifest, the
+identity-record read and the key unlink; it is never copied into an image.
 
 The identity and journal volumes are durable local volumes, not tmpfs: `resume`
 proves a real candidate process death (declared `CandidateScenario`
@@ -132,12 +140,12 @@ read-only entry denies writes even where the mount would allow them; and an
 attested path this image does not have refuses before the child starts.
 
 **The Attempt network.** Each Attempt gets its own routed bridge network, not
-an internal one. Every container is created attached to *no* network, a
-throwaway `CAP_NET_ADMIN` container installs that Attempt's policy inside its
-network namespace and exits, and only then is it connected — so nothing ever
-runs for even one unfiltered packet, and a policy that fails to install leaves
-a container unable to reach anything rather than running wide open. That
-network-none→policy→connect order is structural only for a container's first
+an internal one. Every container the launcher creates is created attached to
+*no* network; a throwaway `CAP_NET_ADMIN` container installs that Attempt's
+chains inside its network namespace and exits, and only then is it connected —
+so an Attempt never reaches a container before its own filter does, and a
+policy that fails to install leaves a container unable to reach that Attempt
+rather than running wide open. That order is structural for a container's first
 start; `resume` instead restarts an already-attached container and reinstalls
 the policy after it is back on the wire, safe only because the Runner's own
 handoff wait keeps it silent until the policy lands (`runner_candidate.sh`
@@ -145,16 +153,34 @@ handoff wait keeps it silent until the policy lands (`runner_candidate.sh`
 named open gap. The Runner itself carries no packet-filtering tool and no
 capability to alter what was left. The Runner may reach outbound DNS,
 outbound HTTPS, and its own Attempt subnet for Core. Core may reach nothing
-outbound beyond that subnet: it holds the private key and the only store of
-product truth and has no business on the Internet. Inbound, exactly one
-opening exists in an Attempt: Core accepts its own session port from its own
-subnet, because Core is the only container that
-serves anything. The Runner accepts nothing inbound at all — it dials out, and
-its answers return as established connections. Everything else, in either
-direction, is REJECTed — including IPv6, which gets the same reject chain — so
-a forbidden connection fails immediately with `Connection refused` and the
-provider CLI's own error handling surfaces it, rather than a silent DROP the
-operator would have to diagnose by timeout.
+outbound beyond its Attempt subnets and the base network it serves the cockpit
+on: it holds the private key and the only store of product truth and has no
+business on the Internet — which means a policed console loses whatever
+Internet reach its base network gave it, deliberately. Inbound, exactly one
+opening exists per Attempt: Core accepts its own session port from that
+Attempt's subnet, because Core is the only container that serves anything. The
+Runner accepts nothing inbound at all — it dials out, and its answers return as
+established connections. Everything else, in either direction, is REJECTed —
+including IPv6, which gets a blanket reject chain no Attempt widens, because
+Attempt networks are IPv4 — so a forbidden connection fails immediately with
+`Connection refused` and the provider CLI's own error handling surfaces it,
+rather than a silent DROP the operator would have to diagnose by timeout.
+
+**One chain per Attempt, in a console that outlives them.** A container's own
+`INPUT`/`OUTPUT` chains carry the base policy once — loopback, established
+answers, the Runner's DNS and HTTPS or the console's base network, a jump into
+the Attempt dispatch chain, and then the rejects. Each Attempt then owns a
+named pair of chains reached from that dispatch chain, and releasing an Attempt
+removes them whole and reads the namespace back to prove they are gone. So the
+console can be attached to one Attempt after another without rules
+accumulating, and a stopped console has no namespace and therefore no residue.
+A base policy that fails halfway leaves that container's namespace
+half-filtered; the container's own restart clears it, because a namespace does
+not survive one. `console` measures all of it: the console keeps answering on
+its own port from the host and from its base network while an Attempt runs, an
+Attempt network reaches the console on the session port and is refused
+immediately on the cockpit port, two Attempts run one after the other against
+the same console, and after each release the namespace names no rule of it.
 
 Cross-Attempt unreachability is proven rather than assumed: a second Attempt
 probing the first is refused by its *own* outbound policy, because the other
@@ -202,39 +228,85 @@ Docker's build cache.
 `atelier2-runner-launcher` is the only process on this host that talks to
 Docker. It runs *beside* the console, never inside it: Serve receives no engine
 socket, no privileged broker, and no carrier call of any kind (ADR 0009 §2, the
-2026-08-23 operator ruling on `#540`). Start it with the lease directory the
-console publishes into, the directory holding this installation's certificate
-authority, and the image that installs an Attempt's packet filter:
+2026-08-23 operator ruling on `#540`).
+
+Mint the identity the console serves Attempt sessions under first, out of this
+installation's own authority. The console reads that directory read-only and
+copies its `ca.crt` and `core.crt` into each Attempt's handoff:
 
 ```bash
-uv run atelier2-runner-launcher \
+uv run atelier2-runner-launcher issue-console-identity \
+  --certificate-authority-state <directory> \
+  --identity <directory>
+```
+
+Running it again is the renewal: the authority stands for about a year, the
+console's leaf for about a quarter, and the leaf a Runner presents is minted
+per invocation for the attempt span its manifest declares. Renew before the
+quarter is out — `serve` refuses to start on an expired console identity by
+name rather than letting every Attempt fail as an unreadable handshake.
+
+Then start the watcher with the lease directory the console publishes into,
+what the console *is* on this host, and what any Attempt may ask this host for:
+
+```bash
+uv run atelier2-runner-launcher serve \
   --lease-directory <directory> \
   --certificate-authority-state <directory> \
   --network-policy-image <image> \
   --attempt-root <directory> \
-  --console-container <container>
+  --console-container <container> \
+  --console-network <network> \
+  --console-identity <directory> \
+  --runner-image <image>
 ```
 
 **What it may do.** For each lease it claims — exclusively, by moving the lease
-document — it creates that Attempt's network, attaches the console's own
-container to it, creates the Attempt's identity, handoff and journal volumes,
-starts the Runner container the attested manifest describes, hands it the
-public bootstrap, mints the identity that one invocation may present, delivers
-it through a receiver container, writes the inspect attestation Core admits the
-session on, waits for the session, and removes every object it created. All of
-them carry `atelier2.runner-lease=<lease>`. `--once` establishes a single lease
-and stops; without it the launcher keeps watching at `--poll-seconds`.
+document — it creates that Attempt's network, installs that Attempt's chains in
+the console's own container and attaches it, creates the Attempt's identity,
+handoff and journal volumes, starts the Runner container the attested manifest
+describes, hands it the public bootstrap, mints the identity that one
+invocation may present, delivers it through a receiver container, writes the
+inspect attestation Core admits the session on, waits for the session, and
+removes every object it created together with the console's chains for it. All
+objects carry `atelier2.runner-lease=<lease>`. `--once` establishes a single
+lease and stops; without it the launcher keeps watching at `--poll-seconds`.
 
 **A lease is a request, not an authorization.** It names host directories this
-privileged process will mount and the container it will attach to an Attempt
-network, so it is validated against what *you* declared at start, never against
-what the document claims: every path a lease names must resolve inside
-`--attempt-root`, and its console container must be `--console-container`.
-Anything else is refused by name before it is read, and what gets mounted is
-the resolved path this checked, not the one the document spelled. That is what
-keeps the seam safe when Serve becomes the writer of leases (ADR 0009 §2,
-2026-08-23 amendment on ruling B) — Serve may ask for an Attempt and may never
-command one.
+privileged process will mount, the image it will run as root over that
+Attempt's volumes, and the container it will attach to an Attempt network, so
+it is validated against what *you* declared at start, never against what the
+document claims: every path a lease names must resolve inside `--attempt-root`,
+its console container must be `--console-container`, and its Runner image must
+be `--runner-image`. Its own file name must be a lease id — the same 64-hex
+form as the Attempt it names — because every container, volume, label and chain
+name of the Attempt is built from it. Anything else is refused by name before
+it is read, and what gets mounted is the resolved path this checked, not the
+one the document spelled. That is what keeps the seam safe when Serve becomes
+the writer of leases (ADR 0009 §2, 2026-08-23 amendments on ruling B) — Serve
+may ask for an Attempt and may never command one.
+
+**The manifest must be the one Core bound, and must fit this host.** A lease
+carries the manifest document and the manifest identity Core selected
+separately; the launcher reads them against each other and refuses an Attempt
+whose document is not the one that identity names. What that document then asks
+this host for is bounded by what you declared, defaulting to the candidate
+Attempt's own numbers:
+
+```bash
+  --maximum-memory-bytes <bytes> \
+  --maximum-process-limit <count> \
+  --maximum-cpu-quota-microseconds <microseconds> \
+  --maximum-scratch-bytes <bytes> \
+  --maximum-writable-surface-bytes <bytes>
+```
+
+The last is the sum of the Attempt's writable grants, each of which becomes a
+tmpfs and therefore host memory — bounding one grant while their count is free
+would bound nothing. A manifest over any of these is refused before the first
+engine call, so a lease this host will not carry costs no object at all. These
+are host protection, not Attempt correctness: a compromised Serve still chooses
+its own Attempts' numbers *within* them (ADR 0009 §2, 2026-08-23 amendment).
 
 **The attempt root holds per-Attempt material and nothing else.** Everything
 under it is a surface some lease may ask to have mounted into an Attempt, so
@@ -244,9 +316,11 @@ authority beside the attempt root, never inside it.
 
 **What it may not do.** It never reads or writes the product's own store, never
 runs provider code, never publishes a port or takes the host's own network
-namespace — its own attestation refuses a container that was not created
-reachable by nothing — and never removes an object that does not carry the
-lease label of an Attempt it owns. The authority key stays in
+namespace for a Runner — its inspect attestation refuses a Runner container
+that was not created reachable by nothing, and its attachment attestation
+refuses any container reaching further than the declared base network and one
+Attempt network — and never removes an object that does not carry the lease
+label of an Attempt it owns. The authority key stays in
 `--certificate-authority-state` on this host: it is never mounted, copied, or
 passed into any container, and the client key minted for an invocation is
 unlinked the moment its delivery is over, taken or not.
@@ -271,27 +345,24 @@ start has, because a restart throws away the namespace the policy lived in.
 
 Residue is reconciled, not swept: at start the launcher releases every lease
 still marked claimed by a launcher that is gone and removes exactly the objects
-carrying those leases' labels. An Attempt that may already have run is never
-silently run a second time — what its owner does with an interrupted lease is
-that owner's decision.
+carrying those leases' labels, including the console's chains for them. An
+Attempt that may already have run is never silently run a second time — what
+its owner does with an interrupted lease is that owner's decision. A claimed
+document whose name is not a lease id never named an object at all and is only
+released; residue nobody can clear — a console that is already gone — is
+reported as `reconcile-refused=…` and stepped over, because refusing to start
+over a leftover would turn it into an outage.
 
-**Three bounds this form still has.** The console container a lease names must
-already be attached to nothing: the launcher's own fence requires a container
-created private, which the disposable witness Core is and the Compose console —
-started on its own `serve` network — is not. Attaching the live console to an
-Attempt network is therefore not yet proven and is C-3/C-4 territory; today the
-attach path is exercised by the witness's stand-in. Run exactly *one* launcher
-per lease directory: reconciliation identifies an abandoned Attempt by its lease sitting
-in `claimed`, which a second launcher starting beside a working one would read
-as abandoned (a launcher-ownership token is `#540` C-3 work, with the fleet it
-belongs to). And a container may be attached to *one* Attempt in its lifetime:
-the Attempt policy is appended to that container's own chains, so a second
-Attempt's rules would sit behind the first's and quietly widen both. Rather
-than accumulate silently the carrier refuses with
-`carrier-attempt-policy-already-installed`, which today only a console attached
-twice can trigger; giving each Attempt its own named chain, removed at release,
-is `#540` A2 and is what a long-lived console needs before C-3 attaches it more
-than once.
+**Exactly one launcher per lease directory.** Reconciliation identifies an
+abandoned Attempt by its lease sitting in `claimed`, which is also what a
+working launcher's live Attempt looks like — a second launcher beside a first
+would tear a running Attempt down. A launcher therefore takes an exclusive
+`flock` on `<lease-directory>/.launcher.lock` before it reconciles anything and
+refuses by name when another holds it. The claim is the kernel's: it disappears
+with the process, including one that was `SIGKILL`ed, so a crashed launcher
+leaves nothing to clear by hand. Its bound is this host — a launcher fleet
+across hosts needs the ownership token `#540` C-2 named, which a lock the other
+host cannot see is not.
 
 ## Stable local Serve installation
 
