@@ -224,6 +224,14 @@ def _attempt_family_target_state(
     `CANCELLED` attempt under any other command names a replacement that may
     still be in flight or a cancel this inventory does not own, and answers
     `None`.
+
+    Ordered by `attempt_ordinal` descending, not merely limited to one row:
+    a superseded ordinal-1 (`replacement=ONE` under a foreign or legacy
+    command) can sit beside a live ordinal-2 on the exact same node, and an
+    unordered pick could read the superseded row's foreign command instead of
+    the live one's operator command -- the same current-attempt-by-ordinal
+    read `request_run_cancellation`'s own current-record lookup already uses
+    in `agent_attempt_store.py`.
     """
     row = (
         connection.execute(
@@ -242,6 +250,7 @@ def _attempt_family_target_state(
                     agent_attempts.c.state == AgentAttemptState.CANCELLED.value,
                 ),
             )
+            .order_by(agent_attempts.c.attempt_ordinal.desc())
             .limit(1)
         )
         .mappings()

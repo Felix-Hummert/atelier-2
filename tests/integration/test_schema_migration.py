@@ -1230,13 +1230,18 @@ def _is_run_state_cancelled(node: ast.AST) -> bool:
 class _CancelledStateConstructors(ast.NodeVisitor):
     """The name of every function that constructs `RunState.CANCELLED`.
 
-    An `is`/`==` comparison is a reader guarding against the word, never a
-    writer, so a `Compare` visits its own operands first and marks them --
-    `visit_Attribute` then skips exactly those nodes, by identity, wherever
-    the traversal reaches them next. Reading source as its parsed tree rather
-    than as text is what keeps a docstring's own prose about the word (this
-    module's, or `uncontinuable_runs.py`'s) from ever being mistaken for code
-    that constructs it: a string constant holds no `Attribute` node at all.
+    An `is`/`==` comparison, or `in`/`not in` a literal collection of states,
+    is a reader guarding against the word, never a writer, so a `Compare`
+    visits its own operands first and marks them -- `visit_Attribute` then
+    skips exactly those nodes, by identity, wherever the traversal reaches
+    them next. A collection operand of `in`/`not in` is unwrapped one level,
+    the shape `state in {RunState.CANCELLED, RunState.FAILED}` already reads
+    elsewhere in this tree, so the word inside it marks the same way as a
+    bare operand rather than surfacing as a false third producer. Reading
+    source as its parsed tree rather than as text is what keeps a docstring's
+    own prose about the word (this module's, or `uncontinuable_runs.py`'s)
+    from ever being mistaken for code that constructs it: a string constant
+    holds no `Attribute` node at all.
     """
 
     def __init__(self) -> None:
@@ -1245,11 +1250,21 @@ class _CancelledStateConstructors(ast.NodeVisitor):
         self._reader_nodes: set[int] = set()
 
     def visit_Compare(self, node: ast.Compare) -> None:
+        operands = (node.left, *node.comparators)
         if any(isinstance(op, ast.Is | ast.Eq) for op in node.ops):
-            for operand in (node.left, *node.comparators):
-                if _is_run_state_cancelled(operand):
-                    self._reader_nodes.add(id(operand))
+            for operand in operands:
+                self._mark_reader(operand)
+        if any(isinstance(op, ast.In | ast.NotIn) for op in node.ops):
+            for operand in operands:
+                self._mark_reader(operand)
+                if isinstance(operand, ast.Set | ast.List | ast.Tuple):
+                    for element in operand.elts:
+                        self._mark_reader(element)
         self.generic_visit(node)
+
+    def _mark_reader(self, operand: ast.expr) -> None:
+        if _is_run_state_cancelled(operand):
+            self._reader_nodes.add(id(operand))
 
     def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         self._function_stack.append(node.name)
