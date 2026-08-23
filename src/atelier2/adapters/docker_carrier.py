@@ -389,6 +389,20 @@ class DockerCarrier:
             ]
         )
 
+    def start_private_container(self, spec: ContainerSpec) -> str:
+        """Start one container that can reach nothing at all.
+
+        This is where every container of an Attempt begins: running, but
+        detached from every network, so whatever it does before its Attempt
+        exists it does alone. A container may stay here indefinitely -- the
+        console's own Serve container waits like this for the Attempt it will
+        be attached to.
+        """
+        self._run(
+            ["run", "-d", "--network", _PRIVATE_NETWORK, *_create_arguments(spec)]
+        )
+        return self._attested_container_id(spec)
+
     def start_policed_container(
         self, spec: ContainerSpec, network: AttemptNetwork, role: ContainerRole
     ) -> str:
@@ -399,21 +413,88 @@ class DockerCarrier:
         connected. A policy that fails to install therefore leaves a container
         unable to reach anything rather than running wide open.
         """
-        self._run(
-            ["run", "-d", "--network", _PRIVATE_NETWORK, *_create_arguments(spec)]
-        )
-        self.install_attempt_policy(spec.name, network.subnet, role)
-        # The engine refuses to attach a container that is still in private
-        # mode, so the empty namespace is released only once the policy is in it.
-        self._run(["network", "disconnect", _PRIVATE_NETWORK, spec.name])
-        self.connect_policed_container(spec.name, network, role)
-        return self._attested_container_id(spec)
+        container_id = self.start_private_container(spec)
+        self.attach_policed_container(spec.name, network, role)
+        return container_id
 
-    def connect_policed_container(
+    def attach_policed_container(
         self, container: str, network: AttemptNetwork, role: ContainerRole
     ) -> None:
+        """Put one Attempt's policy into a private container, then attach it.
+
+        The policy goes in while the container is still unreachable, so the
+        first packet it may ever send is already filtered. The engine refuses
+        to attach a container that is still in private mode, so the empty
+        namespace is released only once the policy is in it.
+        """
+        self.install_attempt_policy(container, network.subnet, role)
+        # A container that was never in private mode has no empty namespace to
+        # release, so this outcome is not asserted. What is asserted is the
+        # connect below, which the engine refuses for a container still in it.
+        self._succeeded(["network", "disconnect", _PRIVATE_NETWORK, container])
         alias = ["--alias", CORE_DNS_NAME] if role is ContainerRole.CORE else []
         self._run(["network", "connect", *alias, network.name, container])
+
+    def run_receiving_stdin(self, spec: ContainerSpec, stdin: bytes) -> None:
+        """Run one container to completion on a pipe, on no network at all.
+
+        This is how material reaches an Attempt without the host ever binding a
+        directory into it: the container reads what it is given from its own
+        standard input, writes it where it was told, and exits.
+        """
+        self._run(
+            [
+                "run",
+                "-i",
+                "--rm",
+                "--network",
+                _PRIVATE_NETWORK,
+                *_create_arguments(spec),
+            ],
+            stdin,
+        )
+
+    def file_exists_in_volume(
+        self, volume: str, image: str, path: PurePosixPath
+    ) -> bool:
+        """Whether a volume holds one file, read from a throwaway container.
+
+        The volume is the only thing mounted and the container runs one test
+        and exits, so asking this question grants nothing and changes nothing.
+        """
+        return self._succeeded(
+            [
+                "run",
+                "--rm",
+                "--user",
+                "root",
+                "--mount",
+                f"type=volume,src={volume},dst={path.parent},volume-nocopy",
+                "--entrypoint",
+                "test",
+                image,
+                "-f",
+                str(path),
+            ]
+        )
+
+    def labelled_containers(self, label: str) -> tuple[str, ...]:
+        return self._labelled(["ps", "--all", "--no-trunc", "--quiet"], label)
+
+    def labelled_volumes(self, label: str) -> tuple[str, ...]:
+        return self._labelled(["volume", "ls", "--quiet"], label)
+
+    def labelled_networks(self, label: str) -> tuple[str, ...]:
+        return self._labelled(["network", "ls", "--quiet"], label)
+
+    def _labelled(self, listing: Sequence[str], label: str) -> tuple[str, ...]:
+        """Every object carrying exactly this label, and nothing else.
+
+        Reconciliation removes what it finds here, so the filter is the whole
+        safety of it: an object without this Attempt's own label is not this
+        launcher's to remove.
+        """
+        return tuple(self._run([*listing, "--filter", f"label={label}"]).split())
 
     def _attested_container_id(self, spec: ContainerSpec) -> str:
         """The created container's id, once its mounts read back as asked for.
@@ -593,8 +674,28 @@ class DockerCarrier:
             self._succeeded(["volume", "rm", volume])
 
     def remove_networks(self, networks: Iterable[str]) -> None:
+        """Remove Attempt networks, detaching whatever is still attached.
+
+        The console's own container outlives the Attempt it was attached to, so
+        an Attempt network is never free of containers when its Attempt ends.
+        Detaching is all that happens to them: nothing here stops or removes a
+        container it did not create.
+        """
         for network in networks:
+            for container in self._attached_containers(network):
+                self._succeeded(
+                    ["network", "disconnect", "--force", network, container]
+                )
             self._succeeded(["network", "rm", network])
+
+    def _attached_containers(self, network: str) -> tuple[str, ...]:
+        try:
+            document = self._inspect("network", network)
+        except CarrierRefusal:
+            # A network that is already gone has nothing attached to it; the
+            # removal below is idempotent for the same reason.
+            return ()
+        return tuple(document.get("Containers") or ())
 
 
 def _tmpfs_size(options: str) -> int:
@@ -846,6 +947,9 @@ def _parser() -> argparse.ArgumentParser:
     volume.add_argument("--owner-uid", type=int)
     volume.add_argument("--owner-gid", type=int)
 
+    private = commands.add_parser("start-private")
+    _add_container_spec_arguments(private)
+
     started = commands.add_parser("start-policed")
     _add_container_spec_arguments(started)
     started.add_argument("--network", required=True)
@@ -919,6 +1023,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
             carrier.own_volume(
                 parsed.name, parsed.own_with_image, parsed.owner_uid, parsed.owner_gid
             )
+    elif parsed.command == "start-private":
+        print(carrier.start_private_container(_spec_from(parsed)))
     elif parsed.command == "start-policed":
         print(
             carrier.start_policed_container(

@@ -89,6 +89,17 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
     "adapters/dbos/workflow.py::CANCELLATION_REDRIVE_SECONDS": SpelledValue(
         1, "owner with a seam: the whole redrive ladder is decided in this one tuple"
     ),
+    "host/runner_launcher.py::_LEASE_POLL_SECONDS": SpelledValue(
+        1,
+        "the channel's named default, feeding --poll-seconds; a watching "
+        "launcher's cadence is the operator's to set",
+    ),
+    "host/runner_launcher.py::_HANDOFF_DEADLINE_SECONDS": SpelledValue(
+        1,
+        "owner with a seam: how long the launcher waits for a container it "
+        "just started to publish its own surface, named once beside the "
+        "Attempt it bounds",
+    ),
     "adapters/docker_carrier.py::_POLL_INTERVAL_SECONDS": SpelledValue(
         1,
         "owner with a seam: how often the carrier re-reads a container's own "

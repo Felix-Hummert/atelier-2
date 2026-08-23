@@ -25,7 +25,7 @@ carrier() {
 # Every size, path and limit below is read out of the manifest contract, so the
 # launcher, the attested manifest and the inspect fence share one source and no
 # number is typed twice.
-read -r scratch_directory scratch_bytes credential_directory workspace_bytes core_port \
+read -r scratch_directory scratch_bytes credential_directory core_port \
   runner_uid runner_gid process_limit memory_bytes cpu_period cpu_quota < <(
   uv run --locked python -c \
     'from atelier2.adapters.runner_tls import CORE_SESSION_PORT
@@ -39,13 +39,11 @@ from atelier2.contracts.runner_manifests import (
     CANDIDATE_PROCESS_LIMIT,
     CANDIDATE_SCRATCH_BYTES,
     CANDIDATE_SCRATCH_DIRECTORY,
-    CANDIDATE_WORKSPACE_BYTES,
 )
 print(
     CANDIDATE_SCRATCH_DIRECTORY,
     CANDIDATE_SCRATCH_BYTES,
     CANDIDATE_CREDENTIAL_DIRECTORY,
-    CANDIDATE_WORKSPACE_BYTES,
     CORE_SESSION_PORT,
     CANDIDATE_EFFECTIVE_UID,
     CANDIDATE_EFFECTIVE_GID,
@@ -57,9 +55,6 @@ print(
 )
 runner_user="${runner_uid}:${runner_gid}"
 core_scratch_bytes=16777216
-handoff_bytes=1048576
-offer_bytes=1048576
-maximum_offer_bytes=4096
 handoff_deadline_seconds=10
 
 # The exact hardening every Runner-image container in this witness runs under,
@@ -381,32 +376,28 @@ esac
 
 root=$(mktemp -d "$witness_root_prefix.XXXXXX")
 released=false
-identity_volume=""
-handoff_volume=""
-journal_volume=""
+network=""
 label="atelier2.runner-candidate=${RANDOM}${RANDOM}"
-network="atelier2-301a-${RANDOM}${RANDOM}"
-core="${network}-core"
-runner="${network}-runner"
+lease_id="301a${RANDOM}${RANDOM}"
+core="atelier2-301a-${lease_id}-core"
 printf '%s\n' "$label" >"$root/label"
-printf '%s\n' "$runner" >"$root/runner-container"
+printf '%s\n' "$lease_id" >"$root/lease"
 printf '%s\n' "$scenario" >"$root/scenario"
 
 cleanup() {
   carrier logs --container "$core" --output "$root/core.log" >/dev/null 2>&1 || true
-  carrier logs --container "$runner" --output "$root/runner.log" >/dev/null 2>&1 || true
   if "$released"; then
-    carrier remove --container "$runner" --container "$core" --network "$network" \
-      --volume "$identity_volume" --volume "$handoff_volume" \
-      --volume "$journal_volume" >/dev/null 2>&1 || true
+    # Everything the launcher created it removed itself; Core is the one
+    # container this witness owns, standing in for the console's own.
+    carrier remove --container "$core" >/dev/null 2>&1 || true
   else
-    printf 'recovery left labelled objects: label=%s network=%s core=%s runner=%s volume=%s handoff=%s journal=%s root=%s\n' \
-      "$label" "$network" "$core" "$runner" "$identity_volume" "$handoff_volume" "$journal_volume" "$root" >&2
+    printf 'recovery left labelled objects: label=%s lease=%s core=%s network=%s root=%s\n' \
+      "$label" "$lease_id" "$core" "$network" "$root" >&2
   fi
 }
 trap cleanup EXIT
-mkdir -p "$root"/{issuer,core-identity,peer,handoff,offer,issuer-output,provider-credentials,core-store}
-chmod 0700 "$root/issuer-output"
+mkdir -p "$root"/{issuer,core-identity,peer,handoff,offer,issuer-output,provider-credentials,core-store,leases/open}
+chmod 0700 "$root/issuer-output" "$root/provider-credentials"
 uv run --locked python tests/witness/runner_candidate_issuer.py core --state "$root/issuer" --identity "$root/core-identity"
 cp "$root/core-identity/ca.crt" "$root/handoff/ca.crt"
 cp "$root/core-identity/core.crt" "$root/handoff/core.crt"
@@ -414,42 +405,11 @@ build_candidate_images >/dev/null
 image_digest=$(docker image inspect -f '{{.Id}}' "$runner_image")
 source_commit=$(git rev-parse HEAD)
 uv run --locked python tests/witness/runner_candidate_issuer.py manifest --source-commit "$source_commit" --image-digest "$image_digest" --output "$root/handoff"
-# Routed, not `--internal`: this Attempt network reaches the Internet for
-# outbound HTTPS and DNS, and the carrier's Attempt policy refuses everything
-# else loudly inside each container's own network namespace (ADR 0009 sec. 2,
-# 2026-08-23 amendment). Cross-Attempt unreachability no longer rests on
-# `--internal` and is proven live by the `egress` leg instead.
-attempt_subnet=$(carrier create-network --name "$network" --label "$label")
-# Recorded only after the network exists, so a concurrent `clean` never
-# mistakes a still-being-created witness for a released one (see the "no
-# recorded network" case in `clean`).
-printf '%s\n' "$network" >"$root/network"
-identity_volume="atelier2-301a-identity-$network"
-handoff_volume="atelier2-301a-handoff-$network"
-journal_volume="atelier2-301a-journal-$network"
-# The identity and journal volumes must survive this exact container's own
-# restart across the `resume` scenario's real crash (#15-B5); a tmpfs-backed
-# volume does not (verified: it loses its content once no container has it
-# mounted, which a stopped container's own restart always crosses). Handoff
-# stays tmpfs -- its content is fully reproducible from files already
-# retained on the host, and `resume` below just re-copies them. The carrier
-# hands each durable volume to the Runner's own account and reads that
-# ownership back before it is ever mounted into the Runner.
-carrier create-volume --name "$identity_volume" --label "$label" \
-  --own-with-image "$runner_image" --owner-uid "$runner_uid" --owner-gid "$runner_gid"
-carrier create-volume --name "$handoff_volume" --label "$label" \
-  --tmpfs-bytes "$handoff_bytes" --tmpfs-uid "$runner_uid" --tmpfs-gid "$runner_gid" \
-  --tmpfs-mode 1777
-carrier create-volume --name "$journal_volume" --label "$label" \
-  --own-with-image "$runner_image" --owner-uid "$runner_uid" --owner-gid "$runner_gid"
-# Core is policed too, and more tightly than the Runner: it holds the private
-# key and the only store of product truth, and needs no outbound Internet at
-# all. The carrier creates it detached from every network, so the policy is in
-# place before it can send a single packet, and reads each bind's right back
-# out of the created container -- `/handoff` is read-only to Core or the
-# carrier refuses.
-carrier start-policed --name "$core" --image "$core_image" --label "$label" \
-  --network "$network" --subnet "$attempt_subnet" --role core \
+# Core stands in for the console's own Serve container: it is started attached
+# to no network at all and reaches nothing until the launcher creates this
+# Attempt's network and attaches it. Its `/handoff` bind is read-only, which
+# the carrier reads back out of the container it created.
+carrier start-private --name "$core" --image "$core_image" --label "$label" \
   --read-only --tmpfs "${scratch_directory}:${core_scratch_bytes}" \
   --bind "$root/core-identity:/run/atelier2-core-identity:ro" \
   --bind "$root/peer:/run/atelier2-peer-authorization:ro" \
@@ -460,91 +420,64 @@ carrier copy-from --container "$core" \
   --source /var/lib/atelier2-candidate/bootstrap.json \
   --source /var/lib/atelier2-candidate/core-peer.json \
   --destination "$root/handoff" --deadline-seconds "$handoff_deadline_seconds"
-# The one extra host surface ADR 0009 sec. 2's 2026-08-22 amendment admits
-# beyond the per-invocation identity material: the provider's own credential
-# directory, bind-mounted READ-ONLY. This unbilled witness holds no credential,
-# so the directory is empty -- but it is mounted in the decided form, and the
-# launcher's inspect attestation refuses any other.
-chmod 0700 "$root/provider-credentials"
-runner_id=$(carrier start-policed --name "$runner" --image "$runner_image" --label "$label" \
-  --network "$network" --subnet "$attempt_subnet" --role runner \
-  "${carrier_hardening[@]}" "${carrier_writable_surface[@]}" \
-  --tmpfs "/workspace:${workspace_bytes}:1777" \
-  --tmpfs "/offer:${offer_bytes}:1777" \
-  --bind "$root/provider-credentials:${credential_directory}:ro" \
-  --volume "$handoff_volume:/handoff:rw" \
-  --volume "$identity_volume:/run/atelier2-identity:ro" \
-  --volume "$journal_volume:/journal:rw")
-
-# Handoff is tmpfs-backed and its content is fully reproducible from the host
-# files already retained under `$root/handoff`; `resume` below calls this a
-# second time to re-populate it after the container's own restart wipes it.
-copy_handoff_into_runner() {
-  carrier copy-into --container "$runner" \
-    --source "$root/handoff/ca.crt" \
-    --source "$root/handoff/core.crt" \
-    --source "$root/handoff/manifest" \
-    --source "$root/handoff/core-peer.json" \
-    --source "$root/handoff/bootstrap.json" \
-    --destination /handoff --deadline-seconds "$handoff_deadline_seconds"
+# The lease is what a Serve endpoint will answer with in C-3; here the witness
+# writes the same facts as one document. The launcher is what turns it into an
+# Attempt -- it holds the Docker authority, this script does not hand it any.
+cat >"$root/leases/open/${lease_id}.json" <<LEASE
+{
+  "binding_path": "$root/handoff/bootstrap.json",
+  "manifest_path": "$root/handoff/manifest",
+  "runner_image": "$runner_image",
+  "serve_container": "$core",
+  "handoff_directory": "$root/handoff",
+  "core_peer_directory": "$root/peer",
+  "issuance_directory": "$root/issuer-output",
+  "provider_credential_source": "$root/provider-credentials"
 }
-copy_handoff_into_runner
-carrier read-file --container "$runner" --path /offer/invocation.json \
-  --user "$runner_user" --maximum-bytes "$maximum_offer_bytes" \
-  --deadline-seconds "$handoff_deadline_seconds" --output "$root/offer/invocation.json"
-uv run --locked python tests/witness/runner_candidate_issuer.py runner --state "$root/issuer" --bootstrap "$root/handoff/bootstrap.json" --invocation-offer "$root/offer/invocation.json" --runner-identity "$root/issuer-output" --core-peer "$root/peer"
-uv run --locked python tests/witness/runner_candidate_issuer.py receiver-record --identity "$root/issuer-output" | docker run -i --rm --name "${runner}-identity-receiver" --label "$label" --network none --user "$runner_user" --read-only --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 16 --memory 32m --cpus 0.1 --tmpfs /tmp:rw,noexec,nosuid,size=1m --mount type=volume,src="$identity_volume",dst=/identity,volume-nocopy --entrypoint atelier2-runner-identity-receiver "$runner_image" --destination /identity
-uv run --locked python tests/witness/runner_candidate_issuer.py unlink-private --key "$root/issuer/ca.key" --key "$root/core-identity/core.key" --key "$root/issuer-output/client.key"
-carrier inspect --container "$runner_id" --output "$root/runner-inspect.json"
-uv run --locked python tests/witness/runner_candidate_issuer.py attest-inspect --inspect "$root/runner-inspect.json" --manifest "$root/handoff/manifest" --output "$root/handoff/inspect-attested"
-runner_status=$(carrier wait --container "$runner")
+LEASE
+launcher_status=0
+uv run --locked python -m atelier2.host.runner_launcher \
+  --lease-directory "$root/leases" \
+  --certificate-authority-state "$root/issuer" \
+  --network-policy-image "$policy_image" --once 2>&1 \
+  | tee "$root/launcher.log" || launcher_status=$?
+network=$(sed -n 's/^attempt-network=//p' "$root/launcher.log")
+if [[ -n "$network" ]]; then
+  # Recorded only once the launcher reported the network it created, so a
+  # concurrent `clean` never mistakes a still-running witness for a released
+  # one (see the "no recorded network" case in `clean`).
+  printf '%s\n' "$network" >"$root/network"
+fi
+# The witness's own disposable CA and Core key: the launcher already unlinked
+# the client key it minted, and nothing on this host may outlive the run.
+uv run --locked python tests/witness/runner_candidate_issuer.py unlink-private --key "$root/issuer/ca.key" --key "$root/core-identity/core.key"
+core_status=$(carrier wait --container "$core")
 if [[ "$scenario" == "crash-after-publish" ]]; then
-  if [[ "$runner_status" != "$crash_after_publish_exit_code" ]]; then
-    printf 'runner did not exit at the declared crash cut: runner=%s expected=%s root=%s\n' \
-      "$runner_status" "$crash_after_publish_exit_code" "$root" >&2
+  # The declared crash really happened and the launcher really resumed from
+  # it: without these two lines a clean first run would pass this scenario
+  # while proving nothing about resume.
+  if ! grep -qx "runner-exit=$crash_after_publish_exit_code" "$root/launcher.log"; then
+    printf 'the launcher did not observe the declared crash cut: expected=%s root=%s\n' \
+      "$crash_after_publish_exit_code" "$root" >&2
     exit 1
   fi
-  # The literal "terminal-record" must match `_RECORD_NAME` in
-  # `src/atelier2/adapters/runner_journal.py` -- the one filename fact this
-  # shell probe and that Python module can only share by declared, matching
-  # literal, the same way `crash_after_publish_exit_code` above does.
-  journal_record=absent
-  if docker run --rm --user root \
-    --mount "type=volume,src=$journal_volume,dst=/journal,volume-nocopy" \
-    --entrypoint test "$runner_image" -f /journal/terminal-record; then
-    journal_record=present
-  fi
-  if [[ "$journal_record" != "present" ]]; then
+  if ! grep -qx "journal-terminal-record=present" "$root/launcher.log"; then
     printf 'journal did not retain a terminal record across the crash: root=%s\n' "$root" >&2
     exit 1
   fi
-  printf 'observed the declared crash after journal.publish; journal retained its terminal record: runner-exit=%s root=%s\n' \
-    "$runner_status" "$root"
-  carrier start --container "$runner"
-  # A restarted container gets a fresh network namespace, so this Attempt's
-  # policy has to be installed into it again before it resumes. Its network
-  # attachment survives the restart, so unlike the first start this cannot put
-  # the policy in first -- the resumed Runner does nothing on the wire until
-  # the handoff below is copied back in.
-  carrier police --container "$runner" --subnet "$attempt_subnet" --role runner
-  copy_handoff_into_runner
-  printf 'restarted the runner container with its identity and journal volumes intact: runner=%s root=%s\n' \
-    "$runner" "$root"
-  runner_status=$(carrier wait --container "$runner")
 fi
-core_status=$(carrier wait --container "$core")
-if [[ "$runner_status" == 0 && "$core_status" == 0 ]]; then
+if [[ "$launcher_status" == 0 && "$core_status" == 0 ]]; then
   if find "$root" -type f -name '*.key' 2>/dev/null | grep -q .; then
     printf 'witness retained a private key: root=%s\n' "$root" >&2
     exit 1
   fi
   released=true
   if [[ "$scenario" == "crash-after-publish" ]]; then
-    printf 'resume delivered the retained evidence through RELEASED: runner=%s core=%s root=%s\n' \
-      "$runner_status" "$core_status" "$root"
+    printf 'resume delivered the retained evidence through RELEASED: core=%s root=%s\n' \
+      "$core_status" "$root"
   fi
 else
-  printf 'candidate did not reach RELEASED: runner=%s core=%s root=%s\n' "$runner_status" "$core_status" "$root" >&2
+  printf 'candidate did not reach RELEASED: launcher=%s core=%s root=%s\n' "$launcher_status" "$core_status" "$root" >&2
   exit 1
 fi
 printf '%s\n' "$root"

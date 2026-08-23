@@ -286,8 +286,16 @@ def _write_json(path: Path, document: dict[str, str]) -> None:
     )
 
 
+# How long Core waits for the launcher to establish the rest of the Attempt --
+# the Runner container, this invocation's issued identity, and the inspect
+# attestation. It is the same bound as the accept above, because it answers the
+# same question: a launcher that is not coming makes this witness fail loudly
+# instead of hanging.
+_LAUNCHER_HANDOFF_TIMEOUT_SECONDS = _ACCEPT_TIMEOUT_SECONDS
+
+
 def _wait_for(path: Path) -> None:
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + _LAUNCHER_HANDOFF_TIMEOUT_SECONDS
     while not path.is_file() and time.monotonic() < deadline:
         time.sleep(0.05)
     if not path.is_file():

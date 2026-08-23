@@ -163,12 +163,12 @@ def test_a_container_is_private_then_policed_and_only_then_connected(
     verbs = [(call[0], call[1]) for call in _calls(tmp_path)]
     assert verbs == [
         ("run", "-d"),
+        ("container", "inspect"),
         ("run", "--rm"),
         ("network", "disconnect"),
         ("network", "connect"),
-        ("container", "inspect"),
     ]
-    created, policed = _calls(tmp_path)[0], _calls(tmp_path)[1]
+    created, policed = _calls(tmp_path)[0], _calls(tmp_path)[2]
     assert created[created.index("--network") + 1] == "none"
     assert policed[policed.index("--network") + 1] == "container:attempt-runner"
 

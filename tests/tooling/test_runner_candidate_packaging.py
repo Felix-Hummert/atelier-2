@@ -65,7 +65,14 @@ def test_stable_serve_files_do_not_adopt_candidate_packaging() -> None:
         assert "Dockerfile.runner" not in text
 
 
-def test_launcher_copies_public_bootstrap_and_keeps_core_inspect_read_only() -> None:
+def test_the_witness_copies_public_bootstrap_and_keeps_core_handoff_read_only() -> None:
+    """Core reads its handoff and never writes it.
+
+    The public bootstrap leaves Core the same way it always did -- copied out
+    of the container -- and the directory it is copied into is bound back into
+    Core read-only, so the attestation Core reads from it is one nothing inside
+    Core could have written.
+    """
     text = LAUNCHER.read_text(encoding="utf-8")
     assert "carrier copy-from --container" in text
     assert "--source /var/lib/atelier2-candidate/bootstrap.json" in text
@@ -73,11 +80,7 @@ def test_launcher_copies_public_bootstrap_and_keeps_core_inspect_read_only() -> 
     assert '"$root/handoff:/handoff"' not in text.replace(
         '"$root/handoff:/handoff:ro"', ""
     )
-    assert '--volume "$handoff_volume:/handoff:rw"' in text
-    assert "--tmpfs /handoff:" not in text
     assert "unlink-private" in text
-    assert "attest-inspect" in text
-    assert '"$root/handoff/inspect-attested"' in text
     core = (PROJECT_ROOT / "tests/witness/runner_candidate_core.py").read_text(
         encoding="utf-8"
     )
@@ -87,10 +90,12 @@ def test_launcher_copies_public_bootstrap_and_keeps_core_inspect_read_only() -> 
     assert 'handoff / "inspect-attested").write' not in core
 
 
-def test_launcher_records_the_witness_network_only_after_it_is_created() -> None:
+def test_the_witness_records_the_attempt_network_the_launcher_reported() -> None:
     """A concurrent `clean` must never see a recorded network before it exists,
-    or it could mistake a still-running witness for a released one."""
+    or it could mistake a still-running witness for a released one. The witness
+    does not name the network at all any more: it records the one the launcher
+    says it created, which cannot precede the creation."""
     text = LAUNCHER.read_text(encoding="utf-8")
-    network_created_at = text.index('carrier create-network --name "$network"')
-    network_recorded_at = text.index('>"$root/network"')
-    assert network_created_at < network_recorded_at
+    reported_at = text.index("sed -n 's/^attempt-network=//p'")
+    recorded_at = text.index('>"$root/network"')
+    assert reported_at < recorded_at
