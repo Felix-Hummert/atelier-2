@@ -48,9 +48,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceHash,
 )
 from atelier2.contracts.runner_manifests import (
-    CANDIDATE_CHILD_PATH_GRANTS,
     RunnerManifestV1,
-    RunnerPathGrant,
     decode_runner_manifest,
     encode_measured_provider_cli,
     runner_manifest_id,
@@ -61,7 +59,11 @@ from atelier2.contracts.runner_session_codec import (
     encode_runner_session_frame,
     runner_session_body_length,
 )
-from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSessionMessage
+from atelier2.contracts.runner_sessions import (
+    NO_REFUSED_EVIDENCE,
+    RunnerSessionFrame,
+    RunnerSessionMessage,
+)
 from atelier2.contracts.runner_terminal_evidence_codec import (
     encode_runner_terminal_evidence_record,
 )
@@ -76,6 +78,8 @@ from atelier2.runner.authorization import (
     resolve_free_runner_authorization,
 )
 from atelier2.runner.executors import (
+    RunnerToolchainRefused,
+    RunnerToolchainUnpinned,
     attest_runner_provider_toolchain,
     runner_executor_cli_pin,
     select_runner_executor,
@@ -256,17 +260,6 @@ def _identity_mount_denied(identity: Path) -> bool:
     return False
 
 
-def child_allowlist() -> tuple[RunnerPathGrant, ...]:
-    """The candidate image's own declared child surface, for the preflight probe.
-
-    A real session takes the child's grants from the manifest Core selected, so
-    no surface reaches a provider child unattested. This is the same declared
-    candidate surface, named once in the contract, for the preflight that runs
-    before any manifest exists.
-    """
-    return CANDIDATE_CHILD_PATH_GRANTS
-
-
 def _runner_workspace_directory() -> Path:
     """The one ephemeral workspace this container was given before it started.
 
@@ -350,6 +343,40 @@ def _measured_ready_payload(
         payload, manifest, auth_reference, runner_executor_cli_pin(manifest)
     )
     return payload
+
+
+def _attested_ready_payload(
+    channel: RunnerFrameChannel,
+    binding: RunnerGenerationBinding,
+    invocation: RunnerInvocationId,
+    sequence: int,
+    manifest: RunnerManifestV1,
+    auth_reference: str,
+    identity: Path,
+) -> tuple[bytes, ...]:
+    """Measure this container for READY, or tell Core by name why it cannot.
+
+    A Runner that cannot attest its own provider toolchain has to say so on
+    the wire before it dies. Dropping the connection would leave Core with a
+    torn socket and no reason, so the refusal Core would have to guess at
+    becomes a REFUSE frame carrying the exact code -- loud and named -- and
+    only then does this lifetime end. Nothing is armed and nothing durable is
+    written on either side.
+    """
+    try:
+        return _measured_ready_payload(manifest, auth_reference, identity)
+    except (RunnerToolchainUnpinned, RunnerToolchainRefused) as refusal:
+        _write_frame(
+            channel,
+            _frame(
+                RunnerSessionMessage.REFUSE,
+                sequence,
+                binding,
+                invocation,
+                (str(refusal).encode("ascii"), NO_REFUSED_EVIDENCE),
+            ),
+        )
+        raise
 
 
 def _decline_crossing_cancel(
@@ -496,7 +523,9 @@ def run_candidate_session(
             sequence,
             binding,
             invocation,
-            _measured_ready_payload(manifest, reference, identity),
+            _attested_ready_payload(
+                channel, binding, invocation, sequence, manifest, reference, identity
+            ),
         ),
     )
     if fence.read_frame().message is not RunnerSessionMessage.LAUNCH:

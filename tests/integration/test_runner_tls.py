@@ -294,8 +294,21 @@ _IDENTITY_MOUNT = {
 _JOURNAL_MOUNT = {"Destination": "/journal", "RW": True, "Type": "volume"}
 
 
+def _credential_mount(manifest, **overrides: object) -> dict[str, object]:
+    """The one read-only host bind ADR 0009 sec. 2's amendment admits."""
+    return {
+        "Destination": manifest.provider_credential_directory.as_posix(),
+        "RW": False,
+        "Type": "bind",
+        **overrides,
+    }
+
+
 def _inspect_document(
-    manifest, security: list[str], tmpfs: dict[str, str] | None = None
+    manifest,
+    security: list[str],
+    tmpfs: dict[str, str] | None = None,
+    mounts: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
         "Image": manifest.image_digest,
@@ -313,14 +326,23 @@ def _inspect_document(
                 **(tmpfs if tmpfs is not None else _writable_surface(manifest)),
             },
         },
-        "Mounts": [_IDENTITY_MOUNT, _JOURNAL_MOUNT],
+        "Mounts": [
+            _IDENTITY_MOUNT,
+            _JOURNAL_MOUNT,
+            *(mounts if mounts is not None else [_credential_mount(manifest)]),
+        ],
     }
 
 
 def _writable_surface(manifest) -> dict[str, str]:
-    """The mount options a launcher must give every writable manifest grant."""
+    """The mount options a launcher must give every writable manifest grant.
+
+    The size comes from the manifest rather than a literal here, because the
+    manifest is what the fence compares against -- a second number would only
+    be able to disagree with it.
+    """
     return {
-        grant.path.as_posix(): "rw,noexec,nosuid,size=16777216"
+        grant.path.as_posix(): f"rw,noexec,nosuid,size={manifest.scratch_bytes}"
         for grant in manifest.child_path_grants
         if grant.right is RunnerPathRight.READ_WRITE
     }
@@ -335,6 +357,13 @@ def _softened_writable_surface(dropped_flag: str) -> dict[str, str]:
 
 _SOFTENED_WITHOUT_NOEXEC = _softened_writable_surface("noexec")
 _SOFTENED_WITHOUT_NOSUID = _softened_writable_surface("nosuid")
+_CREDENTIAL_READ_ONLY = _credential_mount(_candidate_manifest())
+_CREDENTIAL_WRITABLE = _credential_mount(_candidate_manifest(), RW=True)
+_SECOND_HOST_BIND = {
+    "Destination": "/var/lib/atelier2-elsewhere",
+    "RW": False,
+    "Type": "bind",
+}
 
 
 @pytest.mark.parametrize(
@@ -441,6 +470,39 @@ def test_attest_inspect_refuses_a_wrong_identity_or_journal_mount(
     manifest = _candidate_manifest()
     document = _inspect_document(manifest, ["no-new-privileges:true"])
     document["Mounts"] = mounts
+    inspect_path = tmp_path / "inspect.json"
+    inspect_path.write_text(json.dumps(document), encoding="utf-8")
+    manifest_path = tmp_path / "manifest"
+    manifest_path.write_bytes(encode_runner_manifest(manifest))
+
+    with pytest.raises(ValueError, match="runner-attestation-mismatch"):
+        _issuer_module().attest_runner_inspect(
+            inspect_path, manifest_path, tmp_path / "out"
+        )
+
+
+@pytest.mark.parametrize(
+    "mounts",
+    (
+        pytest.param([], id="credential-bind-missing"),
+        pytest.param([_CREDENTIAL_WRITABLE], id="credential-bind-would-be-writable"),
+        pytest.param(
+            [_CREDENTIAL_READ_ONLY, _SECOND_HOST_BIND],
+            id="a-second-host-path-was-bound-in",
+        ),
+    ),
+)
+def test_attest_inspect_admits_only_the_read_only_credential_host_bind(
+    tmp_path: Path, mounts: list[dict[str, object]]
+) -> None:
+    """ADR 0009 sec. 2 admits one host bind beyond the identity material.
+
+    Read-write access to the operator's own credential directory stays
+    forbidden, and no second host path is admitted at all, so the fence has to
+    refuse both a widened right and an extra surface.
+    """
+    manifest = _candidate_manifest()
+    document = _inspect_document(manifest, ["no-new-privileges:true"], mounts=mounts)
     inspect_path = tmp_path / "inspect.json"
     inspect_path.write_text(json.dumps(document), encoding="utf-8")
     manifest_path = tmp_path / "manifest"

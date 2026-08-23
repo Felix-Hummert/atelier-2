@@ -23,7 +23,7 @@ from atelier2.contracts.runner_manifests import (
 _CREDENTIALS = PurePosixPath("/run/atelier2-provider-config")
 _GRANTS = (
     RunnerPathGrant(PurePosixPath("/proc"), RunnerPathRight.READ_ONLY),
-    RunnerPathGrant(_CREDENTIALS, RunnerPathRight.READ_WRITE),
+    RunnerPathGrant(_CREDENTIALS, RunnerPathRight.READ_ONLY),
     RunnerPathGrant(PurePosixPath("/tmp"), RunnerPathRight.READ_WRITE),
     RunnerPathGrant(PurePosixPath("/usr"), RunnerPathRight.READ_ONLY),
 )
@@ -53,6 +53,7 @@ def _manifest() -> RunnerManifestV1:
         reap_deadline_milliseconds=5_000,
         total_attempt_milliseconds=60_000,
         provider_credential_directory=_CREDENTIALS,
+        scratch_bytes=67_108_864,
         child_path_grants=_GRANTS,
     )
 
@@ -78,7 +79,7 @@ def test_manifest_identity_binds_every_attested_runner_fact() -> None:
         {
             "child_path_grants": (
                 RunnerPathGrant(PurePosixPath("/usr"), RunnerPathRight.READ_ONLY),
-                RunnerPathGrant(_CREDENTIALS, RunnerPathRight.READ_WRITE),
+                RunnerPathGrant(_CREDENTIALS, RunnerPathRight.READ_ONLY),
             )
         },
         {
@@ -88,6 +89,14 @@ def test_manifest_identity_binds_every_attested_runner_fact() -> None:
             )
         },
         {"provider_credential_directory": PurePosixPath("/tmp/elsewhere")},
+        {
+            "child_path_grants": tuple(
+                RunnerPathGrant(grant.path, RunnerPathRight.READ_WRITE)
+                if grant.path == _CREDENTIALS
+                else grant
+                for grant in _GRANTS
+            )
+        },
     ),
     ids=(
         "image-digest",
@@ -98,7 +107,8 @@ def test_manifest_identity_binds_every_attested_runner_fact() -> None:
         "no-child-surface",
         "unsorted-child-surface",
         "repeated-child-path",
-        "credential-directory-outside-the-writable-surface",
+        "credential-directory-outside-the-granted-surface",
+        "credential-directory-granted-writable",
     ),
 )
 def test_manifest_refuses_an_unattestable_fact(change: dict[str, object]) -> None:
@@ -131,7 +141,10 @@ def test_manifest_identity_separates_a_widened_child_surface() -> None:
     widened = replace(
         manifest,
         child_path_grants=tuple(
-            RunnerPathGrant(grant.path, RunnerPathRight.READ_WRITE) for grant in _GRANTS
+            grant
+            if grant.path == _CREDENTIALS
+            else RunnerPathGrant(grant.path, RunnerPathRight.READ_WRITE)
+            for grant in _GRANTS
         ),
     )
 

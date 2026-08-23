@@ -709,7 +709,7 @@ def test_replacement_not_allowed_maps_to_the_a_refusal_without_a_second_attempt(
 def test_closed_refusal_vocabulary_is_the_reviewed_a_set() -> None:
     assert "runner-replacement-not-supported-a" in RUNNER_SESSION_REFUSAL_CODES
     assert "runner-cancel-conflict" in RUNNER_SESSION_REFUSAL_CODES
-    assert len(RUNNER_SESSION_REFUSAL_CODES) == 37
+    assert len(RUNNER_SESSION_REFUSAL_CODES) == 38
 
 
 def _free_request(**changes: object) -> AgentExecutionRequestV2:
@@ -868,6 +868,55 @@ def test_core_session_refuses_a_ready_whose_measurement_is_not_a_version() -> No
 
     with pytest.raises(RunnerSessionRefusal, match="runner-session-noncanonical"):
         session.accept(_frame(RunnerSessionMessage.READY, 2, tuple(payload)))
+    assert core.armed == 0
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        "runner-toolchain-unpinned",
+        "runner-provider-cli-absent",
+        "runner-provider-cli-drift",
+        "runner-provider-credential-absent",
+        "runner-provider-policy-present",
+        "runner-provider-toolchain-unusable",
+    ),
+)
+def test_core_learns_a_pre_start_refusal_by_name_instead_of_a_torn_socket(
+    code: str,
+) -> None:
+    """A Runner that cannot attest itself says so; Core never arms on it."""
+    core = _Core()
+    session = _session(core)
+    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+
+    with pytest.raises(RunnerSessionRefusal, match=code):
+        session.accept(
+            _frame(RunnerSessionMessage.REFUSE, 2, (code.encode("ascii"), b""))
+        )
+    assert core.armed == 0
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        pytest.param((b"a-code-core-has-no-vocabulary-for", b""), id="unknown-code"),
+        pytest.param(
+            (b"runner-toolchain-unpinned", b"d" * 64),
+            id="names-evidence-that-cannot-exist",
+        ),
+        pytest.param((b"\xff", b""), id="not-ascii"),
+    ),
+)
+def test_core_refuses_a_pre_start_refusal_it_cannot_read(
+    payload: tuple[bytes, bytes],
+) -> None:
+    core = _Core()
+    session = _session(core)
+    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-session-noncanonical"):
+        session.accept(_frame(RunnerSessionMessage.REFUSE, 2, payload))
     assert core.armed == 0
 
 

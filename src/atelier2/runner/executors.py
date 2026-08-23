@@ -25,6 +25,7 @@ from typing import Protocol
 from atelier2.adapters.claude_subscription import (
     CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
     CONFORMANT_CLAUDE_VERSIONS,
+    CREDENTIAL_RECORD_ENTRY,
     MANAGED_POLICY_ROOTS,
     ClaudeExecutableUnsupported,
     ClaudeManagedPolicyPresent,
@@ -121,17 +122,35 @@ class _ClaudeSubscriptionToolchain:
             measured = MeasuredProviderCli(
                 verify_claude_capability(settings.executable)
             )
+            # An offered credential directory with no credential record at all
+            # is its own refusal, named before the policy attestation runs.
+            # Without this split, an unbilled Runner that simply holds no
+            # credential would be reported as a host where administrator
+            # policy can act, which is a different and much louder claim.
+            record = settings.credential_directory / CREDENTIAL_RECORD_ENTRY
+            if not record.is_file():
+                raise RunnerToolchainRefused("runner-provider-credential-absent")
             attest_no_managed_policy(
                 settings.credential_directory, MANAGED_POLICY_ROOTS
             )
+        except RunnerToolchainRefused:
+            # Already named above; it is a ValueError too, so it must pass
+            # through before the broad clause below can rename it.
+            raise
         except ClaudeExecutableUnsupported as error:
             raise RunnerToolchainRefused("runner-provider-cli-drift") from error
         except ClaudeManagedPolicyPresent as error:
             raise RunnerToolchainRefused("runner-provider-policy-present") from error
-        except (OSError, ValueError) as error:
-            # An unreadable policy surface or credential directory is a
-            # deployment this Runner cannot attest, not one it may assume is
-            # clean: the mount exists and something refused to answer for it.
+        except OSError as error:
+            # Measured, not assumed: `Path.exists()` ignores only ENOENT,
+            # ENOTDIR, EBADF and ELOOP, so a policy surface this Runner may not
+            # stat raises EACCES straight out of `attest_no_managed_policy`
+            # (observed live: PermissionError on a root-owned credential
+            # mount). A surface that refuses to answer is not an absent one.
+            raise RunnerToolchainRefused(
+                "runner-provider-toolchain-unusable"
+            ) from error
+        except ValueError as error:
             raise RunnerToolchainRefused(
                 "runner-provider-toolchain-unusable"
             ) from error

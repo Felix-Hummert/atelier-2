@@ -15,7 +15,7 @@ _CAPABILITIES = re.compile(r"[0-9a-f]{16}")
 _DOTTED_VERSION = re.compile(r"(0|[1-9][0-9]{0,8})(\.(0|[1-9][0-9]{0,8})){2}")
 _FRAME_PREFIX = b"ATELIER2\x00"
 _DOMAIN = b"runner-manifest/v1"
-_FIXED_FIELD_COUNT = 24
+_FIXED_FIELD_COUNT = 25
 _MAXIMUM_PATH_BYTES = 4096
 CANDIDATE_EFFECTIVE_UID = 10001
 CANDIDATE_EFFECTIVE_GID = 10001
@@ -30,7 +30,6 @@ CANDIDATE_TERM_GRACE = 1_000
 CANDIDATE_REAP_DEADLINE = 5_000
 CANDIDATE_ATTEMPT_SPAN = 60_000
 CANDIDATE_SCRATCH_BYTES = 67_108_864
-CANDIDATE_CREDENTIAL_BYTES = 16_777_216
 
 
 class RunnerPathRight(StrEnum):
@@ -58,17 +57,20 @@ class RunnerPathGrant:
 
 CANDIDATE_SCRATCH_DIRECTORY = PurePosixPath("/tmp")
 CANDIDATE_CREDENTIAL_DIRECTORY = PurePosixPath("/run/atelier2-provider-config")
-# The A candidate image's complete provider-child surface. Every writable
-# entry is a `noexec,nosuid` tmpfs the launcher mounts and the launcher's own
-# inspect attestation re-reads, so executable code stays in the read-only
-# image root and the two writable paths below can hold data only.
+# The A candidate image's complete provider-child surface. Exactly one entry is
+# writable -- a `noexec,nosuid` tmpfs the launcher mounts and its own inspect
+# attestation re-reads -- so executable code stays in the read-only image root
+# and the scratch surface can hold data only. The credential directory is
+# read-only here because ADR 0009 sec. 2's 2026-08-22 amendment decided exactly
+# that form: the provider's credential directory is bind-mounted read-only, and
+# a write-capable per-Attempt copy waits on its own operator ruling.
 CANDIDATE_CHILD_PATH_GRANTS = (
     RunnerPathGrant(PurePosixPath("/dev"), RunnerPathRight.READ_ONLY),
     RunnerPathGrant(PurePosixPath("/lib"), RunnerPathRight.READ_ONLY),
     RunnerPathGrant(PurePosixPath("/lib64"), RunnerPathRight.READ_ONLY),
     RunnerPathGrant(PurePosixPath("/opt"), RunnerPathRight.READ_ONLY),
     RunnerPathGrant(PurePosixPath("/proc"), RunnerPathRight.READ_ONLY),
-    RunnerPathGrant(CANDIDATE_CREDENTIAL_DIRECTORY, RunnerPathRight.READ_WRITE),
+    RunnerPathGrant(CANDIDATE_CREDENTIAL_DIRECTORY, RunnerPathRight.READ_ONLY),
     RunnerPathGrant(CANDIDATE_SCRATCH_DIRECTORY, RunnerPathRight.READ_WRITE),
     RunnerPathGrant(PurePosixPath("/usr"), RunnerPathRight.READ_ONLY),
     RunnerPathGrant(PurePosixPath("/workspace"), RunnerPathRight.READ_ONLY),
@@ -176,6 +178,7 @@ class RunnerManifestV1:
     reap_deadline_milliseconds: int
     total_attempt_milliseconds: int
     provider_credential_directory: PurePosixPath
+    scratch_bytes: int
     child_path_grants: tuple[RunnerPathGrant, ...]
 
     def __post_init__(self) -> None:
@@ -210,6 +213,7 @@ class RunnerManifestV1:
             "memory_bytes",
             "cpu_quota_microseconds",
             "workspace_bytes",
+            "scratch_bytes",
             "journal_bytes",
             "terminate_grace_milliseconds",
             "reap_deadline_milliseconds",
@@ -231,6 +235,14 @@ class RunnerManifestV1:
         decoding convenience: two carriers granting the same surface must reach
         the same `RunnerManifestId`, and a repeated path could otherwise carry
         two different rights and let the wider one win silently.
+
+        The credential directory must be granted **read-only**. ADR 0009
+        sec. 2's 2026-08-22 amendment decided exactly one extra host surface
+        beyond the per-invocation identity material -- the provider's own
+        credential directory, bind-mounted read-only -- because a live operator
+        session may hold that directory open. A write-capable per-Attempt copy
+        is explicitly reserved for a later operator ruling, so this contract
+        keeps it unrepresentable rather than deciding it here.
         """
         grants = self.child_path_grants
         if not grants:
@@ -240,12 +252,12 @@ class RunnerManifestV1:
             raise ValueError(
                 "runner manifest child path grants must be sorted and unique"
             )
-        writable = RunnerPathGrant(
-            self.provider_credential_directory, RunnerPathRight.READ_WRITE
+        required_grant = RunnerPathGrant(
+            self.provider_credential_directory, RunnerPathRight.READ_ONLY
         )
-        if writable not in grants:
+        if required_grant not in grants:
             raise ValueError(
-                "runner manifest credential directory must be a granted writable path"
+                "runner manifest credential directory must be a granted read-only path"
             )
 
 
@@ -276,6 +288,7 @@ def encode_runner_manifest(manifest: RunnerManifestV1) -> bytes:
         struct.pack(">Q", manifest.reap_deadline_milliseconds),
         struct.pack(">Q", manifest.total_attempt_milliseconds),
         manifest.provider_credential_directory.as_posix().encode("utf-8"),
+        struct.pack(">Q", manifest.scratch_bytes),
         struct.pack(">Q", len(manifest.child_path_grants)),
         *_encoded_grant_fields(manifest.child_path_grants),
     )
@@ -313,9 +326,9 @@ def decode_runner_manifest(encoded: bytes) -> RunnerManifestV1:
     fields = _decode_manifest_fields(encoded)
     if len(fields) < _FIXED_FIELD_COUNT or fields[2] != b"runner-session/v1":
         raise ValueError("runner-manifest-mismatch")
-    if len(fields[23]) != 8:
+    if len(fields[23]) != 8 or len(fields[24]) != 8:
         raise ValueError("runner-manifest-mismatch")
-    grant_count = struct.unpack(">Q", fields[23])[0]
+    grant_count = struct.unpack(">Q", fields[24])[0]
     if len(fields) != _FIXED_FIELD_COUNT + 2 * grant_count:
         raise ValueError("runner-manifest-mismatch")
     packed = (fields[8], fields[9], fields[10], *fields[14:22])
@@ -358,6 +371,7 @@ def decode_runner_manifest(encoded: bytes) -> RunnerManifestV1:
             integers[9],
             integers[10],
             PurePosixPath(fields[22].decode("utf-8")),
+            struct.unpack(">Q", fields[23])[0],
             _decoded_grants(fields[_FIXED_FIELD_COUNT:]),
         )
     except (TypeError, UnicodeDecodeError, ValueError) as error:
@@ -384,6 +398,7 @@ def candidate_runner_manifest(
     auth_mode: str,
     requested_capability: str,
     provider_credential_directory: PurePosixPath = CANDIDATE_CREDENTIAL_DIRECTORY,
+    scratch_bytes: int = CANDIDATE_SCRATCH_BYTES,
     child_path_grants: tuple[RunnerPathGrant, ...] = CANDIDATE_CHILD_PATH_GRANTS,
 ) -> RunnerManifestV1:
     """The exact A candidate facts the launcher attests and Core selects."""
@@ -410,6 +425,7 @@ def candidate_runner_manifest(
         CANDIDATE_REAP_DEADLINE,
         CANDIDATE_ATTEMPT_SPAN,
         provider_credential_directory,
+        scratch_bytes,
         child_path_grants,
     )
 

@@ -27,6 +27,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from atelier2.adapters.claude_subscription import CLAUDE_SUBSCRIPTION_EXECUTOR_KEY
 from atelier2.adapters.free_runner_executor import (
     FreeRunnerHoldJob,
     FreeRunnerPrintJob,
@@ -34,6 +35,7 @@ from atelier2.adapters.free_runner_executor import (
 )
 from atelier2.application.run_runner_session import (
     CoreRunnerSession,
+    RunnerSessionRefusal,
     encode_runner_prepare_payload,
 )
 from atelier2.contracts.agent_attempts import (
@@ -249,10 +251,12 @@ def _free_request(job_bytes: bytes = _PRINT_JOB_BYTES) -> AgentExecutionRequestV
     )
 
 
-# The one writable surface a session driven on this host may name. The
-# deployed image instead attests its own `noexec,nosuid` tmpfs paths, which do
-# not exist here; every other grant stays read-only either way.
+# The one writable surface a session driven on this host may name, and the
+# read-only path standing in for the credential directory ADR 0009 sec. 2 binds
+# read-only. The deployed image attests its own paths, which do not exist here;
+# the rights are the same either way, which is what these tests are about.
 _HOST_SCRATCH = PurePosixPath("/tmp")
+_HOST_CREDENTIALS = PurePosixPath("/etc")
 
 
 def _host_child_grants() -> tuple[RunnerPathGrant, ...]:
@@ -279,6 +283,7 @@ def _host_child_grants() -> tuple[RunnerPathGrant, ...]:
             Path("/dev"),
             Path(sys.prefix),
             Path(sys.base_prefix),
+            Path(_HOST_CREDENTIALS),
             installed_source_root,
         )
         if path.exists()
@@ -316,7 +321,7 @@ def _host_manifest(**timings: int) -> RunnerManifestV1:
             provider_id="fake-free",
             auth_mode="api_key",
             requested_capability="headless",
-            provider_credential_directory=_HOST_SCRATCH,
+            provider_credential_directory=_HOST_CREDENTIALS,
             child_path_grants=_host_child_grants(),
         ),
         effective_uid=os.getuid(),
@@ -422,6 +427,7 @@ def _spawn_candidate_session(
     identity: Path,
     journal_directory: Path,
     workspace_directory: Path,
+    search_path: str | None = None,
 ) -> subprocess.Popen[bytes]:
     fd = candidate_side.fileno()
     return subprocess.Popen(
@@ -442,6 +448,7 @@ def _spawn_candidate_session(
             str(_STUBBED_PROCESS_LIMIT),
             str(workspace_directory),
         ),
+        env=None if search_path is None else {**os.environ, "PATH": search_path},
         pass_fds=(fd,),
         close_fds=True,
     )
@@ -459,10 +466,20 @@ class _PreparedSession:
     core_session: CoreRunnerSession
 
 
+# The executor revision whose toolchain this repository pins but a bare test
+# host need not carry -- the one pair that lets a wire test drive a real
+# pre-start toolchain refusal without inventing a fake registry entry.
+_CLAUDE_EXECUTOR = (
+    CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.provider_id.value,
+    CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.executor_revision.value,
+)
+
+
 def _prepared_session(
     tmp_path: Path,
     scenario: CandidateScenario = CandidateScenario.SUCCESS,
     job_bytes: bytes | None = None,
+    executor: tuple[str, str] | None = None,
 ) -> _PreparedSession:
     invocation = RunnerInvocationId("B" * 43)
     manifest = _host_manifest(
@@ -470,6 +487,10 @@ def _prepared_session(
         terminate_grace_milliseconds=200,
         reap_deadline_milliseconds=2_000,
     )
+    if executor is not None:
+        manifest = replace(
+            manifest, provider_id=executor[0], executor_revision=executor[1]
+        )
     manifest_path = tmp_path / "manifest"
     manifest_path.write_bytes(encode_runner_manifest(manifest))
     identity = _denied_identity_directory(tmp_path)
@@ -510,6 +531,50 @@ def _prepared_session(
         core,
         core_session,
     )
+
+
+def test_runner_session_wire_names_a_pre_start_toolchain_refusal_to_core(
+    tmp_path: Path,
+) -> None:
+    """A Runner that cannot attest its toolchain tells Core why, then dies.
+
+    Driven end to end over the real socket, with the candidate's own search
+    path emptied so the outcome is the same on every host: the pinned Claude
+    executable is genuinely not resolvable there. Core must learn
+    `runner-provider-cli-absent` from a REFUSE frame -- not infer something
+    from a dropped connection -- and must arm nothing.
+    """
+    prepared = _prepared_session(tmp_path, executor=_CLAUDE_EXECUTOR)
+    core_side, candidate_side = socket.socketpair()
+
+    with core_side:
+        candidate = _spawn_candidate_session(
+            candidate_side,
+            prepared.binding,
+            prepared.invocation,
+            CandidateScenario.SUCCESS,
+            prepared.manifest_path,
+            prepared.identity,
+            prepared.journal_directory,
+            prepared.workspace_directory,
+            search_path=str(tmp_path / "an-empty-search-path"),
+        )
+        candidate_side.close()
+        try:
+            prepare = prepared.core_session.accept(_read_frame(core_side))
+            assert prepare is not None
+            _write_frame(core_side, prepare)
+            refusal = _read_frame(core_side)
+
+            assert refusal.message is RunnerSessionMessage.REFUSE
+            with pytest.raises(
+                RunnerSessionRefusal, match="runner-provider-cli-absent"
+            ):
+                prepared.core_session.accept(refusal)
+        finally:
+            candidate.wait(timeout=30)
+    assert candidate.returncode != 0
+    assert prepared.core.armed == 0
 
 
 @pytest.mark.parametrize(

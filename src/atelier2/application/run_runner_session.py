@@ -36,7 +36,14 @@ from atelier2.contracts.runner_manifests import (
     decode_measured_provider_cli,
     encode_measured_provider_cli,
 )
-from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSessionMessage
+from atelier2.contracts.runner_sessions import (
+    NO_REFUSED_EVIDENCE,
+    REFUSAL_CODE_FIELD,
+    REFUSAL_EVIDENCE_FIELD,
+    RUNNER_SESSION_REFUSAL_CODES,
+    RunnerSessionFrame,
+    RunnerSessionMessage,
+)
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
@@ -183,8 +190,8 @@ def require_ready_matches_manifest(
     manifest: RunnerManifestV1,
     auth_reference: str,
     cli_pin: RunnerExecutorCliPin,
-) -> MeasuredProviderCliVersion:
-    """Hold one READY against the selected manifest, and return what it measured.
+) -> None:
+    """Hold one READY against the selected manifest, or refuse it.
 
     The provider-CLI field is the one attested fact Core cannot restate: the
     conformance set an executor revision names has more than one member, so
@@ -205,7 +212,6 @@ def require_ready_matches_manifest(
         raise RunnerSessionRefusal("runner-attestation-mismatch")
     if not cli_pin.admits(measured):
         raise RunnerSessionRefusal("runner-provider-cli-drift")
-    return measured
 
 
 def _measured_cli_of(payload: tuple[bytes, ...]) -> MeasuredProviderCliVersion:
@@ -311,6 +317,11 @@ class CoreRunnerSession:
             and frame.message is RunnerSessionMessage.REFUSE
         ):
             return self._accept_crossing_cancel_refusal(frame)
+        if (
+            self._phase is _CorePhase.READY
+            and frame.message is RunnerSessionMessage.REFUSE
+        ):
+            raise self._pre_start_refusal(frame)
         expected = {
             _CorePhase.OFFER: RunnerSessionMessage.INVOCATION_OFFER,
             _CorePhase.READY: RunnerSessionMessage.READY,
@@ -363,6 +374,27 @@ class CoreRunnerSession:
             case _CorePhase.RELEASED:
                 return None
         raise AssertionError("runner session phase must be closed")
+
+    def _pre_start_refusal(self, frame: RunnerSessionFrame) -> RunnerSessionRefusal:
+        """The Runner declined this invocation instead of attesting itself.
+
+        A Runner that cannot attest its own provider toolchain answers PREPARE
+        with a named REFUSE rather than dropping the connection, so Core learns
+        *why* nothing will run instead of inferring it from a torn socket. This
+        arms nothing and writes nothing durable; the refusal is terminal, and
+        its code is required to be one this protocol declares, so a Runner
+        cannot mint a reason Core has no vocabulary for.
+        """
+        try:
+            code = _ascii(frame.payload[REFUSAL_CODE_FIELD])
+        except UnicodeDecodeError as error:
+            raise RunnerSessionRefusal("runner-session-noncanonical") from error
+        if (
+            code not in RUNNER_SESSION_REFUSAL_CODES
+            or frame.payload[REFUSAL_EVIDENCE_FIELD] != NO_REFUSED_EVIDENCE
+        ):
+            return RunnerSessionRefusal("runner-session-noncanonical")
+        return RunnerSessionRefusal(code)
 
     def _accept_crossing_cancel_refusal(
         self, frame: RunnerSessionFrame

@@ -47,6 +47,14 @@ _PAYLOAD_FIELD_COUNTS = {
     RunnerSessionMessage.REFUSE: 2,
 }
 
+# A REFUSE names its code first and, second, the retained evidence it is about.
+# A refusal that precedes any evidence -- one a Runner sends before READY,
+# because it cannot attest its own toolchain -- carries an empty second field,
+# because there is honestly nothing yet for it to name.
+REFUSAL_CODE_FIELD = 0
+REFUSAL_EVIDENCE_FIELD = 1
+NO_REFUSED_EVIDENCE = b""
+
 
 @dataclass(frozen=True)
 class RunnerSessionFrame:
@@ -120,6 +128,7 @@ RUNNER_SESSION_REFUSAL_CODES = frozenset(
         "runner-provider-cli-drift",
         "runner-toolchain-unpinned",
         "runner-provider-cli-absent",
+        "runner-provider-credential-absent",
         "runner-provider-policy-present",
         "runner-provider-toolchain-unusable",
         "runner-peer-unverified",

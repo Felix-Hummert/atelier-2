@@ -240,14 +240,16 @@ def _tmpfs_size(options: str) -> int:
 def _attest_writable_surface_is_noexec_tmpfs(
     tmpfs: dict[str, str], manifest: RunnerManifestV1
 ) -> None:
-    """Every writable path the manifest attests must be a `noexec,nosuid` tmpfs.
+    """Every writable path the manifest attests must be a sized `noexec` tmpfs.
 
     The manifest's Landlock grant already denies the child `EXECUTE` beneath a
     writable path; this is the launcher's independent second fence, read back
     out of the container Docker actually created. Executable code therefore
     stays in the read-only image root even if one of the two ever slipped:
     code written into the writable surface cannot be run from it, and nothing
-    there gains privilege through a set-user-ID bit.
+    there gains privilege through a set-user-ID bit. The size is attested too,
+    exactly as `/workspace`'s already is, so the one surface a provider child
+    may fill has an attested bound rather than whatever the launcher typed.
     """
     for grant in manifest.child_path_grants:
         if grant.right is not RunnerPathRight.READ_WRITE:
@@ -257,6 +259,32 @@ def _attest_writable_surface_is_noexec_tmpfs(
             raise ValueError("runner-attestation-mismatch")
         flags = set(options.split(","))
         if not {"noexec", "nosuid"} <= flags or "rw" not in flags:
+            raise ValueError("runner-attestation-mismatch")
+        if _tmpfs_size(options) != manifest.scratch_bytes:
+            raise ValueError("runner-attestation-mismatch")
+
+
+def _attest_credential_directory_is_the_only_read_only_bind(
+    document, manifest: RunnerManifestV1
+) -> None:
+    """The credential directory is bind-mounted read-only, and nothing else is.
+
+    ADR 0009 sec. 2's 2026-08-22 amendment admits exactly one host surface
+    beyond the per-invocation identity material: the provider's own credential
+    directory, read-only. Read-write access to that original directory stays
+    forbidden, because a live operator session may hold it open. This fence
+    reads both halves back out of the created container -- the credential
+    directory is bound and not writable, and no other host path was bound in
+    at all -- so a launcher cannot quietly add a second host surface, and the
+    write-capable per-Attempt copy reserved for its own operator ruling cannot
+    appear here first.
+    """
+    credential = manifest.provider_credential_directory.as_posix()
+    mount = _mount(document, credential)
+    if mount is None or mount.get("RW") is not False or mount.get("Type") != "bind":
+        raise ValueError("runner-attestation-mismatch")
+    for other in document.get("Mounts") or ():
+        if other.get("Type") == "bind" and other.get("Destination") != credential:
             raise ValueError("runner-attestation-mismatch")
 
 
@@ -312,6 +340,7 @@ def attest_runner_inspect(inspect_path: Path, manifest_path: Path, output: Path)
     ):
         raise ValueError("runner-attestation-mismatch")
     _attest_writable_surface_is_noexec_tmpfs(tmpfs, manifest)
+    _attest_credential_directory_is_the_only_read_only_bind(document, manifest)
     output.write_text(runner_manifest_id(manifest).value + "\n", encoding="ascii")
     return 0
 
