@@ -427,6 +427,14 @@ def test_an_answer_carries_a_waiting_v3_line_on_to_its_terminal_hash(
     )
     assert str(answer_state) == WaitAnswerState.APPLIED.value
 
+    # #511: the answer this test just drove through is readable on its own node,
+    # not only folded into the run's terminal hash.
+    found = durable_queries(started.engine).get_node_detail(RUN, WAIT_NODE)
+    assert isinstance(found, NodeDetailFound), found
+    assert found.detail.answer is not None
+    assert found.detail.answer.value == ANSWER
+    assert found.detail.answer.value_hash == Sha256Hash.of(ANSWER)
+
 
 @pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
 def test_an_answered_wait_standing_last_completes_its_own_run(
