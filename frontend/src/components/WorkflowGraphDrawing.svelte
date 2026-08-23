@@ -2,13 +2,12 @@
   let nextMarker = 0;
 
   /**
-   * Form carries type, the same way it does for state (`StateMark`): a shape
-   * class on `.kind-mark`, never a color alone. Only the three kinds the
-   * target mockup (docs/requirements/0003-ziel-ui-mockup-v5.html §03/§04)
-   * names a shape for — circle, square, hexagon — get one here.
-   * `deterministic` and `subworkflow` keep the plain dot this component always
-   * drew; the subworkflow shape is unfixed until a real composed-workflow node
-   * exists to fix it against (ADR 0006), and a dot commits to nothing.
+   * Form carries type, colour carries state (mockup v5 §03/§04): a circle is
+   * an agent, a square an action, a hexagon a wait. Only those three kinds
+   * have a declared shape. `deterministic` and `subworkflow` keep the plain
+   * circle this drawing always drew for them; the subworkflow shape is unfixed
+   * until a real composed-workflow node exists to fix it against (ADR 0006),
+   * and an unmarked circle commits to nothing.
    */
   const KIND_LEGEND_ENTRIES = ["agent", "action", "wait"] as const;
 
@@ -39,7 +38,7 @@
   import { nodeIsLiveWork } from "../lib/liveWatch";
   import type { NodeState } from "../lib/runProjection";
   import { layerWorkflowGraph } from "../lib/workflowGraph";
-  import StateMark, { stateLabels } from "./StateMark.svelte";
+  import { stateGlyphs, stateLabels } from "./StateMark.svelte";
 
   type WorkflowGraphPreview = {
     id: string;
@@ -52,11 +51,9 @@
   export let previews: readonly WorkflowGraphPreview[];
   export let loops: readonly WorkflowGraphLoop[] = [];
   export let rail: readonly { node_id: string; state: NodeState }[] = [];
-  export let nodeReasons: ReadonlyMap<string, string> = new Map();
   export let currentNodeId: string | null = null;
   export let selectedNodeId: string | null = null;
   export let onSelect: ((nodeId: string) => void) | null = null;
-  export let showExcerpt = false;
   export let showLegend = false;
 
   const markerId = `workflow-graph-arrow-${nextMarker++}`;
@@ -209,11 +206,11 @@
     const root = host.getBoundingClientRect();
     const next: EdgePath[] = [];
     for (const preview of previews) {
-      const to = host.querySelector(`[data-node-id="${CSS.escape(preview.id)}"]`);
+      const to = host.querySelector(`[data-node-id="${CSS.escape(preview.id)}"] .pipe-shape`);
       if (!(to instanceof HTMLElement)) continue;
       const toBox = to.getBoundingClientRect();
       for (const dependency of preview.depends_on) {
-        const from = host.querySelector(`[data-node-id="${CSS.escape(dependency)}"]`);
+        const from = host.querySelector(`[data-node-id="${CSS.escape(dependency)}"] .pipe-shape`);
         if (!(from instanceof HTMLElement)) continue;
         const fromBox = from.getBoundingClientRect();
         const x1 = fromBox.left + fromBox.width / 2 - root.left;
@@ -269,75 +266,36 @@
         <path d={edge.d} fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#{markerId})" />
       {/each}
     </svg>
+    {#snippet stageBody(preview: WorkflowGraphPreview, state: NodeState | undefined)}
+      <span class="pipe-shape" aria-hidden="true"><i>{state === undefined ? "" : stateGlyphs[state]}</i></span>
+      <b class="pipe-name">{preview.id}</b>
+    {/snippet}
     {#snippet layerCard(slot: LayerSlot)}
       <div class="graph-layer" data-layer={slot.index}>
         {#each slot.nodes as preview (preview.id)}
           {@const state = stateById.get(preview.id)}
-          {@const label = nodeLabel(preview.id, state)}
-          {@const reason = nodeReasons.get(preview.id)}
           {#if onSelect !== null}
             <button
               type="button"
-              class="graph-node"
+              class="pipe-stage"
               class:current={preview.id === currentNodeId}
               class:live-work={nodeIsLiveWork(state)}
               data-node-id={preview.id}
+              data-node-kind={preview.kind}
               data-layer={slot.index}
               data-state={state}
               data-live={nodeIsLiveWork(state) ? "true" : undefined}
-              aria-label={label}
+              aria-label={nodeLabel(preview.id, state)}
               aria-expanded={selectedNodeId === preview.id}
               on:click={() => onSelect?.(preview.id)}
-            >
-              <header class="graph-node-header">
-                <span class="node-kind">{preview.kind}</span>
-                {#if state !== undefined}
-                  <StateMark {state} />
-                {:else}
-                  <span class="kind-mark kind-mark-{preview.kind}" aria-hidden="true"></span>
-                {/if}
-              </header>
-              <strong class="node-id">{preview.id}</strong>
-              {#if showExcerpt && preview.role !== null}
-                <span class="node-role">{preview.role}</span>
-              {/if}
-              {#if showExcerpt && preview.instruction_start !== null}
-                <p class="node-instruction">{preview.instruction_start}</p>
-              {/if}
-              {#if reason !== undefined}
-                <p class="node-reason" role="alert">{reason}</p>
-              {/if}
-            </button>
+            >{@render stageBody(preview, state)}</button>
           {:else}
-            <article
-              class="graph-node"
-              class:current={preview.id === currentNodeId}
-              class:live-work={nodeIsLiveWork(state)}
+            <span
+              class="pipe-stage"
               data-node-id={preview.id}
+              data-node-kind={preview.kind}
               data-layer={slot.index}
-              data-state={state}
-              data-live={nodeIsLiveWork(state) ? "true" : undefined}
-              aria-label={label}
-            >
-              <header class="graph-node-header">
-                <span class="node-kind">{preview.kind}</span>
-                {#if state !== undefined}
-                  <StateMark {state} />
-                {:else}
-                  <span class="kind-mark kind-mark-{preview.kind}" aria-hidden="true"></span>
-                {/if}
-              </header>
-              <strong class="node-id">{preview.id}</strong>
-              {#if showExcerpt && preview.role !== null}
-                <span class="node-role">{preview.role}</span>
-              {/if}
-              {#if showExcerpt && preview.instruction_start !== null}
-                <p class="node-instruction">{preview.instruction_start}</p>
-              {/if}
-              {#if reason !== undefined}
-                <p class="node-reason" role="alert">{reason}</p>
-              {/if}
-            </article>
+            >{@render stageBody(preview, undefined)}</span>
           {/if}
         {/each}
       </div>
@@ -363,6 +321,8 @@
 <style>
   .workflow-graph {
     position: relative;
+    overflow-x: auto;
+    padding: var(--space-4) 0 var(--space-3);
   }
 
   .graph-edges {
@@ -376,110 +336,162 @@
   }
 
   .graph-layers {
-    display: grid;
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(9rem, 1fr);
-    gap: 1.5rem;
-    align-items: start;
+    display: flex;
+    align-items: flex-start;
+    gap: var(--pipe-link);
     position: relative;
+    width: max-content;
+    min-width: 100%;
   }
 
   .graph-layer {
     display: grid;
-    gap: 0.75rem;
+    justify-items: center;
+    gap: var(--space-3);
   }
 
   /*
    * A loop's body is drawn as one dashed box around its whole line of
-   * members (docs/requirements/0003-ziel-ui-mockup-v5.html §03/§04), never
-   * colored by any node's state -- the box names structure the document
-   * declared, not a run's progress through it.
+   * members (mockup v5 §03/§04), never coloured by any node's state -- the
+   * box names structure the document declared, not a run's progress through
+   * it.
    */
   .loop-box {
     display: flex;
     align-items: flex-start;
-    gap: 1.5rem;
+    gap: var(--pipe-link);
     position: relative;
     border: 1.5px dashed var(--line);
-    border-radius: 0.8rem;
-    padding: 1.15rem 0.75rem 0.75rem;
-  }
-
-  .loop-box > .graph-layer {
-    flex: 1 1 9rem;
-    min-width: 9rem;
+    border-radius: var(--r-lg);
+    padding: var(--space-5) var(--space-2) var(--space-2);
   }
 
   .loop-box-label {
     position: absolute;
-    top: -0.65rem;
-    left: 0.75rem;
-    background: var(--paper);
-    padding: 0 0.4rem;
-    font-size: 0.72rem;
+    top: calc(var(--space-3) * -1);
+    left: var(--space-4);
+    background: var(--ground);
+    padding: 0 var(--space-2);
+    font-size: var(--text-2xs);
     color: var(--muted);
     white-space: nowrap;
   }
 
-  .graph-node {
+  /*
+   * A node is a small shape on a line, not a card: the mockup's pipe. Form is
+   * the kind, colour is the state, the name sits quietly underneath, and
+   * everything else -- role, prompt, output, receipt -- waits for a click.
+   */
+  .pipe-stage {
     display: grid;
-    gap: 0.25rem;
-    width: 100%;
-    min-height: 44px;
-    border: 1px solid var(--line);
-    border-left-width: 0.45rem;
-    border-radius: 0.75rem;
-    padding: 0.65rem 0.75rem;
-    background: var(--paper);
-    color: inherit;
+    justify-items: center;
+    align-content: start;
+    width: var(--pipe-stage);
+    padding: 0;
+    border: 0;
+    border-radius: var(--r);
+    color: var(--queued);
+    background: transparent;
     font: inherit;
-    text-align: left;
-    cursor: default;
+    text-align: center;
   }
 
-  button.graph-node {
+  button.pipe-stage {
     cursor: pointer;
   }
 
-  .graph-node.current {
-    background: color-mix(in srgb, currentColor 8%, var(--paper));
+  .pipe-shape {
+    display: grid;
+    place-items: center;
+    width: var(--pipe-node);
+    height: var(--pipe-node);
+    position: relative;
+    border: var(--pipe-stroke) solid currentColor;
+    border-radius: 50%;
+    background: var(--panel2);
+    color: inherit;
+    font-size: var(--text-sm);
+    font-weight: 700;
   }
 
-  .graph-node[data-state="queued"] {
-    border-left-style: dashed;
-    border-left-color: var(--queued);
+  .pipe-stage[data-node-kind="action"] .pipe-shape {
+    border-radius: var(--r);
   }
 
-  .graph-node[data-state="working"] {
-    border-left-color: var(--working);
+  /* A hexagon cannot be drawn with a border, so the clip is doubled: the outer
+     shape is the colour, the inner one punches the panel back out of it. */
+  .pipe-stage[data-node-kind="wait"] .pipe-shape {
+    border: 0;
+    border-radius: 0;
+    background: currentColor;
+    clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
   }
 
-  .graph-node.live-work {
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--working) 45%, transparent);
+  .pipe-stage[data-node-kind="wait"] .pipe-shape > i {
+    position: absolute;
+    inset: var(--pipe-stroke);
+    display: grid;
+    place-items: center;
+    clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+    background: var(--panel2);
+    font-style: normal;
   }
 
-  .graph-node[data-state="needs_you"] {
-    border-left-color: var(--danger);
+  .pipe-shape > i {
+    font-style: normal;
+    line-height: 1;
   }
 
-  .graph-node[data-state="succeeded"] {
-    border-left-color: var(--accent);
+  .pipe-name {
+    margin-top: var(--space-2);
+    color: var(--ink);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    overflow-wrap: anywhere;
   }
 
-  .graph-node[data-state="failed"],
-  .graph-node[data-state="interrupted"] {
-    border-left-color: var(--warning);
+  .pipe-stage[data-state="working"] {
+    color: var(--working);
   }
 
-  .graph-node[data-state="cancelled"] {
-    border-left-color: var(--queued);
+  .pipe-stage[data-state="needs_you"] {
+    color: var(--danger);
   }
 
-  .graph-node-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
+  .pipe-stage[data-state="succeeded"] {
+    color: var(--accent);
+  }
+
+  .pipe-stage[data-state="failed"],
+  .pipe-stage[data-state="interrupted"] {
+    color: var(--warning);
+  }
+
+  .pipe-stage.current .pipe-name {
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+  }
+
+  .pipe-stage.live-work .pipe-shape::after {
+    content: "";
+    position: absolute;
+    inset: calc(var(--pipe-stroke) * -2.5);
+    border: var(--pipe-stroke) solid currentColor;
+    border-radius: 50%;
+    opacity: 0.55;
+    animation: pipe-pulse 1.6s ease-out infinite;
+  }
+
+  @keyframes pipe-pulse {
+    0% {
+      transform: scale(0.82);
+      opacity: 0.55;
+    }
+
+    100% {
+      transform: scale(1.25);
+      opacity: 0;
+    }
   }
 
   .kind-mark {
@@ -505,13 +517,6 @@
     clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
   }
 
-  .kind-mark-deterministic,
-  .kind-mark-subworkflow {
-    border-radius: 50%;
-    width: 0.5rem;
-    height: 0.5rem;
-  }
-
   .kind-mark-loop {
     border-style: dashed;
     border-radius: 0.2rem;
@@ -520,56 +525,21 @@
   .graph-legend {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.85rem;
-    margin: 0 0 0.75rem;
+    gap: var(--space-4);
+    margin: 0 0 var(--space-3);
     padding: 0;
     list-style: none;
-    font-size: 0.78rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   .graph-legend li {
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
-  }
-
-  .node-id {
-    font-size: 1.05rem;
-  }
-
-  .node-role {
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
-
-  .node-instruction {
-    margin: 0.1rem 0 0;
-    color: var(--muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .node-reason {
-    margin: 0.25rem 0 0;
-    color: var(--warning);
-    font-size: 0.85rem;
-    overflow-wrap: anywhere;
+    gap: var(--space-1);
   }
 
   .muted {
     color: var(--muted);
-  }
-
-  @media (max-width: 40rem) {
-    .graph-layers {
-      grid-auto-flow: row;
-      grid-auto-columns: unset;
-    }
-
-    .loop-box {
-      flex-direction: column;
-    }
   }
 </style>
