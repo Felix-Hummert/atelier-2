@@ -51,6 +51,11 @@ from atelier2.contracts.node_records_v3 import (
     MAXIMUM_KIND_TOKEN_CHARACTERS,
     PersistedReceiptDisposition,
 )
+from atelier2.contracts.queue_projection import (
+    MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
+    MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
+    QueueItemState,
+)
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunState
 from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
@@ -389,6 +394,7 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "tool_redemptions.capability": _values(ToolGrantCapability),
     "catalog_lineages.kind": _values(RevisionKind),
     "catalog_lineage_retirements.state": _values(CatalogRetirementState),
+    "queue_items.state": _values(QueueItemState),
 }
 
 UNDECLARED_VOCABULARIES: frozenset[str] = frozenset(
@@ -504,6 +510,8 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "node_receipts_v3.request_hash",
         "node_receipts_v3.context_package_hash",
         "node_receipts_v3.receipt_hash",
+        "queue_items.item_id",
+        "queue_items.workflow_lineage_id",
     }
 )
 
@@ -543,6 +551,9 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "attempt_instants.started_at": 20,
     "attempt_instants.ended_at": 20,
     "event_instants.recorded_at": 20,
+    "queue_items.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "queue_items.tracker_item_reference": MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
+    "queue_items.admission_rationale": MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
 }
 
 
