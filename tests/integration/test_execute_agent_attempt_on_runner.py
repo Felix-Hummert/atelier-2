@@ -91,6 +91,7 @@ class _ScriptedTransport:
     manifest: RunnerManifestV1
     auth_reference: str
     output_bytes: bytes
+    resend_as_tombstone: bool = False
     drive_calls: int = 0
     envelope: RunnerTerminalEvidenceEnvelope | None = field(default=None, init=False)
 
@@ -113,6 +114,7 @@ class _ScriptedTransport:
             self.manifest,
             self.auth_reference,
             self.output_bytes,
+            resend_as_tombstone=self.resend_as_tombstone,
         )
 
 
@@ -308,6 +310,88 @@ def test_replay_reuses_the_durable_generation_and_publishes_no_second_lease(
             prepared.store.load(prepared.execution.attempt_id).runner_generation_id
             is not None
         )
+    finally:
+        prepared.runtime.close()
+
+
+def test_a_resumed_tombstone_replay_still_translates_into_the_durable_outcome(
+    tmp_path: Path,
+) -> None:
+    """A fresh driver call for the same execution -- a Core/Serve crash
+    followed by DBOS recovery re-invoking `execute_agent_attempt_on_runner`
+    with fresh `store`/`core` instances -- whose reconnecting Runner presents
+    only its already-tombstoned journal (it received Core's ACK before this
+    exact Core process died, the scenario `DbosRunnerSessionCore`'s own
+    `_require_already_acknowledged` docstring names) must still translate
+    RELEASED into the durable `AgentAttemptSucceeded`, not an unhandled
+    `AssertionError` for a `committed_evidence` this path used to leave
+    unset."""
+    prepared = prepared_free_runner_attempt(
+        tmp_path,
+        "runner/on-runner/tombstone-resume",
+        FreeRunnerPrintJob("hello from runner"),
+    )
+    try:
+        manifest = free_runner_candidate_manifest()
+        material = _material(manifest, prepared.auth_reference)
+        leases = FileRunnerLeasePublisher(tmp_path / "leases", tmp_path / "attempts")
+        invocation_id = RunnerInvocationId("D" * 43)
+        lease_id = RunnerLeaseId(prepared.execution.attempt_id.value)
+        writer, errors = _spawn_peer_material_writer(
+            tmp_path / "attempts", lease_id, runner_manifest_id(manifest).value
+        )
+        try:
+            first = execute_agent_attempt_on_runner(
+                prepared.execution,
+                prepared.store,
+                prepared.store,
+                DbosRunnerSessionCore(
+                    prepared.execution,
+                    prepared.store,
+                    "runner-attempt-cancel-1",
+                    engine=prepared.runtime.engine,
+                ),
+                _ScriptedTransport(
+                    invocation_id,
+                    manifest,
+                    prepared.auth_reference,
+                    b'"resume evidence"',
+                ),
+                leases,
+                leases,
+                material,
+                invocation_deadline_seconds=_PEER_MATERIAL_TIMEOUT_SECONDS,
+            )
+        finally:
+            writer.join(timeout=_PEER_MATERIAL_TIMEOUT_SECONDS)
+        assert not errors
+        assert isinstance(first, AgentAttemptSucceeded)
+
+        second = execute_agent_attempt_on_runner(
+            prepared.execution,
+            prepared.store,
+            prepared.store,
+            DbosRunnerSessionCore(
+                prepared.execution,
+                prepared.store,
+                "runner-attempt-cancel-2",
+                engine=prepared.runtime.engine,
+            ),
+            _ScriptedTransport(
+                invocation_id,
+                manifest,
+                prepared.auth_reference,
+                b'"resume evidence"',
+                resend_as_tombstone=True,
+            ),
+            leases,
+            leases,
+            material,
+            invocation_deadline_seconds=_PEER_MATERIAL_TIMEOUT_SECONDS,
+        )
+
+        assert isinstance(second, AgentAttemptSucceeded)
+        assert second.completion == first.completion
     finally:
         prepared.runtime.close()
 

@@ -483,11 +483,23 @@ def drive_free_runner_session_to_released(
     manifest: RunnerManifestV1,
     auth_reference: str,
     output_bytes: bytes,
+    *,
+    resend_as_tombstone: bool = False,
 ) -> RunnerTerminalEvidenceEnvelope:
     """Play the Runner side of one free-runner session directly against a
     real, already-accepted `CoreRunnerSession`, reaching RELEASED without a
-    socket. Returns the terminal evidence envelope this exchange committed,
-    so a caller can assert against the exact bytes its own driver saw."""
+    socket. Returns the terminal evidence envelope this exchange committed
+    (its content, not necessarily the exact bytes on the wire -- see
+    `resend_as_tombstone`), so a caller can assert against it.
+
+    `resend_as_tombstone` plays a *resumed* candidate: one whose journal
+    already tombstoned this exact evidence because it received Core's ACK
+    before this exact Core process died. TERMINAL_AVAILABLE still offers the
+    same evidence hash -- the candidate's journal fixed that fact before the
+    resume, same as any other reconnect -- but TERMINAL_RECORD carries the
+    tombstone in place of the envelope, because the envelope itself is gone
+    from the journal by then.
+    """
 
     def _frame(
         message: RunnerSessionMessage,
@@ -508,6 +520,9 @@ def drive_free_runner_session_to_released(
         RunnerProviderResult(AgentExecutionResult(output_bytes)),
     )
     evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
+    tombstone = RunnerTerminalEvidenceAckTombstone(
+        binding, invocation_id, evidence_hash
+    )
     session.accept(
         _frame(
             RunnerSessionMessage.TERMINAL_AVAILABLE,
@@ -515,15 +530,13 @@ def drive_free_runner_session_to_released(
             (evidence_hash.value.encode("ascii"),),
         )
     )
-    session.accept_terminal_record(
-        _frame(
-            RunnerSessionMessage.TERMINAL_RECORD,
-            5,
-            (encode_runner_terminal_evidence_record(envelope),),
-        )
+    terminal_record_payload = (
+        encode_runner_terminal_evidence_record(tombstone)
+        if resend_as_tombstone
+        else encode_runner_terminal_evidence_record(envelope)
     )
-    tombstone = RunnerTerminalEvidenceAckTombstone(
-        binding, invocation_id, evidence_hash
+    session.accept_terminal_record(
+        _frame(RunnerSessionMessage.TERMINAL_RECORD, 5, (terminal_record_payload,))
     )
     session.accept(
         _frame(
