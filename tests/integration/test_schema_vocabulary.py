@@ -424,6 +424,10 @@ UNOWNED_VOCABULARIES: Mapping[str, str] = {
     "wait_answers.state_version": (
         "a monotonic state-machine counter, not a closed vocabulary"
     ),
+    "webhook_delivery_cursor.cursor_id": (
+        "the fixed identity of the one durable delivery-cursor row, not a "
+        "closed vocabulary of interchangeable values"
+    ),
 }
 
 DECLARED_VOCABULARIES = _declared_vocabularies(SCHEMA_CONDITIONS)

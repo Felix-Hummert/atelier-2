@@ -539,4 +539,37 @@ CREATE TABLE agent_attempts (
 )
 
 """,
+    (30, "runs"): """
+CREATE TABLE runs (
+	run_id TEXT NOT NULL, 
+	bootstrap_workflow_id TEXT NOT NULL, 
+	revision_hash TEXT NOT NULL, 
+	workflow_format_version INTEGER NOT NULL, 
+	agent_binding_set_hash TEXT, 
+	current_node_id TEXT NOT NULL, 
+	current_round_ordinal INTEGER NOT NULL, 
+	state TEXT NOT NULL, 
+	state_version INTEGER NOT NULL, 
+	last_event_sequence INTEGER NOT NULL, 
+	terminal_hash TEXT, 
+	run_configuration_revision_hash TEXT, 
+	PRIMARY KEY (run_id), 
+	UNIQUE (run_id, revision_hash), 
+	UNIQUE (run_id, revision_hash, agent_binding_set_hash), 
+	CHECK (length(run_id) > 0), 
+	CHECK (length(current_node_id) > 0), 
+	CHECK (current_round_ordinal >= 1), 
+	CHECK (workflow_format_version IN (1, 2, 3)), 
+	CHECK ((workflow_format_version = 1 AND agent_binding_set_hash IS NULL) OR (workflow_format_version = 2 AND agent_binding_set_hash IS NOT NULL AND length(agent_binding_set_hash) = 64 AND agent_binding_set_hash NOT GLOB '*[^0-9a-f]*') OR (workflow_format_version = 3 AND (agent_binding_set_hash IS NULL OR (length(agent_binding_set_hash) = 64 AND agent_binding_set_hash NOT GLOB '*[^0-9a-f]*')))), 
+	CHECK (state IN ('STARTED', 'WAITING_RECONCILIATION', 'WAITING_INPUT', 'COMPLETED', 'FAILED', 'CANCELLED')), 
+	CHECK (state_version >= 0), 
+	CHECK (last_event_sequence >= 0), 
+	CHECK ((state IN ('COMPLETED', 'FAILED', 'CANCELLED') AND terminal_hash IS NOT NULL AND length(terminal_hash) = 64 AND terminal_hash NOT GLOB '*[^0-9a-f]*') OR (state NOT IN ('COMPLETED', 'FAILED', 'CANCELLED') AND terminal_hash IS NULL)), 
+	CHECK ((workflow_format_version = 3 AND run_configuration_revision_hash IS NOT NULL AND length(run_configuration_revision_hash) = 64 AND run_configuration_revision_hash NOT GLOB '*[^0-9a-f]*') OR (workflow_format_version <> 3 AND run_configuration_revision_hash IS NULL)), 
+	UNIQUE (bootstrap_workflow_id), 
+	FOREIGN KEY(revision_hash) REFERENCES workflow_revisions (revision_hash), 
+	FOREIGN KEY(run_configuration_revision_hash) REFERENCES run_configuration_revisions (revision_hash)
+)
+
+""",
 }
