@@ -99,6 +99,28 @@ describe("the project run list ranks by last known activity", () => {
     expect(newestActivityFirst([long, short]).map((run) => run.run_id)).toEqual(["short", "long"]);
   });
 
+  it("ranks a run the operator cancelled by when it ended, same as any other terminal run", () => {
+    const cancelled = v3Run({
+      run_id: "cancelled",
+      public_run_reference: "run1.Y2FuY2VsbGVk",
+      state: "CANCELLED",
+      terminal_hash: "f".repeat(64),
+      started_at: "2026-08-18T10:00:00Z",
+      ended_at: "2026-08-18T11:00:00Z"
+    });
+    const later = v3Run({
+      run_id: "later",
+      public_run_reference: "run1.bGF0ZXI",
+      started_at: "2026-08-18T12:00:00Z"
+    });
+
+    expect(runActivityAt(cancelled)).toBe("2026-08-18T11:00:00Z");
+    expect(newestActivityFirst([cancelled, later]).map((run) => run.run_id)).toEqual([
+      "later",
+      "cancelled"
+    ]);
+  });
+
   it("leaves rows without a stamp in the durable order, behind every dated row", () => {
     const dated = v3Run({ run_id: "dated", public_run_reference: "run1.ZGF0ZWQ" });
     const firstUntimed = startedRun({ run_id: "first", public_run_reference: "run1.Zmlyc3Q" });

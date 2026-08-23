@@ -50,10 +50,12 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head gives the queue projection its durable admission row.
-# Predecessor is the published schema with the receipt-access store removed.
+# Movable hop: this head admits CANCELLED as a run ending, so an operator's
+# run-cancel command (#439) has a terminal word of its own instead of
+# borrowing FAILED. Predecessor is the published schema with the queue
+# projection's durable admission row.
 # Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 28
+_HOP_PREDECESSOR_VERSION = 29
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -76,6 +78,7 @@ _VERSION_TWENTY_SIX = 26
 _VERSION_TWENTY_SEVEN = 27
 _VERSION_TWENTY_EIGHT = 28
 _VERSION_TWENTY_NINE = 29
+_VERSION_THIRTY = 30
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -112,13 +115,18 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # V25 gives the host its live-versioned configuration channel, first entry
 # project id → root path, as append-only revisions. V26 adds recommended
 # occupancy per workflow lineage as a second family on that channel: revision
-# header and role bindings, append-only. The hop number is movable:
+# header and role bindings, append-only.
 # V27 gives Core the exact Runner generation/invocation binding and the durable
 # semantic evidence acceptance phase. V28 removes the receipt-access table that
 # never acquired a writer. V29 gives the queue projection its durable admission
 # row: one item identified by its project and tracker reference, CAS-guarded
-# through OBSERVED to ADMITTED under a named catalog workflow binding. The hop
-# number is movable: `_HOP_PREDECESSOR_VERSION` is the one constant to restack.
+# through OBSERVED to ADMITTED under a named catalog workflow binding. V30
+# admits CANCELLED as a run ending, so an operator's run-cancel command (#439)
+# ends the run under its own word instead of standing STARTED with nothing to
+# continue it or borrowing FAILED for something the operator chose. No writer
+# constructs it yet -- #439 P1 gives the word its durable home; P3 gives it a
+# writer. The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
+# constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -143,6 +151,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     27: "7f929ab33c6b8742ff24a301bb13cb1f49a4ced2d96b52b97dbb26196ebd2ac4",
     28: "8e15796b7361796fc5c70e9c1682ddf58b967dea7fb112127366cfca600c9b36",
     29: "06e1d67be5f39569e7661321c063f7ea84c95efba2906519e7473a6f2016b640",
+    30: "1229c61ee62c20531cb31ed324a3b822646d56899f30be62ab1c6abebf325c3c",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -224,6 +233,10 @@ V28_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_TWENTY_EIGHT,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_EIGHT],
 )
+V29_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_TWENTY_NINE,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_NINE],
+)
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[SCHEMA_VERSION],
@@ -294,14 +307,14 @@ runs = sa.Table(
     ),
     sa.CheckConstraint(
         "state IN ('STARTED', 'WAITING_RECONCILIATION', 'WAITING_INPUT', "
-        "'COMPLETED', 'FAILED')"
+        "'COMPLETED', 'FAILED', 'CANCELLED')"
     ),
     sa.CheckConstraint("state_version >= 0"),
     sa.CheckConstraint("last_event_sequence >= 0"),
     sa.CheckConstraint(
-        "(state IN ('COMPLETED', 'FAILED') AND terminal_hash IS NOT NULL "
+        "(state IN ('COMPLETED', 'FAILED', 'CANCELLED') AND terminal_hash IS NOT NULL "
         "AND length(terminal_hash) = 64 AND terminal_hash NOT GLOB '*[^0-9a-f]*') "
-        "OR (state NOT IN ('COMPLETED', 'FAILED') AND terminal_hash IS NULL)"
+        "OR (state NOT IN ('COMPLETED', 'FAILED', 'CANCELLED') AND terminal_hash IS NULL)"
     ),
     sa.CheckConstraint(
         f"(workflow_format_version = {int(WorkflowFormatVersion.V3)} "
@@ -2470,6 +2483,8 @@ def _table_names_for_version(version: int) -> frozenset[str]:
     }
     if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
+    if version == _VERSION_TWENTY_NINE:
+        return PRODUCT_TABLE_NAMES
     if version == _VERSION_TWENTY_EIGHT:
         return predecessor_tables - {_V27_ACCESS_TABLE_NAME}
     if version in {_VERSION_TWENTY_SEVEN, _VERSION_TWENTY_SIX}:
@@ -3296,6 +3311,29 @@ def _apply_v27_to_v28(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_TWENTY_SEVEN, _VERSION_TWENTY_EIGHT)
 
 
+_PREDECESSOR_RUNS_BEFORE_CANCELLED = "runs_before_cancelled_state"
+
+
+def _apply_v29_to_v30(connection: sqlite3.Connection) -> None:
+    """Admit CANCELLED as a run ending, and keep every stored row.
+
+    Every stored run is still STARTED, waiting, COMPLETED, or FAILED, which
+    the widened constraint still admits, and nothing is reinterpreted. #439
+    P1 gives the word its durable home only; no writer constructs it and no
+    serve-start inventory lifts a run onto it until #439 P3 gives it one.
+    """
+
+    _rebuild_product_table(
+        connection,
+        runs,
+        _PREDECESSOR_RUNS_BEFORE_CANCELLED,
+        ("runs_binding_no_update",),
+        _VERSION_TWENTY_NINE,
+        _VERSION_THIRTY,
+    )
+    _raise_declared_version(connection, _VERSION_TWENTY_NINE, _VERSION_THIRTY)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -3372,6 +3410,7 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
             _VERSION_TWENTY_NINE,
         ),
     ),
+    _SchemaMigrationStep(_VERSION_TWENTY_NINE, _VERSION_THIRTY, _apply_v29_to_v30),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
