@@ -1,6 +1,8 @@
 # ADR 0010: One GitHub adapter observes, publishes and reads back; the core stays platform-blind
 
-- Status: PROPOSED 2026-08-15 — decision only, nothing implemented
+- Status: PROPOSED 2026-08-15 — decision only, most of this record unimplemented;
+  §7's client choice ACCEPTED 2026-08-23 (operator ruling on issue #430) —
+  `githubkit`, measured against the `open-pr` operation and recorded in §7
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   story 4, whose "GitHub landet einen nativen Flow" and provider/secret rules this
@@ -459,15 +461,57 @@ token, and an App assertion whose installation tokens must be minted and refresh
 verification. A maintained client owns them, so hand-rolling the REST client is
 refused as a design.
 
-The leading candidate is `githubkit` — typed models generated from GitHub's own
-OpenAPI description, both token and App authentication strategies, and webhook
-verification in one library, on the Pydantic this project already depends on;
-`PyGithub` is the alternative. Carrying both auth methods behind one client is
-itself part of the measurement, since a library that covers only one of them
-leaves the other hand-rolled. The implementing slice confirms the choice by measuring what the
-library deletes and what it makes this project own, and records that measurement.
-Whichever is chosen stays inside the adapter under the boundary contract of
-decision 1.
+**`githubkit` is the client** (operator ruling on issue #430, 2026-08-23):
+typed models generated from GitHub's own OpenAPI description, both token and
+App authentication strategies, and webhook verification in one library, on the
+Pydantic this project already depends on; `PyGithub` was the alternative and is
+not carried. The measurement below is from the `open-pr` operation's live
+adapter (`atelier2.adapters.github.live_effects`), the first slice composed
+against it.
+
+**What `githubkit` deletes for this operation.** Typed request construction —
+the create-pull-request and create-ref bodies are generated `TypedDict`s
+(`ReposOwnerRepoPullsPostBodyType`, `ReposOwnerRepoGitRefsPostBodyType`)
+this adapter fills in rather than hand-shaping JSON. An injectable transport —
+`GitHubCore` accepts an `httpx.BaseTransport`, which is what lets this
+operation's tests exercise the real request and error-handling path against an
+in-memory server rather than the network (`tests/integration/test_github_open_pr_live.py`),
+with no second test-only client to maintain. Retry — `auto_retry` is on by
+default, so a transient failure is the library's job rather than a call site's
+loop. TLS and connection handling — `httpx` owns both, and this adapter never
+touches a socket. A typed exception — `RequestFailed` carries the response, which
+is what lets `execute` tell "this branch ref already exists" (422, the earlier
+attempt's own race) from every other creation failure without parsing status
+codes and bodies by hand. Both the token and the App auth strategies exist in
+the one library, so the second method (not composed by this slice) is a
+configuration choice later rather than a second client to write.
+
+**What this operation still owns, and one caching feature it explicitly
+refuses.** The marker syntax, its placement in a pull request's own body, and
+the readback-then-create idempotency decision (decision 5, `marker.py`) are
+this adapter's, not the client's: `githubkit` has no notion of "the same
+logical effect" — that is exactly the gap ADR 0010 exists to close. So are
+branch naming, deriving a title from the predecessor agent's output, and the
+credential-by-reference boundary (decision 3) — the adapter hands `githubkit`
+a token resolved from a credential directory at `open()`, never a value from
+anywhere else. `githubkit` bundles `hishel` for HTTP-level response caching by
+default (`http_cache=True`); this operation turns it off, because a cached
+"not found" answering a retry's search is exactly the twin the
+readback-then-create rule exists to prevent — the library's caching applies
+here and is a hazard for this specific read, not a feature this operation
+declines out of caution. And this adapter deliberately does not consume
+`githubkit`'s generated response models for `pulls.list`, `pulls.create` or
+`repos.get_branch`: those models require every field GitHub's schema declares,
+including a fully populated nested repository object neither this operation
+nor its readback needs, so this adapter reads the two fields it actually acts
+on (`number`, `body`) from the raw JSON response instead and fails loud on a
+response shaped unlike what a real GitHub answer carries.
+
+Whichever client is chosen stays inside the adapter under the boundary
+contract of decision 1; `githubkit`'s own vocabulary — its models, its
+exception types, `httpx` — does not appear outside
+`atelier2.adapters.github.**`, the same gate ADR 0005 already enforces for
+DBOS and SQLAlchemy.
 
 ## Refusals
 
