@@ -5,7 +5,7 @@ implementation of this protocol: no URL, no header, no timeout budget, no
 retry policy lives here, because none of that is this port's job. What is
 this port's job is naming the three outcomes one delivery attempt can have,
 so `application.deliver_attention_webhook` can classify a failure as worth
-retrying or not without knowing anything about HTTP.
+retrying or not without knowing anything about the wire protocol underneath.
 """
 
 from __future__ import annotations
