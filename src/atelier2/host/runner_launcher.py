@@ -50,14 +50,13 @@ from atelier2.adapters.docker_carrier import (
     VolumeMount,
     attest_runner_container,
 )
-from atelier2.contracts.agent_attempts import (
-    AgentAttemptId,
-    RunnerGenerationBinding,
-    RunnerGenerationId,
-    RunnerInvocationId,
-    RunnerManifestId,
+from atelier2.contracts.agent_attempts import RunnerInvocationId
+from atelier2.contracts.runner_leases import (
+    RunnerLease,
+    decode_runner_binding,
+    decode_runner_lease_document,
+    lease_label,
 )
-from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.contracts.runner_manifests import (
     CANDIDATE_CPU_PERIOD,
     CANDIDATE_WORKSPACE_BYTES,
@@ -98,41 +97,8 @@ _OFFER_BYTES = 1_048_576
 _MAXIMUM_OFFER_BYTES = 4_096
 _HANDOFF_BYTES = 1_048_576
 _TMPFS_MODE = 0o1777
-_LEASE_LABEL = "atelier2.runner-lease"
 _HANDOFF_DEADLINE_SECONDS = 30.0
 _LEASE_POLL_SECONDS = 1.0
-
-
-@dataclass(frozen=True, slots=True)
-class RunnerLease:
-    """One Attempt a launcher may establish, as its source hands it over.
-
-    Everything an Attempt needs and nothing it does not: the generation Core
-    already bound, the image and manifest that generation names, and the host
-    directories this Attempt's material passes through.
-    """
-
-    lease_id: str
-    binding: RunnerGenerationBinding
-    runner_image: str
-    manifest: RunnerManifestV1
-    serve_container: str
-    handoff_directory: Path
-    core_peer_directory: Path
-    issuance_directory: Path
-    provider_credential_source: Path
-
-    @property
-    def label(self) -> str:
-        """What every carrier object of this Attempt carries, so a launcher
-        that died can still be told which objects were its own."""
-        return lease_label(self.lease_id)
-
-    @property
-    def attempt_name(self) -> str:
-        """The one name every object of this Attempt is derived from, so an
-        operator reading the host sees which lease each of them belongs to."""
-        return f"atelier2-attempt-{self.lease_id}"
 
 
 class AttemptRefusal(Exception):
@@ -307,22 +273,6 @@ class AttemptCarrier(Protocol):
     def remove_networks(self, networks: Iterable[str]) -> None: ...
 
 
-def lease_label(lease_id: str) -> str:
-    """The label an Attempt's objects carry, derived from the lease alone."""
-    return f"{_LEASE_LABEL}={lease_id}"
-
-
-def decode_runner_binding(document: bytes) -> RunnerGenerationBinding:
-    """The generation Core bound for one Attempt, as it publishes it."""
-    record = json.loads(document)
-    return RunnerGenerationBinding(
-        AgentAttemptId(record["attempt_id"]),
-        AgentExecutionRequestHash(record["request_hash"]),
-        RunnerGenerationId(record["generation_id"]),
-        RunnerManifestId(record["manifest_id"]),
-    )
-
-
 class FileRunnerLeaseSource:
     """Runner leases as documents in a directory, for a single-host install.
 
@@ -375,23 +325,23 @@ class FileRunnerLeaseSource:
         whatever the writer chose, and reading is already acting on it.
         """
         try:
-            record = json.loads(document.read_text(encoding="utf-8"))
+            fields = decode_runner_lease_document(document.read_bytes())
             binding_path = self._validation.validated_path(
-                Path(record["binding_path"]), "binding_path"
+                fields.binding_path, "binding_path"
             )
             manifest_path = self._validation.validated_path(
-                Path(record["manifest_path"]), "manifest_path"
+                fields.manifest_path, "manifest_path"
             )
             lease = RunnerLease(
                 document.stem,
                 decode_runner_binding(binding_path.read_bytes()),
-                record["runner_image"],
+                fields.runner_image,
                 decode_runner_manifest(manifest_path.read_bytes()),
-                record["serve_container"],
-                Path(record["handoff_directory"]),
-                Path(record["core_peer_directory"]),
-                Path(record["issuance_directory"]),
-                Path(record["provider_credential_source"]),
+                fields.serve_container,
+                fields.handoff_directory,
+                fields.core_peer_directory,
+                fields.issuance_directory,
+                fields.provider_credential_source,
             )
         except (OSError, ValueError, KeyError, TypeError) as unreadable:
             # Truncated JSON, a missing field, a manifest that will not decode:

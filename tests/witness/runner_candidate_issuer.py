@@ -19,6 +19,7 @@ from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
 from atelier2.adapters.runner_child import REQUIRED_LANDLOCK_ABI
 from atelier2.contracts.agent_attempts import RunnerInvocationId
 from atelier2.contracts.agents import AgentExecutionCapability, AuthMode
+from atelier2.contracts.runner_leases import decode_runner_binding
 from atelier2.contracts.runner_manifests import (
     candidate_runner_manifest,
     encode_runner_manifest,
@@ -29,7 +30,6 @@ from atelier2.host.runner_identity import (
     receiver_record,
     unlink_private_keys,
 )
-from atelier2.host.runner_launcher import decode_runner_binding
 
 
 def write_candidate_manifest(
