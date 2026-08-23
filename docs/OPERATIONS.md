@@ -124,13 +124,19 @@ an internal one. Every container is created attached to *no* network, a
 throwaway `CAP_NET_ADMIN` container installs that Attempt's policy inside its
 network namespace and exits, and only then is it connected — so nothing ever
 runs for even one unfiltered packet, and a policy that fails to install leaves
-a container unable to reach anything rather than running wide open. The Runner
-itself carries no packet-filtering tool and no capability to alter what was
-left. The Runner may reach outbound DNS, outbound HTTPS, and its own Attempt
-subnet for Core. Core may reach nothing outbound beyond that subnet: it holds
-the private key and the only store of product truth and has no business on the
-Internet. Inbound, exactly one opening exists in an Attempt: Core accepts its
-own session port from its own subnet, because Core is the only container that
+a container unable to reach anything rather than running wide open. That
+network-none→policy→connect order is structural only for a container's first
+start; `resume` instead restarts an already-attached container and reinstalls
+the policy after it is back on the wire, safe only because the Runner's own
+handoff wait keeps it silent until the policy lands (`runner_candidate.sh`
+`crash-after-publish`) — giving `resume` that same structural guarantee is a
+named open gap. The Runner itself carries no packet-filtering tool and no
+capability to alter what was left. The Runner may reach outbound DNS,
+outbound HTTPS, and its own Attempt subnet for Core. Core may reach nothing
+outbound beyond that subnet: it holds the private key and the only store of
+product truth and has no business on the Internet. Inbound, exactly one
+opening exists in an Attempt: Core accepts its own session port from its own
+subnet, because Core is the only container that
 serves anything. The Runner accepts nothing inbound at all — it dials out, and
 its answers return as established connections. Everything else, in either
 direction, is REJECTed — including IPv6, which gets the same reject chain — so
