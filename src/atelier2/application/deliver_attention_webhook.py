@@ -111,7 +111,7 @@ def deliver_attention_webhook(
     cursor_publisher: WebhookDeliveryPublisher,
     queries: RunEventQueries,
     transport: WebhookTransport,
-    secret: bytes,
+    signing_key: bytes,
 ) -> DeliverAttentionWebhookResult:
     """Deliver the one attention event after the durable cursor, or say why not."""
 
@@ -158,7 +158,7 @@ def deliver_attention_webhook(
         recorded_at=attention_event.recorded_at,
     )
     payload_bytes = webhook_payload_bytes(payload)
-    signature = sign_webhook_payload(secret, payload_bytes)
+    signature = sign_webhook_payload(signing_key, payload_bytes)
 
     attempt = transport.deliver(payload, payload_bytes, signature)
     match attempt:

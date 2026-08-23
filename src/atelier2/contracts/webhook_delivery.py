@@ -179,13 +179,13 @@ def webhook_payload_bytes(payload: WebhookEventPayload) -> bytes:
     return json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def sign_webhook_payload(secret: bytes, payload_bytes: bytes) -> bytes:
+def sign_webhook_payload(signing_key: bytes, payload_bytes: bytes) -> bytes:
     """HMAC-SHA256 over the exact payload bytes -- the plan's committed rule.
 
-    Pure: the secret and the bytes are both call-site parameters, never read
-    from a file or an environment here. Where the secret comes from is
+    Pure: the key and the bytes are both call-site parameters, never read
+    from a file or an environment here. Where the key comes from is
     phase 2's composition concern, per ADR 0009 §6's credential-by-reference
     pattern.
     """
 
-    return hmac.new(secret, payload_bytes, hashlib.sha256).digest()
+    return hmac.new(signing_key, payload_bytes, hashlib.sha256).digest()
