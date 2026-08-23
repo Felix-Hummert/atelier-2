@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import ssl
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -16,9 +18,14 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from atelier2.adapters.runner_tls import (
     CORE_DNS_NAME,
+    CORE_SESSION_PORT,
     CertificatePeerError,
+    CorePeerDocument,
     core_uri_for_certificate,
+    decode_core_peer_document,
+    encode_core_peer_document,
     pin_tls_13,
+    validate_core_peer_leaf,
     validate_peer_certificate,
 )
 from atelier2.contracts.runner_manifests import (
@@ -171,6 +178,51 @@ def test_tls_peer_validation_refuses_a_wrong_ca_before_a_session_operation() -> 
             expected_uri=uri,
             expected_eku=ExtendedKeyUsageOID.SERVER_AUTH,
         )
+
+
+def _core_peer_document(leaf: bytes, port: int = CORE_SESSION_PORT) -> CorePeerDocument:
+    certificate = x509.load_pem_x509_certificate(leaf)
+    uri = certificate.extensions.get_extension_for_class(
+        x509.SubjectAlternativeName
+    ).value.get_values_for_type(x509.UniformResourceIdentifier)[0]
+    fingerprint = hashlib.sha256(
+        certificate.public_bytes(serialization.Encoding.DER)
+    ).hexdigest()
+    return CorePeerDocument(CORE_DNS_NAME, uri, fingerprint, port)
+
+
+def test_core_peer_document_round_trips_through_its_wire_encoding() -> None:
+    _ca, leaf = _certificate()
+    document = _core_peer_document(leaf)
+
+    assert decode_core_peer_document(encode_core_peer_document(document)) == document
+
+
+def test_core_peer_leaf_validation_accepts_the_exact_pinned_certificate() -> None:
+    ca, leaf = _certificate()
+    document = _core_peer_document(leaf)
+    presented_der = x509.load_pem_x509_certificate(leaf).public_bytes(
+        serialization.Encoding.DER
+    )
+
+    validate_core_peer_leaf(presented_der, ca, document)
+
+
+def test_core_peer_leaf_validation_refuses_a_certificate_with_a_wrong_fingerprint() -> (
+    None
+):
+    """The pinned fingerprint is checked in addition to the SAN/CA/EKU fence
+    `validate_peer_certificate` already owns -- a second, differently issued
+    certificate that would otherwise pass every SAN/CA/EKU check must still be
+    refused if it is not the exact leaf byte-for-byte."""
+    ca, leaf = _certificate()
+    document = replace(_core_peer_document(leaf), fingerprint="0" * 64)
+    presented_der = x509.load_pem_x509_certificate(leaf).public_bytes(
+        serialization.Encoding.DER
+    )
+
+    with pytest.raises(CertificatePeerError, match="runner-peer-unverified"):
+        validate_core_peer_leaf(presented_der, ca, document)
 
 
 def test_issuer_identity_read_refuses_extra_entries(tmp_path: Path) -> None:
