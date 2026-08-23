@@ -3090,11 +3090,16 @@ test("a waiting V3 run is answerable on its own run page", async ({ page }) => {
 
   await page.getByRole("button", { name: `ask — ${standingWords.done}` }).click();
   const panel = page.getByRole("complementary");
-  // The node panel's own facts line (#553) replaces the "Done" chip. This
-  // Wait node carries no started_at/ended_at yet -- #562, still open, is what
-  // will make an answered Wait's timestamps readable -- so the line honestly
-  // names only the state it has, no placeholder standing in for the rest.
-  await expect(panel.getByText("Done", { exact: true })).toBeVisible();
+  // The node panel's own facts line (#553) replaces the "Done" chip: one
+  // joined string, state word first, so this pins the structure the line
+  // always has rather than the exact joined text. #562 landed, so an
+  // answered Wait now carries real started_at/ended_at like any other node.
+  await expect(panel.getByText(/^Done · started .* · ended .* · duration/)).toBeVisible();
+  // #562: an answered Wait's own bytes are readable again, not the interim
+  // "answer itself is not yet kept readable" copy.
+  await expect(panel.getByRole("tabpanel", { name: runPageCopy.tabResult })).toHaveText(
+    '"approved"'
+  );
 
   await page.screenshot({
     path: "test-results/v3-run-done-meta-lines-desktop.png",
