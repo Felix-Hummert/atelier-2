@@ -20,5 +20,16 @@ export const studioPageCopy = {
   why: "Why?",
   runsIncomplete: "Board runs incomplete",
   runsUnavailable: "Board runs unavailable",
-  workflowNamesUnavailable: "Workflow names unavailable — showing run ids."
+  workflowNamesUnavailable: "Workflow names unavailable — showing run ids.",
+  /**
+   * The inline decision affordance a boolean/enum wait gate carries on its own
+   * Board card (#572): the same audited POST the run page uses, answered in
+   * two clicks instead of a visit. A free-text gate never offers this --
+   * `needsWrittenAnswer` names that honestly instead.
+   */
+  answerHere: "Answer here",
+  answerHereLooking: "Looking…",
+  answerHereUnavailable: "This gate could not be read here.",
+  needsWrittenAnswer: "This needs a written answer.",
+  openToAnswer: "Open the run to answer"
 } as const;

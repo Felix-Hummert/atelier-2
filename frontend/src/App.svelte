@@ -46,7 +46,7 @@
   {#if route.page === "chat"}
     <ChatPage {navigate} />
   {:else if route.page === "studio"}
-    <StudioPage {cockpitApi} {navigate} />
+    <StudioPage {cockpitApi} {mutationJournal} {navigate} />
   {:else if route.page === "project"}
     <ProjectPage {cockpitApi} {navigate} />
   {:else if route.page === "new"}
