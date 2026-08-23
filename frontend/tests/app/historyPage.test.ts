@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App.svelte";
 import type { AnyRun, CockpitApi, RunV1, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { historyPageCopy } from "../../src/lib/historyPageCopy";
+import { standingWords } from "../../src/lib/runState";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { completedRun, publicReference, revisionHash } from "../support/workflowV1";
 
@@ -91,12 +93,16 @@ afterEach(() => {
 });
 
 describe("History shows only what has finished", () => {
-  it("says nothing finished yet rather than showing an empty table", async () => {
+  it("says nothing finished yet, and teaches where a finished run comes from", async () => {
     openHistory({});
 
     expect((await screen.findByText("No finished runs yet")).isConnected).toBe(true);
     const page = screen.getByRole("region", { name: "History" });
-    expect(within(page).queryByRole("link")).toBeNull();
+    expect(within(page).queryByRole("link", { name: /run/i })).toBeNull();
+    // An empty surface is never a dead end: it names the next step and leads
+    // there (operator ruling 23.08.).
+    const next = within(page).getByRole("link", { name: historyPageCopy.emptyNext });
+    expect(next.getAttribute("href")).toBe("/atelier/workflows");
   });
 
   it("says it is still looking instead of showing an empty table before the read confirms", async () => {
@@ -138,13 +144,15 @@ describe("History shows only what has finished", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
-  it("names the resolved workflow, a plain Completed result and the real duration", async () => {
+  it("names the resolved workflow, its result in the house's one word for it, and the real duration", async () => {
     openHistory({ completed: [v3Run()] }, {
       getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line"))
     });
 
     const row = await screen.findByRole("link", { name: /Two agents in a line/ });
-    expect(row.textContent).toContain("Completed");
+    // The same word the Board and the run page use for a landed run: one
+    // vocabulary, no synonym drift (operator ruling 23.08.).
+    expect(row.textContent).toContain(standingWords.done);
     expect(row.textContent).toContain("38 min");
   });
 
@@ -152,7 +160,7 @@ describe("History shows only what has finished", () => {
     openHistory({ failed: [v1Failed({ run_id: "broke" })] });
 
     const row = await screen.findByRole("link", { name: /broke/ });
-    expect(row.textContent).toContain("Failed at final");
+    expect(row.textContent).toContain(`${standingWords.failed} · final`);
     expect(row.textContent).toContain("Not recorded");
   });
 

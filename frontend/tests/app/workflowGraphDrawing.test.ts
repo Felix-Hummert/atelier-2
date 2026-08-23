@@ -2,6 +2,7 @@ import { cleanup, render, screen, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it } from "vitest";
 
 import WorkflowGraphDrawing from "../../src/components/WorkflowGraphDrawing.svelte";
+import { stateGlyphs } from "../../src/components/StateMark.svelte";
 
 const chain = [
   {
@@ -24,7 +25,7 @@ afterEach(() => cleanup());
 
 describe("the V3 graph drawing", () => {
   it("places nodes in deterministic layers even when the excerpt arrives reversed", () => {
-    render(WorkflowGraphDrawing, { props: { previews: chain, showExcerpt: true } });
+    render(WorkflowGraphDrawing, { props: { previews: chain } });
 
     const graph = screen.getByRole("region", { name: "Workflow" });
     const implement = graph.querySelector('[data-node-id="implement"]');
@@ -36,7 +37,7 @@ describe("the V3 graph drawing", () => {
     expect(graph.querySelector('[data-layer="1"] [data-node-id="review"]')).not.toBeNull();
   });
 
-  it("paints each node's state from the rail by shape and by name", () => {
+  it("carries each node's state in its name and in its mark, never in colour alone", () => {
     render(WorkflowGraphDrawing, {
       props: {
         previews: chain,
@@ -53,15 +54,37 @@ describe("the V3 graph drawing", () => {
     const implement = within(graph).getByRole("button", { name: "implement — Done" });
     const review = within(graph).getByRole("button", { name: "review — Working" });
 
-    expect(implement.querySelector(".state-succeeded")).not.toBeNull();
-    expect(implement.querySelector(".state-shape")?.textContent).toContain("✓");
-    expect(review.querySelector(".state-working")).not.toBeNull();
-    expect(review.querySelector(".state-shape")?.textContent).toContain("▲");
+    expect(implement.getAttribute("data-state")).toBe("succeeded");
+    expect(implement.textContent).toContain(stateGlyphs.succeeded);
+    expect(review.getAttribute("data-state")).toBe("working");
+    expect(review.textContent).toContain(stateGlyphs.working);
     expect(review.classList.contains("current")).toBe(true);
-    expect(review.classList.contains("live-work")).toBe(true);
     expect(review.getAttribute("data-live")).toBe("true");
-    expect(implement.classList.contains("live-work")).toBe(false);
     expect(implement.getAttribute("data-live")).toBeNull();
+  });
+
+  it("carries each node's kind in its shape, and shows no type token beside its name", () => {
+    render(WorkflowGraphDrawing, {
+      props: {
+        previews: [
+          { id: "gate", kind: "wait" as const, role: null, instruction_start: null, depends_on: [] },
+          { id: "open pr", kind: "action" as const, role: null, instruction_start: null, depends_on: ["gate"] }
+        ],
+        onSelect: () => undefined
+      }
+    });
+
+    const graph = screen.getByRole("region", { name: "Workflow" });
+
+    expect(graph.querySelector('[data-node-id="gate"]')?.getAttribute("data-node-kind")).toBe(
+      "wait"
+    );
+    expect(graph.querySelector('[data-node-id="open pr"]')?.getAttribute("data-node-kind")).toBe(
+      "action"
+    );
+    // "WAIT gate" tells a person nothing they can act on (operator, 23.08.):
+    // the shape carries the kind, the legend explains the shape.
+    expect(graph.textContent).not.toContain("wait");
   });
 
   it("still draws a single node that names no edge", () => {

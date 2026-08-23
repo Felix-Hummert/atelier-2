@@ -36,41 +36,55 @@ function open(pathname: string, overrides: Partial<CockpitApi> = {}) {
   });
 }
 
-describe("the run knows where it sits", () => {
-  it("proves(the-deepest-level-shows-the-whole-way-it-sits-on): shows the whole trail from the run, and walks every step of it", async () => {
+/**
+ * Where a page leads back to, and what it never repeats.
+ *
+ * The trail that walked studio → project → run is gone with the ordering the
+ * mockup and the operator's 23.08. ruling put in its place: a page carries one
+ * way back and never restates its own title in a crumb beside it. The two
+ * acceptance sentences that pinned the old trail
+ * (`the-deepest-level-shows-the-whole-way-it-sits-on`,
+ * `every-level-names-the-way-back-up`) served the superseded REQ-UI-01 and were
+ * retired with it in `acceptance/131-the-workshop-has-three-levels.toml`
+ * (#552) — so these tests carry no claim, and there is no sentence left for
+ * them to carry.
+ */
+describe("every page carries one way back and does not repeat its own title", () => {
+  it("leads a run back to the Board, the rail destination it belongs to", async () => {
     open(RUN_PATH);
     await screen.findByRole("heading", { name: "Unnamed workflow" });
 
-    const trail = screen.getByRole("navigation", { name: "Where you are" });
-    expect(within(trail).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
-      "Board",
-      THE_ONE_PROJECT
+    const back = screen.getByRole("navigation", { name: "Where you are" });
+    expect(within(back).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
+      "←Board"
     ]);
-    expect(within(trail).getByText("Unnamed workflow").isConnected).toBe(true);
+    expect(within(back).queryByText("Unnamed workflow")).toBeNull();
 
-    await fireEvent.click(within(trail).getByRole("link", { name: THE_ONE_PROJECT }));
-    expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
-    expect(window.location.pathname).toBe("/atelier/project");
+    await fireEvent.click(within(back).getByRole("link", { name: "Board" }));
 
-    await fireEvent.click(
-      within(screen.getByRole("navigation", { name: "Where you are" })).getByRole("link", {
-        name: "Board"
-      })
-    );
     expect((await screen.findByRole("heading", { name: "Board" })).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier");
   });
 
-  it("names the level it is on without offering it as a step to walk", async () => {
+  it("leads the project back to the Board without naming the project twice", async () => {
     open("/atelier/project");
     await screen.findByRole("heading", { name: THE_ONE_PROJECT });
 
-    const trail = screen.getByRole("navigation", { name: "Where you are" });
-
-    expect(within(trail).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
-      "Board"
+    const back = screen.getByRole("navigation", { name: "Where you are" });
+    expect(within(back).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
+      "←Board"
     ]);
-    expect(within(trail).getByText(THE_ONE_PROJECT).isConnected).toBe(true);
-    expect(screen.queryByRole("link", { name: "← Board" })).toBeNull();
+    expect(within(back).queryByText(THE_ONE_PROJECT)).toBeNull();
+  });
+
+  it("leads the start door back to Workflows, where starting a run belongs", async () => {
+    open("/atelier/new");
+    await screen.findByRole("heading", { name: "Choose a workflow" });
+
+    const back = screen.getByRole("navigation", { name: "Where you are" });
+
+    expect(within(back).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
+      "←Workflows"
+    ]);
   });
 });

@@ -14,7 +14,8 @@ export const workflowsPageCopy = {
   title: "Workflows",
   emptyTitle: "No named workflows yet",
   emptyDescription:
-    "A published workflow becomes a card here once it carries a name.",
+    "A published document becomes a card here once it carries a name — publish one from the start door.",
+  emptyNext: "Publish a workflow",
   listUnavailable: "Workflows unavailable",
   listIncomplete: "Workflows incomplete",
   noDescription: "No description.",
@@ -35,10 +36,17 @@ export const workflowsPageCopy = {
   retiredNotice: "This workflow's catalog lineage was retired. Starting it is not offered here."
 } as const;
 
-export function workflowFormatFact(formatVersion: 1 | 2 | 3, nodeCount: number | null): string {
-  const parts = [`format ${formatVersion}`];
-  if (nodeCount !== null) parts.push(`${nodeCount} nodes`);
-  return parts.join(" · ");
+/**
+ * How big a workflow is, in a word a reader knows.
+ *
+ * "format 3" is this repository's own vocabulary and says nothing to someone
+ * who has not read it (operator ruling 23.08.); the document's version lives
+ * in the start door's expert reveal, where it can matter. A document whose
+ * format declares no node count says nothing rather than guessing one.
+ */
+export function workflowSizeFact(nodeCount: number | null): string | null {
+  if (nodeCount === null) return null;
+  return nodeCount === 1 ? "1 step" : `${nodeCount} steps`;
 }
 
 /**

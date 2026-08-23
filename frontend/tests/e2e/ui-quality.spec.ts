@@ -5,6 +5,9 @@ import { resolve } from "node:path";
 
 import { runPageSchema } from "../../src/api/client";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
+import { projectPageCopy } from "../../src/lib/projectPageCopy";
+import { standingMarks, standingWords } from "../../src/lib/runState";
+import { studioPageCopy } from "../../src/lib/studioPageCopy";
 import {
   unnamedAxeViolations,
   type AxeBaselineEntry,
@@ -13,12 +16,96 @@ import {
 import { completedRun, startedRun, waitingInputRun } from "../support/workflowV1";
 
 const foundReference = "run1.Zm91bmQtcnVu";
+/** The workflow the e2e fixture publishes, and the detail surface it opens. */
+const seededWorkflowName = "iterate-code";
+
+function wrapped(text: string): string {
+  return `[[[ ${text} ]]]`;
+}
 const baseline = JSON.parse(
   readFileSync(resolve(import.meta.dirname, "../support/axeBaseline.json"), "utf8")
 ) as AxeBaselineEntry[];
 
-const surfaces: readonly { surface: CoreSurface; path: string; ready: (page: Page) => Promise<void>; pseudoReady?: (page: Page) => Promise<void> }[] =
+/**
+ * The fixture host publishes one unnamed format-1 document, so no workflow
+ * detail exists on it to scan. The detail surface is therefore served from
+ * routed reads — the page under test is the real one; only what the wire
+ * answers is staged.
+ */
+async function stageNamedWorkflow(page: Page): Promise<void> {
+  const revisionHash = "a".repeat(64);
+  await page.route(/\/workflow-revisions\?/, (route) =>
+    route.fulfill({ json: { items: [], next_after_revision_hash: null } })
+  );
+  const summary = {
+    workflow_revision_hash: revisionHash,
+    workflow_format_version: 3,
+    executable: true,
+    not_executable_reason: null,
+    name: seededWorkflowName,
+    description: "build → review → fix, until green"
+  };
+  const graph = {
+    workflow_format_version: 3,
+    executable: true,
+    not_executable_reason: null,
+    node_count: 3,
+    agent_roles: ["builder", "reviewer"],
+    orders: [],
+    node_previews: [
+      { id: "build", kind: "agent", role: "builder", instruction_start: null, depends_on: [] },
+      { id: "review", kind: "agent", role: "reviewer", instruction_start: null, depends_on: ["build"] },
+      { id: "open pr", kind: "action", role: null, instruction_start: null, depends_on: ["review"] }
+    ],
+    loops: [
+      {
+        id: "until_green",
+        member_node_ids: ["build", "review"],
+        maximum_rounds: 3,
+        repeat_while: { node: "review", verdict: "revise" }
+      }
+    ],
+    name: seededWorkflowName,
+    description: "build → review → fix, until green"
+  };
+  await page.route("**/atelier/api/v1/workflow-revisions/by-name/*", (route) =>
+    route.fulfill({
+      json: {
+        display_name: seededWorkflowName,
+        lineage_id: "b".repeat(64),
+        workflow_revision_hash: revisionHash,
+        revision_number: 1
+      }
+    })
+  );
+  await page.route(`**/atelier/api/v1/workflow-revisions/${revisionHash}`, (route) =>
+    route.fulfill({ json: { workflow_revision_hash: revisionHash, document_base64: "YQ==", graph } })
+  );
+  // A regular expression, not a glob: `workflow-revisions?*` also matches the
+  // detail path, and a later route wins, so the list would swallow it.
+  await page.route(/\/workflow-revisions\?/, (route) =>
+    route.fulfill({ json: { items: [summary], next_after_revision_hash: null } })
+  );
+}
+
+const surfaces: readonly {
+  surface: CoreSurface;
+  path: string;
+  ready: (page: Page) => Promise<void>;
+  pseudoReady?: (page: Page) => Promise<void>;
+  prepare?: (page: Page) => Promise<void>;
+}[] =
   [
+    {
+      surface: "chat",
+      path: "/atelier/chat",
+      ready: async (page) => {
+        await expect(page.getByRole("heading", { name: "Chat", exact: true })).toBeVisible();
+      },
+      pseudoReady: async (page) => {
+        await expect(page.getByRole("heading", { name: "[[[ Chat ]]]" })).toBeVisible();
+      }
+    },
     {
       surface: "studio",
       path: "/atelier",
@@ -54,8 +141,20 @@ const surfaces: readonly { surface: CoreSurface; path: string; ready: (page: Pag
     {
       surface: "workflows",
       path: "/atelier/workflows",
+      prepare: stageNamedWorkflow,
       ready: async (page) => {
-        await expect(page.getByRole("heading", { name: "Workflows" })).toBeVisible();
+        await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+        await expect(page.getByRole("button", { name: seededWorkflowName })).toBeVisible();
+      }
+    },
+    {
+      surface: "workflow-detail",
+      path: `/atelier/workflows/${encodeURIComponent(seededWorkflowName)}`,
+      prepare: stageNamedWorkflow,
+      ready: async (page) => {
+        await expect(
+          page.getByRole("heading", { level: 1, name: seededWorkflowName })
+        ).toBeVisible();
       }
     },
     {
@@ -127,7 +226,8 @@ async function expectStudioCopyFits(page: Page, desktop: boolean): Promise<void>
 }
 
 test("proves(core-surfaces-have-no-unnamed-axe-violations): core surfaces have no unnamed axe-core violations", async ({ page }) => {
-  for (const { surface, path, ready } of surfaces) {
+  for (const { surface, path, ready, prepare } of surfaces) {
+    await prepare?.(page);
     await page.goto(path);
     await ready(page);
     const unnamed = unnamedAxeViolations(surface, await scanSurface(page), baseline);
@@ -136,7 +236,8 @@ test("proves(core-surfaces-have-no-unnamed-axe-violations): core surfaces have n
 });
 
 test("core surfaces render owned display strings under a pseudo-locale", async ({ page }) => {
-  for (const { path, ready, pseudoReady } of surfaces) {
+  for (const { path, ready, pseudoReady, prepare } of surfaces) {
+    await prepare?.(page);
     const separator = path.includes("?") ? "&" : "?";
     await page.goto(`${path}${separator}pseudo-locale=1`);
     if (path === "/atelier") {
@@ -152,7 +253,9 @@ test("core surfaces render owned display strings under a pseudo-locale", async (
     await expect(rail.getByText("[[[ Board ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ Workflows ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ History ]]]", { exact: true })).toBeVisible();
-    await expect(rail.getByText("[[[ (later) ]]]", { exact: true })).toHaveCount(2);
+    // Only Settings and Profile are still marked later; every rail destination
+    // opens a page, so none of them wears the marker any more.
+    await expect(rail.getByText("[[[ (later) ]]]", { exact: true })).toHaveCount(1);
     await expect(rail.getByText("[[[ switch project ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ Settings ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ Profile ]]]", { exact: true })).toBeVisible();
@@ -185,8 +288,10 @@ test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio keep
     await expect(page.getByText("[[[ Atelier ]]]", { exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "[[[ Board ]]]" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "[[[ Nothing is running ]]]" })).toBeVisible();
-    await expect(page.getByText("[[[ A run appears here the moment a workflow starts. ]]]", { exact: true })).toBeVisible();
-    await expect(page.getByRole("link", { name: "[[[ Start your first workflow ]]]" })).toBeVisible();
+    await expect(
+      page.getByText(wrapped(studioPageCopy.emptyDescription), { exact: true })
+    ).toBeVisible();
+    await expect(page.getByRole("link", { name: wrapped(studioPageCopy.emptyStart) })).toBeVisible();
     await expectStudioCopyFits(page, viewport.width === 1280);
     await page.screenshot({ path: `test-results/studio-empty-${viewport.width}.png`, fullPage: true });
   }
@@ -205,15 +310,23 @@ test("Project keeps work, absence, loading, and retained failure readable", asyn
       await page.setViewportSize(viewport);
       reply = "common";
       await page.goto(`/atelier/project${suffix}`);
-      await expect(page.getByText("Project runs unavailable")).toHaveCount(0);
-      await expect(page.getByRole("region", { name: "Running" })).toContainText("▲Running");
-      await expect(page.getByRole("region", { name: "Waiting for you" })).toContainText("⬢Waiting for you");
-      await expect(page.getByRole("region", { name: "Done" })).toContainText("●Done");
+      await expect(
+        page.getByText(pseudoLocale ? wrapped(projectPageCopy.runsUnavailable) : projectPageCopy.runsUnavailable)
+      ).toHaveCount(0);
+      const work = page.getByRole("region", {
+        name: pseudoLocale ? wrapped(projectPageCopy.workTitle) : projectPageCopy.workTitle
+      });
+      for (const standing of ["running", "waiting", "done"] as const) {
+        const word = pseudoLocale ? wrapped(standingWords[standing]) : standingWords[standing];
+        await expect(work).toContainText(`${standingMarks[standing]} 1 ${word}`);
+      }
       await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-common.png`, fullPage: true });
 
       reply = "empty";
       await page.goto(`/atelier/project${suffix}`);
-      await expect(page.getByText(pseudoLocale ? "[[[ No runs here yet. ]]]" : "No runs here yet.")).toBeVisible();
+      await expect(
+        page.getByText(pseudoLocale ? wrapped(projectPageCopy.noRuns) : projectPageCopy.noRuns)
+      ).toBeVisible();
       await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-empty.png`, fullPage: true });
 
       reply = "loading";
@@ -221,10 +334,9 @@ test("Project keeps work, absence, loading, and retained failure readable", asyn
       await expect(page.getByText("Looking…")).toBeVisible();
       await page.locator("main.workshop-stage").evaluate((stage) => { stage.scrollTop = 0; });
       await expect(page.getByRole("heading", { level: 1, name: THE_ONE_PROJECT })).toBeVisible();
-      await expect(page.getByRole("link", { name: pseudoLocale ? "[[[ Start a run ]]]" : "Start a run" })).toBeVisible();
       await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-loading.png`, fullPage: true });
       loading.release();
-      await expect(page.getByRole("region", { name: "Running" })).toBeVisible();
+      await expect(work).toBeVisible();
 
       // No manual refresh exists once a read is confirmed (#532): the only
       // reachable failure a fresh navigation can show is its own read
@@ -232,14 +344,18 @@ test("Project keeps work, absence, loading, and retained failure readable", asyn
       reply = "retained-error";
       loading.retainedReads = 1;
       await page.goto(`/atelier/project${suffix}`);
-      await expect(page.getByText("Project runs unavailable")).toBeVisible();
+      await expect(
+        page.getByText(pseudoLocale ? wrapped(projectPageCopy.runsUnavailable) : projectPageCopy.runsUnavailable)
+      ).toBeVisible();
       const retry = page.getByRole("button", { name: "Retry project runs" });
       await expect(retry).toBeVisible();
       await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-unavailable.png`, fullPage: true });
 
       reply = "common";
       await retry.click();
-      await expect(page.getByRole("region", { name: "Running" })).toBeVisible();
+      await expect(work).toContainText(
+        pseudoLocale ? wrapped(standingWords.running) : standingWords.running
+      );
       await expect(page.getByRole("button", { name: /project runs/ })).toHaveCount(0);
     }
   }

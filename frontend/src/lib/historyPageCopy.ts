@@ -6,6 +6,10 @@
  * and `studioPageCopy` already hold to, so `?pseudo-locale=1`
  * (`wrapDisplayCopy`) can prove every string here has a source instead of a
  * second hardcoded copy inline in the page.
+ *
+ * The word for a run's state is not owned here: `standingWords` in
+ * `runState.ts` owns it for every surface, so "Done" reads the same on the
+ * Board, on the run and in this table (operator ruling 23.08.).
  */
 export const historyPageCopy = {
   eyebrow: "Atelier",
@@ -15,12 +19,11 @@ export const historyPageCopy = {
   listUnavailable: "History unavailable",
   listIncomplete: "History incomplete",
   emptyTitle: "No finished runs yet",
-  emptyDescription: "A run appears here once it completes or fails.",
+  emptyDescription: "Runs land here once they finish — start one from a workflow.",
+  emptyNext: "Open Workflows",
   columnName: "Name",
   columnResult: "Result",
   columnDuration: "Took",
-  resultCompleted: "Completed",
-  resultFailedAt: "Failed at",
   durationNotRecorded: "Not recorded",
   /**
    * Only shown when a listed row carries no V3 timestamp (a V1 or V2 run):

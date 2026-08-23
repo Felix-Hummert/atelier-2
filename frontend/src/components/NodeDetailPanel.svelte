@@ -1,3 +1,26 @@
+<script lang="ts" context="module">
+  /**
+   * The five tabs a node carries (mockup v5 §03), in the order it draws them.
+   *
+   * A node keeps its whole history: what it produced, what it read, what it
+   * was asked, what it printed while it ran, and what proves all of that. The
+   * tabs exist even where the house cannot fill them yet — a tab that says
+   * plainly what is missing and who owns it is the honest shape; a tab that
+   * is silently absent is not.
+   */
+  export const NODE_TABS = ["result", "input", "prompt", "log", "evidence"] as const;
+
+  export type NodeTab = (typeof NODE_TABS)[number];
+
+  /** Everything about this run that only the Evidence tab is allowed to show. */
+  export type RunEvidence = {
+    runId: string;
+    workflowRevisionHash: string;
+    runConfigurationRevisionHash: string;
+    terminalHash: string | null;
+  };
+</script>
+
 <script lang="ts">
   import type { NodeDetail } from "../api/client";
   import { wrapDisplayCopy } from "../lib/displayCopy";
@@ -8,6 +31,7 @@
     notRecordedCopy,
     runPageCopy
   } from "../lib/runPageCopy";
+  import { runHeaderCopy } from "../lib/runPages";
   import InfoHint from "./InfoHint.svelte";
   import ProofAnchor from "./ProofAnchor.svelte";
   import StateMark from "./StateMark.svelte";
@@ -15,6 +39,45 @@
 
   export let detail: NodeDetail;
   export let onClose: () => void;
+  /** The earlier nodes this one reads, as the published document declares them. */
+  export let readsFrom: readonly string[] = [];
+  export let runEvidence: RunEvidence;
+
+  const tabLabels: Record<NodeTab, string> = {
+    result: runPageCopy.tabResult,
+    input: runPageCopy.tabInput,
+    prompt: runPageCopy.tabPrompt,
+    log: runPageCopy.tabLog,
+    evidence: runPageCopy.tabEvidence
+  };
+
+  /**
+   * Which tab a node opens on, decided by what it is doing — never "the first
+   * one" (operator ruling 23.08.).
+   *
+   * A node that produced something opens on that. A node that stopped opens on
+   * Result too, because that is where the refusal that stopped it stands — the
+   * mockup opens a failure on its log, and the log does not exist yet (#104),
+   * so opening there would greet the operator with an empty tab instead of the
+   * reason. Anything still ahead of its work opens on what it was asked.
+   */
+  const OPENING_TAB: Record<NodeDetail["state"], NodeTab> = {
+    succeeded: "result",
+    failed: "result",
+    cancelled: "result",
+    interrupted: "result",
+    needs_you: "prompt",
+    working: "prompt",
+    queued: "prompt"
+  };
+
+  let openedNodeId: string | null = null;
+  let tab: NodeTab = "result";
+
+  $: if (openedNodeId !== detail.node_id) {
+    openedNodeId = detail.node_id;
+    tab = OPENING_TAB[detail.state];
+  }
 
   /**
    * Three situations this panel must never blur into each other.
@@ -52,16 +115,9 @@
   }
 </script>
 
-<aside
-  class="node-panel"
-  class:live-work={detail.state === "working" && situation !== "refused"}
-  aria-labelledby="node-panel-title"
->
+<aside class="node-panel" aria-labelledby="node-panel-title">
   <header>
-    <div>
-      <p class="eyebrow">Node</p>
-      <h2 id="node-panel-title">{detail.node_id}</h2>
-    </div>
+    <h2 id="node-panel-title">{detail.node_id}</h2>
     <div class="standing">
       <StateMark state={detail.state} />
       <button type="button" class="close" on:click={onClose} aria-label="Close node detail">
@@ -70,114 +126,299 @@
     </div>
   </header>
 
-  {#if situation === "refused"}
-    <p class="refusal" role="alert">
-      <strong>Stopped here:</strong>
-      {detail.refusal}
-    </p>
-  {:else if situation === "waiting"}
-    <p class="waiting" role="status">
-      Waiting for the work before it. Nothing has been refused.
-    </p>
-  {/if}
+  <div class="node-tabs" role="tablist" aria-label={wrapDisplayCopy(runPageCopy.tabsLabel)}>
+    {#each NODE_TABS as candidate (candidate)}
+      <button
+        type="button"
+        role="tab"
+        id={`node-tab-${candidate}`}
+        class="node-tab"
+        class:on={tab === candidate}
+        aria-selected={tab === candidate}
+        aria-controls={`node-tabpanel-${candidate}`}
+        on:click={() => { tab = candidate; }}
+      >{wrapDisplayCopy(tabLabels[candidate])}</button>
+    {/each}
+  </div>
 
-  <section aria-labelledby="node-panel-prompt">
-    <h3 id="node-panel-prompt">{wrapDisplayCopy(runPageCopy.prompt)}</h3>
-    {#if detail.job_base64 === null}
-      <p class="muted">{wrapDisplayCopy(emptyPromptCopy(detail.state))}</p>
+  <div
+    class="node-tabpanel"
+    role="tabpanel"
+    id={`node-tabpanel-${tab}`}
+    aria-labelledby={`node-tab-${tab}`}
+  >
+    {#if tab === "result"}
+      {#if situation === "refused"}
+        <p class="refusal" role="alert">
+          <strong>Stopped here:</strong>
+          {detail.refusal}
+        </p>
+      {:else if situation === "waiting"}
+        <p class="waiting" role="status">
+          Waiting for the work before it. Nothing has been refused.
+        </p>
+      {/if}
+      {#if detail.answer === null}
+        <p class="muted">{wrapDisplayCopy(emptyOutputCopy(detail.state))}</p>
+      {:else}
+        <pre class="exact">{decoded(detail.answer.value_base64)}</pre>
+      {/if}
+    {:else if tab === "input"}
+      {#if readsFrom.length === 0}
+        <p class="muted">{wrapDisplayCopy(runPageCopy.inputNone)}</p>
+      {:else}
+        <p class="reads-from">
+          <span class="reads-from-label">{wrapDisplayCopy(runPageCopy.inputReads)}</span>
+          {#each readsFrom as source (source)}
+            <span class="reads-from-node">{source}</span>
+          {/each}
+        </p>
+        <p class="muted">{wrapDisplayCopy(runPageCopy.inputElsewhere)}</p>
+      {/if}
+    {:else if tab === "prompt"}
+      {#if detail.job_base64 === null}
+        <p class="muted">{wrapDisplayCopy(emptyPromptCopy(detail.state))}</p>
+      {:else}
+        <pre class="exact">{decoded(detail.job_base64)}</pre>
+      {/if}
+    {:else if tab === "log"}
+      <p class="muted">{wrapDisplayCopy(runPageCopy.processLogInLease)}</p>
+      <p class="muted">{wrapDisplayCopy(runPageCopy.logAbsent)}</p>
     {:else}
-      <pre class="exact">{decoded(detail.job_base64)}</pre>
-      {#if detail.job_hash !== null}
-        <p class="hash">
+      <section aria-labelledby="node-panel-who">
+        <h3 id="node-panel-who">{wrapDisplayCopy(runPageCopy.who)}</h3>
+        {#if detail.provenance === null}
+          <p class="muted">{wrapDisplayCopy(emptyWhoCopy(detail.state))}</p>
+        {:else}
+          <p class="who">
+            {detail.provenance.role} · {detail.provenance.provider_id} ·
+            {detail.provenance.executor_revision}
+          </p>
+          <p class="who-fact">
+            {wrapDisplayCopy(runPageCopy.declaredModel)}
+            <span>{detail.provenance.model}</span>
+          </p>
+        {/if}
+        <p class="who-fact">
+          {wrapDisplayCopy(runPageCopy.resolvedModel)}
+          <InfoHint
+            label={runPageCopy.resolvedModelMissingWhy}
+            exact={runPageCopy.resolvedModelMissingExact}
+          />
+          <span class="muted">{wrapDisplayCopy(notRecordedCopy(detail.state))}</span>
+        </p>
+        {#if detail.started_at}
+          <p class="when-ran">
+            {wrapDisplayCopy(runPageCopy.duration)}
+            <When startedAt={detail.started_at} endedAt={detail.ended_at ?? null} kind="duration" />
+          </p>
+        {/if}
+        <p class="who-fact">
+          {wrapDisplayCopy(runPageCopy.usage)}
+          <InfoHint label={runPageCopy.usageMissingWhy} exact={runPageCopy.usageMissingExact} />
+          <span class="muted">{wrapDisplayCopy(notRecordedCopy(detail.state))}</span>
+        </p>
+      </section>
+
+      <section aria-labelledby="node-panel-run-evidence">
+        <h3 id="node-panel-run-evidence">{wrapDisplayCopy(runPageCopy.evidenceRun)}</h3>
+        {#if detail.provenance !== null}
+          <ProofAnchor
+            label={wrapDisplayCopy(runPageCopy.receiptHash)}
+            seals={runPageCopy.sealsReceipt}
+            value={detail.provenance.receipt_hash}
+          />
+        {/if}
+        {#if detail.job_hash !== null}
           <ProofAnchor
             label={wrapDisplayCopy(runPageCopy.promptHash)}
             seals={runPageCopy.sealsPrompt}
             value={detail.job_hash}
-            compact={true}
           />
-        </p>
-      {/if}
-    {/if}
-  </section>
-
-  <section aria-labelledby="node-panel-output">
-    <h3 id="node-panel-output">{wrapDisplayCopy(runPageCopy.output)}</h3>
-    {#if detail.answer === null}
-      <p class="muted">{wrapDisplayCopy(emptyOutputCopy(detail.state))}</p>
-    {:else}
-      <pre class="exact">{decoded(detail.answer.value_base64)}</pre>
-      <p class="hash">
+        {/if}
+        {#if detail.answer !== null}
+          <ProofAnchor
+            label={wrapDisplayCopy(runPageCopy.outputHash)}
+            seals={runPageCopy.sealsOutput}
+            value={detail.answer.value_hash}
+          />
+        {/if}
         <ProofAnchor
-          label={wrapDisplayCopy(runPageCopy.outputHash)}
-          seals={runPageCopy.sealsOutput}
-          value={detail.answer.value_hash}
-          compact={true}
+          label={wrapDisplayCopy(runHeaderCopy.runIdLabel)}
+          seals={runHeaderCopy.sealsRunId}
+          value={runEvidence.runId}
         />
-      </p>
-    {/if}
-  </section>
-
-  <section aria-labelledby="node-panel-who">
-    <h3 id="node-panel-who">{wrapDisplayCopy(runPageCopy.who)}</h3>
-    {#if detail.provenance === null}
-      <p class="muted">{wrapDisplayCopy(emptyWhoCopy(detail.state))}</p>
-    {:else}
-      <p class="who">
-        {detail.provenance.role} · {detail.provenance.provider_id} ·
-        {detail.provenance.executor_revision}
-      </p>
-      <p class="who-fact">
-        {wrapDisplayCopy(runPageCopy.declaredModel)}
-        <span>{detail.provenance.model}</span>
-      </p>
-    {/if}
-    <p class="who-fact">
-      {wrapDisplayCopy(runPageCopy.resolvedModel)}
-      <InfoHint
-        label={runPageCopy.resolvedModelMissingWhy}
-        exact={runPageCopy.resolvedModelMissingExact}
-      />
-      <span class="muted">{wrapDisplayCopy(notRecordedCopy(detail.state))}</span>
-    </p>
-    {#if detail.provenance !== null}
-      <p class="hash">
         <ProofAnchor
-          label={wrapDisplayCopy(runPageCopy.receiptHash)}
-          seals={runPageCopy.sealsReceipt}
-          value={detail.provenance.receipt_hash}
-          compact={true}
+          label={wrapDisplayCopy(runPageCopy.workflowRevision)}
+          seals={runPageCopy.sealsWorkflow}
+          value={runEvidence.workflowRevisionHash}
         />
-      </p>
+        <ProofAnchor
+          label={wrapDisplayCopy(runPageCopy.runConfiguration)}
+          seals={runPageCopy.sealsConfiguration}
+          value={runEvidence.runConfigurationRevisionHash}
+        />
+        <!-- A run that has not landed has no terminal fingerprint, so it gets no
+             row: a label with "not yet" where a value belongs is a placeholder,
+             not a fact (operator ruling 23.08.). -->
+        {#if runEvidence.terminalHash !== null}
+          <ProofAnchor
+            label={wrapDisplayCopy(runPageCopy.terminalHash)}
+            seals={runPageCopy.sealsTerminal}
+            value={runEvidence.terminalHash}
+          />
+        {/if}
+        <p class="muted">{wrapDisplayCopy(runPageCopy.evidenceGap)}</p>
+      </section>
     {/if}
-    {#if detail.started_at}
-      <p class="when-ran">
-        {wrapDisplayCopy(runPageCopy.duration)}
-        <When startedAt={detail.started_at} endedAt={detail.ended_at ?? null} kind="duration" />
-      </p>
-    {/if}
-    <p class="who-fact">
-      {wrapDisplayCopy(runPageCopy.usage)}
-      <InfoHint
-        label={runPageCopy.usageMissingWhy}
-        exact={runPageCopy.usageMissingExact}
-      />
-      <span class="muted">{wrapDisplayCopy(notRecordedCopy(detail.state))}</span>
-    </p>
-  </section>
+  </div>
 </aside>
 
 <style>
-  .node-panel { display: grid; gap: 0.9rem; padding: 1rem; border-radius: 0.5rem; background: color-mix(in srgb, currentColor 5%, transparent); }
-  .node-panel header { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; }
-  .standing { display: flex; align-items: center; gap: 0.75rem; }
-  .close { border: 0; background: transparent; font-size: 1.25rem; line-height: 1; cursor: pointer; color: inherit; }
-  h2 { margin: 0; }
-  h3 { margin: 0 0 0.3rem; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.75; }
-  .refusal { margin: 0; padding: 0.6rem 0.75rem; border-radius: 0.4rem; border-left: 4px solid var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); color: var(--warning); font-weight: 500; }
-  .waiting { margin: 0; padding: 0.6rem 0.75rem; border-radius: 0.4rem; opacity: 0.75; }
-  .exact { margin: 0; padding: 0.6rem; border-radius: 0.4rem; background: color-mix(in srgb, currentColor 7%, transparent); white-space: pre-wrap; overflow-wrap: anywhere; }
-  .hash { margin: 0.3rem 0 0; display: flex; align-items: center; gap: 0.3rem; flex-wrap: wrap; overflow-wrap: anywhere; font-size: 0.85rem; opacity: 0.8; }
-  .who { margin: 0; }
-  .who-fact { margin: 0.5rem 0 0; display: flex; align-items: center; gap: 0.3rem; font-size: 0.9rem; }
-  .muted { opacity: 0.7; }
+  .node-panel {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    background: var(--panel2);
+  }
+
+  .node-panel header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+
+  .standing {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .close {
+    border: 0;
+    background: transparent;
+    font-size: var(--text-lg);
+    line-height: 1;
+    cursor: pointer;
+    color: inherit;
+  }
+
+  h2 {
+    margin: 0;
+    font-size: var(--text-md);
+  }
+
+  h3 {
+    margin: 0 0 var(--space-1);
+    font-size: var(--text-2xs);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+  }
+
+  .node-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .node-tab {
+    border: 0;
+    border-radius: 0;
+    padding: var(--space-2) var(--space-3);
+    color: var(--muted);
+    background: transparent;
+    font-size: var(--text-xs);
+    font-weight: 600;
+  }
+
+  .node-tab.on {
+    color: var(--ink);
+    border-bottom: 2px solid var(--accent);
+    margin-bottom: -1px;
+  }
+
+  .node-tabpanel {
+    display: grid;
+    gap: var(--space-3);
+  }
+
+  .refusal {
+    margin: 0;
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--r);
+    border-left: 4px solid var(--warning);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    color: var(--warning);
+    font-weight: 500;
+  }
+
+  .waiting {
+    margin: 0;
+    color: var(--muted);
+  }
+
+  .exact {
+    margin: 0;
+    padding: var(--space-3);
+    border-radius: var(--r);
+    background: var(--chip);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: var(--text-sm);
+  }
+
+  section {
+    display: grid;
+    gap: var(--space-3);
+  }
+
+  .reads-from {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin: 0;
+  }
+
+  .reads-from-label {
+    color: var(--muted);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .reads-from-node {
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    padding: 0 var(--space-2);
+    background: var(--chip);
+    font-size: var(--text-xs);
+    font-weight: 600;
+  }
+
+  .who {
+    margin: 0;
+  }
+
+  .who-fact,
+  .when-ran {
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+  }
+
+  .muted {
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--text-xs);
+  }
 </style>

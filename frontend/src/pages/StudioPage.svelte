@@ -30,7 +30,7 @@
   } from "../lib/readResource";
   import { runPath } from "../lib/route";
   import { readEveryRevision, readEveryRun } from "../lib/runPages";
-  import { standingMarks } from "../lib/runState";
+  import { standingMarks, standingWords } from "../lib/runState";
   import { studioPageCopy } from "../lib/studioPageCopy";
   import { studioQuestions } from "../lib/studioQuestions";
   import {
@@ -276,22 +276,25 @@
   }
 </script>
 
-<section class="board-page" aria-labelledby="board-title">
-  <header class="page-header">
-    <div>
-      <p class="eyebrow">{wrapDisplayCopy(studioPageCopy.eyebrow)}</p>
-      <h1 id="board-title">{wrapDisplayCopy(studioPageCopy.title)}</h1>
-    </div>
+<section class="board-page surface" aria-labelledby="board-title">
+  <header class="surface-head">
+    <p class="eyebrow">{wrapDisplayCopy(studioPageCopy.eyebrow)}</p>
+    <h1 id="board-title">{wrapDisplayCopy(studioPageCopy.title)}</h1>
   </header>
 
-  <p
-    class="connection connection-{hold.connection}"
-    class:connection-problem={streamStopped(hold)}
-    role="status"
-  >
-    <span aria-hidden="true">{streamStopped(hold) ? "◇" : hold.connection === "live" ? "●" : "↻"}</span>
-    {wrapDisplayCopy(connectionLabel(hold))}
-  </p>
+  <!-- A healthy stream says nothing: a permanent "live" badge is chrome and a
+       first connect is ordinary loading. Only a stream that dropped and has
+       not come back speaks (operator ruling 23.08.). -->
+  {#if streamStopped(hold) || hold.connection === "reconnecting"}
+    <p
+      class="connection connection-{hold.connection}"
+      class:connection-problem={streamStopped(hold)}
+      role="status"
+    >
+      <span aria-hidden="true">{streamStopped(hold) ? "◇" : "↻"}</span>
+      {wrapDisplayCopy(connectionLabel(hold))}
+    </p>
+  {/if}
   {#if hold.stream_failure !== null}
     <ProblemNotice problem={hold.stream_failure} />
   {:else if streamTitle !== null}
@@ -320,7 +323,7 @@
 
   {#if groups !== null}
     {#if empty}
-      <div class="board-empty">
+      <div class="board-empty card empty-state">
         <h2>{wrapDisplayCopy(studioPageCopy.emptyTitle)}</h2>
         <p>{wrapDisplayCopy(studioPageCopy.emptyDescription)}</p>
         {#if canStart}
@@ -350,11 +353,10 @@
                     <span class="row-mark" aria-hidden="true">{standingMarks[row.standing]}</span>
                     <span class="row-name">{row.name}</span>
                     <span class="row-status">
-                      {#if row.status.kind === "waitingInput"}{wrapDisplayCopy(studioPageCopy.waitingInputSentence)}
-                      {:else if row.status.kind === "waitingReconciliation"}{wrapDisplayCopy(studioPageCopy.waitingReconciliationSentence)}
-                      {:else if row.status.kind === "running"}{wrapDisplayCopy(studioPageCopy.runningAt)} {row.status.nodeId}
-                      {:else if row.status.kind === "failed"}{wrapDisplayCopy(studioPageCopy.failedAt)} {row.status.nodeId}
-                      {:else}{wrapDisplayCopy(studioPageCopy.completedSentence)}{/if}
+                      {#if row.status.kind === "waitingInput" || row.status.kind === "waitingReconciliation"}{wrapDisplayCopy(standingWords.waiting)}
+                      {:else if row.status.kind === "running"}{wrapDisplayCopy(standingWords.running)} · {row.status.nodeId}
+                      {:else if row.status.kind === "failed"}{wrapDisplayCopy(standingWords.failed)} · {row.status.nodeId}
+                      {:else}{wrapDisplayCopy(standingWords.done)}{/if}
                     </span>
                     {#if row.miniPipeline !== null}
                       <span class="row-pipeline" aria-hidden="true">
@@ -383,37 +385,8 @@
 </section>
 
 <style>
-  .board-page {
-    display: grid;
-    align-content: start;
-    gap: var(--space-4);
-    max-width: none;
-    min-width: 0;
-    min-height: 100%;
-  }
-
-  .page-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    min-width: 0;
-    gap: var(--space-3);
-  }
-
   .board-group {
     min-width: 0;
-  }
-
-  .eyebrow {
-    margin: 0;
-    font-size: var(--text-2xs);
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-
-  h1 {
-    margin: 0.2rem 0 0;
   }
 
   .connection {
@@ -424,20 +397,6 @@
     margin: 0;
     color: var(--muted);
     font-size: var(--text-xs);
-  }
-
-  .board-empty {
-    min-width: 0;
-    border: 1px solid var(--line);
-    border-radius: var(--r-lg);
-    padding: 1rem;
-    background: var(--paper);
-    display: grid;
-    gap: var(--space-3);
-  }
-
-  .board-empty .empty-start {
-    justify-self: start;
   }
 
   .board-group-title {

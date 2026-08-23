@@ -1,8 +1,12 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 
+import { shortFingerprint } from "../../src/lib/fingerprint";
 import { NAMED_AGENT_CHOICE_STORAGE_KEY } from "../../src/lib/namedAgentChoice";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
+import { projectPageCopy } from "../../src/lib/projectPageCopy";
+import { runPageCopy } from "../../src/lib/runPageCopy";
+import { standingWords } from "../../src/lib/runState";
 
 const foundReference = "run1.Zm91bmQtcnVu";
 const absentReference = "run1.YWJzZW50LXJ1bg";
@@ -41,14 +45,14 @@ test("the target-UI shell names today's doors and does not fake the rest", async
   await expect(rail.getByRole("link", { name: "Board" })).toBeVisible();
   await expect(rail.getByRole("link", { name: "Workflows" })).toBeVisible();
   await expect(rail.getByRole("link", { name: "History" })).toBeVisible();
-  await expect(rail.getByRole("link", { name: "Chat" })).toHaveCount(0);
-  await expect(rail.getByText("Chat", { exact: true })).toBeVisible();
-  await expect(rail.locator("[title*='#7']")).toBeVisible();
+  await expect(rail.getByRole("link", { name: "Chat" })).toBeVisible();
   await expect(rail.getByText(THE_ONE_PROJECT, { exact: true })).toBeVisible();
   await expect(rail.getByText("switch project")).toBeVisible();
   await expect(rail.getByText("Settings", { exact: true })).toBeVisible();
   await expect(rail.getByText("Profile", { exact: true })).toBeVisible();
-  await expect(rail.getByText("(later)", { exact: true })).toHaveCount(2);
+  // Only Settings and Profile are still marked later; every rail destination
+  // opens a page now.
+  await expect(rail.getByText("(later)", { exact: true })).toHaveCount(1);
 
   await rail.getByRole("link", { name: "History" }).click();
   await expect(page.getByRole("heading", { name: "History" })).toBeVisible();
@@ -132,10 +136,11 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
     const observed: string[] = [];
     document.addEventListener("focusin", (event) => {
       if (event.target !== document.querySelector("main.workshop-stage")) return;
-      const marker = ["#new-title", "#board-title", ".trail-here"]
-        .map((selector) => document.querySelector(selector))
-        .find((candidate) => candidate !== null);
-      if (marker instanceof HTMLElement) observed.push(marker.id || marker.className);
+      // Which surface the stage is showing, read from the id its section is
+      // labelled by -- present from the first frame, before any read confirms.
+      const named = document.querySelector("main.workshop-stage [aria-labelledby]");
+      const marker = named?.getAttribute("aria-labelledby") ?? null;
+      if (marker !== null) observed.push(marker);
     });
     Object.assign(window, { observedMainMarkers: observed });
   });
@@ -224,14 +229,14 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
   await expect(page.getByTestId("run-state")).toHaveText("completed");
   await expect(page.locator(".connection")).toHaveText(/Complete/);
   const terminalHash = page.getByRole("group", { name: "Terminal hash" });
-  const terminalHashButton = terminalHash.getByRole("button", { name: "Terminal hash" });
+  const terminalHashButton = terminalHash.getByRole("button", { name: "Copy Terminal hash" });
   await expect(terminalHash).toBeVisible();
   for (let tab = 0; tab < 12 && !(await terminalHashButton.evaluate((element) => element === document.activeElement)); tab += 1) {
     await page.keyboard.press("Tab");
   }
   await expect(terminalHashButton).toBeFocused();
   await page.keyboard.press("Space");
-  await expect(terminalHash.locator("code")).toHaveText(/^[0-9a-f]{64}$/);
+  await expect(terminalHash.locator("code")).toHaveText(/^[0-9a-f]{8}…[0-9a-f]{4}$/);
   await page.setViewportSize({ width: 1280, height: 900 });
   const eventLog = page.locator("details.event-log");
   await expect(eventLog).toHaveJSProperty("open", false);
@@ -289,10 +294,14 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
   await expect(stage).toBeFocused();
   await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { observedMainMarkers: string[] }).observedMainMarkers)).toEqual([
-    // The door workflow's own detail page carries the same breadcrumb
-    // component a run does, hence the leading "trail-here" this journey now
-    // passes through on its way from Board via Workflows into New Run.
-    "trail-here", "new-title", "trail-here", "board-title"
+    // The whole keyboard journey, surface by surface: the catalog, the door
+    // workflow's own detail, the start door, the run it started, and back to
+    // the Board.
+    "workflows-title",
+    "workflow-detail-title",
+    "new-title",
+    "run-title",
+    "board-title"
   ]);
 });
 
@@ -454,12 +463,11 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
     newHash,
     "2026-08-20T13:00:00Z"
   );
-  // round tracks each attempt at the run list: 1 fails at transport, 2
-  // succeeds at the run list but fails the joint name read for one hash
-  // (still hidden, still no confirm), 3 confirms both rows atomically. No
-  // step needs a manual refresh: the read is confirmed only once, and only
-  // the one accessible Retry ever repeats it (#532 removes the permanent
-  // control every one of these five surfaces used to carry alongside it).
+  // round tracks each attempt at the run list: 1 and 2 fail at transport and
+  // confirm nothing, 3 confirms. The project counts the work rather than
+  // listing it (#536), so its read is the run list alone -- no workflow name
+  // read joins it any more. No step needs a manual refresh: the read is
+  // confirmed only once, and only the one accessible Retry ever repeats it.
   let round = 0;
   const observed: Array<{ method: string; path: string }> = [];
   page.on("request", (request) => {
@@ -475,7 +483,7 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
       return;
     }
     round += 1;
-    if (round === 1) {
+    if (round <= 2) {
       await route.abort("failed");
       return;
     }
@@ -503,8 +511,6 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
     });
   });
 
-  const revisionPath = (hash: string): string =>
-    `/atelier/api/v1/workflow-revisions/${hash}`;
   const expectOnlyProjectRead = (paths: string[]): void => {
     expect(observed.every(({ method }) => method === "GET")).toBe(true);
     expect(observed.map(({ path }) => path).sort()).toEqual([...paths].sort());
@@ -517,16 +523,15 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
   await expect(retry).toHaveCount(1);
   const projectUrl = page.url();
 
-  // Round 2: the run list itself now answers, but the joint name read for
-  // one hash fails -- the read still confirms nothing (atomicity), and the
-  // transport detail still stays hidden.
+  // Round 2: the read fails again -- it confirms nothing, and the transport
+  // detail still stays hidden.
   observed.length = 0;
   await retry.focus();
   await page.keyboard.press("Enter");
   await expect(page.getByText("Project runs unavailable")).toBeVisible();
   await expect(retry).toBeFocused();
-  await expect(page.getByRole("link", { name: /confirmed project run|new project run/ })).toHaveCount(0);
-  expectOnlyProjectRead([runListPath, revisionPath(oldHash), revisionPath(newHash)]);
+  await expect(page.getByText(standingWords.running, { exact: true })).toHaveCount(0);
+  expectOnlyProjectRead([runListPath]);
   expect(page.url()).toBe(projectUrl);
 
   // ReadState.svelte's control mounts only in the failed state (#514's
@@ -550,17 +555,19 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
   });
   await page.locator("style").last().evaluate((element) => element.remove());
 
-  // Round 3: both the run list and every name resolve -- the whole read
-  // confirms together.
+  // Round 3: the run list resolves -- the read confirms, and the level says
+  // how much work it holds.
   observed.length = 0;
   await retry.click();
   await expect(page.getByText("Project runs unavailable")).toHaveCount(0);
-  const confirmedRow = page.getByRole("link", { name: /confirmed project run/ });
-  await expect(confirmedRow).toContainText("Confirmed workflow");
-  await expect(page.getByRole("link", { name: /new project run/ })).toContainText("New workflow");
+  await expect(page.getByRole("region", { name: projectPageCopy.workTitle })).toContainText(
+    `2 ${standingWords.running}`
+  );
+  // The rows themselves are the Board's, never repeated here (#536).
+  await expect(page.getByRole("link", { name: /confirmed project run/ })).toHaveCount(0);
   // One freshness model, once confirmed: no manual refresh remains.
   await expect(page.getByRole("button", { name: /project runs/ })).toHaveCount(0);
-  expectOnlyProjectRead([runListPath, revisionPath(oldHash), revisionPath(newHash)]);
+  expectOnlyProjectRead([runListPath]);
   expect(page.url()).toBe(projectUrl);
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.screenshot({
@@ -1164,7 +1171,7 @@ test("proves(new-run-confirms-workflow-detail-before-committing-selection-and-dr
   expect(page.url()).toBe(newRunUrl);
 });
 
-test("walks the whole workshop: board into the run, and the trail back up through the project", async ({ page }) => {
+test("walks the whole workshop: board into the run, and one named way back", async ({ page }) => {
   await page.goto("/atelier");
   await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
 
@@ -1176,18 +1183,16 @@ test("walks the whole workshop: board into the run, and the trail back up throug
   // This V1 fixture declares no workflow name; the title says that honestly
   // instead of leading with the raw run id (#506).
   await expect(page.getByRole("heading", { name: "Unnamed workflow" })).toBeVisible();
+  // One way back, to the rail destination this page belongs to, and it never
+  // repeats the page's own title beside it (operator ruling 23.08.).
   const trail = page.getByRole("navigation", { name: "Where you are" });
+  await expect(trail.getByRole("link")).toHaveCount(1);
   await expect(trail.getByRole("link", { name: "Board" })).toBeVisible();
-  await expect(trail.getByRole("link", { name: THE_ONE_PROJECT })).toBeVisible();
+  await expect(trail).not.toContainText("Unnamed workflow");
   await page.screenshot({ path: "test-results/run-trail-desktop.png", fullPage: true });
   await assertNoSeriousAccessibilityFindings(page);
 
-  await trail.getByRole("link", { name: THE_ONE_PROJECT }).click();
-  await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
-  await page
-    .getByRole("navigation", { name: "Where you are" })
-    .getByRole("link", { name: "Board" })
-    .click();
+  await trail.getByRole("link", { name: "Board" }).click();
   await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
   await expect(page).toHaveURL(/\/atelier$/);
 });
@@ -1431,21 +1436,26 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
   await page.goto(`/atelier/runs/${reference}`);
 
   await expect(page.getByRole("heading", { level: 1, name: "Two agents in a line" })).toBeVisible();
-  const identity = page.getByRole("button", { name: "Run id" });
-  await expect(page.getByText("v3/seen-in-the-browser")).toHaveCount(0);
-  await identity.click();
-  await expect(page.getByText("v3/seen-in-the-browser")).toBeVisible();
   const graph = page.getByRole("region", { name: "Workflow" });
   await expect(graph.getByRole("button", { name: "implement — Done" })).toBeVisible();
   await expect(graph.getByRole("button", { name: "review — Done" })).toBeVisible();
   await expect(page.getByLabel("Where this run stands")).toContainText("Done");
   await expect(page.getByLabel("Where this run stands")).not.toContainText("Snapshot");
-  const terminalProof = page.getByRole("button", { name: "Terminal hash" });
-  await expect(terminalProof).toBeVisible();
+  // Not one fingerprint and not the run id stands on the main surface; they
+  // live in the node's Evidence tab (operator ruling 23.08.).
+  await expect(page.getByText("v3/seen-in-the-browser")).toHaveCount(0);
+  await expect(page.getByRole("group", { name: "Terminal hash" })).toHaveCount(0);
   await expect(page.getByText(terminal)).toHaveCount(0);
-  await terminalProof.click();
-  await expect(page.getByText(terminal)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: runPageCopy.readAgain })).toHaveCount(0);
+
+  await graph.getByRole("button", { name: "implement — Done" }).click();
+  await page.getByRole("tab", { name: runPageCopy.tabEvidence }).click();
+  await expect(page.getByRole("group", { name: "Run id" })).toContainText(
+    "v3/seen-in-the-browser"
+  );
+  await expect(page.getByRole("group", { name: "Terminal hash" })).toContainText(
+    shortFingerprint(terminal)
+  );
 
   await page.screenshot({ path: "test-results/v3-run-desktop.png", fullPage: true });
   await page.screenshot({ path: "test-results/v3-graph-desktop.png", fullPage: true });
@@ -2219,11 +2229,17 @@ test("watches a V3 chain move, node by node, without a reload", async ({ page })
   // this deterministic without making it a lie.
   await page.goto(`/atelier/runs/${reference}`);
 
-  const arriving = page.getByRole("list", { name: "What finished" });
-  await expect(arriving.getByRole("listitem")).toHaveCount(2, { timeout: 20_000 });
-  await expect(arriving).toContainText("implement");
-  await expect(arriving).toContainText("review");
-  await expect(page.getByLabel("Where this run stands")).toContainText("Ended");
+  // The graph is the one picture of where the run stands: each node turns
+  // Done on it as its event arrives, and nothing repeats that as a second list.
+  const chain = page.getByRole("region", { name: "Workflow" });
+  await expect(chain.getByRole("button", { name: "implement — Done" })).toBeVisible({
+    timeout: 20_000
+  });
+  await expect(chain.getByRole("button", { name: "review — Done" })).toBeVisible({
+    timeout: 20_000
+  });
+  await expect(page.getByRole("list", { name: "What finished" })).toHaveCount(0);
+  await expect(page.getByLabel("Where this run stands")).toContainText(standingWords.done);
 
   await page.screenshot({ path: "test-results/v3-run-live.png", fullPage: true });
 });
@@ -2298,9 +2314,13 @@ test("draws a running V3 chain as a graph while a node is still working", async 
   const working = graph.getByRole("button", { name: /Working$/ });
   await expect(working).toBeVisible({ timeout: 10_000 });
   await expect(working).toHaveAttribute("data-live", "true");
-  await expect(page.getByRole("region", { name: "Now" })).toBeVisible();
-  await expect(page.getByText("Process log stays in the lease.")).toBeVisible();
   await expect(page.getByRole("progressbar")).toHaveCount(0);
+  // The log that does not exist is named where a log would live, on the node
+  // itself, rather than as a standing box on the run surface.
+  await working.click();
+  await page.getByRole("tab", { name: runPageCopy.tabLog }).click();
+  await expect(page.getByText(runPageCopy.processLogInLease)).toBeVisible();
+  await working.click();
   await expect(graph.locator('[data-node-id="implement"]')).toHaveAttribute("data-layer", "0");
   await expect(graph.locator('[data-node-id="review"]')).toHaveAttribute("data-layer", "1");
 
@@ -2417,28 +2437,32 @@ test("a node whose answer its own contract refuses never reports success", async
     ]);
   }).toPass({ timeout: 15_000 });
 
+  // The project counts the standing; the row itself is the Board's (#536).
   await page.goto(`/atelier/project`);
-  await expect(page.getByRole("heading", { name: "Failed" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "v3/the-silent-one" })).toBeVisible();
+  await expect(page.getByRole("region", { name: projectPageCopy.workTitle })).toContainText(
+    standingWords.failed
+  );
 
   await page.goto(`/atelier/runs/${reference}`);
   await expect(page.getByRole("heading", { level: 1, name: "the chain the operator watched" })).toBeVisible();
   await expect(page.getByText("v3/the-silent-one")).toHaveCount(0);
-  await page.getByRole("button", { name: "Run id" }).click();
-  await expect(page.getByText("v3/the-silent-one")).toBeVisible();
   await expect(page.getByLabel("Where this run stands")).toContainText("Failed");
   await expect(page.getByLabel("Where this run stands")).not.toContainText("Done");
   await expect(page.getByRole("button", { name: "implement — Failed" })).toBeVisible();
   await expect(page.getByRole("button", { name: /Working/ })).toHaveCount(0);
 
   await page.getByRole("button", { name: "implement — Failed" }).click();
-  // Nothing was written, so there is nothing to show as an output -- and the
-  // panel says so honestly rather than dressing the silence as a value.
-  await expect(page.getByRole("region", { name: "Prompt" })).toContainText(
+  // A node that stopped opens on Result, where the refusal that stopped it
+  // stands. Nothing was written, and the panel says so rather than dressing
+  // the silence as a value.
+  await expect(page.getByRole("tabpanel")).toContainText("Nothing written.");
+  await expect(page.getByRole("tabpanel")).not.toContainText("yet");
+  await page.getByRole("tab", { name: runPageCopy.tabPrompt }).click();
+  await expect(page.getByRole("tabpanel")).toContainText(
     "Write three German sentences about code review."
   );
-  await expect(page.getByRole("region", { name: "Output" })).toContainText("Nothing written.");
-  await expect(page.getByRole("region", { name: "Output" })).not.toContainText("yet");
+  await page.getByRole("tab", { name: runPageCopy.tabEvidence }).click();
+  await expect(page.getByRole("group", { name: "Run id" })).toContainText("v3/the-silent-one");
   await expect(page.getByText("a moment")).toHaveCount(0);
   await page.screenshot({ path: "test-results/v3-node-refusal.png", fullPage: true });
 });
@@ -2526,16 +2550,19 @@ test("clicking a finished node shows its whole log", async ({ page }) => {
   await page.goto(`/atelier/runs/${reference}`);
   await expect(page.getByRole("heading", { level: 1, name: "the chain the operator read" })).toBeVisible();
   await expect(page.getByText("v3/the-read-one")).toHaveCount(0);
-  await page.getByRole("button", { name: "Run id" }).click();
-  await expect(page.getByText("v3/the-read-one")).toBeVisible();
 
   await page.getByRole("button", { name: /implement/ }).click();
-  await expect(page.getByRole("region", { name: "Prompt" })).toContainText(
+  // A finished node opens on what it produced; what it was asked is one tab
+  // away, and the whole picture never leaks onto the run surface.
+  await expect(page.getByRole("tabpanel")).toContainText("V3 provider bytes");
+  await page.getByRole("tab", { name: runPageCopy.tabPrompt }).click();
+  await expect(page.getByRole("tabpanel")).toContainText(
     "Write three German sentences about code review."
   );
-  await expect(page.getByRole("region", { name: "Output" })).toContainText("V3 provider bytes");
-  await expect(page.getByLabel("What finished")).toContainText("implement");
-  await expect(page.getByLabel("What finished")).not.toContainText("V3 provider bytes");
+  await expect(page.getByRole("list", { name: "What finished" })).toHaveCount(0);
+
+  await page.getByRole("tab", { name: runPageCopy.tabEvidence }).click();
+  await expect(page.getByRole("group", { name: "Run id" })).toContainText("v3/the-read-one");
   const who = page.getByRole("region", { name: "Who" });
   await expect(who.getByText("Declared model")).toBeVisible();
   await expect(who.getByText("v3-model")).toBeVisible();
@@ -2546,7 +2573,7 @@ test("clicking a finished node shows its whole log", async ({ page }) => {
   await page.screenshot({ path: "test-results/v3-node-detail.png", fullPage: true });
 });
 
-test("opening Details on a saved V3 workflow shows each node with its role and instruction start", async ({
+test("opening Details on a saved V3 workflow draws its nodes as the quiet pipe", async ({
   page
 }) => {
   const api = "/atelier/api/v1";
@@ -2585,10 +2612,14 @@ test("opening Details on a saved V3 workflow shows each node with its role and i
   const details = row.locator("details.revision-details");
   await expect(details).toContainText("implement");
   await expect(details).toContainText("builder");
-  await expect(details).toContainText("Implement every acceptance sentence of the bound story.");
   await expect(details).toContainText("review");
   await expect(details).toContainText("reviewer");
-  await expect(details).toContainText("Name every defect with the sentence it violates.");
+  await expect(details.locator('[data-node-id="implement"]')).toBeVisible();
+  await expect(details.locator('[data-node-id="review"]')).toBeVisible();
+  // The picture stays quiet: the authored prompt waits on the workflow's own
+  // detail page (mockup v5 §04), so the picker never pastes it here.
+  await expect(details).not.toContainText("Implement every acceptance sentence of the bound story.");
+  await expect(details).not.toContainText("Name every defect with the sentence it violates.");
   await page.screenshot({
     path: "test-results/v3-picker-node-previews.png",
     fullPage: true
@@ -2797,11 +2828,14 @@ test("two revisions of one lineage are one picker row; the older choice changes 
   await expect(row).not.toContainText("Cannot be started");
 
   const details = row.locator("details.revision-details");
-  await expect(details).toContainText("Write the first admitted draft.");
+  await expect(details.locator("[data-node-id]").first()).toBeVisible();
+  // The chosen revision's own fingerprint is shown shortened beside its name;
+  // neither digest is ever printed whole (operator ruling 23.08.).
   await expect(details).not.toContainText(olderHash);
-  await details.getByRole("button", { name: "Workflow revision" }).click();
-  await expect(details).toContainText(olderHash);
-  await expect(details).not.toContainText(newestHash);
+  await expect(details.getByRole("group", { name: "Workflow revision" })).toContainText(
+    shortFingerprint(olderHash)
+  );
+  await expect(details).not.toContainText(shortFingerprint(newestHash));
 
   await page.screenshot({
     path: "test-results/v3-picker-lineage-desktop.png",
@@ -3018,14 +3052,15 @@ test("a waiting V3 run is answerable on its own run page", async ({ page }) => {
   await page.goto(`/atelier/runs/${reference}`);
   await expect(page.getByRole("heading", { level: 1, name: "answer-card-194" })).toBeVisible();
   await expect(page.getByText(runId)).toHaveCount(0);
-  await page.getByRole("button", { name: "Run id" }).click();
-  await expect(page.getByText(runId)).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Answer needed" })).toBeVisible();
-  await expect(page.getByText("Approve this, or name the blocking defect.")).toBeVisible();
-  const card = page.getByRole("region", { name: "Answer needed" });
-  await card.getByRole("textbox", { name: "Answer" }).fill("true");
-  await card.getByRole("button", { name: "Answer" }).click();
-  await expect(page.getByRole("heading", { name: /Answer pending|Answer needed|Answer uncertain/ })).toBeVisible();
+  // The waiting step presents itself as its question, never as its type and
+  // id (operator, 23.08.).
+  const question = "Approve this, or name the blocking defect.";
+  await expect(page.getByRole("heading", { level: 2, name: question })).toBeVisible();
+  await expect(page.getByText("WAIT ask")).toHaveCount(0);
+  const card = page.getByRole("region", { name: question });
+  // Plain words, not JSON: the composer must not fail a person on syntax.
+  await card.getByRole("textbox", { name: runPageCopy.answerLabel }).fill("approved");
+  await card.getByRole("button", { name: runPageCopy.answerSubmit }).click();
 
   await expect(async () => {
     const read = await page.request.get(`${api}/runs/${reference}`);
@@ -3037,7 +3072,8 @@ test("a waiting V3 run is answerable on its own run page", async ({ page }) => {
   }).toPass({ timeout: 20_000 });
 
   await page.goto(`/atelier/runs/${reference}`);
-  await expect(page.getByRole("heading", { name: "Answer needed" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { level: 2, name: question })).toHaveCount(0);
+  await expect(page.getByLabel("Where this run stands")).toContainText(standingWords.done);
   await expect(page.getByText(/not yet/)).toHaveCount(0);
 
   await page.screenshot({

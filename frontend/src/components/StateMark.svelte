@@ -11,13 +11,13 @@
     cancelled: "Cancelled",
     interrupted: "Interrupted"
   };
-</script>
 
-<script lang="ts">
-  export let state: NodeState;
-  export let animated = true;
-
-  const shapes: Record<NodeState, string> = {
+  /**
+   * The glyph that carries a state without colour, for eyes that read no
+   * colour. It is owned here beside the words so the run graph's small shapes
+   * and this mark can never disagree about what "done" looks like.
+   */
+  export const stateGlyphs: Record<NodeState, string> = {
     queued: "",
     working: "▲",
     needs_you: "!",
@@ -28,7 +28,12 @@
   };
 </script>
 
+<script lang="ts">
+  export let state: NodeState;
+  export let animated = true;
+</script>
+
 <span class="state-mark state-{state}" class:state-still={!animated} data-state={state}>
-  <span class="state-shape" aria-hidden="true"><span>{shapes[state]}</span></span>
+  <span class="state-shape" aria-hidden="true"><span>{stateGlyphs[state]}</span></span>
   <strong>{stateLabels[state]}</strong>
 </span>

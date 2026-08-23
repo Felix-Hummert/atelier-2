@@ -11,13 +11,13 @@
     type WorkflowRevisionDetail,
     type WorkflowRevisionSummary
   } from "../api/client";
-  import Breadcrumb from "../components/Breadcrumb.svelte";
+  import BackLink from "../components/BackLink.svelte";
   import InfoHint from "../components/InfoHint.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import ProofAnchor from "../components/ProofAnchor.svelte";
+  import { shortFingerprint } from "../lib/fingerprint";
   import ReadState from "../components/ReadState.svelte";
   import WorkflowGraphDrawing from "../components/WorkflowGraphDrawing.svelte";
-  import { THE_ONE_PROJECT } from "../lib/project";
   import {
     MutationJournal,
     createRunId as makeRunId,
@@ -1033,12 +1033,7 @@
 <svelte:window onkeydown={handleEscape} />
 
 <section aria-labelledby="new-title">
-  <Breadcrumb
-    steps={[{ label: "Board", path: "/atelier" }, { label: THE_ONE_PROJECT, path: "/atelier/project" }]}
-    current="New run"
-    {navigate}
-  />
-  <p class="eyebrow">New durable work</p>
+  <BackLink label="Workflows" path="/atelier/workflows" {navigate} />
   <h1 id="new-title">Choose a workflow</h1>
 
   {#if failureMessage !== null}<ProblemNotice message={failureMessage} />{/if}
@@ -1108,8 +1103,8 @@
                 />
                 <span class="revision-label">
                   {#if revision.name === null}
-                    <code class="revision-hash">{revision.workflow_revision_hash}</code>
-                    <span class="muted">unnamed — format {revision.workflow_format_version} declares no name</span>
+                    <strong class="revision-name">Unnamed workflow</strong>
+                    <span class="muted">format {revision.workflow_format_version} declares no name · {shortFingerprint(revision.workflow_revision_hash)}</span>
                   {:else}
                     <strong class="revision-name">{revision.name}</strong>
                     {#if revision.description !== null}<span class="revision-description">{revision.description}</span>{/if}
@@ -1165,7 +1160,6 @@
                 <WorkflowGraphDrawing
                   previews={publishedNodePreviews(published) ?? []}
                   loops={publishedLoops(published)}
-                  showExcerpt={true}
                 />
               {/if}
               {#if publishedOrders(published) !== null}

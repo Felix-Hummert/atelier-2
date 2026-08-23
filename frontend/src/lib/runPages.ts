@@ -148,7 +148,7 @@ function failureText(error: unknown): string {
 export const runHeaderCopy = {
   unnamedWorkflow: "Unnamed workflow",
   runIdLabel: "Run id",
-  sealsRunId: "this durable run"
+  sealsRunId: "the name this run answers to when the store is asked for it"
 } as const;
 
 export function runHeaderTitle(workflowName: string | null): string {

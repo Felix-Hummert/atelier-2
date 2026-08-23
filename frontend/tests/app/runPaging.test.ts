@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App.svelte";
 import type { CockpitApi, RunV1 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { projectPageCopy } from "../../src/lib/projectPageCopy";
+import { standingMarks, standingWords } from "../../src/lib/runState";
 import {
   cockpitApiStub,
   PAGE_CURSORS,
@@ -47,16 +49,24 @@ describe("the workshop reads the durable list to its end", () => {
     const listRuns = pagedListRuns([firstPage, secondPage]);
     open("/atelier/project", listRuns);
 
-    const done = await screen.findByRole("region", { name: "Done" });
+    // The finished run lives only on the second page: it is counted only if
+    // the reader followed the cursor to the end.
+    const work = await screen.findByRole("region", { name: projectPageCopy.workTitle });
+    await within(work).findAllByRole("listitem");
+    const counts = within(work)
+      .getAllByRole("listitem")
+      .map((entry) => entry.textContent?.replace(/\s+/g, " ").trim());
 
-    expect(within(done).getByText("the-finished-one").isConnected).toBe(true);
-    expect(within(await screen.findByRole("region", { name: "Running" })).getAllByRole("link")).toHaveLength(50);
+    expect(counts).toContain(`${standingMarks.running} 50 ${standingWords.running}`);
+    expect(counts).toContain(`${standingMarks.done} 1 ${standingWords.done}`);
     expect(listRuns.mock.calls.map(([after]) => after)).toEqual([undefined, PAGE_CURSORS[0]]);
   });
 
   it("stops saying that reading further is unbuilt, because it is built", async () => {
     open("/atelier/project", pagedListRuns([firstPage, secondPage]));
-    await screen.findByRole("region", { name: "Done" });
+    await within(
+      await screen.findByRole("region", { name: projectPageCopy.workTitle })
+    ).findAllByRole("listitem");
 
     expect(screen.queryByText(/not built yet/i)).toBeNull();
     expect(screen.queryByText(/Not every run of this project is on this page/i)).toBeNull();
@@ -77,10 +87,10 @@ describe("the workshop reads the durable list to its end", () => {
 
     const notice = await screen.findByRole("alert");
 
-    expect(notice.textContent).toContain("Project runs incomplete");
-    expect(screen.queryByRole("region", { name: "Running" })).toBeNull();
+    expect(notice.textContent).toContain(projectPageCopy.runsIncomplete);
+    expect(screen.queryByText(standingWords.running)).toBeNull();
     expect(screen.queryByText("run-0")).toBeNull();
-    expect(screen.queryByRole("region", { name: "Done" })).toBeNull();
+    expect(screen.queryByText(standingWords.done)).toBeNull();
   });
 
   it("ends visibly instead of spinning when the durable list repeats a cursor", async () => {
@@ -98,9 +108,9 @@ describe("the workshop reads the durable list to its end", () => {
 
     const notice = await screen.findByRole("alert");
 
-    expect(notice.textContent).toContain("Project runs incomplete");
+    expect(notice.textContent).toContain(projectPageCopy.runsIncomplete);
     expect(listRuns.mock.calls.length).toBeLessThanOrEqual(3);
-    expect(screen.queryByRole("region", { name: "Done" })).toBeNull();
+    expect(screen.queryByText(standingWords.done)).toBeNull();
     expect(screen.queryByText("the-finished-one")).toBeNull();
   });
 });

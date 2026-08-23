@@ -352,6 +352,7 @@ def create_app(
 COCKPIT_INDEX_PATHS: tuple[str, ...] = (
     "/atelier",
     "/atelier/",
+    "/atelier/chat",
     "/atelier/project",
     "/atelier/runs",
     "/atelier/new",

@@ -28,30 +28,38 @@
   }
 </script>
 
-<div class="read-state">
-  <div class="read-truth">
-    {#if read.request.state === "loading"}
-      <span class="read-progress" role="status">
-        <span aria-hidden="true">↻</span>
-        {read.confirmed === null ? "Looking…" : "Refreshing…"}
-      </span>
-    {:else if read.request.state === "failed"}
-      <span class="read-failure" role="alert">
-        <span class="read-mark" aria-hidden="true">◇</span>
-        <strong>{read.request.failure.title}</strong>
-      </span>
+<!--
+  A confirmed read says nothing at all. The block used to hold its height on
+  every surface whether or not it had anything to report, which put a band of
+  empty space between a page's title and its content forever after the read
+  landed (operator ruling 23.08.: no element that carries no statement).
+-->
+{#if read.request.state !== "idle"}
+  <div class="read-state">
+    <div class="read-truth">
+      {#if read.request.state === "loading"}
+        <span class="read-progress" role="status">
+          <span aria-hidden="true">↻</span>
+          {read.confirmed === null ? "Looking…" : "Refreshing…"}
+        </span>
+      {:else}
+        <span class="read-failure" role="alert">
+          <span class="read-mark" aria-hidden="true">◇</span>
+          <strong>{read.request.failure.title}</strong>
+        </span>
+      {/if}
+    </div>
+    {#if read.request.state === "failed"}
+      <button
+        class="quiet"
+        type="button"
+        aria-label={`Retry ${label}`}
+        onclick={activate}
+        use:focusIfRetried
+      >Retry</button>
     {/if}
   </div>
-  {#if read.request.state === "failed"}
-    <button
-      class="quiet"
-      type="button"
-      aria-label={`Retry ${label}`}
-      onclick={activate}
-      use:focusIfRetried
-    >Retry</button>
-  {/if}
-</div>
+{/if}
 
 <style>
   .read-state {
@@ -60,7 +68,6 @@
     justify-content: flex-end;
     gap: 0.75rem;
     min-height: 3.25rem;
-    margin-bottom: 1rem;
   }
 
   .read-truth {

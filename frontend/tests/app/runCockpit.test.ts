@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
@@ -8,6 +8,7 @@ import {
   type CockpitApi,
   type Run
 } from "../../src/api/client";
+import { shortFingerprint } from "../../src/lib/fingerprint";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import {
@@ -215,17 +216,19 @@ describe("read-only run cockpit", () => {
     });
 
     await screen.findByRole("heading", { name: "Unnamed workflow" });
+    // The whole digest is never printed; a shortened reading of it stands
+    // beside its name, and Copy carries the exact bytes (operator, 23.08.).
     expect(screen.queryByText(digest)).toBeNull();
-    const workflow = screen.getByRole("button", { name: "Workflow revision" });
-    expect(workflow.textContent).not.toContain(digest);
-    workflow.focus();
-    expect(document.activeElement).toBe(workflow);
-    await fireEvent.click(workflow);
+    const workflow = screen.getByRole("group", { name: "Workflow revision" });
+    expect(within(workflow).getByText(shortFingerprint(digest)).isConnected).toBe(true);
+    const copy = within(workflow).getByRole("button", { name: "Copy Workflow revision" });
+    copy.focus();
+    expect(document.activeElement).toBe(copy);
+    await fireEvent.click(copy);
     expect(writeText).toHaveBeenCalledWith(digest);
     await waitFor(() => expect(screen.getByText("Copied").isConnected).toBe(true));
 
-    const terminal = screen.getByRole("button", { name: "Terminal hash" });
-    await fireEvent.click(terminal);
+    await fireEvent.click(screen.getByRole("button", { name: "Copy Terminal hash" }));
     expect(writeText).toHaveBeenLastCalledWith(digest);
   });
 
@@ -244,9 +247,10 @@ describe("read-only run cockpit", () => {
     // the raw run id (the Constitution's law 8 counterexample).
     const title = await screen.findByRole("heading", { level: 1, name: "Unnamed workflow" });
     expect(title.isConnected).toBe(true);
-    const identity = screen.getByRole("button", { name: "Run id" });
-    expect(identity.textContent).not.toContain("run");
-    await fireEvent.click(identity);
+    const identity = screen.getByRole("group", { name: "Run id" });
+    // A speaking id is content, not a riddle: it is shown, not hidden.
+    expect(within(identity).getByText("run").isConnected).toBe(true);
+    await fireEvent.click(within(identity).getByRole("button", { name: "Copy Run id" }));
     expect(writeText).toHaveBeenCalledWith("run");
     await waitFor(() => expect(screen.getByText("Copied").isConnected).toBe(true));
   });
