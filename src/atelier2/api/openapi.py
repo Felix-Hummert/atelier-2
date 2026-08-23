@@ -89,6 +89,7 @@ OCCUPANCY_PATH = (
 )
 PROJECTS_PATH = API_PREFIX + "/projects"
 PROJECT_PATH = PROJECTS_PATH + "/{public_project_reference}"
+PROJECT_ROOT_PATH = PROJECT_PATH + "/root"
 
 EVENT_MODELS = (
     AgentCompletedEventResource,
@@ -285,6 +286,24 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "catalog-lineage-missing",
         "occupancy-missing",
         "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (PROJECT_ROOT_PATH, "put"): (
+        "invalid-public-project-reference",
+        "project-unknown",
+        "invalid-request",
+        "unsupported-media-type",
+        "project-root-revision-conflict",
+        "host-configuration-unreadable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (PROJECT_ROOT_PATH, "get"): (
+        "invalid-public-project-reference",
+        "project-unknown",
+        "project-root-missing",
+        "host-configuration-unreadable",
         "durable-state-corrupt",
         "internal-error",
     ),
@@ -711,6 +730,8 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
             (PROJECT_PATH, "get", "public_project_reference", "path"),
             (OCCUPANCY_PATH, "put", "public_project_reference", "path"),
             (OCCUPANCY_PATH, "get", "public_project_reference", "path"),
+            (PROJECT_ROOT_PATH, "put", "public_project_reference", "path"),
+            (PROJECT_ROOT_PATH, "get", "public_project_reference", "path"),
         ),
         "CatalogLineageId": (
             (OCCUPANCY_PATH, "put", "lineage_id", "path"),

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from sqlalchemy.engine import Engine
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.run_store import load_kept_value
+from atelier2.adapters.dbos.run_transitions import load_graph
 from atelier2.application.run_runner_session import (
     RunnerSessionRefusal,
     cancellation_refusal_code,
 )
 from atelier2.contracts.agent_attempts import (
     AgentAttemptReplacement,
+    AgentAttemptState,
     CancelAgentAttemptRequest,
     RunnerEvidenceAcceptancePhase,
     RunnerGenerationBinding,
@@ -21,9 +26,13 @@ from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.runner_terminal_evidence_codec import (
     decode_runner_terminal_evidence_record,
 )
+from atelier2.contracts.verdicts import read_verdict
+from atelier2.contracts.workflows import NodeCompletion, completion_after_node
+from atelier2.contracts.workflows_v3 import verdict_condition_of
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     RunnerTerminalEvidenceCommitRefused,
+    RunnerTerminalEvidenceCommitted,
 )
 
 
@@ -34,6 +43,34 @@ class DbosRunnerSessionCore:
     execution: AgentAttemptExecution
     store: DbosAgentAttemptStore
     cancellation_command_id: str
+    # A single-item box, not a plain attribute: the dataclass is frozen (its
+    # wire-facing fields must never be reassigned mid-session), but the one
+    # commit `commit_terminal_record` ever durably wins still has to reach a
+    # caller driving this session -- `#540` C-3.4's own Core-side driver reads
+    # `committed_evidence` once RELEASED, for the `NodeCompletion`
+    # `commit_runner_terminal_evidence` already computed and this class used
+    # to discard along with the rest of the store's answer.
+    _committed: list[RunnerTerminalEvidenceCommitted | None] = field(
+        default_factory=lambda: [None], repr=False, compare=False
+    )
+    # Optional so every existing composer that never reads `committed_evidence`
+    # (the witness, the wire tests) stays unchanged: without it, a resumed
+    # tombstone for a SUCCEEDED attempt still confirms and commits, but with
+    # `completion=None` -- the pre-fix answer. A composer that does read
+    # `committed_evidence` -- `#540` C-3.4's own driver -- must supply it: the
+    # resumed-tombstone path is the one place this class needs a durable read
+    # `self.store` itself does not expose (`DbosAgentAttemptStore._engine` is
+    # private), to recover the `NodeCompletion` the wire protocol carries no
+    # frame for on that exact path.
+    engine: Engine | None = None
+
+    @property
+    def committed_evidence(self) -> RunnerTerminalEvidenceCommitted | None:
+        """What this session's one terminal-record commit durably won, once it
+        has happened -- `None` before `commit_terminal_record` is ever called,
+        or on the resumed-tombstone replay `_require_already_acknowledged`
+        answers without a fresh store commit."""
+        return self._committed[0]
 
     def arm(
         self, binding: RunnerGenerationBinding, invocation: RunnerInvocationId
@@ -53,6 +90,7 @@ class DbosRunnerSessionCore:
         committed = self.store.commit_runner_terminal_evidence(self.execution, decoded)
         if isinstance(committed, RunnerTerminalEvidenceCommitRefused):
             raise TypeError("runner-terminal-record-refused")
+        self._committed[0] = committed
         return committed.evidence_hash
 
     def _require_already_acknowledged(
@@ -90,7 +128,37 @@ class DbosRunnerSessionCore:
             )
         ):
             raise TypeError("runner-terminal-record-refused")
+        completion = None
+        if attempt.state is AgentAttemptState.SUCCEEDED and self.engine is not None:
+            completion = self._completion_for_succeeded_attempt(self.engine)
+        self._committed[0] = RunnerTerminalEvidenceCommitted(
+            attempt, tombstone.evidence_hash, completion
+        )
         return tombstone.evidence_hash
+
+    def _completion_for_succeeded_attempt(self, engine: Engine) -> NodeCompletion:
+        """Recompute a SUCCEEDED attempt's `NodeCompletion` from durable truth.
+
+        The same two facts `agent_attempt_store.py`'s own idempotent commit
+        retry reads back under `commit_runner_terminal_evidence` -- the
+        workflow graph this attempt's request names, and whatever verdict a
+        declared loop condition already kept -- read here through the same
+        public `atelier2.adapters.dbos` readers rather than a second
+        derivation of either.
+        """
+        request = self.execution.request
+        with engine.connect() as connection:
+            graph = load_graph(connection, request.workflow_revision_hash)
+            verdict = (
+                None
+                if verdict_condition_of(graph, request.node_id) is None
+                else read_verdict(
+                    load_kept_value(connection, request.node_execution_id)
+                )
+            )
+            return completion_after_node(
+                graph, request.node_id, request.round_ordinal, verdict
+            )
 
     def acknowledge(
         self,

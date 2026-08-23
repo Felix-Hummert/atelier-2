@@ -210,7 +210,7 @@ def test_the_bootstrap_codec_decodes_the_binding_core_publishes() -> None:
 
 def test_a_lease_derives_every_object_name_from_its_id(tmp_path: Path) -> None:
     lease = RunnerLease(
-        "a" * 64,
+        RunnerLeaseId("a" * 64),
         _binding(),
         _RUNNER_IMAGE,
         _manifest(),

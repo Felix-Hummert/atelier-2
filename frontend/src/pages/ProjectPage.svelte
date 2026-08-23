@@ -462,6 +462,15 @@
 </section>
 
 <style>
+  /* Sections of a surface stand a section apart, so a label reads as
+     belonging to the group under it rather than floating between two. */
+  .project-page {
+    display: grid;
+    align-content: start;
+    gap: var(--space-section);
+    min-width: 0;
+  }
+
   .project-block {
     display: grid;
     gap: var(--space-3);
@@ -471,10 +480,10 @@
   .project-block h2 {
     margin: 0;
     font-size: var(--text-2xs);
-    font-weight: 800;
-    letter-spacing: 0.12em;
+    font-weight: var(--weight-heavy);
+    letter-spacing: var(--tracking-label);
     text-transform: uppercase;
-    color: var(--muted);
+    color: var(--ink-dim);
   }
 
   .project-counts,
@@ -487,14 +496,14 @@
   }
 
   .project-counts {
-    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), 1fr));
   }
 
   .project-count {
     display: flex;
     align-items: baseline;
     gap: var(--space-2);
-    border: 1px solid var(--line);
+    border: var(--edge) solid var(--line);
     border-radius: var(--r-lg);
     padding: var(--space-4) var(--space-5);
     background: var(--panel2);
@@ -506,35 +515,35 @@
   }
 
   .project-count span:last-child {
-    color: var(--muted);
+    color: var(--ink-dim);
     font-size: var(--text-sm);
   }
 
   .project-count-running .project-count-mark {
-    color: var(--working);
+    color: var(--signal-live);
   }
 
   .project-count-waiting .project-count-mark {
-    color: var(--danger);
+    color: var(--signal-attention-mark);
   }
 
   .project-count-failed .project-count-mark {
-    color: var(--warning);
+    color: var(--signal-failure);
   }
 
   .project-count-done .project-count-mark {
-    color: var(--accent);
+    color: var(--signal-quiet);
   }
 
   .project-references {
-    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(var(--card-min), 1fr));
   }
 
   .project-references a {
     display: grid;
     gap: var(--space-1);
     height: 100%;
-    border: 1px solid var(--line);
+    border: var(--edge) solid var(--line);
     border-radius: var(--r-lg);
     padding: var(--space-4) var(--space-5);
     background: var(--panel2);
@@ -548,11 +557,11 @@
   }
 
   .project-references span {
-    color: var(--muted);
+    color: var(--ink-dim);
     font-size: var(--text-sm);
   }
 
   .muted {
-    color: var(--muted);
+    color: var(--ink-dim);
   }
 </style>

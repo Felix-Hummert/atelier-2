@@ -28,10 +28,10 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
-    min-height: 44px;
+    min-height: var(--tap);
     color: var(--accent);
     font-size: var(--text-sm);
-    font-weight: 700;
+    font-weight: var(--weight-strong);
     text-decoration: none;
   }
 

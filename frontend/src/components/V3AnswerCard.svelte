@@ -188,53 +188,53 @@
   .decision {
     display: grid;
     gap: var(--space-3);
-    border: 2px solid var(--danger);
+    border: var(--edge-strong) solid var(--signal-attention-mark);
     border-radius: var(--r-lg);
     padding: var(--space-5);
     background: var(--panel2);
   }
 
   .decision-sent {
-    border-color: var(--working);
+    border-color: var(--signal-live);
   }
 
   .eyebrow {
     margin: 0;
-    color: var(--danger);
+    color: var(--signal-attention);
     font-size: var(--text-2xs);
-    font-weight: 800;
-    letter-spacing: 0.12em;
+    font-weight: var(--weight-heavy);
+    letter-spacing: var(--tracking-label);
     text-transform: uppercase;
   }
 
   .decision-sent .eyebrow {
-    color: var(--working);
+    color: var(--signal-live);
   }
 
   h2 {
     margin: 0;
     font-size: var(--text-lg);
-    line-height: 1.25;
+    line-height: var(--leading-tight);
     overflow-wrap: anywhere;
   }
 
   h2.looking {
-    color: var(--muted);
+    color: var(--ink-dim);
   }
 
   h3 {
     margin: 0 0 var(--space-2);
-    color: var(--muted);
+    color: var(--ink-dim);
     font-size: var(--text-2xs);
-    font-weight: 700;
-    letter-spacing: 0.12em;
+    font-weight: var(--weight-heavy);
+    letter-spacing: var(--tracking-label);
     text-transform: uppercase;
   }
 
   h4 {
     margin: 0 0 var(--space-1);
     font-size: var(--text-xs);
-    font-weight: 700;
+    font-weight: var(--weight-strong);
   }
 
   .decision-context {
@@ -244,7 +244,7 @@
 
   .decision-source pre {
     margin: 0;
-    max-height: 14rem;
+    max-height: var(--scroll-box);
     overflow: auto;
     padding: var(--space-3);
     border-radius: var(--r);
@@ -256,7 +256,7 @@
 
   .muted {
     margin: 0;
-    color: var(--muted);
+    color: var(--ink-dim);
     font-size: var(--text-sm);
   }
 
