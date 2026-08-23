@@ -6,6 +6,17 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = PROJECT_ROOT / "src" / "atelier2"
 LAUNCHER = PROJECT_ROOT / "scripts" / "runner_candidate.sh"
+CARRIER = SOURCE_ROOT / "adapters" / "docker_carrier.py"
+COMPOSE = PROJECT_ROOT / "compose.yaml"
+ENGINE_EXECUTABLE = "/usr/bin/docker"
+# Every spelling by which a program reaches the engine: its own name, however it
+# would be found on `PATH` or addressed outright, and the socket that is the
+# engine's actual authority. A module that names none of these has no way to
+# call it -- including through an argument vector, which a substring search over
+# whole files would have walked straight past.
+ENGINE_NAMES = frozenset(
+    {"docker", ENGINE_EXECUTABLE, "/var/run/docker.sock", "docker.sock"}
+)
 STABLE_FILES = (
     "Dockerfile",
     "compose.yaml",
@@ -30,14 +41,59 @@ def test_core_and_runner_source_have_no_docker_client() -> None:
                 assert node.module.split(".", 1)[0] != "docker"
 
 
-def test_launcher_is_the_only_candidate_docker_caller() -> None:
-    text = LAUNCHER.read_text(encoding="utf-8")
-    assert "/usr/bin/docker" in text
-    assert "docker run" in text
-    for path in (PROJECT_ROOT / "src").rglob("*"):
-        if path.suffix in {".py", ".sh"} and path.is_file():
-            body = path.read_text(encoding="utf-8")
-            assert "docker " not in body
+def _engine_names_in(module: Path) -> set[str]:
+    """Every engine spelling this module could hand to anything, at all.
+
+    Read out of the parsed source rather than searched for in the text, because
+    the way a program calls the engine is an argument vector -- `["docker",
+    "run", ...]` -- in which no substring of a call ever appears. Only a
+    constant that *is* one of these names counts, so prose that merely mentions
+    Docker -- a comment, a docstring, a refusal sentence -- is not a call and is
+    not counted.
+    """
+    tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+    return {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value in ENGINE_NAMES
+    }
+
+
+def test_the_carrier_is_the_only_source_module_that_can_reach_the_engine() -> None:
+    """Docker authority is spent in one owner and nowhere else in the source.
+
+    The host launcher's carrier holds it (ADR 0009 sec. 2, `#540` ruling B);
+    every other source module ships inside a Core or Runner image, where the
+    ability to reach the engine would be exactly the privilege the whole
+    arrangement exists to withhold. The witness drives its launcher operations
+    through that same owner rather than through a second, shell-shaped copy.
+    """
+    assert ENGINE_EXECUTABLE in _engine_names_in(CARRIER)
+    for path in _python_files(SOURCE_ROOT):
+        if path != CARRIER:
+            assert _engine_names_in(path) == set(), path
+    for path in (PROJECT_ROOT / "src").rglob("*.sh"):
+        assert not {name for name in ENGINE_NAMES if name in path.read_text("utf-8")}
+    assert "python -m atelier2.adapters.docker_carrier" in LAUNCHER.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_the_stable_console_is_given_no_engine_authority() -> None:
+    """The console runs the product; it never gets to run containers.
+
+    This is ADR 0009 sec. 2's actual stop condition, and the reason the host
+    launcher exists at all: a Serve compromise must not be host root. A mounted
+    engine socket or a privileged service would hand it exactly that, so the
+    deployment descriptor is read for both.
+    """
+    compose = COMPOSE.read_text(encoding="utf-8")
+
+    assert "docker.sock" not in compose
+    assert "privileged" not in compose
+    assert "cap_add" not in compose
 
 
 def test_stable_serve_files_do_not_adopt_candidate_packaging() -> None:
@@ -48,21 +104,22 @@ def test_stable_serve_files_do_not_adopt_candidate_packaging() -> None:
         assert "Dockerfile.runner" not in text
 
 
-def test_launcher_copies_public_bootstrap_and_keeps_core_inspect_read_only() -> None:
+def test_the_witness_copies_public_bootstrap_and_keeps_core_handoff_read_only() -> None:
+    """Core reads its handoff and never writes it.
+
+    The public bootstrap leaves Core the same way it always did -- copied out
+    of the container -- and the directory it is copied into is bound back into
+    Core read-only, so the attestation Core reads from it is one nothing inside
+    Core could have written.
+    """
     text = LAUNCHER.read_text(encoding="utf-8")
-    assert (
-        '/usr/bin/docker cp "$core:/var/lib/atelier2-candidate/bootstrap.json"' in text
+    assert "carrier copy-from --container" in text
+    assert "--source /var/lib/atelier2-candidate/bootstrap.json" in text
+    assert '"$attempt_root/handoff:/handoff:ro"' in text
+    assert '"$attempt_root/handoff:/handoff"' not in text.replace(
+        '"$attempt_root/handoff:/handoff:ro"', ""
     )
-    assert "/usr/bin/docker cp" in text
-    assert '"$root/handoff:/handoff:ro"' in text
-    assert '"$root/handoff:/handoff"' not in text.replace(
-        '"$root/handoff:/handoff:ro"', ""
-    )
-    assert "dst=/handoff,volume-nocopy" in text
-    assert "--tmpfs /handoff:" not in text
     assert "unlink-private" in text
-    assert "attest-inspect" in text
-    assert '"$root/handoff/inspect-attested"' in text
     core = (PROJECT_ROOT / "tests/witness/runner_candidate_core.py").read_text(
         encoding="utf-8"
     )
@@ -72,10 +129,12 @@ def test_launcher_copies_public_bootstrap_and_keeps_core_inspect_read_only() -> 
     assert 'handoff / "inspect-attested").write' not in core
 
 
-def test_launcher_records_the_witness_network_only_after_it_is_created() -> None:
+def test_the_witness_records_the_attempt_network_the_launcher_reported() -> None:
     """A concurrent `clean` must never see a recorded network before it exists,
-    or it could mistake a still-running witness for a released one."""
+    or it could mistake a still-running witness for a released one. The witness
+    does not name the network at all any more: it records the one the launcher
+    says it created, which cannot precede the creation."""
     text = LAUNCHER.read_text(encoding="utf-8")
-    network_created_at = text.index("docker network create")
-    network_recorded_at = text.index('>"$root/network"')
-    assert network_created_at < network_recorded_at
+    reported_at = text.index("sed -n 's/^attempt-network=//p'")
+    recorded_at = text.index('>"$root/network"')
+    assert reported_at < recorded_at
