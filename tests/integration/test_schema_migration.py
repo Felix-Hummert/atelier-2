@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -36,6 +37,7 @@ from atelier2.adapters.dbos.schema import (
     V26_SCHEMA_HANDOFF,
     V27_SCHEMA_HANDOFF,
     V28_SCHEMA_HANDOFF,
+    V29_SCHEMA_HANDOFF,
     MigrationRequired,
     UnsupportedSchemaVersion,
     _product_schema_fingerprint,
@@ -371,11 +373,17 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[28]
         == "8e15796b7361796fc5c70e9c1682ddf58b967dea7fb112127366cfca600c9b36"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 29
+    assert V29_SCHEMA_HANDOFF.version == 29
     assert (
-        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        V29_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[29]
         == "06e1d67be5f39569e7661321c063f7ea84c95efba2906519e7473a6f2016b640"
+    )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 30
+    assert (
+        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[30]
+        == "1229c61ee62c20531cb31ed324a3b822646d56899f30be62ab1c6abebf325c3c"
     )
 
 
@@ -404,6 +412,7 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         26,
         27,
         28,
+        29,
     ],
 )
 def test_predecessor_store_is_refused_without_mutation(
@@ -1176,6 +1185,8 @@ def test_effect_ledger_rejects_invalid_field_shapes(
         ("WAITING_RECONCILIATION", True),
         ("WAITING_INPUT", True),
         ("COMPLETED", True),
+        ("FAILED", True),
+        ("CANCELLED", True),
         ("RECONCILING", False),
         ("PREPARED", False),
         ("CONFIRMED", False),
@@ -1185,18 +1196,19 @@ def test_effect_ledger_rejects_invalid_field_shapes(
 def test_run_state_tokens_are_exact(
     ledger_engine: Engine, state: str, accepted: bool
 ) -> None:
+    terminal_states = {"COMPLETED", "FAILED", "CANCELLED"}
     statement = runs.insert().values(
         run_id="candidate-run",
         bootstrap_workflow_id="candidate-workflow",
         revision_hash=hashlib.sha256(b"workflow-v1").hexdigest(),
         workflow_format_version=1,
         agent_binding_set_hash=None,
-        current_node_id=("final" if state == "COMPLETED" else "node"),
+        current_node_id=("final" if state in terminal_states else "node"),
         current_round_ordinal=FIRST_ROUND_ORDINAL,
         state=state,
         state_version=0,
         last_event_sequence=0,
-        terminal_hash=("0" * 64 if state == "COMPLETED" else None),
+        terminal_hash=("0" * 64 if state in terminal_states else None),
     )
     if accepted:
         with ledger_engine.begin() as connection:
@@ -1204,6 +1216,40 @@ def test_run_state_tokens_are_exact(
     else:
         with pytest.raises(exc.IntegrityError), ledger_engine.begin() as connection:
             connection.execute(statement)
+
+
+_CANCELLED_STATE_COMPARISON = re.compile(r"(?:is|==)\s+RunState\.CANCELLED\b")
+
+
+def test_run_state_cancelled_has_no_producer_yet() -> None:
+    """#439 P1 gives CANCELLED its durable home; #439 P3 gives it a writer.
+
+    `test_run_state_tokens_are_exact` above proves the migrated CHECK admits
+    the word at the storage layer. This is the other half: between P1 and P3
+    `RunState.CANCELLED` is a word nothing in the product constructs, and this
+    is what would turn red the day a writer starts referencing it without the
+    end-of-run seam (serve-start inventory, terminal lift, cancelled receipt)
+    #439 P3 is the named owner of. Source text is the right evidence for an
+    absence: no runtime path exists yet to drive behaviorally.
+
+    Two kinds of mention are not a writer, and stay allowed forever rather
+    than only until P3: `contracts/` is the word's own definitional home
+    (`RunState` itself, and the `TERMINAL_RUN_STATES` set every terminal-state
+    check already reads through); and an `is`/`==` comparison anywhere else is
+    a reader guarding against the word, the way `api/projection/runs.py`
+    already refuses to render a V1/V2 run whose frozen wire predates it.
+    """
+
+    source_root = Path(__file__).resolve().parents[2] / "src" / "atelier2"
+    reference = "RunState.CANCELLED"
+    offenders: set[str] = set()
+    for path in source_root.rglob("*.py"):
+        if "contracts" in path.relative_to(source_root).parts:
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if reference in line and not _CANCELLED_STATE_COMPARISON.search(line):
+                offenders.add(str(path.relative_to(source_root)))
+    assert offenders == set()
 
 
 @pytest.mark.parametrize(

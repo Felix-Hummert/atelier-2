@@ -167,6 +167,7 @@ def _run_resource_v3(projection: RunProjection, run: RunV3) -> RunResourceV3:
                 "WAITING_INPUT",
                 "COMPLETED",
                 "FAILED",
+                "CANCELLED",
             ],
             run.state.value,
         ),
@@ -220,6 +221,8 @@ def _run_resource_v2(
         )
     else:
         waiting = NoWaitingResourceV2(type="NONE")
+    if run.state is RunState.CANCELLED:
+        raise ValueError("a V2 run cannot end as CANCELLED")
     return RunResourceV2(
         workflow_format_version=2,
         run_id=run.run_id.value,
@@ -243,7 +246,16 @@ def _run_resource_v2(
             for binding in run.agent_bindings
         ),
         state_version=run.state_version,
-        state=run.state.value,
+        state=cast(
+            Literal[
+                "STARTED",
+                "WAITING_RECONCILIATION",
+                "WAITING_INPUT",
+                "COMPLETED",
+                "FAILED",
+            ],
+            run.state.value,
+        ),
         current_node=cast(NodeResourceV2, node_resource(node)),
         # A run resource says where the snapshot stands, so no event has
         # overtaken it here; the event stream carries its own rail.

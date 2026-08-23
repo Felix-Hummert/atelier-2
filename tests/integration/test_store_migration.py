@@ -34,6 +34,7 @@ from atelier2.adapters.dbos.schema import (
     _V17_AGENT_ATTEMPT_TRIGGERS,
     _V23_AGENT_ATTEMPT_TRIGGERS,
     _V24_AGENT_ATTEMPT_TRIGGERS,
+    _VERSION_TWENTY,
     PRODUCT_SCHEMA_HANDOFF,
     SCHEMA_VERSION,
     V13_SCHEMA_HANDOFF,
@@ -933,6 +934,24 @@ def _drop_queue_items_table(connection: sqlite3.Connection) -> None:
     connection.execute(f"DROP TABLE {queue_items.name}")
 
 
+def _revert_cancelled_run_state(connection: sqlite3.Connection) -> None:
+    """Restore the pre-CANCELLED `runs` CHECK the #439 P1 hop widened.
+
+    `runs`' shape has been unchanged since the V20 round column, so every
+    "exact vNN store" fixture between V21 and V29 shares the one V20 shape --
+    the #439 P1 hop is simply the first since then to touch it again.
+    """
+
+    _rebuild_product_table(
+        connection,
+        runs,
+        "runs_after_cancelled_state",
+        ("runs_binding_no_update",),
+        SCHEMA_VERSION,
+        _VERSION_TWENTY,
+    )
+
+
 def _revert_runner_evidence_attempts(connection: sqlite3.Connection) -> None:
     """Restore the exact V26 attempt table and its pre-Runner trigger."""
 
@@ -956,6 +975,7 @@ def _create_exact_v21_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         _revert_agent_refused_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
@@ -989,6 +1009,7 @@ def _create_exact_v22_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         _revert_agent_refused_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
@@ -1009,6 +1030,7 @@ def _create_exact_v23_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         _revert_project_verification_failed_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
@@ -1029,6 +1051,7 @@ def _create_exact_v24_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
@@ -1049,6 +1072,7 @@ def _create_exact_v25_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
         connection.execute(
@@ -1068,6 +1092,7 @@ def _create_exact_v26_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -1116,6 +1141,7 @@ def _create_exact_v27_store(database_path: Path, *, access: bool = False) -> Non
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V27_SCHEMA_HANDOFF.version,),
@@ -1133,6 +1159,7 @@ def _create_exact_v28_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V28_SCHEMA_HANDOFF.version,),
@@ -1450,6 +1477,7 @@ def test_v26_attempt_bytes_cross_v27_and_v28_unchanged_with_none_evidence(
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",

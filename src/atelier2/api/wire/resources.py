@@ -1035,7 +1035,12 @@ class RunResourceV3(ApiModel):
     )
     state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
     state: Literal[
-        "STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED", "FAILED"
+        "STARTED",
+        "WAITING_RECONCILIATION",
+        "WAITING_INPUT",
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED",
     ]
     current_node_id: str = Field(min_length=1)
     node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
@@ -1047,7 +1052,9 @@ class RunResourceV3(ApiModel):
     @model_validator(mode="after")
     def validate_state_shape(self) -> RunResourceV3:
         """A terminal hash exists exactly when the run has ended, and never before."""
-        if (self.state in {"COMPLETED", "FAILED"}) != (self.terminal_hash is not None):
+        if (self.state in {"COMPLETED", "FAILED", "CANCELLED"}) != (
+            self.terminal_hash is not None
+        ):
             raise ValueError("V3 run state and terminal hash disagree")
         return self
 

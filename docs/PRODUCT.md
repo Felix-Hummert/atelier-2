@@ -535,7 +535,13 @@ reason back, and an ending nothing recorded is reported as exactly that rather
 than as an empty one. Standard error stops at the receipt: the `AGENT_FAILED`
 event keeps carrying the bare failure code, so the event stream stays a bounded
 surface anybody may subscribe to. The bounded vocabulary deliberately not
-written here: cancelled and blocked receipt dispositions.
+written here: the blocked receipt disposition, and, until #439 P3 gives it a
+writer, the cancelled receipt disposition on the running node and the run's
+own terminal word. #439 P1 names both tokens durably --
+`NodeReceiptReason.CANCELLED_BY_OPERATOR` and `RunState.CANCELLED` -- but no
+writer constructs either yet: a migrated store admits the run word and the API
+can serve it, and nothing produces it before an operator's V3 run-cancel
+command lands.
 
 An agent is authored as one markdown file. Its frontmatter is a closed set of
 `name`, `description`, an optional `model`, and an optional `tools` declaration;

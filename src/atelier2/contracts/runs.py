@@ -40,11 +40,18 @@ class RunState(StrEnum):
     WAITING_INPUT = "WAITING_INPUT"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
-TERMINAL_RUN_STATES = frozenset({RunState.COMPLETED, RunState.FAILED})
-"""The two ways a run ends. Success keeps `COMPLETED`; an uncontinuable
-failure lifts the node's own ending rather than inventing a third word."""
+TERMINAL_RUN_STATES = frozenset(
+    {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}
+)
+"""The three ways a run ends. Success keeps `COMPLETED`; an uncontinuable
+failure lifts the node's own ending rather than inventing a third word; an
+operator's run-cancel command lifts the run under its own word rather than
+borrowing `FAILED` for something the operator chose. Issue #439 P1 gives
+`CANCELLED` its durable home; no writer constructs it until #439 P3 gives the
+word its own end-of-run seam."""
 
 
 FIRST_ROUND_ORDINAL = 1

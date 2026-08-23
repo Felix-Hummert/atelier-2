@@ -655,6 +655,16 @@ const runV2Schema = z
  * leaves the V2 cockpit exactly as it was and lets the V3 view render what
  * actually exists.
  */
+/** The V3 run states the served document names; tests/api/servedVocabulary holds them to it. */
+export const RUN_STATES_V3 = [
+  "STARTED",
+  "WAITING_RECONCILIATION",
+  "WAITING_INPUT",
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED"
+] as const;
+
 const runV3Schema = z
   .object({
     workflow_format_version: z.literal(3),
@@ -665,7 +675,7 @@ const runV3Schema = z
     run_configuration_revision_hash: sha256,
     agent_bindings: z.array(agentBindingV2Schema).max(100),
     state_version: nonnegativeSafeInteger,
-    state: z.enum(["STARTED", "WAITING_RECONCILIATION", "WAITING_INPUT", "COMPLETED", "FAILED"]),
+    state: z.enum(RUN_STATES_V3),
     current_node_id: z.string().min(1),
     node_rail: z.array(nodeRailEntrySchema).min(1),
     terminal_hash: sha256.nullable(),
