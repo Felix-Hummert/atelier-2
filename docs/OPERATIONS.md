@@ -57,9 +57,15 @@ a local rootful Docker engine the operator has authorized:
 bash scripts/runner_candidate.sh success
 bash scripts/runner_candidate.sh cancel
 bash scripts/runner_candidate.sh resume
+bash scripts/runner_candidate.sh toolchain
+bash scripts/runner_candidate.sh egress
 ```
 
-Each scenario creates one labelled internal Attempt network, one disposable
+`success`, `cancel` and `resume` drive one full session each. `toolchain` and
+`egress` drive no session at all: they measure the deployed image and the
+Attempt network form, unbilled, with no credential and no provider call.
+
+Each session scenario creates one labelled Attempt network, one disposable
 Core witness, one Runner, one handoff tmpfs volume, and one identity and one
 journal volume. Exact labelled objects are removed only after the Runner
 answers `RELEASED`. On failure the script leaves those objects and prints
@@ -87,6 +93,48 @@ by the same teardown as every other labelled object once released. Handoff
 stays tmpfs; its content is fully reproducible from files the launcher already
 retains on the host, so `resume` simply re-copies them into the restarted
 container instead of needing them to survive on their own.
+
+**The Runner's writable surface.** The image root stays read-only and carries
+the whole toolchain: node, the Claude CLI pinned to a release out of
+`CONFORMANT_CLAUDE_VERSIONS`, and bubblewrap. Exactly two paths are writable —
+`/tmp` and the provider configuration directory
+`/run/atelier2-provider-config` — and both are `noexec,nosuid` tmpfs mounts, so
+the provider child may write data there and may never execute it or gain
+privilege from it. Which paths a child may touch, and with which right, is a
+manifest fact: `RunnerManifestV1` carries the whole allowlist, the Runner
+installs exactly that as its Landlock ruleset, and the launcher's inspect
+attestation re-reads the mount flags of every writable entry. Widening the
+surface therefore changes the manifest identity Core selected and refuses,
+rather than passing unnoticed. Anything outside the allowlist is denied by
+Landlock; a read-only entry denies writes even where the mount would allow
+them; and an attested path this image does not have refuses before the child
+starts.
+
+**The Attempt network.** Each Attempt gets its own routed bridge network, not
+an internal one, and a throwaway `CAP_NET_ADMIN` container installs that
+Attempt's policy inside the started Runner's own network namespace and exits;
+the Runner holds no packet-filtering tool and no capability to alter it.
+Allowed: outbound DNS, outbound HTTPS, and traffic to the Attempt's own subnet
+so the Runner reaches Core. Forbidden: every other outbound port and every
+inbound connection, including from another Attempt — Docker keeps separate
+user-defined bridge networks unable to reach one another. The failure shape is
+the point: forbidden traffic is REJECTed, so a connection fails immediately
+with `Connection refused` and the provider CLI's own error handling surfaces
+it, rather than a silent DROP the operator would have to diagnose by timeout.
+`egress` measures exactly that: a real name resolves, HTTPS connects, and
+ports 80, 25 and every inbound attempt refuse in under a second.
+
+**What `toolchain` measures.** `claude --version` in the hardened container
+must report the pinned release; the runner-side pre-start attestation must
+answer typed for all three cases — the fake-free executor measures *no* CLI
+(a declared absence, not a skipped check), the Claude executor measures its
+version and then refuses because no personal-subscription credential is
+present, and a manifest naming an executor revision this image pins no
+toolchain for refuses before any provider start. The leg also records whether
+bubblewrap can start a namespace under the session hardening and asserts
+nothing about the answer: on a host whose Docker default seccomp profile
+denies user-namespace creation the exit is 1, and that is a measurement for
+the owning item to rule on, never a reason to soften the container.
 
 ```bash
 bash scripts/runner_candidate.sh clean

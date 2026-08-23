@@ -2,11 +2,208 @@
 set -euo pipefail
 
 witness_root_prefix="/var/tmp/atelier2-301a-runner-witness"
-candidate_images=(atelier2-301a-core atelier2-301a-runner)
+candidate_images=(atelier2-301a-core atelier2-301a-runner atelier2-301a-egress)
 # Must match `_CRASH_AFTER_PUBLISH_EXIT_CODE` in `src/atelier2/runner/session.py`
 # -- the one process-level fact a real `os._exit` and this shell script can
 # only share by declared, matching literal.
 crash_after_publish_exit_code=92
+
+# The exact hardening every Runner-image container in this witness runs under,
+# named once so a probe leg can never accidentally measure something softer
+# than the session leg it is supposed to speak about.
+runner_hardening=(
+  --user 10001:10001
+  --read-only
+  --cap-drop ALL
+  --security-opt no-new-privileges:true
+  --pids-limit 64
+  --memory 268435456
+  --cpu-period 100000
+  --cpu-quota 100000
+)
+# The writable surfaces `CANDIDATE_CHILD_PATH_GRANTS` attests. Both are
+# `noexec,nosuid`, which the launcher's own inspect attestation re-reads: the
+# provider child may write data here and may never run it.
+runner_writable_surface=(
+  --tmpfs /tmp:rw,noexec,nosuid,size=67108864,mode=1777
+  --tmpfs /run/atelier2-provider-config:rw,noexec,nosuid,size=16777216,mode=0700,uid=10001,gid=10001
+)
+
+build_candidate_images() {
+  # The pinned Claude release is read out of `CONFORMANT_CLAUDE_VERSIONS`,
+  # which stays the one register of that fact. The runner re-measures the
+  # installed executable against that same set before every provider start,
+  # so this build argument is never itself the trusted pin.
+  local claude_version
+  claude_version=$(uv run --locked python -c \
+    'from atelier2.adapters.claude_subscription import CONFORMANT_CLAUDE_VERSIONS
+print(".".join(str(part) for part in max(CONFORMANT_CLAUDE_VERSIONS)))')
+  docker build -q -f tests/witness/Dockerfile.runner-core -t atelier2-301a-core . >/dev/null
+  docker build -q --build-arg CLAUDE_VERSION="$claude_version" --target runner \
+    -f tests/witness/Dockerfile.runner -t atelier2-301a-runner . >/dev/null
+  docker build -q --target network-policy \
+    -f tests/witness/Dockerfile.runner -t atelier2-301a-egress . >/dev/null
+  printf '%s\n' "$claude_version"
+}
+
+# Installs one Attempt's egress policy inside the already-started Runner's own
+# network namespace, from a throwaway container that exits immediately. The
+# Runner itself holds no packet-filtering tool and no `CAP_NET_ADMIN`, so it
+# cannot alter what this leaves behind. Outbound HTTPS and DNS reach the
+# Internet and the Attempt's own subnet reaches Core; everything else, in
+# either direction, is REJECTed -- a loud, immediate connection failure the
+# provider CLI's own error handling surfaces, never a silent DROP timeout
+# (ADR 0009 sec. 2, 2026-08-23 amendment).
+install_attempt_egress_policy() {
+  local target="$1" subnet="$2"
+  docker run --rm --network "container:$target" --user 0 \
+    --cap-drop ALL --cap-add NET_ADMIN --entrypoint sh atelier2-301a-egress -c "
+set -e
+iptables -A OUTPUT -o lo -j ACCEPT
+iptables -A OUTPUT -d $subnet -j ACCEPT
+iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+iptables -A OUTPUT -p tcp --dport 443 -j ACCEPT
+iptables -A OUTPUT -p tcp -j REJECT --reject-with tcp-reset
+iptables -A OUTPUT -j REJECT --reject-with icmp-port-unreachable
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -p tcp -j REJECT --reject-with tcp-reset
+iptables -A INPUT -j REJECT --reject-with icmp-port-unreachable
+"
+}
+
+# The unbilled toolchain legs: what the deployed Runner image really measures
+# about its own provider toolchain, under exactly the session's hardening and
+# with no network, no credential and no identity of any kind. The probe program
+# is a read-only harness bind mount into a container that drives no session --
+# witness plumbing, never a production mount form (ADR 0009 sec. 2).
+run_toolchain_legs() {
+  local claude_version probe_root
+  claude_version=$(build_candidate_images)
+  probe_root=$(mktemp -d "$witness_root_prefix.toolchain.XXXXXX")
+  trap 'rm -rf -- "$probe_root"' RETURN
+  cat >"$probe_root/toolchain_probe.py" <<'PROBE'
+from atelier2.contracts.runner_manifests import candidate_runner_manifest
+from atelier2.runner.executors import attest_runner_provider_toolchain
+
+
+def manifest(provider_id, executor_revision):
+    return candidate_runner_manifest(
+        source_commit="a" * 40,
+        image_digest="sha256:" + "b" * 64,
+        required_landlock_abi=1,
+        executor_revision=executor_revision,
+        executor_operational_identity="toolchain-probe",
+        provider_id=provider_id,
+        auth_mode="subscription",
+        requested_capability="headless",
+    )
+
+
+# Each expectation is the leg's assertion, not a description of it: an image
+# that attested something else fails this probe with a nonzero exit.
+EXPECTATIONS = (
+    ("fake-free", "fake-free/v1", "MEASURED AbsentProviderCli()"),
+    # The version measurement runs before the policy attestation, so reaching
+    # this refusal is itself the proof that the installed release measured
+    # inside CONFORMANT_CLAUDE_VERSIONS. What refuses is the missing personal
+    # subscription credential -- correct for an unbilled Runner.
+    ("anthropic", "claude-subscription/v1", "REFUSED runner-provider-policy-present"),
+    ("anthropic", "claude-not-installed/v9", "REFUSED runner-toolchain-unpinned"),
+)
+
+failed = False
+for provider_id, executor_revision, expected in EXPECTATIONS:
+    try:
+        measured = attest_runner_provider_toolchain(manifest(provider_id, executor_revision))
+        observed = f"MEASURED {measured}"
+    except ValueError as refusal:
+        observed = f"REFUSED {refusal}"
+    verdict = "ok" if observed == expected else "UNEXPECTED"
+    failed = failed or verdict != "ok"
+    print(f"{provider_id} {executor_revision} {observed} [{verdict}, expected {expected}]")
+raise SystemExit(1 if failed else 0)
+PROBE
+  printf 'pinned Claude release from CONFORMANT_CLAUDE_VERSIONS: %s\n' "$claude_version"
+  printf -- '--- leg: measured provider CLI version under the session hardening ---\n'
+  local reported
+  reported=$(docker run --rm "${runner_hardening[@]}" "${runner_writable_surface[@]}" \
+    --network none --entrypoint claude atelier2-301a-runner --version)
+  printf 'claude --version in the hardened container: %s\n' "$reported"
+  if [[ "$reported" != "$claude_version "* ]]; then
+    printf 'the image measured a release outside the pinned conformance set\n' >&2
+    exit 1
+  fi
+  printf -- '--- leg: bubblewrap startability under the session hardening ---\n'
+  docker run --rm "${runner_hardening[@]}" "${runner_writable_surface[@]}" \
+    --network none --entrypoint bwrap atelier2-301a-runner --version
+  local bwrap_status=0
+  docker run --rm "${runner_hardening[@]}" "${runner_writable_surface[@]}" \
+    --network none --entrypoint bwrap atelier2-301a-runner \
+    --ro-bind / / --dev /dev --proc /proc --unshare-all /usr/bin/true || bwrap_status=$?
+  # Deliberately not asserted either way. This is a measurement the operator
+  # rules on: on this host the exit is 1, because Docker's default seccomp
+  # profile denies user-namespace creation. Softening the container to make
+  # bubblewrap succeed would trade the whole hardening for a probe, so the
+  # number is recorded and the ruling is left to the owning item.
+  printf 'bwrap namespace start under cap-drop=ALL, no-new-privileges and the default seccomp profile: exit=%s\n' \
+    "$bwrap_status"
+  printf -- '--- leg: runner-side pre-start toolchain attestation ---\n'
+  docker run --rm "${runner_hardening[@]}" "${runner_writable_surface[@]}" \
+    --network none -v "$probe_root/toolchain_probe.py:/tmp/toolchain_probe.py:ro" \
+    --entrypoint python atelier2-301a-runner /tmp/toolchain_probe.py
+}
+
+# The unbilled egress legs: the failure shape ADR 0009 sec. 2's 2026-08-23
+# amendment requires this witness to demonstrate for the mechanism it selected.
+run_egress_legs() {
+  build_candidate_images >/dev/null
+  local label network subnet host address
+  label="atelier2.runner-candidate=${RANDOM}${RANDOM}"
+  network="atelier2-301a-egress-${RANDOM}${RANDOM}"
+  host="${network}-probe"
+  docker network create --label "$label" "$network" >/dev/null
+  trap 'docker rm -f "$host" >/dev/null 2>&1 || true; docker network rm "$network" >/dev/null 2>&1 || true' RETURN
+  subnet=$(docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "$network")
+  docker run -d --name "$host" --label "$label" --network "$network" \
+    "${runner_hardening[@]}" "${runner_writable_surface[@]}" \
+    --entrypoint sleep atelier2-301a-runner 300 >/dev/null
+  printf 'attempt network %s subnet %s\n' "$network" "$subnet"
+  install_attempt_egress_policy "$host" "$subnet"
+  address=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$network\").IPAddress}}" "$host")
+  printf -- '--- leg: outbound DNS and HTTPS reach the Internet; everything else is refused ---\n'
+  docker run --rm --network "container:$host" --entrypoint bash atelier2-301a-runner -c '
+set +e
+failed=0
+resolved=$(getent hosts api.anthropic.com)
+echo "dns-resolved=${resolved:-NONE}"
+[[ -n "$resolved" ]] || { echo "UNEXPECTED: DNS did not resolve in the attempt network"; failed=1; }
+started=$SECONDS; timeout 8 bash -c "exec 3<>/dev/tcp/api.anthropic.com/443"; rc=$?
+echo "https-443-rc=$rc seconds=$((SECONDS - started))"
+(( rc == 0 )) || { echo "UNEXPECTED: outbound HTTPS did not connect"; failed=1; }
+for port in 80 25; do
+  started=$SECONDS; timeout 8 bash -c "exec 3<>/dev/tcp/1.1.1.1/$port"; rc=$?
+  elapsed=$((SECONDS - started))
+  echo "outbound-$port-rc=$rc seconds=$elapsed"
+  # A refusal must be immediate: a DROP would time out at 8 seconds instead.
+  (( rc != 0 && elapsed < 2 )) || { echo "UNEXPECTED: port $port was not refused loudly and immediately"; failed=1; }
+done
+exit $failed
+'
+  printf -- '--- leg: inbound into the Attempt container is refused immediately ---\n'
+  docker run --rm --network "$network" --entrypoint bash atelier2-301a-runner -c "
+set +e
+failed=0
+for port in 8443 22; do
+  started=\$SECONDS; timeout 8 bash -c \"exec 3<>/dev/tcp/$address/\$port\"; rc=\$?
+  elapsed=\$((SECONDS - started))
+  echo \"inbound-\$port-rc=\$rc seconds=\$elapsed\"
+  (( rc != 0 && elapsed < 2 )) || { echo \"UNEXPECTED: inbound port \$port was not refused loudly and immediately\"; failed=1; }
+done
+exit \$failed
+"
+}
 
 mode="${1:-success}"
 case "$mode" in
@@ -15,6 +212,14 @@ case "$mode" in
     ;;
   resume)
     scenario="crash-after-publish"
+    ;;
+  toolchain)
+    run_toolchain_legs
+    exit 0
+    ;;
+  egress)
+    run_egress_legs
+    exit 0
     ;;
   clean)
     removed=0
@@ -48,7 +253,7 @@ case "$mode" in
     exit 0
     ;;
   *)
-    printf 'usage: %s [success|cancel|resume|clean|images]\n' "$0" >&2
+    printf 'usage: %s [success|cancel|resume|toolchain|egress|clean|images]\n' "$0" >&2
     exit 1
     ;;
 esac
@@ -92,12 +297,18 @@ chmod 0700 "$root/issuer-output"
 uv run --locked python tests/witness/runner_candidate_issuer.py core --state "$root/issuer" --identity "$root/core-identity"
 cp "$root/core-identity/ca.crt" "$root/handoff/ca.crt"
 cp "$root/core-identity/core.crt" "$root/handoff/core.crt"
-docker build -q -f tests/witness/Dockerfile.runner-core -t atelier2-301a-core . >/dev/null
-docker build -q -f tests/witness/Dockerfile.runner -t atelier2-301a-runner . >/dev/null
+build_candidate_images >/dev/null
 image_digest=$(docker image inspect -f '{{.Id}}' atelier2-301a-runner)
 source_commit=$(git rev-parse HEAD)
 uv run --locked python tests/witness/runner_candidate_issuer.py manifest --source-commit "$source_commit" --image-digest "$image_digest" --output "$root/handoff"
-docker network create --internal --label "$label" "$network" >/dev/null
+# Routed, not `--internal`: this Attempt network reaches the Internet for
+# outbound HTTPS and DNS, and `install_attempt_egress_policy` below refuses
+# everything else loudly inside the Runner's own network namespace (ADR 0009
+# sec. 2, 2026-08-23 amendment). Docker keeps separate user-defined bridge
+# networks unable to reach one another, so cross-Attempt isolation survives
+# the change from `--internal`.
+docker network create --label "$label" "$network" >/dev/null
+attempt_subnet=$(docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "$network")
 # Recorded only after the network exists, so a concurrent `clean` never
 # mistakes a still-being-created witness for a released one (see the "no
 # recorded network" case in `clean`).
@@ -141,7 +352,8 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 [[ -s "$root/handoff/bootstrap.json" && -s "$root/handoff/core-peer.json" ]]
-runner_id=$(docker run -d --name "$runner" --label "$label" --network "$network" --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 64 --memory 268435456 --cpu-period 100000 --cpu-quota 100000 --tmpfs /workspace:rw,noexec,nosuid,size=67108864,mode=1777 --tmpfs /offer:rw,noexec,nosuid,size=1048576,mode=1777 --mount type=volume,src="$handoff_volume",dst=/handoff,volume-nocopy --mount type=volume,src="$identity_volume",dst=/run/atelier2-identity,readonly,volume-nocopy --mount type=volume,src="$journal_volume",dst=/journal,volume-nocopy atelier2-301a-runner)
+runner_id=$(docker run -d --name "$runner" --label "$label" --network "$network" "${runner_hardening[@]}" "${runner_writable_surface[@]}" --tmpfs /workspace:rw,noexec,nosuid,size=67108864,mode=1777 --tmpfs /offer:rw,noexec,nosuid,size=1048576,mode=1777 --mount type=volume,src="$handoff_volume",dst=/handoff,volume-nocopy --mount type=volume,src="$identity_volume",dst=/run/atelier2-identity,readonly,volume-nocopy --mount type=volume,src="$journal_volume",dst=/journal,volume-nocopy atelier2-301a-runner)
+install_attempt_egress_policy "$runner" "$attempt_subnet"
 
 # Handoff is tmpfs-backed and its content is fully reproducible from the host
 # files already retained under `$root/handoff`; `resume` below calls this a
@@ -197,6 +409,9 @@ if [[ "$scenario" == "crash-after-publish" ]]; then
   printf 'observed the declared crash after journal.publish; journal retained its terminal record: runner-exit=%s root=%s\n' \
     "$runner_status" "$root"
   docker start "$runner" >/dev/null
+  # A restarted container gets a fresh network namespace, so this Attempt's
+  # egress policy has to be installed into it again before it resumes.
+  install_attempt_egress_policy "$runner" "$attempt_subnet"
   copy_handoff_into_runner
   printf 'restarted the runner container with its identity and journal volumes intact: runner=%s root=%s\n' \
     "$runner" "$root"
