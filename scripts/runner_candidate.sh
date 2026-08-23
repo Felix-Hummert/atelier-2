@@ -82,7 +82,11 @@ run_toolchain_legs() {
   local claude_version probe_root
   claude_version=$(build_candidate_images)
   probe_root=$(mktemp -d "$witness_root_prefix.toolchain.XXXXXX")
-  trap 'rm -rf -- "$probe_root"' RETURN
+  # An EXIT trap, not a RETURN one: a failing assertion below leaves this
+  # function through `exit`, which no RETURN trap would ever see. The paths are
+  # expanded into the trap now, because by the time it runs this function's own
+  # locals are gone.
+  trap "rm -rf -- '$probe_root'" EXIT
   cat >"$probe_root/toolchain_probe.py" <<'PROBE'
 from atelier2.contracts.runner_manifests import candidate_runner_manifest
 from atelier2.runner.executors import attest_runner_provider_toolchain
@@ -164,7 +168,11 @@ run_egress_legs() {
   network="atelier2-301a-egress-${RANDOM}${RANDOM}"
   host="${network}-probe"
   docker network create --label "$label" "$network" >/dev/null
-  trap 'docker rm -f "$host" >/dev/null 2>&1 || true; docker network rm "$network" >/dev/null 2>&1 || true' RETURN
+  # An EXIT trap, not a RETURN one: a failing assertion below leaves this
+  # function through `exit`, and a RETURN trap would strand this Attempt's
+  # network and container on the host. The names are expanded into the trap
+  # now, because by the time it runs this function's own locals are gone.
+  trap "docker rm -f '$host' >/dev/null 2>&1 || true; docker network rm '$network' >/dev/null 2>&1 || true" EXIT
   subnet=$(docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "$network")
   docker run -d --name "$host" --label "$label" --network "$network" \
     "${runner_hardening[@]}" "${runner_writable_surface[@]}" \
