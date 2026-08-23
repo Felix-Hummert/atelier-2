@@ -41,10 +41,12 @@ from atelier2.contracts.runner_manifests import (
 )
 from atelier2.host.runner_identity import RunnerIdentityAuthority
 from atelier2.host.runner_launcher import (
+    AttemptRefusal,
     AttemptVolumes,
     FileRunnerLeaseSource,
     RunnerLauncher,
     RunnerLease,
+    RunnerLeaseValidation,
     runner_container_spec,
 )
 
@@ -86,7 +88,9 @@ def _attested_document(manifest: RunnerManifestV1) -> dict[str, Any]:
         "Config": {"User": f"{manifest.effective_uid}:{manifest.effective_gid}"},
         "NetworkSettings": {"Ports": {}},
         "HostConfig": {
-            "NetworkMode": "attempt",
+            # Created private and connected afterwards: the engine keeps
+            # reporting the mode the container was created with.
+            "NetworkMode": "none",
             "PortBindings": {},
             "ReadonlyRootfs": True,
             "CapDrop": ["ALL"],
@@ -122,13 +126,16 @@ def _attested_document(manifest: RunnerManifestV1) -> dict[str, Any]:
 class RecordingCarrier:
     """A host that records what the launcher asked of it.
 
-    `runner_exits` is read one entry per wait, so a test states the lifetime it
-    is about -- one clean exit, or a crash and the resumed exit after it.
+    `runner_exits` and `journal_records` are each read one entry per call, so a
+    test states the exact lifetime it is about -- one clean exit, or a crash,
+    one journal answer, and the resumed exit after it -- instead of an answer
+    that would keep repeating whatever it was asked.
     """
 
     document: dict[str, Any]
     runner_exits: list[int]
-    journal_retained: bool = False
+    journal_records: list[bool] = field(default_factory=list)
+    delivery_refusal: Exception | None = None
     created: dict[str, list[str]] = field(
         default_factory=lambda: {"containers": [], "volumes": [], "networks": []}
     )
@@ -142,6 +149,7 @@ class RecordingCarrier:
     delivered_identity: bytes = b""
     started_again: list[str] = field(default_factory=list)
     runner_specification: ContainerSpec | None = None
+    operations: list[str] = field(default_factory=list)
 
     def create_attempt_network(self, name: str, label: str) -> AttemptNetwork:
         self.created["networks"].append(name)
@@ -150,6 +158,8 @@ class RecordingCarrier:
     def attach_policed_container(
         self, container: str, network: AttemptNetwork, role: ContainerRole
     ) -> None:
+        self.operations.append("attach")
+        self.policed.append(container)
         self.attached.append((container, network.name))
 
     def install_attempt_policy(
@@ -168,13 +178,15 @@ class RecordingCarrier:
     def start_policed_container(
         self, spec: ContainerSpec, network: AttemptNetwork, role: ContainerRole
     ) -> str:
+        self.operations.append("start-policed")
         self.runner_specification = spec
         self.created["containers"].append(spec.name)
         self.policed.append(spec.name)
         self.attached.append((spec.name, network.name))
         return str(self.document["Id"])
 
-    def start_container(self, container: str) -> None:
+    def restart_private_container(self, container: str) -> None:
+        self.operations.append("restart-private")
         self.started_again.append(container)
 
     def wait_for_exit(self, container: str) -> int:
@@ -190,6 +202,7 @@ class RecordingCarrier:
         destination: PurePosixPath,
         deadline_seconds: float,
     ) -> None:
+        self.operations.append("handoff")
         self.handoffs.append([source.name for source in sources])
 
     def read_file_in_container(
@@ -204,11 +217,13 @@ class RecordingCarrier:
 
     def run_receiving_stdin(self, spec: ContainerSpec, stdin: bytes) -> None:
         self.delivered_identity = stdin
+        if self.delivery_refusal is not None:
+            raise self.delivery_refusal
 
     def file_exists_in_volume(
         self, volume: str, image: str, path: PurePosixPath
     ) -> bool:
-        return self.journal_retained
+        return self.journal_records.pop(0)
 
     def labelled_containers(self, label: str) -> tuple[str, ...]:
         return tuple(self.created["containers"])
@@ -229,11 +244,13 @@ class RecordingCarrier:
         self.removed["networks"].extend(networks)
 
 
-def _lease(root: Path, manifest: RunnerManifestV1 | None = None) -> RunnerLease:
+def _lease(
+    root: Path, manifest: RunnerManifestV1 | None = None, lease_id: str = _LEASE_ID
+) -> RunnerLease:
     for name in ("handoff", "peer", "issuance", "provider-credentials"):
         (root / name).mkdir(mode=0o700, parents=True, exist_ok=True)
     return RunnerLease(
-        _LEASE_ID,
+        lease_id,
         _binding(),
         _RUNNER_IMAGE,
         manifest if manifest is not None else _manifest(),
@@ -245,6 +262,10 @@ def _lease(root: Path, manifest: RunnerManifestV1 | None = None) -> RunnerLease:
     )
 
 
+def _validation(root: Path) -> RunnerLeaseValidation:
+    return RunnerLeaseValidation(root, _SERVE_CONTAINER)
+
+
 def _launcher(
     root: Path, carrier: RecordingCarrier, source: Any
 ) -> tuple[RunnerLauncher, list[str]]:
@@ -253,22 +274,38 @@ def _launcher(
         carrier,
         RunnerIdentityAuthority(root / "authority"),
         source,
+        _validation(root),
         announced.append,
     )
     return launcher, announced
 
 
-@dataclass
-class OneLeaseSource:
-    """A source holding exactly the lease a test is about."""
+class SourceExhausted(Exception):
+    """What a test uses to end a watching launcher, standing in for the
+    operator stopping the process. It is deliberately not an Attempt refusal,
+    so it also shows how narrow the loop's own catch is."""
 
-    lease: RunnerLease | None
+
+@dataclass
+class OpenLeases:
+    """A source holding exactly the leases a test is about, in order.
+
+    `exhausted` makes a watching loop end: without it a launcher that is
+    working correctly would poll an empty source forever, which is what a
+    launcher is for and what a test cannot wait for.
+    """
+
+    open_leases: list[RunnerLease]
     released: list[str] = field(default_factory=list)
     stale: tuple[str, ...] = ()
+    exhausted: type[Exception] | None = None
 
     def claim_open_lease(self) -> RunnerLease | None:
-        claimed, self.lease = self.lease, None
-        return claimed
+        if self.open_leases:
+            return self.open_leases.pop(0)
+        if self.exhausted is not None:
+            raise self.exhausted()
+        return None
 
     def release(self, lease: RunnerLease) -> None:
         self.released.append(lease.lease_id)
@@ -294,7 +331,7 @@ def test_a_lease_document_is_claimed_by_exactly_one_launcher(tmp_path: Path) -> 
         encoding="utf-8",
     )
     directory = tmp_path / "leases"
-    source = FileRunnerLeaseSource(directory)
+    source = FileRunnerLeaseSource(directory, _validation(tmp_path))
     (directory / "open" / f"{_LEASE_ID}.json").write_text(
         json.dumps(
             {
@@ -316,7 +353,10 @@ def test_a_lease_document_is_claimed_by_exactly_one_launcher(tmp_path: Path) -> 
     assert claimed is not None
     assert claimed.lease_id == _LEASE_ID
     assert claimed.binding == _binding()
-    assert FileRunnerLeaseSource(directory).claim_open_lease() is None
+    assert (
+        FileRunnerLeaseSource(directory, _validation(tmp_path)).claim_open_lease()
+        is None
+    )
 
     source.release(claimed)
 
@@ -329,13 +369,15 @@ def test_a_lease_a_dead_launcher_left_claimed_is_abandoned_with_its_objects(
     """An Attempt that may already have run is never silently run again: what
     it left on the host is removed, and the lease goes back to its owner."""
     directory = tmp_path / "leases"
-    FileRunnerLeaseSource(directory)
+    FileRunnerLeaseSource(directory, _validation(tmp_path))
     (directory / "claimed" / "interrupted.json").write_text("{}", encoding="utf-8")
     carrier = RecordingCarrier(_attested_document(_manifest()), [])
     carrier.created["containers"].append("atelier2-attempt-interrupted-runner")
     carrier.created["volumes"].append("atelier2-attempt-interrupted-journal")
     carrier.created["networks"].append("atelier2-attempt-interrupted")
-    launcher, announced = _launcher(tmp_path, carrier, FileRunnerLeaseSource(directory))
+    launcher, announced = _launcher(
+        tmp_path, carrier, FileRunnerLeaseSource(directory, _validation(tmp_path))
+    )
 
     launcher.reconcile_abandoned_attempts()
 
@@ -350,7 +392,7 @@ def test_an_established_attempt_leaves_nothing_behind(tmp_path: Path) -> None:
     """The whole ensemble, and then a host that looks as it did before."""
     carrier = RecordingCarrier(_attested_document(_manifest()), [0])
     lease = _lease(tmp_path)
-    source = OneLeaseSource(lease)
+    source = OpenLeases([lease])
     launcher, announced = _launcher(tmp_path, carrier, source)
 
     launcher.establish(lease)
@@ -436,10 +478,10 @@ def test_a_runner_that_journaled_its_terminal_fact_is_resumed_once(
     """A Runner that died holding the only record of what happened gets its
     own container back, re-policed, with its handoff replaced."""
     carrier = RecordingCarrier(
-        _attested_document(_manifest()), [92, 0], journal_retained=True
+        _attested_document(_manifest()), [92, 0], journal_records=[True]
     )
     lease = _lease(tmp_path)
-    launcher, announced = _launcher(tmp_path, carrier, OneLeaseSource(lease))
+    launcher, announced = _launcher(tmp_path, carrier, OpenLeases([lease]))
 
     launcher.establish(lease)
 
@@ -456,15 +498,123 @@ def test_a_runner_that_retained_nothing_fails_its_attempt(tmp_path: Path) -> Non
     refused, and what it left is kept for the operator and the next
     reconciliation rather than swept away."""
     carrier = RecordingCarrier(
-        _attested_document(_manifest()), [1], journal_retained=False
+        _attested_document(_manifest()), [1], journal_records=[False]
     )
     lease = _lease(tmp_path)
-    source = OneLeaseSource(lease)
+    source = OpenLeases([lease])
     launcher, _announced = _launcher(tmp_path, carrier, source)
 
-    with pytest.raises(CarrierRefusal, match="launcher-attempt-failed"):
+    with pytest.raises(AttemptRefusal, match="launcher-attempt-failed"):
         launcher.establish(lease)
 
     assert carrier.started_again == []
     assert carrier.removed["networks"] == []
     assert source.released == []
+
+
+def test_a_lease_may_not_name_a_path_outside_the_attempt_root(tmp_path: Path) -> None:
+    """A lease asks; it does not authorise. A document that named the host's own
+    directories would otherwise mount them into an Attempt."""
+    validation = _validation(tmp_path / "attempts")
+    (tmp_path / "attempts").mkdir()
+    lease = _lease(tmp_path)
+
+    with pytest.raises(AttemptRefusal, match="outside-the-attempt-root"):
+        validation.validated(lease)
+
+
+def test_a_lease_may_not_name_another_console_container(tmp_path: Path) -> None:
+    """Attaching a container to an Attempt network installs a packet filter in
+    its namespace; naming a foreign container would aim that at a stranger."""
+    validation = RunnerLeaseValidation(tmp_path, "another-console")
+
+    with pytest.raises(AttemptRefusal, match="another-console-container"):
+        validation.validated(_lease(tmp_path))
+
+
+def test_a_lease_document_naming_a_foreign_path_is_never_even_read(
+    tmp_path: Path,
+) -> None:
+    """The refusal comes before the adapter follows what the document says:
+    reading a path a stranger chose is already acting on it."""
+    directory = tmp_path / "leases"
+    source = FileRunnerLeaseSource(directory, _validation(tmp_path / "attempts"))
+    (tmp_path / "attempts").mkdir()
+    (directory / "open" / f"{_LEASE_ID}.json").write_text(
+        json.dumps(
+            {
+                "binding_path": "/etc/shadow",
+                "manifest_path": str(tmp_path / "manifest"),
+                "runner_image": _RUNNER_IMAGE,
+                "serve_container": _SERVE_CONTAINER,
+                "handoff_directory": str(tmp_path / "handoff"),
+                "core_peer_directory": str(tmp_path / "peer"),
+                "issuance_directory": str(tmp_path / "issuance"),
+                "provider_credential_source": str(tmp_path / "credentials"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AttemptRefusal, match="binding_path"):
+        source.claim_open_lease()
+
+
+def test_the_resumed_runner_is_detached_before_it_is_started_again(
+    tmp_path: Path,
+) -> None:
+    """One order on both paths: a container is never reachable before its
+    Attempt policy is in its namespace. A restart throws that namespace away,
+    so the container is released from its network first and gets policy and
+    network back through the same operation a first start uses."""
+    carrier = RecordingCarrier(
+        _attested_document(_manifest()), [92, 0], journal_records=[True]
+    )
+    lease = _lease(tmp_path)
+    launcher, _announced = _launcher(tmp_path, carrier, OpenLeases([lease]))
+
+    launcher.establish(lease)
+
+    assert carrier.operations == [
+        "attach",
+        "start-policed",
+        "handoff",
+        "restart-private",
+        "attach",
+        "handoff",
+    ]
+
+
+def test_a_failed_attempt_does_not_end_a_watching_launcher(tmp_path: Path) -> None:
+    """One bad Attempt is a bad Attempt, not an outage: it is reported, its
+    lease stays claimed for reconciliation, and the next lease is served."""
+    carrier = RecordingCarrier(
+        _attested_document(_manifest()), [1, 0], journal_records=[False]
+    )
+    failing = _lease(tmp_path)
+    good = _lease(tmp_path / "second", lease_id="lease-two")
+    source = OpenLeases([failing, good], exhausted=SourceExhausted)
+    launcher, announced = _launcher(tmp_path, carrier, source)
+
+    with pytest.raises(SourceExhausted):
+        launcher.serve_open_leases(once=False, poll_seconds=0)
+
+    assert [line for line in announced if line.startswith("attempt-failed=")]
+    assert announced.count(f"attempt-released={good.lease_id}") == 1
+    assert source.released == [good.lease_id]
+
+
+def test_a_minted_key_leaves_the_host_even_when_delivery_fails(
+    tmp_path: Path,
+) -> None:
+    """A failed delivery is a failed Attempt, never a private key left behind."""
+    carrier = RecordingCarrier(_attested_document(_manifest()), [])
+    carrier.delivery_refusal = CarrierRefusal("carrier-command-refused: receiver")
+    lease = _lease(tmp_path)
+    launcher, _announced = _launcher(tmp_path, carrier, OpenLeases([lease]))
+
+    with pytest.raises(CarrierRefusal):
+        launcher.establish(lease)
+
+    assert not (lease.issuance_directory / "client.key").exists()
+    assert (lease.issuance_directory / "client.crt").is_file()

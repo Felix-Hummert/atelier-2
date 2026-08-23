@@ -196,6 +196,24 @@ read-only mount: the run breaks with a named, observable error rather than
 hanging silently, and no credential data is lost, because nothing was ever
 writable to lose.
 
+**2026-08-23 amendment (Operator-Ruling B, #540-Journal): a lease is a request,
+not an authorization.** The local carrier form is a host launcher process
+beside the console. It alone holds engine authority; Serve receives no socket,
+no broker, and no privileged helper, and asks for an Attempt by publishing a
+Runner lease. That lease is therefore a **trusted input to a privileged
+process**: it names host directories the launcher will mount into a container
+and the container it will attach to an Attempt network — a lease free to name
+anything would be a mount of the host's own filesystem into an Attempt, and
+`CAP_NET_ADMIN` inside a namespace nobody chose. The launcher consequently
+validates source and target itself, against what the operator declared when it
+was started, and never against what the document claims: every path a lease
+names must resolve inside the operator's declared attempt root, and the console
+container it names must be the one declared at start. This holds now, while an
+operator script writes the leases, and it is what makes the seam safe when
+Serve becomes the writer — Serve is precisely the component this record refuses
+to trust with the carrier, and being able to ask must never become being able
+to command.
+
 ### 3. Operator authentication gates every exposure beyond this machine
 
 The API gains an authenticated **operator principal** before any exposure that

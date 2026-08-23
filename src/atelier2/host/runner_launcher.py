@@ -9,8 +9,16 @@ one invocation may present, the inspect attestation Core admits the session on,
 and the complete removal of all of it afterwards.
 
 The lease source is the portability seam. Locally it is a directory of lease
-documents a Serve process writes; a cluster plays the same role over the same
-interface. Deploying elsewhere replaces that adapter, never this arrangement.
+documents; a cluster plays the same role over the same interface. Deploying
+elsewhere replaces that adapter, never this arrangement.
+
+A lease is a trusted input, and asking for something is not authority to get
+it: whoever writes leases -- an operator's script today, Serve itself from
+`#540` C-3 -- is asking this process to mount host directories and to attach a
+container to a network. Serve is precisely the component the arrangement
+refuses to trust with the carrier, so the launcher validates what a lease names
+against what the operator declared at start (`RunnerLeaseValidation`) instead
+of believing the document.
 
 What this process is trusted with is deliberately narrow: it never reads the
 product's own state, never runs provider code, and never hands an Attempt
@@ -126,6 +134,56 @@ class RunnerLease:
         return f"atelier2-attempt-{self.lease_id}"
 
 
+class AttemptRefusal(Exception):
+    """A named refusal of one Attempt, carrying which lease it was about."""
+
+
+@dataclass(frozen=True, slots=True)
+class RunnerLeaseValidation:
+    """What the operator declares a lease may name, before one is acted on.
+
+    A lease is a trusted input: it names host directories this process mounts
+    into a container and the console container it attaches to an Attempt
+    network. A lease that could name any path would be a mount of the host's
+    own root into an Attempt, and one that could name any container would be
+    `CAP_NET_ADMIN` inside a namespace nobody meant. Today an operator script
+    writes the leases; from `#540` C-3 a Serve process does, and Serve is
+    exactly the component this whole arrangement refuses to trust with the
+    carrier. So the launcher decides what it accepts rather than believing the
+    document: every path must resolve inside the operator's declared attempt
+    root, and the console container must be the one named at start.
+    """
+
+    attempt_root: Path
+    console_container: str
+
+    def validated_path(self, named: Path, field: str) -> Path:
+        resolved = named.resolve()
+        root = self.attempt_root.resolve()
+        if not resolved.is_relative_to(root):
+            raise AttemptRefusal(
+                f"lease-names-a-path-outside-the-attempt-root: {field}={named}"
+            )
+        return resolved
+
+    def validated_console(self, named: str) -> str:
+        if named != self.console_container:
+            raise AttemptRefusal(f"lease-names-another-console-container: {named}")
+        return named
+
+    def validated(self, lease: RunnerLease) -> RunnerLease:
+        """The same lease, once every surface it names has been admitted."""
+        for field, named in (
+            ("handoff_directory", lease.handoff_directory),
+            ("core_peer_directory", lease.core_peer_directory),
+            ("issuance_directory", lease.issuance_directory),
+            ("provider_credential_source", lease.provider_credential_source),
+        ):
+            self.validated_path(named, field)
+        self.validated_console(lease.serve_container)
+        return lease
+
+
 class RunnerLeaseSource(Protocol):
     """Where open Runner leases come from, and where finished ones go back.
 
@@ -171,7 +229,7 @@ class AttemptCarrier(Protocol):
         self, spec: ContainerSpec, network: AttemptNetwork, role: ContainerRole
     ) -> str: ...
 
-    def start_container(self, container: str) -> None: ...
+    def restart_private_container(self, container: str) -> None: ...
 
     def wait_for_exit(self, container: str) -> int: ...
 
@@ -244,7 +302,8 @@ class FileRunnerLeaseSource:
     an interrupted lease is that owner's decision (`#540` C-3).
     """
 
-    def __init__(self, directory: Path) -> None:
+    def __init__(self, directory: Path, validation: RunnerLeaseValidation) -> None:
+        self._validation = validation
         self._open = directory / "open"
         self._claimed = directory / "claimed"
         self._released = directory / "released"
@@ -273,18 +332,31 @@ class FileRunnerLeaseSource:
         return tuple(stale)
 
     def _decode(self, document: Path) -> RunnerLease:
+        """One lease document, admitted before a single byte of it is followed.
+
+        The two paths this reads are checked first: a lease that could point
+        `manifest_path` or `binding_path` anywhere would make this adapter read
+        whatever the writer chose, and reading is already acting on it.
+        """
         record = json.loads(document.read_text(encoding="utf-8"))
-        manifest_path = Path(record["manifest_path"])
-        return RunnerLease(
-            document.stem,
-            decode_runner_binding(Path(record["binding_path"]).read_bytes()),
-            record["runner_image"],
-            decode_runner_manifest(manifest_path.read_bytes()),
-            record["serve_container"],
-            Path(record["handoff_directory"]),
-            Path(record["core_peer_directory"]),
-            Path(record["issuance_directory"]),
-            Path(record["provider_credential_source"]),
+        binding_path = self._validation.validated_path(
+            Path(record["binding_path"]), "binding_path"
+        )
+        manifest_path = self._validation.validated_path(
+            Path(record["manifest_path"]), "manifest_path"
+        )
+        return self._validation.validated(
+            RunnerLease(
+                document.stem,
+                decode_runner_binding(binding_path.read_bytes()),
+                record["runner_image"],
+                decode_runner_manifest(manifest_path.read_bytes()),
+                record["serve_container"],
+                Path(record["handoff_directory"]),
+                Path(record["core_peer_directory"]),
+                Path(record["issuance_directory"]),
+                Path(record["provider_credential_source"]),
+            )
         )
 
 
@@ -352,6 +424,7 @@ class RunnerLauncher:
     carrier: AttemptCarrier
     authority: RunnerIdentityAuthority
     leases: RunnerLeaseSource
+    validation: RunnerLeaseValidation
     announce: Callable[[str], None]
 
     def reconcile_abandoned_attempts(self) -> None:
@@ -365,18 +438,31 @@ class RunnerLauncher:
             self.announce(f"reconciled-attempt={lease_id}")
             self._remove_attempt(lease_label(lease_id))
 
-    def serve_open_leases(self, once: bool, poll_seconds: float) -> None:
+    def serve_open_leases(self, once: bool, poll_seconds: float) -> int:
+        """Establish leases until there are none left, or forever.
+
+        A failed Attempt is loud and local: it is reported, its lease stays
+        claimed and its objects stay on the host to be read, and this launcher
+        keeps serving the next lease. One bad Attempt taking the whole host's
+        launcher down with it would turn a single failure into an outage.
+        Returns how many Attempts failed, so a bounded run can answer for them.
+        """
+        failed = 0
         self.reconcile_abandoned_attempts()
         while True:
             lease = self.leases.claim_open_lease()
             if lease is None:
                 if once:
-                    return
+                    return failed
                 time.sleep(poll_seconds)
                 continue
-            self.establish(lease)
+            try:
+                self.establish(lease)
+            except (AttemptRefusal, CarrierRefusal) as refusal:
+                failed += 1
+                self.announce(f"attempt-failed={refusal}")
             if once:
-                return
+                return failed
 
     def establish(self, lease: RunnerLease) -> None:
         """Run one Attempt from an empty host to a released one.
@@ -385,6 +471,7 @@ class RunnerLauncher:
         back to its source. On failure they are deliberately left, named, for
         the operator to read -- the next launcher start reconciles them.
         """
+        self.validation.validated(lease)
         self.announce(f"attempt-lease={lease.lease_id}")
         network = self.carrier.create_attempt_network(lease.attempt_name, lease.label)
         self.announce(f"attempt-network={network.name}")
@@ -456,7 +543,8 @@ class RunnerLauncher:
         identity cannot be minted before the Runner exists, and the leaf cannot
         be reused by a second one. The material is handed to a receiver
         container over a pipe rather than bind-mounted from the host, and the
-        private key is unlinked as soon as the receiver has it.
+        private key is unlinked the moment that delivery is over -- taken or
+        not.
         """
         manifest = lease.manifest
         offer = json.loads(
@@ -474,35 +562,40 @@ class RunnerLauncher:
             lease.issuance_directory,
             lease.core_peer_directory,
         )
-        self.carrier.run_receiving_stdin(
-            ContainerSpec(
-                f"{container}-identity-receiver",
-                lease.runner_image,
-                lease.label,
-                ContainerHardening(
-                    user=f"{manifest.effective_uid}:{manifest.effective_gid}",
-                    read_only_root=True,
-                    drop_all_capabilities=True,
-                    no_new_privileges=True,
-                    process_limit=manifest.process_limit,
-                    memory_bytes=manifest.memory_bytes,
-                    cpu_period_microseconds=CANDIDATE_CPU_PERIOD,
-                    cpu_quota_microseconds=manifest.cpu_quota_microseconds,
-                ),
-                tmpfs=tuple(_writable_grants(manifest)),
-                volumes=(
-                    VolumeMount(
-                        volumes.identity,
-                        _IDENTITY_RECEIVER_DESTINATION,
-                        MountRight.READ_WRITE,
-                    ),
-                ),
-                entrypoint=_IDENTITY_RECEIVER_ENTRYPOINT,
-                arguments=("--destination", str(_IDENTITY_RECEIVER_DESTINATION)),
+        receiver = ContainerSpec(
+            f"{container}-identity-receiver",
+            lease.runner_image,
+            lease.label,
+            ContainerHardening(
+                user=f"{manifest.effective_uid}:{manifest.effective_gid}",
+                read_only_root=True,
+                drop_all_capabilities=True,
+                no_new_privileges=True,
+                process_limit=manifest.process_limit,
+                memory_bytes=manifest.memory_bytes,
+                cpu_period_microseconds=CANDIDATE_CPU_PERIOD,
+                cpu_quota_microseconds=manifest.cpu_quota_microseconds,
             ),
-            receiver_record(lease.issuance_directory),
+            tmpfs=tuple(_writable_grants(manifest)),
+            volumes=(
+                VolumeMount(
+                    volumes.identity,
+                    _IDENTITY_RECEIVER_DESTINATION,
+                    MountRight.READ_WRITE,
+                ),
+            ),
+            entrypoint=_IDENTITY_RECEIVER_ENTRYPOINT,
+            arguments=("--destination", str(_IDENTITY_RECEIVER_DESTINATION)),
         )
-        unlink_private_keys([lease.issuance_directory / "client.key"])
+        try:
+            self.carrier.run_receiving_stdin(
+                receiver, receiver_record(lease.issuance_directory)
+            )
+        finally:
+            # A key that was minted has to leave this host whether or not the
+            # receiver took it: a failed delivery is a failed Attempt, never a
+            # private key left lying in the issuance directory.
+            unlink_private_keys([lease.issuance_directory / "client.key"])
 
     def _attest(self, lease: RunnerLease, container_id: str) -> None:
         """Read the created container back against the manifest Core bound.
@@ -544,20 +637,18 @@ class RunnerLauncher:
         )
         self.announce(f"journal-terminal-record={'present' if retained else 'absent'}")
         if not retained:
-            raise CarrierRefusal(
+            raise AttemptRefusal(
                 f"launcher-attempt-failed: {lease.lease_id} runner exited "
                 f"{exit_code} with no retained terminal record"
             )
-        self.carrier.start_container(container)
-        self.carrier.install_attempt_policy(
-            container, network.subnet, ContainerRole.RUNNER
-        )
+        self.carrier.restart_private_container(container)
+        self.carrier.attach_policed_container(container, network, ContainerRole.RUNNER)
         self._deliver_handoff(lease, container)
         self.announce(f"runner-resumed={container}")
         resumed = self.carrier.wait_for_exit(container)
         self.announce(f"runner-exit={resumed}")
         if resumed != 0:
-            raise CarrierRefusal(
+            raise AttemptRefusal(
                 f"launcher-attempt-failed: {lease.lease_id} resumed runner "
                 f"exited {resumed}"
             )
@@ -575,6 +666,17 @@ def main(arguments: Sequence[str] | None = None) -> int:
     parser.add_argument("--lease-directory", type=Path, required=True)
     parser.add_argument("--certificate-authority-state", type=Path, required=True)
     parser.add_argument("--network-policy-image", required=True)
+    parser.add_argument(
+        "--attempt-root",
+        type=Path,
+        required=True,
+        help="the one directory tree a lease may name; nothing outside it is mounted",
+    )
+    parser.add_argument(
+        "--console-container",
+        required=True,
+        help="the container a lease may have attached to an Attempt network",
+    )
     parser.add_argument("--poll-seconds", type=float, default=_LEASE_POLL_SECONDS)
     parser.add_argument(
         "--once",
@@ -582,14 +684,17 @@ def main(arguments: Sequence[str] | None = None) -> int:
         help="establish at most one lease and stop, instead of watching",
     )
     parsed = parser.parse_args(arguments)
+    validation = RunnerLeaseValidation(parsed.attempt_root, parsed.console_container)
     launcher = RunnerLauncher(
         DockerCarrier(parsed.network_policy_image),
         RunnerIdentityAuthority(parsed.certificate_authority_state),
-        FileRunnerLeaseSource(parsed.lease_directory),
+        FileRunnerLeaseSource(parsed.lease_directory, validation),
+        validation,
         _announce,
     )
-    launcher.serve_open_leases(parsed.once, parsed.poll_seconds)
-    return 0
+    # A bounded run answers for the Attempts it failed; a watching one has
+    # already reported each of them and keeps going.
+    return 1 if launcher.serve_open_leases(parsed.once, parsed.poll_seconds) else 0
 
 
 def _announce(line: str) -> None:

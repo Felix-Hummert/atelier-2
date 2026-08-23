@@ -436,10 +436,15 @@ cat >"$root/leases/open/${lease_id}.json" <<LEASE
 }
 LEASE
 launcher_status=0
+# The launcher believes no lease: it admits only paths under the attempt root
+# and only the console container declared here, both of which this witness
+# passes as its own disposable directory and its own Core.
 uv run --locked python -m atelier2.host.runner_launcher \
   --lease-directory "$root/leases" \
   --certificate-authority-state "$root/issuer" \
-  --network-policy-image "$policy_image" --once 2>&1 \
+  --network-policy-image "$policy_image" \
+  --attempt-root "$root" \
+  --console-container "$core" --once 2>&1 \
   | tee "$root/launcher.log" || launcher_status=$?
 network=$(sed -n 's/^attempt-network=//p' "$root/launcher.log")
 if [[ -n "$network" ]]; then

@@ -210,7 +210,9 @@ authority, and the image that installs an Attempt's packet filter:
 uv run atelier2-runner-launcher \
   --lease-directory <directory> \
   --certificate-authority-state <directory> \
-  --network-policy-image <image>
+  --network-policy-image <image> \
+  --attempt-root <directory> \
+  --console-container <container>
 ```
 
 **What it may do.** For each lease it claims — exclusively, by moving the lease
@@ -223,29 +225,57 @@ session on, waits for the session, and removes every object it created. All of
 them carry `atelier2.runner-lease=<lease>`. `--once` establishes a single lease
 and stops; without it the launcher keeps watching at `--poll-seconds`.
 
-**What it may not do.** It never reads or writes the product's own store, never
-runs provider code, never publishes a port or takes the host's own
-network namespace — its own attestation refuses a container with either — and
-never removes an
-object that does not carry the lease label of an Attempt it owns. The authority
-key stays in `--certificate-authority-state` on this host: it is never mounted,
-copied, or passed into any container, and the client key minted for an
-invocation is unlinked as soon as the receiver container has taken it.
+**A lease is a request, not an authorization.** It names host directories this
+privileged process will mount and the container it will attach to an Attempt
+network, so it is validated against what *you* declared at start, never against
+what the document claims: every path a lease names must resolve inside
+`--attempt-root`, and its console container must be `--console-container`.
+Anything else is refused by name before it is read. That is what keeps the seam
+safe when Serve becomes the writer of leases (ADR 0009 §2, 2026-08-23 amendment
+on ruling B) — Serve may ask for an Attempt and may never command one.
 
-**Failure shape.** A refused engine operation, a container that does not match
-the manifest Core bound, or a Runner that exits nonzero with nothing retained
-in its journal ends that Attempt loudly with a named refusal and leaves its
-objects on the host to be read. The one restart the launcher performs is the
-opposite case: a Runner that exits nonzero but did retain a terminal record
-still holds the only account of what happened, so that exact container is
-started again, this Attempt's policy is installed into its fresh network
-namespace, and its handoff is replaced so it can resume and deliver.
+**What it may not do.** It never reads or writes the product's own store, never
+runs provider code, never publishes a port or takes the host's own network
+namespace — its own attestation refuses a container that was not created
+reachable by nothing — and never removes an object that does not carry the
+lease label of an Attempt it owns. The authority key stays in
+`--certificate-authority-state` on this host: it is never mounted, copied, or
+passed into any container, and the client key minted for an invocation is
+unlinked the moment its delivery is over, taken or not.
+
+**Failure shape.** A refused engine operation, a lease naming something outside
+what you declared, a container that does not match the manifest Core bound, or
+a Runner that exits nonzero with nothing retained in its journal ends *that
+Attempt* loudly with a named refusal and leaves its objects on the host to be
+read. It does not end the launcher: the lease stays claimed, the failure is
+reported as `attempt-failed=…`, and the next lease is served — one bad Attempt
+is a bad Attempt, not an outage. A bounded `--once` run exits nonzero when its
+Attempt failed.
+
+The one restart the launcher performs is the opposite case: a Runner that exits
+nonzero but did retain a terminal record still holds the only account of what
+happened. That exact container is released from its Attempt network first,
+started again, and only then policed and reconnected — the same order a first
+start has, because a restart throws away the namespace the policy lived in.
 
 Residue is reconciled, not swept: at start the launcher releases every lease
 still marked claimed by a launcher that is gone and removes exactly the objects
 carrying those leases' labels. An Attempt that may already have run is never
 silently run a second time — what its owner does with an interrupted lease is
 that owner's decision.
+
+**Two bounds this form still has.** Run exactly *one* launcher per lease
+directory: reconciliation identifies an abandoned Attempt by its lease sitting
+in `claimed`, which a second launcher starting beside a working one would read
+as abandoned (a launcher-ownership token is `#540` C-3 work, with the fleet it
+belongs to). And a container may be attached to *one* Attempt in its lifetime:
+the Attempt policy is appended to that container's own chains, so a second
+Attempt's rules would sit behind the first's and quietly widen both. Rather
+than accumulate silently the carrier refuses with
+`carrier-attempt-policy-already-installed`, which today only a console attached
+twice can trigger; giving each Attempt its own named chain, removed at release,
+is `#540` A2 and is what a long-lived console needs before C-3 attaches it more
+than once.
 
 ## Stable local Serve installation
 

@@ -7,11 +7,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = PROJECT_ROOT / "src" / "atelier2"
 LAUNCHER = PROJECT_ROOT / "scripts" / "runner_candidate.sh"
 CARRIER = SOURCE_ROOT / "adapters" / "docker_carrier.py"
+COMPOSE = PROJECT_ROOT / "compose.yaml"
 ENGINE_EXECUTABLE = "/usr/bin/docker"
-# The engine's own command vocabulary, as it reads in a call: `docker network`,
-# `docker run`, and every other verb. `docker_carrier` never matches it, so a
-# module that merely imports the carrier is not a module that calls the engine.
-ENGINE_CALL = "docker "
+# Every spelling by which a program reaches the engine: its own name, however it
+# would be found on `PATH` or addressed outright, and the socket that is the
+# engine's actual authority. A module that names none of these has no way to
+# call it -- including through an argument vector, which a substring search over
+# whole files would have walked straight past.
+ENGINE_NAMES = frozenset(
+    {"docker", ENGINE_EXECUTABLE, "/var/run/docker.sock", "docker.sock"}
+)
 STABLE_FILES = (
     "Dockerfile",
     "compose.yaml",
@@ -36,25 +41,67 @@ def test_core_and_runner_source_have_no_docker_client() -> None:
                 assert node.module.split(".", 1)[0] != "docker"
 
 
-def test_the_carrier_is_the_only_source_module_that_addresses_the_engine() -> None:
+def _engine_names_in(module: Path) -> set[str]:
+    """Every engine spelling this module could hand to anything, at all.
+
+    Read out of the parsed source rather than searched for in the text, because
+    the way a program calls the engine is an argument vector -- `["docker",
+    "run", ...]` -- in which no substring of a call ever appears. A comment or
+    a docstring naming Docker is not a call and is not counted; a string
+    constant that *is* one of these names is, wherever it sits.
+    """
+    tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+    return {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value in ENGINE_NAMES
+    } - _docstrings(tree)
+
+
+def _docstrings(tree: ast.Module) -> set[str]:
+    documented = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    return {
+        text
+        for node in ast.walk(tree)
+        if isinstance(node, documented) and (text := ast.get_docstring(node, False))
+    }
+
+
+def test_the_carrier_is_the_only_source_module_that_can_reach_the_engine() -> None:
     """Docker authority is spent in one owner and nowhere else in the source.
 
     The host launcher's carrier holds it (ADR 0009 sec. 2, `#540` ruling B);
-    every other source module ships inside a Core or Runner image, where an
-    engine call would be exactly the privilege the whole arrangement exists to
-    withhold. The witness drives its launcher operations through that same
-    owner rather than through a second, shell-shaped copy of it.
+    every other source module ships inside a Core or Runner image, where the
+    ability to reach the engine would be exactly the privilege the whole
+    arrangement exists to withhold. The witness drives its launcher operations
+    through that same owner rather than through a second, shell-shaped copy.
     """
-    assert ENGINE_EXECUTABLE in CARRIER.read_text(encoding="utf-8")
-    for path in (PROJECT_ROOT / "src").rglob("*"):
-        if path == CARRIER or path.suffix not in {".py", ".sh"} or not path.is_file():
-            continue
-        body = path.read_text(encoding="utf-8")
-        assert ENGINE_CALL not in body
-        assert ENGINE_EXECUTABLE not in body
+    assert ENGINE_EXECUTABLE in _engine_names_in(CARRIER)
+    for path in _python_files(SOURCE_ROOT):
+        if path != CARRIER:
+            assert _engine_names_in(path) == set(), path
+    for path in (PROJECT_ROOT / "src").rglob("*.sh"):
+        assert not {name for name in ENGINE_NAMES if name in path.read_text("utf-8")}
     assert "python -m atelier2.adapters.docker_carrier" in LAUNCHER.read_text(
         encoding="utf-8"
     )
+
+
+def test_the_stable_console_is_given_no_engine_authority() -> None:
+    """The console runs the product; it never gets to run containers.
+
+    This is ADR 0009 sec. 2's actual stop condition, and the reason the host
+    launcher exists at all: a Serve compromise must not be host root. A mounted
+    engine socket or a privileged service would hand it exactly that, so the
+    deployment descriptor is read for both.
+    """
+    compose = COMPOSE.read_text(encoding="utf-8")
+
+    assert "docker.sock" not in compose
+    assert "privileged" not in compose
+    assert "cap_add" not in compose
 
 
 def test_stable_serve_files_do_not_adopt_candidate_packaging() -> None:

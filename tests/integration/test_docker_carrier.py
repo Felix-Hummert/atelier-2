@@ -62,7 +62,9 @@ def _created_runner_container(manifest: RunnerManifestV1) -> dict[str, Any]:
         "Config": {"User": f"{manifest.effective_uid}:{manifest.effective_gid}"},
         "NetworkSettings": {"Ports": {}},
         "HostConfig": {
-            "NetworkMode": "attempt-network",
+            # Created private and connected afterwards: the engine keeps
+            # reporting the mode the container was created with.
+            "NetworkMode": "none",
             "PortBindings": {},
             "ReadonlyRootfs": True,
             "CapDrop": ["ALL"],
@@ -94,13 +96,27 @@ def _created_runner_container(manifest: RunnerManifestV1) -> dict[str, Any]:
     }
 
 
-def _engine(tmp_path: Path, container: dict[str, Any] | None = None) -> Path:
-    """A stand-in engine that records every call and answers the carrier's reads."""
+def _attached_container(network: str | None = "attempt-network") -> dict[str, Any]:
+    """A container as the engine reports it: created private, attached to one
+    network, or -- while it is being restarted -- to none at all."""
+    return {
+        "Id": "container-id",
+        "HostConfig": {"NetworkMode": "none"},
+        "NetworkSettings": {"Networks": {network: {}} if network else {}},
+    }
+
+
+def _engine(tmp_path: Path, *containers: dict[str, Any]) -> Path:
+    """A stand-in engine that records every call and answers the carrier's reads.
+
+    Each container inspect is answered with the next document given, and the
+    last one keeps answering, so a test can state a container that changes
+    between two reads -- attached, and then released.
+    """
     log = tmp_path / "engine-calls.jsonl"
-    answers = tmp_path / "engine-container.json"
+    answers = tmp_path / "engine-containers.json"
     answers.write_text(
-        json.dumps(container if container is not None else {"Id": "container-id"}),
-        encoding="utf-8",
+        json.dumps(list(containers) or [_attached_container()]), encoding="utf-8"
     )
     executable = tmp_path / "engine"
     executable.write_text(
@@ -110,7 +126,9 @@ def _engine(tmp_path: Path, container: dict[str, Any] | None = None) -> Path:
         "log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
         "log.close()\n"
         "if sys.argv[1:3] == ['container', 'inspect']:\n"
-        f"    print(json.dumps([json.load(open({str(answers)!r}))]))\n"
+        f"    documents = json.load(open({str(answers)!r}))\n"
+        "    print(json.dumps([documents[0]]))\n"
+        f"    open({str(answers)!r}, 'w').write(json.dumps(documents[1:] or documents))\n"
         "elif sys.argv[1:3] == ['network', 'inspect']:\n"
         f"    print(json.dumps([{{'IPAM': {{'Config': [{{'Subnet': {_SUBNET!r}}}]}}}}]))\n"
         "elif sys.argv[1:2] == ['wait']:\n"
@@ -167,6 +185,7 @@ def test_a_container_is_private_then_policed_and_only_then_connected(
         ("run", "--rm"),
         ("network", "disconnect"),
         ("network", "connect"),
+        ("container", "inspect"),
     ]
     created, policed = _calls(tmp_path)[0], _calls(tmp_path)[2]
     assert created[created.index("--network") + 1] == "none"
@@ -191,10 +210,8 @@ def test_a_bind_the_engine_made_writable_is_refused(tmp_path: Path) -> None:
     """A read-only bind that came back writable is a host surface nobody
     decided to open, so the carrier refuses the container it just created."""
     document = {
-        "Id": "container-id",
-        "Mounts": [
-            {"Destination": "/handoff", "RW": True, "Type": "bind"},
-        ],
+        **_attached_container(),
+        "Mounts": [{"Destination": "/handoff", "RW": True, "Type": "bind"}],
     }
     carrier = DockerCarrier(_POLICY_IMAGE, _engine(tmp_path, document))
     spec = _spec(
@@ -259,3 +276,56 @@ def test_a_way_into_the_attempt_from_the_host_is_refused(
 
     with pytest.raises(ValueError, match="runner-attestation-mismatch"):
         attest_runner_container(document, manifest)
+
+
+@pytest.mark.parametrize(
+    "reported",
+    (
+        pytest.param(
+            {"NetworkSettings": {"Ports": {"8443/tcp": None}}},
+            id="a-port-is-exposed-and-bound-to-nothing",
+        ),
+        pytest.param(
+            {"HostConfig": {"PortBindings": None}},
+            id="the-engine-reports-no-bindings-as-null",
+        ),
+    ),
+)
+def test_an_absence_of_bindings_is_an_absence(reported: dict[str, Any]) -> None:
+    """The engine spells "nothing is published" in more than one way, and every
+    one of them has to read as nothing published -- otherwise this fence would
+    refuse the very containers the carrier creates."""
+    manifest = _manifest()
+    document = _created_runner_container(manifest)
+    for section, values in reported.items():
+        document[section] = {**document[section], **values}
+
+    assert attest_runner_container(document, manifest)
+
+
+def test_a_restarted_container_is_detached_started_and_only_then_policed(
+    tmp_path: Path,
+) -> None:
+    """A restart throws away the namespace its Attempt policy lived in, so a
+    container that came back attached would run unfiltered until the policy was
+    reinstalled. The engine sees it released, started, and only then policed
+    and reconnected -- the same order a first start has."""
+    carrier = DockerCarrier(_POLICY_IMAGE, _engine(tmp_path, _attached_container(None)))
+
+    carrier.restart_private_container("attempt-runner")
+
+    verbs = [(call[0], call[1]) for call in _calls(tmp_path)]
+    assert verbs == [
+        ("container", "inspect"),
+        ("start", "attempt-runner"),
+        ("container", "inspect"),
+    ]
+
+
+def test_a_container_that_came_back_attached_is_refused(tmp_path: Path) -> None:
+    """The order is only a guarantee if it is read back: a restart that
+    reattached the container is refused rather than policed afterwards."""
+    carrier = DockerCarrier(_POLICY_IMAGE, _engine(tmp_path, _attached_container()))
+
+    with pytest.raises(CarrierRefusal, match="carrier-attachment-differs"):
+        carrier.restart_private_container("attempt-runner")

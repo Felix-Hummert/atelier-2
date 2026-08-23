@@ -151,6 +151,12 @@ class TmpfsVolumeOptions:
     mode: int
 
 
+# The first rule any Attempt policy installs, and therefore the one this asks
+# about to find out whether a namespace already carries one.
+_POLICY_MARKER_RULE = "iptables -C OUTPUT -o lo -j ACCEPT"
+_ALREADY_POLICED = "carrier-attempt-policy-already-installed"
+
+
 def _policy_program(subnet: str, role: ContainerRole) -> str:
     """This Attempt's packet-filtering ruleset, for one container's namespace.
 
@@ -159,6 +165,16 @@ def _policy_program(subnet: str, role: ContainerRole) -> str:
     surfaces, never a silent DROP timeout. The same reject chain is installed
     for IPv6, so enabling IPv6 on a future Attempt network cannot silently open
     a second, unfiltered path.
+
+    The rules are appended to the namespace's own chains, which is only correct
+    for a namespace that carries no Attempt policy yet -- a second Attempt's
+    rules would sit behind the first Attempt's ACCEPTs and quietly widen both.
+    Every container an Attempt starts is created fresh, and a restarted one
+    comes back with an empty namespace, so that holds today for everything
+    except a container attached to a second Attempt in its lifetime. Rather
+    than accumulate silently, this refuses: `#540` A2 replaces the append with
+    one named chain per Attempt, removed at release, which is what a
+    long-lived console attached to many Attempts needs.
     """
     rules = [
         "iptables -A OUTPUT -o lo -j ACCEPT",
@@ -193,7 +209,16 @@ def _policy_program(subnet: str, role: ContainerRole) -> str:
         "ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
         "ip6tables -A INPUT -j REJECT",
     ]
-    return "\n".join(("set -e", *rules))
+    return "\n".join(
+        (
+            "set -e",
+            f"if {_POLICY_MARKER_RULE} 2>/dev/null; then",
+            f"  echo {_ALREADY_POLICED} >&2",
+            "  exit 3",
+            "fi",
+            *rules,
+        )
+    )
 
 
 def _mount_arguments(spec: ContainerSpec) -> list[str]:
@@ -434,6 +459,46 @@ class DockerCarrier:
         self._succeeded(["network", "disconnect", _PRIVATE_NETWORK, container])
         alias = ["--alias", CORE_DNS_NAME] if role is ContainerRole.CORE else []
         self._run(["network", "connect", *alias, network.name, container])
+        self._attest_attachment(container, network.name)
+
+    def _attest_attachment(self, container: str, network: str | None) -> None:
+        """Where this container can be reached, read back out of the engine.
+
+        Positive, not a list of refusals: the container must have been created
+        private -- which is what makes the policy-before-reachability order
+        possible at all -- and must now be attached to exactly the one network
+        it was attached to, or to none at all. Anything else, including the
+        host's own namespace or a second network nobody's policy speaks about,
+        is refused here rather than discovered by an Attempt that could reach
+        further than it should.
+        """
+        document = self.inspect_container(container)
+        mode = document["HostConfig"].get("NetworkMode")
+        attached = set(
+            (document.get("NetworkSettings") or {}).get("Networks") or {}
+        ) - {_PRIVATE_NETWORK}
+        expected = {network} if network is not None else set()
+        if mode != _PRIVATE_NETWORK or attached != expected:
+            raise CarrierRefusal(
+                f"carrier-attachment-differs: {container} runs as {mode} attached "
+                f"to {sorted(attached)}, expected {sorted(expected)}"
+            )
+
+    def restart_private_container(self, container: str) -> None:
+        """Start an exited container again, reachable by nothing.
+
+        Its Attempt's policy lives in a network namespace the restart throws
+        away, so a container that came back attached would run unfiltered until
+        the policy is reinstalled. Every attachment is therefore released
+        first, and the container that comes up is read back as private before
+        `attach_policed_container` gives it its policy and its network again --
+        the same order, in the same owner, as a first start.
+        """
+        document = self.inspect_container(container)
+        for network in (document.get("NetworkSettings") or {}).get("Networks") or {}:
+            self._run(["network", "disconnect", network, container])
+        self._run(["start", container])
+        self._attest_attachment(container, None)
 
     def run_receiving_stdin(self, spec: ContainerSpec, stdin: bytes) -> None:
         """Run one container to completion on a pipe, on no network at all.
@@ -514,9 +579,6 @@ class DockerCarrier:
                     f"carrier-mount-right-differs: {spec.name} {bind.destination}"
                 )
         return str(document["Id"])
-
-    def start_container(self, container: str) -> None:
-        self._run(["start", container])
 
     def wait_for_exit(self, container: str) -> int:
         return int(self._run(["wait", container]).strip())
@@ -765,21 +827,28 @@ def _attest_credential_directory_is_the_only_read_only_bind(
 
 
 def _attest_the_attempt_is_the_only_way_in(document: dict[str, Any]) -> None:
-    """No published port, and no share of the host's own network namespace.
+    """No published port, and a container that was created private.
 
     An Attempt's single inbound opening is Core's session port inside the
     Attempt's own subnet. A published port would put the Runner on an address
-    the host's own neighbours can reach, and `--network host` would hand it the
-    host's namespace outright -- in which the Attempt policy this carrier
-    installs would be filtering the host itself rather than one Attempt. Both
-    are refused here, read back out of the container the engine created.
+    the host's own neighbours can reach; the host's own namespace, or any other
+    network mode, would mean the Attempt policy this carrier installs is
+    filtering something other than one Attempt.
 
-    Docker reports "no bindings" as either an empty object or as null, so an
-    absent value is exactly that absence; publication is what is stated, and
-    what is refused.
+    The network mode is therefore read positively: `none` is what every
+    container this carrier creates is created as, and it stays `none` in the
+    engine's own report after the Attempt network is connected, so it says
+    exactly "this container was created reachable by nothing". Which network it
+    then got is a different question, and the carrier answers that one where it
+    attaches (`_attest_attachment`).
+
+    Ports are read the other way round, because the engine reports "no
+    bindings" as an empty object *or* as null -- an absent value is exactly
+    that absence. Publication is what is stated, and what is refused.
     """
     host = document["HostConfig"]
-    if host.get("NetworkMode") == "host":
+    mode = host.get("NetworkMode")
+    if mode is not None and mode != _PRIVATE_NETWORK:
         raise ValueError("runner-attestation-mismatch")
     published = host.get("PortBindings") or {}
     exposed = (document.get("NetworkSettings") or {}).get("Ports") or {}
@@ -936,17 +1005,6 @@ def _parser() -> argparse.ArgumentParser:
     network.add_argument("--name", required=True)
     network.add_argument("--label", required=True)
 
-    volume = commands.add_parser("create-volume")
-    volume.add_argument("--name", required=True)
-    volume.add_argument("--label", required=True)
-    volume.add_argument("--tmpfs-bytes", type=int)
-    volume.add_argument("--tmpfs-uid", type=int)
-    volume.add_argument("--tmpfs-gid", type=int)
-    volume.add_argument("--tmpfs-mode", type=lambda value: int(value, 8))
-    volume.add_argument("--own-with-image")
-    volume.add_argument("--owner-uid", type=int)
-    volume.add_argument("--owner-gid", type=int)
-
     private = commands.add_parser("start-private")
     _add_container_spec_arguments(private)
 
@@ -956,14 +1014,6 @@ def _parser() -> argparse.ArgumentParser:
     started.add_argument("--subnet", required=True)
     started.add_argument("--role", type=ContainerRole, required=True)
 
-    policed = commands.add_parser("police")
-    policed.add_argument("--container", required=True)
-    policed.add_argument("--subnet", required=True)
-    policed.add_argument("--role", type=ContainerRole, required=True)
-
-    start = commands.add_parser("start")
-    start.add_argument("--container", required=True)
-
     wait = commands.add_parser("wait")
     wait.add_argument("--container", required=True)
 
@@ -971,29 +1021,11 @@ def _parser() -> argparse.ArgumentParser:
     logs.add_argument("--container", required=True)
     logs.add_argument("--output", type=Path, required=True)
 
-    inspect = commands.add_parser("inspect")
-    inspect.add_argument("--container", required=True)
-    inspect.add_argument("--output", type=Path, required=True)
-
-    into = commands.add_parser("copy-into")
-    into.add_argument("--container", required=True)
-    into.add_argument("--source", type=Path, action="append", required=True)
-    into.add_argument("--destination", type=PurePosixPath, required=True)
-    into.add_argument("--deadline-seconds", type=float, required=True)
-
     out = commands.add_parser("copy-from")
     out.add_argument("--container", required=True)
     out.add_argument("--source", type=PurePosixPath, action="append", required=True)
     out.add_argument("--destination", type=Path, required=True)
     out.add_argument("--deadline-seconds", type=float, required=True)
-
-    read = commands.add_parser("read-file")
-    read.add_argument("--container", required=True)
-    read.add_argument("--path", type=PurePosixPath, required=True)
-    read.add_argument("--user", required=True)
-    read.add_argument("--maximum-bytes", type=int, required=True)
-    read.add_argument("--deadline-seconds", type=float, required=True)
-    read.add_argument("--output", type=Path, required=True)
 
     remove = commands.add_parser("remove")
     remove.add_argument("--container", action="append", default=[])
@@ -1007,22 +1039,6 @@ def main(arguments: Sequence[str] | None = None) -> int:
     carrier = DockerCarrier(parsed.policy_image)
     if parsed.command == "create-network":
         print(carrier.create_attempt_network(parsed.name, parsed.label).subnet)
-    elif parsed.command == "create-volume":
-        tmpfs = (
-            TmpfsVolumeOptions(
-                parsed.tmpfs_bytes,
-                parsed.tmpfs_uid,
-                parsed.tmpfs_gid,
-                parsed.tmpfs_mode,
-            )
-            if parsed.tmpfs_bytes is not None
-            else None
-        )
-        carrier.create_volume(parsed.name, parsed.label, tmpfs)
-        if parsed.own_with_image is not None:
-            carrier.own_volume(
-                parsed.name, parsed.own_with_image, parsed.owner_uid, parsed.owner_gid
-            )
     elif parsed.command == "start-private":
         print(carrier.start_private_container(_spec_from(parsed)))
     elif parsed.command == "start-policed":
@@ -1033,35 +1049,13 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 parsed.role,
             )
         )
-    elif parsed.command == "police":
-        carrier.install_attempt_policy(parsed.container, parsed.subnet, parsed.role)
-    elif parsed.command == "start":
-        carrier.start_container(parsed.container)
     elif parsed.command == "wait":
         print(carrier.wait_for_exit(parsed.container))
     elif parsed.command == "logs":
         carrier.capture_logs(parsed.container, parsed.output)
-    elif parsed.command == "inspect":
-        parsed.output.write_text(
-            json.dumps(carrier.inspect_container(parsed.container)), encoding="utf-8"
-        )
-    elif parsed.command == "copy-into":
-        carrier.copy_into_container(
-            parsed.container, parsed.source, parsed.destination, parsed.deadline_seconds
-        )
     elif parsed.command == "copy-from":
         carrier.copy_from_container(
             parsed.container, parsed.source, parsed.destination, parsed.deadline_seconds
-        )
-    elif parsed.command == "read-file":
-        parsed.output.write_bytes(
-            carrier.read_file_in_container(
-                parsed.container,
-                parsed.path,
-                parsed.user,
-                parsed.maximum_bytes,
-                parsed.deadline_seconds,
-            )
         )
     else:
         carrier.remove_containers(parsed.container)
