@@ -70,6 +70,30 @@ class AuthMode(StrEnum):
     API_KEY = "api_key"
 
 
+MAXIMUM_AUTH_REFERENCE_BYTES = 128
+
+
+@dataclass(frozen=True)
+class AuthReference:
+    """A provider's own non-secret pointer to a resolved authorization.
+
+    Never the credential value and never a host path -- both sides of the
+    wire check this exact typed form and refuse anything else. Each provider
+    owns its own derivation into this shape; the fake-free candidate's lives
+    in `atelier2.adapters.free_runner_executor`, the one production adapter
+    reachable from both Core's encode side and the Runner's resolve side.
+    """
+
+    value: str
+
+    def __post_init__(self) -> None:
+        encoded = self.value.encode("ascii")
+        if not 1 <= len(encoded) <= MAXIMUM_AUTH_REFERENCE_BYTES:
+            raise ValueError(
+                f"auth reference must be 1..{MAXIMUM_AUTH_REFERENCE_BYTES} ASCII bytes"
+            )
+
+
 class AgentExecutionCapability(StrEnum):
     HEADLESS = "headless"
     HEADLESS_WITH_TOOLS = "headless_with_tools"

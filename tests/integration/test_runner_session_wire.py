@@ -32,7 +32,9 @@ from atelier2.adapters.free_runner_executor import (
     FreeRunnerHoldJob,
     FreeRunnerPrintJob,
     encode_free_runner_job,
+    free_runner_auth_reference,
 )
+from atelier2.adapters.runner_cli_pins import runner_executor_cli_pin
 from atelier2.application.run_runner_session import (
     CoreRunnerSession,
     RunnerSessionRefusal,
@@ -85,8 +87,6 @@ from atelier2.contracts.runner_terminal_evidence_codec import (
     decode_runner_terminal_evidence_record,
 )
 from atelier2.contracts.runs import WorkflowRevisionHash
-from atelier2.runner.authorization import free_runner_auth_reference
-from atelier2.runner.executors import runner_executor_cli_pin
 from atelier2.runner.session import CandidateScenario, RunnerFrameChannel, _status_field
 
 # A cgroup pids controller isn't delegated the same way (or readable the same
@@ -546,6 +546,16 @@ def _prepared_session(
         core,
         core_session,
     )
+
+
+def test_both_wire_ends_derive_the_free_runner_auth_reference_from_one_owner() -> None:
+    """Core's encode side (`_prepared_session` above) and the Runner's resolve
+    side (`runner.session`) must never grow two derivations of the same
+    reference -- they share the one function `adapters.free_runner_executor`
+    owns."""
+    from atelier2.runner import session as runner_session
+
+    assert runner_session.free_runner_auth_reference is free_runner_auth_reference
 
 
 @pytest.mark.parametrize(
