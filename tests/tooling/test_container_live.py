@@ -1065,7 +1065,9 @@ def test_update_refuses_ambient_mode_before_tearing_down_a_good_installation(
     ).read_bytes()
     (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
 
-    completed = run_live(repository, tmp_path, "update", ATELIER2_DEPLOYMENT="disposable")
+    completed = run_live(
+        repository, tmp_path, "update", ATELIER2_DEPLOYMENT="disposable"
+    )
 
     assert completed.returncode != 0
     assert docker_invocations(tmp_path) == []
