@@ -27,9 +27,12 @@ export const chatPageCopy = {
   /**
    * The reply every sent message gets while Vision #7 is unbuilt. It says
    * three true things: nothing was started, the message was not thrown away,
-   * and which vision owns the door that is missing.
+   * and which vision owns the door that is missing. "Until you reload" is the
+   * conversation's real boundary: it survives in-app rail navigation (the
+   * module that owns it outlives the page component) but not a reload,
+   * because durable conversations across a reload are #7's door too.
    */
   conductorAbsent:
-    "No conductor is connected yet, so nothing was started. Your message is kept in this conversation for as long as this page is open. Vision #7 owns that door.",
+    "No conductor is connected yet, so nothing was started. Your message is kept in this conversation until you reload the page. Vision #7 owns that door.",
   conductorAbsentSource: "#7"
 } as const;
