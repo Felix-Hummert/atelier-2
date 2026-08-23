@@ -224,15 +224,22 @@ idempotent: nothing installed is a clean success. When the record is exact it
 tears down through `docker compose down --volumes --rmi local
 --remove-orphans`; when the record is missing, corrupt, or its exactness
 cannot be proved (the "record gone, Docker residue remains" case), it instead
-sweeps every Docker resource carrying the stable deployment's label or name,
-the same identity `install` itself refuses to collide with. Either path
-leaves zero matching Docker resources behind, so a following `install` always
-succeeds — `another local-live Docker owner exists` cannot recur.
+sweeps every Docker resource carrying the stable deployment's label — the
+same identity `install`'s own collision guard checks for the container,
+volume, and network — plus any image under the stable project's name prefix,
+which never blocks a new install (each install tags a fresh image under a
+new random project name) but would otherwise linger as disk residue. A
+foreign Docker object under a different label or name prefix is never
+touched by either path. Either path leaves zero matching Docker resources
+behind, so a following `install` always succeeds — `another local-live
+Docker owner exists` cannot recur.
 
 `update` is `uninstall` followed by `install` in one step. It refuses ambient
 Compose mode first, before touching anything. Redeploying to a new commit
-through `update` discards the Compose volume; the command names that plainly
-in its own output. This is accepted while the stable console still holds no
+through `update` discards the Compose volume only when a volume actually
+existed to lose; the command states that plainly in its own output — a
+sweep that only ever found a stray container or network never claims a
+store was lost. This is accepted while the stable console still holds no
 durable operator data worth preserving; a real store migration is a later
 concern.
 

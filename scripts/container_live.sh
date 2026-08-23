@@ -42,8 +42,13 @@ temporary_descriptor=""
 snapshot_root=""
 install_in_progress=0
 installation_completed=0
-local_live_docker_resources_removed=0
 uninstalled_existing_installation=0
+uninstalled_existing_store=0
+owned_project_has_volume=0
+local_live_container_removed=0
+local_live_network_removed=0
+local_live_volume_removed=0
+local_live_image_removed=0
 
 validate_private_directory() {
   local path="$1"
@@ -195,6 +200,7 @@ resource_identity_is_exact() {
 }
 project_resources_are_owned() {
   local resource resource_type resources
+  owned_project_has_volume=0
   resources="$(docker ps --all --quiet --filter "label=com.docker.compose.project=${record[project]}")" || return 1
   while IFS= read -r resource; do
     [[ -z "${resource}" ]] && continue
@@ -207,6 +213,9 @@ project_resources_are_owned() {
     while IFS= read -r resource; do
       [[ -z "${resource}" ]] && continue
       resource_identity_is_exact "${resource_type}" "${resource}" || return 1
+      if [[ "${resource_type}" == "volume" ]]; then
+        owned_project_has_volume=1
+      fi
     done <<<"${resources}"
   done
 }
@@ -246,7 +255,12 @@ remove_local_live_docker_resources() {
         volume) docker volume rm --force -- "${resource}" >/dev/null ;;
         image) docker rmi --force -- "${resource}" >/dev/null ;;
       esac || return 1
-      local_live_docker_resources_removed=1
+      case "${resource_type}" in
+        container) local_live_container_removed=1 ;;
+        network) local_live_network_removed=1 ;;
+        volume) local_live_volume_removed=1 ;;
+        image) local_live_image_removed=1 ;;
+      esac
     done < <(local_live_docker_resource_ids "${resource_type}")
   done
 }
@@ -500,21 +514,40 @@ start_container() {
   fail "exact container did not become healthy"
 }
 
+# No signal trap guards this destructive teardown. Every path below only
+# removes the durable record (rm -rf "${installation_directory}", or the
+# record/descriptor deletion inside teardown_recorded_installation) after the
+# Docker call that owns that step has already returned success; `fail` exits
+# before that point on any failure. An interruption therefore never finalizes
+# "removed" ahead of the destructive call it depends on — it just leaves
+# Docker debris for the next `uninstall` to finish. A plain retry is safe and
+# idempotent by construction, so no compensating trap is needed here.
 uninstall_installation() {
   if [[ ! -e "${installation_directory}" ]]; then
     echo "container live: nothing installed"
     return
   fi
   acquire_install_lock
-  local cleaned=0
+  local_live_container_removed=0
+  local_live_network_removed=0
+  local_live_volume_removed=0
+  local_live_image_removed=0
+  owned_project_has_volume=0
+  local cleaned=0 volume_removed=0
   if [[ -e "${record_file}" ]] && read_record && teardown_recorded_installation; then
     cleaned=1
+    volume_removed="${owned_project_has_volume}"
   else
     remove_local_live_docker_resources \
       || fail "uninstall could not remove every Docker resource"
-    cleaned="${local_live_docker_resources_removed}"
+    if ((local_live_container_removed || local_live_network_removed \
+      || local_live_volume_removed || local_live_image_removed)); then
+      cleaned=1
+    fi
+    volume_removed="${local_live_volume_removed}"
   fi
   rm -rf -- "${installation_directory}"
+  uninstalled_existing_store="${volume_removed}"
   if ((cleaned)); then
     uninstalled_existing_installation=1
     echo "container live: uninstalled"
@@ -525,8 +558,9 @@ uninstall_installation() {
 
 update_installation() {
   assert_ambient_container_mode_is_forbidden
+  uninstalled_existing_store=0
   uninstall_installation
-  if ((uninstalled_existing_installation)); then
+  if ((uninstalled_existing_store)); then
     echo "container live: update discards the previous store; installing fresh"
   fi
   install_container
