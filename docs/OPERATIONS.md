@@ -348,19 +348,48 @@ touched by either path. Either path leaves zero matching Docker resources
 behind, so a following `install` always succeeds — `another local-live
 Docker owner exists` cannot recur.
 
-`update` is `uninstall` followed by `install` in one step. It refuses ambient
-Compose mode first, before touching anything. Redeploying to a new commit
-through `update` discards the Compose volume only when a volume actually
-existed to lose; the command states that plainly in its own output — a
-sweep that only ever found a stray container or network never claims a
-store was lost. This is accepted while the stable console still holds no
-durable operator data worth preserving; a real store migration is a later
-concern.
+`update` refuses ambient Compose mode first, before touching anything, then
+keeps the installed Compose volume and network and raises the store through
+the offline migration ladder (`atelier2 migrate`, #244) in place, before the
+new container starts. It refuses an installation whose identity has drifted
+rather than guess at it. The previous container is stopped first to give the
+ladder exclusive access to the store files; the ladder's own contract is the
+backup — each step is one transaction that either commits completely or
+leaves the file exactly as it was, so there is nothing to separately copy.
 
-This slice deliberately has no copy, migration, preview, activation, rollback,
-or acceptance command. The stable console exposes current Core/V1
-provider-free behavior only; it adds no provider or Runner. Use the disposable
-candidate above for zero-residue release proof.
+If the ladder refuses the store (an unknown or newer schema, or a locked
+file), or the previous container fails to stop, nothing has happened yet: the
+previous container is restarted untouched and `update` fails with the
+refusal. `compose up` itself is not part of that safe window — the new
+commit always changes the running container's labels, so Compose always
+recreates it, deleting the previous container as an intrinsic part of that
+one call, before startup can even be confirmed healthy. A failure at or
+after that point therefore finds the previous container already gone:
+`update` reports the true state instead — the store is migrated, the new
+container's health is unconfirmed — and names `status`, then `uninstall` or
+`update` again, as the recovery path. The durable record is untouched either
+way until the very end. On full success the new container starts on the
+migrated store and `update` reports the ladder's fingerprint proof alongside
+the cockpit URL.
+
+`update --fresh` is the previous behavior: `uninstall` followed by `install`
+in one step, discarding the Compose volume and starting empty. It states
+that plainly in its own output, and only when a volume actually existed to
+lose — a sweep that only ever found a stray container or network never
+claims a store was lost.
+
+This slice deliberately has no copy, preview, activation, rollback, or
+acceptance command. The stable console exposes current Core/V1 provider-free
+behavior only; it adds no provider or Runner. Use the disposable candidate
+above for zero-residue release proof.
+
+Upgrading an installation made before this migration-preserving `update`
+existed needs one `uninstall` first: the installation record gained the
+volume and network's origin commit/tree as durable fields, and an
+older-format record on disk cannot satisfy the new record's shape. `status`
+on such a record reports `DRIFTED`; `uninstall`'s label-based sweep still
+finds and removes it without needing to read it, so a following `install`
+starts clean.
 
 ## Pin an executor toolchain
 

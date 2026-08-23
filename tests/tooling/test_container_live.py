@@ -22,7 +22,9 @@ COMPOSE = PROJECT_ROOT / "compose.yaml"
 DOCKERFILE = PROJECT_ROOT / "Dockerfile"
 
 CONTAINER_ID = "a" * 64
+UPDATED_CONTAINER_ID = "3" * 64
 IMAGE_ID = f"sha256:{'b' * 64}"
+UPDATED_IMAGE_ID = f"sha256:{'7' * 64}"
 NETWORK_ID = "c" * 64
 ENGINE_ID = "engine:local:test"
 PROJECT_NAME = re.compile(r"^atelier2-live-[0-9a-f]{16}$")
@@ -59,7 +61,8 @@ import shutil
 import sys
 import time
 from pathlib import Path
-CONTAINER_ID = {CONTAINER_ID!r}; IMAGE_ID = {IMAGE_ID!r}
+CONTAINER_ID = {CONTAINER_ID!r}; UPDATED_CONTAINER_ID = {UPDATED_CONTAINER_ID!r}
+IMAGE_ID = {IMAGE_ID!r}; UPDATED_IMAGE_ID = {UPDATED_IMAGE_ID!r}
 NETWORK_ID = {NETWORK_ID!r}; ENGINE_ID = {ENGINE_ID!r}
 FOREIGN_DEPLOYMENT_LABEL = {FOREIGN_DEPLOYMENT_LABEL!r}
 FOREIGN_CONTAINER_ID = {FOREIGN_CONTAINER_ID!r}; FOREIGN_IMAGE_ID = {FOREIGN_IMAGE_ID!r}
@@ -68,12 +71,26 @@ FOREIGN_IMAGE_REFERENCE = {FOREIGN_IMAGE_REFERENCE!r}
 foreign_present = os.environ.get("ATELIER2_TEST_FOREIGN_LOCAL_RESOURCE") == "1"
 arguments = sys.argv[1:]
 state_path = Path(os.environ["ATELIER2_TEST_DOCKER_STATE"]); record_path = Path(os.environ["ATELIER2_TEST_DOCKER_RECORD"])
+build_count_path = Path(os.environ["ATELIER2_TEST_DOCKER_BUILD_COUNT"])
 with record_path.open("a", encoding="utf-8") as output:
     output.write(json.dumps(arguments) + "\\n")
 state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {{}}
 drift = os.environ.get("ATELIER2_TEST_DRIFT", ""); list_failure = os.environ.get("ATELIER2_TEST_PROJECT_LIST_FAILURE", "")
 def save() -> None:
     state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+def current_image_id() -> str:
+    # The second build a preserving update runs (the first belongs to the
+    # install this test built on) produces a distinguishable image, exactly
+    # as a real second `docker build` would produce a different digest.
+    built = int(build_count_path.read_text()) if build_count_path.exists() else 0
+    return UPDATED_IMAGE_ID if built >= 2 else IMAGE_ID
+def current_container_id() -> str:
+    # The service's labels bake in the running commit, so a second `up`
+    # always carries a different config hash than the first and Compose
+    # always recreates the container under a new id -- deleting the previous
+    # one as part of that same call, exactly like a real redeploy.
+    built = int(build_count_path.read_text()) if build_count_path.exists() else 0
+    return UPDATED_CONTAINER_ID if built >= 2 else CONTAINER_ID
 def wait_at(phase: str) -> None:
     if phase not in os.environ.get("ATELIER2_TEST_WAIT_PHASE", "").split(","):
         return
@@ -86,15 +103,19 @@ def wait_at(phase: str) -> None:
     release = Path(os.environ["ATELIER2_TEST_READY_DIRECTORY"]) / "start-cleanup-release"
     while not release.exists():
         time.sleep(0.01)
-def label(name: str) -> str:
+def label(name: str, origin: bool = False) -> str:
+    # A volume or network keeps its creation-time (origin) commit/tree labels
+    # for as long as a preserving update reuses it; only the container is
+    # relabelled with the currently running commit/tree on every redeploy.
     if drift == "label" and name == "atelier2.deployment":
         return "foreign"
     if name == "atelier2.deployment":
         return state["deployment"]
     if name == "atelier2.source.commit":
-        return "0" * 40 if drift == "source" else state["source_commit"]
+        commit = state["store_source_commit"] if origin else state["source_commit"]
+        return "0" * 40 if drift == "source" else commit
     if name == "atelier2.source.tree":
-        return state["source_tree"]
+        return state["store_source_tree"] if origin else state["source_tree"]
     if name == "com.docker.compose.project":
         return state["project"]
     return ""
@@ -112,30 +133,51 @@ if arguments and arguments[0] == "compose":
             if not record.is_file() or "state=INSTALLING\\n" not in record.read_text(encoding="utf-8"): raise SystemExit(61)
         wait_at("build")
         if os.environ.get("ATELIER2_TEST_FAIL_BUILD") == "1": raise SystemExit(41)
+        built = (int(build_count_path.read_text()) if build_count_path.exists() else 0) + 1
+        build_count_path.write_text(str(built))
         context = Path(arguments[arguments.index("--project-directory") + 1])
         copy_to = os.environ.get("ATELIER2_TEST_CONTEXT")
         if copy_to: shutil.copytree(context, copy_to)
         raise SystemExit(0)
     if "up" in arguments:
         wait_at("up")
+        previous_store_commit = state.get("store_source_commit")
+        previous_store_tree = state.get("store_source_tree")
         state = {{
             "project": project,
             "deployment": os.environ["ATELIER2_DEPLOYMENT"],
             "source_commit": os.environ["ATELIER2_SOURCE_COMMIT"],
             "source_tree": os.environ["ATELIER2_SOURCE_TREE"],
+            "store_source_commit": previous_store_commit or os.environ["ATELIER2_SOURCE_COMMIT"],
+            "store_source_tree": previous_store_tree or os.environ["ATELIER2_SOURCE_TREE"],
             "status": "running",
             "health": "healthy",
+            "image_id": current_image_id(),
+            "container_id": current_container_id(),
         }}
         save()
         if os.environ.get("ATELIER2_TEST_FAIL_UP") == "1": raise SystemExit(42)
         raise SystemExit(0)
     if "ps" in arguments:
-        if state: print(CONTAINER_ID)
+        if state: print(state.get("container_id", CONTAINER_ID))
         raise SystemExit(0)
     if "down" in arguments:
         if os.environ.get("ATELIER2_TEST_FAIL_DOWN") == "1": raise SystemExit(43)
         if state.get("project") == project: state = {{}}; save()
         raise SystemExit(0)
+if arguments[:1] == ["run"] and "migrate" in arguments:
+    if os.environ.get("ATELIER2_TEST_FAIL_MIGRATE") == "1":
+        print("schema version 2 is unknown; this command will not alter it", file=sys.stderr)
+        raise SystemExit(1)
+    print("schema version 1 is already current")
+    print("  fingerprint " + "f" * 64)
+    print("  nothing to migrate")
+    raise SystemExit(0)
+if arguments[:3] == ["inspect", "--type", "image"]:
+    if arguments[arguments.index("--format") + 1] == "{{{{.Id}}}}":
+        print(arguments[-1])
+        raise SystemExit(0)
+    raise SystemExit(45)
 if arguments[:2] == ["ps", "--all"]:
     if os.environ.get("ATELIER2_TEST_FOREIGN_RESOURCE") == "1":
         print("d" * 64)
@@ -144,7 +186,7 @@ if arguments[:2] == ["ps", "--all"]:
         if foreign_present and wanted == FOREIGN_DEPLOYMENT_LABEL:
             print(FOREIGN_CONTAINER_ID)
         if state and not state.get("container_removed") and wanted in ("local-live", state["project"]):
-            print(CONTAINER_ID)
+            print(state.get("container_id", CONTAINER_ID))
     raise SystemExit(0)
 if arguments[:2] in (["volume", "ls"], ["network", "ls"]):
     if os.environ.get("ATELIER2_TEST_FOREIGN_RESOURCE") == "1":
@@ -163,12 +205,12 @@ if arguments[:2] == ["images", "--quiet"]:
     if foreign_present and FOREIGN_IMAGE_REFERENCE.startswith(prefix):
         print(FOREIGN_IMAGE_ID)
     if state and not state.get("image_removed") and f"{{state['project']}}-serve".startswith(prefix):
-        print(IMAGE_ID)
+        print(current_image_id())
     raise SystemExit(0)
 if arguments[:1] == ["rm"] and "--force" in arguments:
     identifier = arguments[-1]
     if identifier == FOREIGN_CONTAINER_ID: raise SystemExit(58)
-    if not state or identifier != CONTAINER_ID: raise SystemExit(54)
+    if not state or identifier != state.get("container_id", CONTAINER_ID): raise SystemExit(54)
     state["container_removed"] = True
     if all(state.get(f"{{kind}}_removed") for kind in ("container", "network", "volume", "image")):
         state = {{}}
@@ -195,20 +237,25 @@ if arguments[:2] == ["volume", "rm"] and "--force" in arguments:
 if arguments[:1] == ["rmi"] and "--force" in arguments:
     identifier = arguments[-1]
     if identifier == FOREIGN_IMAGE_ID: raise SystemExit(62)
-    if not state or identifier != IMAGE_ID: raise SystemExit(57)
-    state["image_removed"] = True
-    if all(state.get(f"{{kind}}_removed") for kind in ("container", "network", "volume", "image")):
-        state = {{}}
-    save()
+    if identifier not in (IMAGE_ID, UPDATED_IMAGE_ID): raise SystemExit(57)
+    # Removing a stale, no-longer-current image (a preserving update's own
+    # cleanup of the previous digest) does not touch installed-resource
+    # bookkeeping -- exactly like real Docker, which leaves the running
+    # container, network, and volume untouched by removing a dangling image.
+    if state and identifier == state.get("image_id"):
+        state["image_removed"] = True
+        if all(state.get(f"{{kind}}_removed") for kind in ("container", "network", "volume", "image")):
+            state = {{}}
+        save()
     raise SystemExit(0)
 if arguments and arguments[0] == "inspect":
-    if not state or arguments[-1] != CONTAINER_ID: raise SystemExit(44)
+    if not state or arguments[-1] != state.get("container_id", CONTAINER_ID): raise SystemExit(44)
     template = arguments[arguments.index("--format") + 1]
     template = template.replace("{{{{", "{{").replace("}}}}", "}}")
     if template == "{{.Id}}":
-        print("d" * 64 if drift == "container" else CONTAINER_ID)
+        print("d" * 64 if drift == "container" else state.get("container_id", CONTAINER_ID))
     elif template == "{{.Image}}":
-        print(os.environ.get("ATELIER2_TEST_INITIAL_IMAGE_ID", f"sha256:{{'e' * 64}}" if drift == "image" else IMAGE_ID))
+        print(os.environ.get("ATELIER2_TEST_INITIAL_IMAGE_ID", f"sha256:{{'e' * 64}}" if drift == "image" else state.get("image_id", IMAGE_ID)))
     elif "index .Config.Labels" in template:
         name = template.split('"')[1]
         print(label(name))
@@ -233,7 +280,7 @@ if arguments and arguments[0] == "inspect":
     elif "index .NetworkSettings.Networks" in template:
         print("" if drift == "network-wrong" else "d" * 64 if drift == "network-attachment-id" else NETWORK_ID)
     elif template == "{{json .Config}}":
-        configuration = {{"image": IMAGE_ID, "project": state["project"], "source": state["source_commit"]}}
+        configuration = {{"image": state.get("image_id", IMAGE_ID), "project": state["project"], "source": state["source_commit"]}}
         if drift == "config": configuration["changed"] = True
         print(json.dumps(configuration, sort_keys=True, separators=(",", ":")))
     elif template == "{{.State.Status}}":
@@ -255,25 +302,25 @@ if arguments[:2] in (["volume", "inspect"], ["network", "inspect"]):
     elif template == "{{.Id}}" and resource_type == "network":
         print(os.environ.get("ATELIER2_TEST_INITIAL_NETWORK_ID", "f" * 64 if drift == "network" else NETWORK_ID))
     elif "index .Labels" in template:
-        print(label(template.split('"')[1]))
+        print(label(template.split('"')[1], origin=True))
     else: raise SystemExit(47)
     raise SystemExit(0)
 if arguments and arguments[0] == "stop":
-    if not state or arguments[-1] != CONTAINER_ID: raise SystemExit(48)
+    if not state or arguments[-1] != state.get("container_id", CONTAINER_ID): raise SystemExit(48)
     wait_at("start-cleanup")
     if os.environ.get("ATELIER2_TEST_FAIL_STOP") == "1": raise SystemExit(53)
     state["status"] = "exited"
     save()
-    print(CONTAINER_ID)
+    print(state.get("container_id", CONTAINER_ID))
     raise SystemExit(0)
 if arguments and arguments[0] == "start":
-    if not state or arguments[-1] != CONTAINER_ID: raise SystemExit(49)
+    if not state or arguments[-1] != state.get("container_id", CONTAINER_ID): raise SystemExit(49)
     wait_at("start")
     state["status"] = "running"
     state["health"] = "healthy"
     save()
     if os.environ.get("ATELIER2_TEST_FAIL_START") == "1": raise SystemExit(51)
-    print(CONTAINER_ID)
+    print(state.get("container_id", CONTAINER_ID))
     raise SystemExit(0)
 raise SystemExit(50)
 """,
@@ -375,6 +422,7 @@ def lifecycle_environment(tmp_path: Path, **settings: str) -> dict[str, str]:
         "TMPDIR": str(tmp_path),
         "ATELIER2_TEST_DOCKER_STATE": str(tmp_path / "docker-state.json"),
         "ATELIER2_TEST_DOCKER_RECORD": str(tmp_path / "docker-record.jsonl"),
+        "ATELIER2_TEST_DOCKER_BUILD_COUNT": str(tmp_path / "docker-build-count"),
         "ATELIER2_TEST_CONTEXT": str(tmp_path / "docker-context"),
         "ATELIER2_TEST_READY_DIRECTORY": str(tmp_path),
     }
@@ -392,10 +440,16 @@ def run_live(
     repository: Path,
     tmp_path: Path,
     command: str,
+    *extra_arguments: str,
     **settings: str,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["bash", str(repository / "scripts/container_live.sh"), command],
+        [
+            "bash",
+            str(repository / "scripts/container_live.sh"),
+            command,
+            *extra_arguments,
+        ],
         cwd=repository,
         env=lifecycle_environment(tmp_path, **settings),
         capture_output=True,
@@ -456,7 +510,7 @@ def docker_mutations(invocations: list[list[str]]) -> list[list[str]]:
         if "build" in arguments
         or "up" in arguments
         or "down" in arguments
-        or arguments[:1] in (["start"], ["stop"], ["rm"], ["rmi"])
+        or arguments[:1] in (["start"], ["stop"], ["rm"], ["rmi"], ["run"])
         or arguments[:2] in (["network", "rm"], ["volume", "rm"])
     ]
 
@@ -995,28 +1049,142 @@ def test_double_uninstall_is_harmless(tmp_path: Path) -> None:
     assert not installation_directory(tmp_path).exists()
 
 
-def test_update_replaces_the_installation_and_names_the_store_loss(
+def commit_a_second_change(repository: Path) -> None:
+    (repository / "payload.txt").write_text("second\n", encoding="utf-8")
+    run_git(repository, "add", "--all")
+    run_git(repository, "commit", "--quiet", "--message", "second change")
+
+
+@pytest.mark.proves("an-update-migrates-the-preserved-store-and-starts-on-it")
+def test_update_migrates_the_preserved_store_and_starts_on_it(
     tmp_path: Path,
 ) -> None:
+    repository = installed_repository(tmp_path)
+    before = read_record(tmp_path)
+    commit_a_second_change(repository)
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+    shutil.rmtree(tmp_path / "docker-context")
+
+    completed = run_live(repository, tmp_path, "update")
+
+    assert completed.returncode == 0, completed.stderr
+    assert "fingerprint" in completed.stdout
+    assert "cockpit ->" in completed.stdout
+    assert "container live: uninstalled" not in completed.stdout
+    record = read_record(tmp_path)
+    assert record["state"] == "INSTALLED"
+    assert record["project"] == before["project"]
+    assert record["volume_name"] == before["volume_name"]
+    assert record["network_name"] == before["network_name"]
+    assert record["store_source_commit"] == before["store_source_commit"]
+    assert record["store_source_tree"] == before["store_source_tree"]
+    assert record["source_commit"] == run_git(repository, "rev-parse", "HEAD")
+    assert record["source_commit"] != before["source_commit"]
+
+    mutations = docker_mutations(docker_invocations(tmp_path))
+    stopped = mutations.index(["stop", "--time", "30", CONTAINER_ID])
+    migrated = next(
+        index for index, args in enumerate(mutations) if args[:1] == ["run"]
+    )
+    started_new = next(index for index, args in enumerate(mutations) if "up" in args)
+    assert stopped < migrated < started_new
+    removed_image = next(args for args in mutations if args[:1] == ["rmi"])
+    assert removed_image[-1] == before["image_id"]
+
+
+@pytest.mark.proves("a-refused-migration-restarts-the-previous-container-untouched")
+def test_update_restarts_the_previous_container_on_a_refused_migration(
+    tmp_path: Path,
+) -> None:
+    repository = installed_repository(tmp_path)
+    before = read_record(tmp_path)
+    before_record_bytes = (
+        installation_directory(tmp_path) / "installation.state"
+    ).read_bytes()
+    commit_a_second_change(repository)
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+    shutil.rmtree(tmp_path / "docker-context")
+
+    completed = run_live(repository, tmp_path, "update", ATELIER2_TEST_FAIL_MIGRATE="1")
+
+    assert completed.returncode != 0
+    assert "migration refused" in completed.stderr
+    assert (
+        installation_directory(tmp_path) / "installation.state"
+    ).read_bytes() == before_record_bytes
+    mutations = docker_mutations(docker_invocations(tmp_path))
+    stopped = mutations.index(["stop", "--time", "30", CONTAINER_ID])
+    assert mutations[stopped + 1] == [
+        "run",
+        "--rm",
+        "--entrypoint",
+        "atelier2",
+        "--volume",
+        f"{before['volume_name']}:/var/lib/atelier2/store",
+        UPDATED_IMAGE_ID,
+        "migrate",
+        "--database",
+        "/var/lib/atelier2/store/atelier.sqlite",
+    ]
+    assert mutations[-1] == ["start", CONTAINER_ID]
+    assert (
+        json.loads((tmp_path / "docker-state.json").read_text())["status"] == "running"
+    )
+    assert not any("up" in args for args in mutations)
+
+
+@pytest.mark.proves(
+    "an-unconfirmed-new-container-after-migration-gets-a-true-diagnosis"
+)
+def test_update_reports_the_true_state_when_the_new_container_is_unconfirmed(
+    tmp_path: Path,
+) -> None:
+    repository = installed_repository(tmp_path)
+    before_record_bytes = (
+        installation_directory(tmp_path) / "installation.state"
+    ).read_bytes()
+    commit_a_second_change(repository)
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+    shutil.rmtree(tmp_path / "docker-context")
+
+    completed = run_live(repository, tmp_path, "update", ATELIER2_TEST_FAIL_UP="1")
+
+    assert completed.returncode != 0
+    assert f"docker start {CONTAINER_ID}" not in completed.stderr
+    assert "no longer exists to restart" in completed.stderr
+    assert "container_live.sh status" in completed.stderr
+    assert (
+        installation_directory(tmp_path) / "installation.state"
+    ).read_bytes() == before_record_bytes
+    mutations = docker_mutations(docker_invocations(tmp_path))
+    migrated = next(
+        index for index, args in enumerate(mutations) if args[:1] == ["run"]
+    )
+    assert any("up" in args for args in mutations[migrated:])
+    assert not any(args[:1] == ["start"] for args in mutations)
+
+
+@pytest.mark.proves("fresh-explicitly-names-the-store-it-discards")
+def test_update_fresh_wipes_the_store_and_names_it(tmp_path: Path) -> None:
     repository = installed_repository(tmp_path)
     original_project = read_record(tmp_path)["project"]
     (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
     shutil.rmtree(tmp_path / "docker-context")
 
     completed = run_live(
-        repository, tmp_path, "update", ATELIER2_TEST_REQUIRE_INTENT="1"
+        repository, tmp_path, "update", "--fresh", ATELIER2_TEST_REQUIRE_INTENT="1"
     )
 
     assert completed.returncode == 0, completed.stderr
     assert "container live: uninstalled" in completed.stdout
-    assert "discards the previous store" in completed.stdout
+    assert "--fresh discards the previous store" in completed.stdout
     assert "cockpit ->" in completed.stdout
     record = read_record(tmp_path)
     assert record["state"] == "INSTALLED"
     assert record["project"] != original_project
 
 
-def test_update_names_store_loss_only_when_a_volume_was_actually_removed(
+def test_update_fresh_names_store_loss_only_when_a_volume_was_actually_removed(
     tmp_path: Path,
 ) -> None:
     repository = installed_repository(tmp_path)
@@ -1031,7 +1199,7 @@ def test_update_names_store_loss_only_when_a_volume_was_actually_removed(
     shutil.rmtree(tmp_path / "docker-context")
 
     completed = run_live(
-        repository, tmp_path, "update", ATELIER2_TEST_REQUIRE_INTENT="1"
+        repository, tmp_path, "update", "--fresh", ATELIER2_TEST_REQUIRE_INTENT="1"
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -1040,7 +1208,7 @@ def test_update_names_store_loss_only_when_a_volume_was_actually_removed(
     assert "cockpit ->" in completed.stdout
 
 
-def test_update_from_no_installation_installs_fresh_without_a_store_loss_note(
+def test_update_from_no_installation_installs_fresh_with_nothing_to_preserve(
     tmp_path: Path,
 ) -> None:
     repository = lifecycle_repository(tmp_path)
@@ -1050,13 +1218,28 @@ def test_update_from_no_installation_installs_fresh_without_a_store_loss_note(
     )
 
     assert completed.returncode == 0, completed.stderr
+    assert "discards the previous store" not in completed.stdout
+    assert "cockpit ->" in completed.stdout
+    assert read_record(tmp_path)["state"] == "INSTALLED"
+
+
+def test_update_fresh_from_no_installation_installs_fresh_without_a_store_loss_note(
+    tmp_path: Path,
+) -> None:
+    repository = lifecycle_repository(tmp_path)
+
+    completed = run_live(
+        repository, tmp_path, "update", "--fresh", ATELIER2_TEST_REQUIRE_INTENT="1"
+    )
+
+    assert completed.returncode == 0, completed.stderr
     assert "container live: nothing installed" in completed.stdout
     assert "discards the previous store" not in completed.stdout
     assert "cockpit ->" in completed.stdout
     assert read_record(tmp_path)["state"] == "INSTALLED"
 
 
-def test_update_refuses_ambient_mode_before_tearing_down_a_good_installation(
+def test_update_refuses_ambient_mode_before_touching_a_good_installation(
     tmp_path: Path,
 ) -> None:
     repository = installed_repository(tmp_path)
@@ -1076,6 +1259,29 @@ def test_update_refuses_ambient_mode_before_tearing_down_a_good_installation(
     ).read_bytes() == before_record
 
 
+def test_update_rejects_unrecognized_extra_arguments(tmp_path: Path) -> None:
+    repository = installed_repository(tmp_path)
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+
+    completed = run_live(repository, tmp_path, "update", "--unknown")
+
+    assert completed.returncode != 0
+    assert "optional --fresh flag" in completed.stderr
+    assert docker_invocations(tmp_path) == []
+
+
+@pytest.mark.parametrize("command", ("install", "status", "stop", "start", "uninstall"))
+def test_single_argument_commands_reject_extra_arguments(
+    tmp_path: Path, command: str
+) -> None:
+    repository = lifecycle_repository(tmp_path)
+
+    completed = run_live(repository, tmp_path, command, "extra")
+
+    assert completed.returncode != 0
+    assert docker_invocations(tmp_path) == []
+
+
 LIFECYCLE_GUARDS = (
     "flock --nonblock 9",
     '[state]="INSTALLING"',
@@ -1090,6 +1296,9 @@ LIFECYCLE_GUARDS = (
     'rm -rf -- "${installation_directory}"',
     'docker rm --force -- "${resource}"',
     'uninstalled_existing_store="${volume_removed}"',
+    'docker stop --time 30 "${update_old_container_id}"',
+    'docker start "${update_old_container_id}"',
+    'fail "store migration refused',
 )
 
 
@@ -1107,6 +1316,8 @@ def test_lifecycle_guard_mutations_bite_the_contract() -> None:
 
 
 def test_live_script_has_no_broad_or_deferred_lifecycle_authority() -> None:
+    # #564 consumed the offline migration ladder from `update` itself, so
+    # "migrate" is no longer forbidden here -- it names an owned command.
     script = CONTAINER_LIVE.read_text(encoding="utf-8").lower()
     for forbidden in (
         "prune",
@@ -1114,7 +1325,6 @@ def test_live_script_has_no_broad_or_deferred_lifecycle_authority() -> None:
         "systemctl --user stop",
         "docker restart",
         "update_container",
-        "migrate",
         "rollback",
         "retire",
         "provider",

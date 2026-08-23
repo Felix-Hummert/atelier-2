@@ -1,0 +1,32 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/564"
+
+# UPDATE KEEPS THE STORE VOLUME AND CLIMBS THE MIGRATION LADDER BEFORE START.
+#
+# Redeploying to a new commit through `update` used to tear the Compose
+# volume down and rebuild empty -- accepted while the console held no data
+# worth keeping, a data-loss trap the moment a real run or gate answer lives
+# in it. The offline migration ladder (#244) already proves the hop is safe:
+# one committed step, or the file left exactly as it was. This story is the
+# console consuming that ladder itself, in place, before the new container
+# ever starts -- the ladder's own transactional contract is the backup, so
+# there is nothing to separately copy.
+#
+# Wiping is no longer implicit. It is only ever `uninstall`, or the explicit
+# `update --fresh` that names what it is about to discard.
+
+[[sentence]]
+id = "an-update-migrates-the-preserved-store-and-starts-on-it"
+text = "container_live.sh update keeps the installed Compose volume and network, raises the store through the migration ladder before the new container starts, reports the ladder's fingerprint proof, and the new container serves on the migrated store."
+
+[[sentence]]
+id = "a-refused-migration-restarts-the-previous-container-untouched"
+text = "When the migration ladder refuses the store or the previous container fails to stop, before the new container's compose up ever runs, update leaves the store file unaltered, restarts the previous container, and the installation record still names the previous install."
+
+[[sentence]]
+id = "an-unconfirmed-new-container-after-migration-gets-a-true-diagnosis"
+text = "When the new container fails to start or become healthy after compose up has already recreated it -- deleting the previous container as part of that same call -- update reports that the store is migrated and the new container is unconfirmed, names status and uninstall or update as the recovery path, never claims to have restarted a container that no longer exists, and leaves the installation record untouched until it can publish a verified success."
+
+[[sentence]]
+id = "fresh-explicitly-names-the-store-it-discards"
+text = "update --fresh discards the store exactly as the old update once did, and only when the sweep actually removed a volume does it say so plainly."
