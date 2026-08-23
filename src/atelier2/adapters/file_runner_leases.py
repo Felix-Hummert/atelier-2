@@ -238,7 +238,9 @@ class FileRunnerLeasePublisher:
         material: every file this writes is fsynced on its own descriptor,
         and every directory it creates is fsynced after everything that
         belongs inside it exists, so the directory entry for each is durable
-        too.
+        too -- including `attempt_root` itself, whose own directory entry for
+        this Attempt's `root` is exactly what `mkdir(paths.root, ...)` above
+        just created and nothing else here makes durable.
         """
         for directory in (
             paths.root,
@@ -264,6 +266,7 @@ class FileRunnerLeasePublisher:
         self._sync_directory(paths.issuance)
         self._sync_directory(paths.provider_credentials)
         self._sync_directory(paths.root)
+        self._sync_directory(self._attempt_root)
 
     @staticmethod
     def _write_file_durable(path: Path, payload: bytes) -> None:

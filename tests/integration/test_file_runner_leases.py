@@ -186,6 +186,44 @@ def test_a_material_fsync_failure_never_reveals_the_lease_either(
     assert list((tmp_path / "leases" / "open").glob("*.json")) == []
 
 
+def test_a_fsync_failure_on_the_attempt_root_alone_never_reveals_the_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`mkdir(paths.root, ...)` creates this Attempt's one directory entry
+    inside `attempt_root`; nothing but `attempt_root`'s own fsync makes that
+    entry durable. Failing exactly that fsync -- and no other -- must still
+    refuse the publish, not just a failure anywhere in the material tree.
+    """
+    from atelier2.adapters import file_runner_leases
+
+    publisher = _publisher(tmp_path)
+    attempt_root = tmp_path / "attempts"
+    real_open = file_runner_leases.os.open
+    real_fsync = file_runner_leases.os.fsync
+    attempt_root_descriptors: set[int] = set()
+
+    def _tracking_open(path: Path, *args: int, **kwargs: int) -> int:
+        descriptor = real_open(path, *args, **kwargs)
+        if path == attempt_root:
+            attempt_root_descriptors.add(descriptor)
+        return descriptor
+
+    def _fails_only_for_the_attempt_root(descriptor: int) -> None:
+        if descriptor in attempt_root_descriptors:
+            raise OSError("simulated fsync failure on the attempt root itself")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(file_runner_leases.os, "open", _tracking_open)
+    monkeypatch.setattr(
+        file_runner_leases.os, "fsync", _fails_only_for_the_attempt_root
+    )
+
+    result = publisher.publish(_request())
+
+    assert result == DurableWriteUnavailable()
+    assert list((tmp_path / "leases" / "open").glob("*.json")) == []
+
+
 def test_a_second_publish_of_the_same_request_is_idempotent(tmp_path: Path) -> None:
     publisher = _publisher(tmp_path)
     request = _request()
