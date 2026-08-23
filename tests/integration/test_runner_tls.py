@@ -24,6 +24,7 @@ from atelier2.adapters.runner_tls import (
 from atelier2.contracts.runner_manifests import (
     CANDIDATE_CPU_PERIOD,
     CANDIDATE_WORKSPACE_BYTES,
+    RunnerPathRight,
     candidate_runner_manifest,
     encode_runner_manifest,
 )
@@ -293,7 +294,9 @@ _IDENTITY_MOUNT = {
 _JOURNAL_MOUNT = {"Destination": "/journal", "RW": True, "Type": "volume"}
 
 
-def _inspect_document(manifest, security: list[str]) -> dict[str, object]:
+def _inspect_document(
+    manifest, security: list[str], tmpfs: dict[str, str] | None = None
+) -> dict[str, object]:
     return {
         "Image": manifest.image_digest,
         "Config": {"User": f"{manifest.effective_uid}:{manifest.effective_gid}"},
@@ -307,10 +310,31 @@ def _inspect_document(manifest, security: list[str]) -> dict[str, object]:
             "CpuPeriod": CANDIDATE_CPU_PERIOD,
             "Tmpfs": {
                 "/workspace": f"rw,noexec,nosuid,size={CANDIDATE_WORKSPACE_BYTES}",
+                **(tmpfs if tmpfs is not None else _writable_surface(manifest)),
             },
         },
         "Mounts": [_IDENTITY_MOUNT, _JOURNAL_MOUNT],
     }
+
+
+def _writable_surface(manifest) -> dict[str, str]:
+    """The mount options a launcher must give every writable manifest grant."""
+    return {
+        grant.path.as_posix(): "rw,noexec,nosuid,size=16777216"
+        for grant in manifest.child_path_grants
+        if grant.right is RunnerPathRight.READ_WRITE
+    }
+
+
+def _softened_writable_surface(dropped_flag: str) -> dict[str, str]:
+    return {
+        path: ",".join(flag for flag in options.split(",") if flag != dropped_flag)
+        for path, options in _writable_surface(_candidate_manifest()).items()
+    }
+
+
+_SOFTENED_WITHOUT_NOEXEC = _softened_writable_surface("noexec")
+_SOFTENED_WITHOUT_NOSUID = _softened_writable_surface("nosuid")
 
 
 @pytest.mark.parametrize(
@@ -328,6 +352,37 @@ def test_attest_inspect_requires_exact_no_new_privileges_true(
     inspect_path = tmp_path / "inspect.json"
     inspect_path.write_text(
         json.dumps(_inspect_document(manifest, security)), encoding="utf-8"
+    )
+    manifest_path = tmp_path / "manifest"
+    manifest_path.write_bytes(encode_runner_manifest(manifest))
+
+    with pytest.raises(ValueError, match="runner-attestation-mismatch"):
+        _issuer_module().attest_runner_inspect(
+            inspect_path, manifest_path, tmp_path / "out"
+        )
+
+
+@pytest.mark.parametrize(
+    "tmpfs",
+    (
+        pytest.param({}, id="writable-surface-not-mounted"),
+        pytest.param(
+            _SOFTENED_WITHOUT_NOEXEC, id="writable-surface-would-allow-execution"
+        ),
+        pytest.param(
+            _SOFTENED_WITHOUT_NOSUID, id="writable-surface-would-allow-set-user-id"
+        ),
+    ),
+)
+def test_attest_inspect_requires_every_writable_grant_to_be_a_noexec_tmpfs(
+    tmp_path: Path, tmpfs: dict[str, str]
+) -> None:
+    """The manifest attests the writable paths; the launcher proves their flags."""
+    manifest = _candidate_manifest()
+    inspect_path = tmp_path / "inspect.json"
+    inspect_path.write_text(
+        json.dumps(_inspect_document(manifest, ["no-new-privileges:true"], tmpfs)),
+        encoding="utf-8",
     )
     manifest_path = tmp_path / "manifest"
     manifest_path.write_bytes(encode_runner_manifest(manifest))

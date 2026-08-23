@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 import ssl
 import struct
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -12,6 +13,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
+from atelier2.adapters.claude_subscription import (
+    CLAUDE_SUBSCRIPTION_EXECUTOR_KEY,
+    CONFORMANT_CLAUDE_VERSIONS,
+)
 from atelier2.adapters.free_runner_executor import (
     FreeRunnerCandidateExecutor,
     FreeRunnerHoldJob,
@@ -30,6 +35,7 @@ from atelier2.application.run_runner_session import (
     encode_runner_prepare_payload,
     encode_runner_ready_payload,
     require_matching_evidence_hash,
+    require_ready_matches_manifest,
 )
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
@@ -58,6 +64,9 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.runner_manifests import (
+    ABSENT_PROVIDER_CLI,
+    MeasuredProviderCli,
+    MeasuredProviderCliVersion,
     candidate_runner_manifest,
 )
 from atelier2.contracts.runner_session_codec import (
@@ -85,7 +94,12 @@ from atelier2.runner.authorization import (
     free_runner_auth_reference,
     resolve_free_runner_authorization,
 )
-from atelier2.runner.executors import RunnerExecutorUnavailable, select_runner_executor
+from atelier2.runner.executors import (
+    RunnerExecutorUnavailable,
+    RunnerToolchainUnpinned,
+    runner_executor_cli_pin,
+    select_runner_executor,
+)
 from atelier2.runner.session import _CoreFrameFence
 
 
@@ -270,13 +284,16 @@ def _session(core: _Core | None = None) -> CoreRunnerSession:
         _candidate_manifest(),
         reference,
         _INVOCATION,
+        runner_executor_cli_pin(_candidate_manifest()),
     )
 
 
-def _ready_payload() -> tuple[bytes, ...]:
+def _ready_payload(
+    measured_cli: MeasuredProviderCliVersion = ABSENT_PROVIDER_CLI,
+) -> tuple[bytes, ...]:
     request = _free_request()
     reference = free_runner_auth_reference(request.resolved_binding.auth_profile).value
-    return encode_runner_ready_payload(_candidate_manifest(), reference)
+    return encode_runner_ready_payload(_candidate_manifest(), reference, measured_cli)
 
 
 def test_core_session_arms_once_then_commits_acknowledges_and_releases_in_order() -> (
@@ -442,7 +459,7 @@ def test_core_session_refuses_replayed_bytes_at_the_same_sequence() -> None:
     session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
 
     with pytest.raises(RunnerSessionRefusal, match="runner-session-replay"):
-        session.accept(_frame(RunnerSessionMessage.READY, 1, (b"x",) * 11))
+        session.accept(_frame(RunnerSessionMessage.READY, 1, (b"x",) * 12))
 
 
 def test_core_session_refuses_a_sequence_gap() -> None:
@@ -692,7 +709,7 @@ def test_replacement_not_allowed_maps_to_the_a_refusal_without_a_second_attempt(
 def test_closed_refusal_vocabulary_is_the_reviewed_a_set() -> None:
     assert "runner-replacement-not-supported-a" in RUNNER_SESSION_REFUSAL_CODES
     assert "runner-cancel-conflict" in RUNNER_SESSION_REFUSAL_CODES
-    assert len(RUNNER_SESSION_REFUSAL_CODES) == 32
+    assert len(RUNNER_SESSION_REFUSAL_CODES) == 37
 
 
 def _free_request(**changes: object) -> AgentExecutionRequestV2:
@@ -806,6 +823,79 @@ def test_core_session_refuses_manifest_mismatch_without_arming() -> None:
     with pytest.raises(RunnerSessionRefusal, match="runner-manifest-mismatch"):
         session.accept(_frame(RunnerSessionMessage.READY, 2, tuple(payload)))
     assert core.armed == 0
+
+
+def test_core_session_refuses_a_measured_cli_the_manifest_executor_runs_none_of() -> (
+    None
+):
+    """The fake-free executor starts no provider CLI, so any version is drift."""
+    core = _Core()
+    session = _session(core)
+    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-provider-cli-drift"):
+        session.accept(
+            _frame(
+                RunnerSessionMessage.READY,
+                2,
+                _ready_payload(MeasuredProviderCli((2, 1, 233))),
+            )
+        )
+    assert core.armed == 0
+
+
+def test_a_ready_without_the_measured_provider_cli_field_is_refused() -> None:
+    manifest = _candidate_manifest()
+    reference = free_runner_auth_reference(
+        _free_request().resolved_binding.auth_profile
+    )
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-session-noncanonical"):
+        require_ready_matches_manifest(
+            _ready_payload()[:-1],
+            manifest,
+            reference.value,
+            runner_executor_cli_pin(manifest),
+        )
+
+
+def test_core_session_refuses_a_ready_whose_measurement_is_not_a_version() -> None:
+    core = _Core()
+    session = _session(core)
+    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+    payload = list(_ready_payload())
+    payload[11] = b"whatever-the-runner-felt-like"
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-session-noncanonical"):
+        session.accept(_frame(RunnerSessionMessage.READY, 2, tuple(payload)))
+    assert core.armed == 0
+
+
+def test_the_pinned_claude_toolchain_admits_exactly_the_adapter_conformance_set() -> (
+    None
+):
+    """The runner-side pin is the adapter's own reviewed set, never a copy."""
+    manifest = replace(
+        _candidate_manifest(),
+        provider_id=CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.provider_id.value,
+        executor_revision=CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.executor_revision.value,
+    )
+    pin = runner_executor_cli_pin(manifest)
+
+    assert not pin.admits(ABSENT_PROVIDER_CLI)
+    assert all(
+        pin.admits(MeasuredProviderCli(version))
+        for version in CONFORMANT_CLAUDE_VERSIONS
+    )
+
+
+def test_a_manifest_naming_a_revision_this_image_lacks_is_refused_before_ready() -> (
+    None
+):
+    manifest = replace(_candidate_manifest(), executor_revision="claude-someday/v9")
+
+    with pytest.raises(RunnerToolchainUnpinned, match="runner-toolchain-unpinned"):
+        runner_executor_cli_pin(manifest)
 
 
 def test_runner_fence_completes_a_frame_split_across_poll_timeouts() -> None:

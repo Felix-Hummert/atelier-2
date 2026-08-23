@@ -48,8 +48,11 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceHash,
 )
 from atelier2.contracts.runner_manifests import (
+    CANDIDATE_CHILD_PATH_GRANTS,
     RunnerManifestV1,
+    RunnerPathGrant,
     decode_runner_manifest,
+    encode_measured_provider_cli,
     runner_manifest_id,
 )
 from atelier2.contracts.runner_session_codec import (
@@ -72,7 +75,11 @@ from atelier2.runner.authorization import (
     free_runner_auth_reference,
     resolve_free_runner_authorization,
 )
-from atelier2.runner.executors import select_runner_executor
+from atelier2.runner.executors import (
+    attest_runner_provider_toolchain,
+    runner_executor_cli_pin,
+    select_runner_executor,
+)
 
 _CONTROL_POLL_SECONDS = 0.05
 
@@ -249,12 +256,15 @@ def _identity_mount_denied(identity: Path) -> bool:
     return False
 
 
-def child_allowlist() -> tuple[Path, ...]:
-    paths = [Path("/usr"), Path("/lib"), Path("/proc"), Path("/dev")]
-    for extra in (Path("/lib64"), Path("/workspace")):
-        if extra.exists():
-            paths.append(extra)
-    return tuple(paths)
+def child_allowlist() -> tuple[RunnerPathGrant, ...]:
+    """The candidate image's own declared child surface, for the preflight probe.
+
+    A real session takes the child's grants from the manifest Core selected, so
+    no surface reaches a provider child unattested. This is the same declared
+    candidate surface, named once in the contract, for the preflight that runs
+    before any manifest exists.
+    """
+    return CANDIDATE_CHILD_PATH_GRANTS
 
 
 def _runner_workspace_directory() -> Path:
@@ -311,8 +321,17 @@ def _drain_exited_child(
 def _measured_ready_payload(
     manifest: RunnerManifestV1, auth_reference: str, identity: Path
 ) -> tuple[bytes, ...]:
+    """Everything this container can prove about itself, measured before READY.
+
+    The provider-toolchain attestation runs here, ahead of the whole rest of
+    the session: a Runner whose installed CLI is outside the conformance set
+    its manifest's executor revision names, or whose host or account still
+    lets administrator policy act, refuses before Core ever arms the attempt
+    and therefore before any provider process could start.
+    """
     if landlock_kernel_abi() < REQUIRED_LANDLOCK_ABI:
         raise LandlockUnavailable("runner-child-boundary-unavailable")
+    measured_cli = attest_runner_provider_toolchain(manifest)
     payload = (
         manifest.executor_revision.encode("utf-8"),
         manifest.executor_operational_identity.encode("utf-8"),
@@ -325,8 +344,11 @@ def _measured_ready_payload(
         struct.pack(">Q", REQUIRED_LANDLOCK_ABI),
         b"DENIED" if _identity_mount_denied(identity) else b"WRITABLE",
         hashlib.sha256(auth_reference.encode("ascii")).hexdigest().encode("ascii"),
+        encode_measured_provider_cli(measured_cli),
     )
-    require_ready_matches_manifest(payload, manifest, auth_reference)
+    require_ready_matches_manifest(
+        payload, manifest, auth_reference, runner_executor_cli_pin(manifest)
+    )
     return payload
 
 
@@ -509,7 +531,7 @@ def run_candidate_session(
             command = executor.prepare_process(request)
             child = start_runner_child(
                 command.arguments,
-                child_allowlist(),
+                manifest.child_path_grants,
                 environment=command.environment,
                 standard_input=command.standard_input,
             )

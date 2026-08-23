@@ -29,7 +29,13 @@ from atelier2.contracts.agents import (
     ResolvedAgentBinding,
 )
 from atelier2.contracts.executions import NodeExecutionId
-from atelier2.contracts.runner_manifests import RunnerManifestV1
+from atelier2.contracts.runner_manifests import (
+    MeasuredProviderCliVersion,
+    RunnerExecutorCliPin,
+    RunnerManifestV1,
+    decode_measured_provider_cli,
+    encode_measured_provider_cli,
+)
 from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSessionMessage
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import (
@@ -148,8 +154,13 @@ def decode_runner_prepare_payload(
     return request
 
 
+READY_PAYLOAD_FIELD_COUNT = 12
+
+
 def encode_runner_ready_payload(
-    manifest: RunnerManifestV1, auth_reference: str
+    manifest: RunnerManifestV1,
+    auth_reference: str,
+    measured_cli: MeasuredProviderCliVersion,
 ) -> tuple[bytes, ...]:
     return (
         manifest.executor_revision.encode("utf-8"),
@@ -163,6 +174,7 @@ def encode_runner_ready_payload(
         struct.pack(">Q", manifest.required_landlock_abi),
         b"DENIED",
         hashlib.sha256(auth_reference.encode("ascii")).hexdigest().encode("ascii"),
+        encode_measured_provider_cli(measured_cli),
     )
 
 
@@ -170,10 +182,19 @@ def require_ready_matches_manifest(
     payload: tuple[bytes, ...],
     manifest: RunnerManifestV1,
     auth_reference: str,
-) -> None:
-    expected = encode_runner_ready_payload(manifest, auth_reference)
-    if len(payload) != 11:
-        raise RunnerSessionRefusal("runner-session-noncanonical")
+    cli_pin: RunnerExecutorCliPin,
+) -> MeasuredProviderCliVersion:
+    """Hold one READY against the selected manifest, and return what it measured.
+
+    The provider-CLI field is the one attested fact Core cannot restate: the
+    conformance set an executor revision names has more than one member, so
+    Core admits any measurement inside it and refuses every measurement
+    outside it. That check belongs to both ends -- the Runner refuses its own
+    drift before it starts a provider, and Core refuses the same drift before
+    it arms the attempt -- so this single function is what both call.
+    """
+    measured = _measured_cli_of(payload)
+    expected = encode_runner_ready_payload(manifest, auth_reference, measured)
     if payload[5] != b"1" or payload[6] != b"1" or payload[9] != b"DENIED":
         raise RunnerSessionRefusal("runner-attestation-mismatch")
     if payload[10] != expected[10]:
@@ -182,6 +203,18 @@ def require_ready_matches_manifest(
         raise RunnerSessionRefusal("runner-manifest-mismatch")
     if payload[2:9] != expected[2:9]:
         raise RunnerSessionRefusal("runner-attestation-mismatch")
+    if not cli_pin.admits(measured):
+        raise RunnerSessionRefusal("runner-provider-cli-drift")
+    return measured
+
+
+def _measured_cli_of(payload: tuple[bytes, ...]) -> MeasuredProviderCliVersion:
+    if len(payload) != READY_PAYLOAD_FIELD_COUNT:
+        raise RunnerSessionRefusal("runner-session-noncanonical")
+    try:
+        return decode_measured_provider_cli(payload[11])
+    except ValueError as error:
+        raise RunnerSessionRefusal("runner-session-noncanonical") from error
 
 
 def _uint64(field: bytes) -> int:
@@ -218,6 +251,11 @@ class CoreRunnerSession:
     manifest: RunnerManifestV1
     auth_reference: str
     invocation_id: RunnerInvocationId
+    # Which measured provider CLI this manifest's executor revision admits. The
+    # conformance set is a build fact of the executor adapter, not a carrier
+    # fact the manifest may author (ADR 0009 sec. 7), so the composition root
+    # binds it here rather than Core deriving it from bytes a launcher wrote.
+    cli_pin: RunnerExecutorCliPin
     _phase: _CorePhase = _CorePhase.OFFER
     _next_runner_sequence: int = 1
     _next_core_sequence: int = 1
@@ -291,7 +329,7 @@ class CoreRunnerSession:
                 )
             case _CorePhase.READY:
                 require_ready_matches_manifest(
-                    frame.payload, self.manifest, self.auth_reference
+                    frame.payload, self.manifest, self.auth_reference, self.cli_pin
                 )
                 try:
                     self.core.arm(self.binding, self.invocation_id)

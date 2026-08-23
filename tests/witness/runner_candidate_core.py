@@ -88,6 +88,7 @@ from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
 from atelier2.runner.__main__ import CandidateScenario
 from atelier2.runner.authorization import free_runner_auth_reference
+from atelier2.runner.executors import runner_executor_cli_pin
 
 _OUTPUT_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b"true")
 
@@ -440,6 +441,11 @@ def main(arguments: list[str] | None = None) -> int:
                         manifest,
                         reference,
                         invocation,
+                        # A composition root's job, not Core's: the serving
+                        # deployment binds the conformance set its executor
+                        # adapters own. This disposable witness reuses the
+                        # Runner-side registry because it composes both ends.
+                        runner_executor_cli_pin(manifest),
                     )
                 released = _drive_until_released_or_dropped(
                     connection, session, scenario

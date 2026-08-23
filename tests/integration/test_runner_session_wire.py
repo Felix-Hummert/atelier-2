@@ -23,7 +23,7 @@ import socket
 import subprocess
 import sys
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -67,6 +67,8 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.runner_manifests import (
     RunnerManifestV1,
+    RunnerPathGrant,
+    RunnerPathRight,
     candidate_runner_manifest,
     encode_runner_manifest,
     runner_manifest_id,
@@ -82,6 +84,7 @@ from atelier2.contracts.runner_terminal_evidence_codec import (
 )
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.runner.authorization import free_runner_auth_reference
+from atelier2.runner.executors import runner_executor_cli_pin
 from atelier2.runner.session import CandidateScenario, RunnerFrameChannel, _status_field
 
 # A cgroup pids controller isn't delegated the same way (or readable the same
@@ -90,20 +93,16 @@ from atelier2.runner.session import CandidateScenario, RunnerFrameChannel, _stat
 # `_pid_limit`'s own real fallback chain can legitimately find nothing
 # numeric on some of them. The manifest and the live READY measurement must
 # still agree, so both sides use this one fixed stand-in instead of the real
-# per-host reading — exactly the same accommodation as `child_allowlist`
-# below. Production's real `_pid_limit` is untouched and stays proven by the
+# per-host reading. Production's real `_pid_limit` is untouched and stays proven by the
 # Docker witness (`scripts/runner_candidate.sh`), which runs on its own
 # attested cgroup.
 _STUBBED_PROCESS_LIMIT = 4096
 
-# Runs `run_candidate_session` in a fresh interpreter, with its own
-# `PR_SET_NO_NEW_PRIVS`, a Landlock allowlist widened to reach this test
-# interpreter's own install prefix and installed atelier2 source (the
-# production allowlist names the deployed candidate image's layout instead
-# — the same accommodation `test_runner_child.py` already makes for the
-# identical reason), and a stubbed cgroup pid limit reading (see
-# `_STUBBED_PROCESS_LIMIT` above). Nothing about the session's own logic is
-# touched.
+# Runs `run_candidate_session` in a fresh interpreter with its own
+# `PR_SET_NO_NEW_PRIVS` and a stubbed cgroup pid limit reading (see
+# `_STUBBED_PROCESS_LIMIT` above). The child's Landlock surface arrives
+# through the manifest `_host_manifest` attests, exactly as it does in the
+# deployed image. Nothing about the session's own logic is touched.
 _CANDIDATE_DRIVER = """
 import ctypes
 import socket
@@ -133,28 +132,6 @@ libc = ctypes.CDLL(None, use_errno=True)
 if libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
     raise OSError(ctypes.get_errno(), "prctl(NO_NEW_PRIVS) failed")
 
-
-def _interpreter_reachable_allowlist():
-    import atelier2
-
-    # An editable install's real files live outside both prefixes (this
-    # dev tree's own src/, not site-packages); the fixed candidate program
-    # (adapters/free_runner_executor.run_free_runner_job) imports atelier2
-    # only after Landlock restricts this process, so whatever install form
-    # is active has to be reachable here the same way `/usr` already
-    # covers a packaged, non-editable install (production's own layout).
-    installed_source_root = Path(atelier2.__file__).resolve().parent.parent
-    return tuple(
-        path
-        for path in (
-            Path("/usr"), Path("/lib"), Path("/lib64"), Path("/proc"), Path("/dev"),
-            Path(sys.prefix), Path(sys.base_prefix), installed_source_root,
-        )
-        if path.exists()
-    )
-
-
-session_module.child_allowlist = _interpreter_reachable_allowlist
 session_module._pid_limit = lambda: int(process_limit)
 session_module._runner_workspace_directory = lambda: Path(workspace_directory)
 run_candidate_session(
@@ -272,6 +249,54 @@ def _free_request(job_bytes: bytes = _PRINT_JOB_BYTES) -> AgentExecutionRequestV
     )
 
 
+# The one writable surface a session driven on this host may name. The
+# deployed image instead attests its own `noexec,nosuid` tmpfs paths, which do
+# not exist here; every other grant stays read-only either way.
+_HOST_SCRATCH = PurePosixPath("/tmp")
+
+
+def _host_child_grants() -> tuple[RunnerPathGrant, ...]:
+    """The child surface this test interpreter really needs, as one manifest fact.
+
+    The fixed candidate program (`free_runner_executor.run_free_runner_job`)
+    imports atelier2 only after Landlock restricts it, so this interpreter's
+    install prefix and an editable install's real source tree (this dev tree's
+    own `src/`, outside both prefixes) have to be named the same way `/usr`
+    already covers a packaged install — production's own layout. Attesting it
+    through the manifest is what the deployed image does too, so this drives
+    the real path instead of replacing the session's own function.
+    """
+    import atelier2
+
+    installed_source_root = Path(atelier2.__file__).resolve().parent.parent
+    read_only = {
+        PurePosixPath(path)
+        for path in (
+            Path("/usr"),
+            Path("/lib"),
+            Path("/lib64"),
+            Path("/proc"),
+            Path("/dev"),
+            Path(sys.prefix),
+            Path(sys.base_prefix),
+            installed_source_root,
+        )
+        if path.exists()
+    } - {_HOST_SCRATCH}
+    return tuple(
+        sorted(
+            (
+                *(
+                    RunnerPathGrant(path, RunnerPathRight.READ_ONLY)
+                    for path in read_only
+                ),
+                RunnerPathGrant(_HOST_SCRATCH, RunnerPathRight.READ_WRITE),
+            ),
+            key=lambda grant: grant.path.as_posix(),
+        )
+    )
+
+
 def _host_manifest(**timings: int) -> RunnerManifestV1:
     """A candidate manifest declaring exactly what this host will measure.
 
@@ -291,6 +316,8 @@ def _host_manifest(**timings: int) -> RunnerManifestV1:
             provider_id="fake-free",
             auth_mode="api_key",
             requested_capability="headless",
+            provider_credential_directory=_HOST_SCRATCH,
+            child_path_grants=_host_child_grants(),
         ),
         effective_uid=os.getuid(),
         effective_gid=os.getgid(),
@@ -471,6 +498,7 @@ def _prepared_session(
         manifest,
         reference,
         invocation,
+        runner_executor_cli_pin(manifest),
     )
     return _PreparedSession(
         binding,

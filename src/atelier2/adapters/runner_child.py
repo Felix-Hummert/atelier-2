@@ -6,9 +6,9 @@ import signal
 import subprocess
 import sys
 from collections.abc import Callable
-from pathlib import Path
 
 from atelier2.contracts.agent_attempts import RunnerCancellationObservation
+from atelier2.contracts.runner_manifests import RunnerPathGrant, RunnerPathRight
 
 _LANDLOCK_CREATE_RULESET = 444
 _LANDLOCK_ADD_RULE = 445
@@ -17,11 +17,39 @@ _LANDLOCK_CREATE_RULESET_VERSION = 1
 _LANDLOCK_RULE_PATH_BENEATH = 1
 _PR_SET_NO_NEW_PRIVS = 38
 _ACCESS_EXECUTE = 1 << 0
+_ACCESS_WRITE_FILE = 1 << 1
 _ACCESS_READ_FILE = 1 << 2
 _ACCESS_READ_DIR = 1 << 3
+_ACCESS_REMOVE_DIR = 1 << 4
+_ACCESS_REMOVE_FILE = 1 << 5
+_ACCESS_MAKE_DIR = 1 << 7
+_ACCESS_MAKE_REGULAR = 1 << 8
+_ACCESS_MAKE_SOCKET = 1 << 9
+_ACCESS_MAKE_FIFO = 1 << 10
+_ACCESS_MAKE_SYMLINK = 1 << 12
 REQUIRED_LANDLOCK_ABI = 1
 _HANDLED_ACCESS = (1 << 13) - 1
-_ALLOWED_READ_ONLY_ACCESS = _ACCESS_EXECUTE | _ACCESS_READ_FILE | _ACCESS_READ_DIR
+# A read-only grant is the standard form and keeps `EXECUTE`, because the
+# provider CLI and its interpreter live beneath one. A writable grant
+# deliberately drops `EXECUTE` and both device-node rights: the writable
+# surface exists to hold data, and code a child could first write and then run
+# is exactly the widening the manifest attestation and the `noexec` mount are
+# there to stop -- two independent fences rather than one.
+_GRANTED_ACCESS = {
+    RunnerPathRight.READ_ONLY: _ACCESS_EXECUTE | _ACCESS_READ_FILE | _ACCESS_READ_DIR,
+    RunnerPathRight.READ_WRITE: (
+        _ACCESS_READ_FILE
+        | _ACCESS_READ_DIR
+        | _ACCESS_WRITE_FILE
+        | _ACCESS_REMOVE_DIR
+        | _ACCESS_REMOVE_FILE
+        | _ACCESS_MAKE_DIR
+        | _ACCESS_MAKE_REGULAR
+        | _ACCESS_MAKE_SOCKET
+        | _ACCESS_MAKE_FIFO
+        | _ACCESS_MAKE_SYMLINK
+    ),
+}
 _LIBC = ctypes.CDLL(None, use_errno=True)
 
 
@@ -47,7 +75,7 @@ class RunnerChildReapFailed(RuntimeError):
 
 def start_runner_child(
     command: tuple[str, ...],
-    allowed_read_only_paths: tuple[Path, ...] | None = None,
+    path_grants: tuple[RunnerPathGrant, ...] | None = None,
     *,
     environment: tuple[tuple[str, str], ...] = (),
     standard_input: bytes = b"",
@@ -64,15 +92,20 @@ def start_runner_child(
     the child needing to already be draining it.
     """
     launched = command
-    if allowed_read_only_paths is not None:
-        allowed = (
-            "(" + ", ".join(repr(str(path)) for path in allowed_read_only_paths) + ")"
+    if path_grants is not None:
+        declared = tuple(
+            (grant.path.as_posix(), grant.right.value) for grant in path_grants
         )
         launcher = (
             "import os, signal, sys\n"
-            "from pathlib import Path\n"
+            "from pathlib import PurePosixPath\n"
             "from atelier2.adapters.runner_child import install_landlock_guard\n"
-            f"install_landlock_guard(tuple(Path(path) for path in {allowed}))\n"
+            "from atelier2.contracts.runner_manifests import "
+            "RunnerPathGrant, RunnerPathRight\n"
+            "install_landlock_guard(tuple(\n"
+            "    RunnerPathGrant(PurePosixPath(path), RunnerPathRight(right))\n"
+            f"    for path, right in {declared!r}\n"
+            "))\n"
             "signal.signal(signal.SIGTERM, signal.SIG_DFL)\n"
             "os.execvp(sys.argv[1], sys.argv[1:])\n"
         )
@@ -131,12 +164,17 @@ def reap_cancelled_runner_child(
     return RunnerCancellationObservation.REAPED_AFTER_KILL
 
 
-def install_landlock_guard(allowed_read_only_paths: tuple[Path, ...]) -> int:
-    """Install a deny-by-default filesystem guard and return its kernel ABI."""
+def install_landlock_guard(path_grants: tuple[RunnerPathGrant, ...]) -> int:
+    """Install a deny-by-default filesystem guard and return its kernel ABI.
+
+    Every grant the caller names is the whole surface: a path outside them is
+    denied, and a path named read-only stays read-only even where the mount
+    beneath it would allow a write.
+    """
     abi = _landlock_abi()
     if abi < REQUIRED_LANDLOCK_ABI:
         raise LandlockUnavailable("the kernel does not provide Landlock ABI 1")
-    if not allowed_read_only_paths:
+    if not path_grants:
         raise LandlockUnavailable("the child has no Landlock allowlist")
     _call(_LIBC.prctl, _PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
     ruleset = _RulesetAttributes(_HANDLED_ACCESS, 0)
@@ -148,8 +186,8 @@ def install_landlock_guard(allowed_read_only_paths: tuple[Path, ...]) -> int:
         0,
     )
     try:
-        for path in allowed_read_only_paths:
-            _allow_path(ruleset_descriptor, path)
+        for grant in path_grants:
+            _allow_path(ruleset_descriptor, grant)
         _call(_LIBC.syscall, _LANDLOCK_RESTRICT_SELF, ruleset_descriptor, 0)
     finally:
         os.close(ruleset_descriptor)
@@ -167,10 +205,15 @@ def _landlock_abi() -> int:
     return max(0, value)
 
 
-def _allow_path(ruleset_descriptor: int, path: Path) -> None:
-    descriptor = os.open(path, os.O_PATH | os.O_CLOEXEC)
+def _allow_path(ruleset_descriptor: int, grant: RunnerPathGrant) -> None:
     try:
-        attributes = _PathBeneathAttributes(_ALLOWED_READ_ONLY_ACCESS, descriptor)
+        descriptor = os.open(grant.path, os.O_PATH | os.O_CLOEXEC)
+    except OSError as error:
+        raise LandlockUnavailable(
+            f"the attested child surface {grant.path} is absent: {error}"
+        ) from error
+    try:
+        attributes = _PathBeneathAttributes(_GRANTED_ACCESS[grant.right], descriptor)
         _call(
             _LIBC.syscall,
             _LANDLOCK_ADD_RULE,

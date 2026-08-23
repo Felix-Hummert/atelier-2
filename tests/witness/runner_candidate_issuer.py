@@ -39,6 +39,8 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.runner_manifests import (
     CANDIDATE_CPU_PERIOD,
     CANDIDATE_WORKSPACE_BYTES,
+    RunnerManifestV1,
+    RunnerPathRight,
     candidate_runner_manifest,
     decode_runner_manifest,
     encode_runner_manifest,
@@ -235,6 +237,29 @@ def _tmpfs_size(options: str) -> int:
     raise ValueError("runner-attestation-mismatch")
 
 
+def _attest_writable_surface_is_noexec_tmpfs(
+    tmpfs: dict[str, str], manifest: RunnerManifestV1
+) -> None:
+    """Every writable path the manifest attests must be a `noexec,nosuid` tmpfs.
+
+    The manifest's Landlock grant already denies the child `EXECUTE` beneath a
+    writable path; this is the launcher's independent second fence, read back
+    out of the container Docker actually created. Executable code therefore
+    stays in the read-only image root even if one of the two ever slipped:
+    code written into the writable surface cannot be run from it, and nothing
+    there gains privilege through a set-user-ID bit.
+    """
+    for grant in manifest.child_path_grants:
+        if grant.right is not RunnerPathRight.READ_WRITE:
+            continue
+        options = tmpfs.get(grant.path.as_posix())
+        if options is None:
+            raise ValueError("runner-attestation-mismatch")
+        flags = set(options.split(","))
+        if not {"noexec", "nosuid"} <= flags or "rw" not in flags:
+            raise ValueError("runner-attestation-mismatch")
+
+
 def _mount(document, destination: str) -> dict[str, object] | None:
     return next(
         (
@@ -286,6 +311,7 @@ def attest_runner_inspect(inspect_path: Path, manifest_path: Path, output: Path)
         or journal_mount.get("Type") != "volume"
     ):
         raise ValueError("runner-attestation-mismatch")
+    _attest_writable_surface_is_noexec_tmpfs(tmpfs, manifest)
     output.write_text(runner_manifest_id(manifest).value + "\n", encoding="ascii")
     return 0
 
