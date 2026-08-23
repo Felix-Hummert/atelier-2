@@ -20,13 +20,22 @@ from pathlib import Path
 from typing import Protocol
 
 from atelier2.adapters.bounded_processes import bounded_process_streams
-from atelier2.adapters.free_runner_executor import refuse_unbound_runner_a_request
+from atelier2.adapters.free_runner_executor import (
+    free_runner_auth_reference,
+    refuse_unbound_runner_a_request,
+    resolve_free_runner_authorization,
+)
 from atelier2.adapters.runner_child import (
     REQUIRED_LANDLOCK_ABI,
     LandlockUnavailable,
     landlock_kernel_abi,
     reap_cancelled_runner_child,
     start_runner_child,
+)
+from atelier2.adapters.runner_cli_pins import (
+    RunnerToolchainRefused,
+    RunnerToolchainUnpinned,
+    runner_executor_cli_pin,
 )
 from atelier2.adapters.runner_journal import RunnerJournal
 from atelier2.application.run_runner_session import (
@@ -73,15 +82,8 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
-from atelier2.runner.authorization import (
-    free_runner_auth_reference,
-    resolve_free_runner_authorization,
-)
 from atelier2.runner.executors import (
-    RunnerToolchainRefused,
-    RunnerToolchainUnpinned,
     attest_runner_provider_toolchain,
-    runner_executor_cli_pin,
     select_runner_executor,
 )
 
