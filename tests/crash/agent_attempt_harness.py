@@ -9,6 +9,7 @@ from pathlib import Path
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.run_transitions import load_run
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
@@ -44,8 +45,13 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
-from atelier2.contracts.runs import RunId, WorkflowRevision
-from atelier2.ports.agent_attempts import AgentAttemptCancellationAccepted
+from atelier2.contracts.run_cancellations import CancelRunRequest
+from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationAccepted,
+    RunCancellationAccepted,
+    RunCancellationTerminalRetry,
+)
 from atelier2.ports.durable_runs import StartPublishedRunRequestV2
 from atelier2.ports.run_queries import (
     RunFound,
@@ -335,6 +341,52 @@ def main(root: Path, mode: str) -> None:
                     return
                 time.sleep(0.01)
             raise AssertionError("parent-death cancellation was not recovered")
+        if mode == "recover-operator-cancellation":
+            # #439 P3 Fenster (i): the operator's own run-cancel command is
+            # durably accepted (CAS + enqueue committed) while nothing owns
+            # the process any more, then this restart is the first runtime
+            # that ever drives the enqueued cleanup workflow -- the same
+            # crash-before-attestation shape `recover-cancellation` proves
+            # above, but under a command `is_operator_run_cancel` recognizes,
+            # so the run itself must lift to CANCELLED, not stay STARTED.
+            execution = agent_attempt_execution(exact_request)
+            attempt = store.load(execution.attempt_id)
+            witness = (
+                None
+                if attempt.watchdog_generation_id is None
+                else attempt_cgroup(lease, attempt)
+            )
+            submitting_store = DbosAgentAttemptStore(
+                lease.engine, lease.settings.application_version
+            )
+            accepted = submitting_store.request_run_cancellation(
+                CancelRunRequest(
+                    attempt.run_id,
+                    "operator-crash-restart-1",
+                    exact_request.node_execution_id,
+                )
+            )
+            if not isinstance(
+                accepted, RunCancellationAccepted | RunCancellationTerminalRetry
+            ):
+                raise AssertionError("controlled operator run-cancel was not accepted")
+            lease.launch()
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                terminal = store.load(execution.attempt_id)
+                with lease.engine.connect() as connection:
+                    run = load_run(connection, attempt.run_id)
+                if (
+                    terminal.state
+                    in {AgentAttemptState.CANCELLED, AgentAttemptState.INTERRUPTED}
+                    and run.state is RunState.CANCELLED
+                    and (witness is None or not witness.exists())
+                ):
+                    return
+                time.sleep(0.01)
+            raise AssertionError(
+                "operator run-cancel during parent death was not recovered"
+            )
         if mode == "recover":
             execute_agent_attempt(
                 agent_attempt_execution(exact_request),
