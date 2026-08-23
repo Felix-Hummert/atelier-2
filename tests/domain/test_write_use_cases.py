@@ -26,6 +26,16 @@ from atelier2.application.cancel_agent_attempt import (
     ReplacementNotAllowed,
     cancel_agent_attempt,
 )
+from atelier2.application.cancel_run import (
+    CancelAccepted,
+    CancelCommandConflict,
+    CancelNotCancellable,
+    CancelOvertakenBySuccess,
+    CancelRunMissing,
+    CancelTerminalRetry,
+    MalformedIdempotencyKey,
+    cancel_run_result,
+)
 from atelier2.application.publish_adapter_operation_revision import (
     AdapterOperationPublicationCollision,
     AdapterOperationPublicationCreated,
@@ -96,7 +106,8 @@ from atelier2.contracts.budgets_v3 import BudgetRevisionRefusal
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.orders import InlineOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
-from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.run_cancellations import CancelRunRequest
+from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import SchemaDocumentRefusal
 from atelier2.contracts.tool_grants_v3 import ToolGrantRefusal
 from atelier2.ports.agent_attempts import (
@@ -125,6 +136,25 @@ from atelier2.ports.agent_attempts import (
 )
 from atelier2.ports.agent_attempts import (
     DurableWriteUnavailable as PortDurableWriteUnavailable,
+)
+from atelier2.ports.agent_attempts import (
+    RunCancellationAccepted as DurableRunCancellationAccepted,
+)
+from atelier2.ports.agent_attempts import (
+    RunCancellationCommandConflict as DurableRunCommandConflict,
+)
+from atelier2.ports.agent_attempts import (
+    RunCancellationNotCancellable as DurableRunNotCancellable,
+)
+from atelier2.ports.agent_attempts import (
+    RunCancellationOvertakenBySuccess as DurableRunOvertakenBySuccess,
+)
+from atelier2.ports.agent_attempts import RunCancellationRefusal
+from atelier2.ports.agent_attempts import (
+    RunCancellationRunMissing as DurableRunCancellationRunMissing,
+)
+from atelier2.ports.agent_attempts import (
+    RunCancellationTerminalRetry as DurableRunTerminalRetry,
 )
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCollision as PortConfigurationCollision,
@@ -628,6 +658,9 @@ class ScriptedCanceller:
         self.asked.append(request)
         return self._answer
 
+    def request_run_cancellation(self, request: CancelRunRequest) -> Any:
+        raise AssertionError("the attempt use-case under test asked the run command")
+
 
 # Derived rather than invented: the attempt id is bound to its execution and
 # request, so a made-up one is refused before any use-case is reached.
@@ -703,3 +736,110 @@ def test_every_port_answer_of_a_cancellation_becomes_this_layers_own_outcome(
 
     assert cancel_agent_attempt(CANCELLATION_REQUEST, canceller) == expected
     assert canceller.asked == [CANCELLATION_REQUEST]
+
+
+class ScriptedRunCanceller:
+    """One run canceller that answers with exactly what it was scripted to say."""
+
+    def __init__(self, answer: Any) -> None:
+        self._answer = answer
+        self.asked: list[CancelRunRequest] = []
+
+    def request_run_cancellation(self, request: CancelRunRequest) -> Any:
+        self.asked.append(request)
+        return self._answer
+
+    def request_cancellation(self, request: CancelAgentAttemptRequest) -> Any:
+        raise AssertionError("the run use-case under test asked the attempt command")
+
+
+RUN_CANCEL_RUN_ID = RunId("run/cancel")
+RUN_CANCEL_NODE_EXECUTION = NodeExecutionId.for_node(
+    RUN_CANCEL_RUN_ID, WorkflowRevisionHash("d" * 64), "implement"
+)
+RUN_CANCEL_REQUEST = CancelRunRequest(
+    RUN_CANCEL_RUN_ID, "operator-cancel-1", RUN_CANCEL_NODE_EXECUTION
+)
+RUN_CANCEL_CANONICAL_RUN = Run(
+    RUN_CANCEL_RUN_ID,
+    WorkflowRevisionHash("d" * 64),
+    RunState.STARTED,
+    "implement",
+    3,
+    5,
+)
+
+
+@pytest.mark.proves("every-write-decision-belongs-to-a-use-case")
+@pytest.mark.parametrize(
+    ("port_answer", "expected"),
+    [
+        pytest.param(
+            DurableRunCancellationAccepted(CANCELLED_ATTEMPT),
+            CancelAccepted(CANCELLED_ATTEMPT),
+            id="accepted",
+        ),
+        pytest.param(
+            DurableRunTerminalRetry(RUN_CANCEL_CANONICAL_RUN),
+            CancelTerminalRetry(RUN_CANCEL_CANONICAL_RUN),
+            id="terminal-retry",
+        ),
+        pytest.param(
+            DurableRunOvertakenBySuccess(RUN_CANCEL_CANONICAL_RUN),
+            CancelOvertakenBySuccess(RUN_CANCEL_CANONICAL_RUN),
+            id="overtaken-by-success",
+        ),
+        pytest.param(
+            DurableRunNotCancellable(RunCancellationRefusal.BETWEEN_NODES),
+            CancelNotCancellable(RunCancellationRefusal.BETWEEN_NODES),
+            id="not-cancellable",
+        ),
+        pytest.param(
+            DurableRunCommandConflict(),
+            CancelCommandConflict(),
+            id="command-conflict",
+        ),
+        pytest.param(
+            DurableRunCancellationRunMissing(),
+            CancelRunMissing(),
+            id="run-missing",
+        ),
+        pytest.param(
+            PortDurableWriteUnavailable(), WriteUnavailable(), id="write-unavailable"
+        ),
+        pytest.param(
+            PortDurableStateCorrupt(), DurableStateCorrupt(), id="state-corrupt"
+        ),
+    ],
+)
+def test_every_port_answer_of_a_run_cancellation_becomes_this_layers_own_outcome(
+    port_answer: Any, expected: Any
+) -> None:
+    """#439 P2's use-case, held to the same discipline as its attempt sibling.
+
+    A route above must never read a port word directly, so every answer the
+    store can give this new command is proven to reach exactly one outcome in
+    this layer's own vocabulary.
+    """
+    canceller = ScriptedRunCanceller(port_answer)
+
+    result = cancel_run_result(
+        RUN_CANCEL_REQUEST.run_id,
+        RUN_CANCEL_REQUEST.idempotency_key,
+        RUN_CANCEL_REQUEST.expected_node_execution_id,
+        canceller,
+    )
+
+    assert result == expected
+    assert canceller.asked == [RUN_CANCEL_REQUEST]
+
+
+def test_a_malformed_idempotency_key_is_refused_before_the_store_is_asked() -> None:
+    canceller = ScriptedRunCanceller(object())
+
+    result = cancel_run_result(
+        RUN_CANCEL_RUN_ID, "", RUN_CANCEL_NODE_EXECUTION, canceller
+    )
+
+    assert isinstance(result, MalformedIdempotencyKey)
+    assert canceller.asked == []
