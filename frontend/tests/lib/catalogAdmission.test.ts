@@ -28,6 +28,7 @@ function v3Revision(name: string): WorkflowRevisionDetail {
       node_count: 1,
       agent_roles: ["builder"],
       orders: [],
+      wait_answer_schemas: [],
       node_previews: [
         {
           id: "implement",

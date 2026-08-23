@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
@@ -14,13 +16,16 @@ from atelier2.api.wire.resources import (
     NoWaitingResource,
     RunResource,
     SubworkflowNodeResource,
+    WaitAnswerSchemaResourceV3,
     WaitingInputResource,
     WaitingReconciliationResource,
     WaitNodeResource,
+    WorkflowDeclaredSchemaResourceV3,
     WorkflowGraphResourceV3,
     WorkflowLoopVerdictResourceV3,
     WorkflowNodePreviewResourceV3,
 )
+from atelier2.application.read_workflow_revisions import WaitAnswerClassification
 from tests.scenarios.workflows import (
     V3_DOCUMENT,
     VERDICT_LOOP_DOCUMENT,
@@ -28,6 +33,27 @@ from tests.scenarios.workflows import (
 )
 
 HASH = "0" * 64
+
+
+def _wait_preview(node_id: str) -> WorkflowNodePreviewResourceV3:
+    return WorkflowNodePreviewResourceV3(
+        id=node_id, kind="wait", role=None, instruction_start=None, depends_on=()
+    )
+
+
+def _wait_answer_schema(
+    node_id: str, kind: Literal["boolean", "enum", "free"] = "free"
+) -> WaitAnswerSchemaResourceV3:
+    return WaitAnswerSchemaResourceV3(
+        node_id=node_id,
+        schema=WorkflowDeclaredSchemaResourceV3(
+            ref="decision", revision="schema-decision"
+        ),
+        kind=kind,
+        values=("true", "false") if kind == "enum" else None,
+    )
+
+
 EXECUTION = "1" * 64
 
 
@@ -250,6 +276,7 @@ def test_v3_graph_accepts_depends_on_that_names_a_sibling_preview() -> None:
         node_count=2,
         agent_roles=("builder",),
         orders=(),
+        wait_answer_schemas=(),
         node_previews=(
             _agent_preview("implement"),
             _agent_preview("review", depends_on=("implement",)),
@@ -270,6 +297,7 @@ def test_v3_graph_accepts_an_entry_preview_with_no_edges() -> None:
         node_count=1,
         agent_roles=("builder",),
         orders=(),
+        wait_answer_schemas=(),
         node_previews=(_agent_preview("implement"),),
         loops=(),
         name="One agent",
@@ -288,6 +316,7 @@ def test_v3_graph_refuses_a_depends_on_that_names_no_preview() -> None:
             node_count=1,
             agent_roles=("builder",),
             orders=(),
+            wait_answer_schemas=(),
             node_previews=(_agent_preview("review", depends_on=("implement",)),),
             loops=(),
             name="Broken edge",
@@ -318,6 +347,157 @@ def test_v3_graph_projection_carries_no_loops_when_the_document_declares_none() 
 
     assert isinstance(resource, WorkflowGraphResourceV3)
     assert resource.loops == ()
+
+
+def test_v3_graph_projection_names_a_wait_nodes_schema_hull_unresolved() -> None:
+    """Reading the schema's own bytes to say `boolean` or `enum` needs a
+    `PublishedRevisionResolver` read the API layer may not make itself by
+    matching a port record (`api-port-record-problems`,
+    `scripts/check_architecture.py`) -- `atelier2.application.read_workflow_revisions`
+    does that read and hands this projection the plain verdict. A caller that
+    supplies none (or one that names no entry for this node) gets the hull
+    unresolved, exactly as `orders` already does, and classifies `free`."""
+    document = b"""format_version: 3
+name: Approve or send back
+nodes:
+  - id: approve
+    type: wait
+    prompt: Approve the candidate or send it back.
+    outputs:
+      - name: decision
+        schema: {ref: decision, revision: schema-decision}
+"""
+    graph = parse_workflow_document(document)
+
+    resource = graph_resource(graph)
+
+    assert isinstance(resource, WorkflowGraphResourceV3)
+    assert resource.wait_answer_schemas == (
+        WaitAnswerSchemaResourceV3(
+            node_id="approve",
+            schema=WorkflowDeclaredSchemaResourceV3(
+                ref="decision", revision="schema-decision"
+            ),
+            kind="free",
+            values=None,
+        ),
+    )
+
+
+def test_v3_graph_projection_applies_a_supplied_wait_answer_classification() -> None:
+    """The projection never resolves a schema itself; it only ever matches an
+    already-resolved verdict by node id, one wait node classifying and the
+    other -- not named by any supplied verdict -- falling back to `free`."""
+    document = b"""format_version: 3
+name: Ship or hold, or say why
+nodes:
+  - id: ship
+    type: wait
+    prompt: Ship it?
+    outputs:
+      - name: decision
+        schema: {ref: decision, revision: schema-decision}
+  - id: reason
+    type: wait
+    prompt: Say why, freely.
+    outputs:
+      - name: note
+        schema: {ref: note, revision: schema-note}
+"""
+    graph = parse_workflow_document(document)
+
+    resource = graph_resource(
+        graph,
+        (WaitAnswerClassification(node_id="ship", kind="boolean"),),
+    )
+
+    assert isinstance(resource, WorkflowGraphResourceV3)
+    by_node_id = {entry.node_id: entry for entry in resource.wait_answer_schemas}
+    assert by_node_id["ship"].kind == "boolean"
+    assert by_node_id["ship"].values is None
+    assert by_node_id["reason"].kind == "free"
+
+
+def test_v3_graph_projection_applies_a_supplied_enum_classification_with_its_values() -> (
+    None
+):
+    document = b"""format_version: 3
+name: Approve or revise
+nodes:
+  - id: verdict
+    type: wait
+    prompt: Approve or revise?
+    outputs:
+      - name: decision
+        schema: {ref: decision, revision: schema-decision}
+"""
+    graph = parse_workflow_document(document)
+
+    resource = graph_resource(
+        graph,
+        (
+            WaitAnswerClassification(
+                node_id="verdict", kind="enum", values=('"approve"', '"revise"')
+            ),
+        ),
+    )
+
+    assert isinstance(resource, WorkflowGraphResourceV3)
+    entry = resource.wait_answer_schemas[0]
+    assert entry.kind == "enum"
+    assert entry.values == ('"approve"', '"revise"')
+
+
+def test_wait_answer_schema_requires_values_exactly_for_an_enum_kind() -> None:
+    with pytest.raises(ValidationError):
+        WaitAnswerSchemaResourceV3(
+            node_id="approve",
+            schema=WorkflowDeclaredSchemaResourceV3(ref="decision", revision="hash"),
+            kind="enum",
+            values=None,
+        )
+    with pytest.raises(ValidationError):
+        WaitAnswerSchemaResourceV3(
+            node_id="approve",
+            schema=WorkflowDeclaredSchemaResourceV3(ref="decision", revision="hash"),
+            kind="boolean",
+            values=("true",),
+        )
+
+
+def test_v3_graph_accepts_a_wait_preview_with_its_matching_answer_schema() -> None:
+    resource = WorkflowGraphResourceV3(
+        workflow_format_version=3,
+        executable=False,
+        not_executable_reason="waits for a runtime that binds waits",
+        node_count=1,
+        agent_roles=(),
+        orders=(),
+        wait_answer_schemas=(_wait_answer_schema("approve", kind="enum"),),
+        node_previews=(_wait_preview("approve"),),
+        loops=(),
+        name="One wait",
+        description=None,
+    )
+
+    assert resource.wait_answer_schemas[0].node_id == "approve"
+
+
+def test_v3_graph_refuses_a_wait_answer_schema_naming_no_wait_preview() -> None:
+    with pytest.raises(ValidationError, match="answer schema"):
+        WorkflowGraphResourceV3(
+            workflow_format_version=3,
+            executable=True,
+            not_executable_reason=None,
+            node_count=1,
+            agent_roles=("builder",),
+            orders=(),
+            wait_answer_schemas=(_wait_answer_schema("approve"),),
+            node_previews=(_agent_preview("other"),),
+            loops=(),
+            name="Mismatched wait answer schema",
+            description=None,
+        )
 
 
 def test_models_are_frozen_strict_and_forbid_extra_fields() -> None:

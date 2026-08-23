@@ -24,6 +24,7 @@ function v3Revision() {
       node_count: 2,
       agent_roles: ["builder"],
       orders: [],
+      wait_answer_schemas: [],
       node_previews: [
         {
           id: "implement",
@@ -118,6 +119,20 @@ describe("a version 3 run in the cockpit", () => {
     // A loaded run is not a failed one: the page must not offer to fetch it again
     // beneath the answer it already has.
     expect(screen.queryByRole("button", { name: runPageCopy.readAgain })).toBeNull();
+  });
+
+  it("proves(a-run-carries-when-it-started-and-ended): shows the run's exact facts inline, honestly omitting a timestamp that has not arrived, with no reveal to find them behind", async () => {
+    render(App, {
+      props: { cockpitApi: api(v3Run()), mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+
+    const standing = screen.getByLabelText("Where this run stands");
+    expect(standing.textContent).toContain("Running");
+    expect(standing.textContent).toMatch(/for \d/);
+    expect(screen.getByText(/started .* · duration/).textContent).not.toContain("ended");
+    expect(screen.queryByText("Exact time")).toBeNull();
   });
 
   it("proves(a-chain-run-is-watched-while-it-runs): moves the node that finished to Done on the one picture of the run", async () => {
@@ -588,6 +603,100 @@ describe("a version 3 run that stops for a person", () => {
     expect(body.answer_base64).toBe(btoa('{"verdict":"green"}'));
   });
 
+  /** The published answer schema of #553's decision-button graphs, everything but its classification. */
+  function decisionSchema(kind: "boolean" | "enum" | "free", values: string[] | null = null) {
+    const revision = waitRevision();
+    return {
+      ...revision,
+      graph: {
+        ...revision.graph,
+        wait_answer_schemas: [
+          {
+            node_id: "approve",
+            schema: { ref: "decision", revision: "e".repeat(64) },
+            kind,
+            values
+          }
+        ]
+      }
+    };
+  }
+
+  it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): a boolean schema renders two decision buttons, sends the exact click, and confirms it", async () => {
+    let resolveAnswer: (result: { status: 200; value: RunV3 }) => void = () => {};
+    const answerCall = vi.fn(
+      (mutation: { body_base64: string }) =>
+        new Promise<{ status: 200; value: RunV3 }>((resolve) => {
+          void mutation;
+          resolveAnswer = resolve;
+        })
+    );
+    render(App, {
+      props: {
+        cockpitApi: waitingApi({
+          answer: answerCall,
+          getWorkflowRevision: vi.fn(async () => decisionSchema("boolean"))
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    await screen.findByRole("heading", { name: question });
+    expect(screen.queryByRole("textbox")).toBeNull();
+
+    await fireEvent.click(await screen.findByRole("button", { name: runPageCopy.answerYes }));
+
+    await waitFor(() => expect(answerCall).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(globalThis.atob(answerCall.mock.calls[0]?.[0]?.body_base64 ?? ""));
+    expect(body.answer_base64).toBe(btoa("true"));
+    await screen.findByText(`${runPageCopy.answeredPrefix} ${runPageCopy.answerYes}`);
+    resolveAnswer({ status: 200, value: answeredRun() });
+  });
+
+  it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): an enum schema renders one button per value and sends its exact JSON", async () => {
+    let resolveAnswer: (result: { status: 200; value: RunV3 }) => void = () => {};
+    const answerCall = vi.fn(
+      (mutation: { body_base64: string }) =>
+        new Promise<{ status: 200; value: RunV3 }>((resolve) => {
+          void mutation;
+          resolveAnswer = resolve;
+        })
+    );
+    render(App, {
+      props: {
+        cockpitApi: waitingApi({
+          answer: answerCall,
+          getWorkflowRevision: vi.fn(async () =>
+            decisionSchema("enum", ['"approve"', '"revise"'])
+          )
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    await screen.findByRole("heading", { name: question });
+    expect(screen.queryByRole("textbox")).toBeNull();
+
+    await fireEvent.click(await screen.findByRole("button", { name: "revise" }));
+
+    await waitFor(() => expect(answerCall).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(globalThis.atob(answerCall.mock.calls[0]?.[0]?.body_base64 ?? ""));
+    expect(body.answer_base64).toBe(btoa('"revise"'));
+    await screen.findByText(`${runPageCopy.answeredPrefix} revise`);
+    resolveAnswer({ status: 200, value: answeredRun() });
+  });
+
+  it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): keeps the free-form textarea for a schema this build has not classified", async () => {
+    render(App, {
+      props: { cockpitApi: waitingApi(), mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    await screen.findByRole("heading", { name: question });
+
+    expect(screen.getByLabelText(runPageCopy.answerLabel).isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: runPageCopy.answerYes })).toBeNull();
+  });
+
   it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): names a refused answer on the card", async () => {
     render(App, {
       props: {
@@ -781,7 +890,10 @@ describe("a failed node on the run page", () => {
     expect(within(who).getByText("Resolved model").closest("p")?.textContent).toMatch(
       /not recorded$/
     );
-    await screen.findByText("12 s");
+    // The facts line under the node's title is the one place duration shows now
+    // -- every tab, not only Evidence (the "Done" chip it replaces, 23.08.).
+    const panel = screen.getByRole("complementary");
+    await within(panel).findByText(/duration 12 s/);
     expect(screen.queryByText(/yet/)).toBeNull();
   });
 
@@ -962,8 +1074,9 @@ describe("the click into a node", () => {
 
     await openNodeTab(/implement/, runPageCopy.tabEvidence);
 
-    await screen.findByText("Duration");
-    await screen.findByText("5 min");
+    // The facts line under the node's title carries duration now, replacing
+    // the "Done" chip -- one grammar for every tab, not an Evidence-only fact.
+    await screen.findByText(/started .* · ended .* · duration 5 min/);
   });
 
   it("a done wait node says it was answered instead of claiming nothing was written", async () => {

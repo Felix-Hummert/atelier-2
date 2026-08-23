@@ -22,7 +22,7 @@
 </script>
 
 <script lang="ts">
-  import type { NodeDetail } from "../api/client";
+  import type { NodeDetail, RunV3 } from "../api/client";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import {
     emptyOutputCopy,
@@ -32,16 +32,50 @@
     runPageCopy
   } from "../lib/runPageCopy";
   import { runHeaderCopy } from "../lib/runPages";
+  import { whenFacts } from "../lib/runProjection";
+  import { stateLabels } from "./StateMark.svelte";
   import InfoHint from "./InfoHint.svelte";
   import ProofAnchor from "./ProofAnchor.svelte";
-  import StateMark from "./StateMark.svelte";
-  import When from "./When.svelte";
 
   export let detail: NodeDetail;
   export let onClose: () => void;
   /** The earlier nodes this one reads, as the published document declares them. */
   export let readsFrom: readonly string[] = [];
   export let runEvidence: RunEvidence;
+  /**
+   * The rail's own word for a retried attempt on this node, or null where the
+   * rail names none -- the same fact `WorkflowGraphDrawing` already reads off
+   * the run, never a second count this panel keeps for itself.
+   */
+  export let railAttempt: RunV3["node_rail"][number]["attempt"] = null;
+
+  /**
+   * The facts line that replaces the "Done" chip (operator ruling 23.08.):
+   * state word, then started/ended/duration exactly as the run head already
+   * says them, then the attempt ordinal -- but only once there has been more
+   * than one, so a node's first and only attempt says nothing extra. A loop's
+   * round number belongs beside it and is a named gap: the read API carries
+   * no round datum yet (`RunResourceV3` has none), so this line never guesses
+   * one.
+   */
+  $: nodeFacts = whenFacts(detail.started_at ?? null, detail.ended_at ?? null, new Date());
+  $: nodeFactLine = [
+    wrapDisplayCopy(stateLabels[detail.state]),
+    nodeFacts.startedExact === null
+      ? null
+      : `${wrapDisplayCopy(runPageCopy.started)} ${nodeFacts.startedExact}`,
+    nodeFacts.endedExact === null
+      ? null
+      : `${wrapDisplayCopy(runPageCopy.ended)} ${nodeFacts.endedExact}`,
+    nodeFacts.durationWords === null
+      ? null
+      : `${wrapDisplayCopy(runPageCopy.duration)} ${nodeFacts.durationWords}`,
+    railAttempt !== null && railAttempt.ordinal > 1
+      ? `${wrapDisplayCopy(runPageCopy.attempt)} ${railAttempt.ordinal}`
+      : null
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" · ");
 
   const tabLabels: Record<NodeTab, string> = {
     result: runPageCopy.tabResult,
@@ -133,13 +167,11 @@
 <aside class="node-panel" aria-labelledby="node-panel-title">
   <header>
     <h2 id="node-panel-title">{detail.node_id}</h2>
-    <div class="standing">
-      <StateMark state={detail.state} />
-      <button type="button" class="close" on:click={onClose} aria-label="Close node detail">
-        ×
-      </button>
-    </div>
+    <button type="button" class="close" on:click={onClose} aria-label="Close node detail">
+      ×
+    </button>
   </header>
+  <p class="node-facts">{nodeFactLine}</p>
 
   <div class="node-tabs" role="tablist" aria-label={wrapDisplayCopy(runPageCopy.tabsLabel)}>
     {#each NODE_TABS as candidate (candidate)}
@@ -229,12 +261,6 @@
           />
           <span class="muted">{wrapDisplayCopy(notRecordedCopy(detail.state))}</span>
         </p>
-        {#if detail.started_at}
-          <p class="when-ran">
-            {wrapDisplayCopy(runPageCopy.duration)}
-            <When startedAt={detail.started_at} endedAt={detail.ended_at ?? null} kind="duration" />
-          </p>
-        {/if}
         <p class="who-fact">
           {wrapDisplayCopy(runPageCopy.usage)}
           <InfoHint label={runPageCopy.usageMissingWhy} exact={runPageCopy.usageMissingExact} />
@@ -313,10 +339,11 @@
     gap: var(--space-3);
   }
 
-  .standing {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
+  .node-facts {
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
   }
 
   .close {
@@ -461,8 +488,7 @@
     margin: 0;
   }
 
-  .who-fact,
-  .when-ran {
+  .who-fact {
     margin: 0;
     display: flex;
     flex-wrap: wrap;

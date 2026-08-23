@@ -6,6 +6,7 @@ import {
   PUBLIC_ATTEMPT_STATES,
   agentConfigurationRevisionPageSchema,
   authProfileRevisionPageSchema,
+  waitAnswerSchemaV3Schema,
   workflowDeclaredOrderSchema,
   workflowDeclaredSchemaSchema,
   workflowNodePreviewSchema,
@@ -130,6 +131,7 @@ describe("the served vocabulary", () => {
             }
           }
         ],
+        wait_answer_schemas: [],
         node_previews: [
           {
             id: "cook",
@@ -162,6 +164,11 @@ describe("the served vocabulary", () => {
       Object.keys(
         servedDocument.components.schemas.WorkflowDeclaredSchemaResourceV3?.properties ??
           {}
+      ).sort()
+    );
+    expect(Object.keys(waitAnswerSchemaV3Schema.shape).sort()).toEqual(
+      Object.keys(
+        servedDocument.components.schemas.WaitAnswerSchemaResourceV3?.properties ?? {}
       ).sort()
     );
     expect(workflowRevisionDetailSchema.parse(sample)).toEqual(sample);

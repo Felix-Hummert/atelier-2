@@ -128,6 +128,7 @@ describe("the authored agent roles a second consumer may edit", () => {
       node_count: 1,
       agent_roles: roles,
       orders: [],
+      wait_answer_schemas: [],
       node_previews: [],
       loops: [],
       name: "roles",

@@ -144,6 +144,34 @@ const workflowDeclaredOrderSchema = z
 export { workflowDeclaredOrderSchema, workflowDeclaredSchemaSchema };
 
 /**
+ * One waiting node's answer schema, classified as far as the server's excerpt
+ * may without evaluating it. `kind` is `boolean` only where the schema's own
+ * top level names `type: boolean`, `enum` only where it names `enum` (with
+ * `values` the author's own members, each already the exact JSON text a
+ * decision sends), and `free` for every other shape -- including a schema the
+ * server's own excerpt has not yet resolved, which is this build's answer for
+ * every node today (#553 names the resolving use case as a follow-up).
+ */
+const waitAnswerSchemaV3Schema = z
+  .object({
+    node_id: z.string().min(1),
+    schema: workflowDeclaredSchemaSchema,
+    kind: z.enum(["boolean", "enum", "free"]),
+    values: z.array(z.string()).nullable()
+  })
+  .strict()
+  .superRefine((entry, context) => {
+    if ((entry.kind === "enum") !== (entry.values !== null)) {
+      context.addIssue({
+        code: "custom",
+        message: "values names the enum's own members, and only those"
+      });
+    }
+  });
+
+export { waitAnswerSchemaV3Schema };
+
+/**
  * The node and verdict that close a loop's round early, when the document
  * names one. Absent where the document declares no earlier exit at all.
  */
@@ -179,6 +207,7 @@ const workflowGraphV3Schema = z
     node_count: z.number().int().positive(),
     agent_roles: z.array(z.string().min(1)).max(100),
     orders: z.array(workflowDeclaredOrderSchema),
+    wait_answer_schemas: z.array(waitAnswerSchemaV3Schema),
     node_previews: z.array(workflowNodePreviewSchema),
     loops: z.array(workflowLoopSchema),
     name: z.string().min(1),

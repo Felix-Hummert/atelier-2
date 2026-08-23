@@ -92,7 +92,9 @@ def bound_use_cases(
     """Spend the ports here, so that nothing below this line can reach one."""
     return ApiUseCases(
         get_workflow_revision=lambda revision_hash: get_workflow_revision(
-            revision_hash, ports.workflow_revision_queries
+            revision_hash,
+            ports.workflow_revision_queries,
+            ports.published_revision_registry,
         ),
         resolve_catalog_name=lambda kind, query, position: resolve_catalog_name(
             kind, query, position, ports.catalog_resolver
