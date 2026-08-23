@@ -4,16 +4,23 @@
  * A violation that is not in this list fails CI. A row without an owning
  * GitHub issue is not a baseline entry — it is a swallowed finding.
  *
- * Workflows and History join the Chromium scan (Studio, Project, New Run,
- * the seeded Run page) together under wcag2a / wcag2aa / wcag22aa (66 axe
- * rules) in #526: the Workflows catalog (#527) shipped without ever being
- * added here, and this closes that gap rather than carrying it forward a
- * third time. Widening the scan surfaced one pre-existing Workflows finding
- * outside this change's fence (#534, `axeBaseline.json`); every other
- * surface, including History, reported none.
+ * Every surface the rail can reach, plus the two a rail destination leads
+ * into (a workflow's detail and a run), is scanned under wcag2a / wcag2aa /
+ * wcag22aa. Chat and the workflow detail joined in #516: a surface that is
+ * not on this list is a surface whose accessibility nothing checks, which is
+ * how the Workflows catalog once shipped unscanned (#526).
  */
 
-export const CORE_SURFACES = ["studio", "project", "new-run", "run", "workflows", "history"] as const;
+export const CORE_SURFACES = [
+  "chat",
+  "studio",
+  "project",
+  "new-run",
+  "run",
+  "workflows",
+  "workflow-detail",
+  "history"
+] as const;
 
 export type CoreSurface = (typeof CORE_SURFACES)[number];
 

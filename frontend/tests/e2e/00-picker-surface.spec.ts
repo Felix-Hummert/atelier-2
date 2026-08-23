@@ -1,6 +1,8 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
+import { shortFingerprint } from "../../src/lib/fingerprint";
+
 async function publishSchema(page: Page, document: string): Promise<string> {
   const published = await page.request.post("/atelier/api/v1/schema-revisions", {
     headers: { "content-type": "application/json" },
@@ -232,14 +234,22 @@ test("Details shows published substance, an honest empty, and the edit door", as
   await page.goto("/atelier/new");
   const ready = page.getByRole("article", { name: readyName });
   await ready.getByText("Details", { exact: true }).click();
-  await expect(ready.getByText("Show the published substance.")).toBeVisible();
+  // The published nodes are drawn as the quiet pipe now: a shape and a name,
+  // with the authored prompt excerpt living on the workflow's own detail page
+  // (mockup v5 §04), so the picker no longer repeats it.
+  await expect(ready.locator('[data-node-id]').first()).toBeVisible();
+  await expect(ready).not.toContainText("Show the published substance.");
   await expect(ready.getByRole("region", { name: "Orders" })).toContainText("portions");
   await expect(ready.getByRole("heading", { name: "Revisions" })).toBeVisible();
   await expect(ready.getByText("One revision.")).toBeVisible();
+  // The digest is shown shortened beside its name, never printed whole and
+  // never hidden behind a click (operator ruling 23.08.).
   await expect(ready).not.toContainText(readyHash);
-  await ready.getByRole("button", { name: "Workflow revision" }).click();
-  await expect(ready).toContainText(readyHash);
+  await expect(ready.getByRole("group", { name: "Workflow revision" })).toContainText(
+    shortFingerprint(readyHash)
+  );
   await expect(ready.getByText("Seals the published document.")).toBeVisible();
+  await ready.getByRole("button", { name: "Copy Workflow revision" }).click();
   await page.screenshot({
     path: "test-results/picker-details.png",
     fullPage: true

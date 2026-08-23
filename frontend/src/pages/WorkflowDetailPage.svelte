@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
 
   import type { CockpitApi, WorkflowRevisionDetail } from "../api/client";
-  import Breadcrumb from "../components/Breadcrumb.svelte";
+  import BackLink from "../components/BackLink.svelte";
   import ReadState from "../components/ReadState.svelte";
   import WorkflowGraphDrawing from "../components/WorkflowGraphDrawing.svelte";
   import WorkflowNodePreviewPanel from "../components/WorkflowNodePreviewPanel.svelte";
@@ -18,7 +18,7 @@
   } from "../lib/readResource";
   import { readEveryRevision } from "../lib/runPages";
   import { groupSavedWorkflows } from "../lib/savedWorkflows";
-  import { catalogStateNote, workflowFormatFact, workflowsPageCopy } from "../lib/workflowsPageCopy";
+  import { catalogStateNote, workflowSizeFact, workflowsPageCopy } from "../lib/workflowsPageCopy";
 
   export let cockpitApi: CockpitApi;
   export let navigate: (path: string) => void;
@@ -55,6 +55,9 @@
   $: previews = graph !== null && graph.workflow_format_version === 3 ? graph.node_previews : null;
   $: loops = graph !== null && graph.workflow_format_version === 3 ? graph.loops : [];
   $: selectedPreview = previews?.find((preview) => preview.id === selectedNodeId) ?? null;
+  $: sizeFact = workflowSizeFact(
+    graph !== null && graph.workflow_format_version === 3 ? graph.node_count : null
+  );
 
   /**
    * `name` is read once, on mount, the same way `RunCockpitPage` reads
@@ -127,8 +130,8 @@
   }
 </script>
 
-<section aria-labelledby="workflow-detail-title">
-  <Breadcrumb steps={[{ label: "Workflows", path: "/atelier/workflows" }]} current={name} {navigate} />
+<section class="surface" aria-labelledby="workflow-detail-title">
+  <BackLink label="Workflows" path="/atelier/workflows" {navigate} />
 
   <ReadState read={detail} label="workflow detail" onRetry={() => { void load(); }} />
   {#if failureMessage !== null}<p class="failure" role="alert">{failureMessage}</p>{/if}
@@ -137,7 +140,7 @@
     <p class="empty-title">{wrapDisplayCopy(workflowsPageCopy.notFoundTitle)}</p>
     <p class="muted">{wrapDisplayCopy(workflowsPageCopy.notFoundDescription)}</p>
   {:else if graph !== null}
-    <header class="detail-head">
+    <header class="surface-head detail-head">
       <div>
         <p class="eyebrow">{wrapDisplayCopy(workflowsPageCopy.eyebrow)}</p>
         <h1 id="workflow-detail-title">{name}</h1>
@@ -147,12 +150,9 @@
         {#if graph.workflow_format_version === 3 && graph.description !== null}
           <p class="muted">{graph.description}</p>
         {/if}
-        <p class="fact">
-          {workflowFormatFact(
-            graph.workflow_format_version,
-            graph.workflow_format_version === 3 ? graph.node_count : null
-          )}
-        </p>
+        {#if sizeFact !== null}
+          <p class="fact">{sizeFact}</p>
+        {/if}
       </div>
       <button
         type="button"
@@ -181,18 +181,6 @@
 </section>
 
 <style>
-  .eyebrow {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.78rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
-
-  h1 {
-    margin: 0.2rem 0 0.2rem;
-  }
-
   .muted {
     color: var(--muted);
   }
@@ -208,7 +196,7 @@
     font-size: 0.72rem;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--amber);
+    color: var(--warning);
   }
 
   .failure {
@@ -224,8 +212,7 @@
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 1rem;
-    margin-bottom: 1rem;
+    gap: var(--space-5);
   }
 
   .primary {

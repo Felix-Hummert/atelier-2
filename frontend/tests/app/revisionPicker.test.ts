@@ -9,6 +9,7 @@ import {
   workflowRevisionSummarySchema,
   type CockpitApi
 } from "../../src/api/client";
+import { shortFingerprint } from "../../src/lib/fingerprint";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { utf8Base64 } from "../support/exactBytes";
@@ -303,10 +304,10 @@ describe("the saved-workflow picker", () => {
       "Cannot be started: This workflow declares no output on node 'implement'. Add one outputs: entry there and publish again."
     );
     expect(details?.textContent).not.toContain("agent-output-shape-unavailable");
+    // The whole digest is never printed on a row; the shortened reading of it
+    // stands beside its name, and Copy carries the exact bytes.
     expect(details?.textContent).not.toContain(namedHash);
-    await fireEvent.click(screen.getByRole("button", { name: "Workflow revision" }));
-    expect(details?.textContent).toContain(namedHash);
-    expect(details?.textContent).not.toBe(namedHash);
+    expect(details?.textContent).toContain(shortFingerprint(namedHash));
     expect(details?.textContent).not.toContain("NEVER_PARSE_THIS_INSTRUCTION");
     expect(vi.mocked(cockpitApi.getWorkflowRevision).mock.calls.map(([hash]) => hash)).toEqual([
       namedHash
@@ -441,10 +442,14 @@ describe("the saved-workflow picker", () => {
     const reviewStart = graph.node_previews[1]?.instruction_start ?? "";
     await waitFor(() => {
       expect(details?.textContent).toContain("builder");
-      expect(details?.textContent).toContain(implementStart);
+      expect(details?.querySelector('[data-node-id="implement"]')).not.toBeNull();
     });
     expect(details?.textContent).toContain("reviewer");
-    expect(details?.textContent).toContain(reviewStart);
+    expect(details?.querySelector('[data-node-id="review"]')).not.toBeNull();
+    // The picture stays quiet: a node is a shape and a name here, and its
+    // prompt excerpt waits on the workflow's own detail page (mockup v5 §04).
+    expect(details?.textContent).not.toContain(implementStart);
+    expect(details?.textContent).not.toContain(reviewStart);
     expect(details?.querySelectorAll("[data-node-id]")).toHaveLength(graph.node_previews.length);
     expect(details?.textContent).not.toContain("NEVER_PARSE_THIS_INSTRUCTION");
   });
@@ -501,8 +506,7 @@ describe("the saved-workflow picker", () => {
     await waitFor(() => {
       expect(details?.querySelectorAll("[data-node-id]")).toHaveLength(1);
     });
-    expect(details?.textContent).toMatch(/wait/i);
-    expect(details?.querySelector(".node-instruction")).toBeNull();
+    expect(details?.querySelector('[data-node-kind="wait"]')).not.toBeNull();
     expect(details?.textContent).not.toContain("NEVER_PARSE_THIS_PROMPT");
   });
 
@@ -525,20 +529,23 @@ describe("the saved-workflow picker", () => {
     }
   });
 
-  it("keeps the hash as the label of a revision whose format declares no name", async () => {
+  it("labels a revision whose format declares no name, and shortens the digest that stands in for one", async () => {
     renderPicker([unnamedRevision()]);
 
-    const option = await screen.findByRole("radio", { name: /unnamed/i });
+    const option = await screen.findByRole("radio", { name: /Unnamed workflow/ });
 
     expect(option).toHaveProperty("disabled", false);
-    expect(screen.getByText(unnamedHash)).toBeTruthy();
+    // A 64-character digest as a row title is unreadable (#537): the row says
+    // what it is, and carries a shortened reading of the digest beside it.
+    expect(screen.queryByText(unnamedHash)).toBeNull();
+    expect(screen.getAllByText(new RegExp(shortFingerprint(unnamedHash))).length).toBeGreaterThan(0);
     expect(screen.getByLabelText("Details for this unnamed workflow")).toBeTruthy();
   });
 
   it("leaves a startable revision selectable and says nothing about starting it", async () => {
     renderPicker([unnamedRevision()]);
 
-    await screen.findByRole("radio", { name: /unnamed/i });
+    await screen.findByRole("radio", { name: /Unnamed workflow/ });
 
     expect(screen.queryByText(/cannot be started/i)).toBeNull();
   });
@@ -1009,12 +1016,12 @@ describe("the picker groups revisions that share a published name", () => {
     expect(orders.textContent).toContain("portions");
     expect(orders.textContent).toContain("portions-schema");
     expect(orders.textContent).not.toContain("e".repeat(64));
-    await fireEvent.click(screen.getByRole("button", { name: "Schema of portions" }));
-    expect(orders.textContent).toContain("e".repeat(64));
+    expect(orders.textContent).toContain(shortFingerprint("e".repeat(64)));
+    expect(screen.getByRole("group", { name: "Schema of portions" }).isConnected).toBe(true);
     expect(screen.queryByText("No orders.")).toBeNull();
   });
 
-  it("proves(a-revision-hash-is-a-proof-anchor): hides the revision hash until asked and copies it", async () => {
+  it("proves(a-revision-hash-is-a-proof-anchor): shows the revision hash shortened beside its name and copies it whole", async () => {
     const writeText = vi.fn(async () => undefined);
     Object.assign(globalThis.navigator, { clipboard: { writeText } });
     const cockpitApi = api([namedRevision()], {
@@ -1029,10 +1036,12 @@ describe("the picker groups revisions that share a published name", () => {
     await fireEvent.click(screen.getByText("Details"));
 
     const details = screen.getByText("Details").closest("details");
+    expect(details?.textContent).toContain(shortFingerprint(namedHash));
     expect(details?.textContent).not.toContain(namedHash);
-    await fireEvent.click(screen.getByRole("button", { name: "Workflow revision" }));
-    expect(details?.textContent).toContain(namedHash);
     expect(screen.getByText("Seals the published document.")).toBeTruthy();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Copy Workflow revision" }));
+
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(writeText).toHaveBeenCalledWith(namedHash);
     await waitFor(() => expect(screen.getByText("Copied").isConnected).toBe(true));

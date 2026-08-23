@@ -2,7 +2,6 @@
   import { onMount } from "svelte";
 
   import {
-    isRunV3,
     type AgentConfigurationRevisionListItem,
     type AnyRun,
     CockpitRequestError,
@@ -11,7 +10,7 @@
     type WorkflowRevisionDetail,
     type WorkflowRevisionSummary
   } from "../api/client";
-  import Breadcrumb from "../components/Breadcrumb.svelte";
+  import BackLink from "../components/BackLink.svelte";
   import ReadState from "../components/ReadState.svelte";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { THE_ONE_PROJECT } from "../lib/project";
@@ -23,21 +22,17 @@
     retainedRead,
     type RetainedRead
   } from "../lib/readResource";
-  import { runPath } from "../lib/route";
-  import { newestActivityFirst, workflowNamesOf } from "../lib/runList";
   import { readEveryAgentConfiguration, readEveryRevision, readEveryRun } from "../lib/runPages";
   import { catalogHeadsOf, catalogNameStateOf, problemCode, type CatalogNameState } from "../lib/catalogName";
   import { namedAgentLabel } from "../lib/namedAgentChoice";
   import { agentRolesOf, groupSavedWorkflows } from "../lib/savedWorkflows";
-  import { humanMove, runsStanding, standingMarks, standingOrder, standingWords } from "../lib/runState";
-  import { ageLabel, exactLocal } from "../lib/when";
+  import { countStanding, standingMarks, standingOrder, standingWords } from "../lib/runState";
 
   export let cockpitApi: CockpitApi;
   export let navigate: (path: string) => void;
 
   interface ProjectSnapshot {
     runs: AnyRun[];
-    workflowNames: ReadonlyMap<string, string>;
   }
 
   type ProjectReadFailure =
@@ -64,7 +59,6 @@
 
   let project: RetainedRead<ProjectSnapshot, ProjectReadFailure> =
     retainedRead<ProjectSnapshot, ProjectReadFailure>();
-  const now = new Date();
 
   let occupancyEditor: RetainedRead<OccupancyEditorSnapshot, OccupancyEditorFailure> = retainedRead();
   let occupancySelection: RetainedRead<SelectedOccupancy, OccupancyEditorFailure> = retainedRead();
@@ -97,21 +91,15 @@
       if (!reading.complete) {
         project = failRead(project, begun.generation, {
           kind: "incomplete",
-          title: "Project runs incomplete"
+          title: wrapDisplayCopy(projectPageCopy.runsIncomplete)
         });
         return;
       }
-      const workflowNames = await workflowNamesOf(reading.runs, (hash) =>
-        cockpitApi.getWorkflowRevision(hash)
-      );
-      project = confirmRead(project, begun.generation, {
-        runs: reading.runs,
-        workflowNames
-      });
+      project = confirmRead(project, begun.generation, { runs: reading.runs });
     } catch {
       project = failRead(project, begun.generation, {
         kind: "unavailable",
-        title: "Project runs unavailable"
+        title: wrapDisplayCopy(projectPageCopy.runsUnavailable)
       });
     }
   }
@@ -308,39 +296,16 @@
     void selectOccupancy(revision);
   }
 
-  function listedWorkflowName(
-    run: AnyRun,
-    names: ReadonlyMap<string, string>
-  ): string | null {
-    if (!isRunV3(run)) return null;
-    return names.get(run.workflow_revision_hash) ?? null;
-  }
-
-  function listedWhen(
-    run: AnyRun
-  ): { datetime: string; exact: string; age: string } | null {
-    if (!isRunV3(run) || run.started_at == null) return null;
-    const ended = run.ended_at ?? null;
-    return {
-      datetime: run.started_at,
-      exact:
-        ended === null
-          ? exactLocal(run.started_at)
-          : `${exactLocal(run.started_at)} → ${exactLocal(ended)}`,
-      age: ageLabel(
-        run.started_at,
-        now,
-        ended === null ? "for" : "ago",
-        ended === null ? undefined : ended
-      )
-    };
-  }
-
-  $: items = newestActivityFirst(project.confirmed?.runs ?? []);
-  $: workflowNames = project.confirmed?.workflowNames ?? new Map<string, string>();
-  $: groups = standingOrder
-    .map((standing) => ({ standing, runs: runsStanding(items, standing) }))
-    .filter((group) => group.runs.length > 0);
+  /**
+   * How much work this project holds, one number per standing.
+   *
+   * A count is the whole statement here: the rows themselves are the Board's
+   * (live) and History's (finished), and repeating them at this level was the
+   * same list a third time (#536).
+   */
+  $: workCounts = standingOrder
+    .map((standing) => ({ standing, count: countStanding(project.confirmed?.runs ?? [], standing) }))
+    .filter((entry) => entry.count > 0);
   $: occupancyRows = groupSavedWorkflows(occupancyEditor.confirmed?.workflows ?? [], occupancyEditor.confirmed?.newestByName ?? {});
   $: selectedRevision = occupancyEditor.confirmed?.workflows.find((item) => item.workflow_revision_hash === selectedWorkflowHash) ?? null;
   $: selectedOccupancy = occupancySelection.confirmed;
@@ -348,61 +313,58 @@
   $: occupancyChanged = selectedOccupancy !== null && !sameBindings(occupancyInputOf(selectedOccupancy).bindings, selectedOccupancy.occupancy?.bindings ?? []);
 </script>
 
-<section aria-labelledby="project-title">
-  <Breadcrumb steps={[{ label: "Board", path: "/atelier" }]} current={THE_ONE_PROJECT} {navigate} />
+<section class="project-page" aria-labelledby="project-title">
+  <BackLink label={projectPageCopy.board} path="/atelier" {navigate} />
 
-  <header class="page-header">
-    <div>
-      <p class="eyebrow">{wrapDisplayCopy(projectPageCopy.eyebrow)}</p>
-      <h1 id="project-title">{THE_ONE_PROJECT}</h1>
-    </div>
-    <a class="button primary" href="/atelier/new" aria-label={wrapDisplayCopy(projectPageCopy.startRun)} onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}>{wrapDisplayCopy(projectPageCopy.start)}</a>
+  <header>
+    <p class="eyebrow">{wrapDisplayCopy(projectPageCopy.eyebrow)}</p>
+    <h1 id="project-title">{THE_ONE_PROJECT}</h1>
   </header>
 
-  <ReadState read={project} label="project runs" onRetry={() => { void load(); }} />
-
-  {#if project.confirmed !== null}
-    {#if groups.length === 0}
-      <p class="muted">{wrapDisplayCopy(projectPageCopy.noRuns)}</p>
-    {:else}
-      <p id="run-sort" class="muted">{wrapDisplayCopy(projectPageCopy.newestFirst)}</p>
-    {/if}
-    {#each groups as group (group.standing)}
-      <section class="run-group" aria-labelledby={`group-${group.standing}`} aria-describedby="run-sort">
-        <h2 class="section-title" id={`group-${group.standing}`}>{standingWords[group.standing]}</h2>
-        <ul class="card-list">
-          {#each group.runs as run (run.public_run_reference)}
-            {@const workflowName = listedWorkflowName(run, workflowNames)}
-            {@const when = listedWhen(run)}
-            <li>
-              <a class="run-card" href={runPath(run.public_run_reference)} onclick={(event) => { event.preventDefault(); navigate(runPath(run.public_run_reference)); }}>
-                <div class="run-card-main">
-                  <strong>{run.run_id}</strong>
-                  <span class="run-card-assignment">
-                    {workflowName === null ? THE_ONE_PROJECT : `${THE_ONE_PROJECT} · ${workflowName}`}
-                  </span>
-                </div>
-                <span class={`state-label state-${group.standing}`}><span aria-hidden="true">{standingMarks[group.standing]}</span>{standingWords[group.standing]}</span>
-                {#if group.standing === "waiting"}
-                  <span class="state-label state-waiting">{humanMove(run.state)}</span>
-                {/if}
-                {#if when !== null}
-                  <span class="run-card-when">
-                    <time datetime={when.datetime}>{when.exact}</time>
-                    <span>{when.age}</span>
-                  </span>
-                {/if}
-              </a>
+  <section class="project-block" aria-labelledby="project-work-title">
+    <h2 id="project-work-title">{wrapDisplayCopy(projectPageCopy.workTitle)}</h2>
+    <ReadState read={project} label="project runs" onRetry={() => { void load(); }} />
+    {#if project.confirmed !== null}
+      {#if workCounts.length === 0}
+        <p class="muted">{wrapDisplayCopy(projectPageCopy.noRuns)}</p>
+        <a
+          class="button primary"
+          href="/atelier/workflows"
+          onclick={(event) => { event.preventDefault(); navigate("/atelier/workflows"); }}
+        >{wrapDisplayCopy(projectPageCopy.noRunsNext)}</a>
+      {:else}
+        <ul class="project-counts">
+          {#each workCounts as entry (entry.standing)}
+            <li class="project-count project-count-{entry.standing}">
+              <span class="project-count-mark" aria-hidden="true">{standingMarks[entry.standing]}</span>
+              <b>{entry.count}</b>
+              <span>{wrapDisplayCopy(standingWords[entry.standing])}</span>
             </li>
           {/each}
         </ul>
-      </section>
-    {/each}
-  {/if}
+      {/if}
+    {/if}
+  </section>
 
-  <section class="queue" aria-labelledby="queue-title">
-    <h2 id="queue-title">{wrapDisplayCopy(projectPageCopy.queueTitle)}</h2>
-    <p>{wrapDisplayCopy(projectPageCopy.queueAbsence)}</p>
+  <section class="project-block" aria-labelledby="project-references-title">
+    <h2 id="project-references-title">{wrapDisplayCopy(projectPageCopy.referencesTitle)}</h2>
+    <ul class="project-references">
+      {#each [
+        { label: projectPageCopy.board, description: projectPageCopy.boardDescription, path: "/atelier" },
+        { label: projectPageCopy.history, description: projectPageCopy.historyDescription, path: "/atelier/history" },
+        { label: projectPageCopy.workflows, description: projectPageCopy.workflowsDescription, path: "/atelier/workflows" }
+      ] as reference (reference.path)}
+        <li>
+          <a
+            href={reference.path}
+            onclick={(event) => { event.preventDefault(); navigate(reference.path); }}
+          >
+            <strong>{wrapDisplayCopy(reference.label)}</strong>
+            <span>{wrapDisplayCopy(reference.description)}</span>
+          </a>
+        </li>
+      {/each}
+    </ul>
   </section>
 
   <section class="occupancy-editor" aria-labelledby="occupancy-title">
@@ -498,3 +460,99 @@
   </section>
 
 </section>
+
+<style>
+  .project-block {
+    display: grid;
+    gap: var(--space-3);
+    min-width: 0;
+  }
+
+  .project-block h2 {
+    margin: 0;
+    font-size: var(--text-2xs);
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .project-counts,
+  .project-references {
+    display: grid;
+    gap: var(--space-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .project-counts {
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  }
+
+  .project-count {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    padding: var(--space-4) var(--space-5);
+    background: var(--panel2);
+  }
+
+  .project-count b {
+    font-size: var(--text-lg);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .project-count span:last-child {
+    color: var(--muted);
+    font-size: var(--text-sm);
+  }
+
+  .project-count-running .project-count-mark {
+    color: var(--working);
+  }
+
+  .project-count-waiting .project-count-mark {
+    color: var(--danger);
+  }
+
+  .project-count-failed .project-count-mark {
+    color: var(--warning);
+  }
+
+  .project-count-done .project-count-mark {
+    color: var(--accent);
+  }
+
+  .project-references {
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  }
+
+  .project-references a {
+    display: grid;
+    gap: var(--space-1);
+    height: 100%;
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    padding: var(--space-4) var(--space-5);
+    background: var(--panel2);
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .project-references a:hover,
+  .project-references a:focus-visible {
+    border-color: var(--accent);
+  }
+
+  .project-references span {
+    color: var(--muted);
+    font-size: var(--text-sm);
+  }
+
+  .muted {
+    color: var(--muted);
+  }
+</style>

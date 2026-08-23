@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 import { encodePublicRunReference, runPageSchema, type RunV1, type RunV3 } from "../../src/api/client";
-import { humanMove } from "../../src/lib/runState";
+import { humanMove, standingWords } from "../../src/lib/runState";
 import { connectionLabels } from "../../src/lib/streamStatus";
 import { studioPageCopy } from "../../src/lib/studioPageCopy";
 import {
@@ -150,9 +150,13 @@ async function expectPopulatedCopy(page: Page): Promise<void> {
 
   const done = page.getByRole("region", { name: `${wrapped(studioPageCopy.done)} · 1` });
   await expect(done).toBeVisible();
-  await expect(done.getByText(wrapped(studioPageCopy.completedSentence))).toBeVisible();
+  // The one word every surface uses for a landed run, from its single owner.
+  await expect(done.getByText(wrapped(standingWords.done))).toBeVisible();
 
-  await expect(page.getByRole("status").filter({ hasText: wrapped(connectionLabels.live) })).toBeVisible();
+  // A healthy stream says nothing at all (operator ruling 23.08.).
+  await expect(
+    page.getByRole("status").filter({ hasText: wrapped(connectionLabels.live) })
+  ).toHaveCount(0);
 }
 
 async function mockAttentionOpen(page: Page): Promise<void> {
@@ -208,7 +212,9 @@ test("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Studio 
     await page.evaluate(() => window.scrollTo(0, 0));
     await expect(page.getByRole("heading", { name: wrapped(studioPageCopy.title) })).toBeVisible();
     await expect(page.getByText(wrapped(studioPageCopy.runsUnavailable))).toBeVisible();
-    await expect(page.getByRole("status").filter({ hasText: wrapped(connectionLabels.live) })).toBeVisible();
+    await expect(
+      page.getByRole("status").filter({ hasText: wrapped(connectionLabels.live) })
+    ).toHaveCount(0);
     await expectStudioCopyFits(page);
     await page.screenshot({ path: `test-results/studio-unavailable-${viewport.width}.png`, fullPage: true });
   }

@@ -18,6 +18,7 @@
     type RetainedRead
   } from "../lib/readResource";
   import { runPath } from "../lib/route";
+  import { standingWords } from "../lib/runState";
   import { workflowNamesOf } from "../lib/runList";
   import { readEveryRun } from "../lib/runPages";
   import { ageLabel } from "../lib/when";
@@ -84,8 +85,8 @@
   $: showTimestamplessHint = hasTimestamplessRows(visibleRows);
 </script>
 
-<section class="history-page" aria-labelledby="history-title">
-  <header class="page-header">
+<section class="history-page surface" aria-labelledby="history-title">
+  <header class="surface-head history-head">
     <div>
       <p class="eyebrow">{wrapDisplayCopy(historyPageCopy.eyebrow)}</p>
       <h1 id="history-title">{wrapDisplayCopy(historyPageCopy.title)}</h1>
@@ -102,9 +103,14 @@
 
   {#if history.confirmed !== null}
     {#if visibleRows.length === 0}
-      <div class="history-empty">
+      <div class="history-empty card empty-state">
         <h2>{wrapDisplayCopy(historyPageCopy.emptyTitle)}</h2>
         <p>{wrapDisplayCopy(historyPageCopy.emptyDescription)}</p>
+        <a
+          class="button primary"
+          href="/atelier/workflows"
+          onclick={(event) => { event.preventDefault(); navigate("/atelier/workflows"); }}
+        >{wrapDisplayCopy(historyPageCopy.emptyNext)}</a>
       </div>
     {:else}
       <div class="history-head-row" aria-hidden="true">
@@ -127,9 +133,9 @@
               <span class="row-result">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnResult)}: </span>
                 {#if row.result.kind === "failed"}
-                  {wrapDisplayCopy(historyPageCopy.resultFailedAt)} {row.result.nodeId}
+                  {wrapDisplayCopy(standingWords.failed)} · {row.result.nodeId}
                 {:else}
-                  {wrapDisplayCopy(historyPageCopy.resultCompleted)}
+                  {wrapDisplayCopy(standingWords.done)}
                 {/if}
               </span>
               <span class="row-duration">
@@ -152,33 +158,12 @@
 </section>
 
 <style>
-  .history-page {
-    display: grid;
-    align-content: start;
-    gap: var(--space-4);
-    max-width: none;
-    min-width: 0;
-    min-height: 100%;
-  }
-
-  .page-header {
+  .history-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     min-width: 0;
     gap: var(--space-3);
-  }
-
-  .eyebrow {
-    margin: 0;
-    font-size: var(--text-2xs);
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-
-  h1 {
-    margin: 0.2rem 0 0;
   }
 
   .period-chip {
@@ -201,23 +186,8 @@
     color: var(--danger);
   }
 
-  .history-empty {
-    min-width: 0;
-    border: 1px solid var(--line);
-    border-radius: var(--r-lg);
-    padding: 1rem;
-    background: var(--paper);
-    display: grid;
-    gap: var(--space-3);
-  }
-
   .history-empty h2 {
     margin: 0;
-  }
-
-  .history-empty p {
-    margin: 0;
-    color: var(--muted);
   }
 
   .history-head-row {
@@ -301,6 +271,7 @@
     flex: none;
     color: var(--muted);
     font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
   }
 
   .timestampless-hint {

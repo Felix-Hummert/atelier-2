@@ -12,16 +12,13 @@ import {
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
-import { studioQuestions } from "../../src/lib/studioQuestions";
-import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
+import { projectPageCopy } from "../../src/lib/projectPageCopy";
+import { standingMarks, standingWords } from "../../src/lib/runState";
+import { cockpitApiStub } from "../support/cockpitApi";
 import {
-  completedRun,
-  publicReference,
   revisionHash,
   startedRun,
-  waitingInputRun,
-  waitingReconciliationRun,
-  workflowRevision
+  waitingInputRun
 } from "../support/workflowV1";
 
 beforeEach(() => {
@@ -50,26 +47,6 @@ const openProject = (runs: Array<RunV1 | RunV3>, overrides: Partial<CockpitApi> 
     ...overrides
   });
 
-function listedV3Run(changes: Partial<RunV3> = {}): RunV3 {
-  return {
-    workflow_format_version: 3,
-    run_id: "v3/two-agents",
-    public_run_reference: publicReference,
-    workflow_revision_hash: revisionHash,
-    agent_binding_set_hash: "b".repeat(64),
-    run_configuration_revision_hash: "c".repeat(64),
-    agent_bindings: [],
-    state_version: 1,
-    state: "STARTED",
-    current_node_id: "review",
-    node_rail: [{ node_id: "review", state: "working", attempt: null }],
-    terminal_hash: null,
-    latest_event_cursor: null,
-    started_at: "2026-08-18T15:00:00Z",
-    ended_at: null,
-    ...changes
-  };
-}
 
 function listedV3Revision(
   name = "Two agents in a line",
@@ -120,69 +97,72 @@ describe("the project answers what is happening here", () => {
     expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
   });
 
-  it("groups the runs by what each one is doing, and omits a group nothing is in", async () => {
+  /**
+   * The project no longer lists runs (#536). The Board owns the live rows and
+   * History owns the landed ones; a third copy of the same list at this level
+   * said nothing neither of them already said. What is left here is what only
+   * this level can answer: how much work this project holds, where it is read,
+   * and who the house reaches for by default.
+   */
+  it("counts the work by what each run is doing, and omits a standing nothing is in", async () => {
     openProject([
       startedRun({ public_run_reference: "run1.YQ", run_id: "alpha" }),
       waitingInputRun({ public_run_reference: "run1.Yg", run_id: "beta" }),
       startedRun({ public_run_reference: "run1.Yw", run_id: "gamma" })
     ]);
 
-    const running = await screen.findByRole("region", { name: "Running" });
-    expect(within(running).getAllByRole("link")).toHaveLength(2);
-    expect(within(await screen.findByRole("region", { name: "Waiting for you" })).getAllByRole("link")).toHaveLength(1);
-    expect(screen.queryByRole("region", { name: "Done" })).toBeNull();
-  });
+    const work = await screen.findByRole("region", { name: projectPageCopy.workTitle });
+    await within(work).findAllByRole("listitem");
+    const counts = within(work)
+      .getAllByRole("listitem")
+      .map((entry) => entry.textContent?.replace(/\s+/g, " ").trim());
 
-  it("lets a row carry the move a human owes and the group carry the state", async () => {
-    openProject([
-      startedRun({ public_run_reference: "run1.YQ", run_id: "alpha" }),
-      waitingInputRun({ public_run_reference: "run1.Yg", run_id: "beta" }),
-      waitingReconciliationRun({ public_run_reference: "run1.Yw", run_id: "gamma" }),
-      completedRun({ public_run_reference: "run1.ZA", run_id: "delta" })
+    expect(counts).toEqual([
+      `${standingMarks.running} 2 ${standingWords.running}`,
+      `${standingMarks.waiting} 1 ${standingWords.waiting}`
     ]);
-
-    const waiting = await screen.findByRole("region", { name: "Waiting for you" });
-    expect(within(waiting).getByText("Answer").isConnected).toBe(true);
-    expect(within(waiting).getByText("Reconcile").isConnected).toBe(true);
-
-    for (const group of ["Running", "Done"] as const) {
-      const region = screen.getByRole("region", { name: group });
-      expect(within(region).getByText(group === "Running" ? "alpha" : "delta").isConnected).toBe(
-        true
-      );
-      expect(within(region).getByText(THE_ONE_PROJECT).isConnected).toBe(true);
-    }
+    expect(within(work).queryByText(standingWords.done)).toBeNull();
   });
 
-  it("shows every grouped run's owned standing mark and word", async () => {
-    openProject([
-      startedRun({ public_run_reference: "run1.YQ", run_id: "running" }),
-      waitingInputRun({ public_run_reference: "run1.Yg", run_id: "waiting" }),
-      { ...startedRun({ public_run_reference: "run1.Yw", run_id: "failed" }), state: "FAILED" },
-      completedRun({ public_run_reference: "run1.ZA", run_id: "done" })
-    ]);
+  it("carries no run rows of its own, so the Board and History stay the one place each is read", async () => {
+    openProject([startedRun({ run_id: "alpha" })]);
 
-    const expectedStandings: Array<[string, string]> = [
-      ["running", "▲Running"], ["waiting", "⬢Waiting for you"], ["failed", "◇Failed"], ["done", "●Done"]
-    ];
-    for (const [run, standing] of expectedStandings) {
-      expect((await screen.findByRole("link", { name: new RegExp(run) })).textContent).toContain(standing);
-    }
+    const work = await screen.findByRole("region", { name: projectPageCopy.workTitle });
+    await within(work).findAllByRole("listitem");
+
+    expect(screen.queryByRole("link", { name: /alpha/ })).toBeNull();
+    expect(within(work).queryByRole("link")).toBeNull();
   });
 
-  it("leads down into a run of this project", async () => {
+  it("leads to the three places this project's work is read", async () => {
     openProject([startedRun()]);
 
-    const running = await screen.findByRole("region", { name: "Running" });
-    await fireEvent.click(within(running).getByRole("link"));
+    const references = await screen.findByRole("region", {
+      name: projectPageCopy.referencesTitle
+    });
 
-    expect(window.location.pathname).toBe(`/atelier/runs/${publicReference}`);
+    expect(
+      within(references)
+        .getAllByRole("link")
+        .map((link) => link.getAttribute("href"))
+    ).toEqual(["/atelier", "/atelier/history", "/atelier/workflows"]);
+  });
+
+  it("teaches where a first run comes from when this project holds none", async () => {
+    openProject([]);
+
+    const work = await screen.findByRole("region", { name: projectPageCopy.workTitle });
+
+    expect((await within(work).findByText(projectPageCopy.noRuns)).isConnected).toBe(true);
+    expect(
+      within(work).getByRole("link", { name: projectPageCopy.noRunsNext }).getAttribute("href")
+    ).toBe("/atelier/workflows");
   });
 
   it("offers no manual refresh once the Project read is confirmed", async () => {
     openProject([startedRun()]);
 
-    await screen.findByRole("region", { name: "Running" });
+    await screen.findByRole("region", { name: projectPageCopy.workTitle });
 
     expect(screen.queryByRole("button", { name: /project runs/ })).toBeNull();
   });
@@ -191,7 +171,7 @@ describe("the project answers what is happening here", () => {
     openProject([], { listRuns: vi.fn(() => new Promise<never>(() => undefined)) });
 
     expect((await screen.findByText("Looking…")).isConnected).toBe(true);
-    expect(screen.queryByRole("region", { name: "Running" })).toBeNull();
+    expect(screen.queryByText(projectPageCopy.noRuns)).toBeNull();
   });
 
   it("repeats the same unavailable Project read until success", async () => {
@@ -202,7 +182,7 @@ describe("the project answers what is happening here", () => {
       .mockResolvedValueOnce({ items: [startedRun()], next_after: null });
     openProject([], { listRuns });
 
-    await screen.findByText("Project runs unavailable");
+    await screen.findByText(projectPageCopy.runsUnavailable);
     // A fresh query per click, never a held reference: Retry mounts its own
     // control each failed round (ReadState.svelte's pattern for #514), so the
     // operator clicks whatever Retry is on screen right now.
@@ -213,7 +193,9 @@ describe("the project answers what is happening here", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: "Retry project runs" }));
 
-    expect((await screen.findByRole("region", { name: "Running" })).isConnected).toBe(true);
+    expect(
+      (await screen.findByText(`${standingMarks.running} 1 ${standingWords.running}`.split(" ")[2] ?? "")).isConnected
+    ).toBe(true);
     expect(listRuns).toHaveBeenCalledTimes(3);
     expect(screen.queryByRole("button", { name: /project runs/ })).toBeNull();
     expect(window.location.pathname).toBe("/atelier/project");
@@ -232,124 +214,15 @@ describe("the project answers what is happening here", () => {
       .mockResolvedValueOnce({ items: [complete], next_after: null });
     openProject([], { listRuns });
 
-    await screen.findByText("Project runs incomplete");
-    expect(screen.queryByText("partial")).toBeNull();
+    await screen.findByText(projectPageCopy.runsIncomplete);
+    expect(screen.queryByText(standingWords.running)).toBeNull();
     expect(screen.queryByText(/private later-page detail/)).toBeNull();
     expect(listRuns).toHaveBeenNthCalledWith(2, "more");
 
     await fireEvent.click(screen.getByRole("button", { name: "Retry project runs" }));
 
-    expect((await screen.findByText("complete")).isConnected).toBe(true);
-    expect(screen.queryByText("Project runs incomplete")).toBeNull();
-  });
-
-  it("keeps runs and workflow names atomic: a name-lookup failure confirms nothing, and Retry confirms both together", async () => {
-    const run = listedV3Run({ run_id: "confirmed run" });
-    let nameReads = 0;
-    const getWorkflowRevision = vi.fn(async (hash: string) => {
-      nameReads += 1;
-      if (nameReads === 1) throw new Error("private name detail");
-      return listedV3Revision("Confirmed workflow", hash);
-    });
-    openProject([run], { getWorkflowRevision });
-
-    await screen.findByText("Project runs unavailable");
-    expect(screen.queryByRole("link", { name: /confirmed run/ })).toBeNull();
-    expect(screen.queryByText(/private name detail/)).toBeNull();
-
-    await fireEvent.click(screen.getByRole("button", { name: "Retry project runs" }));
-
-    const confirmedRow = await screen.findByRole("link", { name: /confirmed run/ });
-    expect(confirmedRow.textContent).toContain("Confirmed workflow");
-    expect(screen.queryByText("Project runs unavailable")).toBeNull();
-  });
-});
-
-describe("the project lists runs as the operator can scan them", () => {
-  it("names the sort and keeps the newest activity first even when the durable list answers oldest first", async () => {
-    openProject(
-      [
-        listedV3Run({
-          run_id: "older",
-          public_run_reference: "run1.b2xkZXI",
-          started_at: "2026-08-18T14:00:00Z"
-        }),
-        listedV3Run({
-          run_id: "newer",
-          public_run_reference: "run1.bmV3ZXI",
-          started_at: "2026-08-18T16:00:00Z"
-        })
-      ],
-      { getWorkflowRevision: vi.fn(async () => listedV3Revision()) }
-    );
-
-    const running = await screen.findByRole("region", { name: "Running" });
-    expect(screen.getByText("Newest first.").isConnected).toBe(true);
-    const rows = within(running).getAllByRole("link");
-    expect(rows[0]?.textContent).toContain("newer");
-    expect(rows[0]?.textContent).not.toContain("older");
-    expect(rows[1]?.textContent).toContain("older");
-  });
-
-  it("puts the local date and time on the row instead of behind a hover", async () => {
-    openProject([listedV3Run()], {
-      getWorkflowRevision: vi.fn(async () => listedV3Revision())
-    });
-
-    const row = await screen.findByRole("link", { name: /v3\/two-agents/ });
-    const stamp = row.querySelector("time");
-
-    expect(stamp?.getAttribute("datetime")).toBe("2026-08-18T15:00:00Z");
-    expect(stamp?.textContent).toContain("2026");
-    expect(
-      screen.queryByRole("button", { name: studioQuestions.lastLandingTime.hintLabel })
-    ).toBeNull();
-  });
-
-  it("shows the project and the published workflow name on the row", async () => {
-    openProject([listedV3Run()], {
-      getWorkflowRevision: vi.fn(async () => listedV3Revision("Two agents in a line"))
-    });
-
-    const row = await screen.findByRole("link", { name: /v3\/two-agents/ });
-
-    expect(row.textContent).toContain(THE_ONE_PROJECT);
-    expect(row.textContent).toContain("Two agents in a line");
-  });
-});
-
-describe("the queue names what does not exist yet", () => {
-  it("names the absent ranking and offers the one action possible today, once", async () => {
-    openProject([startedRun()]);
-
-    const queue = await screen.findByRole("region", { name: "Queue" });
-
-    expect(within(queue).getByText("No priority or assignment.").isConnected).toBe(true);
-    expect(within(queue).queryByText(/order|first|next|schedul|priorit\w+ is/i)).toBeNull();
-    expect(screen.getAllByRole("link", { name: "Start a run" })).toHaveLength(1);
-
-    await fireEvent.click(screen.getByRole("link", { name: "Start a run" }));
-
-    expect((await screen.findByRole("heading", { name: "Choose a workflow" })).isConnected).toBe(true);
-  });
-
-  it("hints at no rule, no source, and no assignment the system does not have", async () => {
-    openProject([startedRun()]);
-    const queue = await screen.findByRole("region", { name: "Queue" });
-
-    expect(within(queue).queryByRole("button")).toBeNull();
-    expect(screen.queryByRole("region", { name: /Rules|Sources|Settings|Library/ })).toBeNull();
-  });
-
-  it("keeps existing runs before the subordinate queue and occupancy controls", async () => {
-    openProject([startedRun()]);
-
-    const runGroup = await screen.findByRole("region", { name: "Running" });
-    const queue = screen.getByRole("region", { name: "Queue" });
-    const occupancy = screen.getByRole("region", { name: "Occupancy" });
-
-    expect(runGroup.compareDocumentPosition(queue) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    expect(runGroup.compareDocumentPosition(occupancy) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect((await screen.findByText(standingWords.running)).isConnected).toBe(true);
+    expect(screen.queryByText(projectPageCopy.runsIncomplete)).toBeNull();
   });
 });
 
@@ -937,22 +810,17 @@ describe("project occupancy editor", () => {
   });
 });
 
-describe("every level names the way back up", () => {
-  it("proves(every-level-names-the-way-back-up): walks the named way from the run up to the project and from the project up into the board", async () => {
-    const feed = new FakeRunEventFeed();
-    openAt(`/atelier/runs/${publicReference}`, {
-      getRun: vi.fn(async () => startedRun()),
-      getWorkflowRevision: vi.fn(async () => workflowRevision()),
-      openRunEvents: feed.open,
-      listRuns: vi.fn(async () => ({ items: [startedRun()], next_after: null }))
-    });
-    await screen.findByRole("heading", { name: "Unnamed workflow" });
-
-    const trail = screen.getByRole("navigation", { name: "Where you are" });
-    await fireEvent.click(within(trail).getByRole("link", { name: THE_ONE_PROJECT }));
-
-    expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
-    expect(window.location.pathname).toBe("/atelier/project");
+/**
+ * `every-level-names-the-way-back-up` said the way leads run → project →
+ * studio. It no longer does: the project is the context above the four rail
+ * destinations, not a level between them, and a run leads back to the Board it
+ * came from. The sentence serves the retired REQ-UI-01, so retiring it is the
+ * requirement revision's job (#521) and this test carries no claim.
+ */
+describe("the project names the way back up", () => {
+  it("walks from the project into the Board", async () => {
+    openProject([startedRun()]);
+    await screen.findByRole("heading", { name: THE_ONE_PROJECT });
 
     await fireEvent.click(
       within(screen.getByRole("navigation", { name: "Where you are" })).getByRole("link", {

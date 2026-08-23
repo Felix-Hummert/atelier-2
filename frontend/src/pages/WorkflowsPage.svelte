@@ -110,16 +110,25 @@
   }
 </script>
 
-<section aria-labelledby="workflows-title">
-  <p class="eyebrow">{wrapDisplayCopy(workflowsPageCopy.eyebrow)}</p>
-  <h1 id="workflows-title">{wrapDisplayCopy(workflowsPageCopy.title)}</h1>
+<section class="surface" aria-labelledby="workflows-title">
+  <header class="surface-head">
+    <p class="eyebrow">{wrapDisplayCopy(workflowsPageCopy.eyebrow)}</p>
+    <h1 id="workflows-title">{wrapDisplayCopy(workflowsPageCopy.title)}</h1>
+  </header>
 
   <ReadState read={revisions} label="workflows" onRetry={() => { void loadRevisions(); }} />
   {#if failureMessage !== null}<p class="failure" role="alert">{failureMessage}</p>{/if}
 
   {#if revisions.confirmed !== null && namedRows.length === 0}
-    <p class="empty-title">{wrapDisplayCopy(workflowsPageCopy.emptyTitle)}</p>
-    <p class="muted">{wrapDisplayCopy(workflowsPageCopy.emptyDescription)}</p>
+    <div class="card empty-state">
+      <h2>{wrapDisplayCopy(workflowsPageCopy.emptyTitle)}</h2>
+      <p>{wrapDisplayCopy(workflowsPageCopy.emptyDescription)}</p>
+      <a
+        class="button primary"
+        href="/atelier/new"
+        onclick={(event) => { event.preventDefault(); navigate("/atelier/new"); }}
+      >{wrapDisplayCopy(workflowsPageCopy.emptyNext)}</a>
+    </div>
   {/if}
 
   <ul class="workflow-cards">
@@ -140,21 +149,8 @@
 </section>
 
 <style>
-  .eyebrow {
+  h2 {
     margin: 0;
-    color: var(--muted);
-    font-size: 0.78rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
-
-  h1 {
-    margin: 0.2rem 0 1rem;
-  }
-
-  .empty-title {
-    margin: 0 0 0.2rem;
-    font-weight: 600;
   }
 
   .muted {
@@ -168,20 +164,20 @@
   .workflow-cards {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
-    gap: 0.75rem;
-    margin: 0.5rem 0 0;
+    gap: var(--space-3);
+    margin: 0;
     padding: 0;
     list-style: none;
   }
 
   .workflow-card {
     display: grid;
-    gap: 0.3rem;
+    gap: var(--space-1);
     width: 100%;
-    padding: 0.8rem 1rem;
+    padding: var(--space-4) var(--space-5);
     border: 1px solid var(--line);
-    border-radius: 0.55rem;
-    background: var(--panel);
+    border-radius: var(--r-lg);
+    background: var(--panel2);
     color: inherit;
     font: inherit;
     text-align: left;
