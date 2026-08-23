@@ -37,6 +37,21 @@ class OccupancyRevisionCollision:
     pass
 
 
+@dataclass(frozen=True)
+class ProjectRootRevisionCreated:
+    revision: ProjectRootRevision
+
+
+@dataclass(frozen=True)
+class ProjectRootRevisionExisting:
+    revision: ProjectRootRevision
+
+
+@dataclass(frozen=True)
+class ProjectRootRevisionConflict:
+    pass
+
+
 type LatestProjectRootResult = (
     ProjectRootRevision | None | HostConfigurationReadUnavailable | DurableStateCorrupt
 )
@@ -54,11 +69,23 @@ type PublishOccupancyResult = (
     | DurableStateCorrupt
 )
 
+type PublishProjectRootResult = (
+    ProjectRootRevisionCreated
+    | ProjectRootRevisionExisting
+    | ProjectRootRevisionConflict
+    | HostConfigurationReadUnavailable
+    | DurableStateCorrupt
+)
+
 
 class HostConfigurationChannel(Protocol):
     def latest_project_root_revision(
         self, project_id: ProjectId
     ) -> LatestProjectRootResult: ...
+
+    def publish_project_root_revision(
+        self, revision: ProjectRootRevision
+    ) -> PublishProjectRootResult: ...
 
     def latest_occupancy_revision(
         self, project_id: ProjectId, lineage_id: CatalogLineageId

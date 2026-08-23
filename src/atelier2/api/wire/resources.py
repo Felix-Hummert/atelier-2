@@ -40,6 +40,7 @@ from atelier2.contracts.catalog_v3 import (
 from atelier2.contracts.host_configuration import (
     MAXIMUM_OCCUPANCY_BINDINGS,
     MAXIMUM_PROJECT_ID_CHARACTERS,
+    MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SERVED_PROJECTS,
 )
 from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState
@@ -182,6 +183,19 @@ class ProjectListResource(ApiModel):
     items: tuple[ProjectResource, ...] = Field(
         max_length=MAXIMUM_SERVED_PROJECTS, strict=False
     )
+
+
+class ProjectRootRevisionResource(ApiModel):
+    project_id: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_ID_CHARACTERS)
+    public_project_reference: str = Field(
+        pattern=PUBLIC_PROJECT_REFERENCE_PATTERN,
+        max_length=MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    )
+    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    root_path: str = Field(
+        min_length=1, max_length=MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS
+    )
+    project_root_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
 class OccupancyRevisionResource(ApiModel):

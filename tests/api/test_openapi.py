@@ -24,6 +24,7 @@ from atelier2.api.openapi import (
     EVENT_PATH,
     OCCUPANCY_PATH,
     PROJECT_PATH,
+    PROJECT_ROOT_PATH,
     PROJECTS_PATH,
 )
 from atelier2.api.references import (
@@ -95,6 +96,7 @@ EXPECTED_PATHS = {
     PROJECTS_PATH,
     PROJECT_PATH,
     OCCUPANCY_PATH,
+    PROJECT_ROOT_PATH,
     API_PREFIX + "/runs",
     API_PREFIX + "/runs/{public_ref}",
     NODE_DETAIL_PATH,
@@ -179,6 +181,8 @@ EXPECTED_ROUTE_SEQUENCE = (
     ("GET", PROJECT_PATH, "get_project_route"),
     ("PUT", OCCUPANCY_PATH, "put_occupancy_revision_route"),
     ("GET", OCCUPANCY_PATH, "get_occupancy_revision_route"),
+    ("PUT", PROJECT_ROOT_PATH, "put_project_root_revision_route"),
+    ("GET", PROJECT_ROOT_PATH, "get_project_root_revision_route"),
     ("POST", API_PREFIX + "/runs", "start_run_route"),
     ("GET", API_PREFIX + "/runs", "list_runs"),
     ("GET", API_PREFIX + "/runs/{public_ref}", "get_run_route"),
@@ -212,6 +216,8 @@ EXPECTED_SUCCESS_STATUSES = {
     (PROJECT_PATH, "get"): {"200"},
     (OCCUPANCY_PATH, "put"): {"200", "201"},
     (OCCUPANCY_PATH, "get"): {"200"},
+    (PROJECT_ROOT_PATH, "put"): {"200", "201"},
+    (PROJECT_ROOT_PATH, "get"): {"200"},
     (API_PREFIX + "/runs", "post"): {"200", "201"},
     (API_PREFIX + "/runs", "get"): {"200"},
     (API_PREFIX + "/runs/{public_ref}", "get"): {"200"},

@@ -27,7 +27,10 @@ from atelier2.contracts.catalog_v3 import (
     MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
 )
-from atelier2.contracts.host_configuration import MAXIMUM_OCCUPANCY_BINDINGS
+from atelier2.contracts.host_configuration import (
+    MAXIMUM_OCCUPANCY_BINDINGS,
+    MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
+)
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
 
@@ -95,6 +98,13 @@ class PublishAgentConfigurationRevisionRequestResource(ApiModel):
 class StartRunRequestResource(ApiModel):
     run_id: str = Field(min_length=1)
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+
+
+class PutProjectRootRevisionRequestResource(ApiModel):
+    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    root_path: str = Field(
+        min_length=1, max_length=MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS
+    )
 
 
 class PutOccupancyRevisionRequestResource(ApiModel):
