@@ -282,7 +282,6 @@
 
 <section class="board-page surface" aria-labelledby="board-title">
   <header class="surface-head">
-    <p class="eyebrow">{wrapDisplayCopy(studioPageCopy.eyebrow)}</p>
     <h1 id="board-title">{wrapDisplayCopy(studioPageCopy.title)}</h1>
   </header>
 
@@ -360,6 +359,7 @@
                       {#if row.status.kind === "waitingInput" || row.status.kind === "waitingReconciliation"}{wrapDisplayCopy(standingWords.waiting)}
                       {:else if row.status.kind === "running"}{wrapDisplayCopy(standingWords.running)} · {row.status.nodeId}
                       {:else if row.status.kind === "failed"}{wrapDisplayCopy(standingWords.failed)} · {row.status.nodeId}
+                      {:else if row.status.kind === "cancelled"}{wrapDisplayCopy(standingWords.cancelled)}
                       {:else}{wrapDisplayCopy(standingWords.done)}{/if}
                     </span>
                     {#if row.miniPipeline !== null}
@@ -465,7 +465,8 @@
     color: var(--signal-failure);
   }
 
-  .board-row-done .row-mark {
+  .board-row-done .row-mark,
+  .board-row-cancelled .row-mark {
     color: var(--signal-quiet);
   }
 

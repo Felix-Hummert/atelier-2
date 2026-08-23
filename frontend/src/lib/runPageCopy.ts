@@ -40,8 +40,7 @@ export const runPageCopy = {
   outputEmpty: "Nothing written yet.",
   outputEmptyEnded: "Nothing written.",
   waitAnswerNotReadable:
-    "You answered this gate. The answer itself is not yet kept readable after completion — #511 owns that.",
-  waitAnswerNotReadableSource: "#511",
+    "You answered this gate. The answer itself is not yet kept readable after completion.",
   whoEmpty: "No receipt yet.",
   whoEmptyEnded: "No receipt.",
   processLogInLease: "Process log stays in the lease.",
@@ -64,13 +63,14 @@ export const runPageCopy = {
   tabEvidence: "Evidence",
   tabsLabel: "What this node carries",
   logAbsent:
-    "No process log is kept. It stays inside the executor's lease while the node runs and nothing stores it afterwards. #104 owns the export that will.",
+    "No process log is kept. It stays inside the executor's lease while the node runs and nothing stores it afterwards.",
   inputReads: "Reads from",
   inputNone: "This node reads no earlier node.",
   inputElsewhere: "What each of those wrote stands on its own node, under Result.",
   evidenceRun: "This run",
+  evidenceRunIntro: "Every fingerprint below seals exactly what it names.",
   evidenceGap:
-    "A full evidence dossier — the receipt chain, cost, and a verifiable export — is #511. What the receipt records today stands above.",
+    "A full evidence dossier — the receipt chain, cost, and a verifiable export — is not built. What the receipt records today stands above.",
   streamStale: "This page is not following the run right now.",
   readAgain: "Read again",
   eventEvidence: "Event evidence",

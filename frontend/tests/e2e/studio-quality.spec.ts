@@ -144,14 +144,17 @@ async function expectPopulatedCopy(page: Page): Promise<void> {
   await expect(needsYou.getByText(`${wrapped(requiredMove("WAITING_INPUT"))} →`)).toBeVisible();
   await expect(needsYou.getByText(`${wrapped(requiredMove("WAITING_RECONCILIATION"))} →`)).toBeVisible();
 
-  const running = page.getByRole("region", { name: `${wrapped(studioPageCopy.running)} · 3` });
+  const running = page.getByRole("region", { name: `${wrapped(studioPageCopy.running)} · 2` });
   await expect(running).toBeVisible();
-  await expect(running.getByText(`${wrapped(studioPageCopy.why)} →`)).toBeVisible();
+  await expect(running.getByText(`${wrapped(studioPageCopy.why)} →`)).toHaveCount(0);
 
-  const done = page.getByRole("region", { name: `${wrapped(studioPageCopy.done)} · 1` });
+  // A failed run is over, not still running -- it groups with what landed
+  // (#581), and still reads its own true word there.
+  const done = page.getByRole("region", { name: `${wrapped(studioPageCopy.done)} · 2` });
   await expect(done).toBeVisible();
   // The one word every surface uses for a landed run, from its single owner.
   await expect(done.getByText(wrapped(standingWords.done))).toBeVisible();
+  await expect(done.getByText(`${wrapped(studioPageCopy.why)} →`)).toBeVisible();
 
   // A healthy stream says nothing at all (operator ruling 23.08.).
   await expect(
@@ -234,7 +237,7 @@ test("proves(studio-elements-answer-named-questions): every interactive Studio c
     reply = "questions";
     await page.goto("/atelier");
     await expect(page.getByRole("heading", { name: studioPageCopy.title })).toBeVisible();
-    await expect(page.getByRole("region", { name: "Done today · 2" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Done today · 3" })).toBeVisible();
     // No Start of any kind sits beside the Board head (#532): starting a
     // workflow is a Workflows-owned action now, and once the five-list read
     // confirms, ReadState.svelte mounts no control at all.

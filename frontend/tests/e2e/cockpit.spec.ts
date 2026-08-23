@@ -52,7 +52,7 @@ test("the target-UI shell names today's doors and does not fake the rest", async
   await expect(rail.getByText("Profile", { exact: true })).toBeVisible();
   // Only Settings and Profile are still marked later; every rail destination
   // opens a page now.
-  await expect(rail.getByText("(later)", { exact: true })).toHaveCount(1);
+  await expect(rail.getByText("Not built yet", { exact: true })).toHaveCount(1);
 
   await rail.getByRole("link", { name: "History" }).click();
   await expect(page.getByRole("heading", { name: "History" })).toBeVisible();

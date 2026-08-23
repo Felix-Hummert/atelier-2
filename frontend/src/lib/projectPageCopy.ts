@@ -9,7 +9,6 @@
  * third copy here was the same statement three times (#536).
  */
 export const projectPageCopy = {
-  eyebrow: "Project",
   workTitle: "Work in this project",
   noRuns: "No runs in this project yet.",
   noRunsNext: "Start one from a workflow.",

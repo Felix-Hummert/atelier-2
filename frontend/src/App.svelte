@@ -44,7 +44,7 @@
 
 <WorkshopShell bind:this={workshopShell} {route} {navigate}>
   {#if route.page === "chat"}
-    <ChatPage {navigate} />
+    <ChatPage />
   {:else if route.page === "studio"}
     <StudioPage {cockpitApi} {mutationJournal} {navigate} />
   {:else if route.page === "project"}
@@ -68,7 +68,6 @@
   {:else}
     <section class="surface">
       <header class="surface-head">
-        <p class="eyebrow">Atelier</p>
         <h1>Page not found</h1>
         <p>No page lives at this address. The Board holds what is running.</p>
       </header>

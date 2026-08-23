@@ -317,7 +317,6 @@
   <BackLink label={projectPageCopy.board} path="/atelier" {navigate} />
 
   <header>
-    <p class="eyebrow">{wrapDisplayCopy(projectPageCopy.eyebrow)}</p>
     <h1 id="project-title">{THE_ONE_PROJECT}</h1>
   </header>
 

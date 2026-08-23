@@ -54,7 +54,6 @@
   export let currentNodeId: string | null = null;
   export let selectedNodeId: string | null = null;
   export let onSelect: ((nodeId: string) => void) | null = null;
-  export let showLegend = false;
 
   const markerId = `workflow-graph-arrow-${nextMarker++}`;
 
@@ -236,93 +235,114 @@
   });
 </script>
 
-<section class="workflow-graph" bind:this={host} aria-label="Workflow">
-  {#if showLegend}
+<div class="workflow-graph card">
+  <details class="graph-help">
+    <summary class="reveal-affordance">What the shapes mean</summary>
     <ul class="graph-legend" aria-label="Node shapes and the loop marker">
       {#each KIND_LEGEND_ENTRIES as kind (kind)}
         <li><span class="kind-mark kind-mark-{kind}" aria-hidden="true"></span>{kindLegendLabels[kind]}</li>
       {/each}
       <li><span class="kind-mark kind-mark-loop" aria-hidden="true"></span>Loop</li>
     </ul>
-  {/if}
-  {#if !layered.ok}
-    <p class="muted" role="status">{layered.reason}</p>
-  {:else}
-    <svg class="graph-edges" aria-hidden="true">
-      <defs>
-        <marker
-          id={markerId}
-          viewBox="0 0 10 10"
-          refX="8"
-          refY="5"
-          markerWidth="6"
-          markerHeight="6"
-          orient="auto-start-reverse"
-        >
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
-        </marker>
-      </defs>
-      {#each edgePaths as edge (edge.key)}
-        <path d={edge.d} fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#{markerId})" />
-      {/each}
-    </svg>
-    {#snippet stageBody(preview: WorkflowGraphPreview, state: NodeState | undefined)}
-      <span class="pipe-shape" aria-hidden="true"><i>{state === undefined ? "" : stateGlyphs[state]}</i></span>
-      <b class="pipe-name">{preview.id}</b>
-    {/snippet}
-    {#snippet layerCard(slot: LayerSlot)}
-      <div class="graph-layer" data-layer={slot.index}>
-        {#each slot.nodes as preview (preview.id)}
-          {@const state = stateById.get(preview.id)}
-          {#if onSelect !== null}
-            <button
-              type="button"
-              class="pipe-stage"
-              class:current={preview.id === currentNodeId}
-              class:live-work={nodeIsLiveWork(state)}
-              data-node-id={preview.id}
-              data-node-kind={preview.kind}
-              data-layer={slot.index}
-              data-state={state}
-              data-live={nodeIsLiveWork(state) ? "true" : undefined}
-              aria-label={nodeLabel(preview.id, state)}
-              aria-expanded={selectedNodeId === preview.id}
-              on:click={() => onSelect?.(preview.id)}
-            >{@render stageBody(preview, state)}</button>
+  </details>
+  <section class="graph-canvas" bind:this={host} aria-label="Workflow">
+    {#if !layered.ok}
+      <p class="muted" role="status">{layered.reason}</p>
+    {:else}
+      <svg class="graph-edges" aria-hidden="true">
+        <defs>
+          <marker
+            id={markerId}
+            viewBox="0 0 10 10"
+            refX="8"
+            refY="5"
+            markerWidth="6"
+            markerHeight="6"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+          </marker>
+        </defs>
+        {#each edgePaths as edge (edge.key)}
+          <path d={edge.d} fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#{markerId})" />
+        {/each}
+      </svg>
+      {#snippet stageBody(preview: WorkflowGraphPreview, state: NodeState | undefined)}
+        <span class="pipe-shape" aria-hidden="true"><i>{state === undefined ? "" : stateGlyphs[state]}</i></span>
+        <b class="pipe-name">{preview.id}</b>
+      {/snippet}
+      {#snippet layerCard(slot: LayerSlot)}
+        <div class="graph-layer" data-layer={slot.index}>
+          {#each slot.nodes as preview (preview.id)}
+            {@const state = stateById.get(preview.id)}
+            {#if onSelect !== null}
+              <button
+                type="button"
+                class="pipe-stage"
+                class:current={preview.id === currentNodeId}
+                class:live-work={nodeIsLiveWork(state)}
+                data-node-id={preview.id}
+                data-node-kind={preview.kind}
+                data-layer={slot.index}
+                data-state={state}
+                data-live={nodeIsLiveWork(state) ? "true" : undefined}
+                aria-label={nodeLabel(preview.id, state)}
+                aria-expanded={selectedNodeId === preview.id}
+                on:click={() => onSelect?.(preview.id)}
+              >{@render stageBody(preview, state)}</button>
+            {:else}
+              <span
+                class="pipe-stage"
+                data-node-id={preview.id}
+                data-node-kind={preview.kind}
+                data-layer={slot.index}
+              >{@render stageBody(preview, undefined)}</span>
+            {/if}
+          {/each}
+        </div>
+      {/snippet}
+      <div class="graph-layers">
+        {#each segments as segment (segment.key)}
+          {#if segment.kind === "loop"}
+            {@const labelId = `${markerId}-loop-${segment.loop.id}`}
+            <div class="loop-box" role="group" aria-labelledby={labelId}>
+              <span class="loop-box-label" id={labelId}>{loopLabel(segment.loop)}</span>
+              {#each segment.slots as slot (slot.index)}
+                {@render layerCard(slot)}
+              {/each}
+            </div>
           {:else}
-            <span
-              class="pipe-stage"
-              data-node-id={preview.id}
-              data-node-kind={preview.kind}
-              data-layer={slot.index}
-            >{@render stageBody(preview, undefined)}</span>
+            {@render layerCard(segment.slot)}
           {/if}
         {/each}
       </div>
-    {/snippet}
-    <div class="graph-layers">
-      {#each segments as segment (segment.key)}
-        {#if segment.kind === "loop"}
-          {@const labelId = `${markerId}-loop-${segment.loop.id}`}
-          <div class="loop-box" role="group" aria-labelledby={labelId}>
-            <span class="loop-box-label" id={labelId}>{loopLabel(segment.loop)}</span>
-            {#each segment.slots as slot (slot.index)}
-              {@render layerCard(slot)}
-            {/each}
-          </div>
-        {:else}
-          {@render layerCard(segment.slot)}
-        {/if}
-      {/each}
-    </div>
-  {/if}
-</section>
+    {/if}
+  </section>
+</div>
 
 <style>
+  /* Framed as a panel, `.card`'s own border and ground, so the graph reads as
+     an object on the page rather than shapes floating over bare ground -- a
+     single node draws exactly as held as a whole chain (operator ruling
+     23.08.). The help disclosure sits outside the scrollable canvas so it
+     never scrolls away with a wide graph. */
   .workflow-graph {
+    display: grid;
+    gap: var(--space-3);
+  }
+
+  /* A tap target no smaller than any other control's, the same floor
+     `.event-log summary` and `.revision-details summary` already hold to. */
+  .graph-help summary {
+    display: flex;
+    align-items: center;
+    min-height: var(--tap);
+    cursor: pointer;
+  }
+
+  .graph-canvas {
     position: relative;
     overflow-x: auto;
-    padding: var(--space-4) 0 var(--space-3);
   }
 
   .graph-edges {
@@ -527,7 +547,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-4);
-    margin: 0 0 var(--space-3);
+    margin: var(--space-2) 0 0;
     padding: 0;
     list-style: none;
     font-size: var(--text-xs);

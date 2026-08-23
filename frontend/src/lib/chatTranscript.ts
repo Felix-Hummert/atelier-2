@@ -8,8 +8,6 @@ export type ChatMessage = {
   id: string;
   speaker: ChatSpeaker;
   text: string;
-  /** The vision or issue a house line comes from, or null where it speaks for itself. */
-  source: string | null;
 };
 
 /**
@@ -20,8 +18,8 @@ export type ChatMessage = {
  * and pull a reply out of the house for nothing.
  *
  * The house answer is the same sentence every time on purpose: no conductor
- * reads these messages yet (Vision #7), and a varying reply would suggest
- * something is listening.
+ * reads these messages yet, and a varying reply would suggest something is
+ * listening.
  */
 export function sendChatMessage(
   transcript: readonly ChatMessage[],
@@ -32,13 +30,8 @@ export function sendChatMessage(
   const turn = transcript.length + 1;
   return [
     ...transcript,
-    { id: `you-${turn}`, speaker: "you", text, source: null },
-    {
-      id: `house-${turn}`,
-      speaker: "house",
-      text: chatPageCopy.conductorAbsent,
-      source: chatPageCopy.conductorAbsentSource
-    }
+    { id: `you-${turn}`, speaker: "you", text },
+    { id: `house-${turn}`, speaker: "house", text: chatPageCopy.conductorAbsent }
   ];
 }
 

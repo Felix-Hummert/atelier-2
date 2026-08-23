@@ -9,7 +9,6 @@
  * the Board's alone: its title, its group headings and its empty state.
  */
 export const studioPageCopy = {
-  eyebrow: "Atelier",
   title: "Board",
   emptyTitle: "Nothing is running",
   emptyDescription: "Runs appear here the moment one starts — start one from a workflow.",
