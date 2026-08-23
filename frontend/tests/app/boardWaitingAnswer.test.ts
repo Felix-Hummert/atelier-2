@@ -291,6 +291,41 @@ describe("a boolean or enum wait gate answers inline on its Board card (#572)", 
     ).toBeTruthy();
   });
 
+  it("opens on its own and names a journaled answer that no longer matches this waiting node, instead of staying silently collapsed", async () => {
+    // The realistic shape of "corrupt": an earlier attempt journaled an
+    // answer for this same node under a workflow revision the run has since
+    // moved past (e.g. republished between attempts).
+    const journal = new MutationJournal(sessionStorage);
+    const staleRevisionHash = "f".repeat(64);
+    const mutation = await v3WaitMutation(publicReference, staleRevisionHash, "approve", "true");
+    await journal.prepare(mutation);
+    window.history.replaceState(null, "", "/atelier");
+
+    render(App, {
+      props: {
+        cockpitApi: cockpitApiStub({
+          listRuns: vi.fn(async (_after?: string, state?: string) => ({
+            items: state === undefined || state === "WAITING_INPUT" ? [waitingRun()] : [],
+            next_after: null
+          })),
+          getWorkflowRevision: vi.fn(async () => revision("boolean"))
+        }),
+        mutationJournal: journal
+      }
+    });
+
+    const needsYou = await screen.findByRole("region", { name: "Needs you · 1" });
+    // Opens without a click: a person who left mid decision must see the
+    // problem, not find the card collapsed again behind "Answer here".
+    const alert = await within(needsYou).findByRole("alert", { name: "Send failed" });
+    expect(alert.textContent).toContain("The saved exact answer does not belong to this waiting node.");
+    // Never a guess at decision buttons for an identity this surface cannot
+    // trust -- the honest fallback and its link to the run page instead.
+    expect(within(needsYou).queryByRole("button", { name: runPageCopy.answerYes })).toBeNull();
+    expect(within(needsYou).getByText("This needs a written answer.")).toBeTruthy();
+    expect(within(needsYou).getByRole("link", { name: "Open the run to answer" }).isConnected).toBe(true);
+  });
+
   it("names a free-text gate honestly and leads to the run page instead of offering buttons it cannot answer here", async () => {
     openBoard([waitingRun()], { getWorkflowRevision: vi.fn(async () => revision("free")) });
 

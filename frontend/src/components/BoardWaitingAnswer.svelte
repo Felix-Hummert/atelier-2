@@ -25,7 +25,10 @@
    * one network call, so this component defers that call until the operator
    * actually opens the card (`toggle`), never for every waiting row the Board
    * paints (the cost tradeoff #572 names): a card nobody opens costs nothing
-   * beyond the row already on screen.
+   * beyond the row already on screen. The one deliberate exception is a
+   * decision the durable journal already holds uncertain (`checkPendingForNode`):
+   * that card opens and reads the graph itself, because a person left mid
+   * decision needs to see it, not find it collapsed again.
    */
   export let run: RunV3;
   export let cockpitApi: CockpitApi;
@@ -82,7 +85,11 @@
     );
     if (checkedNodeKey !== key) return;
     if (lookup.kind === "corrupt") {
+      // A saved entry this surface cannot trust names no schema kind either
+      // -- the card opens on the honest fallback (below) plus this message,
+      // never a guess at buttons for a mismatched or foreign identity.
       waitFailureMessage = lookup.message;
+      expanded = true;
       return;
     }
     if (lookup.kind === "none") return;
@@ -216,16 +223,20 @@
 
   {#if expanded}
     <div class="board-answer-panel" role="group" aria-label={wrapDisplayCopy(studioPageCopy.answerHere)}>
+      {#snippet failureAlert(label: string)}
+        {#if waitFailureMessage !== null}
+          <div class="board-answer-alert" role="alert" aria-label={label}>
+            <strong>{label}</strong>
+            <small>{waitFailureMessage}</small>
+          </div>
+        {/if}
+      {/snippet}
+
       {#if pendingWait !== null}
         <p class="board-answer-status" role="status">
           {waitBusy ? "Sending answer" : waitAccepted ? "Answer pending" : "Answer uncertain"}
         </p>
-        {#if waitFailureMessage !== null}
-          <div class="board-answer-alert" role="alert" aria-label="Send uncertain">
-            <strong>Send uncertain</strong>
-            <small>{waitFailureMessage}</small>
-          </div>
-        {/if}
+        {@render failureAlert("Send uncertain")}
         <output class="board-answer-value" aria-label="Exact answer"
           >{confirmedDecision !== null
             ? `${wrapDisplayCopy(runPageCopy.answeredPrefix)} ${confirmedDecision}`
@@ -248,8 +259,10 @@
         {/if}
       {:else if graph.state === "loading"}
         <p class="board-answer-status" role="status">{wrapDisplayCopy(studioPageCopy.answerHereLooking)}</p>
+        {@render failureAlert("Send failed")}
       {:else if graph.state === "failed"}
         <p class="board-answer-status">{wrapDisplayCopy(studioPageCopy.answerHereUnavailable)}</p>
+        {@render failureAlert("Send failed")}
         <a href={runPath(run.public_run_reference)} onclick={openRun}>{wrapDisplayCopy(studioPageCopy.openToAnswer)}</a>
       {:else if graph.state === "ready" && (graph.kind === "boolean" || graph.kind === "enum")}
         <div class="board-answer-buttons" role="group" aria-label={wrapDisplayCopy(runPageCopy.answerLabel)}>
@@ -280,14 +293,10 @@
             {/each}
           {/if}
         </div>
-        {#if waitFailureMessage !== null}
-          <div class="board-answer-alert" role="alert" aria-label="Send failed">
-            <strong>Send failed</strong>
-            <small>{waitFailureMessage}</small>
-          </div>
-        {/if}
+        {@render failureAlert("Send failed")}
       {:else}
         <p class="board-answer-status">{wrapDisplayCopy(studioPageCopy.needsWrittenAnswer)}</p>
+        {@render failureAlert("Send failed")}
         <a href={runPath(run.public_run_reference)} onclick={openRun}>{wrapDisplayCopy(studioPageCopy.openToAnswer)}</a>
       {/if}
     </div>
