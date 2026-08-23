@@ -230,9 +230,17 @@ privileged process will mount and the container it will attach to an Attempt
 network, so it is validated against what *you* declared at start, never against
 what the document claims: every path a lease names must resolve inside
 `--attempt-root`, and its console container must be `--console-container`.
-Anything else is refused by name before it is read. That is what keeps the seam
-safe when Serve becomes the writer of leases (ADR 0009 §2, 2026-08-23 amendment
-on ruling B) — Serve may ask for an Attempt and may never command one.
+Anything else is refused by name before it is read, and what gets mounted is
+the resolved path this checked, not the one the document spelled. That is what
+keeps the seam safe when Serve becomes the writer of leases (ADR 0009 §2,
+2026-08-23 amendment on ruling B) — Serve may ask for an Attempt and may never
+command one.
+
+**The attempt root holds per-Attempt material and nothing else.** Everything
+under it is a surface some lease may ask to have mounted into an Attempt, so
+`--certificate-authority-state` must lie outside it; overlapping trees are
+refused at start rather than discovered by the lease that used them. Keep the
+authority beside the attempt root, never inside it.
 
 **What it may not do.** It never reads or writes the product's own store, never
 runs provider code, never publishes a port or takes the host's own network
@@ -243,14 +251,17 @@ lease label of an Attempt it owns. The authority key stays in
 passed into any container, and the client key minted for an invocation is
 unlinked the moment its delivery is over, taken or not.
 
-**Failure shape.** A refused engine operation, a lease naming something outside
-what you declared, a container that does not match the manifest Core bound, or
-a Runner that exits nonzero with nothing retained in its journal ends *that
-Attempt* loudly with a named refusal and leaves its objects on the host to be
-read. It does not end the launcher: the lease stays claimed, the failure is
-reported as `attempt-failed=…`, and the next lease is served — one bad Attempt
-is a bad Attempt, not an outage. A bounded `--once` run exits nonzero when its
-Attempt failed.
+**Failure shape.** A refused engine operation, a container that does not match
+the manifest Core bound, or a Runner that exits nonzero with nothing retained in
+its journal ends *that Attempt* loudly with a named refusal and leaves its
+objects on the host to be read; it is reported as `attempt-failed=…`. A lease
+this launcher will not accept at all — one naming something outside what you
+declared, or a document that cannot be read — is refused where it is claimed
+and reported as `lease-refused=…`; it stays quarantined under the lease
+directory's `claimed`, never retried. Neither ends the launcher: the next lease
+is served, because one bad Attempt is a bad Attempt and not an outage, and from
+C-3 one document Serve got wrong must cost exactly one Attempt. A bounded
+`--once` run exits nonzero when its lease failed.
 
 The one restart the launcher performs is the opposite case: a Runner that exits
 nonzero but did retain a terminal record still holds the only account of what
@@ -264,8 +275,13 @@ carrying those leases' labels. An Attempt that may already have run is never
 silently run a second time — what its owner does with an interrupted lease is
 that owner's decision.
 
-**Two bounds this form still has.** Run exactly *one* launcher per lease
-directory: reconciliation identifies an abandoned Attempt by its lease sitting
+**Three bounds this form still has.** The console container a lease names must
+already be attached to nothing: the launcher's own fence requires a container
+created private, which the disposable witness Core is and the Compose console —
+started on its own `serve` network — is not. Attaching the live console to an
+Attempt network is therefore not yet proven and is C-3/C-4 territory; today the
+attach path is exercised by the witness's stand-in. Run exactly *one* launcher
+per lease directory: reconciliation identifies an abandoned Attempt by its lease sitting
 in `claimed`, which a second launcher starting beside a working one would read
 as abandoned (a launcher-ownership token is `#540` C-3 work, with the fleet it
 belongs to). And a container may be attached to *one* Attempt in its lifetime:

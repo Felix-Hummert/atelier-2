@@ -396,15 +396,21 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
-mkdir -p "$root"/{issuer,core-identity,peer,handoff,offer,issuer-output,provider-credentials,core-store,leases/open}
-chmod 0700 "$root/issuer-output" "$root/provider-credentials"
+# The attempt root holds per-Attempt material and nothing else: a lease may ask
+# for anything under it to be mounted into the Attempt, so this witness's own
+# disposable authority, Core identity and store sit beside it, never inside it.
+# The launcher refuses the two trees overlapping anyway.
+attempt_root="$root/attempt"
+mkdir -p "$root"/{issuer,core-identity,core-store,leases/open} \
+  "$attempt_root"/{peer,handoff,issuance,provider-credentials}
+chmod 0700 "$attempt_root/issuance" "$attempt_root/provider-credentials"
 uv run --locked python tests/witness/runner_candidate_issuer.py core --state "$root/issuer" --identity "$root/core-identity"
-cp "$root/core-identity/ca.crt" "$root/handoff/ca.crt"
-cp "$root/core-identity/core.crt" "$root/handoff/core.crt"
+cp "$root/core-identity/ca.crt" "$attempt_root/handoff/ca.crt"
+cp "$root/core-identity/core.crt" "$attempt_root/handoff/core.crt"
 build_candidate_images >/dev/null
 image_digest=$(docker image inspect -f '{{.Id}}' "$runner_image")
 source_commit=$(git rev-parse HEAD)
-uv run --locked python tests/witness/runner_candidate_issuer.py manifest --source-commit "$source_commit" --image-digest "$image_digest" --output "$root/handoff"
+uv run --locked python tests/witness/runner_candidate_issuer.py manifest --source-commit "$source_commit" --image-digest "$image_digest" --output "$attempt_root/handoff"
 # Core stands in for the console's own Serve container: it is started attached
 # to no network at all and reaches nothing until the launcher creates this
 # Attempt's network and attaches it. Its `/handoff` bind is read-only, which
@@ -412,27 +418,27 @@ uv run --locked python tests/witness/runner_candidate_issuer.py manifest --sourc
 carrier start-private --name "$core" --image "$core_image" --label "$label" \
   --read-only --tmpfs "${scratch_directory}:${core_scratch_bytes}" \
   --bind "$root/core-identity:/run/atelier2-core-identity:ro" \
-  --bind "$root/peer:/run/atelier2-peer-authorization:ro" \
-  --bind "$root/handoff:/handoff:ro" \
+  --bind "$attempt_root/peer:/run/atelier2-peer-authorization:ro" \
+  --bind "$attempt_root/handoff:/handoff:ro" \
   --bind "$root/core-store:/var/lib/atelier2-candidate:rw" \
   --argument=--scenario --argument="$scenario" >/dev/null
 carrier copy-from --container "$core" \
   --source /var/lib/atelier2-candidate/bootstrap.json \
   --source /var/lib/atelier2-candidate/core-peer.json \
-  --destination "$root/handoff" --deadline-seconds "$handoff_deadline_seconds"
+  --destination "$attempt_root/handoff" --deadline-seconds "$handoff_deadline_seconds"
 # The lease is what a Serve endpoint will answer with in C-3; here the witness
 # writes the same facts as one document. The launcher is what turns it into an
 # Attempt -- it holds the Docker authority, this script does not hand it any.
 cat >"$root/leases/open/${lease_id}.json" <<LEASE
 {
-  "binding_path": "$root/handoff/bootstrap.json",
-  "manifest_path": "$root/handoff/manifest",
+  "binding_path": "$attempt_root/handoff/bootstrap.json",
+  "manifest_path": "$attempt_root/handoff/manifest",
   "runner_image": "$runner_image",
   "serve_container": "$core",
-  "handoff_directory": "$root/handoff",
-  "core_peer_directory": "$root/peer",
-  "issuance_directory": "$root/issuer-output",
-  "provider_credential_source": "$root/provider-credentials"
+  "handoff_directory": "$attempt_root/handoff",
+  "core_peer_directory": "$attempt_root/peer",
+  "issuance_directory": "$attempt_root/issuance",
+  "provider_credential_source": "$attempt_root/provider-credentials"
 }
 LEASE
 launcher_status=0
@@ -443,7 +449,7 @@ uv run --locked python -m atelier2.host.runner_launcher \
   --lease-directory "$root/leases" \
   --certificate-authority-state "$root/issuer" \
   --network-policy-image "$policy_image" \
-  --attempt-root "$root" \
+  --attempt-root "$attempt_root" \
   --console-container "$core" --once 2>&1 \
   | tee "$root/launcher.log" || launcher_status=$?
 network=$(sed -n 's/^attempt-network=//p' "$root/launcher.log")

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -47,6 +47,7 @@ from atelier2.host.runner_launcher import (
     RunnerLauncher,
     RunnerLease,
     RunnerLeaseValidation,
+    admitted_attempt_root,
     runner_container_spec,
 )
 
@@ -244,11 +245,17 @@ class RecordingCarrier:
         self.removed["networks"].extend(networks)
 
 
+def _attempt_directories(root: Path) -> Path:
+    """The per-Attempt tree a lease may name, as the writer prepares it."""
+    for name in ("handoff", "peer", "issuance", "provider-credentials"):
+        (root / name).mkdir(mode=0o700, parents=True, exist_ok=True)
+    return root
+
+
 def _lease(
     root: Path, manifest: RunnerManifestV1 | None = None, lease_id: str = _LEASE_ID
 ) -> RunnerLease:
-    for name in ("handoff", "peer", "issuance", "provider-credentials"):
-        (root / name).mkdir(mode=0o700, parents=True, exist_ok=True)
+    _attempt_directories(root)
     return RunnerLease(
         lease_id,
         _binding(),
@@ -618,3 +625,161 @@ def test_a_minted_key_leaves_the_host_even_when_delivery_fails(
 
     assert not (lease.issuance_directory / "client.key").exists()
     assert (lease.issuance_directory / "client.crt").is_file()
+
+
+def _lease_document(root: Path, **overrides: str) -> dict[str, str]:
+    _attempt_directories(root)
+    manifest = _manifest()
+    (root / "manifest").write_bytes(encode_runner_manifest(manifest))
+    (root / "bootstrap.json").write_text(
+        json.dumps(
+            {
+                "attempt_id": "a" * 64,
+                "request_hash": "c" * 64,
+                "generation_id": "generation-one",
+                "manifest_id": runner_manifest_id(manifest).value,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "binding_path": str(root / "bootstrap.json"),
+        "manifest_path": str(root / "manifest"),
+        "runner_image": _RUNNER_IMAGE,
+        "serve_container": _SERVE_CONTAINER,
+        "handoff_directory": str(root / "handoff"),
+        "core_peer_directory": str(root / "peer"),
+        "issuance_directory": str(root / "issuance"),
+        "provider_credential_source": str(root / "provider-credentials"),
+        **overrides,
+    }
+
+
+@dataclass
+class UntilEmpty:
+    """The real file source, ending the watch once it has nothing left.
+
+    A launcher that is working correctly polls an empty source forever, which
+    is what it is for and what a test cannot wait for. Everything else -- the
+    claim, the decode, the refusal -- stays the real adapter's.
+    """
+
+    source: FileRunnerLeaseSource
+
+    def claim_open_lease(self) -> RunnerLease | None:
+        lease = self.source.claim_open_lease()
+        if lease is None:
+            raise SourceExhausted()
+        return lease
+
+    def release(self, lease: RunnerLease) -> None:
+        self.source.release(lease)
+
+    def abandon_stale_claims(self) -> tuple[str, ...]:
+        return self.source.abandon_stale_claims()
+
+
+def _published(directory: Path, lease_id: str, document: str) -> None:
+    (directory / "open" / f"{lease_id}.json").write_text(document, encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "published",
+    (
+        pytest.param("{ this is not json", id="a-document-that-is-not-a-document"),
+        pytest.param('{"runner_image": "x"}', id="a-document-missing-every-field"),
+    ),
+)
+def test_a_lease_document_nobody_can_read_does_not_end_the_launcher(
+    tmp_path: Path, published: str
+) -> None:
+    """From C-3 a Serve process writes these documents. One it got wrong has to
+    cost exactly one lease -- quarantined where it was claimed -- and the next
+    lease has to be served."""
+    directory = tmp_path / "leases"
+    source = FileRunnerLeaseSource(directory, _validation(tmp_path))
+    _published(directory, "unreadable", published)
+    _published(directory, _LEASE_ID, json.dumps(_lease_document(tmp_path)))
+    carrier = RecordingCarrier(_attested_document(_manifest()), [0, 0])
+    launcher, announced = _launcher(tmp_path, carrier, UntilEmpty(source))
+
+    with pytest.raises(SourceExhausted):
+        launcher.serve_open_leases(once=False, poll_seconds=0)
+
+    assert any(line.startswith("lease-refused=") for line in announced)
+    assert f"attempt-released={_LEASE_ID}" in announced
+    assert (directory / "claimed" / "unreadable.json").is_file()
+
+
+def test_a_lease_naming_a_foreign_path_does_not_end_the_launcher(
+    tmp_path: Path,
+) -> None:
+    """The refusal the validation raises is a refused lease like any other."""
+    directory = tmp_path / "leases"
+    source = FileRunnerLeaseSource(directory, _validation(tmp_path))
+    _published(
+        directory,
+        "hostile",
+        json.dumps(_lease_document(tmp_path, handoff_directory="/etc")),
+    )
+    _published(directory, _LEASE_ID, json.dumps(_lease_document(tmp_path)))
+    carrier = RecordingCarrier(_attested_document(_manifest()), [0, 0])
+    launcher, announced = _launcher(tmp_path, carrier, UntilEmpty(source))
+
+    with pytest.raises(SourceExhausted):
+        launcher.serve_open_leases(once=False, poll_seconds=0)
+
+    assert any(line.startswith("lease-refused=") for line in announced)
+    assert f"attempt-released={_LEASE_ID}" in announced
+
+
+def test_a_container_that_does_not_attest_its_manifest_fails_only_its_attempt(
+    tmp_path: Path,
+) -> None:
+    """The attestation refuses in the manifest's own vocabulary; the launcher
+    answers for it as this Attempt's failure, not as its own end."""
+    softened = _attested_document(_manifest())
+    softened["HostConfig"] = {**softened["HostConfig"], "ReadonlyRootfs": False}
+    carrier = RecordingCarrier(softened, [])
+    lease = _lease(tmp_path)
+    source = OpenLeases([lease])
+    launcher, announced = _launcher(tmp_path, carrier, source)
+
+    failed = launcher.serve_open_leases(once=True, poll_seconds=0)
+
+    assert failed == 1
+    assert any("does not attest the manifest" in line for line in announced)
+    assert source.released == []
+
+
+def test_the_attempt_root_may_not_contain_the_authority(tmp_path: Path) -> None:
+    """Everything under the attempt root is a surface a lease may ask to have
+    mounted. The authority's key directory is the one thing that must never
+    become one, so overlapping trees are refused at start."""
+    with pytest.raises(AttemptRefusal, match="attempt-root-contains-the-authority"):
+        admitted_attempt_root(tmp_path, tmp_path / "authority")
+
+    with pytest.raises(AttemptRefusal, match="attempt-root-contains-the-authority"):
+        admitted_attempt_root(tmp_path / "attempts", tmp_path)
+
+    assert admitted_attempt_root(tmp_path / "attempts", tmp_path / "authority")
+
+
+def test_an_admitted_lease_carries_the_paths_that_were_checked(
+    tmp_path: Path,
+) -> None:
+    """What a consumer mounts is the resolved path, never the one the document
+    spelled: a symlink swapped after the check would otherwise decide what ends
+    up inside the Attempt."""
+    (tmp_path / "provider-credentials").mkdir(mode=0o700, parents=True)
+    (tmp_path / "by-another-name").symlink_to(tmp_path / "provider-credentials")
+    lease = _lease(tmp_path)
+
+    admitted = _validation(tmp_path).validated(
+        replace(lease, provider_credential_source=tmp_path / "by-another-name")
+    )
+
+    assert (
+        admitted.provider_credential_source
+        == (tmp_path / "provider-credentials").resolve()
+    )

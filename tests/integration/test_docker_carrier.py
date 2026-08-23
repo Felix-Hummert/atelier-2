@@ -303,23 +303,49 @@ def test_an_absence_of_bindings_is_an_absence(reported: dict[str, Any]) -> None:
     assert attest_runner_container(document, manifest)
 
 
+@pytest.mark.parametrize(
+    ("attached", "expected"),
+    (
+        pytest.param(
+            "attempt-network",
+            [
+                ("container", "inspect"),
+                ("network", "disconnect"),
+                ("start", "attempt-runner"),
+                ("container", "inspect"),
+            ],
+            id="the-exited-container-is-still-on-its-attempt-network",
+        ),
+        pytest.param(
+            None,
+            [
+                ("container", "inspect"),
+                ("start", "attempt-runner"),
+                ("container", "inspect"),
+            ],
+            id="the-exited-container-is-already-attached-to-nothing",
+        ),
+    ),
+)
 def test_a_restarted_container_is_detached_started_and_only_then_policed(
-    tmp_path: Path,
+    tmp_path: Path, attached: str | None, expected: list[tuple[str, str]]
 ) -> None:
     """A restart throws away the namespace its Attempt policy lived in, so a
     container that came back attached would run unfiltered until the policy was
-    reinstalled. The engine sees it released, started, and only then policed
-    and reconnected -- the same order a first start has."""
-    carrier = DockerCarrier(_POLICY_IMAGE, _engine(tmp_path, _attached_container(None)))
+    reinstalled. Whatever it is still attached to is released first, and what
+    comes up is read back as reachable by nothing -- so policy and network
+    arrive afterwards, in the same order a first start has."""
+    carrier = DockerCarrier(
+        _POLICY_IMAGE,
+        _engine(tmp_path, _attached_container(attached), _attached_container(None)),
+    )
 
     carrier.restart_private_container("attempt-runner")
 
-    verbs = [(call[0], call[1]) for call in _calls(tmp_path)]
-    assert verbs == [
-        ("container", "inspect"),
-        ("start", "attempt-runner"),
-        ("container", "inspect"),
-    ]
+    assert [(call[0], call[1]) for call in _calls(tmp_path)] == expected
+    if attached is not None:
+        released = _calls(tmp_path)[1]
+        assert released[2:] == [attached, "attempt-runner"]
 
 
 def test_a_container_that_came_back_attached_is_refused(tmp_path: Path) -> None:

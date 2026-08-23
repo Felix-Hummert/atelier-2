@@ -46,9 +46,10 @@ def _engine_names_in(module: Path) -> set[str]:
 
     Read out of the parsed source rather than searched for in the text, because
     the way a program calls the engine is an argument vector -- `["docker",
-    "run", ...]` -- in which no substring of a call ever appears. A comment or
-    a docstring naming Docker is not a call and is not counted; a string
-    constant that *is* one of these names is, wherever it sits.
+    "run", ...]` -- in which no substring of a call ever appears. Only a
+    constant that *is* one of these names counts, so prose that merely mentions
+    Docker -- a comment, a docstring, a refusal sentence -- is not a call and is
+    not counted.
     """
     tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
     return {
@@ -57,15 +58,6 @@ def _engine_names_in(module: Path) -> set[str]:
         if isinstance(node, ast.Constant)
         and isinstance(node.value, str)
         and node.value in ENGINE_NAMES
-    } - _docstrings(tree)
-
-
-def _docstrings(tree: ast.Module) -> set[str]:
-    documented = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-    return {
-        text
-        for node in ast.walk(tree)
-        if isinstance(node, documented) and (text := ast.get_docstring(node, False))
     }
 
 
@@ -123,9 +115,9 @@ def test_the_witness_copies_public_bootstrap_and_keeps_core_handoff_read_only() 
     text = LAUNCHER.read_text(encoding="utf-8")
     assert "carrier copy-from --container" in text
     assert "--source /var/lib/atelier2-candidate/bootstrap.json" in text
-    assert '"$root/handoff:/handoff:ro"' in text
-    assert '"$root/handoff:/handoff"' not in text.replace(
-        '"$root/handoff:/handoff:ro"', ""
+    assert '"$attempt_root/handoff:/handoff:ro"' in text
+    assert '"$attempt_root/handoff:/handoff"' not in text.replace(
+        '"$attempt_root/handoff:/handoff:ro"', ""
     )
     assert "unlink-private" in text
     core = (PROJECT_ROOT / "tests/witness/runner_candidate_core.py").read_text(

@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
@@ -172,16 +173,51 @@ class RunnerLeaseValidation:
         return named
 
     def validated(self, lease: RunnerLease) -> RunnerLease:
-        """The same lease, once every surface it names has been admitted."""
-        for field, named in (
-            ("handoff_directory", lease.handoff_directory),
-            ("core_peer_directory", lease.core_peer_directory),
-            ("issuance_directory", lease.issuance_directory),
-            ("provider_credential_source", lease.provider_credential_source),
-        ):
-            self.validated_path(named, field)
+        """The same lease, carrying the paths that were actually admitted.
+
+        The resolved form replaces what the document said, because those are
+        two different paths: a symlink swapped between the check and the mount
+        would otherwise put a directory nobody admitted inside an Attempt. What
+        every consumer of this lease mounts is therefore the path this checked.
+        """
         self.validated_console(lease.serve_container)
-        return lease
+        return replace(
+            lease,
+            handoff_directory=self.validated_path(
+                lease.handoff_directory, "handoff_directory"
+            ),
+            core_peer_directory=self.validated_path(
+                lease.core_peer_directory, "core_peer_directory"
+            ),
+            issuance_directory=self.validated_path(
+                lease.issuance_directory, "issuance_directory"
+            ),
+            provider_credential_source=self.validated_path(
+                lease.provider_credential_source, "provider_credential_source"
+            ),
+        )
+
+
+def admitted_attempt_root(
+    attempt_root: Path, certificate_authority_state: Path
+) -> Path:
+    """The attempt root, once it is proven to hold only per-Attempt material.
+
+    Everything under this root is a surface a lease may ask to have mounted
+    into an Attempt. The authority's own key directory is the one thing on this
+    host that must never become one, and a root containing it would admit a
+    lease that names the root itself -- binding the authority into the Attempt
+    along with everything else. The two are therefore required to be disjoint
+    trees, refused at start rather than discovered by the lease that used it.
+    """
+    root = attempt_root.resolve()
+    authority = certificate_authority_state.resolve()
+    if root.is_relative_to(authority) or authority.is_relative_to(root):
+        raise AttemptRefusal(
+            f"attempt-root-contains-the-authority: {attempt_root} and "
+            f"{certificate_authority_state} must be disjoint trees"
+        )
+    return root
 
 
 class RunnerLeaseSource(Protocol):
@@ -338,15 +374,15 @@ class FileRunnerLeaseSource:
         `manifest_path` or `binding_path` anywhere would make this adapter read
         whatever the writer chose, and reading is already acting on it.
         """
-        record = json.loads(document.read_text(encoding="utf-8"))
-        binding_path = self._validation.validated_path(
-            Path(record["binding_path"]), "binding_path"
-        )
-        manifest_path = self._validation.validated_path(
-            Path(record["manifest_path"]), "manifest_path"
-        )
-        return self._validation.validated(
-            RunnerLease(
+        try:
+            record = json.loads(document.read_text(encoding="utf-8"))
+            binding_path = self._validation.validated_path(
+                Path(record["binding_path"]), "binding_path"
+            )
+            manifest_path = self._validation.validated_path(
+                Path(record["manifest_path"]), "manifest_path"
+            )
+            lease = RunnerLease(
                 document.stem,
                 decode_runner_binding(binding_path.read_bytes()),
                 record["runner_image"],
@@ -357,7 +393,16 @@ class FileRunnerLeaseSource:
                 Path(record["issuance_directory"]),
                 Path(record["provider_credential_source"]),
             )
-        )
+        except (OSError, ValueError, KeyError, TypeError) as unreadable:
+            # Truncated JSON, a missing field, a manifest that will not decode:
+            # the writer handed this process something it cannot act on, which
+            # is one refused lease and never a stopped launcher. The document
+            # has already been renamed into `claimed`, so it stays quarantined
+            # rather than being picked up again on the next poll.
+            raise AttemptRefusal(
+                f"lease-document-unreadable: {document.stem}: {unreadable}"
+            ) from unreadable
+        return self._validation.validated(lease)
 
 
 def _writable_grants(manifest: RunnerManifestV1) -> Iterator[TmpfsMount]:
@@ -444,25 +489,50 @@ class RunnerLauncher:
         A failed Attempt is loud and local: it is reported, its lease stays
         claimed and its objects stay on the host to be read, and this launcher
         keeps serving the next lease. One bad Attempt taking the whole host's
-        launcher down with it would turn a single failure into an outage.
-        Returns how many Attempts failed, so a bounded run can answer for them.
+        launcher down with it would turn a single failure into an outage --
+        and from `#540` C-3 the leases are written by Serve, so one document
+        Serve got wrong must cost exactly one Attempt.
+
+        Claiming is inside that same guard, because it is where a lease is read
+        and admitted: a document naming a path nobody declared, or one that
+        cannot be read at all, refuses there rather than in the Attempt it
+        never became. Such a lease has already been renamed into `claimed`,
+        which is where a refused lease belongs -- quarantined, not retried.
+
+        Returns how many leases were refused, so a bounded run can answer for
+        them.
         """
         failed = 0
         self.reconcile_abandoned_attempts()
         while True:
-            lease = self.leases.claim_open_lease()
-            if lease is None:
-                if once:
-                    return failed
-                time.sleep(poll_seconds)
-                continue
-            try:
-                self.establish(lease)
-            except (AttemptRefusal, CarrierRefusal) as refusal:
-                failed += 1
-                self.announce(f"attempt-failed={refusal}")
+            acted, refused = self._serve_next_lease()
+            failed += 1 if refused else 0
             if once:
                 return failed
+            if not acted:
+                time.sleep(poll_seconds)
+
+    def _serve_next_lease(self) -> tuple[bool, bool]:
+        """Claim and establish the next lease; say whether it acted and refused.
+
+        A lease that refuses while it is being claimed and one that refuses
+        while its Attempt is established are reported apart, because they are
+        different things to read in a log: one is a document this launcher
+        would not accept, the other an Attempt that did not come up.
+        """
+        lease = None
+        try:
+            lease = self.leases.claim_open_lease()
+            if lease is None:
+                return False, False
+            self.establish(lease)
+        except (AttemptRefusal, CarrierRefusal) as refusal:
+            claimed = lease is not None
+            self.announce(
+                f"attempt-failed={refusal}" if claimed else f"lease-refused={refusal}"
+            )
+            return True, True
+        return True, False
 
     def establish(self, lease: RunnerLease) -> None:
         """Run one Attempt from an empty host to a released one.
@@ -604,9 +674,15 @@ class RunnerLauncher:
         manifest it selected, so an Attempt whose container is not what the
         manifest says never gets a session at all.
         """
-        attested = attest_runner_container(
-            self.carrier.inspect_container(container_id), lease.manifest
-        )
+        try:
+            attested = attest_runner_container(
+                self.carrier.inspect_container(container_id), lease.manifest
+            )
+        except ValueError as mismatch:
+            raise AttemptRefusal(
+                f"launcher-attempt-failed: {lease.lease_id} container does not "
+                f"attest the manifest Core bound: {mismatch}"
+            ) from mismatch
         (lease.handoff_directory / _ATTESTATION_NAME).write_text(
             attested + "\n", encoding="ascii"
         )
@@ -670,7 +746,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
         "--attempt-root",
         type=Path,
         required=True,
-        help="the one directory tree a lease may name; nothing outside it is mounted",
+        help=(
+            "the one directory tree a lease may name; it holds per-Attempt "
+            "material only, and never the certificate authority state"
+        ),
     )
     parser.add_argument(
         "--console-container",
@@ -684,7 +763,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
         help="establish at most one lease and stop, instead of watching",
     )
     parsed = parser.parse_args(arguments)
-    validation = RunnerLeaseValidation(parsed.attempt_root, parsed.console_container)
+    validation = RunnerLeaseValidation(
+        admitted_attempt_root(parsed.attempt_root, parsed.certificate_authority_state),
+        parsed.console_container,
+    )
     launcher = RunnerLauncher(
         DockerCarrier(parsed.network_policy_image),
         RunnerIdentityAuthority(parsed.certificate_authority_state),
@@ -702,4 +784,11 @@ def _announce(line: str) -> None:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        status = main()
+    except AttemptRefusal as refusal:
+        # A refusal at start is an answer to the operator, not a stack trace:
+        # what was declared cannot be launched under, and this says which part.
+        print(refusal, file=sys.stderr)
+        status = 1
+    raise SystemExit(status)
