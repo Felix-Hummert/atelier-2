@@ -323,7 +323,7 @@ def _measured_ready_payload(
     and therefore before any provider process could start.
     """
     if landlock_kernel_abi() < REQUIRED_LANDLOCK_ABI:
-        raise LandlockUnavailable("runner-child-boundary-unavailable")
+        raise LandlockUnavailable(CHILD_BOUNDARY_UNAVAILABLE_REFUSAL_CODE)
     measured_cli = attest_runner_provider_toolchain(manifest)
     payload = (
         manifest.executor_revision.encode("utf-8"),
@@ -345,6 +345,14 @@ def _measured_ready_payload(
     return payload
 
 
+# The one code this Runner names when the kernel itself cannot enforce the
+# child boundary. `LandlockUnavailable` carries prose from its other raise
+# sites, so the wire never reads its message: the code is stated here, checked
+# against the protocol's declared vocabulary by Core, and used for both the
+# refusal this module raises and the frame it sends about it.
+CHILD_BOUNDARY_UNAVAILABLE_REFUSAL_CODE = "runner-child-boundary-unavailable"
+
+
 def _attested_ready_payload(
     channel: RunnerFrameChannel,
     binding: RunnerGenerationBinding,
@@ -356,27 +364,48 @@ def _attested_ready_payload(
 ) -> tuple[bytes, ...]:
     """Measure this container for READY, or tell Core by name why it cannot.
 
-    A Runner that cannot attest its own provider toolchain has to say so on
-    the wire before it dies. Dropping the connection would leave Core with a
-    torn socket and no reason, so the refusal Core would have to guess at
-    becomes a REFUSE frame carrying the exact code -- loud and named -- and
-    only then does this lifetime end. Nothing is armed and nothing durable is
-    written on either side.
+    A Runner that cannot attest itself -- its provider toolchain, or the kernel
+    boundary it would confine a child with -- has to say so on the wire before
+    it dies. Dropping the connection would leave Core with a torn socket and no
+    reason, so the refusal Core would otherwise have to guess at becomes a
+    REFUSE frame carrying the exact code -- loud and named -- and only then does
+    this lifetime end. Nothing is armed and nothing durable is written on
+    either side.
     """
     try:
         return _measured_ready_payload(manifest, auth_reference, identity)
     except (RunnerToolchainUnpinned, RunnerToolchainRefused) as refusal:
-        _write_frame(
+        # These carry their own declared code as their message by construction.
+        _refuse_before_start(channel, binding, invocation, sequence, str(refusal))
+        raise
+    except LandlockUnavailable:
+        _refuse_before_start(
             channel,
-            _frame(
-                RunnerSessionMessage.REFUSE,
-                sequence,
-                binding,
-                invocation,
-                (str(refusal).encode("ascii"), NO_REFUSED_EVIDENCE),
-            ),
+            binding,
+            invocation,
+            sequence,
+            CHILD_BOUNDARY_UNAVAILABLE_REFUSAL_CODE,
         )
         raise
+
+
+def _refuse_before_start(
+    channel: RunnerFrameChannel,
+    binding: RunnerGenerationBinding,
+    invocation: RunnerInvocationId,
+    sequence: int,
+    code: str,
+) -> None:
+    _write_frame(
+        channel,
+        _frame(
+            RunnerSessionMessage.REFUSE,
+            sequence,
+            binding,
+            invocation,
+            (code.encode("ascii"), NO_REFUSED_EVIDENCE),
+        ),
+    )
 
 
 def _decline_crossing_cancel(

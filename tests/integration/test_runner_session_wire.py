@@ -116,8 +116,8 @@ _PR_SET_NO_NEW_PRIVS = 38
 (
     fd, attempt_id, request_hash, generation_id, manifest_id, invocation_id,
     scenario_value, manifest_path, identity, journal_directory, process_limit,
-    workspace_directory,
-) = sys.argv[1:13]
+    workspace_directory, landlock_abi,
+) = sys.argv[1:14]
 
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
@@ -134,6 +134,11 @@ libc = ctypes.CDLL(None, use_errno=True)
 if libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
     raise OSError(ctypes.get_errno(), "prctl(NO_NEW_PRIVS) failed")
 
+# Declared witness data, not a stubbed subject: an empty value leaves the real
+# kernel reading in place, and only a test that wants to drive the
+# no-child-boundary refusal names one.
+if landlock_abi:
+    session_module.landlock_kernel_abi = lambda: int(landlock_abi)
 session_module._pid_limit = lambda: int(process_limit)
 session_module._runner_workspace_directory = lambda: Path(workspace_directory)
 run_candidate_session(
@@ -436,6 +441,7 @@ def _spawn_candidate_session(
     journal_directory: Path,
     workspace_directory: Path,
     search_path: str | None = None,
+    landlock_abi: str = "",
 ) -> subprocess.Popen[bytes]:
     fd = candidate_side.fileno()
     return subprocess.Popen(
@@ -455,6 +461,7 @@ def _spawn_candidate_session(
             str(journal_directory),
             str(_STUBBED_PROCESS_LIMIT),
             str(workspace_directory),
+            landlock_abi,
         ),
         env=None if search_path is None else {**os.environ, "PATH": search_path},
         pass_fds=(fd,),
@@ -541,18 +548,43 @@ def _prepared_session(
     )
 
 
-def test_runner_session_wire_names_a_pre_start_toolchain_refusal_to_core(
+@pytest.mark.parametrize(
+    ("executor", "empty_search_path", "landlock_abi", "expected"),
+    (
+        pytest.param(
+            _CLAUDE_EXECUTOR,
+            True,
+            "",
+            "runner-provider-cli-absent",
+            id="the-pinned-provider-cli-is-not-installed",
+        ),
+        pytest.param(
+            None,
+            False,
+            "0",
+            "runner-child-boundary-unavailable",
+            id="the-kernel-cannot-confine-a-child",
+        ),
+    ),
+)
+def test_runner_session_wire_names_a_pre_start_refusal_to_core(
     tmp_path: Path,
+    executor: tuple[str, str] | None,
+    empty_search_path: bool,
+    landlock_abi: str,
+    expected: str,
 ) -> None:
-    """A Runner that cannot attest its toolchain tells Core why, then dies.
+    """A Runner that cannot attest itself tells Core why, then dies.
 
-    Driven end to end over the real socket, with the candidate's own search
-    path emptied so the outcome is the same on every host: the pinned Claude
-    executable is genuinely not resolvable there. Core must learn
-    `runner-provider-cli-absent` from a REFUSE frame -- not infer something
-    from a dropped connection -- and must arm nothing.
+    Driven end to end over the real socket. Neither case can be reached by
+    accident on a healthy host, so each is made true deliberately and in the
+    same shape it would occur: an emptied search path really does leave the
+    pinned Claude executable unresolvable, and a kernel reporting no Landlock
+    ABI really does leave this Runner unable to confine a child. Core must
+    learn the exact code from a REFUSE frame -- not infer something from a
+    dropped connection -- and must arm nothing.
     """
-    prepared = _prepared_session(tmp_path, executor=_CLAUDE_EXECUTOR)
+    prepared = _prepared_session(tmp_path, executor=executor)
     core_side, candidate_side = socket.socketpair()
 
     with core_side:
@@ -565,7 +597,10 @@ def test_runner_session_wire_names_a_pre_start_toolchain_refusal_to_core(
             prepared.identity,
             prepared.journal_directory,
             prepared.workspace_directory,
-            search_path=str(tmp_path / "an-empty-search-path"),
+            search_path=(
+                str(tmp_path / "an-empty-search-path") if empty_search_path else None
+            ),
+            landlock_abi=landlock_abi,
         )
         candidate_side.close()
         try:
@@ -575,9 +610,7 @@ def test_runner_session_wire_names_a_pre_start_toolchain_refusal_to_core(
             refusal = _read_frame(core_side)
 
             assert refusal.message is RunnerSessionMessage.REFUSE
-            with pytest.raises(
-                RunnerSessionRefusal, match="runner-provider-cli-absent"
-            ):
+            with pytest.raises(RunnerSessionRefusal, match=expected):
                 prepared.core_session.accept(refusal)
         finally:
             candidate.wait(timeout=30)
