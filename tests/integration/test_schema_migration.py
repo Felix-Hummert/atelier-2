@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import ast
 import hashlib
-import re
 import sqlite3
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -1218,38 +1218,97 @@ def test_run_state_tokens_are_exact(
             connection.execute(statement)
 
 
-_CANCELLED_STATE_COMPARISON = re.compile(r"(?:is|==)\s+RunState\.CANCELLED\b")
+def _is_run_state_cancelled(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "CANCELLED"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "RunState"
+    )
 
 
-def test_run_state_cancelled_has_no_producer_yet() -> None:
-    """#439 P1 gives CANCELLED its durable home; #439 P3 gives it a writer.
+class _CancelledStateConstructors(ast.NodeVisitor):
+    """The name of every function that constructs `RunState.CANCELLED`.
+
+    An `is`/`==` comparison is a reader guarding against the word, never a
+    writer, so a `Compare` visits its own operands first and marks them --
+    `visit_Attribute` then skips exactly those nodes, by identity, wherever
+    the traversal reaches them next. Reading source as its parsed tree rather
+    than as text is what keeps a docstring's own prose about the word (this
+    module's, or `uncontinuable_runs.py`'s) from ever being mistaken for code
+    that constructs it: a string constant holds no `Attribute` node at all.
+    """
+
+    def __init__(self) -> None:
+        self.owners: set[str] = set()
+        self._function_stack: list[str] = []
+        self._reader_nodes: set[int] = set()
+
+    def visit_Compare(self, node: ast.Compare) -> None:
+        if any(isinstance(op, ast.Is | ast.Eq) for op in node.ops):
+            for operand in (node.left, *node.comparators):
+                if _is_run_state_cancelled(operand):
+                    self._reader_nodes.add(id(operand))
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self._function_stack.append(node.name)
+        self.generic_visit(node)
+        self._function_stack.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if _is_run_state_cancelled(node) and id(node) not in self._reader_nodes:
+            self.owners.add(
+                self._function_stack[-1] if self._function_stack else "<module>"
+            )
+        self.generic_visit(node)
+
+
+_CANCELLED_STATE_PRODUCERS: dict[str, str] = {
+    "adapters/dbos/agent_attempt_store.py::_lift_run_under_operator_cancel": (
+        "the in-transaction lift `attest_cancellation_cleanup` and "
+        "`_commit_runner_cancellation` both close through, on either carrier"
+    ),
+    "adapters/dbos/uncontinuable_runs.py::_attempt_family_target_state": (
+        "the serve-start net's own answer for an operator-cancelled or "
+        "-interrupted current-node attempt with no replacement in flight"
+    ),
+}
+"""#439 P3's exactly two producers of `RunState.CANCELLED`, named so a third
+one is a review question in the diff below, never a silent grep exception."""
+
+
+def test_run_state_cancelled_has_exactly_its_named_producers() -> None:
+    """#439 P1 gave CANCELLED its durable home; #439 P3 gave it exactly two.
 
     `test_run_state_tokens_are_exact` above proves the migrated CHECK admits
-    the word at the storage layer. This is the other half: between P1 and P3
-    `RunState.CANCELLED` is a word nothing in the product constructs, and this
-    is what would turn red the day a writer starts referencing it without the
-    end-of-run seam (serve-start inventory, terminal lift, cancelled receipt)
-    #439 P3 is the named owner of. Source text is the right evidence for an
-    absence: no runtime path exists yet to drive behaviorally.
-
-    Two kinds of mention are not a writer, and stay allowed forever rather
-    than only until P3: `contracts/` is the word's own definitional home
-    (`RunState` itself, and the `TERMINAL_RUN_STATES` set every terminal-state
-    check already reads through); and an `is`/`==` comparison anywhere else is
-    a reader guarding against the word, the way `api/projection/runs.py`
-    already refuses to render a V1/V2 run whose frozen wire predates it.
+    the word at the storage layer. This is the other half, carried forward
+    rather than deleted now that #439 P3 landed: every construction of
+    `RunState.CANCELLED` outside `contracts/` (its own definitional home,
+    `RunState` itself and the `TERMINAL_RUN_STATES` set every terminal-state
+    check already reads through) is one of the two named producers above --
+    the run's own terminal lift, on either carrier, under the operator's own
+    cancel command identity, or the serve-start net's answer for the same
+    identity left leaderless. An `is`/`==` comparison anywhere else, the way
+    `api/projection/runs.py` already refuses to render a V1/V2 run whose
+    frozen wire predates the word, is still a reader, not a producer.
     """
 
     source_root = Path(__file__).resolve().parents[2] / "src" / "atelier2"
-    reference = "RunState.CANCELLED"
-    offenders: set[str] = set()
-    for path in source_root.rglob("*.py"):
-        if "contracts" in path.relative_to(source_root).parts:
+    found: set[str] = set()
+    for module in sorted(source_root.rglob("*.py")):
+        relative = module.relative_to(source_root)
+        if "contracts" in relative.parts:
             continue
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if reference in line and not _CANCELLED_STATE_COMPARISON.search(line):
-                offenders.add(str(path.relative_to(source_root)))
-    assert offenders == set()
+        constructors = _CancelledStateConstructors()
+        constructors.visit(
+            ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+        )
+        for owner in constructors.owners:
+            found.add(f"{relative.as_posix()}::{owner}")
+    assert found == set(_CANCELLED_STATE_PRODUCERS)
 
 
 @pytest.mark.parametrize(

@@ -105,6 +105,67 @@ def test_restart_finishes_cancellation_after_the_process_owner_dies(
     )
 
 
+def test_restart_lifts_an_operator_cancelled_run_and_keeps_its_hash_across_a_second_restart(
+    tmp_path: Path,
+) -> None:
+    """#439 P3, Fenster (i): the operator's own command survives the crash.
+
+    `test_restart_finishes_cancellation_after_the_process_owner_dies` above
+    proves the attempt's own recovery under a foreign command; this is the
+    same crash, but under the operator's `is_operator_run_cancel` command --
+    so this restart must also lift the run to `CANCELLED`, not leave it
+    `STARTED`. A second restart against the exact same durable state proves
+    the terminal hash, the run's word, and the event log are byte-stable: a
+    retry against an already-terminal run writes nothing new.
+    """
+    child(tmp_path, "crash-running", CRASHED)
+    provider_pid = int((tmp_path / "running-pid").read_text(encoding="ascii"))
+
+    child(tmp_path, "recover-operator-cancellation")
+
+    assert not Path(f"/proc/{provider_pid}").exists()
+    assert rows(
+        tmp_path,
+        "SELECT state,process_phase,redrive_state,cancellation_disposition FROM agent_attempts",
+    ) == (
+        (
+            "INTERRUPTED",
+            "CLEANUP_ATTESTED",
+            "CLEANUP_ATTESTED",
+            "OWNER_LOST_AFTER_PARENT_DEATH",
+        ),
+    )
+    run_after_first_restart = rows(tmp_path, "SELECT state,terminal_hash FROM runs")
+    assert len(run_after_first_restart) == 1
+    run_state, terminal_hash = run_after_first_restart[0]
+    assert run_state == "CANCELLED"
+    assert terminal_hash is not None
+    events_after_first_restart = rows(
+        tmp_path, "SELECT event_kind FROM run_events ORDER BY event_sequence"
+    )
+    assert events_after_first_restart == (
+        ("AGENT_CANCEL_REQUESTED",),
+        ("AGENT_INTERRUPTED",),
+    )
+    # The harness's own workflow document is format 2: #439 P3's receipt is a
+    # V3-only `node-receipt/v3` (proved directly, with a V3 run, in
+    # `tests/integration/test_run_cancellation.py`); a format-2 run stays
+    # honestly receipt-less here, the same as every other leftover family
+    # `tests/integration/test_interrupted_uncontinuable_inventory.py` proves.
+    assert rows(tmp_path, "SELECT COUNT(*) FROM node_receipts_v3") == ((0,),)
+
+    child(tmp_path, "recover-operator-cancellation")
+
+    assert (
+        rows(tmp_path, "SELECT state,terminal_hash FROM runs")
+        == run_after_first_restart
+    )
+    assert (
+        rows(tmp_path, "SELECT event_kind FROM run_events ORDER BY event_sequence")
+        == events_after_first_restart
+    )
+
+
 def test_clean_runtime_close_retains_the_witness_until_recovery_attests(
     tmp_path: Path,
 ) -> None:
