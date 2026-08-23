@@ -27,7 +27,9 @@ from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.free_runner_executor import (
     FreeRunnerHoldJob,
     encode_free_runner_job,
+    free_runner_auth_reference,
 )
+from atelier2.adapters.runner_cli_pins import runner_executor_cli_pin
 from atelier2.adapters.runner_journal import RunnerJournal
 from atelier2.application.run_runner_session import (
     CoreRunnerSession,
@@ -56,8 +58,6 @@ from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSession
 from atelier2.contracts.runner_terminal_evidence_codec import (
     encode_runner_terminal_evidence_record,
 )
-from atelier2.runner.authorization import free_runner_auth_reference
-from atelier2.runner.executors import runner_executor_cli_pin
 from atelier2.runner.session import CandidateScenario
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.integration.test_runner_session_application import (
