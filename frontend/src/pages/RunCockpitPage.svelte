@@ -15,7 +15,7 @@
     type RunEventSubscription,
     type WorkflowRevisionDetail
   } from "../api/client";
-  import Breadcrumb from "../components/Breadcrumb.svelte";
+  import BackLink from "../components/BackLink.svelte";
   import HumanActionCard from "../components/HumanActionCard.svelte";
   import NodeRail from "../components/NodeRail.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
@@ -35,7 +35,6 @@
     type WaitMutation
   } from "../lib/mutationJournal";
   import V3RunView from "../components/V3RunView.svelte";
-  import { THE_ONE_PROJECT } from "../lib/project";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import {
     beginRead,
@@ -213,17 +212,20 @@
   }
 
   /**
-   * The one honest case the live stream cannot heal by itself.
+   * Reading the run again, from scratch, whenever the page is not following it.
    *
-   * A dropped connection needs no button: the browser's own EventSource
-   * retries it on its own, which is why "Reconnecting" carries none. A
-   * protocol violation or an explicit STREAM_FAILED closes the stream for
-   * good instead, and nothing reopens it without this deliberate act -- so
-   * this is the one place a manual affordance stays, named for what it does
-   * and shown only in that stopped state, not permanently in the header.
+   * This used to fire only on a protocol violation, on the theory that the
+   * browser's own EventSource heals an ordinary drop. It does not always: after
+   * a server restart the page sat on "Reconnecting" for eighteen minutes with
+   * no way out (operator, 23.08.). So the existing subscription is dropped and
+   * both the run and its stream are opened again — an act that is honest in
+   * every unhealthy state. What this cannot heal — a cursor the other side no
+   * longer knows — is #529.
    */
   function retryStream(): void {
-    if (projection === null || !streamStopped(projection)) return;
+    if (projection === null) return;
+    stream?.close();
+    stream = null;
     projection = markConnecting(projection);
     void load();
   }
@@ -840,22 +842,10 @@
       ? snapshot.confirmed.revision.graph.name
       : null;
   $: headerTitle = runHeaderTitle(workflowName);
-  /** Mirrors V3RunView's own three-state title (#506): one owner, not a second guess. */
-  let v3HeaderTitle: string | null = null;
-  $: trailHere =
-    v3Run !== null
-      ? v3HeaderTitle ?? "Run"
-      : snapshot.confirmed === null
-        ? "Run"
-        : headerTitle;
 </script>
 
 <section aria-labelledby={v3Run !== null ? "v3-run-title" : "run-title"}>
-  <Breadcrumb
-    steps={[{ label: "Board", path: "/atelier" }, { label: THE_ONE_PROJECT, path: "/atelier/project" }]}
-    current={trailHere}
-    {navigate}
-  />
+  <BackLink label="Board" path="/atelier" {navigate} />
 
   {#if v3Run !== null}
     <V3RunView
@@ -865,9 +855,6 @@
       {projection}
       onRunRead={(read) => {
         v3Run = read;
-      }}
-      onHeaderTitle={(title) => {
-        v3HeaderTitle = title;
       }}
       onRetryStream={retryStream}
     />
@@ -884,7 +871,6 @@
         <h1 id="run-title">{headerTitle}</h1>
         <p class="run-identity">
           <ProofAnchor
-            compact
             label={runHeaderCopy.runIdLabel}
             seals={runHeaderCopy.sealsRunId}
             value={snapshot.confirmed.run.run_id}
