@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly deployment="local-live" published_port="8422" restart_policy="unless-stopped"
-readonly record_version="1" record_size_limit="16384" descriptor_size_limit="16384"
+readonly record_version="2" record_size_limit="16384" descriptor_size_limit="16384"
 readonly project_name_prefix="atelier2-live-"
 
 fail() {
@@ -10,12 +10,24 @@ fail() {
   exit 1
 }
 
-if (($# != 1)); then
+if (($# < 1)); then
   fail "expected exactly one command: install, status, stop, start, uninstall, or update"
 fi
 command="$1"
+fresh=0
 case "${command}" in
-  install | status | stop | start | uninstall | update) ;;
+  install | status | stop | start | uninstall)
+    (($# == 1)) || fail "${command} takes no arguments"
+    ;;
+  update)
+    if (($# == 1)); then
+      :
+    elif (($# == 2)) && [[ "$2" == "--fresh" ]]; then
+      fresh=1
+    else
+      fail "update accepts an optional --fresh flag only"
+    fi
+    ;;
   *) fail "unknown command ${command}" ;;
 esac
 
@@ -49,6 +61,10 @@ local_live_container_removed=0
 local_live_network_removed=0
 local_live_volume_removed=0
 local_live_image_removed=0
+update_old_container_id=""
+update_old_image_id=""
+update_old_stopped=0
+update_completed=0
 
 validate_private_directory() {
   local path="$1"
@@ -100,7 +116,7 @@ record_value_is_valid() {
     deployment) [[ "${value}" == "${deployment}" ]] ;;
     published_port) [[ "${value}" == "${published_port}" ]] ;;
     restart_policy) [[ "${value}" == "${restart_policy}" ]] ;;
-    source_commit | source_tree) [[ "${value}" =~ ^[0-9a-f]{40}$ ]] ;;
+    source_commit | source_tree | store_source_commit | store_source_tree) [[ "${value}" =~ ^[0-9a-f]{40}$ ]] ;;
     project) [[ "${value}" =~ ^atelier2-live-[0-9a-f]{16}$ ]] ;;
     descriptor_sha256 | configuration_sha256) [[ "${value}" =~ ^[0-9a-f]{64}$ ]] ;;
     engine_id) [[ "${value}" =~ ^[A-Za-z0-9:._-]{1,160}$ ]] ;;
@@ -117,7 +133,10 @@ record_is_valid() {
     record_value_is_valid "${key}" "${record[${key}]}" || return 1
   done
   if [[ "${record[state]:-}" == "INSTALLED" ]]; then
-    required+=(image_id container_id volume_name network_name network_id configuration_sha256)
+    required+=(
+      image_id container_id volume_name network_name network_id
+      configuration_sha256 store_source_commit store_source_tree
+    )
   fi
   for key in "${required[@]}"; do
     [[ -n "${record[${key}]:-}" ]] || return 1
@@ -161,6 +180,8 @@ publish_record() {
       printf 'network_name=%s\n' "${record[network_name]}"
       printf 'network_id=%s\n' "${record[network_id]}"
       printf 'configuration_sha256=%s\n' "${record[configuration_sha256]}"
+      printf 'store_source_commit=%s\n' "${record[store_source_commit]}"
+      printf 'store_source_tree=%s\n' "${record[store_source_tree]}"
     fi
   } >"${temporary_record}"
   sync -f "${temporary_record}"
@@ -193,10 +214,15 @@ resource_label() {
   docker "${resource_type}" inspect --format "{{index .Labels \"${label}\"}}" "${resource}"
 }
 resource_identity_is_exact() {
-  local resource_type="$1" resource="$2"
+  # Volume and network identity is judged by the commit that created them
+  # (record[store_source_commit/tree]), never the commit currently running
+  # (record[source_commit/tree]): a preserving `update` keeps both resources
+  # in place across every later redeploy, so their creation-time labels stay
+  # frozen at the store's origin while the running code moves on.
+  local resource_type="$1" resource="$2" expected_commit="$3" expected_tree="$4"
   [[ "$(resource_label "${resource_type}" "${resource}" atelier2.deployment)" == "${deployment}" ]] \
-    && [[ "$(resource_label "${resource_type}" "${resource}" atelier2.source.commit)" == "${record[source_commit]}" ]] \
-    && [[ "$(resource_label "${resource_type}" "${resource}" atelier2.source.tree)" == "${record[source_tree]}" ]]
+    && [[ "$(resource_label "${resource_type}" "${resource}" atelier2.source.commit)" == "${expected_commit}" ]] \
+    && [[ "$(resource_label "${resource_type}" "${resource}" atelier2.source.tree)" == "${expected_tree}" ]]
 }
 project_resources_are_owned() {
   local resource resource_type resources
@@ -212,7 +238,14 @@ project_resources_are_owned() {
     resources="$(docker "${resource_type}" ls --quiet --filter "label=com.docker.compose.project=${record[project]}")" || return 1
     while IFS= read -r resource; do
       [[ -z "${resource}" ]] && continue
-      resource_identity_is_exact "${resource_type}" "${resource}" || return 1
+      # An INSTALLING record has no store_source_commit/tree yet (they are
+      # only finalized once state reaches INSTALLED): a crash-recovery
+      # teardown of that half-finished install created its volume/network
+      # under the record's own (only) source_commit/tree, so that is the
+      # right identity to demand here.
+      resource_identity_is_exact "${resource_type}" "${resource}" \
+        "${record[store_source_commit]:-${record[source_commit]}}" \
+        "${record[store_source_tree]:-${record[source_tree]}}" || return 1
       if [[ "${resource_type}" == "volume" ]]; then
         owned_project_has_volume=1
       fi
@@ -285,6 +318,28 @@ cleanup_start_process() {
     || echo "container live: failed start cleanup is incomplete" >&2
   exit "${original_status}"
 }
+cleanup_update_process() {
+  local original_status="$?"
+  trap - EXIT
+  trap '' HUP INT TERM
+  [[ -z "${temporary_descriptor}" ]] || rm -f -- "${temporary_descriptor}"
+  [[ -z "${snapshot_root}" ]] || rm -rf -- "${snapshot_root}"
+  if ((update_old_stopped && !update_completed)); then
+    # `compose up` recreates the service container on every update -- the
+    # new commit always changes its labels, so its config hash always
+    # differs -- which deletes the previous container as part of that same
+    # call, before --wait can even fail. A failure at or after `up` runs can
+    # therefore find the previous container already gone: check reality
+    # before promising a restart nothing can honour.
+    if docker inspect --type container --format '{{.Id}}' "${update_old_container_id}" >/dev/null 2>&1; then
+      docker start "${update_old_container_id}" >/dev/null \
+        || echo "container live: failed update cleanup is incomplete; run: docker start ${update_old_container_id}" >&2
+    else
+      echo "container live: the store is already migrated and the previous container no longer exists to restart; run 'container_live.sh status' to see the new container's state, then 'uninstall' or 'update' again" >&2
+    fi
+  fi
+  exit "${original_status}"
+}
 assert_host_units_are_off() {
   local unit output
   for unit in atelier2.service atelier2-live.service; do
@@ -337,10 +392,12 @@ verify_installed_configuration() {
   [[ "$(docker_container_field '{{with (index (index .HostConfig.PortBindings "8422/tcp") 0)}}{{.HostIp}}:{{.HostPort}}{{end}}')" == "127.0.0.1:${published_port}" ]] || return 1
   [[ "$(docker_container_field '{{range .Mounts}}{{.Type}}|{{.Name}}|{{.Destination}}|{{.RW}}{{end}}')" == "volume|${record[volume_name]}|/var/lib/atelier2/store|true" ]] || return 1
   [[ "$(docker volume inspect --format '{{.Name}}' "${record[volume_name]}")" == "${record[volume_name]}" ]] || return 1
-  resource_identity_is_exact volume "${record[volume_name]}" || return 1
+  resource_identity_is_exact volume "${record[volume_name]}" \
+    "${record[store_source_commit]}" "${record[store_source_tree]}" || return 1
   [[ "$(docker network inspect --format '{{.Name}}' "${record[network_name]}")" == "${record[network_name]}" ]] || return 1
   [[ "$(docker network inspect --format '{{.Id}}' "${record[network_name]}")" == "${record[network_id]}" ]] || return 1
-  resource_identity_is_exact network "${record[network_name]}" || return 1
+  resource_identity_is_exact network "${record[network_name]}" \
+    "${record[store_source_commit]}" "${record[store_source_tree]}" || return 1
   [[ "$(docker_container_field '{{len .NetworkSettings.Networks}}')" == "1" ]] || return 1
   [[ "$(docker_container_field "{{with index .NetworkSettings.Networks \"${record[network_name]}\"}}{{.NetworkID}}{{end}}")" == "${record[network_id]}" ]] || return 1
   [[ "$(configuration_sha256)" == "${record[configuration_sha256]}" ]]
@@ -424,6 +481,8 @@ install_container() {
   record[network_name]="${project}_serve"
   record[network_id]="$(docker network inspect --format '{{.Id}}' "${record[network_name]}")"
   record[configuration_sha256]="$(configuration_sha256)"
+  record[store_source_commit]="${record[source_commit]}"
+  record[store_source_tree]="${record[source_tree]}"
   record[state]="INSTALLED"
   verify_installed_configuration || fail "installed container identity is incomplete"
   container_is_healthy || fail "installed container is not healthy"
@@ -556,14 +615,135 @@ uninstall_installation() {
   fi
 }
 
+built_serve_image_id() {
+  local project="$1" reference short_id
+  reference="${project}-serve"
+  short_id="$(docker images --quiet --filter "reference=${reference}")" \
+    || fail "the built image identity is unavailable"
+  [[ -n "${short_id}" ]] || fail "the built image identity is unavailable"
+  docker inspect --type image --format '{{.Id}}' "${short_id}"
+}
+
+# Raises the installed store through the migration ladder (`atelier2
+# migrate`, #244) in place, on the same Compose volume and network, then
+# starts the new container on the migrated store. The ladder's own contract
+# is the backup (see migrate_store's own docstring, and #244's precedent):
+# each step is one transaction that either commits completely or leaves the
+# file exactly as it was, so there is nothing to separately copy.
+#
+# The previous container is stopped first to give the ladder exclusive
+# access. A failure before `compose up` runs (the stop, or the ladder's own
+# refusal) restarts that previous container untouched -- nothing else has
+# happened yet. `compose up` itself is not part of that safe window: the new
+# commit always changes the service's labels, so its config hash always
+# differs from the previous container's, and Compose recreates it --
+# deleting the previous container as an intrinsic part of that one call,
+# before `--wait` can even time out. A failure at or after `up` therefore
+# finds the previous container already gone; cleanup_update_process checks
+# for that and reports the true state (store migrated, new container
+# unconfirmed) instead of promising a restart nothing can honour. The
+# durable record is untouched either way until the very end.
+update_preserving_store() {
+  acquire_install_lock
+  if [[ ! -e "${record_file}" ]]; then
+    install_container
+    return
+  fi
+  read_record || fail "installation record drifted"
+  if [[ "${record[state]}" != "INSTALLED" ]]; then
+    install_container
+    return
+  fi
+  verify_installed_configuration \
+    || fail "installed identity drifted; resolve with status, then uninstall or update --fresh"
+  assert_host_units_are_off
+
+  update_old_container_id="${record[container_id]}"
+  update_old_image_id="${record[image_id]}"
+  update_old_stopped=0
+  update_completed=0
+  snapshot_root="$(mktemp -d "${TMPDIR:-/tmp}/atelier2-live.XXXXXX")"
+  trap cleanup_update_process EXIT
+  trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+
+  snapshot="${snapshot_root}/source"
+  mkdir --mode=0700 -- "${snapshot}"
+  if ! read -r source_commit source_tree \
+    < <("${repository}/scripts/container_snapshot.sh" "${repository}" "${snapshot}"); then
+    fail "source snapshot failed"
+  fi
+  engine_id="$(docker_engine_id)" || fail "Docker engine identity is unavailable"
+  [[ "${engine_id}" == "${record[engine_id]}" ]] || fail "Docker engine identity drifted"
+  record[source_commit]="${source_commit}"
+  record[source_tree]="${source_tree}"
+  record[descriptor_sha256]="$(sha256sum -- "${snapshot}/compose.yaml" | cut -d ' ' -f 1)"
+
+  export_compose_identity
+  compose=(docker compose --project-name "${record[project]}" --project-directory "${snapshot}" -f "${snapshot}/compose.yaml")
+  "${compose[@]}" build
+  new_image_id="$(built_serve_image_id "${record[project]}")"
+
+  docker stop --time 30 "${update_old_container_id}" >/dev/null \
+    || fail "the running container did not stop"
+  update_old_stopped=1
+
+  if ! migration_report="$(docker run --rm --entrypoint atelier2 \
+    --volume "${record[volume_name]}:/var/lib/atelier2/store" "${new_image_id}" \
+    migrate --database /var/lib/atelier2/store/atelier.sqlite 2>&1)"; then
+    fail "store migration refused; the previous container is restarting: ${migration_report}"
+  fi
+  echo "container live: ${migration_report//$'\n'/$'\n''container live: '}"
+
+  assert_port_is_free
+  "${compose[@]}" up --detach --wait --wait-timeout 30 --no-build
+  container_id="$("${compose[@]}" ps --quiet serve)"
+  [[ "${container_id}" =~ ^[0-9a-f]{64}$ ]] || fail "Docker returned an invalid container identity"
+  record[container_id]="${container_id}"
+  record[image_id]="$(docker_container_field '{{.Image}}')"
+  record[network_id]="$(docker network inspect --format '{{.Id}}' "${record[network_name]}")"
+  record[configuration_sha256]="$(configuration_sha256)"
+
+  # The descriptor is switched to the new snapshot here, deliberately after
+  # every Docker mutation and immediately before the final verify+publish: it
+  # is the same atomic commit boundary install_container uses, just placed so
+  # that every long-running external command (build, migrate, up) still runs
+  # while the record and descriptor together describe the *previous* install.
+  # Only a crash in the few local writes between here and publish_record
+  # could leave the two apart; that already-healthy previous container would
+  # then read as DRIFTED rather than lie as healthy -- the safe direction.
+  temporary_descriptor="$(mktemp "${installation_directory}/.compose.XXXXXX")"
+  cp -- "${snapshot}/compose.yaml" "${temporary_descriptor}"
+  chmod 0600 -- "${temporary_descriptor}"
+  sync -f "${temporary_descriptor}"
+  mv -f -- "${temporary_descriptor}" "${descriptor_file}"
+  temporary_descriptor=""
+  sync -f "${installation_directory}"
+
+  verify_installed_configuration || fail "updated container identity is incomplete"
+  container_is_healthy || fail "updated container is not healthy"
+  publish_record
+  update_completed=1
+  rm -rf -- "${snapshot_root}"
+  snapshot_root=""
+  trap - EXIT HUP INT TERM
+
+  docker rmi --force -- "${update_old_image_id}" >/dev/null \
+    || echo "container live: previous image ${update_old_image_id} was not removed" >&2
+  echo "container live: cockpit -> http://127.0.0.1:${published_port}/atelier/"
+}
+
 update_installation() {
   assert_ambient_container_mode_is_forbidden
-  uninstalled_existing_store=0
-  uninstall_installation
-  if ((uninstalled_existing_store)); then
-    echo "container live: update discards the previous store; installing fresh"
+  if ((fresh)); then
+    uninstalled_existing_store=0
+    uninstall_installation
+    if ((uninstalled_existing_store)); then
+      echo "container live: --fresh discards the previous store; installing fresh"
+    fi
+    install_container
+  else
+    update_preserving_store
   fi
-  install_container
 }
 
 case "${command}" in
