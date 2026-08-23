@@ -89,6 +89,11 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
     "adapters/dbos/workflow.py::CANCELLATION_REDRIVE_SECONDS": SpelledValue(
         1, "owner with a seam: the whole redrive ladder is decided in this one tuple"
     ),
+    "adapters/docker_carrier.py::_POLL_INTERVAL_SECONDS": SpelledValue(
+        1,
+        "owner with a seam: how often the carrier re-reads a container's own "
+        "surface while the deadline its caller stated runs out",
+    ),
     "adapters/agent_processes.py::MAXIMUM_AGENT_CONTROL_REQUEST_ATTEMPTS": SpelledValue(
         1, "owner with a seam: control-frame retry budget, named once"
     ),

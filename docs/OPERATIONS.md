@@ -65,6 +65,14 @@ bash scripts/runner_candidate.sh egress
 `egress` drive no session at all: they measure the deployed image and the
 Attempt network form, unbilled, with no credential and no provider call.
 
+Every engine operation these scenarios perform *as a launcher* — Attempt
+network, volumes, container start and restart, wait, file transport, inspect
+attestation, teardown — is spent through one typed owner,
+`atelier2.adapters.docker_carrier`, in argument vectors rather than shell
+strings. What the script still calls directly is deliberately not a launcher
+operation: the image builds, the `toolchain` and `egress` probe legs, and
+`clean`'s own directory maintenance, which measure or tidy from the outside.
+
 Each session scenario creates one labelled Attempt network, one disposable
 Core witness, one Runner, one handoff tmpfs volume, and one identity and one
 journal volume. Exact labelled objects are removed only after the Runner
@@ -173,8 +181,8 @@ bash scripts/runner_candidate.sh images
 ```
 
 `clean` removes only witness directories whose run reached `RELEASED`. It
-records that run's labelled network only after `docker network create`
-succeeds, so a recorded network's absence is the release proof; a directory
+records that run's labelled network only after the carrier created it, so a
+recorded network's absence is the release proof; a directory
 with no recorded network — including one whose witness is still mid-run — or
 whose recorded network still exists, is left untouched. Failure-analysis
 residue is never removed by `clean`. Clearing a released directory's

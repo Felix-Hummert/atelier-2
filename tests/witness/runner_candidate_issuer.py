@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+from atelier2.adapters.docker_carrier import attest_runner_inspect
 from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
 from atelier2.adapters.runner_child import REQUIRED_LANDLOCK_ABI
 from atelier2.adapters.runner_tls import (
@@ -37,12 +38,7 @@ from atelier2.contracts.agents import (
     AuthMode,
 )
 from atelier2.contracts.runner_manifests import (
-    CANDIDATE_CPU_PERIOD,
-    CANDIDATE_WORKSPACE_BYTES,
-    RunnerManifestV1,
-    RunnerPathRight,
     candidate_runner_manifest,
-    decode_runner_manifest,
     encode_runner_manifest,
     runner_manifest_id,
 )
@@ -222,126 +218,6 @@ def write_candidate_manifest(
     (output / "manifest-id").write_text(
         runner_manifest_id(manifest).value + "\n", encoding="ascii"
     )
-    return 0
-
-
-def _tmpfs_size(options: str) -> int:
-    for part in options.split(","):
-        if part.startswith("size="):
-            raw = part.removeprefix("size=")
-            if raw[-1:] in {"m", "M"}:
-                return int(raw[:-1]) * 1024 * 1024
-            if raw[-1:] in {"k", "K"}:
-                return int(raw[:-1]) * 1024
-            return int(raw)
-    raise ValueError("runner-attestation-mismatch")
-
-
-def _attest_writable_surface_is_noexec_tmpfs(
-    tmpfs: dict[str, str], manifest: RunnerManifestV1
-) -> None:
-    """Every writable path the manifest attests must be a sized `noexec` tmpfs.
-
-    The manifest's Landlock grant already denies the child `EXECUTE` beneath a
-    writable path; this is the launcher's independent second fence, read back
-    out of the container Docker actually created. Executable code therefore
-    stays in the read-only image root even if one of the two ever slipped:
-    code written into the writable surface cannot be run from it, and nothing
-    there gains privilege through a set-user-ID bit. The size is attested too,
-    exactly as `/workspace`'s already is, so the one surface a provider child
-    may fill has an attested bound rather than whatever the launcher typed.
-    """
-    for grant in manifest.child_path_grants:
-        if grant.right is not RunnerPathRight.READ_WRITE:
-            continue
-        options = tmpfs.get(grant.path.as_posix())
-        if options is None:
-            raise ValueError("runner-attestation-mismatch")
-        flags = set(options.split(","))
-        if not {"noexec", "nosuid"} <= flags or "rw" not in flags:
-            raise ValueError("runner-attestation-mismatch")
-        if _tmpfs_size(options) != manifest.scratch_bytes:
-            raise ValueError("runner-attestation-mismatch")
-
-
-def _attest_credential_directory_is_the_only_read_only_bind(
-    document, manifest: RunnerManifestV1
-) -> None:
-    """The credential directory is bind-mounted read-only, and nothing else is.
-
-    ADR 0009 sec. 2's 2026-08-22 amendment admits exactly one host surface
-    beyond the per-invocation identity material: the provider's own credential
-    directory, read-only. Read-write access to that original directory stays
-    forbidden, because a live operator session may hold it open. This fence
-    reads both halves back out of the created container -- the credential
-    directory is bound and not writable, and no other host path was bound in
-    at all -- so a launcher cannot quietly add a second host surface, and the
-    write-capable per-Attempt copy reserved for its own operator ruling cannot
-    appear here first.
-    """
-    credential = manifest.provider_credential_directory.as_posix()
-    mount = _mount(document, credential)
-    if mount is None or mount.get("RW") is not False or mount.get("Type") != "bind":
-        raise ValueError("runner-attestation-mismatch")
-    for other in document.get("Mounts") or ():
-        if other.get("Type") == "bind" and other.get("Destination") != credential:
-            raise ValueError("runner-attestation-mismatch")
-
-
-def _mount(document, destination: str) -> dict[str, object] | None:
-    return next(
-        (
-            mount
-            for mount in document.get("Mounts") or ()
-            if mount.get("Destination") == destination
-        ),
-        None,
-    )
-
-
-def attest_runner_inspect(inspect_path: Path, manifest_path: Path, output: Path) -> int:
-    document = json.loads(inspect_path.read_text(encoding="utf-8"))
-    if isinstance(document, list):
-        document = document[0]
-    host = document["HostConfig"]
-    config = document["Config"]
-    manifest = decode_runner_manifest(manifest_path.read_bytes())
-    tmpfs = host.get("Tmpfs") or {}
-    security = host.get("SecurityOpt") or []
-    cap_drop = host.get("CapDrop") or []
-    user = config.get("User") or ""
-    expected_user = f"{manifest.effective_uid}:{manifest.effective_gid}"
-    nnp = "no-new-privileges:true" in security
-    identity_mount = _mount(document, "/run/atelier2-identity")
-    # `docker inspect` reports "volume" for both a tmpfs-backed and a
-    # disk-backed named volume, so this attests only the mount's type and
-    # writability -- the same shape identity's own volume mount is attested
-    # below. It cannot itself prove the journal will survive this exact
-    # container's own restart (`#15-B5`); the `resume` witness leg proves
-    # that live, by actually restarting the container and resuming from it.
-    journal_mount = _mount(document, "/journal")
-    if (
-        document.get("Image") != manifest.image_digest
-        or user != expected_user
-        or host.get("ReadonlyRootfs") is not True
-        or "ALL" not in cap_drop
-        or not nnp
-        or int(host.get("PidsLimit") or 0) != manifest.process_limit
-        or int(host.get("Memory") or 0) != manifest.memory_bytes
-        or int(host.get("CpuQuota") or 0) != manifest.cpu_quota_microseconds
-        or int(host.get("CpuPeriod") or 0) != CANDIDATE_CPU_PERIOD
-        or _tmpfs_size(tmpfs.get("/workspace", "")) != CANDIDATE_WORKSPACE_BYTES
-        or identity_mount is None
-        or identity_mount.get("RW") is not False
-        or identity_mount.get("Type") != "volume"
-        or journal_mount is None
-        or journal_mount.get("RW") is not True
-        or journal_mount.get("Type") != "volume"
-    ):
-        raise ValueError("runner-attestation-mismatch")
-    _attest_writable_surface_is_noexec_tmpfs(tmpfs, manifest)
-    _attest_credential_directory_is_the_only_read_only_bind(document, manifest)
-    output.write_text(runner_manifest_id(manifest).value + "\n", encoding="ascii")
     return 0
 
 
