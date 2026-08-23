@@ -20,6 +20,14 @@ export const studioQuestions = {
     id: "retry-projection",
     question: "Can I apply the attention event that failed?"
   },
+  answerHere: {
+    id: "answer-here",
+    question: "Can I open a boolean or enum gate's decision inline, right on its Board card?"
+  },
+  answerDecision: {
+    id: "answer-decision",
+    question: "Can I send, retry, or discard a decision I started on the Board card?"
+  },
   /**
    * Not a Board control: `When.svelte` reuses this hint label wherever it
    * renders a relative time, on the run page as much as here. It stays on

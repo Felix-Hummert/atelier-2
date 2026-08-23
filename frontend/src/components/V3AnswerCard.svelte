@@ -11,6 +11,7 @@
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import type { WaitMutation } from "../lib/mutationJournal";
   import { runPageCopy } from "../lib/runPageCopy";
+  import { confirmedDecisionLabel, decisionLabel } from "../lib/waitDecision";
 
   /**
    * The one card that carries a decision the run is waiting on.
@@ -70,22 +71,10 @@
     onAnswer(answer);
   }
 
-  /** A schema-authored JSON value, read back the way a person means it. */
-  function decisionLabel(jsonEncoded: string): string {
-    const parsed = JSON.parse(jsonEncoded) as unknown;
-    return typeof parsed === "string" ? parsed : JSON.stringify(parsed);
-  }
-
   $: confirmedDecision =
     pendingAnswer === null
       ? null
-      : answerKind === "boolean"
-        ? pendingAnswer === "true"
-          ? runPageCopy.answerYes
-          : runPageCopy.answerNo
-        : answerKind === "enum"
-          ? decisionLabel(pendingAnswer)
-          : null;
+      : confirmedDecisionLabel(answerKind, pendingAnswer, runPageCopy.answerYes, runPageCopy.answerNo);
 </script>
 
 <section

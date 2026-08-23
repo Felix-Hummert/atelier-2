@@ -2,11 +2,13 @@
   import { onMount } from "svelte";
 
   import {
+    isRunV3,
     type AnyRun,
     type CockpitApi,
     type RunEvent,
     type RunEventSubscription
   } from "../api/client";
+  import BoardWaitingAnswer from "../components/BoardWaitingAnswer.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import ReadState from "../components/ReadState.svelte";
   import {
@@ -20,6 +22,7 @@
   import { BOARD_GROUPS, projectBoardGroups, type BoardGroups } from "../lib/boardRows";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { humanErrorMessage } from "../lib/humanRefusal";
+  import type { MutationJournal } from "../lib/mutationJournal";
   import {
     beginRead,
     confirmRead,
@@ -43,6 +46,7 @@
   import { boardBadgeCounts } from "../lib/workshop";
 
   export let cockpitApi: CockpitApi;
+  export let mutationJournal: MutationJournal;
   export let navigate: (path: string) => void;
 
   type StudioHome = {
@@ -374,6 +378,15 @@
                       <span class="row-action row-action-bad">{wrapDisplayCopy(studioPageCopy.why)} →</span>
                     {/if}
                   </a>
+                  {#if row.status.kind === "waitingInput" && isRunV3(row.run)}
+                    <BoardWaitingAnswer
+                      run={row.run}
+                      {cockpitApi}
+                      {mutationJournal}
+                      onRunRead={(read) => upsertRuns([read])}
+                      {navigate}
+                    />
+                  {/if}
                 </li>
               {/each}
             </ul>

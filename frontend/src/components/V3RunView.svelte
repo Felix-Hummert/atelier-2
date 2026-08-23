@@ -2,8 +2,6 @@
   import { onMount, tick } from "svelte";
 
   import {
-    CockpitRequestError,
-    isRunV3,
     type CockpitApi,
     type NodeDetail,
     type RunEvent,
@@ -13,10 +11,7 @@
   import { humanErrorMessage } from "../lib/humanRefusal";
   import {
     MutationJournal,
-    v3WaitMutation,
     waitAnswerText,
-    waitMutationId,
-    type JournalEntry,
     type WaitMutation
   } from "../lib/mutationJournal";
   import { whenFacts, type StreamProjection } from "../lib/runProjection";
@@ -24,7 +19,11 @@
   import { runPageCopy } from "../lib/runPageCopy";
   import { runStanding, standingMarks, standingWords } from "../lib/runState";
   import { protocolDetail, protocolTitle } from "../lib/streamStatus";
-  import { encodeWaitAnswer } from "../lib/waitAnswer";
+  import {
+    deliverWaitAnswer,
+    loadPendingWaitAnswer,
+    prepareWaitAnswer
+  } from "../lib/waitAnswerDelivery";
   import { ageLabel } from "../lib/when";
   import NodeDetailPanel from "./NodeDetailPanel.svelte";
   import ProblemNotice from "./ProblemNotice.svelte";
@@ -81,7 +80,7 @@
   let openNodeId: string | null = null;
   let detail: NodeDetail | null = null;
   let failure: string | null = null;
-  let pendingWait: Extract<JournalEntry, { kind: "wait" }> | null = null;
+  let pendingWait: WaitMutation | null = null;
   let waitAccepted = false;
   let waitBusy = false;
   let waitValidationMessage: string | null = null;
@@ -315,27 +314,23 @@
       waitAccepted = false;
       return;
     }
-    const mutationId = waitMutationId(run.public_run_reference, run.current_node_id);
-    const entry = await mutationJournal.get(mutationId);
-    if (entry !== null && entry.kind !== "wait") {
-      waitFailureMessage = "The saved request identity belongs to another operation.";
+    const lookup = await loadPendingWaitAnswer(
+      mutationJournal,
+      run.public_run_reference,
+      run.workflow_revision_hash,
+      run.current_node_id
+    );
+    if (lookup.kind === "corrupt") {
+      waitFailureMessage = lookup.message;
       return;
     }
-    if (entry === null) {
+    if (lookup.kind === "none") {
       pendingWait = null;
       waitAccepted = false;
       return;
     }
-    if (
-      entry.workflow_revision_hash !== run.workflow_revision_hash ||
-      entry.node_id !== run.current_node_id ||
-      entry.public_run_reference !== run.public_run_reference
-    ) {
-      waitFailureMessage = "The saved exact answer does not belong to this waiting node.";
-      return;
-    }
-    if (pendingWait?.mutation_id !== entry.mutation_id) waitAccepted = false;
-    pendingWait = entry;
+    pendingWait = lookup.pending;
+    waitAccepted = false;
   }
 
   async function submitWait(typed: string): Promise<void> {
@@ -347,22 +342,19 @@
     }
     if (run.state !== "WAITING_INPUT") return;
     waitBusy = true;
-    let mutation: WaitMutation | null = null;
     try {
-      mutation = await v3WaitMutation(
+      const mutation = await prepareWaitAnswer(
+        mutationJournal,
         run.public_run_reference,
         run.workflow_revision_hash,
         run.current_node_id,
-        encodeWaitAnswer(typed)
+        typed
       );
-      const prepared = await mutationJournal.prepare(mutation);
-      if (prepared.kind !== "wait") throw new Error("The saved request belongs to another operation.");
-      pendingWait = prepared;
+      pendingWait = mutation;
       waitAccepted = false;
-      await deliverWait(mutation);
+      await deliverAndSettle(mutation, "The answer could not be confirmed.");
       await focusAfterDelivery();
     } catch (error) {
-      if (mutation !== null) await recordWaitFailure(mutation.mutation_id, error);
       waitFailureMessage = humanErrorMessage(error, "The answer could not be confirmed.");
       await focusWaitFailure();
     } finally {
@@ -375,12 +367,8 @@
     waitFailureMessage = null;
     waitBusy = true;
     try {
-      await deliverWait(pendingWait);
+      await deliverAndSettle(pendingWait, "The exact retry could not be confirmed.");
       await focusAfterDelivery();
-    } catch (error) {
-      await recordWaitFailure(pendingWait.mutation_id, error);
-      waitFailureMessage = humanErrorMessage(error, "The exact retry could not be confirmed.");
-      await focusWaitFailure();
     } finally {
       waitBusy = false;
     }
@@ -396,50 +384,25 @@
     answerCard?.focusInput();
   }
 
-  async function deliverWait(mutation: WaitMutation): Promise<void> {
-    const result = await cockpitApi.answer(mutation);
-    const resolved = await mutationJournal.resolve(mutation.mutation_id, {
-      type: "wait_response",
-      status: result.status,
-      target: mutation.target,
-      request_body_base64: mutation.body_base64
-    });
-    if (result.status === 200 && !resolved) {
-      throw new Error("The workshop confirmed a different answer than the one that was sent.");
-    }
-    if (result.status === 202 && resolved) {
-      throw new Error("Your answer was reported as stored while it is still pending.");
-    }
-    if (!isRunV3(result.value)) {
-      throw new Error("The workshop answered with a run in a format this page cannot read.");
-    }
-    if (result.value.public_run_reference !== run.public_run_reference) {
-      throw new CockpitRequestError("The workshop answered with a different run than this page is showing.");
-    }
-    onRunRead(result.value);
-    if (result.status === 202) {
-      const uncertain = await mutationJournal.markUncertain(mutation.mutation_id);
-      if (uncertain.kind !== "wait") throw new Error("The accepted request belongs to another operation.");
-      pendingWait = uncertain;
-      waitAccepted = true;
-    } else {
-      pendingWait = null;
-      waitAccepted = false;
-    }
-  }
-
-  async function recordWaitFailure(mutationId: string, error: unknown): Promise<void> {
-    if (error instanceof CockpitRequestError && error.definitive_failure) {
-      await mutationJournal.discard(mutationId);
+  /** The one audited delivery path (#572): the run page and the Board send through the same function. */
+  async function deliverAndSettle(mutation: WaitMutation, fallbackMessage: string): Promise<void> {
+    const outcome = await deliverWaitAnswer(cockpitApi, mutationJournal, mutation, fallbackMessage);
+    if (outcome.kind === "confirmed") {
+      onRunRead(outcome.run);
       pendingWait = null;
       waitAccepted = false;
       return;
     }
-    if (await mutationJournal.get(mutationId)) {
-      await mutationJournal.markUncertain(mutationId);
-      const entry = await mutationJournal.get(mutationId);
-      pendingWait = entry?.kind === "wait" ? entry : pendingWait;
+    if (outcome.kind === "uncertain") {
+      onRunRead(outcome.run);
+      pendingWait = outcome.pending;
+      waitAccepted = true;
+      return;
     }
+    pendingWait = outcome.pending;
+    waitAccepted = false;
+    waitFailureMessage = outcome.message;
+    await focusWaitFailure();
   }
 
   async function focusAfterDelivery(): Promise<void> {
