@@ -47,6 +47,7 @@ from atelier2.adapters.runner_core_transport import (
     accept_and_drive_session,
     accept_pinned_runner,
     bind_session_listener,
+    drive_until_released_or_dropped,
 )
 from atelier2.adapters.runner_tls import (
     CORE_DNS_NAME,
@@ -1202,6 +1203,120 @@ def test_runner_core_transport_accepts_a_second_connection_after_the_first_drops
 
     assert not errors
     assert build_count == 1
+
+
+def test_runner_core_transport_drive_writes_the_on_started_hooks_frame() -> None:
+    """The `on_started` hook's one write-back: STARTED triggers it, and its
+    returned frame -- not the fake session's own `accept` response, which is
+    always withheld below -- is exactly what reaches the wire."""
+    binding = _binding(AgentExecutionRequestHash("a" * 64), RunnerManifestId("c" * 64))
+    invocation = RunnerInvocationId("C" * 43)
+    triggered = RunnerSessionFrame(
+        RunnerSessionMessage.CANCEL,
+        1,
+        binding,
+        invocation,
+        (b"run", b"cmd", (0).to_bytes(8, "big"), b"NONE"),
+    )
+    driver, connection = socket.socketpair()
+    errors: list[BaseException] = []
+
+    def _drive() -> None:
+        try:
+            drive_until_released_or_dropped(
+                connection, _FakeSessionAdvancer(), lambda session: triggered
+            )
+        except BaseException as error:  # noqa: BLE001 -- surfaced to the test thread
+            errors.append(error)
+
+    with driver, connection:
+        thread = threading.Thread(target=_drive)
+        thread.start()
+        try:
+            driver.sendall(
+                encode_runner_session_frame(
+                    RunnerSessionFrame(
+                        RunnerSessionMessage.STARTED,
+                        1,
+                        binding,
+                        invocation,
+                        ((1).to_bytes(8, "big"),),
+                    )
+                )
+            )
+            written = _read_frame(driver)
+            assert written == triggered
+
+            driver.sendall(
+                encode_runner_session_frame(
+                    RunnerSessionFrame(
+                        RunnerSessionMessage.RELEASED,
+                        2,
+                        binding,
+                        invocation,
+                        (b"released",),
+                    )
+                )
+            )
+        finally:
+            thread.join(timeout=5)
+
+    assert not errors
+
+
+def test_runner_core_transport_drive_writes_nothing_when_on_started_returns_none() -> (
+    None
+):
+    """The `on_started is not None and ... is not None` guard: STARTED still
+    reaches the hook, but a `None` answer writes nothing back for it."""
+    binding = _binding(AgentExecutionRequestHash("a" * 64), RunnerManifestId("d" * 64))
+    invocation = RunnerInvocationId("D" * 43)
+    driver, connection = socket.socketpair()
+    errors: list[BaseException] = []
+
+    def _drive() -> None:
+        try:
+            drive_until_released_or_dropped(
+                connection, _FakeSessionAdvancer(), lambda session: None
+            )
+        except BaseException as error:  # noqa: BLE001 -- surfaced to the test thread
+            errors.append(error)
+
+    with driver, connection:
+        thread = threading.Thread(target=_drive)
+        thread.start()
+        try:
+            driver.sendall(
+                encode_runner_session_frame(
+                    RunnerSessionFrame(
+                        RunnerSessionMessage.STARTED,
+                        1,
+                        binding,
+                        invocation,
+                        ((1).to_bytes(8, "big"),),
+                    )
+                )
+            )
+            driver.settimeout(0.2)
+            with pytest.raises(TimeoutError):
+                driver.recv(1)
+            driver.settimeout(None)
+
+            driver.sendall(
+                encode_runner_session_frame(
+                    RunnerSessionFrame(
+                        RunnerSessionMessage.RELEASED,
+                        2,
+                        binding,
+                        invocation,
+                        (b"released",),
+                    )
+                )
+            )
+        finally:
+            thread.join(timeout=5)
+
+    assert not errors
 
 
 class _FakeSessionAdvancer:

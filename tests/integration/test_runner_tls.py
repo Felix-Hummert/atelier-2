@@ -6,6 +6,7 @@ import json
 import ssl
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -196,6 +197,33 @@ def test_core_peer_document_round_trips_through_its_wire_encoding() -> None:
     document = _core_peer_document(leaf)
 
     assert decode_core_peer_document(encode_core_peer_document(document)) == document
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        pytest.param(lambda body: body.pop("dns_name"), id="missing-field"),
+        pytest.param(lambda body: body.__setitem__("port", 0), id="zero-port"),
+        pytest.param(
+            lambda body: body.__setitem__("port", 65536), id="over-range-port"
+        ),
+        pytest.param(
+            lambda body: body.__setitem__("port", "not-a-port"), id="non-integer-port"
+        ),
+    ),
+)
+def test_core_peer_document_decode_refuses_a_corrupt_document(
+    mutate: Callable[[dict[str, object]], object],
+) -> None:
+    """The handoff crosses a container/filesystem boundary into a TLS peer-pin
+    decision, so a missing field or an out-of-range port is refused by one
+    named code rather than surfacing a raw `KeyError` or an unchecked port."""
+    _ca, leaf = _certificate()
+    body = json.loads(encode_core_peer_document(_core_peer_document(leaf)))
+    mutate(body)
+
+    with pytest.raises(ValueError, match="core-peer-document-corrupt"):
+        decode_core_peer_document(json.dumps(body).encode("utf-8"))
 
 
 def test_core_peer_leaf_validation_accepts_the_exact_pinned_certificate() -> None:

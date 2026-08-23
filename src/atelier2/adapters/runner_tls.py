@@ -61,6 +61,10 @@ class CorePeerDocument:
     fingerprint: str
     port: int
 
+    def __post_init__(self) -> None:
+        if type(self.port) is not int or not 1 <= self.port <= 65535:
+            raise ValueError("core-peer-document-corrupt")
+
 
 def encode_core_peer_document(document: CorePeerDocument) -> bytes:
     return json.dumps(
@@ -76,13 +80,23 @@ def encode_core_peer_document(document: CorePeerDocument) -> bytes:
 
 
 def decode_core_peer_document(raw: bytes) -> CorePeerDocument:
-    parsed = json.loads(raw)
-    return CorePeerDocument(
-        str(parsed["dns_name"]),
-        str(parsed["uri"]),
-        str(parsed["fingerprint"]),
-        int(parsed["port"]),
-    )
+    """Decode one core-peer.json handoff, or refuse any other byte sequence.
+
+    This document crosses a container and filesystem boundary and feeds a TLS
+    peer-pin decision directly, so a missing field, a wrong shape, or a port
+    outside the valid range is refused with one named code rather than
+    surfacing a raw `KeyError` or an unchecked value to that decision.
+    """
+    try:
+        parsed = json.loads(raw)
+        return CorePeerDocument(
+            str(parsed["dns_name"]),
+            str(parsed["uri"]),
+            str(parsed["fingerprint"]),
+            int(parsed["port"]),
+        )
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        raise ValueError("core-peer-document-corrupt") from error
 
 
 def runner_uri_for_invocation(
