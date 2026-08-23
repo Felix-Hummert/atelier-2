@@ -44,9 +44,10 @@ function open(pathname: string, overrides: Partial<CockpitApi> = {}) {
  * way back and never restates its own title in a crumb beside it. The two
  * acceptance sentences that pinned the old trail
  * (`the-deepest-level-shows-the-whole-way-it-sits-on`,
- * `every-level-names-the-way-back-up`) both serve the retired REQ-UI-01, and
- * retiring them formally is the requirement revision's job (#521), not this
- * file's — so these tests carry no claim.
+ * `every-level-names-the-way-back-up`) served the superseded REQ-UI-01 and were
+ * retired with it in `acceptance/131-the-workshop-has-three-levels.toml`
+ * (#552) — so these tests carry no claim, and there is no sentence left for
+ * them to carry.
  */
 describe("every page carries one way back and does not repeat its own title", () => {
   it("leads a run back to the Board, the rail destination it belongs to", async () => {

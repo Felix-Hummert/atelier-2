@@ -814,8 +814,9 @@ describe("project occupancy editor", () => {
  * `every-level-names-the-way-back-up` said the way leads run → project →
  * studio. It no longer does: the project is the context above the four rail
  * destinations, not a level between them, and a run leads back to the Board it
- * came from. The sentence serves the retired REQ-UI-01, so retiring it is the
- * requirement revision's job (#521) and this test carries no claim.
+ * came from. That sentence served the superseded REQ-UI-01 and was retired with
+ * it in `acceptance/131-the-workshop-has-three-levels.toml` (#552), so this
+ * test carries no claim.
  */
 describe("the project names the way back up", () => {
   it("walks from the project into the Board", async () => {
