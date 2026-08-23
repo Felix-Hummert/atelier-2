@@ -33,9 +33,11 @@ from atelier2.adapters.free_runner_executor import (
     FreeRunnerHoldJob,
     FreeRunnerPrintJob,
     encode_free_runner_job,
+    free_runner_auth_reference,
     refuse_unbound_runner_a_request,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.adapters.runner_cli_pins import runner_executor_cli_pin
 from atelier2.adapters.runner_tls import (
     CORE_DNS_NAME,
     CORE_SESSION_PORT,
@@ -88,8 +90,6 @@ from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
 from atelier2.runner.__main__ import CandidateScenario
-from atelier2.runner.authorization import free_runner_auth_reference
-from atelier2.runner.executors import runner_executor_cli_pin
 
 _OUTPUT_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b"true")
 

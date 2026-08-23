@@ -24,7 +24,13 @@ from atelier2.adapters.free_runner_executor import (
     FreeRunnerPrintJob,
     decode_free_runner_job,
     encode_free_runner_job,
+    free_runner_auth_reference,
     refuse_unbound_runner_a_request,
+    resolve_free_runner_authorization,
+)
+from atelier2.adapters.runner_cli_pins import (
+    RunnerToolchainUnpinned,
+    runner_executor_cli_pin,
 )
 from atelier2.adapters.runner_tls import runner_uri_for_invocation
 from atelier2.application.run_runner_session import (
@@ -59,6 +65,7 @@ from atelier2.contracts.agents import (
     AgentRole,
     AuthMode,
     AuthProfileRevision,
+    AuthReference,
     ProviderId,
     ResolvedAgentBinding,
 )
@@ -89,15 +96,8 @@ from atelier2.runner.__main__ import (
     _invocation_for_session,
     _load_verified_client_identity,
 )
-from atelier2.runner.authorization import (
-    AuthReference,
-    free_runner_auth_reference,
-    resolve_free_runner_authorization,
-)
 from atelier2.runner.executors import (
     RunnerExecutorUnavailable,
-    RunnerToolchainUnpinned,
-    runner_executor_cli_pin,
     select_runner_executor,
 )
 from atelier2.runner.session import _CoreFrameFence

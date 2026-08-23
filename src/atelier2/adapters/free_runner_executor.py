@@ -18,6 +18,8 @@ from atelier2.contracts.agents import (
     AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
     AuthMode,
+    AuthProfileRevision,
+    AuthReference,
     ProviderId,
 )
 from atelier2.contracts.runner_sessions import MAXIMUM_RUNNER_A_TEXT_BYTES
@@ -285,3 +287,35 @@ def refuse_unbound_runner_a_request(request: AgentExecutionRequestV2) -> None:
         or configuration.requested_capability not in factory.declared_capabilities
     ):
         raise ValueError("runner-a-executor-unavailable")
+
+
+@dataclass(frozen=True)
+class FreeRunnerAuthorization:
+    """The fake-free executor receives no credential material."""
+
+
+def free_runner_auth_reference(profile: AuthProfileRevision) -> AuthReference:
+    """The one deterministic, secret-free reference for a fake-free profile.
+
+    Both Core's encode side (the disposable `#301` witness process today; a
+    real Core composition later) and the Runner's resolve side
+    (`runner.session`) call this module directly, so the reference either
+    end computes for the same `AuthProfileRevision` can never drift into two
+    owners.
+    """
+    return AuthReference(
+        f"urn:atelier2:fake-free-auth:v1:{profile.revision_hash.value}"
+    )
+
+
+def resolve_free_runner_authorization(
+    profile: AuthProfileRevision, reference: AuthReference
+) -> FreeRunnerAuthorization:
+    """Confirm `reference` is exactly this profile's own derived reference."""
+    if (
+        profile.provider_id.value != "fake-free"
+        or profile.auth_mode is not AuthMode.API_KEY
+        or reference != free_runner_auth_reference(profile)
+    ):
+        raise ValueError("auth-profile-unresolvable")
+    return FreeRunnerAuthorization()
