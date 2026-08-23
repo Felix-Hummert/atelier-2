@@ -79,6 +79,15 @@ class NodeReceiptReason(StrEnum):
     PROCESS_SUPERVISION_FAILED = "process-supervision-failed"
     AGENT_REFUSED = "agent-refused"
     PROJECT_VERIFICATION_FAILED = "project-verification-failed"
+    CANCELLED_BY_OPERATOR = "cancelled-by-operator"
+    """The running node's own receipt when an operator's run-cancel ends it.
+
+    Deliberately not `run-cancelled`: ADR 0006 already gives that token to the
+    `blocked` receipt a *not-yet-started* node gets when a run cancel cascades
+    over the ready set (`docs/decisions/0006-node-vocabulary.md`). This token
+    names the other half -- the node that was actually running -- so the two
+    never collide once both have writers.
+    """
 
 
 def node_receipt_reason(token: NodeReceiptReason, verdict: str | None = None) -> str:

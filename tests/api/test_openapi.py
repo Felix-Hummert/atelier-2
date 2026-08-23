@@ -276,7 +276,7 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head admits occupancy under a `project1.` public project reference.
+    it. This head admits `CANCELLED` as a `RunResourceV3.state` (#439 P1).
     Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 

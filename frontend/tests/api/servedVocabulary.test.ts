@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   NODE_STATES,
   PUBLIC_ATTEMPT_STATES,
+  RUN_STATES_V3,
   agentConfigurationRevisionPageSchema,
   authProfileRevisionPageSchema,
   waitAnswerSchemaV3Schema,
@@ -39,6 +40,12 @@ describe("the served vocabulary", () => {
   it("proves(the-browser-and-the-served-contract-know-the-same-node-states): the browser decodes exactly the node states the document serves", () => {
     expect([...NODE_STATES]).toEqual(
       servedDocument.components.schemas.NodeRailResource?.properties?.state?.enum
+    );
+  });
+
+  it("decodes exactly the V3 run states the document serves", () => {
+    expect([...RUN_STATES_V3]).toEqual(
+      servedDocument.components.schemas.RunResourceV3?.properties?.state?.enum
     );
   });
 

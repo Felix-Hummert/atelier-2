@@ -34,6 +34,7 @@ from atelier2.adapters.dbos.schema import (
     _V17_AGENT_ATTEMPT_TRIGGERS,
     _V23_AGENT_ATTEMPT_TRIGGERS,
     _V24_AGENT_ATTEMPT_TRIGGERS,
+    _VERSION_TWENTY,
     PRODUCT_SCHEMA_HANDOFF,
     SCHEMA_VERSION,
     V13_SCHEMA_HANDOFF,
@@ -45,6 +46,7 @@ from atelier2.adapters.dbos.schema import (
     V26_SCHEMA_HANDOFF,
     V27_SCHEMA_HANDOFF,
     V28_SCHEMA_HANDOFF,
+    V29_SCHEMA_HANDOFF,
     MigrationRequired,
     _rebuild_product_table,
     _require_product_shape,
@@ -933,6 +935,24 @@ def _drop_queue_items_table(connection: sqlite3.Connection) -> None:
     connection.execute(f"DROP TABLE {queue_items.name}")
 
 
+def _revert_cancelled_run_state(connection: sqlite3.Connection) -> None:
+    """Restore the pre-CANCELLED `runs` CHECK the #439 P1 hop widened.
+
+    `runs`' shape has been unchanged since the V20 round column, so every
+    "exact vNN store" fixture between V21 and V29 shares the one V20 shape --
+    the #439 P1 hop is simply the first since then to touch it again.
+    """
+
+    _rebuild_product_table(
+        connection,
+        runs,
+        "runs_after_cancelled_state",
+        ("runs_binding_no_update",),
+        SCHEMA_VERSION,
+        _VERSION_TWENTY,
+    )
+
+
 def _revert_runner_evidence_attempts(connection: sqlite3.Connection) -> None:
     """Restore the exact V26 attempt table and its pre-Runner trigger."""
 
@@ -956,6 +976,7 @@ def _create_exact_v21_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         _revert_agent_refused_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
@@ -989,6 +1010,7 @@ def _create_exact_v22_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         _revert_agent_refused_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
@@ -1009,6 +1031,7 @@ def _create_exact_v23_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         _revert_project_verification_failed_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
@@ -1029,6 +1052,7 @@ def _create_exact_v24_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
@@ -1049,6 +1073,7 @@ def _create_exact_v25_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
         connection.execute(
@@ -1068,6 +1093,7 @@ def _create_exact_v26_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -1116,6 +1142,7 @@ def _create_exact_v27_store(database_path: Path, *, access: bool = False) -> Non
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V27_SCHEMA_HANDOFF.version,),
@@ -1133,12 +1160,33 @@ def _create_exact_v28_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V28_SCHEMA_HANDOFF.version,),
         )
         connection.commit()
         _require_product_shape(connection, V28_SCHEMA_HANDOFF.version)
+
+
+def _create_exact_v29_store(database_path: Path) -> None:
+    """A current store with the pre-CANCELLED runs CHECK: the published V29 shape.
+
+    Unlike V28's fixture, `queue_items` stays: it is the table V29 itself
+    added, and this store already carries every hop up to and including it.
+    """
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _revert_cancelled_run_state(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V29_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V29_SCHEMA_HANDOFF.version)
 
 
 def _v27_living_rows(database_path: Path) -> tuple[tuple[object, ...], ...]:
@@ -1337,7 +1385,7 @@ def test_an_exact_v24_store_migrates_to_v25(
     engine.dispose()
 
 
-def test_an_exact_v28_store_migrates_to_v29(
+def test_an_exact_v28_store_migrates_through_v29_to_v30(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -1350,7 +1398,7 @@ def test_an_exact_v28_store_migrates_to_v29(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert "28" in shown.out and "29" in shown.out
+    assert "28" in shown.out and "29" in shown.out and "30" in shown.out
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -1366,7 +1414,55 @@ def test_an_exact_v28_store_migrates_to_v29(
     engine.dispose()
 
 
-def test_an_exact_v25_store_migrates_through_v27_and_v28_to_v29(
+def test_an_exact_v29_store_migrates_to_v30(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v29_store(database_path)
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 29"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+
+    shown = capsys.readouterr()
+    assert "29" in shown.out and "30" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
+        )
+        revision_hash = "cc" * 32
+        connection.execute(
+            workflow_revisions.insert().values(
+                revision_hash=revision_hash, document=b"post-v30-migration"
+            )
+        )
+        connection.execute(
+            runs.insert().values(
+                run_id="post-v30-run",
+                bootstrap_workflow_id="post-v30-workflow",
+                revision_hash=revision_hash,
+                workflow_format_version=1,
+                agent_binding_set_hash=None,
+                current_node_id="final",
+                current_round_ordinal=FIRST_ROUND_ORDINAL,
+                state="CANCELLED",
+                state_version=0,
+                last_event_sequence=0,
+                terminal_hash="0" * 64,
+            )
+        )
+        connection.commit()
+    engine.dispose()
+
+
+def test_an_exact_v25_store_migrates_through_v27_and_v28_and_v29_to_v30(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -1379,7 +1475,7 @@ def test_an_exact_v25_store_migrates_through_v27_and_v28_to_v29(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert all(step in shown.out for step in ("25", "26", "27", "28", "29"))
+    assert all(step in shown.out for step in ("25", "26", "27", "28", "29", "30"))
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -1404,7 +1500,7 @@ def test_an_exact_v25_store_migrates_through_v27_and_v28_to_v29(
     engine.dispose()
 
 
-def test_an_exact_v26_store_migrates_through_v27_and_v28_to_v29(
+def test_an_exact_v26_store_migrates_through_v27_and_v28_and_v29_to_v30(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -1417,7 +1513,7 @@ def test_an_exact_v26_store_migrates_through_v27_and_v28_to_v29(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert all(step in shown.out for step in ("26", "27", "28", "29"))
+    assert all(step in shown.out for step in ("26", "27", "28", "29", "30"))
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
     engine = create_canonical_engine(database_path)
     initialize_schema(engine)
@@ -1450,6 +1546,7 @@ def test_v26_attempt_bytes_cross_v27_and_v28_unchanged_with_none_evidence(
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",

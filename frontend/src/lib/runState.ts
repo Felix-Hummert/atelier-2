@@ -6,16 +6,19 @@ import type { AnyRun } from "../api/client";
  * One owner for every level of the workshop, so "waits for a human" is decided
  * once. The records below are total over the served states of *every* format a
  * listing can hold: a state added to the wire is a type error here rather than a
- * run that silently waits for nobody. A version 3 run adds no state of its own --
- * it can only be started or completed -- so grouping it needed no new word.
+ * run that silently waits for nobody. `CANCELLED` is a V3-only word (#439 P1) --
+ * no writer produces it before #439 P3 gives an operator's run-cancel command
+ * its own end-of-run seam, but the wire vocabulary already carries it, so the
+ * word is grouped here rather than left to fall through.
  */
-export type RunStanding = "running" | "waiting" | "failed" | "done";
+export type RunStanding = "running" | "waiting" | "failed" | "cancelled" | "done";
 
 const standings: Record<AnyRun["state"], RunStanding> = {
   STARTED: "running",
   WAITING_INPUT: "waiting",
   WAITING_RECONCILIATION: "waiting",
   FAILED: "failed",
+  CANCELLED: "cancelled",
   COMPLETED: "done"
 };
 
@@ -25,6 +28,7 @@ const humanMoves: Record<AnyRun["state"], string | null> = {
   WAITING_INPUT: "Answer",
   WAITING_RECONCILIATION: "Reconcile",
   FAILED: null,
+  CANCELLED: null,
   COMPLETED: null
 };
 
@@ -33,6 +37,7 @@ export const standingWords: Record<RunStanding, string> = {
   running: "Running",
   waiting: "Waiting for you",
   failed: "Failed",
+  cancelled: "Cancelled",
   done: "Done"
 };
 
@@ -41,6 +46,7 @@ export const standingOrder: readonly RunStanding[] = [
   "running",
   "waiting",
   "failed",
+  "cancelled",
   "done"
 ];
 
@@ -49,6 +55,7 @@ export const standingMarks: Record<RunStanding, string> = {
   running: "▲",
   waiting: "⬢",
   failed: "◇",
+  cancelled: "⊘",
   done: "●"
 };
 
