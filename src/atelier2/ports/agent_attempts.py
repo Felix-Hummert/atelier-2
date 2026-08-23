@@ -23,6 +23,8 @@ from atelier2.contracts.agent_attempts import (
 from atelier2.contracts.agents import AgentExecutionRequestV2, AgentExecutionResult
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.pages import PageLimit
+from atelier2.contracts.run_bindings import AnyRun
+from atelier2.contracts.run_cancellations import CancelRunRequest
 from atelier2.contracts.runner_terminal_evidence_codec import (
     RunnerTerminalEvidenceRecordCorrupt,
     RunnerTerminalEvidenceRecordMissing,
@@ -202,6 +204,80 @@ type AgentAttemptCancellationResult = (
 )
 
 
+class RunCancellationRefusal(StrEnum):
+    """Why the store's own truth refuses a *new* run-cancel command right now.
+
+    #439's D3 names five reasons a run cannot be cancelled. This is the closed
+    set both sides share: this module's store-truth refusal today, and #439
+    P4's later `RunCancellability` projection, which renders the full
+    predicate -- including the reasons no CAS transaction here ever has to
+    decide because no command was submitted to observe them (`ALREADY_ENDED`
+    of a *specific attempt* the run has already moved past, for instance,
+    collapses into `BETWEEN_NODES` before a fresh command can reach it). One
+    token per reason, never two spellings of the same fact.
+    """
+
+    BETWEEN_NODES = "between-nodes"
+    WAITING_FOR_YOU = "waiting-for-you"
+    NODE_RUNS_NO_AGENT = "node-runs-no-agent"
+    ALREADY_CANCELLING = "already-cancelling"
+    ALREADY_ENDED = "already-ended"
+
+
+@dataclass(frozen=True)
+class RunCancellationAccepted:
+    """A genuinely new command moved the run's live attempt to `CANCEL_REQUESTED`."""
+
+    attempt: AgentAttempt
+
+
+@dataclass(frozen=True)
+class RunCancellationTerminalRetry:
+    """The exact command was already accepted, and cleanup already ended it."""
+
+    run: AnyRun
+
+
+@dataclass(frozen=True)
+class RunCancellationOvertakenBySuccess:
+    """The exact command was accepted, but the attempt succeeded first.
+
+    The run is not terminal because of this command -- it kept going on the
+    success. `terminal` is not a field here the way it is on
+    `AgentAttemptCancellationAccepted`: there is no terminal attempt state a
+    caller could read as "this cancel ended the run", because it did not.
+    """
+
+    run: AnyRun
+
+
+@dataclass(frozen=True)
+class RunCancellationNotCancellable:
+    reason: RunCancellationRefusal
+
+
+@dataclass(frozen=True)
+class RunCancellationCommandConflict:
+    """This run's live attempt already carries a different command's cancel."""
+
+
+@dataclass(frozen=True)
+class RunCancellationRunMissing:
+    pass
+
+
+type RunCancellationResult = (
+    RunCancellationAccepted
+    | RunCancellationTerminalRetry
+    | RunCancellationOvertakenBySuccess
+    | RunCancellationNotCancellable
+    | RunCancellationCommandConflict
+    | RunCancellationRunMissing
+    | DurableWriteUnavailable
+    | DurableStateCorrupt
+)
+
+
 class AgentAttemptReader(Protocol):
     """Read one durable attempt back: all that workspace reconciliation needs."""
 
@@ -346,3 +422,7 @@ class TransactionalAgentAttemptCanceller(Protocol):
     def request_cancellation(
         self, request: CancelAgentAttemptRequest
     ) -> AgentAttemptCancellationResult: ...
+
+    def request_run_cancellation(
+        self, request: CancelRunRequest
+    ) -> RunCancellationResult: ...

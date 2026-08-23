@@ -14,6 +14,7 @@ from atelier2.contracts.agent_attempts import (
     CancelAgentAttemptRequest,
 )
 from atelier2.contracts.agents import AgentExecutorOperationalIdentity
+from atelier2.contracts.run_cancellations import RunCancelCommandId
 from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
@@ -225,4 +226,55 @@ def test_cancellation_rejects_noncanonical_attempt_identity_before_the_port() ->
 
     assert response.status_code == 400
     assert response.json()["type"].endswith(":invalid-agent-attempt-id")
+    assert canceller.requests == []
+
+
+def test_cancellation_rejects_a_run_cancel_namespaced_command_id_before_the_port() -> (
+    None
+):
+    """#439's namespace invariant, from the attempt-route side.
+
+    A `command_id` an operator's run-cancel confirmation minted
+    (`RunCancelCommandId.for_key`) can never legitimately arrive on this
+    route: that mint only ever happens server-side, from a run-cancel
+    idempotency key, never from a client-supplied attempt command id. The
+    route refuses it before the port is even asked, the same way it already
+    refuses a noncanonical attempt id.
+    """
+    canceller = _Canceller(AgentAttemptCancellationRunMissing())
+    client = TestClient(
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=api_ports(
+                run_queries=_RunQueries(), agent_attempt_canceller=canceller
+            ),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        )
+    )
+    attempt = _attempt()
+    reserved_command_id = RunCancelCommandId.for_key("operator-key-1").value
+
+    response = client.post(
+        "/atelier/api/v1/runs/"
+        + encode_public_run_reference(attempt.run_id)
+        + "/agent-attempts/"
+        + attempt.attempt_id.value
+        + "/cancellations",
+        json={
+            "command_id": reserved_command_id,
+            "expected_attempt_state_version": 0,
+            "replacement": "NONE",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["type"].endswith(":invalid-request")
+    assert response.json()["invalid_fields"] == [
+        {
+            "path": "body/command_id",
+            "reason": "belongs to the reserved run-cancel command namespace",
+        }
+    ]
     assert canceller.requests == []
