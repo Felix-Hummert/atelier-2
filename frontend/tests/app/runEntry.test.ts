@@ -16,6 +16,8 @@ import {
   type WorkflowRevisionDetail
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { projectPageCopy } from "../../src/lib/projectPageCopy";
+import { standingMarks, standingWords } from "../../src/lib/runState";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import { base64Bytes, bytesBase64 } from "../support/exactBytes";
 
@@ -42,9 +44,14 @@ describe("mobile run entry", () => {
     });
     render(App, { props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) } });
 
-    expect((await screen.findByRole("link", { name: /run-draft/i })).getAttribute("href")).toBe(
-      `/atelier/runs/${publicReference}`
-    );
+    // The project counts the work; the rows themselves are the Board's (#536).
+    const work = await screen.findByRole("region", { name: projectPageCopy.workTitle });
+    await within(work).findAllByRole("listitem");
+    expect(
+      within(work)
+        .getAllByRole("listitem")
+        .map((entry) => entry.textContent?.replace(/\s+/g, " ").trim())
+    ).toEqual([`${standingMarks.running} 1 ${standingWords.running}`]);
     expect(screen.queryByRole("button", { name: /project runs/ })).toBeNull();
   });
 
@@ -55,8 +62,7 @@ describe("mobile run entry", () => {
     });
 
     expect(within(await screen.findByRole("status")).getByText("Looking…").isConnected).toBe(true);
-    expect(screen.queryByRole("region", { name: "Running" })).toBeNull();
-    expect(screen.queryByRole("listitem")).toBeNull();
+    expect(screen.queryByText(standingWords.running)).toBeNull();
   });
 
   it("shows a project with no runs as empty of groups, still naming where a run comes from", async () => {
@@ -65,9 +71,10 @@ describe("mobile run entry", () => {
       props: { cockpitApi: api({ listRuns }), mutationJournal: new MutationJournal(sessionStorage) }
     });
 
-    expect((await screen.findByText("No runs here yet.")).isConnected).toBe(true);
-    expect(screen.getByRole("link", { name: "Start a run" }).getAttribute("href")).toBe("/atelier/new");
-    expect(screen.queryByRole("listitem")).toBeNull();
+    expect((await screen.findByText(projectPageCopy.noRuns)).isConnected).toBe(true);
+    expect(
+      screen.getByRole("link", { name: projectPageCopy.noRunsNext }).getAttribute("href")
+    ).toBe("/atelier/workflows");
     expect(screen.queryByRole("status")).toBeNull();
   });
 
@@ -83,7 +90,7 @@ describe("mobile run entry", () => {
       }
     });
 
-    await fireEvent.click(await screen.findByRole("radio", { name: new RegExp(revisionHash) }));
+    await fireEvent.click(await screen.findByRole("radio", { name: /Unnamed workflow/ }));
     expect(screen.getByText("run-draft").isConnected).toBe(true);
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
 
@@ -472,7 +479,7 @@ describe("mobile run entry", () => {
         mutationJournal: new MutationJournal(sessionStorage)
       }
     });
-    const option = await screen.findByRole("radio", { name: new RegExp(revisionHash) });
+    const option = await screen.findByRole("radio", { name: /Unnamed workflow/ });
 
     await fireEvent.click(option);
     expect(await screen.findByText("Workflow detail unavailable")).toBeTruthy();
@@ -511,7 +518,7 @@ describe("mobile run entry", () => {
     render(App, {
       props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
     });
-    await fireEvent.click(await screen.findByRole("radio", { name: new RegExp(revisionHash) }));
+    await fireEvent.click(await screen.findByRole("radio", { name: /Unnamed workflow/ }));
     expect((await screen.findByText("Looking…")).isConnected).toBe(true);
     expect(screen.queryByRole("button", { name: /workflow detail/ })).toBeNull();
     await fireEvent.click(screen.getByLabelText("Publish YAML"));
@@ -540,7 +547,7 @@ describe("mobile run entry", () => {
     const first = render(App, {
       props: { cockpitApi, mutationJournal: journal, createRunId: () => "run-draft" }
     });
-    await fireEvent.click(await screen.findByRole("radio", { name: new RegExp(revisionHash) }));
+    await fireEvent.click(await screen.findByRole("radio", { name: /Unnamed workflow/ }));
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", expect.stringContaining("connection closed"));
     const firstBytes = vi.mocked(cockpitApi.start).mock.calls[0]?.[0].body_base64;
@@ -588,7 +595,7 @@ describe("mobile run entry", () => {
     render(App, {
       props: { cockpitApi, mutationJournal: journal, createRunId: () => "run-draft" }
     });
-    await fireEvent.click(await screen.findByRole("radio", { name: new RegExp(revisionHash) }));
+    await fireEvent.click(await screen.findByRole("radio", { name: /Unnamed workflow/ }));
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
 
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", expect.stringContaining("Run not found"));
@@ -613,7 +620,7 @@ describe("mobile run entry", () => {
     render(App, {
       props: { cockpitApi, mutationJournal: journal, createRunId: () => "run-draft" }
     });
-    await fireEvent.click(await screen.findByRole("radio", { name: new RegExp(revisionHash) }));
+    await fireEvent.click(await screen.findByRole("radio", { name: /Unnamed workflow/ }));
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
 
     await screen.findByRole("alert");
@@ -631,7 +638,7 @@ describe("mobile run entry", () => {
         createRunId: () => "run-draft"
       }
     });
-    await fireEvent.click(await screen.findByRole("radio", { name: new RegExp(revisionHash) }));
+    await fireEvent.click(await screen.findByRole("radio", { name: /Unnamed workflow/ }));
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(window.location.pathname).toBe(`/atelier/runs/${publicReference}`));
 

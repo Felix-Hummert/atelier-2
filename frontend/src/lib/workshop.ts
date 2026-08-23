@@ -4,64 +4,45 @@ import type { CockpitRoute } from "./route";
 
 /**
  * The four destinations the target-UI rail names (mockup v5): Chat, Board,
- * Workflows, History. A reachable one opens a page this cockpit already
- * serves. A deferred one is named and disabled, with the vision sentence
- * that owns it — never a dead click and never a fake page.
+ * Workflows, History. Each one opens a page this cockpit serves — the rail
+ * holds no disabled item, because a rail entry that cannot be clicked is a
+ * promise the house does not keep. What a page cannot do yet, that page says
+ * in its own words.
  */
-export type ReachableWorkshopDestination = {
-  id: "board" | "workflows" | "history";
+export type WorkshopDestination = {
+  id: "chat" | "board" | "workflows" | "history";
   label: string;
-  path: "/atelier" | "/atelier/workflows" | "/atelier/history";
+  path: "/atelier/chat" | "/atelier" | "/atelier/workflows" | "/atelier/history";
 };
-
-export type DeferredWorkshopDestination = {
-  id: "chat";
-  label: string;
-  vision: string;
-  visionRef: string;
-};
-
-export type WorkshopDestination = ReachableWorkshopDestination | DeferredWorkshopDestination;
 
 export const WORKSHOP_DESTINATIONS: readonly WorkshopDestination[] = [
-  {
-    id: "chat",
-    label: "Chat",
-    vision: "The conductor door — not built yet. Vision #7.",
-    visionRef: "#7"
-  },
+  { id: "chat", label: "Chat", path: "/atelier/chat" },
   { id: "board", label: "Board", path: "/atelier" },
   { id: "workflows", label: "Workflows", path: "/atelier/workflows" },
   { id: "history", label: "History", path: "/atelier/history" }
 ];
 
-export function destinationIsReachable(
-  destination: WorkshopDestination
-): destination is ReachableWorkshopDestination {
-  return "path" in destination;
-}
-
 /**
  * Which rail item the current page sits under. A missing page sits under none.
  *
- * `new` marks Workflows, not History (Operator ruling 22.08.): starting a run
- * is a Workflows-owned action reachable from Board and from a workflow's own
- * detail page, not a History concern. `project` marks nothing: History moved
- * to its own page (#526), and the old project level stays reachable at its
- * URL only as a seed for a future project area, no longer as the rail's
- * History destination. `run` still marks History: a run reached from a
- * History row is genuinely history being read, live or finished.
+ * `new` marks Workflows (Operator ruling 22.08.): starting a run is a
+ * Workflows-owned action reachable from Board and from a workflow's own detail
+ * page, not a History concern. `run` marks Board: a run being watched is the
+ * Board's own row opened, and the run page's trail leads back there. `project`
+ * marks nothing — the project is the context above the four destinations, not
+ * a fifth one.
  */
-export function activeWorkshopDestination(
-  route: CockpitRoute
-): ReachableWorkshopDestination["id"] | null {
-  if (route.page === "studio") {
+export function activeWorkshopDestination(route: CockpitRoute): WorkshopDestination["id"] | null {
+  if (route.page === "chat") {
+    return "chat";
+  }
+  if (route.page === "studio" || route.page === "run") {
     return "board";
   }
   if (route.page === "workflows" || route.page === "workflow" || route.page === "new") {
     return "workflows";
   }
-  if (route.page === "history" || route.page === "run") {
+  if (route.page === "history") {
     return "history";
   }
   return null;

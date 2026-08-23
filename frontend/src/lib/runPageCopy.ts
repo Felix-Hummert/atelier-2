@@ -3,12 +3,17 @@ import type { NodeState } from "./runProjection";
 /**
  * Words the V3 run page speaks. One owner, the #333 ruling: Prompt / Output / Log.
  *
- * Log is not on the event stream (#104). A STARTED run says that in
+ * Log is not on the event stream (#104). The Log tab says that in
  * `processLogInLease` rather than inventing a progress bar. Usage and a
  * provider-resolved model are not recorded receipt fields, so their empty
  * words live here rather than being invented at the call site. The model on
  * the receipt is the configuration's declared model. "Yet" is only for a
  * node that may still write; a finished node is not waiting for those facts.
+ *
+ * The page reads in one order (operator ruling 23.08.): what this run is and
+ * where it stands, what needs the operator now, the run as a picture, and
+ * everything else only behind a click. Every fact below that is neither the
+ * run's identity nor the pending decision lives inside the node panel's tabs.
  */
 
 export const runPageCopy = {
@@ -33,30 +38,45 @@ export const runPageCopy = {
   outputEmptyEnded: "Nothing written.",
   whoEmpty: "No receipt yet.",
   whoEmptyEnded: "No receipt.",
-  now: "Now",
-  noEventsYet: "No events yet.",
   processLogInLease: "Process log stays in the lease.",
-  connecting: "Connecting…",
-  reconnecting: "Reconnecting",
-  followingLive: "Following live",
-  streamEnded: "Ended",
-  streamDisconnected: "Disconnected",
-  streamStopped: "Stopped",
-  finished: "What finished",
+  needsYou: "Needs you",
+  questionMissing: "This step is waiting for you, but it carries no question.",
+  questionLooking: "Looking…",
+  answerLabel: "Your answer",
+  answerSubmit: "Answer",
+  answerContext: "What this decision reads",
+  answerContextNone: "This step reads no earlier result.",
+  answerContextLooking: "Reading what came before…",
+  answerContextUnreadable: "This result could not be read.",
+  tabResult: "Result",
+  tabInput: "Input",
+  tabPrompt: "Prompt",
+  tabLog: "Log",
+  tabEvidence: "Evidence",
+  tabsLabel: "What this node carries",
+  logAbsent:
+    "No process log is kept. It stays inside the executor's lease while the node runs and nothing stores it afterwards. #104 owns the export that will.",
+  inputReads: "Reads from",
+  inputNone: "This node reads no earlier node.",
+  inputElsewhere: "What each of those wrote stands on its own node, under Result.",
+  evidenceRun: "This run",
+  evidenceGap:
+    "A full evidence dossier — the receipt chain, cost, and a verifiable export — is #511. What the receipt records today stands above.",
+  streamStale: "This page is not following the run right now.",
+  readAgain: "Read again",
   eventEvidence: "Event evidence",
   terminalHash: "Terminal hash",
   runConfiguration: "Run configuration",
   workflowRevision: "Workflow revision",
-  terminalPending: "not yet",
   promptHash: "Prompt hash",
   outputHash: "Output hash",
   receiptHash: "Receipt hash",
   sealsPrompt: "exactly these prompt bytes, not the receipt request hash that frames identity around them",
   sealsOutput: "exactly these output bytes",
   sealsReceipt: "the receipt that named who ran this node",
-  sealsWorkflow: "the published document this run ran against",
-  sealsConfiguration: "the bindings and inputs this run started under",
-  sealsTerminal: "the finished run so an export can verify it",
+  sealsWorkflow: "the exact document this run followed",
+  sealsConfiguration: "the agents and inputs this run started under",
+  sealsTerminal: "the finished result, so a later reader can prove it was not altered",
   sealsEvent: "this durable event"
 } as const;
 

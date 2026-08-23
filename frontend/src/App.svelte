@@ -9,6 +9,7 @@
   } from "./lib/mutationJournal";
   import { cockpitRoute } from "./lib/route";
   import WorkshopShell from "./components/WorkshopShell.svelte";
+  import ChatPage from "./pages/ChatPage.svelte";
   import NewRunPage from "./pages/NewRunPage.svelte";
   import RunCockpitPage from "./pages/RunCockpitPage.svelte";
   import ProjectPage from "./pages/ProjectPage.svelte";
@@ -42,7 +43,9 @@
 <svelte:head><meta name="theme-color" content="#f2efe7" /><title>Atelier 2</title></svelte:head>
 
 <WorkshopShell bind:this={workshopShell} {route} {navigate}>
-  {#if route.page === "studio"}
+  {#if route.page === "chat"}
+    <ChatPage {navigate} />
+  {:else if route.page === "studio"}
     <StudioPage {cockpitApi} {navigate} />
   {:else if route.page === "project"}
     <ProjectPage {cockpitApi} {navigate} />
@@ -63,6 +66,13 @@
       {createReconcileCommandId}
     />
   {:else}
-    <section><p class="eyebrow">Atelier 2</p><h1>Page not found</h1><a class="button" href="/atelier" onclick={(event) => { event.preventDefault(); navigate("/atelier"); }}>Board</a></section>
+    <section class="surface">
+      <header class="surface-head">
+        <p class="eyebrow">Atelier</p>
+        <h1>Page not found</h1>
+        <p>No page lives at this address. The Board holds what is running.</p>
+      </header>
+      <a class="button primary" href="/atelier" onclick={(event) => { event.preventDefault(); navigate("/atelier"); }}>Board</a>
+    </section>
   {/if}
 </WorkshopShell>

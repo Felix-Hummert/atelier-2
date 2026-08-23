@@ -4,12 +4,17 @@ story = "https://github.com/FlexOr2/atelier-2/issues/131"
 # This is the first acceptance declaration for requirement 0003, whose own text
 # records that no story had declared a sentence for it yet.
 #
-# Head A declared the first three sentences below and withheld the fourth,
-# because it built neither the project level nor a way up out of the run and
-# would have passed the promise with half the path. Head B builds the project
-# level, and the run's existing way up now leads to it, so the fourth sentence
-# is declared here and proven by one test that walks the whole path in one go —
-# never by two tests of which either could carry the claim alone.
+# Two sentences of this declaration were retired on 23.08. (PR #551, issue
+# #552): "every-level-names-the-way-back-up" and
+# "the-deepest-level-shows-the-whole-way-it-sits-on". Both described the
+# studio → project → run trail of the superseded REQ-UI-01 — a way up out of
+# the run that leads to the project, and a run that names every step of that
+# path. The operator-approved v5 revision of requirement 0003 (PR #535) replaces
+# that ordering: the project is the context above the four rail destinations
+# rather than a level between them, and every surface carries one named way back
+# to the destination it belongs to. Neither sentence can be honestly proven
+# against that ordering, and a sentence no longer intended is retired here
+# rather than left declared and unclaimed.
 #
 # Three further sentences of #131 stay open with their owners named, and #131 is
 # neither verified nor retired while one of them is open: "no screen offers a
@@ -43,18 +48,8 @@ requirement = "REQ-UI-16"
 text = "An area with nothing in it names the one next action that is possible today, instead of staying blank or hinting at a capability that does not exist."
 
 [[sentence]]
-id = "every-level-names-the-way-back-up"
-requirement = "REQ-UI-01"
-text = "From every level a named way leads exactly one level up: from the run to the project, and from the project into the studio — a way the operator can read, never the browser's back button."
-
-[[sentence]]
 id = "the-workshop-reads-every-page-or-says-it-could-not"
 text = "The workshop reads the durable run list to its end instead of stopping at the first page, and when a page cannot be read it says that what is shown is incomplete rather than presenting a part as the whole."
-
-[[sentence]]
-id = "the-deepest-level-shows-the-whole-way-it-sits-on"
-requirement = "REQ-UI-01"
-text = "Standing in a run, the operator sees the whole way it sits on -- studio, project, run -- and can walk any step of it by name, while the level being looked at is named without being offered as somewhere to go."
 
 [[sentence]]
 id = "a-level-opens-from-a-pasted-link-and-survives-a-reload"

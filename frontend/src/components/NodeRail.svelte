@@ -13,6 +13,7 @@
     type NodeProjection
   } from "../lib/runProjection";
   import InfoHint from "./InfoHint.svelte";
+  import ProofAnchor from "./ProofAnchor.svelte";
   import StateMark, { stateLabels } from "./StateMark.svelte";
 
   export let run: Run;
@@ -160,7 +161,11 @@
             {#if value.kind === "context"}
               <div class="context-row">
                 <span><strong>{value.label}</strong><small>{value.bytes} bytes</small></span>
-                <code>{value.hash}</code>
+                <ProofAnchor
+                  label={`${value.label} fingerprint`}
+                  seals={`exactly these ${value.label.toLowerCase()} bytes`}
+                  value={value.hash}
+                />
                 <InfoHint label={`${value.label} info`} exact={value.exact} />
               </div>
             {:else}
@@ -171,7 +176,16 @@
                 </div>
                 <dl class="request-summary">
                   <div><dt>Format</dt><dd>{value.output.kind === "utf8" ? "UTF-8" : value.output.kind === "binary" ? "Binary" : "Empty"}</dd></div>
-                  <div><dt>SHA-256</dt><dd><code>{value.hash}</code></dd></div>
+                  <div>
+                    <dt>Fingerprint</dt>
+                    <dd>
+                      <ProofAnchor
+                        label="Output fingerprint"
+                        seals="exactly these output bytes"
+                        value={value.hash}
+                      />
+                    </dd>
+                  </div>
                 </dl>
                 {#if value.output.kind === "binary"}
                   <details><summary class="button">Details</summary><code class="exact-answer">{value.output.value}</code></details>

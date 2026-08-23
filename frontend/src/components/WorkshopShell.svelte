@@ -6,8 +6,7 @@
   import {
     WORKSHOP_DESTINATIONS,
     activeWorkshopDestination,
-    boardBadgeCounts,
-    destinationIsReachable
+    boardBadgeCounts
   } from "../lib/workshop";
 
   export let route: CockpitRoute;
@@ -33,35 +32,27 @@
     <div class="rail-brand">{wrapDisplayCopy(railCopy.brand)}</div>
 
     {#each WORKSHOP_DESTINATIONS as destination (destination.id)}
-      {#if destinationIsReachable(destination)}
-        <a
-          class="nav-destination"
-          class:active={active === destination.id}
-          href={destination.path}
-          aria-current={active === destination.id ? "page" : undefined}
-          onclick={(event) => {
-            event.preventDefault();
-            navigate(destination.path);
-          }}
-        >
-          <span class="nav-destination-mark" aria-hidden="true">{destinationMarks[destination.id]}</span>
-          <span class="nav-destination-label">{wrapDisplayCopy(destination.label)}</span>
-          {#if destination.id === "board" && $boardBadgeCounts !== null}
-            {#if $boardBadgeCounts.running > 0}
-              <span class="rail-badge rail-badge-running" aria-label={`${$boardBadgeCounts.running} ${wrapDisplayCopy(railCopy.runningBadgeSuffix)}`}>{$boardBadgeCounts.running}</span>
-            {/if}
-            {#if $boardBadgeCounts.needsYou > 0}
-              <span class="rail-badge rail-badge-needs-you" aria-label={`${$boardBadgeCounts.needsYou} ${wrapDisplayCopy(railCopy.needsYouBadgeSuffix)}`}>{$boardBadgeCounts.needsYou}</span>
-            {/if}
+      <a
+        class="nav-destination"
+        class:active={active === destination.id}
+        href={destination.path}
+        aria-current={active === destination.id ? "page" : undefined}
+        onclick={(event) => {
+          event.preventDefault();
+          navigate(destination.path);
+        }}
+      >
+        <span class="nav-destination-mark" aria-hidden="true">{destinationMarks[destination.id]}</span>
+        <span class="nav-destination-label">{wrapDisplayCopy(destination.label)}</span>
+        {#if destination.id === "board" && $boardBadgeCounts !== null}
+          {#if $boardBadgeCounts.running > 0}
+            <span class="rail-badge rail-badge-running" aria-label={`${$boardBadgeCounts.running} ${wrapDisplayCopy(railCopy.runningBadgeSuffix)}`}>{$boardBadgeCounts.running}</span>
           {/if}
-        </a>
-      {:else}
-        <span class="nav-destination unavailable" aria-disabled="true" title={wrapDisplayCopy(destination.vision)}>
-          <span class="nav-destination-mark" aria-hidden="true">{destinationMarks[destination.id]}</span>
-          <span class="nav-destination-label">{wrapDisplayCopy(destination.label)}</span>
-          <small class="nav-destination-vision">{wrapDisplayCopy(railCopy.later)}</small>
-        </span>
-      {/if}
+          {#if $boardBadgeCounts.needsYou > 0}
+            <span class="rail-badge rail-badge-needs-you" aria-label={`${$boardBadgeCounts.needsYou} ${wrapDisplayCopy(railCopy.needsYouBadgeSuffix)}`}>{$boardBadgeCounts.needsYou}</span>
+          {/if}
+        {/if}
+      </a>
     {/each}
 
     <div class="rail-grow"></div>

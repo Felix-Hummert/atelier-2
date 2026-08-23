@@ -12,6 +12,8 @@ import {
   type RunV3
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { standingWords } from "../../src/lib/runState";
+import { studioPageCopy } from "../../src/lib/studioPageCopy";
 import {
   describeStudioControl,
   questionForStudioControl,
@@ -325,14 +327,14 @@ describe("Running holds what moves and what needs a look, never a landed result"
     expect(rows).toHaveLength(2);
     const failedRow = within(running).getByText("Why? →").closest("a");
     expect(failedRow).not.toBeNull();
-    expect(within(failedRow as HTMLElement).getByText("Failed at agent").isConnected).toBe(true);
+    expect(within(failedRow as HTMLElement).getByText(`${standingWords.failed} · agent`).isConnected).toBe(true);
   });
 
   it("names the node a running row is at, from the run's current node", async () => {
     openStudio([startedRun()]);
 
     const running = await screen.findByRole("region", { name: "Running · 1" });
-    expect(within(running).getByText("Running agent").isConnected).toBe(true);
+    expect(within(running).getByText(`${standingWords.running} · agent`).isConnected).toBe(true);
   });
 });
 
@@ -368,7 +370,7 @@ describe("Done today shows every run that landed today in plain language, newest
     openStudio([completedRun()]);
 
     const done = await screen.findByRole("region", { name: "Done today · 1" });
-    expect(within(done).getByText("Completed").isConnected).toBe(true);
+    expect(within(done).getByText(standingWords.done).isConnected).toBe(true);
   });
 
   it("moves a run that landed on an earlier local day into History, while a run with no end timestamp stays visible", async () => {
@@ -465,11 +467,13 @@ describe("an empty board teaches the one next action", () => {
     const empty = await screen.findByRole("heading", { name: "Nothing is running" });
 
     expect(empty.isConnected).toBe(true);
-    expect(screen.getByText("Live").isConnected).toBe(true);
+    // A healthy stream says nothing at all: a permanent badge is chrome, and
+    // the empty state itself proves the board is following (operator, 23.08.).
+    expect(screen.queryByText("Live")).toBeNull();
     expect(screen.queryByText("Connecting")).toBeNull();
-    expect(screen.getAllByRole("link", { name: "Start your first workflow" })).toHaveLength(1);
+    expect(screen.getAllByRole("link", { name: studioPageCopy.emptyStart })).toHaveLength(1);
 
-    await fireEvent.click(screen.getByRole("link", { name: "Start your first workflow" }));
+    await fireEvent.click(screen.getByRole("link", { name: studioPageCopy.emptyStart }));
 
     expect((await screen.findByRole("heading", { name: "Workflows" })).isConnected).toBe(true);
   });
@@ -579,11 +583,11 @@ describe("the board holds GET /events", () => {
     expect(feed.openAttention).toHaveBeenCalledWith(expect.any(Object));
   });
 
-  it("names connecting as itself, not as an empty board", async () => {
+  it("withholds the empty board until the stream is actually following", async () => {
     openStudioHolding([]);
 
-    expect((await screen.findByText("Connecting")).isConnected).toBe(true);
     await waitFor(() => expect(screen.queryByText("Looking…")).toBeNull());
+    // Nothing has confirmed that nothing is running, so the board does not say it.
     expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
   });
 
@@ -710,7 +714,6 @@ describe("the board holds GET /events", () => {
     );
 
     expect((await screen.findByText("run missing")).isConnected).toBe(true);
-    expect(screen.getByText("Live").isConnected).toBe(true);
     expect(screen.queryByRole("region", { name: /Needs you/ })).toBeNull();
     expect(screen.queryAllByRole("link", { name: /Start/ })).toHaveLength(0);
     expect(getRun).toHaveBeenCalledTimes(1);
@@ -750,7 +753,6 @@ describe("the board holds GET /events", () => {
     expect(screen.getByText("Durable state is corrupt").isConnected).toBe(true);
     expect(screen.getByRole("button", { name: "Retry" }).isConnected).toBe(true);
     expect(screen.queryAllByRole("link", { name: /Start/ })).toHaveLength(0);
-    expect(screen.queryByText("Live")).toBeNull();
     expect(feed.close).toHaveBeenCalled();
 
     await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -773,7 +775,6 @@ describe("the board holds GET /events", () => {
     expect(screen.getByText("Durable state is corrupt").isConnected).toBe(true);
     expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
     expect(screen.queryByText("Connecting")).toBeNull();
-    expect(screen.queryByText("Live")).toBeNull();
     expect(screen.queryAllByRole("link", { name: /Start/ })).toHaveLength(0);
     expect(feed.close).toHaveBeenCalled();
   });
@@ -809,7 +810,7 @@ describe("every Board control answers a named user question", () => {
     const { feed } = openStudioHolding([]);
     await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
-    await screen.findByRole("link", { name: "Start your first workflow" });
+    await screen.findByRole("link", { name: studioPageCopy.emptyStart });
     expectStudioControlsAnswerNamedQuestions([studioQuestions.emptyStart.id]);
 
     cleanup();

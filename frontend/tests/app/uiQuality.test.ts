@@ -7,7 +7,8 @@ import { wrapDisplayCopy } from "../../src/lib/displayCopy";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { humanMove } from "../../src/lib/runState";
-import { connectionLabels } from "../../src/lib/streamStatus";
+import { projectPageCopy } from "../../src/lib/projectPageCopy";
+import { standingWords } from "../../src/lib/runState";
 import { studioPageCopy } from "../../src/lib/studioPageCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import {
@@ -178,8 +179,10 @@ describe("core surfaces read owned display strings", () => {
     await screen.findByRole("heading", { name: "[[[ Nothing is running ]]]" });
 
     expect(screen.getByText("[[[ Atelier ]]]").isConnected).toBe(true);
-    expect(screen.getByText("[[[ A run appears here the moment a workflow starts. ]]]").isConnected).toBe(true);
-    expect(screen.getByRole("link", { name: "[[[ Start your first workflow ]]]" }).isConnected).toBe(true);
+    expect(screen.getByText(wrapDisplayCopy(studioPageCopy.emptyDescription)).isConnected).toBe(true);
+    expect(
+      screen.getByRole("link", { name: wrapDisplayCopy(studioPageCopy.emptyStart) }).isConnected
+    ).toBe(true);
   });
 
   it("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Board renders group titles, row sentences, and connection through the display transform", async () => {
@@ -197,9 +200,9 @@ describe("core surfaces read owned display strings", () => {
     expect(within(running).getByText(`${wrapDisplayCopy(studioPageCopy.why)} →`).isConnected).toBe(true);
 
     const done = screen.getByRole("region", { name: `${wrapDisplayCopy(studioPageCopy.done)} · 1` });
-    expect(within(done).getByText(wrapDisplayCopy(studioPageCopy.completedSentence)).isConnected).toBe(true);
-
-    expect(screen.getByText(wrapDisplayCopy(connectionLabels.connecting)).isConnected).toBe(true);
+    // The state word comes from the one owner every surface reads, wrapped the
+    // same way -- no second copy of "Completed" living on the Board.
+    expect(within(done).getByText(wrapDisplayCopy(standingWords.done)).isConnected).toBe(true);
   });
 
   it("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Studio renders both failed-read titles through the display transform", async () => {
@@ -238,13 +241,23 @@ describe("core surfaces read owned display strings", () => {
     await railShowsOwnedPseudoLocale();
   });
 
-  it("Project renders its new work-first copy through the display transform", async () => {
+  it("Project renders its own copy — counts and references — through the display transform", async () => {
     openProjectPseudoLocale();
 
     await screen.findByRole("heading", { name: THE_ONE_PROJECT });
-    expect(screen.getByText("[[[ Project ]]]").isConnected).toBe(true);
-    expect(screen.getByRole("link", { name: "[[[ Start a run ]]]" }).isConnected).toBe(true);
-    expect(screen.getByRole("heading", { name: "[[[ Queue ]]]" }).isConnected).toBe(true);
-    expect(screen.getByText("[[[ No priority or assignment. ]]]").isConnected).toBe(true);
+    expect(screen.getByText(wrapDisplayCopy(projectPageCopy.eyebrow)).isConnected).toBe(true);
+    expect(
+      screen.getByRole("heading", { name: wrapDisplayCopy(projectPageCopy.workTitle) }).isConnected
+    ).toBe(true);
+    expect(
+      screen.getByRole("heading", { name: wrapDisplayCopy(projectPageCopy.referencesTitle) })
+        .isConnected
+    ).toBe(true);
+    expect(
+      screen
+        .getByText(wrapDisplayCopy(projectPageCopy.historyDescription))
+        .closest("a")
+        ?.getAttribute("href")
+    ).toBe("/atelier/history");
   });
 });
