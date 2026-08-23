@@ -12,6 +12,38 @@ import {
   type WorkflowNode
 } from "../api/client";
 import { sha256Hex } from "./exactBytes";
+import { ageLabel, exactLocal } from "./when";
+
+/**
+ * The exact facts a run or a node carries about when it ran, plain data with
+ * no copy of its own -- the caller owns the words each fact stands beside.
+ *
+ * A missing timestamp answers null rather than a placeholder: `endedAt` is
+ * absent for a run or node still going, and `startedAt` is absent wherever
+ * the store never recorded one (operator ruling 23.08.: an "exact time"
+ * reveal that only ever repeated the relative age it sat beside is chrome,
+ * not a second fact -- this is the fact itself, always visible).
+ */
+export interface WhenFacts {
+  startedExact: string | null;
+  endedExact: string | null;
+  durationWords: string | null;
+}
+
+export function whenFacts(
+  startedAt: string | null,
+  endedAt: string | null,
+  now: Date
+): WhenFacts {
+  return {
+    startedExact: startedAt === null ? null : exactLocal(startedAt),
+    endedExact: endedAt === null ? null : exactLocal(endedAt),
+    durationWords:
+      startedAt === null
+        ? null
+        : ageLabel(startedAt, now, "duration", endedAt ?? undefined)
+  };
+}
 
 export type ConnectionState =
   | "connecting"

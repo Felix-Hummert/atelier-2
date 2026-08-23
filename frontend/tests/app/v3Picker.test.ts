@@ -22,6 +22,7 @@ function v3Revision(hash: string, documentBase64: string) {
       node_count: 2,
       agent_roles: ["builder"],
       orders: [],
+      wait_answer_schemas: [],
       node_previews: [
         {
           id: "implement",

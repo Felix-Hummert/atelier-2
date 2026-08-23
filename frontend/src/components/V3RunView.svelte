@@ -19,15 +19,15 @@
     type JournalEntry,
     type WaitMutation
   } from "../lib/mutationJournal";
-  import type { StreamProjection } from "../lib/runProjection";
+  import { whenFacts, type StreamProjection } from "../lib/runProjection";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { runPageCopy } from "../lib/runPageCopy";
   import { runStanding, standingMarks, standingWords } from "../lib/runState";
   import { protocolDetail, protocolTitle } from "../lib/streamStatus";
   import { encodeWaitAnswer } from "../lib/waitAnswer";
+  import { ageLabel } from "../lib/when";
   import NodeDetailPanel from "./NodeDetailPanel.svelte";
   import ProblemNotice from "./ProblemNotice.svelte";
-  import When from "./When.svelte";
   import V3AnswerCard, { type WaitContextSource } from "./V3AnswerCard.svelte";
   import WorkflowGraphDrawing from "./WorkflowGraphDrawing.svelte";
 
@@ -90,6 +90,37 @@
   $: pendingAnswer = pendingWait === null ? null : waitAnswerText(pendingWait);
   $: waiting = run.state === "WAITING_INPUT";
   $: standing = runStanding(run.state);
+
+  /**
+   * The state sentence keeps its relative words ("Done 2 min ago"); the exact
+   * facts line beneath it is what used to hide behind an "Exact time" reveal
+   * link (operator ruling 23.08.: always-visible facts, not a link a person
+   * has to find first). A missing timestamp drops its own fact rather than
+   * showing a placeholder.
+   */
+  $: relativeStanding =
+    run.started_at == null
+      ? null
+      : ageLabel(
+          run.started_at,
+          new Date(),
+          run.ended_at == null ? "for" : "ago",
+          run.ended_at ?? undefined
+        );
+  $: runFacts = whenFacts(run.started_at ?? null, run.ended_at ?? null, new Date());
+  $: runFactLine = [
+    runFacts.startedExact === null
+      ? null
+      : `${wrapDisplayCopy(runPageCopy.started)} ${runFacts.startedExact}`,
+    runFacts.endedExact === null
+      ? null
+      : `${wrapDisplayCopy(runPageCopy.ended)} ${runFacts.endedExact}`,
+    runFacts.durationWords === null
+      ? null
+      : `${wrapDisplayCopy(runPageCopy.duration)} ${runFacts.durationWords}`
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" · ");
   type WaitQuestion =
     | { kind: "loading" }
     | { kind: "present"; text: string }
@@ -148,6 +179,10 @@
         description: string | null;
         previews: Extract<WorkflowRevisionDetail["graph"], { workflow_format_version: 3 }>["node_previews"];
         loops: Extract<WorkflowRevisionDetail["graph"], { workflow_format_version: 3 }>["loops"];
+        waitAnswerSchemas: Extract<
+          WorkflowRevisionDetail["graph"],
+          { workflow_format_version: 3 }
+        >["wait_answer_schemas"];
       }
     | { state: "failed"; message: string };
 
@@ -181,6 +216,14 @@
     if (graphRequest.state !== "ready") return [];
     return graphRequest.previews.find((preview) => preview.id === nodeId)?.depends_on ?? [];
   }
+
+  /** The waiting node's own answer schema, or `free` where the graph has not arrived yet. */
+  $: currentWaitAnswerSchema =
+    graphRequest.state === "ready"
+      ? (graphRequest.waitAnswerSchemas.find(
+          (entry) => entry.node_id === run.current_node_id
+        ) ?? null)
+      : null;
 
   function decodedText(base64: string): string | null {
     try {
@@ -430,7 +473,8 @@
         name: revision.graph.name,
         description: revision.graph.description,
         previews: revision.graph.node_previews,
-        loops: revision.graph.loops
+        loops: revision.graph.loops,
+        waitAnswerSchemas: revision.graph.wait_answer_schemas
       };
     } catch (error) {
       graphRequest = {
@@ -466,12 +510,11 @@
     <p class="run-standing" aria-label="Where this run stands">
       <span class="run-standing-mark run-standing-{standing}" aria-hidden="true">{standingMarks[standing]}</span>
       <strong class="run-standing-word run-standing-{standing}">{wrapDisplayCopy(standingWords[standing])}</strong>
-      <When
-        startedAt={run.started_at ?? null}
-        endedAt={run.ended_at ?? null}
-        kind={run.ended_at == null ? "for" : "ago"}
-      />
+      {#if relativeStanding !== null}<span>{relativeStanding}</span>{/if}
     </p>
+    {#if runFactLine !== ""}
+      <p class="run-facts">{runFactLine}</p>
+    {/if}
   </header>
 
   {#if stopped !== null}
@@ -512,6 +555,8 @@
       busy={waitBusy}
       validationMessage={waitValidationMessage}
       failureMessage={waitFailureMessage}
+      answerKind={currentWaitAnswerSchema?.kind ?? "free"}
+      answerValues={currentWaitAnswerSchema?.values ?? []}
       onAnswer={(answer) => { void submitWait(answer); }}
       onRetry={() => { void retryWait(); }}
       onDiscard={() => { void discardWait(); }}
@@ -553,6 +598,7 @@
         {detail}
         onClose={closeNode}
         readsFrom={readsFrom(detail.node_id)}
+        railAttempt={rail.find((entry) => entry.node_id === detail?.node_id)?.attempt ?? null}
         runEvidence={{
           runId: run.run_id,
           workflowRevisionHash: run.workflow_revision_hash,
@@ -598,6 +644,13 @@
 
   .run-standing-word {
     font-size: var(--text-md);
+  }
+
+  .run-facts {
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
   }
 
   .run-standing-running {

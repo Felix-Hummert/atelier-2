@@ -67,6 +67,7 @@ function namedDetail(graphOverrides: Partial<V3Graph> = {}, hash = NAMED_HASH): 
     node_count: 2,
     agent_roles: ["builder", "reviewer"],
     orders: [],
+    wait_answer_schemas: [],
     node_previews: [
       { id: "build", kind: "agent", role: "builder", instruction_start: "Write the change.", depends_on: [] },
       { id: "review", kind: "agent", role: "reviewer", instruction_start: "Check the diff.", depends_on: ["build"] }

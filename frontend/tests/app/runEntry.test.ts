@@ -152,6 +152,7 @@ describe("mobile run entry", () => {
               "agent-output-shape-unavailable: 0 outputs on node 'implement', and an agent node completes with the one value its own schema judges" as const,
             agent_roles: [],
             orders: [],
+            wait_answer_schemas: [],
             node_count: 1,
             node_previews: [
               {

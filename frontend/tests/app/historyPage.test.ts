@@ -60,6 +60,7 @@ function v3Revision(name = "Two agents in a line", hash = revisionHash): Workflo
       node_count: 1,
       agent_roles: ["builder"],
       orders: [],
+      wait_answer_schemas: [],
       node_previews: [
         { id: "final", kind: "agent", role: "builder", instruction_start: "Do the one thing.", depends_on: [] }
       ],
