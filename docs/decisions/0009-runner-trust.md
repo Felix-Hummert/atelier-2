@@ -226,11 +226,19 @@ because Serve *is* Core — Core-side checks protect against drift and mistakes,
 never against Serve itself. What the launcher's fences do protect is this host:
 the manifest a lease names must be the manifest identity Core bound, and every
 resource number it carries — memory, process limit, CPU quota, scratch size,
-and the sum of the tmpfs grants that are host memory — must stay inside bounds
-the operator declared at start. Both fences are therefore **launcher-side**,
-applied before the first engine call of an Attempt, together with the image the
-lease may start as root over that Attempt's volumes. With them, host denial of
-service through a lease is closed too.
+the sum of the tmpfs grants that are host memory, and the journal capacity that
+is host disk — must stay inside bounds the operator declared at start. Both
+fences are therefore **launcher-side**, applied before the first engine call of
+an Attempt, together with the image the lease may start as root over that
+Attempt's volumes.
+
+With them, what a *lease* may ask of this host is bounded in every dimension it
+names. The journal is the one the engine does not enforce: it has to be a
+durable volume so a Runner's own restart finds it, and the local volume driver
+gives such a volume no size, so that capacity is kept by the Runner against its
+own manifest and bounded here by declaration instead. What stays outside this
+sentence is a **Runner image** that ignores its manifest — which is the image
+the operator declared, not one a lease chose.
 
 *(b) "Privately created, therefore policy before reachability" no longer holds
 for the console, and is replaced positively.* The console is started by the

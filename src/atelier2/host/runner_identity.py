@@ -63,20 +63,42 @@ _IDENTITY_FIELD_BYTES = 8_192
 _PRIVATE_KEY_NAMES = frozenset({"ca.key", "core.key", "client.key"})
 
 
+def _write_replacing(path: Path, payload: bytes, mode: int) -> None:
+    """Put one identity file in place whole, or leave the previous one whole.
+
+    Renewal writes into a directory a console is already reading. A file
+    written in place is truncated for as long as its own write takes, so a
+    console reading exactly then reads half an identity; a file renamed into
+    place is only ever one of the two complete versions. The mode is set before
+    the rename, so a private key is never briefly readable under its own name.
+
+    What this does not make atomic is the *pair*: a key and its certificate are
+    two renames, and a reader between them holds a key that does not match the
+    certificate beside it. That window is named where an operator can act on it
+    (`docs/OPERATIONS.md`: renew, then restart the console).
+    """
+    pending = path.with_name(f"{path.name}.pending")
+    pending.write_bytes(payload)
+    pending.chmod(mode)
+    os.replace(pending, path)
+
+
 def _write_private(path: Path, key: rsa.RSAPrivateKey) -> None:
-    path.write_bytes(
+    _write_replacing(
+        path,
         key.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.PKCS8,
             serialization.NoEncryption(),
-        )
+        ),
+        _PRIVATE_MODE,
     )
-    path.chmod(_PRIVATE_MODE)
 
 
 def _write_public(path: Path, certificate: x509.Certificate) -> None:
-    path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
-    path.chmod(_PUBLIC_MODE)
+    _write_replacing(
+        path, certificate.public_bytes(serialization.Encoding.PEM), _PUBLIC_MODE
+    )
 
 
 def _generate_key() -> rsa.RSAPrivateKey:

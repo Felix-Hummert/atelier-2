@@ -41,6 +41,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -77,6 +78,7 @@ from atelier2.contracts.runner_leases import (
 from atelier2.contracts.runner_manifests import (
     CANDIDATE_CPU_PERIOD,
     CANDIDATE_CPU_QUOTA,
+    CANDIDATE_JOURNAL_BYTES,
     CANDIDATE_MEMORY_BYTES,
     CANDIDATE_PROCESS_LIMIT,
     CANDIDATE_SCRATCH_BYTES,
@@ -118,6 +120,17 @@ _HANDOFF_NAMES = (
 # something larger is refused rather than read.
 _OFFER_BYTES = 1_048_576
 _MAXIMUM_OFFER_BYTES = 4_096
+# The bound every document a lease writer names is read under -- the lease
+# itself, the binding Core published, and the manifest with its whole path
+# allowlist. Generous next to all three, and far below what a writer could
+# otherwise make one claim cost this host in memory.
+_MAXIMUM_LEASE_DOCUMENT_BYTES = 65_536
+# The form a Runner's own offered invocation must have. The Runner mints it as
+# `secrets.token_urlsafe` (`atelier2.runner.__main__`), and this is where that
+# value crosses from the least trusted process on the host into a certificate:
+# a URI-SAN takes ASCII, and the shared `RunnerInvocationId` admits far more
+# than that, so the launcher states what it will actually put in a leaf.
+_OFFERED_INVOCATION = re.compile(r"[A-Za-z0-9_-]{1,256}")
 _HANDOFF_BYTES = 1_048_576
 _TMPFS_MODE = 0o1777
 _HANDOFF_DEADLINE_SECONDS = 30.0
@@ -163,6 +176,14 @@ class RunnerManifestBounds:
     manifest fence (`RunnerLeaseValidation.validated`) proves an Attempt is the
     one Core bound; these bounds decide whether this host carries it at all.
 
+    `journal_bytes` is the one of these the engine never sees: the local volume
+    driver has no size for a disk-backed volume, and the journal has to be one
+    because the Runner's own restart must find it (`resume`). The Runner keeps
+    that capacity itself, against the manifest it was handed
+    (`atelier2.adapters.runner_journal`), so bounding the number here is what
+    keeps a lease from choosing how much of this host's disk that promise
+    covers.
+
     The defaults are the candidate Attempt's own numbers: a deployment that
     declares nothing runs exactly what this repository already attests.
     """
@@ -172,6 +193,7 @@ class RunnerManifestBounds:
     cpu_quota_microseconds: int = CANDIDATE_CPU_QUOTA
     scratch_bytes: int = CANDIDATE_SCRATCH_BYTES
     writable_surface_bytes: int = CANDIDATE_SCRATCH_BYTES
+    journal_bytes: int = CANDIDATE_JOURNAL_BYTES
 
     def admitted(self, manifest: RunnerManifestV1) -> None:
         """Refuse a manifest asking for more than this host declared it carries."""
@@ -189,6 +211,7 @@ class RunnerManifestBounds:
                 _writable_surface_bytes(manifest),
                 self.writable_surface_bytes,
             ),
+            ("journal_bytes", manifest.journal_bytes, self.journal_bytes),
         ):
             if asked > bound:
                 raise AttemptRefusal(
@@ -276,9 +299,19 @@ class RunnerLeaseValidation:
         """The same lease, carrying the paths that were actually admitted.
 
         The resolved form replaces what the document said, because those are
-        two different paths: a symlink swapped between the check and the mount
-        would otherwise put a directory nobody admitted inside an Attempt. What
-        every consumer of this lease mounts is therefore the path this checked.
+        two different paths: a name whose own last component is a symlink out
+        of the attempt root is refused here rather than mounted.
+
+        What this does not carry is the moment of the mount. A resolved path
+        is a string, and the engine resolves it again when it binds it, so a
+        writer who owns a directory *inside* the attempt root can swap an
+        intermediate component between this check and that bind and have the
+        engine follow the new one. Serve owns exactly that root, so this is a
+        read of one host directory by a compromised Serve -- inside amendment
+        (a)'s boundary, and above the line an operator should be told about
+        (`docs/OPERATIONS.md`). Closing it needs the attempt root to be built
+        by the launcher rather than validated after Serve built it, which is
+        `#540` C-3.2/C-3.6's, not a check that can be added here.
         """
         self.validated_console(lease.serve_container)
         self.validated_image(lease.runner_image)
@@ -414,6 +447,8 @@ class AttemptCarrier(Protocol):
 
     def remove_attempt_policy(self, container: str, chains: AttemptChains) -> None: ...
 
+    def detach_container(self, container: str, network: str) -> None: ...
+
     def create_volume(
         self, name: str, label: str, tmpfs: TmpfsVolumeOptions | None = None
     ) -> None: ...
@@ -517,11 +552,13 @@ class FileRunnerLeaseSource:
         identity and every object name is built from it. The two paths this
         reads are checked next: a lease that could point `manifest_path` or
         `binding_path` anywhere would make this adapter read whatever the
-        writer chose, and reading is already acting on it.
+        writer chose, and reading is already acting on it. Each of the three
+        documents is read only as far as this launcher would ever act on, so a
+        writer cannot hand this process a file the size of its memory.
         """
         lease_id = admitted_lease_id(document.stem)
         try:
-            fields = decode_runner_lease_document(document.read_bytes())
+            fields = decode_runner_lease_document(_bounded_bytes(document))
             binding_path = self._validation.validated_path(
                 fields.binding_path, "binding_path"
             )
@@ -530,25 +567,54 @@ class FileRunnerLeaseSource:
             )
             lease = RunnerLease(
                 lease_id,
-                decode_runner_binding(binding_path.read_bytes()),
+                decode_runner_binding(_bounded_bytes(binding_path)),
                 fields.runner_image,
-                decode_runner_manifest(manifest_path.read_bytes()),
+                decode_runner_manifest(_bounded_bytes(manifest_path)),
                 fields.serve_container,
                 fields.handoff_directory,
                 fields.core_peer_directory,
                 fields.issuance_directory,
                 fields.provider_credential_source,
             )
-        except (OSError, ValueError, KeyError, TypeError) as unreadable:
-            # Truncated JSON, a missing field, a manifest that will not decode:
-            # the writer handed this process something it cannot act on, which
-            # is one refused lease and never a stopped launcher. The document
-            # has already been renamed into `claimed`, so it stays quarantined
-            # rather than being picked up again on the next poll.
+        except AttemptRefusal:
+            # Already a named answer about this document -- a path outside the
+            # attempt root, or a file over the bound -- and re-wrapping it would
+            # bury which of the two it was.
+            raise
+        except Exception as unreadable:
+            # Truncated JSON, a missing field, a manifest that will not decode,
+            # a nesting depth that exhausts the parser's own stack: the writer
+            # handed this process something it cannot act on, which is one
+            # refused lease and never a stopped launcher. Every way that can
+            # happen is caught, not a list of the ways already seen -- a list
+            # is a guess about a parser's failure modes, and this one has
+            # already been wrong (`json` answers a nested document with
+            # `RecursionError`). The document has already been renamed into
+            # `claimed`, so it stays quarantined rather than being picked up
+            # again on the next poll.
             raise AttemptRefusal(
-                f"lease-document-unreadable: {document.stem}: {unreadable}"
+                f"lease-document-unreadable: {document.stem}: {unreadable!r}"
             ) from unreadable
         return self._validation.validated(lease)
+
+
+def _bounded_bytes(path: Path) -> bytes:
+    """One document a lease writer chose, read only as far as it can be acted on.
+
+    Every file this reads was named by the same writer the launcher refuses to
+    believe, and a read with no bound is that writer choosing how much of this
+    host's memory a claim costs. The bound is generous next to the largest
+    document that has meaning here -- a manifest with its whole path
+    allowlist -- and a file over it is one refused lease.
+    """
+    with path.open("rb") as handle:
+        payload = handle.read(_MAXIMUM_LEASE_DOCUMENT_BYTES + 1)
+    if len(payload) > _MAXIMUM_LEASE_DOCUMENT_BYTES:
+        raise AttemptRefusal(
+            f"lease-document-exceeds-bound: {path} is larger than "
+            f"{_MAXIMUM_LEASE_DOCUMENT_BYTES} bytes"
+        )
+    return payload
 
 
 def _offered_invocation(offer: bytes) -> RunnerInvocationId:
@@ -557,12 +623,26 @@ def _offered_invocation(offer: bytes) -> RunnerInvocationId:
     The offer is written inside the Attempt's own Runner container, which is
     the least trusted process this host runs. A document that is not the one
     record this expects therefore costs that Attempt and never the launcher --
-    which from `#540` C-3 serves every other Attempt on the host.
+    which from `#540` C-3 serves every other Attempt on the host. Every way a
+    document can fail to be that record is one refusal, rather than the ways
+    already thought of.
+
+    The value is also held to the form the launcher will really put in a
+    certificate. `RunnerInvocationId` admits any canonical UTF-8 up to a
+    thousand characters, because it is the shape Core stores; a URI-SAN takes
+    ASCII, so a Runner offering anything else would otherwise reach `x509`
+    and end this process instead of its own Attempt.
     """
     try:
-        return RunnerInvocationId(json.loads(offer)["invocation_id"])
-    except (ValueError, TypeError, KeyError) as unreadable:
-        raise AttemptRefusal(f"runner-offer-unreadable: {unreadable}") from unreadable
+        offered = json.loads(offer)["invocation_id"]
+        if (
+            not isinstance(offered, str)
+            or _OFFERED_INVOCATION.fullmatch(offered) is None
+        ):
+            raise ValueError(f"outside the offered invocation form: {offered!r}")
+        return RunnerInvocationId(offered)
+    except Exception as unreadable:
+        raise AttemptRefusal(f"runner-offer-unreadable: {unreadable!r}") from unreadable
 
 
 def _writable_grants(manifest: RunnerManifestV1) -> Iterator[TmpfsMount]:
@@ -714,32 +794,61 @@ class RunnerLauncher:
         volume-owning container alone starts the lease's image as root.
 
         On success every object this created is removed and the lease goes
-        back to its source. On failure they are deliberately left, named, for
-        the operator to read -- the next launcher start reconciles them.
+        back to its source. On failure the Attempt's own objects are
+        deliberately left, named, for the operator to read -- but the console
+        is not one of them. It outlives every Attempt, so a failure that left
+        it holding this Attempt's chains and its network would refuse the next
+        Attempt's own attestation, and the one after that, while a subnet the
+        engine is free to hand out again kept an ACCEPT rule pointing at it.
+        The console half is therefore given back before the failure is
+        reported.
         """
         lease = self.validation.validated(lease)
         self.announce(f"attempt-lease={lease.lease_id.value}")
         network = self.carrier.create_attempt_network(lease.attempt_name, lease.label)
         self.announce(f"attempt-network={network.name}")
         chains = attempt_chains(lease.lease_id.value)
-        self.carrier.attach_policed_container(
-            lease.serve_container,
-            AttemptAttachment(
-                chains, network, ContainerRole.CORE, self.validation.console_network
-            ),
-        )
-        volumes = self._create_volumes(lease)
-        container = f"{lease.attempt_name}-runner"
-        specification = runner_container_spec(lease, container, volumes)
-        attachment = AttemptAttachment(chains, network, ContainerRole.RUNNER)
-        container_id = self.carrier.start_policed_container(specification, attachment)
-        self._deliver_handoff(lease, container)
-        self._issue_identity(lease, container, volumes)
-        self._attest(lease, container_id)
-        self._await_release(lease, container, attachment, volumes)
-        self._remove_attempt(lease.lease_id)
+        try:
+            self.carrier.attach_policed_container(
+                lease.serve_container,
+                AttemptAttachment(
+                    chains, network, ContainerRole.CORE, self.validation.console_network
+                ),
+            )
+            volumes = self._create_volumes(lease)
+            container = f"{lease.attempt_name}-runner"
+            specification = runner_container_spec(lease, container, volumes)
+            attachment = AttemptAttachment(chains, network, ContainerRole.RUNNER)
+            container_id = self.carrier.start_policed_container(
+                specification, attachment
+            )
+            self._deliver_handoff(lease, container)
+            self._issue_identity(lease, container, volumes)
+            self._attest(lease, container_id)
+            self._await_release(lease, container, attachment, volumes)
+            self._remove_attempt(lease.lease_id)
+        except (AttemptRefusal, CarrierRefusal):
+            self._give_the_console_back(lease, network, chains)
+            raise
         self.leases.release(lease)
         self.announce(f"attempt-released={lease.lease_id.value}")
+
+    def _give_the_console_back(
+        self, lease: RunnerLease, network: AttemptNetwork, chains: AttemptChains
+    ) -> None:
+        """Take the console out of an Attempt that failed, and say if it stuck.
+
+        Only the console: what this Attempt created stays where an operator can
+        read it. A removal that refuses is announced rather than raised,
+        because the Attempt's own failure is the answer this call is running
+        underneath -- and a console that kept something is a second fact, not a
+        replacement for the first.
+        """
+        try:
+            self.carrier.remove_attempt_policy(lease.serve_container, chains)
+        except CarrierRefusal as refusal:
+            self.announce(f"console-still-holds-the-attempt={refusal}")
+        self.carrier.detach_container(lease.serve_container, network.name)
 
     def _create_volumes(self, lease: RunnerLease) -> AttemptVolumes:
         """This Attempt's three volumes, each in the form its content needs.
@@ -805,13 +914,24 @@ class RunnerLauncher:
                 _HANDOFF_DEADLINE_SECONDS,
             )
         )
-        self.authority.issue_runner_identity(
-            lease.binding,
-            invocation,
-            lease.issuance_directory,
-            lease.core_peer_directory,
-            timedelta(milliseconds=manifest.total_attempt_milliseconds),
-        )
+        try:
+            self.authority.issue_runner_identity(
+                lease.binding,
+                invocation,
+                lease.issuance_directory,
+                lease.core_peer_directory,
+                timedelta(milliseconds=manifest.total_attempt_milliseconds),
+            )
+        except Exception as refused:
+            # Minting builds a certificate out of values an Attempt's own
+            # Runner and its lease writer chose. Whatever a library makes of
+            # one it will not accept is this Attempt's failure and never the
+            # launcher's end -- the same standard the offer above is read
+            # under, and the reason it is a whole surface rather than the one
+            # exception type that was found first.
+            raise AttemptRefusal(
+                f"runner-identity-not-issuable: {lease.lease_id.value}: {refused!r}"
+            ) from refused
         receiver = ContainerSpec(
             f"{container}-identity-receiver",
             lease.runner_image,
@@ -1010,6 +1130,7 @@ def _add_bound_arguments(command: argparse.ArgumentParser) -> None:
         ("--maximum-cpu-quota-microseconds", declared.cpu_quota_microseconds),
         ("--maximum-scratch-bytes", declared.scratch_bytes),
         ("--maximum-writable-surface-bytes", declared.writable_surface_bytes),
+        ("--maximum-journal-bytes", declared.journal_bytes),
     ):
         command.add_argument(flag, type=int, default=default)
 
@@ -1037,6 +1158,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             parsed.maximum_cpu_quota_microseconds,
             parsed.maximum_scratch_bytes,
             parsed.maximum_writable_surface_bytes,
+            parsed.maximum_journal_bytes,
         ),
     )
     with single_launcher(parsed.lease_directory):

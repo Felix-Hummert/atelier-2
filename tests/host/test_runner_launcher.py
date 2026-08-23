@@ -37,6 +37,7 @@ from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.contracts.runner_leases import RunnerLeaseId
 from atelier2.contracts.runner_manifests import (
     CANDIDATE_CPU_PERIOD,
+    CANDIDATE_JOURNAL_BYTES,
     CANDIDATE_SCRATCH_BYTES,
     CANDIDATE_WORKSPACE_BYTES,
     RunnerManifestV1,
@@ -160,6 +161,7 @@ class RecordingCarrier:
     attached: list[tuple[str, frozenset[str]]] = field(default_factory=list)
     policed: list[str] = field(default_factory=list)
     unpoliced: list[tuple[str, AttemptChains]] = field(default_factory=list)
+    detached: list[tuple[str, str]] = field(default_factory=list)
     handoffs: list[list[str]] = field(default_factory=list)
     owned: list[str] = field(default_factory=list)
     delivered_identity: bytes = b""
@@ -183,6 +185,10 @@ class RecordingCarrier:
             raise self.policy_removal_refusal
         self.operations.append("remove-policy")
         self.unpoliced.append((container, chains))
+
+    def detach_container(self, container: str, network: str) -> None:
+        self.operations.append("detach")
+        self.detached.append((container, network))
 
     def create_volume(
         self, name: str, label: str, tmpfs: TmpfsVolumeOptions | None = None
@@ -597,6 +603,70 @@ def test_a_runner_that_retained_nothing_fails_its_attempt(tmp_path: Path) -> Non
     assert source.released == []
 
 
+def test_a_failed_attempt_gives_the_console_back_before_it_is_reported(
+    tmp_path: Path,
+) -> None:
+    """The console outlives every Attempt, so a failure that left it holding
+    this Attempt's chains and its network would refuse the next Attempt's own
+    attestation and every one after it -- while an ACCEPT rule kept pointing at
+    a subnet the engine is free to hand out again. What the Attempt itself
+    created stays for the operator to read."""
+    carrier = RecordingCarrier(
+        _attested_document(_manifest()), [1], journal_records=[False]
+    )
+    lease = _lease(tmp_path)
+    launcher, _announced = _launcher(tmp_path, carrier, OpenLeases([lease]))
+
+    with pytest.raises(AttemptRefusal):
+        launcher.establish(lease)
+
+    attempt_network = f"atelier2-attempt-{_LEASE_ID}"
+    assert carrier.unpoliced == [(_SERVE_CONTAINER, attempt_chains(_LEASE_ID))]
+    assert carrier.detached == [(_SERVE_CONTAINER, attempt_network)]
+    assert carrier.removed == {"containers": [], "volumes": [], "networks": []}
+
+
+def test_a_release_that_cannot_clear_the_console_still_detaches_it(
+    tmp_path: Path,
+) -> None:
+    """The same rollback covers the last step of a good Attempt: a release that
+    cannot take its chains out of the console must not leave the console on an
+    Attempt network either, or the next Attempt is refused for it."""
+    carrier = RecordingCarrier(_attested_document(_manifest()), [0])
+    carrier.policy_removal_refusal = CarrierRefusal("carrier-attempt-policy-remains")
+    lease = _lease(tmp_path)
+    source = OpenLeases([lease])
+    launcher, _announced = _launcher(tmp_path, carrier, source)
+
+    with pytest.raises(CarrierRefusal):
+        launcher.establish(lease)
+
+    assert carrier.detached == [(_SERVE_CONTAINER, f"atelier2-attempt-{_LEASE_ID}")]
+    assert source.released == []
+
+
+def test_a_console_that_would_not_let_the_attempt_go_says_so(
+    tmp_path: Path,
+) -> None:
+    """A console that kept something is a second fact, not a replacement for
+    the Attempt's own failure: the refusal an operator has to act on is still
+    the one that ended the Attempt."""
+    carrier = RecordingCarrier(
+        _attested_document(_manifest()), [1], journal_records=[False]
+    )
+    carrier.policy_removal_refusal = CarrierRefusal("carrier-attempt-policy-remains")
+    lease = _lease(tmp_path)
+    launcher, announced = _launcher(tmp_path, carrier, OpenLeases([lease]))
+
+    with pytest.raises(AttemptRefusal, match="launcher-attempt-failed"):
+        launcher.establish(lease)
+
+    assert any(
+        line.startswith("console-still-holds-the-attempt=") for line in announced
+    )
+    assert carrier.detached == [(_SERVE_CONTAINER, f"atelier2-attempt-{_LEASE_ID}")]
+
+
 def test_a_lease_may_not_name_a_path_outside_the_attempt_root(tmp_path: Path) -> None:
     """A lease asks; it does not authorise. A document that named the host's own
     directories would otherwise mount them into an Attempt."""
@@ -891,6 +961,14 @@ def _lease_asking_for_more_of_the_host_than_declared(root: Path) -> RunnerLease:
     return _lease(root, manifest=oversized, binding=_binding(oversized))
 
 
+def _lease_asking_for_more_disk_than_declared(root: Path) -> RunnerLease:
+    """The one bound the engine never sees: the journal is a durable volume the
+    local driver gives no size, so the Runner keeps that capacity against its
+    own manifest -- and a lease chooses the number it keeps."""
+    oversized = replace(_manifest(), journal_bytes=CANDIDATE_JOURNAL_BYTES * 4)
+    return _lease(root, manifest=oversized, binding=_binding(oversized))
+
+
 @pytest.mark.parametrize(
     ("lease_of", "refusal"),
     (
@@ -908,6 +986,11 @@ def _lease_asking_for_more_of_the_host_than_declared(root: Path) -> RunnerLease:
             _lease_asking_for_more_of_the_host_than_declared,
             "lease-manifest-exceeds-a-declared-bound",
             id="a-manifest-asking-for-more-of-the-host-than-declared",
+        ),
+        pytest.param(
+            _lease_asking_for_more_disk_than_declared,
+            "lease-manifest-exceeds-a-declared-bound",
+            id="a-manifest-asking-for-more-of-the-hosts-disk-than-declared",
         ),
     ),
 )
@@ -942,12 +1025,33 @@ def test_a_manifest_within_the_declared_bounds_is_carried(tmp_path: Path) -> Non
     assert _validation(tmp_path, bounds).validated(lease).manifest == manifest
 
 
-def test_an_unreadable_runner_offer_costs_one_attempt(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "offered",
+    (
+        pytest.param(b"{}", id="an-offer-without-an-invocation"),
+        pytest.param(b"[1, 2]", id="an-offer-that-is-not-a-record"),
+        pytest.param(b"{ not json", id="an-offer-that-is-not-a-document"),
+        pytest.param(
+            json.dumps({"invocation_id": "über"}).encode("utf-8"),
+            id="an-invocation-a-certificate-cannot-carry",
+        ),
+        pytest.param(
+            json.dumps({"invocation_id": "a/b"}).encode("utf-8"),
+            id="an-invocation-outside-the-offered-form",
+        ),
+    ),
+)
+def test_an_unreadable_runner_offer_costs_one_attempt(
+    tmp_path: Path, offered: bytes
+) -> None:
     """The offer is written inside the Attempt's own Runner container, the
     least trusted process on this host. One it got wrong is one failed Attempt,
-    and the launcher goes on serving the next lease."""
+    and the launcher goes on serving the next lease -- including a value the
+    shared invocation contract would accept and a URI-SAN would not, which
+    reached `x509` and ended this process before it was held to the form the
+    launcher really puts in a leaf."""
     carrier = RecordingCarrier(_attested_document(_manifest()), [])
-    carrier.offer = b"{}"
+    carrier.offer = offered
     lease = _lease(tmp_path)
     source = OpenLeases([lease])
     launcher, announced = _launcher(tmp_path, carrier, source)
@@ -957,6 +1061,85 @@ def test_an_unreadable_runner_offer_costs_one_attempt(tmp_path: Path) -> None:
     assert failed == 1
     assert any("runner-offer-unreadable" in line for line in announced)
     assert source.released == []
+
+
+def test_an_identity_a_library_will_not_mint_costs_one_attempt(
+    tmp_path: Path,
+) -> None:
+    """Minting builds a certificate out of values an Attempt's Runner and its
+    lease writer chose. Whatever a library makes of one it will not accept is
+    that Attempt's failure, never the end of a launcher that owes every other
+    Attempt on this host its next poll."""
+
+    class RefusingAuthority(RunnerIdentityAuthority):
+        def issue_runner_identity(self, *arguments: Any, **named: Any) -> None:
+            raise ValueError("a value this library will not put in a certificate")
+
+    carrier = RecordingCarrier(_attested_document(_manifest()), [])
+    lease = _lease(tmp_path)
+    announced: list[str] = []
+    launcher = RunnerLauncher(
+        carrier,
+        RefusingAuthority(tmp_path / "authority"),
+        OpenLeases([lease]),
+        _validation(tmp_path),
+        announced.append,
+    )
+
+    failed = launcher.serve_open_leases(once=True, poll_seconds=0)
+
+    assert failed == 1
+    assert any("runner-identity-not-issuable" in line for line in announced)
+
+
+@pytest.mark.parametrize(
+    "published",
+    (
+        pytest.param(
+            '{"a":' * 4_000 + "1" + "}" * 4_000,
+            id="a-document-nested-past-the-parsers-own-stack",
+        ),
+        pytest.param(
+            json.dumps({"runner_image": "x" * 70_000}),
+            id="a-document-larger-than-a-launcher-will-read",
+        ),
+    ),
+)
+def test_a_lease_document_built_to_end_the_launcher_costs_one_lease(
+    tmp_path: Path, published: str
+) -> None:
+    """From C-3 a Serve process writes these. A document that ends this process
+    would take every other Attempt on the host with it, so the ways one can
+    fail to be read are answered for as a whole -- not as the list of ways
+    somebody thought of."""
+    directory = tmp_path / "leases"
+    source = FileRunnerLeaseSource(directory, _validation(tmp_path))
+    _published(directory, _SECOND_LEASE_ID, published)
+    _published(directory, _LEASE_ID, json.dumps(_lease_document(tmp_path)))
+    carrier = RecordingCarrier(_attested_document(_manifest()), [0, 0])
+    launcher, announced = _launcher(tmp_path, carrier, UntilEmpty(source))
+
+    with pytest.raises(SourceExhausted):
+        launcher.serve_open_leases(once=False, poll_seconds=0)
+
+    assert any(line.startswith("lease-refused=") for line in announced)
+    assert f"attempt-released={_LEASE_ID}" in announced
+
+
+def test_a_manifest_larger_than_a_launcher_will_read_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Every file a lease names was named by the writer this launcher refuses
+    to believe, so a read with no bound is that writer choosing what one claim
+    costs this host in memory."""
+    directory = tmp_path / "leases"
+    source = FileRunnerLeaseSource(directory, _validation(tmp_path))
+    document = _lease_document(tmp_path)
+    (tmp_path / "manifest").write_bytes(b"\0" * 70_000)
+    _published(directory, _LEASE_ID, json.dumps(document))
+
+    with pytest.raises(AttemptRefusal, match="lease-document-exceeds-bound"):
+        source.claim_open_lease()
 
 
 def test_a_second_launcher_refuses_before_it_reconciles_anything(

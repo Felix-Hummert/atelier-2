@@ -11,6 +11,7 @@ live engine.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -29,6 +30,8 @@ from atelier2.adapters.docker_carrier import (
     MountRight,
     TmpfsMount,
     VolumeMount,
+    _policy_program,
+    _policy_removal_program,
     attempt_chains,
     attest_runner_container,
 )
@@ -390,7 +393,7 @@ def test_a_container_that_came_back_attached_is_refused(tmp_path: Path) -> None:
         carrier.restart_private_container("attempt-runner")
 
 
-def _policy_program(tmp_path: Path, call: int = 0) -> str:
+def _program_the_engine_got(tmp_path: Path, call: int = 0) -> str:
     """The one program text the carrier renders, as the engine received it."""
     policy_calls = [
         arguments
@@ -398,6 +401,189 @@ def _policy_program(tmp_path: Path, call: int = 0) -> str:
         if arguments[0] == "run" and "sh" in arguments
     ]
     return policy_calls[call][-1]
+
+
+def _packet_filter(tmp_path: Path, failing: str = "", holding: str = "") -> Path:
+    """A stand-in `iptables` the carrier's own programs are really run against.
+
+    The programs this module renders are the fence, so they are run rather than
+    read: this keeps the two answers they are written around -- a chain that
+    exists cannot be created again, and asking for one that is not there fails
+    -- and records every call. `failing` is the one argument vector it refuses,
+    which is how an install that dies halfway, or a namespace nobody may read,
+    is stated. `holding` seeds the chains a namespace already carries.
+    """
+    root = tmp_path / "packet-filter"
+    root.mkdir(parents=True)
+    chains = root / "chains"
+    chains.write_text(holding, encoding="utf-8")
+    source = "\n".join(
+        (
+            "#!/usr/bin/env python3",
+            "import pathlib, sys",
+            f"chains = pathlib.Path({str(chains)!r})",
+            f"calls = pathlib.Path({str(root / 'calls')!r})",
+            "arguments = sys.argv[1:]",
+            "with calls.open('a', encoding='utf-8') as handle:",
+            "    handle.write(NAME + ' ' + ' '.join(arguments) + '\\n')",
+            f"if {failing!r} and ' '.join(arguments) == {failing!r}:",
+            "    raise SystemExit(1)",
+            "held = chains.read_text().split()",
+            "verb = arguments[0] if arguments else ''",
+            "if verb == '-N':",
+            "    if arguments[1] in held:",
+            "        raise SystemExit(1)",
+            "    held.append(arguments[1])",
+            "elif verb == '-X':",
+            "    if arguments[1] not in held:",
+            "        raise SystemExit(1)",
+            "    held.remove(arguments[1])",
+            "elif verb == '-S':",
+            "    if len(arguments) > 1:",
+            "        raise SystemExit(0 if arguments[1] in held else 1)",
+            "    print(chr(10).join('-N ' + chain for chain in held))",
+            "chains.write_text(' '.join(held))",
+            "",
+        )
+    )
+    for name in ("iptables", "ip6tables"):
+        stub = root / name
+        stub.write_text(source.replace("NAME", repr(name), 1), encoding="utf-8")
+        stub.chmod(0o755)
+    return root
+
+
+def _ran(program: str, packet_filter: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["sh", "-c", program],
+        env={"PATH": f"{packet_filter}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _filter_calls(packet_filter: Path) -> list[str]:
+    log = packet_filter / "calls"
+    return log.read_text(encoding="utf-8").splitlines() if log.is_file() else []
+
+
+def _console_policy(attempt: str = _LEASE_ID, subnet: str = _SUBNET) -> str:
+    return _policy_program(
+        AttemptAttachment(
+            attempt_chains(attempt),
+            AttemptNetwork(_ATTEMPT_NETWORK, subnet),
+            ContainerRole.CORE,
+            _CONSOLE_NETWORK,
+        ),
+        _BASE_SUBNET,
+    )
+
+
+_SENTINEL = "iptables -N ATELIER2-BASE-INSTALLED"
+
+
+def test_a_base_policy_that_died_halfway_is_never_read_as_installed(
+    tmp_path: Path,
+) -> None:
+    """What says a namespace is filtered has to be the last thing written into
+    it. A base policy that died after its first rule would otherwise be read as
+    a complete one by every Attempt after it, and each of them would attach to
+    a namespace whose default-deny was never installed."""
+    died = _packet_filter(
+        tmp_path / "died", failing="-A INPUT -p tcp -j REJECT --reject-with tcp-reset"
+    )
+
+    halfway = _ran(_console_policy(), died)
+
+    assert halfway.returncode != 0
+    assert _SENTINEL not in _filter_calls(died)
+
+    healthy = _packet_filter(
+        tmp_path / "healthy", holding=(died / "chains").read_text(encoding="utf-8")
+    )
+
+    recovered = _ran(_console_policy(), healthy)
+
+    assert recovered.returncode == 0, recovered.stderr
+    calls = _filter_calls(healthy)
+    assert _SENTINEL in calls
+    assert calls[calls.index(_SENTINEL) - 1] == "ip6tables -A INPUT -j REJECT"
+
+
+def test_a_namespace_that_carries_the_base_policy_only_gains_the_attempt(
+    tmp_path: Path,
+) -> None:
+    """A console keeps the base policy it already has: the next Attempt adds
+    its own chains and rewrites nothing else in the namespace."""
+    packet_filter = _packet_filter(tmp_path)
+
+    first = _ran(_console_policy(), packet_filter)
+    (packet_filter / "calls").unlink()
+    second = _ran(_console_policy("b" * 64, "10.244.8.0/24"), packet_filter)
+
+    assert (first.returncode, second.returncode) == (0, 0), second.stderr
+    calls = _filter_calls(packet_filter)
+    assert _SENTINEL not in calls
+    assert not [
+        call for call in calls if call.startswith("iptables -A INPUT -j REJECT")
+    ]
+    assert [call for call in calls if "10.244.8.0/24" in call]
+
+
+def test_an_attempt_that_is_already_in_a_namespace_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Creating the Attempt's chains is the fence against establishing one
+    Attempt twice in one namespace: the second install refuses rather than
+    appending a second copy of the same grants."""
+    packet_filter = _packet_filter(tmp_path)
+
+    assert _ran(_console_policy(), packet_filter).returncode == 0
+    assert _ran(_console_policy(), packet_filter).returncode != 0
+
+
+@pytest.mark.parametrize(
+    ("failing", "status", "said"),
+    (
+        pytest.param("", 0, "", id="a-namespace-that-really-let-the-chains-go"),
+        pytest.param(
+            "-S", 4, "carrier-attempt-policy-unreadable", id="a-ruleset-nobody-can-read"
+        ),
+    ),
+)
+def test_a_release_says_the_chains_are_gone_only_when_it_read_that(
+    tmp_path: Path, failing: str, status: int, said: str
+) -> None:
+    """A listing that could not be taken at all is its own refusal. Matching
+    against the output of a command whose own failure was never looked at would
+    report a missing `CAP_NET_ADMIN` as a clean release and leave every grant of
+    the released Attempt standing."""
+    chains = attempt_chains(_LEASE_ID)
+    packet_filter = _packet_filter(
+        tmp_path, failing=failing, holding=f"{chains.inbound} {chains.outbound}"
+    )
+
+    removal = _ran(_policy_removal_program(chains), packet_filter)
+
+    assert removal.returncode == status, removal.stderr
+    assert said in removal.stderr
+
+
+def test_a_release_that_left_a_chain_behind_refuses(tmp_path: Path) -> None:
+    """The readback is the whole promise: a chain a namespace still names is a
+    grant for a subnet the engine is free to hand to somebody else."""
+    chains = attempt_chains(_LEASE_ID)
+    packet_filter = _packet_filter(
+        tmp_path,
+        failing=f"-X {chains.inbound}",
+        holding=f"{chains.inbound} {chains.outbound}",
+    )
+
+    removal = _ran(_policy_removal_program(chains), packet_filter)
+
+    assert removal.returncode == 3
+    assert "carrier-attempt-policy-remains" in removal.stderr
 
 
 def test_the_console_keeps_its_declared_base_network_and_gains_one_attempt(
@@ -415,7 +601,7 @@ def test_the_console_keeps_its_declared_base_network_and_gains_one_attempt(
         "console", _attachment(ContainerRole.CORE, _CONSOLE_NETWORK)
     )
 
-    program = _policy_program(tmp_path)
+    program = _program_the_engine_got(tmp_path)
     assert f"iptables -A INPUT -s {_BASE_SUBNET} -j ACCEPT" in program
     assert f"iptables -A OUTPUT -d {_BASE_SUBNET} -j ACCEPT" in program
 
@@ -456,7 +642,7 @@ def test_an_attempt_installs_its_own_chains_and_leaves_the_base_policy_alone(
         "console", _attachment(ContainerRole.CORE, _CONSOLE_NETWORK)
     )
 
-    program = _policy_program(tmp_path)
+    program = _program_the_engine_got(tmp_path)
     base, attempt = program.split("\nfi\n")
     assert f"iptables -N {chains.inbound}" in attempt
     assert f"iptables -N {chains.outbound}" in attempt
@@ -477,27 +663,25 @@ def test_the_runner_gets_no_inbound_grant_from_its_attempt(tmp_path: Path) -> No
 
     carrier.install_attempt_policy("attempt-runner", _attachment())
 
-    program = _policy_program(tmp_path)
+    program = _program_the_engine_got(tmp_path)
     assert f"iptables -A {chains.outbound} -d {_SUBNET} -j ACCEPT" in program
     assert f"iptables -A {chains.inbound} -" not in program
 
 
-def test_releasing_an_attempt_takes_its_chains_out_and_proves_it(
+def test_releasing_an_attempt_runs_its_removal_inside_the_console(
     tmp_path: Path,
 ) -> None:
-    """The console outlives the Attempt, so what it grants afterwards has to be
-    what it granted before. A namespace still naming this Attempt's chains is
-    a stale grant for a subnet that no longer exists, and refuses."""
+    """What that program then does to a namespace is measured by running it
+    (`test_a_release_says_the_chains_are_gone_only_when_it_read_that`); this is
+    the half above it -- the console's own namespace is where it is run."""
     carrier = DockerCarrier(_POLICY_IMAGE, _engine(tmp_path))
     chains = attempt_chains(_LEASE_ID)
 
     carrier.remove_attempt_policy("console", chains)
 
-    program = _policy_program(tmp_path)
-    for chain in (chains.inbound, chains.outbound):
-        assert f"iptables -X {chain}" in program
-    assert f"iptables -S | grep -q -e {chains.outbound} -e {chains.inbound}" in program
-    assert "carrier-attempt-policy-remains" in program
+    call = _calls(tmp_path)[0]
+    assert call[call.index("--network") + 1] == "container:console"
+    assert _program_the_engine_got(tmp_path) == _policy_removal_program(chains)
 
 
 def test_a_console_that_stopped_has_no_rule_left_to_take_out(

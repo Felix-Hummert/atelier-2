@@ -145,12 +145,10 @@ an internal one. Every container the launcher creates is created attached to
 chains inside its network namespace and exits, and only then is it connected —
 so an Attempt never reaches a container before its own filter does, and a
 policy that fails to install leaves a container unable to reach that Attempt
-rather than running wide open. That order is structural for a container's first
-start; `resume` instead restarts an already-attached container and reinstalls
-the policy after it is back on the wire, safe only because the Runner's own
-handoff wait keeps it silent until the policy lands (`runner_candidate.sh`
-`crash-after-publish`) — giving `resume` that same structural guarantee is a
-named open gap. The Runner itself carries no packet-filtering tool and no
+rather than running wide open. `resume` has the same order rather than an
+exception to it: the container it restarts is released from every network
+first, read back as reachable by nothing, and only then policed and reconnected.
+The Runner itself carries no packet-filtering tool and no
 capability to alter what was left. The Runner may reach outbound DNS,
 outbound HTTPS, and its own Attempt subnet for Core. Core may reach nothing
 outbound beyond its Attempt subnets and the base network it serves the cockpit
@@ -171,12 +169,15 @@ rather than a silent DROP the operator would have to diagnose by timeout.
 answers, the Runner's DNS and HTTPS or the console's base network, a jump into
 the Attempt dispatch chain, and then the rejects. Each Attempt then owns a
 named pair of chains reached from that dispatch chain, and releasing an Attempt
-removes them whole and reads the namespace back to prove they are gone. So the
-console can be attached to one Attempt after another without rules
-accumulating, and a stopped console has no namespace and therefore no residue.
-A base policy that fails halfway leaves that container's namespace
-half-filtered; the container's own restart clears it, because a namespace does
-not survive one. `console` measures all of it: the console keeps answering on
+removes them whole and reads the namespace back to prove they are gone — a
+listing that could not be taken at all is a refusal of its own, never a clean
+release. So the console can be attached to one Attempt after another without
+rules accumulating, and a stopped console has no namespace and therefore no
+residue. What says a namespace already carries the base policy is an empty
+`ATELIER2-BASE-INSTALLED` chain the base policy writes *last*: an install that
+died halfway leaves no sentinel, so the next Attempt installs the whole base
+policy again instead of attaching to a namespace whose default-deny was never
+written. `console` measures all of it: the console keeps answering on
 its own port from the host and from its base network while an Attempt runs, an
 Attempt network reaches the console on the session port and is refused
 immediately on the cockpit port, two Attempts run one after the other against
@@ -298,15 +299,22 @@ Attempt's own numbers:
   --maximum-process-limit <count> \
   --maximum-cpu-quota-microseconds <microseconds> \
   --maximum-scratch-bytes <bytes> \
-  --maximum-writable-surface-bytes <bytes>
+  --maximum-writable-surface-bytes <bytes> \
+  --maximum-journal-bytes <bytes>
 ```
 
-The last is the sum of the Attempt's writable grants, each of which becomes a
-tmpfs and therefore host memory — bounding one grant while their count is free
-would bound nothing. A manifest over any of these is refused before the first
-engine call, so a lease this host will not carry costs no object at all. These
-are host protection, not Attempt correctness: a compromised Serve still chooses
-its own Attempts' numbers *within* them (ADR 0009 §2, 2026-08-23 amendment).
+`--maximum-writable-surface-bytes` is the sum of the Attempt's writable grants,
+each of which becomes a tmpfs and therefore host memory — bounding one grant
+while their count is free would bound nothing. `--maximum-journal-bytes` is the
+one number the engine never sees: the journal has to be a durable volume
+because the Runner's own restart must find it (`resume`), the local volume
+driver gives a disk-backed volume no size, and the Runner keeps that capacity
+itself against the manifest it was handed. Bounding the number is what keeps a
+lease from deciding how much of this host's disk that promise covers. A
+manifest over any of these is refused before the first engine call, so a lease
+this host will not carry costs no object at all. These are host protection, not
+Attempt correctness: a compromised Serve still chooses its own Attempts'
+numbers *within* them (ADR 0009 §2, 2026-08-23 amendment).
 
 **The attempt root holds per-Attempt material and nothing else.** Everything
 under it is a surface some lease may ask to have mounted into an Attempt, so
@@ -326,16 +334,27 @@ passed into any container, and the client key minted for an invocation is
 unlinked the moment its delivery is over, taken or not.
 
 **Failure shape.** A refused engine operation, a container that does not match
-the manifest Core bound, or a Runner that exits nonzero with nothing retained in
+the manifest Core bound, a Runner whose own offer or identity cannot be made
+into a certificate, or a Runner that exits nonzero with nothing retained in
 its journal ends *that Attempt* loudly with a named refusal and leaves its
 objects on the host to be read; it is reported as `attempt-failed=…`. A lease
 this launcher will not accept at all — one naming something outside what you
-declared, or a document that cannot be read — is refused where it is claimed
-and reported as `lease-refused=…`; it stays quarantined under the lease
-directory's `claimed`, never retried. Neither ends the launcher: the next lease
-is served, because one bad Attempt is a bad Attempt and not an outage, and from
-C-3 one document Serve got wrong must cost exactly one Attempt. A bounded
-`--once` run exits nonzero when its lease failed.
+declared, a document that cannot be read, or one larger than a launcher will
+read — is refused where it is claimed and reported as `lease-refused=…`; it
+stays quarantined under the lease directory's `claimed`, never retried. Neither
+ends the launcher: the next lease is served, because one bad Attempt is a bad
+Attempt and not an outage, and from C-3 one document Serve got wrong must cost
+exactly one Attempt. A bounded `--once` run exits nonzero when its lease failed.
+
+**What a failed Attempt gives back.** The console is not left in it. Before the
+failure is reported, this Attempt's chains are taken out of the console's
+namespace and the console is detached from the Attempt network; a removal that
+will not complete is reported as `console-still-holds-the-attempt=…` beside the
+Attempt's own refusal. Without that, the next Attempt would be refused by its
+own attachment attestation — a console on two Attempt networks — and so would
+every Attempt after it, while an ACCEPT rule kept pointing at a subnet the
+engine is free to hand out again. Everything the Attempt itself created stays
+where it is, named, for you to read and for the next start to reconcile.
 
 The one restart the launcher performs is the opposite case: a Runner that exits
 nonzero but did retain a terminal record still holds the only account of what
@@ -363,6 +382,38 @@ with the process, including one that was `SIGKILL`ed, so a crashed launcher
 leaves nothing to clear by hand. Its bound is this host — a launcher fleet
 across hosts needs the ownership token `#540` C-2 named, which a lock the other
 host cannot see is not.
+
+**What this form still leaves standing.** Each of these is measured, bounded,
+and named here rather than left for an operator to discover.
+
+- **A lease's paths are admitted, not held.** A resolved path is a string, and
+  the engine resolves it again when it binds it. Serve owns the attempt root,
+  so a compromised Serve can swap a directory component between the check and
+  the mount and have a host directory read into its own Attempt. That is inside
+  the boundary ADR 0009 §2's amendment (a) draws — the host stays protected,
+  the Attempt does not — and closing it needs the launcher to *build* the
+  attempt root rather than validate one Serve built (`#540` C-3.2/C-3.6).
+- **An Attempt's chain name carries a bounded prefix of its id.** Two Attempts
+  whose prefixes met are refused at chain creation; if one were released while
+  the other ran, the release would flush the chain they share. That closes a
+  live Attempt's grants rather than opening anything.
+- **A policed console has no IPv6 at all**, inbound or outbound: Attempt
+  networks are IPv4, and the base policy rejects the other family whole.
+- **A Runner's leaf covers its manifest's attempt span plus clock skew.** An
+  Attempt that crashed near the end of its span and is resumed can come back to
+  an expired leaf; the session then fails closed at the handshake.
+- **Renewal replaces a key and a certificate as two files.** Each is renamed
+  into place whole, so neither is ever half-written, but a console reading
+  between the two renames holds a key that does not match the certificate
+  beside it. Renew, then restart the console.
+- **The console loses its base network's Internet reach the moment its first
+  Attempt is attached**, deliberately (ADR 0009 §2). A deployment whose Serve
+  needs outbound reach must settle that before the live cutover (`#540` C-3.6).
+- **A Runner image that ignores its own manifest can still fill this host's
+  disk.** The journal volume is durable and the local driver gives it no size,
+  so the capacity is kept by the Runner against its manifest and bounded by
+  `--maximum-journal-bytes` above. That closes the lease-chosen half; the image
+  itself is what you declared with `--runner-image`.
 
 ## Stable local Serve installation
 

@@ -244,10 +244,16 @@ class TmpfsVolumeOptions:
     mode: int
 
 
-# The first rule the base policy installs, and therefore the one this asks
-# about to find out whether a namespace already carries that policy.
-_POLICY_MARKER_RULE = "iptables -C OUTPUT -o lo -j ACCEPT"
+# The last thing the base policy installs, and therefore the one thing whose
+# presence proves the whole of it is in a namespace. It is an empty chain
+# rather than a rule: a half-installed base policy that had left the most
+# generic firewall line behind would otherwise be read as a complete one, and
+# every later Attempt would skip installing a default-deny that is not there.
+# It is also named after this arrangement, so nothing else in that namespace
+# writes it by coincidence.
+_BASE_POLICY_SENTINEL = "ATELIER2-BASE-INSTALLED"
 _ATTEMPT_POLICY_REMAINS = "carrier-attempt-policy-remains"
+_ATTEMPT_POLICY_UNREADABLE = "carrier-attempt-policy-unreadable"
 # Where every Attempt's own chain is jumped to from. They are installed once
 # per namespace, before the base policy's rejects, so an Attempt's chain can be
 # appended at any later time and still be reached.
@@ -296,8 +302,13 @@ def _base_rules(role: ContainerRole, base_subnet: str | None) -> list[str]:
             "iptables -A OUTPUT -p tcp --dport 443 -j ACCEPT",
         ]
     return [
-        f"iptables -N {_OUTBOUND_DISPATCH}",
-        f"iptables -N {_INBOUND_DISPATCH}",
+        # An install that died halfway leaves no sentinel, so the next one runs
+        # this whole block again. Creating a dispatch chain that survived that
+        # death is therefore not a failure; every rule after it is appended
+        # ahead of nothing, because the rejects of a completed base policy
+        # would have carried the sentinel with them.
+        f"iptables -N {_OUTBOUND_DISPATCH} 2>/dev/null || true",
+        f"iptables -N {_INBOUND_DISPATCH} 2>/dev/null || true",
         *outbound,
         f"iptables -A OUTPUT -j {_OUTBOUND_DISPATCH}",
         "iptables -A OUTPUT -p tcp -j REJECT --reject-with tcp-reset",
@@ -307,6 +318,7 @@ def _base_rules(role: ContainerRole, base_subnet: str | None) -> list[str]:
         "iptables -A INPUT -p tcp -j REJECT --reject-with tcp-reset",
         "iptables -A INPUT -j REJECT --reject-with icmp-port-unreachable",
         *_IPV6_RULES,
+        f"iptables -N {_BASE_POLICY_SENTINEL}",
     ]
 
 
@@ -347,11 +359,16 @@ def _policy_program(attachment: AttemptAttachment, base_subnet: str | None) -> s
     Attempt; a long-lived console that is attached to a second Attempt keeps
     the one it already has. What each Attempt adds and removes is its own pair
     of chains.
+
+    Whether it is already there is asked of the sentinel chain, which the base
+    policy writes last. Asking a rule instead would let a base policy that died
+    after its first rule count as a complete one, and every Attempt after that
+    would attach to a namespace with no default-deny in it at all.
     """
     return "\n".join(
         (
             "set -e",
-            f"if ! {_POLICY_MARKER_RULE} 2>/dev/null; then",
+            f"if ! iptables -S {_BASE_POLICY_SENTINEL} >/dev/null 2>&1; then",
             *(f"  {rule}" for rule in _base_rules(attachment.role, base_subnet)),
             "fi",
             *_attempt_rules(attachment),
@@ -364,9 +381,16 @@ def _policy_removal_program(chains: AttemptChains) -> str:
 
     Every step tolerates a piece that is already gone, because removal runs
     both at release and at reconciliation of an Attempt nobody finished. What
-    does not tolerate anything is the answer: a namespace still naming this
-    Attempt's chains keeps a grant for a subnet that no longer exists, so that
-    is refused rather than reported as a clean release.
+    does not tolerate anything is the answer, and the answer is read in two
+    parts: a listing that could not be taken at all is its own refusal, and
+    only a listing this really holds may say the chains are gone. A ruleset
+    nobody could read must never pass for an empty one -- an `iptables` that
+    fails here fails for reasons (a missing `CAP_NET_ADMIN`, a namespace that
+    changed underneath) that would leave the Attempt's grants standing.
+
+    The chain names are the bounded upper-case form `AttemptChains` admits, so
+    the pattern match below is a literal comparison and not a glob a name
+    could carry.
     """
     return "\n".join(
         (
@@ -376,10 +400,16 @@ def _policy_removal_program(chains: AttemptChains) -> str:
             f"iptables -F {chains.inbound} 2>/dev/null",
             f"iptables -X {chains.outbound} 2>/dev/null",
             f"iptables -X {chains.inbound} 2>/dev/null",
-            f"if iptables -S | grep -q -e {chains.outbound} -e {chains.inbound}; then",
-            f"  echo {_ATTEMPT_POLICY_REMAINS} >&2",
-            "  exit 3",
-            "fi",
+            "remaining=$(iptables -S) || {",
+            f"  echo {_ATTEMPT_POLICY_UNREADABLE} >&2",
+            "  exit 4",
+            "}",
+            'case "$remaining" in',
+            f"  *{chains.outbound}* | *{chains.inbound}*)",
+            f"    echo {_ATTEMPT_POLICY_REMAINS} >&2",
+            "    exit 3",
+            "    ;;",
+            "esac",
         )
     )
 
@@ -671,6 +701,17 @@ class DockerCarrier:
         )
         self._run(["network", "connect", *alias, attachment.network.name, container])
         self._attest_attachment(container, attachment.attached_networks())
+
+    def detach_container(self, container: str, network: str) -> None:
+        """Take one container off one network, and change nothing else.
+
+        This is how the console leaves an Attempt that failed: the Attempt's
+        own objects stay on the host to be read, and the container that
+        outlives them stops being reachable from a network that is over.
+        Detaching what is already detached, or what is already gone, is the
+        same answer as detaching it, so this states no outcome.
+        """
+        self._succeeded(["network", "disconnect", "--force", network, container])
 
     def _attest_attachment(self, container: str, expected: frozenset[str]) -> None:
         """Where this container can be reached, read back out of the engine.

@@ -167,9 +167,16 @@ def decode_runner_lease_document(payload: bytes) -> RunnerLeaseDocument:
     """
     try:
         record = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as malformed:
+    except Exception as malformed:
+        # Every way an untrusted document can fail to become JSON is one
+        # refused lease, rather than the ways a reader happened to think of: a
+        # list of exception types is a guess about a parser's failure modes,
+        # and this one has already been wrong -- a deeply nested document
+        # exhausts the parser's own stack and answers with `RecursionError`,
+        # which is no kind of `ValueError` and reached straight past a caller
+        # whose whole job is to refuse one lease without stopping.
         raise RunnerLeaseDocumentMalformed(
-            f"lease-document-not-json: {malformed}"
+            f"lease-document-not-json: {malformed!r}"
         ) from malformed
     if not isinstance(record, dict):
         raise RunnerLeaseDocumentMalformed("lease-document-not-an-object")
