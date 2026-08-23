@@ -44,6 +44,7 @@ from atelier2.adapters.dbos.schema import (
     V25_SCHEMA_HANDOFF,
     V26_SCHEMA_HANDOFF,
     V27_SCHEMA_HANDOFF,
+    V28_SCHEMA_HANDOFF,
     MigrationRequired,
     _rebuild_product_table,
     _require_product_shape,
@@ -65,6 +66,7 @@ from atelier2.adapters.dbos.schema import (
     node_execution_requests_v3,
     node_receipts_v3,
     published_revisions,
+    queue_items,
     run_agent_bindings,
     run_configuration_revisions,
     run_events,
@@ -517,6 +519,7 @@ def _create_populated_v13_store(database_path: Path) -> None:
     initialize_schema(engine)
     with sqlite3.connect(database_path) as predecessor:
         _restore_v27_access_store(predecessor)
+        _drop_queue_items_table(predecessor)
     published = PublishedRevision(RevisionKind.WORKFLOW, b"name: lasagne\n")
     lineage = CatalogLineage(published.kind, published.revision_hash)
     configuration = "44" * 32
@@ -924,6 +927,12 @@ def _drop_occupancy_channel(connection: sqlite3.Connection) -> None:
     connection.execute(f"DROP TABLE {host_occupancy_revisions.name}")
 
 
+def _drop_queue_items_table(connection: sqlite3.Connection) -> None:
+    connection.execute("DROP TRIGGER queue_items_identity_no_update")
+    connection.execute("DROP TRIGGER queue_items_no_delete")
+    connection.execute(f"DROP TABLE {queue_items.name}")
+
+
 def _revert_runner_evidence_attempts(connection: sqlite3.Connection) -> None:
     """Restore the exact V26 attempt table and its pre-Runner trigger."""
 
@@ -946,6 +955,7 @@ def _create_exact_v21_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
+        _drop_queue_items_table(connection)
         _revert_agent_refused_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
@@ -978,6 +988,7 @@ def _create_exact_v22_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
+        _drop_queue_items_table(connection)
         _revert_agent_refused_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
@@ -997,6 +1008,7 @@ def _create_exact_v23_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
+        _drop_queue_items_table(connection)
         _revert_project_verification_failed_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
@@ -1016,6 +1028,7 @@ def _create_exact_v24_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
+        _drop_queue_items_table(connection)
         _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
@@ -1035,6 +1048,7 @@ def _create_exact_v25_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
+        _drop_queue_items_table(connection)
         _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
         connection.execute(
@@ -1053,6 +1067,7 @@ def _create_exact_v26_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
+        _drop_queue_items_table(connection)
         _revert_runner_evidence_attempts(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -1100,6 +1115,7 @@ def _create_exact_v27_store(database_path: Path, *, access: bool = False) -> Non
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
+        _drop_queue_items_table(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V27_SCHEMA_HANDOFF.version,),
@@ -1107,6 +1123,22 @@ def _create_exact_v27_store(database_path: Path, *, access: bool = False) -> Non
         _insert_v27_receipt_witness(connection, access=access)
         connection.commit()
         _require_product_shape(connection, V27_SCHEMA_HANDOFF.version)
+
+
+def _create_exact_v28_store(database_path: Path) -> None:
+    """A current store without the queue admission table: the published V28 shape."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _drop_queue_items_table(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V28_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V28_SCHEMA_HANDOFF.version)
 
 
 def _v27_living_rows(database_path: Path) -> tuple[tuple[object, ...], ...]:
@@ -1134,12 +1166,12 @@ def test_populated_v27_with_empty_access_store_migrates_and_reopens(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert "27" in shown.out and "28" in shown.out
+    assert "27" in shown.out and "28" in shown.out and "29" in shown.out
     assert _v27_living_rows(database_path) == before
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT version FROM atelier_schema_versions"
-        ).fetchone() == (28,)
+        ).fetchone() == (SCHEMA_VERSION,)
         assert (
             connection.execute(
                 "SELECT name FROM sqlite_master WHERE name LIKE "
@@ -1305,7 +1337,36 @@ def test_an_exact_v24_store_migrates_to_v25(
     engine.dispose()
 
 
-def test_an_exact_v25_store_migrates_through_v27_to_v28(
+def test_an_exact_v28_store_migrates_to_v29(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v28_store(database_path)
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 28"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+
+    shown = capsys.readouterr()
+    assert "28" in shown.out and "29" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
+        )
+        assert (
+            connection.scalar(sa.select(sa.func.count()).select_from(queue_items)) == 0
+        )
+    engine.dispose()
+
+
+def test_an_exact_v25_store_migrates_through_v27_and_v28_to_v29(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -1318,7 +1379,7 @@ def test_an_exact_v25_store_migrates_through_v27_to_v28(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert all(step in shown.out for step in ("25", "26", "27", "28"))
+    assert all(step in shown.out for step in ("25", "26", "27", "28", "29"))
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
 
     engine = create_canonical_engine(database_path)
@@ -1343,7 +1404,7 @@ def test_an_exact_v25_store_migrates_through_v27_to_v28(
     engine.dispose()
 
 
-def test_an_exact_v26_store_migrates_through_v27_to_v28(
+def test_an_exact_v26_store_migrates_through_v27_and_v28_to_v29(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -1356,7 +1417,7 @@ def test_an_exact_v26_store_migrates_through_v27_to_v28(
     assert main(["migrate", "--database", str(database_path)]) == 0
 
     shown = capsys.readouterr()
-    assert all(step in shown.out for step in ("26", "27", "28"))
+    assert all(step in shown.out for step in ("26", "27", "28", "29"))
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
     engine = create_canonical_engine(database_path)
     initialize_schema(engine)
@@ -1388,6 +1449,7 @@ def test_v26_attempt_bytes_cross_v27_and_v28_unchanged_with_none_evidence(
 
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
+        _drop_queue_items_table(connection)
         _revert_runner_evidence_attempts(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",

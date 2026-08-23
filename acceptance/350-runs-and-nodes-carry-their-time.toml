@@ -8,7 +8,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/350"
 
 [[sentence]]
 id = "a-run-carries-when-it-started-and-ended"
-text = "A started run answers when it started. A finished run also answers when it ended. The store keeps those instants in UTC; a surface that asks how long shows age, and the exact local stamp sits behind the info affordance."
+text = "A started run answers when it started. A finished run also answers when it ended. The store keeps those instants in UTC; a surface that asks how long shows age beside the state word, and the exact local stamps stand in their own facts line, visible without a reveal a person has to find first."
 
 [[sentence]]
 id = "a-node-carries-how-long-it-ran"

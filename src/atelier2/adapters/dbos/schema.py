@@ -24,6 +24,10 @@ from atelier2.contracts.host_configuration import (
     MAXIMUM_PROJECT_ID_CHARACTERS,
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
 )
+from atelier2.contracts.queue_projection import (
+    MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
+    MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
+)
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
@@ -46,10 +50,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head removes the writerless receipt-access store.
-# Predecessor is the published Runner-evidence schema. Change only this
-# constant to restack.
-_HOP_PREDECESSOR_VERSION = 27
+# Movable hop: this head gives the queue projection its durable admission row.
+# Predecessor is the published schema with the receipt-access store removed.
+# Change only this constant to restack.
+_HOP_PREDECESSOR_VERSION = 28
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -71,6 +75,7 @@ _VERSION_TWENTY_FIVE = 25
 _VERSION_TWENTY_SIX = 26
 _VERSION_TWENTY_SEVEN = 27
 _VERSION_TWENTY_EIGHT = 28
+_VERSION_TWENTY_NINE = 29
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -110,8 +115,10 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # header and role bindings, append-only. The hop number is movable:
 # V27 gives Core the exact Runner generation/invocation binding and the durable
 # semantic evidence acceptance phase. V28 removes the receipt-access table that
-# never acquired a writer. The hop number is movable:
-# `_HOP_PREDECESSOR_VERSION` is the one constant to restack.
+# never acquired a writer. V29 gives the queue projection its durable admission
+# row: one item identified by its project and tracker reference, CAS-guarded
+# through OBSERVED to ADMITTED under a named catalog workflow binding. The hop
+# number is movable: `_HOP_PREDECESSOR_VERSION` is the one constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
     8: "6ba76214cb567ffcdab46e5a3ae00fc10824b962f16a8036ce90590be0b79b38",
@@ -135,6 +142,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     26: "0af3ca8bbbbe06a56c56bb0988de384fde2a807b1e409152a02e1e226e917ab8",
     27: "7f929ab33c6b8742ff24a301bb13cb1f49a4ced2d96b52b97dbb26196ebd2ac4",
     28: "8e15796b7361796fc5c70e9c1682ddf58b967dea7fb112127366cfca600c9b36",
+    29: "06e1d67be5f39569e7661321c063f7ea84c95efba2906519e7473a6f2016b640",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -211,6 +219,10 @@ V26_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V27_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_TWENTY_SEVEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_SEVEN],
+)
+V28_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_TWENTY_EIGHT,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_EIGHT],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1516,6 +1528,45 @@ host_occupancy_bindings = sa.Table(
         "AND agent_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
+queue_items = sa.Table(
+    "queue_items",
+    metadata,
+    sa.Column("item_id", sa.Text, primary_key=True),
+    sa.Column("project_id", sa.Text, nullable=False),
+    sa.Column("tracker_item_reference", sa.Text, nullable=False),
+    sa.Column("state", sa.Text, nullable=False),
+    sa.Column("state_version", sa.Integer, nullable=False),
+    sa.Column(
+        "workflow_lineage_id",
+        sa.Text,
+        sa.ForeignKey("catalog_lineages.lineage_id"),
+        nullable=True,
+    ),
+    sa.Column("admission_rationale", sa.Text, nullable=True),
+    sa.UniqueConstraint("project_id", "tracker_item_reference"),
+    sa.CheckConstraint("length(item_id) = 64 AND item_id NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(
+        f"length(project_id) BETWEEN 1 AND {MAXIMUM_PROJECT_ID_CHARACTERS}"
+    ),
+    sa.CheckConstraint(
+        "length(tracker_item_reference) BETWEEN 1 AND "
+        f"{MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS}"
+    ),
+    sa.CheckConstraint("state IN ('OBSERVED', 'ADMITTED')"),
+    sa.CheckConstraint("state_version >= 0"),
+    sa.CheckConstraint(
+        "(state = 'ADMITTED' "
+        "AND workflow_lineage_id IS NOT NULL "
+        "AND length(workflow_lineage_id) = 64 "
+        "AND workflow_lineage_id NOT GLOB '*[^0-9a-f]*' "
+        "AND admission_rationale IS NOT NULL "
+        f"AND length(admission_rationale) BETWEEN 1 AND "
+        f"{MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS}) "
+        "OR (state = 'OBSERVED' "
+        "AND workflow_lineage_id IS NULL "
+        "AND admission_rationale IS NULL)"
+    ),
+)
 
 PRODUCT_TABLE_NAMES = frozenset(metadata.tables)
 
@@ -2232,6 +2283,19 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'host occupancy bindings are immutable');
         END
     """,
+    "queue_items_identity_no_update": """
+        CREATE TRIGGER queue_items_identity_no_update
+        BEFORE UPDATE OF item_id, project_id, tracker_item_reference
+        ON queue_items BEGIN
+          SELECT RAISE(ABORT, 'queue item identity is immutable');
+        END
+    """,
+    "queue_items_no_delete": """
+        CREATE TRIGGER queue_items_no_delete
+        BEFORE DELETE ON queue_items BEGIN
+          SELECT RAISE(ABORT, 'queue items are immutable');
+        END
+    """,
 }
 
 
@@ -2401,9 +2465,13 @@ def _table_names_for_version(version: int) -> frozenset[str]:
     later = {run_instants.name, attempt_instants.name, event_instants.name}
     host_channel = {host_project_root_revisions.name}
     occupancy = {host_occupancy_revisions.name, host_occupancy_bindings.name}
-    predecessor_tables = PRODUCT_TABLE_NAMES | {_V27_ACCESS_TABLE_NAME}
+    predecessor_tables = (PRODUCT_TABLE_NAMES - {queue_items.name}) | {
+        _V27_ACCESS_TABLE_NAME
+    }
     if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
+    if version == _VERSION_TWENTY_EIGHT:
+        return predecessor_tables - {_V27_ACCESS_TABLE_NAME}
     if version in {_VERSION_TWENTY_SEVEN, _VERSION_TWENTY_SIX}:
         return predecessor_tables
     if version == _VERSION_TWENTY_FIVE:
@@ -2641,7 +2709,7 @@ def _added_table_step(
 ) -> Callable[[sqlite3.Connection], None]:
     """One additive hop: a table this version introduces, its triggers, the CAS.
 
-    Two published steps add exactly one immutable table, so the hop is written
+    Five published steps add exactly one immutable table, so the hop is written
     once rather than copied per version; what differs between them is only the
     table, its triggers, and the two version numbers.
     """
@@ -3293,6 +3361,16 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
     _SchemaMigrationStep(_VERSION_TWENTY_SIX, _VERSION_TWENTY_SEVEN, _apply_v26_to_v27),
     _SchemaMigrationStep(
         _VERSION_TWENTY_SEVEN, _VERSION_TWENTY_EIGHT, _apply_v27_to_v28
+    ),
+    _SchemaMigrationStep(
+        _VERSION_TWENTY_EIGHT,
+        _VERSION_TWENTY_NINE,
+        _added_table_step(
+            queue_items,
+            ("queue_items_identity_no_update", "queue_items_no_delete"),
+            _VERSION_TWENTY_EIGHT,
+            _VERSION_TWENTY_NINE,
+        ),
     ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {

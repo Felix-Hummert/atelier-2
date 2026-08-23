@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.prepare_run_events import (
     EventCursorAhead,
     RunEventStreamPrepared,
@@ -27,6 +28,7 @@ from atelier2.application.read_runs import (
     list_runs,
 )
 from atelier2.application.read_workflow_revisions import (
+    WaitAnswerClassification,
     WorkflowRevisionNotFound,
     WorkflowRevisionRead,
     WorkflowRevisionsListed,
@@ -34,12 +36,14 @@ from atelier2.application.read_workflow_revisions import (
     list_workflow_revisions,
 )
 from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
+from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_projections import (
     RunPage,
 )
-from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.workflow_projections import (
     WorkflowRevisionPage,
+    WorkflowRevisionProjection,
 )
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionPage,
@@ -47,6 +51,10 @@ from atelier2.ports.agent_configurations import (
     CatalogReadUnavailable,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
+from atelier2.ports.published_revisions import (
+    PublishedRevisionFound,
+    PublishedRevisionMissing,
+)
 from atelier2.ports.run_events import (
     CursorAhead,
     EventHistoryCorrupt,
@@ -251,6 +259,82 @@ def test_a_read_asks_its_port_with_exactly_what_the_caller_named() -> None:
     list_runs(RUN_ID, 25, queries)
 
     assert queries.asked == [(RUN_ID, 25, None)]
+
+
+class ScriptedResolver:
+    """A published-revision resolver that answers every resolve with one scripted answer."""
+
+    def __init__(self, answer: Any) -> None:
+        self.answer = answer
+        self.asked: list[tuple[Any, Any]] = []
+
+    def resolve(self, kind: Any, revision_hash: Any) -> Any:
+        self.asked.append((kind, revision_hash))
+        return self.answer
+
+
+WAIT_NODE_ID = "ship"
+WELL_FORMED_UNPUBLISHED_HASH = "b" * 64
+
+
+def _wait_revision_projection(schema_revision: str) -> WorkflowRevisionProjection:
+    """One published V3 revision with one wait node, pinning the named schema revision."""
+    document = f"""format_version: 3
+name: Ship it or hold it
+nodes:
+  - id: {WAIT_NODE_ID}
+    type: wait
+    prompt: Ship it?
+    outputs:
+      - name: decision
+        schema: {{ref: decision, revision: {schema_revision}}}
+""".encode()
+    return WorkflowRevisionProjection(
+        WorkflowRevision(document), parse_workflow_document(document)
+    )
+
+
+@pytest.mark.parametrize(
+    ("schema_revision", "resolver_answer"),
+    [
+        pytest.param(
+            "schema-decision", PublishedRevisionMissing(), id="malformed-pinned-hash"
+        ),
+        pytest.param(
+            WELL_FORMED_UNPUBLISHED_HASH,
+            PublishedRevisionMissing(),
+            id="no-published-revision-carries-this-hash",
+        ),
+        pytest.param(
+            WELL_FORMED_UNPUBLISHED_HASH,
+            PublishedRevisionFound(
+                PublishedRevision(RevisionKind.TOOL, b'{"type": "boolean"}')
+            ),
+            id="revision-published-under-a-different-kind",
+        ),
+        pytest.param(
+            WELL_FORMED_UNPUBLISHED_HASH,
+            PublishedRevisionFound(PublishedRevision(RevisionKind.SCHEMA, b"not json")),
+            id="published-bytes-are-not-a-schema-this-product-enforces",
+        ),
+    ],
+)
+def test_a_wait_answer_schema_classifies_free_for_every_named_resolution_failure(
+    schema_revision: str, resolver_answer: object
+) -> None:
+    """None of the four reasons `_classify_wait_answer` names is silently
+    swallowed into `free`: each is its own scripted resolver answer, and each
+    still ends at the same honest verdict."""
+    projection = _wait_revision_projection(schema_revision)
+    queries = ScriptedQueries(WorkflowRevisionFound(projection))
+    resolver = ScriptedResolver(resolver_answer)
+
+    result = get_workflow_revision(REVISION_HASH, queries, resolver)
+
+    assert isinstance(result, WorkflowRevisionRead)
+    assert result.wait_answer_classifications == (
+        WaitAnswerClassification(node_id=WAIT_NODE_ID, kind="free"),
+    )
 
 
 def test_list_agent_configuration_revisions_becomes_this_layers_own_outcome() -> None:

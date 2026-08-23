@@ -949,7 +949,7 @@ empty collection, and unreadable or corrupt configuration stays visibly
 unavailable or corrupt. There is no HTTP project write, second project,
 pagination, project editor, or store-per-project process.
 
-The canonical store is schema V28. A fresh store is created as exact V28 and
+The canonical store is schema V29. A fresh store is created as exact V29 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output
@@ -958,9 +958,9 @@ preimages and run configuration snapshots those receipts name, and the immutable
 orders a run was started with, the immutable proof of every redeemed tool
 grant, the receipt hash an agent completion binds, immutable content-addressed
 artifacts an order may name instead of carrying their bytes, the round a
-declared loop was turning when each run, event and agent receipt was written, and
+declared loop was turning when each run, event and agent receipt was written,
 the host configuration channel's project-root revisions and occupancy
-revisions. The catalog adapter founds a lineage
+revisions, and the queue projection's admission row per work item. The catalog adapter founds a lineage
 and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An
 admitted name or lineage id resolves to the exact published bytes; a missing
@@ -978,6 +978,23 @@ V28 removes the writerless receipt-Access table and triggers. Its offline V27
 hop drops only an empty table and refuses any row without mutation; the
 published V3 receipt hash retains its literal empty Access subframe as frozen
 byte identity, not as a public input or writable store.
+V29 gives the queue projection ([ADR 0016](decisions/0016-queue-projection-identity.md))
+its durable admission row: one item identified by a project id and an opaque
+tracker reference, whose id a caller never supplies -- it is a SHA-256 digest
+framed from both fields, exactly as a catalog lineage id is framed from its
+kind and founding revision. An admission names an exact, already-founded
+`CatalogLineageId` and a durable rationale; the one CAS-guarded transition an
+item's row admits is OBSERVED to ADMITTED: a stale revision or an admission
+that would replace a different one already recorded is refused with the row
+provably unchanged, and repeating the exact same admission again succeeds
+without a second write. The first admission attempt for one derived identity
+also establishes that identity's row; there is no separate durable "observed"
+write yet. Resolving which lineage a workflow query names -- reading the
+catalog above this projection -- has no production caller yet; it lands with
+the platform door in a later slice. No dependency edge, no readiness, no
+priority, and no HTTP door exist for this projection yet, and nothing in it
+holds a tracker item's title, description, or comments -- REQ-QUEUE-14 keeps
+those with the tracker.
 
 On 2026-08-19 at `ed6376b` this landing measured how many concurrent
 fake-executor runs one SQLite instance carries. The harness is in-process ASGI on one event loop,

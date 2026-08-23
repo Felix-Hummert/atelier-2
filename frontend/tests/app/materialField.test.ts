@@ -40,6 +40,7 @@ function graph(orders: Array<typeof portionsOrder>, name: string) {
     node_count: 1,
     agent_roles: ["cook"],
     orders,
+    wait_answer_schemas: [],
     node_previews: [
       {
         id: "cook",

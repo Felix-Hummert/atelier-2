@@ -1,0 +1,15 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/79"
+
+# A WORK ITEM IS ADMITTED INTO THE QUEUE.
+#
+# The queue's own durable identity, one work item at a time: a project and
+# tracker reference derive one item id, and that item's row carries a durable
+# admission -- a named workflow binding and its reason -- once, under a
+# revision-checked transition. No dependency edge, no readiness, no priority,
+# and no platform door exist yet; this sentence binds only the admission row
+# and the CAS guard around it.
+
+[[sentence]]
+id = "a-work-item-is-admitted-into-the-queue"
+text = "A queue item derived from its project and tracker reference is admitted from OBSERVED to ADMITTED under one named catalog workflow binding and a durable rationale, guarded by the revision the caller inspected; a stale revision or an admission that would replace a different one already recorded is refused leaving the row unchanged, and repeating the same admission again succeeds without a second write."

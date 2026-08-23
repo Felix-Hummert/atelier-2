@@ -1562,6 +1562,7 @@ def published_v3_workflow_revision(name: str = V3_WORKFLOW_NAME) -> Answer:
                 node_count=1,
                 agent_roles=("writer",),
                 orders=(),
+                wait_answer_schemas=(),
                 node_previews=(
                     WorkflowNodePreviewResourceV3(
                         id="draft",

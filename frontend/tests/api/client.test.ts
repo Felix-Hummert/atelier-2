@@ -92,6 +92,7 @@ function v3RevisionWithLoop() {
       node_count: 2,
       agent_roles: ["builder"],
       orders: [],
+      wait_answer_schemas: [],
       node_previews: [
         {
           id: "implement",
@@ -957,6 +958,7 @@ describe("the graph a run is allowed to hold", () => {
       not_executable_reason: "agent forms nothing binds yet: outputs" as const,
       agent_roles: [],
       orders: [],
+      wait_answer_schemas: [],
       node_count: 1,
       node_previews: [
         {

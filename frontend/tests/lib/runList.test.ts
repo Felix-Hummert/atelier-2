@@ -44,6 +44,7 @@ function v3Revision(
       node_count: 1,
       agent_roles: ["builder"],
       orders: [],
+      wait_answer_schemas: [],
       node_previews: [
         {
           id: "review",
