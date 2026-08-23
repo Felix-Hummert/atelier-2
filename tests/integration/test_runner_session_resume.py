@@ -57,6 +57,7 @@ from atelier2.contracts.runner_terminal_evidence_codec import (
     encode_runner_terminal_evidence_record,
 )
 from atelier2.runner.authorization import free_runner_auth_reference
+from atelier2.runner.executors import runner_executor_cli_pin
 from atelier2.runner.session import CandidateScenario
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.integration.test_runner_session_application import (
@@ -117,26 +118,6 @@ libc = ctypes.CDLL(None, use_errno=True)
 if libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
     raise OSError(ctypes.get_errno(), "prctl(NO_NEW_PRIVS) failed")
 
-
-def _interpreter_reachable_allowlist():
-    import atelier2
-
-    # See the identical accommodation in test_runner_session_wire.py's
-    # _CANDIDATE_DRIVER: the fixed candidate program imports atelier2 only
-    # after Landlock restricts this process, so an editable install's real
-    # source (outside both prefixes here) has to be reachable too.
-    installed_source_root = Path(atelier2.__file__).resolve().parent.parent
-    return tuple(
-        path
-        for path in (
-            Path("/usr"), Path("/lib"), Path("/lib64"), Path("/proc"), Path("/dev"),
-            Path(sys.prefix), Path(sys.base_prefix), installed_source_root,
-        )
-        if path.exists()
-    )
-
-
-session_module.child_allowlist = _interpreter_reachable_allowlist
 session_module._pid_limit = lambda: int(process_limit)
 session_module._runner_workspace_directory = lambda: Path(workspace_directory)
 if crash_point == "after-publish":
@@ -257,6 +238,7 @@ def _fresh_core_session(
         manifest,
         reference,
         invocation,
+        runner_executor_cli_pin(manifest),
     )
 
 
@@ -468,6 +450,7 @@ def _session_for(
         fixture.manifest,
         fixture.reference,
         invocation,
+        runner_executor_cli_pin(fixture.manifest),
     )
 
 

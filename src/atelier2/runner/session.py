@@ -50,6 +50,7 @@ from atelier2.contracts.agent_attempts import (
 from atelier2.contracts.runner_manifests import (
     RunnerManifestV1,
     decode_runner_manifest,
+    encode_measured_provider_cli,
     runner_manifest_id,
 )
 from atelier2.contracts.runner_session_codec import (
@@ -58,7 +59,11 @@ from atelier2.contracts.runner_session_codec import (
     encode_runner_session_frame,
     runner_session_body_length,
 )
-from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSessionMessage
+from atelier2.contracts.runner_sessions import (
+    NO_REFUSED_EVIDENCE,
+    RunnerSessionFrame,
+    RunnerSessionMessage,
+)
 from atelier2.contracts.runner_terminal_evidence_codec import (
     encode_runner_terminal_evidence_record,
 )
@@ -72,7 +77,13 @@ from atelier2.runner.authorization import (
     free_runner_auth_reference,
     resolve_free_runner_authorization,
 )
-from atelier2.runner.executors import select_runner_executor
+from atelier2.runner.executors import (
+    RunnerToolchainRefused,
+    RunnerToolchainUnpinned,
+    attest_runner_provider_toolchain,
+    runner_executor_cli_pin,
+    select_runner_executor,
+)
 
 _CONTROL_POLL_SECONDS = 0.05
 
@@ -249,14 +260,6 @@ def _identity_mount_denied(identity: Path) -> bool:
     return False
 
 
-def child_allowlist() -> tuple[Path, ...]:
-    paths = [Path("/usr"), Path("/lib"), Path("/proc"), Path("/dev")]
-    for extra in (Path("/lib64"), Path("/workspace")):
-        if extra.exists():
-            paths.append(extra)
-    return tuple(paths)
-
-
 def _runner_workspace_directory() -> Path:
     """The one ephemeral workspace this container was given before it started.
 
@@ -311,8 +314,17 @@ def _drain_exited_child(
 def _measured_ready_payload(
     manifest: RunnerManifestV1, auth_reference: str, identity: Path
 ) -> tuple[bytes, ...]:
+    """Everything this container can prove about itself, measured before READY.
+
+    The provider-toolchain attestation runs here, ahead of the whole rest of
+    the session: a Runner whose installed CLI is outside the conformance set
+    its manifest's executor revision names, or whose host or account still
+    lets administrator policy act, refuses before Core ever arms the attempt
+    and therefore before any provider process could start.
+    """
     if landlock_kernel_abi() < REQUIRED_LANDLOCK_ABI:
-        raise LandlockUnavailable("runner-child-boundary-unavailable")
+        raise LandlockUnavailable(CHILD_BOUNDARY_UNAVAILABLE_REFUSAL_CODE)
+    measured_cli = attest_runner_provider_toolchain(manifest)
     payload = (
         manifest.executor_revision.encode("utf-8"),
         manifest.executor_operational_identity.encode("utf-8"),
@@ -325,9 +337,75 @@ def _measured_ready_payload(
         struct.pack(">Q", REQUIRED_LANDLOCK_ABI),
         b"DENIED" if _identity_mount_denied(identity) else b"WRITABLE",
         hashlib.sha256(auth_reference.encode("ascii")).hexdigest().encode("ascii"),
+        encode_measured_provider_cli(measured_cli),
     )
-    require_ready_matches_manifest(payload, manifest, auth_reference)
+    require_ready_matches_manifest(
+        payload, manifest, auth_reference, runner_executor_cli_pin(manifest)
+    )
     return payload
+
+
+# The one code this Runner names when the kernel itself cannot enforce the
+# child boundary. `LandlockUnavailable` carries prose from its other raise
+# sites, so the wire never reads its message: the code is stated here, checked
+# against the protocol's declared vocabulary by Core, and used for both the
+# refusal this module raises and the frame it sends about it.
+CHILD_BOUNDARY_UNAVAILABLE_REFUSAL_CODE = "runner-child-boundary-unavailable"
+
+
+def _attested_ready_payload(
+    channel: RunnerFrameChannel,
+    binding: RunnerGenerationBinding,
+    invocation: RunnerInvocationId,
+    sequence: int,
+    manifest: RunnerManifestV1,
+    auth_reference: str,
+    identity: Path,
+) -> tuple[bytes, ...]:
+    """Measure this container for READY, or tell Core by name why it cannot.
+
+    A Runner that cannot attest itself -- its provider toolchain, or the kernel
+    boundary it would confine a child with -- has to say so on the wire before
+    it dies. Dropping the connection would leave Core with a torn socket and no
+    reason, so the refusal Core would otherwise have to guess at becomes a
+    REFUSE frame carrying the exact code -- loud and named -- and only then does
+    this lifetime end. Nothing is armed and nothing durable is written on
+    either side.
+    """
+    try:
+        return _measured_ready_payload(manifest, auth_reference, identity)
+    except (RunnerToolchainUnpinned, RunnerToolchainRefused) as refusal:
+        # These carry their own declared code as their message by construction.
+        _refuse_before_start(channel, binding, invocation, sequence, str(refusal))
+        raise
+    except LandlockUnavailable:
+        _refuse_before_start(
+            channel,
+            binding,
+            invocation,
+            sequence,
+            CHILD_BOUNDARY_UNAVAILABLE_REFUSAL_CODE,
+        )
+        raise
+
+
+def _refuse_before_start(
+    channel: RunnerFrameChannel,
+    binding: RunnerGenerationBinding,
+    invocation: RunnerInvocationId,
+    sequence: int,
+    code: str,
+) -> None:
+    _write_frame(
+        channel,
+        _frame(
+            RunnerSessionMessage.REFUSE,
+            sequence,
+            binding,
+            invocation,
+            (code.encode("ascii"), NO_REFUSED_EVIDENCE),
+        ),
+    )
 
 
 def _decline_crossing_cancel(
@@ -474,7 +552,9 @@ def run_candidate_session(
             sequence,
             binding,
             invocation,
-            _measured_ready_payload(manifest, reference, identity),
+            _attested_ready_payload(
+                channel, binding, invocation, sequence, manifest, reference, identity
+            ),
         ),
     )
     if fence.read_frame().message is not RunnerSessionMessage.LAUNCH:
@@ -509,7 +589,7 @@ def run_candidate_session(
             command = executor.prepare_process(request)
             child = start_runner_child(
                 command.arguments,
-                child_allowlist(),
+                manifest.child_path_grants,
                 environment=command.environment,
                 standard_input=command.standard_input,
             )

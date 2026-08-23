@@ -57,9 +57,15 @@ a local rootful Docker engine the operator has authorized:
 bash scripts/runner_candidate.sh success
 bash scripts/runner_candidate.sh cancel
 bash scripts/runner_candidate.sh resume
+bash scripts/runner_candidate.sh toolchain
+bash scripts/runner_candidate.sh egress
 ```
 
-Each scenario creates one labelled internal Attempt network, one disposable
+`success`, `cancel` and `resume` drive one full session each. `toolchain` and
+`egress` drive no session at all: they measure the deployed image and the
+Attempt network form, unbilled, with no credential and no provider call.
+
+Each session scenario creates one labelled Attempt network, one disposable
 Core witness, one Runner, one handoff tmpfs volume, and one identity and one
 journal volume. Exact labelled objects are removed only after the Runner
 answers `RELEASED`. On failure the script leaves those objects and prints
@@ -87,6 +93,73 @@ by the same teardown as every other labelled object once released. Handoff
 stays tmpfs; its content is fully reproducible from files the launcher already
 retains on the host, so `resume` simply re-copies them into the restarted
 container instead of needing them to survive on their own.
+
+**The Runner's writable surface.** The image root stays read-only and carries
+the whole toolchain: node, the Claude CLI pinned to a release out of
+`CONFORMANT_CLAUDE_VERSIONS`, and bubblewrap. Exactly one path is writable —
+`/tmp` — and it is a `noexec,nosuid` tmpfs of an attested size, so the provider
+child may write data there and may never execute it or gain privilege from it.
+The provider's credential directory is **read-only and not executable**: ADR
+0009 §2's 2026-08-22 amendment admits exactly that one host bind beyond the
+per-invocation identity material, because a live operator session may hold that
+directory open, and a write-capable per-Attempt copy waits on its own operator
+ruling. Being a bind mount, it is the one surface the launcher cannot mount
+`noexec`, so the *grant* forbids execution instead — a real credential
+directory carries plugins, hooks and shell snippets the child must read and
+must never run, and putting that in the right rather than in a convention makes
+it part of the manifest identity Core selected. Execution is granted only where
+the image root's own code lives. Which paths a
+child may touch, and with which right, is a manifest fact: `RunnerManifestV1`
+carries the whole allowlist, the Runner installs exactly that as its Landlock
+ruleset, and the launcher's inspect attestation re-reads the mount flags and
+size of the writable entry, requires the credential directory to be bound
+read-only, and refuses any other host bind at all. Widening the surface
+therefore changes the manifest identity Core selected and refuses, rather than
+passing unnoticed. Anything outside the allowlist is denied by Landlock; a
+read-only entry denies writes even where the mount would allow them; and an
+attested path this image does not have refuses before the child starts.
+
+**The Attempt network.** Each Attempt gets its own routed bridge network, not
+an internal one. Every container is created attached to *no* network, a
+throwaway `CAP_NET_ADMIN` container installs that Attempt's policy inside its
+network namespace and exits, and only then is it connected — so nothing ever
+runs for even one unfiltered packet, and a policy that fails to install leaves
+a container unable to reach anything rather than running wide open. The Runner
+itself carries no packet-filtering tool and no capability to alter what was
+left. The Runner may reach outbound DNS, outbound HTTPS, and its own Attempt
+subnet for Core. Core may reach nothing outbound beyond that subnet: it holds
+the private key and the only store of product truth and has no business on the
+Internet. Inbound, exactly one opening exists in an Attempt: Core accepts its
+own session port from its own subnet, because Core is the only container that
+serves anything. The Runner accepts nothing inbound at all — it dials out, and
+its answers return as established connections. Everything else, in either
+direction, is REJECTed — including IPv6, which gets the same reject chain — so
+a forbidden connection fails immediately with `Connection refused` and the
+provider CLI's own error handling surfaces it, rather than a silent DROP the
+operator would have to diagnose by timeout.
+
+Cross-Attempt unreachability is proven rather than assumed: a second Attempt
+probing the first is refused by its *own* outbound policy, because the other
+Attempt's address is neither in its subnet nor on an allowed port. That is
+loud and immediate, where the host's inter-network isolation alone would only
+drop the packet and make the operator wait out a timeout. `egress` measures all
+of it — a real name resolves, HTTPS connects, ports 80 and 25, every inbound
+attempt and every cross-Attempt attempt refuse in under a second, and the
+namespace is asserted to carry no global IPv6 path. The probed Attempt really
+listens on the ports being probed, proven first over its own loopback, so the
+refusals measure the policy rather than an absent service.
+
+**What `toolchain` measures.** `claude --version` in the hardened container
+must report the pinned release; the runner-side pre-start attestation must
+answer typed for all three cases — the fake-free executor measures *no* CLI
+(a declared absence, not a skipped check), the Claude executor measures its
+version and then refuses because no personal-subscription credential is
+present, and a manifest naming an executor revision this image pins no
+toolchain for refuses before any provider start. The leg also records whether
+bubblewrap can start a namespace under the session hardening and asserts
+nothing about the answer: on a host whose Docker default seccomp profile
+denies user-namespace creation the exit is 1, and that is a measurement for
+the owning item to rule on, never a reason to soften the container.
 
 ```bash
 bash scripts/runner_candidate.sh clean

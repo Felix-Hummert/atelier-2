@@ -16,6 +16,10 @@ from atelier2.contracts.agent_attempts import (
 )
 
 CORE_DNS_NAME = "core.runner-candidate.internal"
+# The one address a Runner reaches Core at. Core binds it, the Runner connects
+# to it, and the launcher's per-Attempt network policy opens exactly it -- three
+# readers of one fact rather than three literals that could drift apart.
+CORE_SESSION_PORT = 8443
 _RUNNER_URI_PREFIX = ("urn", "atelier2", "runner", "v1")
 
 

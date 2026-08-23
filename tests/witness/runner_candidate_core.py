@@ -38,6 +38,7 @@ from atelier2.adapters.free_runner_executor import (
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.runner_tls import (
     CORE_DNS_NAME,
+    CORE_SESSION_PORT,
     SupportedPublicKey,
     core_uri_for_certificate,
     invocation_from_runner_uri,
@@ -88,6 +89,7 @@ from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
 from atelier2.runner.__main__ import CandidateScenario
 from atelier2.runner.authorization import free_runner_auth_reference
+from atelier2.runner.executors import runner_executor_cli_pin
 
 _OUTPUT_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b"true")
 
@@ -383,7 +385,7 @@ def main(arguments: list[str] | None = None) -> int:
         expected_uri=expected_runner_uri,
         expected_eku=ExtendedKeyUsageOID.CLIENT_AUTH,
     )
-    server = socket.create_server(("0.0.0.0", 8443), reuse_port=False)
+    server = socket.create_server(("0.0.0.0", CORE_SESSION_PORT), reuse_port=False)
     server.settimeout(_ACCEPT_TIMEOUT_SECONDS)
     released = False
     session: CoreRunnerSession | None = None
@@ -440,6 +442,11 @@ def main(arguments: list[str] | None = None) -> int:
                         manifest,
                         reference,
                         invocation,
+                        # A composition root's job, not Core's: the serving
+                        # deployment binds the conformance set its executor
+                        # adapters own. This disposable witness reuses the
+                        # Runner-side registry because it composes both ends.
+                        runner_executor_cli_pin(manifest),
                     )
                 released = _drive_until_released_or_dropped(
                     connection, session, scenario

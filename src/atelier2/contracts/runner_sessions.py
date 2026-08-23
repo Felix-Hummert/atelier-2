@@ -33,7 +33,7 @@ class RunnerSessionMessage(StrEnum):
 _PAYLOAD_FIELD_COUNTS = {
     RunnerSessionMessage.INVOCATION_OFFER: 0,
     RunnerSessionMessage.PREPARE: 19,
-    RunnerSessionMessage.READY: 11,
+    RunnerSessionMessage.READY: 12,
     RunnerSessionMessage.LAUNCH: 0,
     RunnerSessionMessage.STARTED: 1,
     RunnerSessionMessage.CANCEL: 4,
@@ -46,6 +46,14 @@ _PAYLOAD_FIELD_COUNTS = {
     RunnerSessionMessage.RELEASED: 1,
     RunnerSessionMessage.REFUSE: 2,
 }
+
+# A REFUSE names its code first and, second, the retained evidence it is about.
+# A refusal that precedes any evidence -- one a Runner sends before READY,
+# because it cannot attest its own toolchain -- carries an empty second field,
+# because there is honestly nothing yet for it to name.
+REFUSAL_CODE_FIELD = 0
+REFUSAL_EVIDENCE_FIELD = 1
+NO_REFUSED_EVIDENCE = b""
 
 
 @dataclass(frozen=True)
@@ -117,6 +125,12 @@ RUNNER_SESSION_REFUSAL_CODES = frozenset(
         "runner-request-hash-mismatch",
         "runner-manifest-mismatch",
         "runner-attestation-mismatch",
+        "runner-provider-cli-drift",
+        "runner-toolchain-unpinned",
+        "runner-provider-cli-absent",
+        "runner-provider-credential-absent",
+        "runner-provider-policy-present",
+        "runner-provider-toolchain-unusable",
         "runner-peer-unverified",
         "runner-peer-eku-mismatch",
         "runner-binding-san-mismatch",

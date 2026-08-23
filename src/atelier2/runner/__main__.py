@@ -14,9 +14,9 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
-from atelier2.adapters.runner_child import LandlockUnavailable, install_landlock_guard
 from atelier2.adapters.runner_tls import (
     CORE_DNS_NAME,
+    CORE_SESSION_PORT,
     invocation_from_runner_uri,
     pin_tls_13,
     runner_uri_for_invocation,
@@ -32,11 +32,7 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.runner.identity_receiver import load_published_identity
-from atelier2.runner.session import (
-    CandidateScenario,
-    child_allowlist,
-    run_candidate_session,
-)
+from atelier2.runner.session import CandidateScenario, run_candidate_session
 
 
 def _binding(bootstrap: dict[str, str]) -> RunnerGenerationBinding:
@@ -187,7 +183,7 @@ def _run_candidate_session(
     # comparison pins the exact presented leaf.
     context.check_hostname = False
     with (
-        socket.create_connection((CORE_DNS_NAME, 8443), 5) as raw,
+        socket.create_connection((CORE_DNS_NAME, CORE_SESSION_PORT), 5) as raw,
         context.wrap_socket(raw, server_hostname=CORE_DNS_NAME) as connection,
     ):
         presented = connection.getpeercert(binary_form=True)
@@ -220,29 +216,22 @@ def _run_candidate_session(
 def main(arguments: list[str] | None = None) -> int:
     """Run only the candidate Runner preflight until its Core handoff is provided."""
     parser = argparse.ArgumentParser(prog="atelier2-runner")
-    parser.add_argument("--landlock-probe", action="store_true")
     parser.add_argument("--candidate-handoff", type=Path)
     parser.add_argument("--candidate-identity", type=Path)
     parser.add_argument("--candidate-journal", type=Path)
     parser.add_argument("--candidate-invocation-offer", type=Path)
     parsed = parser.parse_args(arguments)
-    if parsed.candidate_handoff is not None:
-        if (
-            parsed.candidate_identity is None
-            or parsed.candidate_journal is None
-            or parsed.candidate_invocation_offer is None
-        ):
-            parser.error("candidate identity and journal are required together")
-        return _run_candidate_session(
-            parsed.candidate_handoff,
-            parsed.candidate_identity,
-            parsed.candidate_journal,
-            parsed.candidate_invocation_offer,
-        )
-    if not parsed.landlock_probe:
+    if parsed.candidate_handoff is None:
         parser.error("the candidate Runner needs an explicit handoff mode")
-    try:
-        install_landlock_guard(child_allowlist())
-    except LandlockUnavailable as error:
-        parser.error(f"Landlock is unavailable: {error}")
-    return 0
+    if (
+        parsed.candidate_identity is None
+        or parsed.candidate_journal is None
+        or parsed.candidate_invocation_offer is None
+    ):
+        parser.error("candidate identity and journal are required together")
+    return _run_candidate_session(
+        parsed.candidate_handoff,
+        parsed.candidate_identity,
+        parsed.candidate_journal,
+        parsed.candidate_invocation_offer,
+    )

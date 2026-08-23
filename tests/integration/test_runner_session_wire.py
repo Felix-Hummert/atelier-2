@@ -23,10 +23,11 @@ import socket
 import subprocess
 import sys
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
+from atelier2.adapters.claude_subscription import CLAUDE_SUBSCRIPTION_EXECUTOR_KEY
 from atelier2.adapters.free_runner_executor import (
     FreeRunnerHoldJob,
     FreeRunnerPrintJob,
@@ -34,6 +35,7 @@ from atelier2.adapters.free_runner_executor import (
 )
 from atelier2.application.run_runner_session import (
     CoreRunnerSession,
+    RunnerSessionRefusal,
     encode_runner_prepare_payload,
 )
 from atelier2.contracts.agent_attempts import (
@@ -67,6 +69,8 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.runner_manifests import (
     RunnerManifestV1,
+    RunnerPathGrant,
+    RunnerPathRight,
     candidate_runner_manifest,
     encode_runner_manifest,
     runner_manifest_id,
@@ -82,6 +86,7 @@ from atelier2.contracts.runner_terminal_evidence_codec import (
 )
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.runner.authorization import free_runner_auth_reference
+from atelier2.runner.executors import runner_executor_cli_pin
 from atelier2.runner.session import CandidateScenario, RunnerFrameChannel, _status_field
 
 # A cgroup pids controller isn't delegated the same way (or readable the same
@@ -90,20 +95,16 @@ from atelier2.runner.session import CandidateScenario, RunnerFrameChannel, _stat
 # `_pid_limit`'s own real fallback chain can legitimately find nothing
 # numeric on some of them. The manifest and the live READY measurement must
 # still agree, so both sides use this one fixed stand-in instead of the real
-# per-host reading — exactly the same accommodation as `child_allowlist`
-# below. Production's real `_pid_limit` is untouched and stays proven by the
+# per-host reading. Production's real `_pid_limit` is untouched and stays proven by the
 # Docker witness (`scripts/runner_candidate.sh`), which runs on its own
 # attested cgroup.
 _STUBBED_PROCESS_LIMIT = 4096
 
-# Runs `run_candidate_session` in a fresh interpreter, with its own
-# `PR_SET_NO_NEW_PRIVS`, a Landlock allowlist widened to reach this test
-# interpreter's own install prefix and installed atelier2 source (the
-# production allowlist names the deployed candidate image's layout instead
-# — the same accommodation `test_runner_child.py` already makes for the
-# identical reason), and a stubbed cgroup pid limit reading (see
-# `_STUBBED_PROCESS_LIMIT` above). Nothing about the session's own logic is
-# touched.
+# Runs `run_candidate_session` in a fresh interpreter with its own
+# `PR_SET_NO_NEW_PRIVS` and a stubbed cgroup pid limit reading (see
+# `_STUBBED_PROCESS_LIMIT` above). The child's Landlock surface arrives
+# through the manifest `_host_manifest` attests, exactly as it does in the
+# deployed image. Nothing about the session's own logic is touched.
 _CANDIDATE_DRIVER = """
 import ctypes
 import socket
@@ -115,8 +116,8 @@ _PR_SET_NO_NEW_PRIVS = 38
 (
     fd, attempt_id, request_hash, generation_id, manifest_id, invocation_id,
     scenario_value, manifest_path, identity, journal_directory, process_limit,
-    workspace_directory,
-) = sys.argv[1:13]
+    workspace_directory, landlock_abi,
+) = sys.argv[1:14]
 
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
@@ -133,28 +134,11 @@ libc = ctypes.CDLL(None, use_errno=True)
 if libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
     raise OSError(ctypes.get_errno(), "prctl(NO_NEW_PRIVS) failed")
 
-
-def _interpreter_reachable_allowlist():
-    import atelier2
-
-    # An editable install's real files live outside both prefixes (this
-    # dev tree's own src/, not site-packages); the fixed candidate program
-    # (adapters/free_runner_executor.run_free_runner_job) imports atelier2
-    # only after Landlock restricts this process, so whatever install form
-    # is active has to be reachable here the same way `/usr` already
-    # covers a packaged, non-editable install (production's own layout).
-    installed_source_root = Path(atelier2.__file__).resolve().parent.parent
-    return tuple(
-        path
-        for path in (
-            Path("/usr"), Path("/lib"), Path("/lib64"), Path("/proc"), Path("/dev"),
-            Path(sys.prefix), Path(sys.base_prefix), installed_source_root,
-        )
-        if path.exists()
-    )
-
-
-session_module.child_allowlist = _interpreter_reachable_allowlist
+# Declared witness data, not a stubbed subject: an empty value leaves the real
+# kernel reading in place, and only a test that wants to drive the
+# no-child-boundary refusal names one.
+if landlock_abi:
+    session_module.landlock_kernel_abi = lambda: int(landlock_abi)
 session_module._pid_limit = lambda: int(process_limit)
 session_module._runner_workspace_directory = lambda: Path(workspace_directory)
 run_candidate_session(
@@ -272,6 +256,65 @@ def _free_request(job_bytes: bytes = _PRINT_JOB_BYTES) -> AgentExecutionRequestV
     )
 
 
+# The one writable surface a session driven on this host may name, and the
+# read-only path standing in for the credential directory ADR 0009 sec. 2 binds
+# read-only. The deployed image attests its own paths, which do not exist here;
+# the rights are the same either way, which is what these tests are about.
+_HOST_SCRATCH = PurePosixPath("/tmp")
+_HOST_CREDENTIALS = PurePosixPath("/etc")
+
+
+def _host_child_grants() -> tuple[RunnerPathGrant, ...]:
+    """The child surface this test interpreter really needs, as one manifest fact.
+
+    The fixed candidate program (`free_runner_executor.run_free_runner_job`)
+    imports atelier2 only after Landlock restricts it, so this interpreter's
+    install prefix and an editable install's real source tree (this dev tree's
+    own `src/`, outside both prefixes) have to be named the same way `/usr`
+    already covers a packaged install — production's own layout. Attesting it
+    through the manifest is what the deployed image does too, so this drives
+    the real path instead of replacing the session's own function.
+    """
+    import atelier2
+
+    installed_source_root = Path(atelier2.__file__).resolve().parent.parent
+    executable = {
+        PurePosixPath(path)
+        for path in (
+            Path("/usr"),
+            Path("/lib"),
+            Path("/lib64"),
+            Path(sys.prefix),
+            Path(sys.base_prefix),
+            installed_source_root,
+        )
+        if path.exists()
+    } - {_HOST_SCRATCH, _HOST_CREDENTIALS}
+    # `/proc` and `/dev` are data this child reads, and the credential stand-in
+    # is data it must never run -- the same shape the deployed image attests.
+    read_only = {
+        PurePosixPath(path)
+        for path in (Path("/proc"), Path("/dev"), Path(_HOST_CREDENTIALS))
+        if path.exists()
+    } - executable
+    return tuple(
+        sorted(
+            (
+                *(
+                    RunnerPathGrant(path, RunnerPathRight.READ_AND_EXECUTE)
+                    for path in executable
+                ),
+                *(
+                    RunnerPathGrant(path, RunnerPathRight.READ_ONLY)
+                    for path in read_only
+                ),
+                RunnerPathGrant(_HOST_SCRATCH, RunnerPathRight.READ_WRITE),
+            ),
+            key=lambda grant: grant.path.as_posix(),
+        )
+    )
+
+
 def _host_manifest(**timings: int) -> RunnerManifestV1:
     """A candidate manifest declaring exactly what this host will measure.
 
@@ -291,6 +334,8 @@ def _host_manifest(**timings: int) -> RunnerManifestV1:
             provider_id="fake-free",
             auth_mode="api_key",
             requested_capability="headless",
+            provider_credential_directory=_HOST_CREDENTIALS,
+            child_path_grants=_host_child_grants(),
         ),
         effective_uid=os.getuid(),
         effective_gid=os.getgid(),
@@ -395,6 +440,8 @@ def _spawn_candidate_session(
     identity: Path,
     journal_directory: Path,
     workspace_directory: Path,
+    search_path: str | None = None,
+    landlock_abi: str = "",
 ) -> subprocess.Popen[bytes]:
     fd = candidate_side.fileno()
     return subprocess.Popen(
@@ -414,7 +461,9 @@ def _spawn_candidate_session(
             str(journal_directory),
             str(_STUBBED_PROCESS_LIMIT),
             str(workspace_directory),
+            landlock_abi,
         ),
+        env=None if search_path is None else {**os.environ, "PATH": search_path},
         pass_fds=(fd,),
         close_fds=True,
     )
@@ -432,10 +481,20 @@ class _PreparedSession:
     core_session: CoreRunnerSession
 
 
+# The executor revision whose toolchain this repository pins but a bare test
+# host need not carry -- the one pair that lets a wire test drive a real
+# pre-start toolchain refusal without inventing a fake registry entry.
+_CLAUDE_EXECUTOR = (
+    CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.provider_id.value,
+    CLAUDE_SUBSCRIPTION_EXECUTOR_KEY.executor_revision.value,
+)
+
+
 def _prepared_session(
     tmp_path: Path,
     scenario: CandidateScenario = CandidateScenario.SUCCESS,
     job_bytes: bytes | None = None,
+    executor: tuple[str, str] | None = None,
 ) -> _PreparedSession:
     invocation = RunnerInvocationId("B" * 43)
     manifest = _host_manifest(
@@ -443,6 +502,10 @@ def _prepared_session(
         terminate_grace_milliseconds=200,
         reap_deadline_milliseconds=2_000,
     )
+    if executor is not None:
+        manifest = replace(
+            manifest, provider_id=executor[0], executor_revision=executor[1]
+        )
     manifest_path = tmp_path / "manifest"
     manifest_path.write_bytes(encode_runner_manifest(manifest))
     identity = _denied_identity_directory(tmp_path)
@@ -471,6 +534,7 @@ def _prepared_session(
         manifest,
         reference,
         invocation,
+        runner_executor_cli_pin(manifest),
     )
     return _PreparedSession(
         binding,
@@ -482,6 +546,76 @@ def _prepared_session(
         core,
         core_session,
     )
+
+
+@pytest.mark.parametrize(
+    ("executor", "empty_search_path", "landlock_abi", "expected"),
+    (
+        pytest.param(
+            _CLAUDE_EXECUTOR,
+            True,
+            "",
+            "runner-provider-cli-absent",
+            id="the-pinned-provider-cli-is-not-installed",
+        ),
+        pytest.param(
+            None,
+            False,
+            "0",
+            "runner-child-boundary-unavailable",
+            id="the-kernel-cannot-confine-a-child",
+        ),
+    ),
+)
+def test_runner_session_wire_names_a_pre_start_refusal_to_core(
+    tmp_path: Path,
+    executor: tuple[str, str] | None,
+    empty_search_path: bool,
+    landlock_abi: str,
+    expected: str,
+) -> None:
+    """A Runner that cannot attest itself tells Core why, then dies.
+
+    Driven end to end over the real socket. Neither case can be reached by
+    accident on a healthy host, so each is made true deliberately and in the
+    same shape it would occur: an emptied search path really does leave the
+    pinned Claude executable unresolvable, and a kernel reporting no Landlock
+    ABI really does leave this Runner unable to confine a child. Core must
+    learn the exact code from a REFUSE frame -- not infer something from a
+    dropped connection -- and must arm nothing.
+    """
+    prepared = _prepared_session(tmp_path, executor=executor)
+    core_side, candidate_side = socket.socketpair()
+
+    with core_side:
+        candidate = _spawn_candidate_session(
+            candidate_side,
+            prepared.binding,
+            prepared.invocation,
+            CandidateScenario.SUCCESS,
+            prepared.manifest_path,
+            prepared.identity,
+            prepared.journal_directory,
+            prepared.workspace_directory,
+            search_path=(
+                str(tmp_path / "an-empty-search-path") if empty_search_path else None
+            ),
+            landlock_abi=landlock_abi,
+        )
+        candidate_side.close()
+        try:
+            prepare = prepared.core_session.accept(_read_frame(core_side))
+            assert prepare is not None
+            _write_frame(core_side, prepare)
+            refusal = _read_frame(core_side)
+
+            assert refusal.message is RunnerSessionMessage.REFUSE
+            with pytest.raises(RunnerSessionRefusal, match=expected):
+                prepared.core_session.accept(refusal)
+        finally:
+            candidate.wait(timeout=30)
+    assert candidate.returncode != 0
+    assert prepared.core.armed == 0
 
 
 @pytest.mark.parametrize(
