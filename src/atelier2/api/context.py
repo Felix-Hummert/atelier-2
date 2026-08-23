@@ -18,6 +18,10 @@ from atelier2.application.occupancy import (
     PublishOccupancyUseCaseResult,
 )
 from atelier2.application.prepare_run_events import PrepareRunEventsResult
+from atelier2.application.project_root import (
+    GetProjectRootResult,
+    PublishProjectRootUseCaseResult,
+)
 from atelier2.application.publish_adapter_operation_revision import (
     PublishAdapterOperationRevisionResult,
 )
@@ -222,6 +226,10 @@ class ApiUseCases:
     publish_occupancy_revision: Callable[
         [str, str, int, tuple[tuple[str, str], ...]],
         PublishOccupancyUseCaseResult,
+    ]
+    get_project_root_revision: Callable[[str], GetProjectRootResult]
+    publish_project_root_revision: Callable[
+        [str, int, str], PublishProjectRootUseCaseResult
     ]
 
 
