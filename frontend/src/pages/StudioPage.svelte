@@ -458,7 +458,7 @@
   }
 
   .board-row-waiting .row-mark {
-    color: var(--signal-attention);
+    color: var(--signal-attention-mark);
   }
 
   .board-row-failed .row-mark {
@@ -520,7 +520,7 @@
   }
 
   .pipe-dot-needs_you {
-    background: var(--signal-attention);
+    background: var(--signal-attention-mark);
   }
 
   .pipe-dot-failed,
@@ -545,9 +545,19 @@
     color: var(--signal-failure);
   }
 
+  /* Below this width a row cannot hold its sentence beside its marks, so the
+     sentence takes its own line. What a run is doing is never the part that
+     gets cut (operator ruling 23.08.). */
   @media (max-width: 32rem) {
     .row-name {
       max-width: var(--name-column-narrow);
+    }
+
+    .row-status {
+      flex-basis: 100%;
+      overflow: visible;
+      white-space: normal;
+      text-overflow: clip;
     }
   }
 </style>

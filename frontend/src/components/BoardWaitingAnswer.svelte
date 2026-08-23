@@ -304,18 +304,30 @@
 </div>
 
 <style>
+  /* The reveal belongs to the row above it: it lines up with the card's own
+     text, not with the surface edge. */
   .board-answer {
     min-width: 0;
+    padding-inline: var(--space-4);
   }
 
+  /* The same quiet reveal the rest of the house uses: a disclosure shows
+     something, it does not start something, so it wears no card of its own. */
   .board-answer-toggle {
-    padding: var(--space-1) var(--space-2);
-    border: var(--edge) solid var(--line);
-    border-radius: var(--r);
-    background: var(--panel2);
+    /* Quiet to look at, but still a finger's worth of target. */
+    min-height: var(--tap);
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--signal-attention);
     font-size: var(--text-xs);
     font-weight: var(--weight-strong);
-    color: inherit;
+    text-decoration: underline;
+    text-underline-offset: var(--underline-offset);
+  }
+
+  .board-answer-toggle:hover {
+    color: var(--ink);
   }
 
   .board-answer-panel {

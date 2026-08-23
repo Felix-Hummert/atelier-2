@@ -444,7 +444,7 @@
 
   .pipe-name {
     margin-top: var(--space-2);
-    color: var(--ink);
+    color: var(--ink-dim);
     font-size: var(--text-xs);
     font-weight: var(--weight-strong);
     overflow-wrap: anywhere;
@@ -455,7 +455,7 @@
   }
 
   .pipe-stage[data-state="needs_you"] {
-    color: var(--signal-attention);
+    color: var(--signal-attention-mark);
   }
 
   .pipe-stage[data-state="failed"],
@@ -463,9 +463,11 @@
     color: var(--signal-failure);
   }
 
+  /* Where the run stands is said in ink and weight. An underline means a
+     link everywhere else in the house, and may not mean a second thing here. */
   .pipe-stage.current .pipe-name {
-    text-decoration: underline;
-    text-underline-offset: var(--underline-offset);
+    color: var(--ink);
+    font-weight: var(--weight-heavy);
   }
 
   .pipe-stage.live-work .pipe-shape::after {
@@ -513,7 +515,10 @@
     clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
   }
 
+  /* The legend's loop mark is the loop box itself in miniature: a dashed
+     frame around several nodes, not a second reading of the action square. */
   .kind-mark-loop {
+    width: calc(var(--mark-sm) * 1.75);
     border-style: dashed;
     border-radius: var(--r-sm);
   }

@@ -11,6 +11,10 @@ const shotDir = process.env.ATELIER2_SHOT_DIR ?? "";
 
 test.skip(shotDir === "", "no shot directory named");
 
+// Not a gate but a sitting: two themes, two widths, every surface, and two
+// runs staged live. It is allowed to take as long as that honestly takes.
+test.setTimeout(300_000);
+
 const widths = [
   { name: "1280", width: 1280, height: 900 },
   { name: "390", width: 390, height: 844 }
@@ -63,6 +67,75 @@ async function immediateAgent(page: Page): Promise<string> {
   });
   expect([200, 201]).toContain(configuration.status());
   return (await configuration.json()).agent_configuration_revision_hash as string;
+}
+
+/**
+ * A run that fails, and one that is still working, so the evidence series can
+ * show the two states a calm Board is judged on: brick that is unmistakably
+ * not clay, and the blue that means something is actually running.
+ */
+async function agentOf(
+  page: Page,
+  profileId: string,
+  providerId: string,
+  executorRevision: string
+): Promise<string> {
+  const auth = await page.request.post("/atelier/api/v1/auth-profile-revisions", {
+    data: { profile_id: profileId, revision_number: 1, provider_id: providerId, auth_mode: "subscription" }
+  });
+  expect([200, 201]).toContain(auth.status());
+  const configuration = await page.request.post("/atelier/api/v1/agent-configuration-revisions", {
+    data: {
+      model: "shot-model",
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: executorRevision,
+      requested_capability: "headless"
+    }
+  });
+  expect([200, 201]).toContain(configuration.status());
+  return (await configuration.json()).agent_configuration_revision_hash as string;
+}
+
+async function chainOf(page: Page, name: string, schemaHash: string, nodeIds: readonly string[]): Promise<string> {
+  const lines = ["format_version: 3", `name: ${name}`, "nodes:"];
+  nodeIds.forEach((nodeId, index) => {
+    lines.push(
+      `  - id: ${nodeId}`,
+      "    type: agent",
+      "    role: builder",
+      "    mode: headless",
+      `    instruction: Do the ${nodeId} step.`,
+      ...(index === 0 ? [] : [`    depends_on: [${nodeIds[index - 1]}]`]),
+      `    outputs: [{name: ${nodeId}_result, schema: {ref: any, revision: ${schemaHash}}}]`
+    );
+  });
+  const published = await page.request.post("/atelier/api/v1/workflow-revisions", {
+    headers: { "content-type": "application/yaml" },
+    data: `${lines.join("\n")}\n`
+  });
+  expect(published.status()).toBe(201);
+  return (await published.json()).workflow_revision_hash as string;
+}
+
+async function startRun(page: Page, runId: string, revisionHash: string, agentHash: string): Promise<string> {
+  const started = await page.request.post("/atelier/api/v1/runs", {
+    data: {
+      workflow_format_version: 3,
+      run_id: runId,
+      workflow_revision_hash: revisionHash,
+      agent_bindings: [{ role: "builder", agent_configuration_revision_hash: agentHash }],
+      orders: []
+    }
+  });
+  expect(started.status()).toBe(201);
+  return (await started.json()).public_run_reference as string;
+}
+
+async function runReaches(page: Page, reference: string, state: string): Promise<void> {
+  await expect(async () => {
+    const read = await page.request.get(`/atelier/api/v1/runs/${reference}`);
+    expect((await read.json()).state).toBe(state);
+  }).toPass({ timeout: 30_000 });
 }
 
 test("captures every surface at both widths", async ({ page }) => {
@@ -172,8 +245,36 @@ test("captures every surface at both widths", async ({ page }) => {
   await expect(page.getByLabel("Where this run stands")).toContainText("Done");
   await shoot(page, "run-answered");
 
+  // A run that its own contract stopped: the agent answers prose where the
+  // node declared an object, so nothing writes a success and the run fails.
+  const strictSchema = await page.request.post("/atelier/api/v1/schema-revisions", {
+    headers: { "content-type": "application/json" },
+    data: '{"type": "object"}'
+  });
+  expect([200, 201]).toContain(strictSchema.status());
+  const strictHash = (await strictSchema.json()).schema_revision_hash as string;
+  const failing = await chainOf(page, "publish-the-release", strictHash, ["implement", "review"]);
+  const failedReference = await startRun(page, "demo/failed-contract", failing, agentHash);
+  await runReaches(page, failedReference, "FAILED");
+  await page.goto(`/atelier/runs/${failedReference}`);
+  await expect(page.getByLabel("Where this run stands")).toContainText("Failed");
+  await shoot(page, "run-failed");
+
+  // A run that is still working: the delayed executor holds each node long
+  // enough for the whole series to be photographed while it runs.
+  const slowAgent = await agentOf(page, "shots-slow", "e2e-v3-slow", "delayed/v1");
+  const running = await chainOf(page, "rebuild-the-index", schemaHash, [
+    "gather", "compare", "rewrite", "verify"
+  ]);
+  const runningReference = await startRun(page, "demo/still-running", running, slowAgent);
+  await page.goto(`/atelier/runs/${runningReference}`);
+  await expect(page.getByRole("button", { name: /Working$/ })).toBeVisible({ timeout: 20_000 });
+  await shoot(page, "run-running");
+
   await page.goto("/atelier");
   await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
+  // Clay, blue, brick and quiet ink on one Board: the only place where the
+  // four standings can be judged against each other.
   await shoot(page, "board-populated");
 
   await page.goto("/atelier/history");

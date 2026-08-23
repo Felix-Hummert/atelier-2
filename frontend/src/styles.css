@@ -18,7 +18,7 @@
   --ink: #1b1e1a;
   --ink-dim: #4c5248;
   --ink-faint: #7b8173;
-  --shadow: 0 1px 2px rgb(40 34 20 / 10%), 0 6px 18px rgb(40 34 20 / 10%);
+  --shadow: 0 1px 2px rgb(40 34 20 / 10%), 0 3px 10px rgb(40 34 20 / 7%);
   --shadow-lift: 0 1rem 3rem rgb(40 34 20 / 24%);
   --scrim: rgb(40 34 20 / 55%);
 
@@ -34,7 +34,15 @@
    */
   --signal-quiet: var(--ink-dim);
   --signal-live: #154c80;
-  --signal-attention: #95421f;
+  /*
+   * Clay comes in two steps because one tone cannot do both jobs: a clay
+   * bright enough to read as clay at a glance cannot carry text on paper
+   * (nothing clears AA on it), and a clay dark enough for words reads as
+   * dried blood. So the marks -- shapes, borders, washes -- wear the bright
+   * step, and the words wear the deep one.
+   */
+  --signal-attention: #7d4c21;
+  --signal-attention-mark: #bd7832;
   --signal-failure: #8c2030;
   --signal-ink: #fefdfa;
   /* How thinly a signal tints the card it marks. The tint is mixed into the
@@ -71,6 +79,9 @@
   --space-4: 1rem;
   --space-5: 1.5rem;
   --space-6: 2rem;
+  /* The step between one section of a surface and the next: far enough that a
+     section label reads as belonging to what follows it. */
+  --space-section: 2.5rem;
   --stage-gutter: clamp(1rem, 4vw, 2rem);
   /* The smallest a control may be, so a finger never misses it. */
   --tap: 2.75rem;
@@ -133,7 +144,10 @@
     --accent: #ede9de;
     --accent-ink: #191a1d;
     --signal-live: #7fb0e8;
+    /* On a dark ground one clay does both jobs: it is already light enough
+       to read as a word and dark enough to carry the mark's glyph. */
     --signal-attention: #e78f62;
+    --signal-attention-mark: var(--signal-attention);
     --signal-failure: #ef7f86;
     --signal-ink: #17181b;
   }
@@ -160,6 +174,7 @@ select,
 textarea,
 input {
   font: inherit;
+  accent-color: var(--accent);
 }
 
 button,
@@ -408,6 +423,24 @@ p {
   margin-top: 0;
 }
 
+/*
+ * Small capitals name a section of a surface and nothing else. A label that
+ * names a field, and a name that says who is speaking, are quieter kinds of
+ * label and read in their own case -- one typographic level each, so a screen
+ * does not shout the same way four times over.
+ */
+.field-label {
+  color: var(--ink-dim);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-strong);
+}
+
+.speaker-label {
+  color: var(--ink-dim);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-strong);
+}
+
 /* A page title carries the house serif; nothing else does. */
 h1 {
   margin-bottom: var(--space-5);
@@ -425,6 +458,16 @@ h2 {
 code,
 small {
   overflow-wrap: anywhere;
+}
+
+/* Machine text -- a hash, an id, an exact byte -- always reads the same way:
+   the mono face on a tinted ground, so the eye knows at once it is not prose. */
+code {
+  border-radius: var(--r-sm);
+  padding: 0 var(--space-1);
+  background: var(--chip);
+  font-family: var(--mono);
+  font-size: var(--text-xs);
 }
 
 .eyebrow {
@@ -469,7 +512,7 @@ small {
   align-items: start;
   gap: var(--space-2);
   margin-bottom: var(--space-4);
-  border-color: color-mix(in srgb, var(--signal-attention) 45%, var(--line));
+  border-color: color-mix(in srgb, var(--signal-attention-mark) 45%, var(--line));
   color: var(--signal-attention);
 }
 
@@ -516,25 +559,28 @@ small {
 .revision-picker .revision-option {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-3);
   min-height: var(--tap);
-  border: var(--edge) solid var(--line);
-  border-radius: var(--r);
-  padding: var(--space-3);
-  background: var(--panel2);
+  border: 0;
+  padding: 0;
+  background: transparent;
 }
 
 .saved-workflow {
   display: grid;
-  grid-template-columns: var(--mark-sm) minmax(0, 1fr);
-  gap: var(--space-2);
+  grid-template-columns: var(--edge-mark) minmax(0, 1fr);
   align-items: stretch;
+  overflow: hidden;
+  border: var(--edge) solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel2);
 }
 
 .saved-workflow-body {
   display: grid;
   gap: var(--space-2);
   min-width: 0;
+  padding: var(--space-3) var(--space-4);
 }
 
 .saved-workflow-choice {
@@ -545,14 +591,12 @@ small {
 }
 
 .form-mark {
-  border-radius: var(--r-sm) 0 0 var(--r-sm);
   min-height: var(--tap);
 }
 
-.saved-workflow.form-ready .form-mark {
-  background: var(--accent);
-}
-
+/* A mark on the card's edge means there is something to know about this
+   workflow. The ordinary, startable case wears none: every row carrying a
+   stripe would say nothing at all. */
 .saved-workflow.form-unlisted .form-mark {
   background: repeating-linear-gradient(
     to bottom,
@@ -565,17 +609,16 @@ small {
 .saved-workflow.form-retired .form-mark {
   background: repeating-linear-gradient(
     -45deg,
-    var(--signal-attention) 0 var(--space-1),
+    var(--signal-attention-mark) 0 var(--space-1),
     transparent var(--space-1) var(--space-2)
   );
 }
 
 .saved-workflow.form-refused .form-mark {
-  background: var(--panel);
-  box-shadow: inset 0 0 0 var(--edge-strong) var(--ink-faint);
+  background: var(--ink-faint);
 }
 
-.saved-workflow.form-refused .revision-option {
+.saved-workflow.form-refused {
   background: var(--chip);
 }
 
@@ -605,13 +648,13 @@ small {
 
 /* A row that cannot start is drawn as unavailable rather than merely inert, so
    the reason is read where the choice is made instead of after it. */
-.revision-option.unstartable {
-  border-style: dashed;
+.revision-option.unstartable .revision-name {
+  text-decoration: line-through;
 }
 
 .revision-details,
 .revision-history {
-  margin: 0 0 0 var(--space-3);
+  margin: 0;
   font-size: var(--text-xs);
 }
 
@@ -852,7 +895,6 @@ textarea {
   color: var(--ink-dim);
   font-size: var(--text-xs);
   font-weight: var(--weight-strong);
-  text-transform: uppercase;
 }
 
 .run-summary dd {
@@ -988,7 +1030,7 @@ textarea {
 }
 
 .node-needs_you {
-  border-left-color: var(--signal-attention);
+  border-left-color: var(--signal-attention-mark);
 }
 
 .node-succeeded,
@@ -1019,9 +1061,7 @@ textarea {
 .node-kind {
   color: var(--ink-dim);
   font-size: var(--text-2xs);
-  font-weight: var(--weight-heavy);
-  letter-spacing: var(--tracking-label);
-  text-transform: uppercase;
+  font-weight: var(--weight-strong);
 }
 
 .state-mark {
@@ -1071,7 +1111,7 @@ textarea {
 .state-needs_you .state-shape {
   border: 0;
   color: var(--signal-ink);
-  background: var(--signal-attention);
+  background: var(--signal-attention-mark);
   clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
 }
 
@@ -1240,7 +1280,7 @@ textarea {
   display: grid;
   gap: var(--space-3);
   margin-top: var(--space-4);
-  border: var(--edge-strong) solid var(--signal-attention);
+  border: var(--edge-strong) solid var(--signal-attention-mark);
   border-radius: var(--r-lg);
   padding: var(--space-4);
   background: var(--panel2);
@@ -1270,7 +1310,7 @@ textarea {
 }
 
 .human-action-shape-needs {
-  background: var(--signal-attention);
+  background: var(--signal-attention-mark);
   clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
 }
 
@@ -1302,7 +1342,7 @@ textarea {
   flex: 0 0 auto;
   place-items: center;
   color: var(--signal-ink);
-  background: var(--signal-attention);
+  background: var(--signal-attention-mark);
   clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
   font-size: var(--text-2xs);
   font-weight: var(--weight-heavy);
@@ -1366,10 +1406,8 @@ textarea {
 .request-summary dt,
 .decision-summary dt {
   color: var(--ink-dim);
-  font-size: var(--text-2xs);
-  font-weight: var(--weight-heavy);
-  letter-spacing: var(--tracking-label);
-  text-transform: uppercase;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-strong);
 }
 
 .request-summary dd,
@@ -1541,7 +1579,7 @@ textarea {
   min-height: var(--tap);
   padding: var(--space-3) var(--space-4);
   border: var(--edge) solid var(--line);
-  border-left: var(--edge-mark) solid var(--signal-attention);
+  border-left: var(--edge-mark) solid var(--signal-attention-mark);
   border-radius: var(--r-lg);
   background: var(--panel2);
   color: inherit;
@@ -1551,7 +1589,7 @@ textarea {
 
 .inbox-mark {
   flex: none;
-  color: var(--signal-attention);
+  color: var(--signal-attention-mark);
 }
 
 .queue {

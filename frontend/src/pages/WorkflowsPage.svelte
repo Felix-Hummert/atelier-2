@@ -170,8 +170,12 @@
     list-style: none;
   }
 
+  /* The base button skin centres its content; a card is not a control label,
+     so it takes the surface's own left edge back. */
   .workflow-card {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    justify-content: start;
     gap: var(--space-1);
     width: 100%;
     padding: var(--space-4) var(--space-5);

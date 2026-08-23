@@ -188,7 +188,7 @@
   .decision {
     display: grid;
     gap: var(--space-3);
-    border: var(--edge-strong) solid var(--signal-attention);
+    border: var(--edge-strong) solid var(--signal-attention-mark);
     border-radius: var(--r-lg);
     padding: var(--space-5);
     background: var(--panel2);

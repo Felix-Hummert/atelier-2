@@ -122,17 +122,17 @@
     overflow-wrap: anywhere;
   }
 
+  /* Your own line is the paper one shade deeper, not a grey pasted onto a
+     warm house: the tint is mixed from the ground the workshop already uses. */
   .chat-line-you .chat-message {
-    border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
-    background: color-mix(in srgb, var(--accent) 10%, var(--panel2));
+    border-color: color-mix(in srgb, var(--ink) 20%, var(--line));
+    background: var(--chip);
   }
 
   .chat-speaker {
     color: var(--ink-dim);
     font-size: var(--text-2xs);
-    font-weight: var(--weight-heavy);
-    letter-spacing: var(--tracking-label);
-    text-transform: uppercase;
+    font-weight: var(--weight-strong);
   }
 
   .chat-source {
@@ -153,10 +153,8 @@
 
   .chat-composer-label {
     color: var(--ink-dim);
-    font-size: var(--text-2xs);
-    font-weight: var(--weight-heavy);
-    letter-spacing: var(--tracking-label);
-    text-transform: uppercase;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-strong);
   }
 
   .chat-composer-row {

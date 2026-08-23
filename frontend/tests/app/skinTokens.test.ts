@@ -63,6 +63,10 @@ function tokenBlock(source: string, opener: string): string {
   return source.slice(start, source.indexOf("\n}", start));
 }
 
+function declaredTokens(block: string): string[] {
+  return [...block.matchAll(/^\s*(--[a-z0-9-]+):/gm)].map((match) => match[1] ?? "");
+}
+
 function colourTokens(block: string): string[] {
   return [...block.matchAll(/^\s*(--[a-z0-9-]+):\s*(.+);$/gm)]
     .filter((match) => colourLiteral.test(match[2] ?? ""))
@@ -79,11 +83,13 @@ describe("the skin lives in one place", () => {
     expect(literals).toEqual([]);
   });
 
-  it("gives dark a colour of its own wherever light has one", () => {
+  it("answers every light colour with a dark one of its own", () => {
     const source = readFileSync(resolve(sourceRoot, stylesheet), "utf8");
     const light = colourTokens(tokenBlock(source, ":root {"));
-    const dark = colourTokens(tokenBlock(source, "@media (prefers-color-scheme: dark)"));
+    const dark = declaredTokens(tokenBlock(source, "@media (prefers-color-scheme: dark)"));
     expect(light.length).toBeGreaterThan(0);
-    expect(dark).toEqual(light);
+    // A dark answer may name another token rather than repeat a literal, so
+    // what is checked is that dark answers at all, not how it spells it.
+    expect(light.filter((token) => !dark.includes(token))).toEqual([]);
   });
 });

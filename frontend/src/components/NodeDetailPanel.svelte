@@ -368,11 +368,18 @@
     color: var(--ink-dim);
   }
 
+  /* One line that scrolls, never a second line: a tab that wraps below the
+     rule reads as a heading for what follows it, not as a tab. */
   .node-tabs {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: var(--space-1);
+    overflow-x: auto;
     border-bottom: var(--edge) solid var(--line);
+  }
+
+  .node-tab {
+    flex: none;
   }
 
   .node-tab {
@@ -400,8 +407,8 @@
     margin: 0;
     padding: var(--space-3) var(--space-4);
     border-radius: var(--r);
-    border-left: var(--edge-mark) solid var(--signal-attention);
-    background: color-mix(in srgb, var(--signal-attention) var(--wash), var(--panel2));
+    border-left: var(--edge-mark) solid var(--signal-attention-mark);
+    background: color-mix(in srgb, var(--signal-attention-mark) var(--wash), var(--panel2));
     color: var(--signal-attention);
     font-weight: var(--weight-medium);
   }
@@ -469,10 +476,8 @@
 
   .reads-from-label {
     color: var(--ink-dim);
-    font-size: var(--text-2xs);
-    font-weight: var(--weight-heavy);
-    letter-spacing: var(--tracking-label);
-    text-transform: uppercase;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-strong);
   }
 
   .reads-from-node {

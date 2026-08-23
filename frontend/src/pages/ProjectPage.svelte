@@ -462,6 +462,15 @@
 </section>
 
 <style>
+  /* Sections of a surface stand a section apart, so a label reads as
+     belonging to the group under it rather than floating between two. */
+  .project-page {
+    display: grid;
+    align-content: start;
+    gap: var(--space-section);
+    min-width: 0;
+  }
+
   .project-block {
     display: grid;
     gap: var(--space-3);
@@ -515,7 +524,7 @@
   }
 
   .project-count-waiting .project-count-mark {
-    color: var(--signal-attention);
+    color: var(--signal-attention-mark);
   }
 
   .project-count-failed .project-count-mark {
