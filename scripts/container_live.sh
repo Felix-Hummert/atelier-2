@@ -3,6 +3,7 @@ set -euo pipefail
 
 readonly deployment="local-live" published_port="8422" restart_policy="unless-stopped"
 readonly record_version="1" record_size_limit="16384" descriptor_size_limit="16384"
+readonly project_name_prefix="atelier2-live-"
 
 fail() {
   echo "container live: $1" >&2
@@ -10,11 +11,11 @@ fail() {
 }
 
 if (($# != 1)); then
-  fail "expected exactly one command: install, status, stop, or start"
+  fail "expected exactly one command: install, status, stop, start, uninstall, or update"
 fi
 command="$1"
 case "${command}" in
-  install | status | stop | start) ;;
+  install | status | stop | start | uninstall | update) ;;
   *) fail "unknown command ${command}" ;;
 esac
 
@@ -41,6 +42,13 @@ temporary_descriptor=""
 snapshot_root=""
 install_in_progress=0
 installation_completed=0
+uninstalled_existing_installation=0
+uninstalled_existing_store=0
+owned_project_has_volume=0
+local_live_container_removed=0
+local_live_network_removed=0
+local_live_volume_removed=0
+local_live_image_removed=0
 
 validate_private_directory() {
   local path="$1"
@@ -192,6 +200,7 @@ resource_identity_is_exact() {
 }
 project_resources_are_owned() {
   local resource resource_type resources
+  owned_project_has_volume=0
   resources="$(docker ps --all --quiet --filter "label=com.docker.compose.project=${record[project]}")" || return 1
   while IFS= read -r resource; do
     [[ -z "${resource}" ]] && continue
@@ -204,10 +213,13 @@ project_resources_are_owned() {
     while IFS= read -r resource; do
       [[ -z "${resource}" ]] && continue
       resource_identity_is_exact "${resource_type}" "${resource}" || return 1
+      if [[ "${resource_type}" == "volume" ]]; then
+        owned_project_has_volume=1
+      fi
     done <<<"${resources}"
   done
 }
-cleanup_failed_install() {
+teardown_recorded_installation() {
   local cleanup_status=0
   [[ "$(docker_engine_id)" == "${record[engine_id]}" ]] || return 1
   descriptor_is_exact || return 1
@@ -215,11 +227,42 @@ cleanup_failed_install() {
   export_compose_identity
   docker compose --project-name "${record[project]}" -f "${descriptor_file}" \
     down --volumes --rmi local --remove-orphans || cleanup_status=$?
+  unset ATELIER2_DEPLOYMENT ATELIER2_PUBLISHED_PORT ATELIER2_RESTART_POLICY \
+    ATELIER2_SOURCE_COMMIT ATELIER2_SOURCE_TREE
   if ((cleanup_status == 0)); then
     rm -f -- "${descriptor_file}" "${record_file}"
     sync -f "${installation_directory}"
   fi
   return "${cleanup_status}"
+}
+local_live_docker_resource_ids() {
+  local resource_type="$1"
+  case "${resource_type}" in
+    container) docker ps --all --quiet --filter "label=atelier2.deployment=${deployment}" ;;
+    network) docker network ls --quiet --filter "label=atelier2.deployment=${deployment}" ;;
+    volume) docker volume ls --quiet --filter "label=atelier2.deployment=${deployment}" ;;
+    image) docker images --quiet --filter "reference=${project_name_prefix}*" ;;
+  esac
+}
+remove_local_live_docker_resources() {
+  local resource_type resource
+  for resource_type in container network volume image; do
+    while IFS= read -r resource; do
+      [[ -z "${resource}" ]] && continue
+      case "${resource_type}" in
+        container) docker rm --force -- "${resource}" >/dev/null ;;
+        network) docker network rm -- "${resource}" >/dev/null ;;
+        volume) docker volume rm --force -- "${resource}" >/dev/null ;;
+        image) docker rmi --force -- "${resource}" >/dev/null ;;
+      esac || return 1
+      case "${resource_type}" in
+        container) local_live_container_removed=1 ;;
+        network) local_live_network_removed=1 ;;
+        volume) local_live_volume_removed=1 ;;
+        image) local_live_image_removed=1 ;;
+      esac
+    done < <(local_live_docker_resource_ids "${resource_type}")
+  done
 }
 cleanup_install_process() {
   local original_status="$?"
@@ -230,7 +273,7 @@ cleanup_install_process() {
   [[ -z "${snapshot_root}" ]] || rm -rf -- "${snapshot_root}"
   if ((install_in_progress && !installation_completed)); then
     if ! read_record || [[ "${record[state]}" != "INSTALLING" ]] \
-      || ! cleanup_failed_install; then
+      || ! teardown_recorded_installation; then
       echo "container live: failed install cleanup is incomplete" >&2
     fi
   fi
@@ -316,17 +359,21 @@ load_completed_installation() {
   [[ "${record[state]}" == "INSTALLED" ]] || fail "installation is incomplete"
   verify_installed_configuration || fail "installation identity drifted"
 }
-install_container() {
+assert_ambient_container_mode_is_forbidden() {
+  local variable
   for variable in ATELIER2_DEPLOYMENT ATELIER2_PUBLISHED_PORT ATELIER2_RESTART_POLICY; do
     [[ -z "${!variable+x}" ]] || fail "ambient container mode is forbidden"
   done
+}
+install_container() {
+  assert_ambient_container_mode_is_forbidden
   acquire_install_lock
   if [[ -e "${record_file}" ]]; then
     read_record || fail "installation record drifted"
     if [[ "${record[state]}" == "INSTALLED" ]]; then
       fail "installation already exists"
     fi
-    cleanup_failed_install || fail "failed install cleanup is incomplete"
+    teardown_recorded_installation || fail "failed install cleanup is incomplete"
   elif [[ -e "${descriptor_file}" ]]; then
     fail "installation descriptor exists without its intent"
   fi
@@ -467,9 +514,63 @@ start_container() {
   fail "exact container did not become healthy"
 }
 
+# No signal trap guards this destructive teardown. Every path below only
+# removes the durable record (rm -rf "${installation_directory}", or the
+# record/descriptor deletion inside teardown_recorded_installation) after the
+# Docker call that owns that step has already returned success; `fail` exits
+# before that point on any failure. An interruption therefore never finalizes
+# "removed" ahead of the destructive call it depends on — it just leaves
+# Docker debris for the next `uninstall` to finish. A plain retry is safe and
+# idempotent by construction, so no compensating trap is needed here.
+uninstall_installation() {
+  if [[ ! -e "${installation_directory}" ]]; then
+    echo "container live: nothing installed"
+    return
+  fi
+  acquire_install_lock
+  local_live_container_removed=0
+  local_live_network_removed=0
+  local_live_volume_removed=0
+  local_live_image_removed=0
+  owned_project_has_volume=0
+  local cleaned=0 volume_removed=0
+  if [[ -e "${record_file}" ]] && read_record && teardown_recorded_installation; then
+    cleaned=1
+    volume_removed="${owned_project_has_volume}"
+  else
+    remove_local_live_docker_resources \
+      || fail "uninstall could not remove every Docker resource"
+    if ((local_live_container_removed || local_live_network_removed \
+      || local_live_volume_removed || local_live_image_removed)); then
+      cleaned=1
+    fi
+    volume_removed="${local_live_volume_removed}"
+  fi
+  rm -rf -- "${installation_directory}"
+  uninstalled_existing_store="${volume_removed}"
+  if ((cleaned)); then
+    uninstalled_existing_installation=1
+    echo "container live: uninstalled"
+  else
+    echo "container live: nothing installed"
+  fi
+}
+
+update_installation() {
+  assert_ambient_container_mode_is_forbidden
+  uninstalled_existing_store=0
+  uninstall_installation
+  if ((uninstalled_existing_store)); then
+    echo "container live: update discards the previous store; installing fresh"
+  fi
+  install_container
+}
+
 case "${command}" in
   install) install_container ;;
   status) status_container ;;
   stop) stop_container ;;
   start) start_container ;;
+  uninstall) uninstall_installation ;;
+  update) update_installation ;;
 esac

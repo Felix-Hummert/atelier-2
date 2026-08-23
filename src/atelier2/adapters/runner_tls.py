@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import ssl
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed448, ed25519, padding, rsa
-from cryptography.x509.oid import ObjectIdentifier
+from cryptography.x509.oid import ExtendedKeyUsageOID, ObjectIdentifier
 
 from atelier2.contracts.agent_attempts import (
     RunnerGenerationBinding,
@@ -41,6 +43,60 @@ def core_uri_for_certificate(public_key: SupportedPublicKey) -> str:
         serialization.PublicFormat.SubjectPublicKeyInfo,
     )
     return f"urn:atelier2:core:v1:{hashlib.sha256(encoded).hexdigest()}"
+
+
+@dataclass(frozen=True, slots=True)
+class CorePeerDocument:
+    """The one address, certificate identity, and port a Runner reaches Core
+    at -- an Attempt's Core composition writes this once, and its Runner reads
+    it once, so neither side ever re-derives what the other already fixed.
+
+    `port` is carried per document rather than assumed: today's witness and
+    launcher both still bind `CORE_SESSION_PORT`, but the document is what a
+    Runner actually dials, so a future per-Attempt port needs no wire change.
+    """
+
+    dns_name: str
+    uri: str
+    fingerprint: str
+    port: int
+
+    def __post_init__(self) -> None:
+        if type(self.port) is not int or not 1 <= self.port <= 65535:
+            raise ValueError("core-peer-document-corrupt")
+
+
+def encode_core_peer_document(document: CorePeerDocument) -> bytes:
+    return json.dumps(
+        {
+            "dns_name": document.dns_name,
+            "uri": document.uri,
+            "fingerprint": document.fingerprint,
+            "port": document.port,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def decode_core_peer_document(raw: bytes) -> CorePeerDocument:
+    """Decode one core-peer.json handoff, or refuse any other byte sequence.
+
+    This document crosses a container and filesystem boundary and feeds a TLS
+    peer-pin decision directly, so a missing field, a wrong shape, or a port
+    outside the valid range is refused with one named code rather than
+    surfacing a raw `KeyError` or an unchecked value to that decision.
+    """
+    try:
+        parsed = json.loads(raw)
+        return CorePeerDocument(
+            str(parsed["dns_name"]),
+            str(parsed["uri"]),
+            str(parsed["fingerprint"]),
+            int(parsed["port"]),
+        )
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        raise ValueError("core-peer-document-corrupt") from error
 
 
 def runner_uri_for_invocation(
@@ -167,3 +223,25 @@ def _verify_issuer_signature(
             raise CertificatePeerError("runner-peer-unverified")
     except InvalidSignature as error:
         raise CertificatePeerError("runner-peer-unverified") from error
+
+
+def validate_core_peer_leaf(
+    presented_der: bytes, ca_pem: bytes, document: CorePeerDocument
+) -> x509.Certificate:
+    """Validate a presented Core leaf against everything `document` pinned:
+    the exact CA, SAN set, EKU, and the fingerprint of the exact bytes
+    presented -- the fence a Runner holds against Core, symmetric to the one
+    Core's accept loop holds against its Runner (`RunnerPeerPin`)."""
+    presented_pem = x509.load_der_x509_certificate(presented_der).public_bytes(
+        serialization.Encoding.PEM
+    )
+    certificate = validate_peer_certificate(
+        presented_pem,
+        ca_pem,
+        expected_dns_name=document.dns_name,
+        expected_uri=document.uri,
+        expected_eku=ExtendedKeyUsageOID.SERVER_AUTH,
+    )
+    if hashlib.sha256(presented_der).hexdigest() != document.fingerprint:
+        raise CertificatePeerError("runner-peer-unverified")
+    return certificate

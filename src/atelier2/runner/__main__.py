@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import secrets
@@ -12,16 +11,15 @@ from pathlib import Path
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
-from cryptography.x509.oid import ExtendedKeyUsageOID
 
 from atelier2.adapters.runner_tls import (
     CORE_DNS_NAME,
-    CORE_SESSION_PORT,
+    decode_core_peer_document,
     invocation_from_runner_uri,
     pin_tls_13,
     runner_uri_for_invocation,
     sole_peer_uri,
-    validate_peer_certificate,
+    validate_core_peer_leaf,
 )
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
@@ -45,7 +43,12 @@ def _binding(bootstrap: dict[str, str]) -> RunnerGenerationBinding:
 
 
 def _declared_scenario(bootstrap: dict[str, str]) -> CandidateScenario:
-    return CandidateScenario(bootstrap["scenario"])
+    """The scenario this bootstrap declares, or `SUCCESS` for an ordinary run.
+
+    A real launcher's bootstrap names no scenario at all -- that vocabulary is
+    the witness's own -- so an absent field is a normal run, not a refusal.
+    """
+    return CandidateScenario(bootstrap.get("scenario", CandidateScenario.SUCCESS.value))
 
 
 def _invocation_from_published_identity(
@@ -157,15 +160,17 @@ def _run_candidate_session(
     )
     _wait_for_client_identity(identity)
     expected_runner_uri = runner_uri_for_invocation(binding, invocation)
-    peer = json.loads(handoff.joinpath("core-peer.json").read_text(encoding="utf-8"))
+    document = decode_core_peer_document(
+        handoff.joinpath("core-peer.json").read_bytes()
+    )
     core_certificate = handoff.joinpath("core.crt").read_bytes()
     ca_certificate = handoff.joinpath("ca.crt").read_bytes()
-    validate_peer_certificate(
-        core_certificate,
+    validate_core_peer_leaf(
+        x509.load_pem_x509_certificate(core_certificate).public_bytes(
+            serialization.Encoding.DER
+        ),
         ca_certificate,
-        expected_dns_name=CORE_DNS_NAME,
-        expected_uri=peer["uri"],
-        expected_eku=ExtendedKeyUsageOID.SERVER_AUTH,
+        document,
     )
     client_certificate, client_key, volume_ca = load_published_identity(
         identity, expected_uri=expected_runner_uri, expected_ca=ca_certificate
@@ -178,29 +183,17 @@ def _run_candidate_session(
         context, client_certificate, client_key, journal_directory
     )
     # The built-in hostname check would only repeat the DNS half of the manual
-    # post-handshake fence below: validate_peer_certificate pins SAN DNS name,
-    # SPKI-bound URI, and EKU against the bootstrap CA, and the fingerprint
-    # comparison pins the exact presented leaf.
+    # post-handshake fence below: validate_core_peer_leaf pins SAN DNS name,
+    # SPKI-bound URI, EKU and fingerprint against the bootstrap document.
     context.check_hostname = False
     with (
-        socket.create_connection((CORE_DNS_NAME, CORE_SESSION_PORT), 5) as raw,
+        socket.create_connection((CORE_DNS_NAME, document.port), 5) as raw,
         context.wrap_socket(raw, server_hostname=CORE_DNS_NAME) as connection,
     ):
         presented = connection.getpeercert(binary_form=True)
         if presented is None:
             raise RuntimeError("Core did not present an authenticated leaf")
-        presented_pem = x509.load_der_x509_certificate(presented).public_bytes(
-            serialization.Encoding.PEM
-        )
-        validate_peer_certificate(
-            presented_pem,
-            ca_certificate,
-            expected_dns_name=CORE_DNS_NAME,
-            expected_uri=peer["uri"],
-            expected_eku=ExtendedKeyUsageOID.SERVER_AUTH,
-        )
-        if hashlib.sha256(presented).hexdigest() != peer["fingerprint"]:
-            raise RuntimeError("runner-peer-unverified")
+        validate_core_peer_leaf(presented, ca_certificate, document)
         run_candidate_session(
             connection,
             binding,
