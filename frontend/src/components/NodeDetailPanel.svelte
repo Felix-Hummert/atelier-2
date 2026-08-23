@@ -100,6 +100,21 @@
         : "ran";
 
   /**
+   * A wait node the operator already answered, whose answer this reader still
+   * cannot see -- #511's gap, not an empty node.
+   *
+   * A wait node never carries a receipt (nothing ran it) and never carries a
+   * completion payload (its answer lands through a different door than an
+   * agent's), so a wait node's `provenance` and `answer` are null for its
+   * whole life. An agent node that reached `succeeded` always carries both --
+   * anything else is the corrupt-store situation this panel never receives.
+   * So this exact shape, once a node has ended successfully, names a wait
+   * gate the operator already closed rather than a node that wrote nothing.
+   */
+  $: endedWaitAnswerGap =
+    detail.state === "succeeded" && detail.answer === null && detail.provenance === null;
+
+  /**
    * The bytes are decoded here and nowhere else.
    *
    * The wire carries base64 so arbitrary provider output never passes through a
@@ -159,7 +174,14 @@
         </p>
       {/if}
       {#if detail.answer === null}
-        <p class="muted">{wrapDisplayCopy(emptyOutputCopy(detail.state))}</p>
+        {#if endedWaitAnswerGap}
+          <p class="wait-answer-gap">
+            {wrapDisplayCopy(runPageCopy.waitAnswerNotReadable)}
+            <span class="result-source">{runPageCopy.waitAnswerNotReadableSource}</span>
+          </p>
+        {:else}
+          <p class="muted">{wrapDisplayCopy(emptyOutputCopy(detail.state))}</p>
+        {/if}
       {:else}
         <pre class="exact">{decoded(detail.answer.value_base64)}</pre>
       {/if}
@@ -220,7 +242,7 @@
         </p>
       </section>
 
-      <section aria-labelledby="node-panel-run-evidence">
+      <section class="run-evidence-list" aria-labelledby="node-panel-run-evidence">
         <h3 id="node-panel-run-evidence">{wrapDisplayCopy(runPageCopy.evidenceRun)}</h3>
         {#if detail.provenance !== null}
           <ProofAnchor
@@ -362,6 +384,27 @@
     color: var(--muted);
   }
 
+  .wait-answer-gap {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin: 0;
+    color: var(--muted);
+  }
+
+  /* The same quiet origin pill the chat transcript uses for a house line that
+     names the vision or issue behind it -- one look reads as one owner. */
+  .result-source {
+    justify-self: start;
+    border: 1px solid var(--line);
+    border-radius: var(--r-pill);
+    padding: 0 var(--space-2);
+    color: var(--muted);
+    background: var(--chip);
+    font-size: var(--text-2xs);
+  }
+
   .exact {
     margin: 0;
     padding: var(--space-3);
@@ -375,6 +418,18 @@
   section {
     display: grid;
     gap: var(--space-3);
+  }
+
+  /*
+   * Each fingerprint is its own group -- label, value, and the sentence that
+   * names what it seals. The gap between one group's sentence and the next
+   * group's label has to read as clearly wider than the gap ProofAnchor
+   * already keeps inside a single group, or the sentence reads as belonging
+   * to whichever label sits closest rather than to its own value (operator
+   * finding 23.08.).
+   */
+  .run-evidence-list {
+    gap: var(--space-5);
   }
 
   .reads-from {
