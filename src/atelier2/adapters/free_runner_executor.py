@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import json
+import signal
+import sys
+import time
 from dataclasses import dataclass
 
+from atelier2.contracts.agent_attempts import (
+    MAXIMUM_RUNNER_STANDARD_ERROR_BYTES,
+    AgentAttemptFailureCode,
+)
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutionResult,
     AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
     AuthMode,
-    AuthProfileRevision,
     ProviderId,
 )
 from atelier2.contracts.runner_sessions import MAXIMUM_RUNNER_A_TEXT_BYTES
@@ -23,27 +31,179 @@ from atelier2.ports.agent_executions import (
 )
 
 
+class FreeRunnerJobRefused(ValueError):
+    """The fixed candidate program refuses any job document but its two."""
+
+
 @dataclass(frozen=True)
-class FreeRunnerAuthorization:
-    """The fake-free executor receives no credential material."""
+class FreeRunnerPrintJob:
+    """Print `text` and exit zero -- the candidate's completed-attempt leg."""
+
+    text: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str) or not self.text:
+            raise ValueError("free runner print job text must be nonempty")
 
 
-class FreeRunnerAuthorizationResolver:
-    """Resolve the one candidate authorization from the hashed public profile."""
+@dataclass(frozen=True)
+class FreeRunnerHoldJob:
+    """Sleep `hold_seconds` while ignoring SIGTERM -- the candidate's cancel leg.
 
-    def reference_for(self, profile: AuthProfileRevision) -> str:
-        return f"urn:atelier2:fake-free-auth:v1:{profile.revision_hash.value}"
+    Ignoring SIGTERM is deliberate, not incidental: it is what makes
+    `reap_cancelled_runner_child` reach `REAPED_AFTER_KILL`, the exact
+    physical observation the ADR's cancel proof asserts on (`#301-B1` review
+    note). A hold job that answered SIGTERM would silently make that proof
+    untestable rather than fail it loudly.
+    """
 
-    def resolve(
-        self, profile: AuthProfileRevision, reference: str
-    ) -> FreeRunnerAuthorization:
-        if (
-            profile.provider_id.value != "fake-free"
-            or profile.auth_mode is not AuthMode.API_KEY
-            or reference != self.reference_for(profile)
-        ):
-            raise ValueError("auth-profile-unresolvable")
-        return FreeRunnerAuthorization()
+    hold_seconds: float
+
+    def __post_init__(self) -> None:
+        if type(self.hold_seconds) not in (int, float) or self.hold_seconds <= 0:
+            raise ValueError("free runner hold job seconds must be a positive number")
+
+
+FreeRunnerJobDocument = FreeRunnerPrintJob | FreeRunnerHoldJob
+
+_JOB_KIND_FIELD = "kind"
+_PRINT_KIND = "print"
+_HOLD_KIND = "hold"
+_PRINT_TEXT_FIELD = "text"
+_HOLD_SECONDS_FIELD = "hold_seconds"
+
+
+def encode_free_runner_job(document: FreeRunnerJobDocument) -> bytes:
+    """The one wire form for `job_bytes`: never argv, never interpreted program
+    text (ADR 0009 S1) -- both the runner-side executor that builds this and
+    the fixed candidate program that reads it agree on nothing else."""
+    if isinstance(document, FreeRunnerPrintJob):
+        body: dict[str, object] = {
+            _JOB_KIND_FIELD: _PRINT_KIND,
+            _PRINT_TEXT_FIELD: document.text,
+        }
+    elif isinstance(document, FreeRunnerHoldJob):
+        body = {
+            _JOB_KIND_FIELD: _HOLD_KIND,
+            _HOLD_SECONDS_FIELD: document.hold_seconds,
+        }
+    else:
+        raise TypeError("free runner job document must be Print or Hold")
+    return json.dumps(body, sort_keys=True).encode("utf-8")
+
+
+def decode_free_runner_job(data: bytes) -> FreeRunnerJobDocument:
+    """The candidate program's own decode: refuse anything but its two documents."""
+    try:
+        body = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise FreeRunnerJobRefused("free-runner-job-refused") from error
+    if not isinstance(body, dict):
+        raise FreeRunnerJobRefused("free-runner-job-refused")
+    kind = body.get(_JOB_KIND_FIELD)
+    try:
+        if kind == _PRINT_KIND:
+            text = body.get(_PRINT_TEXT_FIELD)
+            if not isinstance(text, str):
+                raise FreeRunnerJobRefused("free-runner-job-refused")
+            return FreeRunnerPrintJob(text)
+        if kind == _HOLD_KIND:
+            hold_seconds = body.get(_HOLD_SECONDS_FIELD)
+            if not isinstance(hold_seconds, (int, float)) or isinstance(
+                hold_seconds, bool
+            ):
+                raise FreeRunnerJobRefused("free-runner-job-refused")
+            return FreeRunnerHoldJob(hold_seconds)
+    except ValueError as error:
+        raise FreeRunnerJobRefused("free-runner-job-refused") from error
+    raise FreeRunnerJobRefused("free-runner-job-refused")
+
+
+def run_free_runner_job() -> int:
+    """The fixed candidate program's whole body: read stdin, decode, act, refuse.
+
+    `_FREE_RUNNER_PROGRAM_SOURCE` below runs exactly this function and carries
+    no job bytes of its own; every job document arrives only over the stdin
+    this reads, never as an argument or as code the interpreter was handed.
+    """
+    try:
+        document = decode_free_runner_job(sys.stdin.buffer.read())
+    except FreeRunnerJobRefused as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    if isinstance(document, FreeRunnerPrintJob):
+        print(document.text)
+        return 0
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    time.sleep(document.hold_seconds)
+    return 0
+
+
+_FREE_RUNNER_PROGRAM_SOURCE = (
+    "import sys\n"
+    "from atelier2.adapters.free_runner_executor import run_free_runner_job\n"
+    "raise SystemExit(run_free_runner_job())\n"
+)
+
+_UNUSABLE_FREE_RUNNER_ANSWER = AgentExecutionFailure(
+    AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
+)
+
+# `prepare_process` below deliberately declares its stdout frame bound as
+# `MAXIMUM_AGENT_OUTPUT_BYTES_V2` rather than importing this bound directly,
+# so the runner session can reuse that one number as the shared read bound
+# for both this candidate's stdout and stderr (see the comment on
+# `standard_output_frame_bytes` there). If either bound's owner ever moves
+# it, this assertion breaks the import loudly instead of silently widening
+# or narrowing what stderr may carry.
+assert MAXIMUM_AGENT_OUTPUT_BYTES_V2 == MAXIMUM_RUNNER_STANDARD_ERROR_BYTES, (
+    "the fake-free candidate's declared output bound and the runner's "
+    "standard-error bound have drifted apart"
+)
+
+
+class FreeRunnerCandidateExecutor:
+    """The one real runner-side executor for the fake-free candidate program.
+
+    `_CoreRefusingFreeRunnerExecutor` below is the Serve-side fence: nothing
+    reachable from Core may ever run a live fake-free process. This is the
+    other half -- the one thing the isolated Runner container is actually
+    allowed to execute, reached only through
+    `atelier2.runner.executors.select_runner_executor`, never through the
+    Core-facing factory below.
+    """
+
+    def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
+        return AgentProcessCommand(
+            (sys.executable, "-c", _FREE_RUNNER_PROGRAM_SOURCE),
+            standard_input=request.job_bytes,
+            # Deliberately the durable result bound, not a wider provider
+            # frame: this candidate never needs more, and using the same
+            # number lets the runner session reuse one bounded read for both
+            # this stream and the standard-error bound it enforces alongside
+            # it (`MAXIMUM_RUNNER_STANDARD_ERROR_BYTES`, which is this same
+            # 49_152 by construction).
+            standard_output_frame_bytes=MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+        )
+
+    def decode_process_completion(
+        self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
+    ) -> AgentExecutionResult | AgentExecutionFailure:
+        """The answer travels inside the process result; the workspace lease
+        `invocation` carries is not consulted -- this candidate program never
+        reads or writes it."""
+        del invocation
+        if completion.return_code != 0:
+            return _UNUSABLE_FREE_RUNNER_ANSWER
+        return AgentExecutionResult(completion.standard_output.strip())
+
+    def release_credential_channel(self, command: AgentProcessCommand) -> None:
+        """Nothing to take back: this executor hands the child no credential
+        channel at all."""
+        del command
+
+    def close(self) -> None:
+        return
 
 
 class FreeRunnerExecutorFactory:
