@@ -5,6 +5,7 @@ import App from "../../src/App.svelte";
 import { CockpitRequestError, type CockpitApi, type RunV3 } from "../../src/api/client";
 import { shortFingerprint } from "../../src/lib/fingerprint";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { runHeaderCopy } from "../../src/lib/runPages";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import { eventCursor, publicReference, revisionHash as digest } from "../support/workflowV1";
@@ -888,6 +889,45 @@ describe("the click into a node", () => {
     expect(screen.getByText(shortFingerprint("e".repeat(64))).isConnected).toBe(true);
   });
 
+  it("groups each evidence fact with its own explanation, never a neighbour's", async () => {
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), { getNodeDetail: vi.fn(async () => nodeDetail() as never) }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByText("implement");
+
+    await openNodeTab(/implement/, runPageCopy.tabEvidence);
+
+    const thisRun = await screen.findByRole("region", { name: runPageCopy.evidenceRun });
+    const groups = within(thisRun).getAllByRole("group");
+    // The reading order a person meets these facts in, and the sentence each
+    // one carries -- read together, inside the same accessible group, so a
+    // sentence can never be mistaken for belonging to the field beside it.
+    const fieldsInOrder: ReadonlyArray<{ label: string; seals: string }> = [
+      { label: runPageCopy.receiptHash, seals: runPageCopy.sealsReceipt },
+      { label: runPageCopy.promptHash, seals: runPageCopy.sealsPrompt },
+      { label: runPageCopy.outputHash, seals: runPageCopy.sealsOutput },
+      { label: runHeaderCopy.runIdLabel, seals: runHeaderCopy.sealsRunId },
+      { label: runPageCopy.workflowRevision, seals: runPageCopy.sealsWorkflow },
+      { label: runPageCopy.runConfiguration, seals: runPageCopy.sealsConfiguration }
+    ];
+    expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual(
+      fieldsInOrder.map((field) => field.label)
+    );
+    fieldsInOrder.forEach((field, index) => {
+      const group = groups[index];
+      if (group === undefined) throw new Error(`no evidence group rendered for ${field.label}`);
+      expect(within(group).getByText(`Seals ${field.seals}.`)).toBeTruthy();
+      // No neighbour's label leaked into this group's own accessible content.
+      const otherLabels = fieldsInOrder.filter((_, other) => other !== index).map((f) => f.label);
+      for (const otherLabel of otherLabels) {
+        expect(within(group).queryByText(otherLabel)).toBeNull();
+      }
+    });
+  });
+
   it("proves(a-click-into-a-node-shows-what-it-was-asked-and-wrote): says usage is not recorded instead of leaving the question open", async () => {
     render(App, {
       props: {
@@ -924,6 +964,45 @@ describe("the click into a node", () => {
 
     await screen.findByText("Duration");
     await screen.findByText("5 min");
+  });
+
+  it("a done wait node says it was answered instead of claiming nothing was written", async () => {
+    const answeredGate = nodeDetail({
+      node_id: "gate",
+      state: "succeeded",
+      job_base64: btoa("Merge this, or name the blocking defect."),
+      job_hash: "e".repeat(64),
+      answer: null,
+      provenance: null
+    });
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), { getNodeDetail: vi.fn(async () => answeredGate as never) }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByText("implement");
+
+    await openNodeTab(/implement/, runPageCopy.tabResult);
+
+    await screen.findByText(runPageCopy.waitAnswerNotReadable);
+    expect(screen.getByText(runPageCopy.waitAnswerNotReadableSource).isConnected).toBe(true);
+    expect(screen.queryByText(runPageCopy.outputEmptyEnded)).toBeNull();
+  });
+
+  it("a node with a written answer shows the value, not the wait explanation", async () => {
+    render(App, {
+      props: {
+        cockpitApi: api(v3Run(), { getNodeDetail: vi.fn(async () => nodeDetail() as never) }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByText("implement");
+
+    await openNodeTab(/implement/, runPageCopy.tabResult);
+
+    await screen.findByText(wrote);
+    expect(screen.queryByText(runPageCopy.waitAnswerNotReadable)).toBeNull();
   });
 
   it("proves(a-stopped-node-says-so-and-a-waiting-one-does-not): shows the refusal that stops the run, in the words of the owner that refused", async () => {

@@ -36,6 +36,9 @@ export const runPageCopy = {
   promptEmptyEnded: "Not composed.",
   outputEmpty: "Nothing written yet.",
   outputEmptyEnded: "Nothing written.",
+  waitAnswerNotReadable:
+    "You answered this gate. The answer itself is not yet kept readable after completion — #511 owns that.",
+  waitAnswerNotReadableSource: "#511",
   whoEmpty: "No receipt yet.",
   whoEmptyEnded: "No receipt.",
   processLogInLease: "Process log stays in the lease.",
