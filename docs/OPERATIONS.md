@@ -205,6 +205,8 @@ recorded identity:
 bash scripts/container_live.sh status
 bash scripts/container_live.sh stop
 bash scripts/container_live.sh start
+bash scripts/container_live.sh uninstall
+bash scripts/container_live.sh update
 ```
 
 `status` is read-only and prints exactly `RUNNING`, `STOPPED`, `INCOMPLETE`, or
@@ -215,9 +217,27 @@ same container and leaves the volume intact. A failed install removes only its
 intent-owned project when exact identity can be proved; otherwise it leaves the
 incomplete record and fails loudly.
 
-This slice deliberately has no update, copy, migration, preview, activation,
-rollback, acceptance, retirement, or uninstall command. Do not manually delete
-an accepted record or its volume. The stable console exposes current Core/V1
+`uninstall` tears the installation down completely — container, network,
+volume, image, and the record directory itself — reading only its own
+record and compose truth, never an operator-supplied variable. It is
+idempotent: nothing installed is a clean success. When the record is exact it
+tears down through `docker compose down --volumes --rmi local
+--remove-orphans`; when the record is missing, corrupt, or its exactness
+cannot be proved (the "record gone, Docker residue remains" case), it instead
+sweeps every Docker resource carrying the stable deployment's label or name,
+the same identity `install` itself refuses to collide with. Either path
+leaves zero matching Docker resources behind, so a following `install` always
+succeeds — `another local-live Docker owner exists` cannot recur.
+
+`update` is `uninstall` followed by `install` in one step. It refuses ambient
+Compose mode first, before touching anything. Redeploying to a new commit
+through `update` discards the Compose volume; the command names that plainly
+in its own output. This is accepted while the stable console still holds no
+durable operator data worth preserving; a real store migration is a later
+concern.
+
+This slice deliberately has no copy, migration, preview, activation, rollback,
+or acceptance command. The stable console exposes current Core/V1
 provider-free behavior only; it adds no provider or Runner. Use the disposable
 candidate above for zero-residue release proof.
 

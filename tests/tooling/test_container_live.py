@@ -123,19 +123,55 @@ if arguments and arguments[0] == "compose":
 if arguments[:2] == ["ps", "--all"]:
     if os.environ.get("ATELIER2_TEST_FOREIGN_RESOURCE") == "1":
         print("d" * 64)
-    elif state:
-        wanted = arguments[-1].split("=", 1)[1]
+    elif state and not state.get("container_removed"):
+        wanted = arguments[-1].split("=", 2)[-1]
         if wanted in ("local-live", state["project"]):
             print(CONTAINER_ID)
     raise SystemExit(0)
 if arguments[:2] in (["volume", "ls"], ["network", "ls"]):
     if os.environ.get("ATELIER2_TEST_FOREIGN_RESOURCE") == "1":
         print("foreign")
-    elif state:
-        wanted = arguments[-1].split("=", 1)[1]
+    elif state and not state.get(f"{{arguments[0]}}_removed"):
+        wanted = arguments[-1].split("=", 2)[-1]
         if wanted in ("local-live", state["project"]):
             suffix = "store" if arguments[0] == "volume" else "serve"
             print(f"{{state['project']}}_{{suffix}}")
+    raise SystemExit(0)
+if arguments[:2] == ["images", "--quiet"]:
+    if state and not state.get("image_removed"):
+        print(IMAGE_ID)
+    raise SystemExit(0)
+if arguments[:1] == ["rm"] and "--force" in arguments:
+    identifier = arguments[-1]
+    if not state or identifier != CONTAINER_ID: raise SystemExit(54)
+    state["container_removed"] = True
+    if all(state.get(f"{{kind}}_removed") for kind in ("container", "network", "volume", "image")):
+        state = {{}}
+    save()
+    raise SystemExit(0)
+if arguments[:2] == ["network", "rm"]:
+    identifier = arguments[-1]
+    if not state or identifier != f"{{state['project']}}_serve": raise SystemExit(55)
+    state["network_removed"] = True
+    if all(state.get(f"{{kind}}_removed") for kind in ("container", "network", "volume", "image")):
+        state = {{}}
+    save()
+    raise SystemExit(0)
+if arguments[:2] == ["volume", "rm"] and "--force" in arguments:
+    identifier = arguments[-1]
+    if not state or identifier != f"{{state['project']}}_store": raise SystemExit(56)
+    state["volume_removed"] = True
+    if all(state.get(f"{{kind}}_removed") for kind in ("container", "network", "volume", "image")):
+        state = {{}}
+    save()
+    raise SystemExit(0)
+if arguments[:1] == ["rmi"] and "--force" in arguments:
+    identifier = arguments[-1]
+    if not state or identifier != IMAGE_ID: raise SystemExit(57)
+    state["image_removed"] = True
+    if all(state.get(f"{{kind}}_removed") for kind in ("container", "network", "volume", "image")):
+        state = {{}}
+    save()
     raise SystemExit(0)
 if arguments and arguments[0] == "inspect":
     if not state or arguments[-1] != CONTAINER_ID: raise SystemExit(44)
@@ -392,7 +428,8 @@ def docker_mutations(invocations: list[list[str]]) -> list[list[str]]:
         if "build" in arguments
         or "up" in arguments
         or "down" in arguments
-        or arguments[:1] in (["start"], ["stop"])
+        or arguments[:1] in (["start"], ["stop"], ["rm"], ["rmi"])
+        or arguments[:2] in (["network", "rm"], ["volume", "rm"])
     ]
 
 
@@ -816,6 +853,137 @@ def test_failed_start_stops_the_exact_recorded_container_and_keeps_state(
     assert ("cleanup is incomplete" in completed.stderr) is cleanup_incomplete
 
 
+def test_uninstall_without_an_installation_is_idempotent(tmp_path: Path) -> None:
+    repository = lifecycle_repository(tmp_path)
+
+    completed = run_live(repository, tmp_path, "uninstall")
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "container live: nothing installed\n"
+    assert not installation_directory(tmp_path).exists()
+    assert docker_invocations(tmp_path) == []
+
+
+def test_uninstall_removes_the_complete_installation(tmp_path: Path) -> None:
+    repository = installed_repository(tmp_path)
+    directory = installation_directory(tmp_path)
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+
+    completed = run_live(repository, tmp_path, "uninstall")
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "container live: uninstalled\n"
+    assert not directory.exists()
+    mutations = docker_mutations(docker_invocations(tmp_path))
+    down = next(arguments for arguments in mutations if "down" in arguments)
+    assert down[-5:] == ["down", "--volumes", "--rmi", "local", "--remove-orphans"]
+
+    status = run_live(repository, tmp_path, "status")
+    assert status.stdout == "INCOMPLETE\n"
+
+    shutil.rmtree(tmp_path / "docker-context")
+    reinstalled = run_live(
+        repository, tmp_path, "install", ATELIER2_TEST_REQUIRE_INTENT="1"
+    )
+    assert reinstalled.returncode == 0, reinstalled.stderr
+
+
+def test_uninstall_removes_orphaned_docker_resources_without_a_record(
+    tmp_path: Path,
+) -> None:
+    repository = installed_repository(tmp_path)
+    directory = installation_directory(tmp_path)
+    (directory / "installation.state").unlink()
+    (directory / "compose.yaml").unlink()
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+
+    completed = run_live(repository, tmp_path, "uninstall")
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "container live: uninstalled\n"
+    assert not directory.exists()
+    invocations = docker_invocations(tmp_path)
+    assert any(arguments[:1] == ["rm"] for arguments in invocations)
+    assert any(arguments[:2] == ["network", "rm"] for arguments in invocations)
+    assert any(arguments[:2] == ["volume", "rm"] for arguments in invocations)
+    assert any(arguments[:1] == ["rmi"] for arguments in invocations)
+    assert all("compose" not in arguments for arguments in invocations)
+
+    shutil.rmtree(tmp_path / "docker-context")
+    reinstalled = run_live(
+        repository, tmp_path, "install", ATELIER2_TEST_REQUIRE_INTENT="1"
+    )
+    assert reinstalled.returncode == 0, reinstalled.stderr
+
+
+def test_double_uninstall_is_harmless(tmp_path: Path) -> None:
+    repository = installed_repository(tmp_path)
+    assert run_live(repository, tmp_path, "uninstall").returncode == 0
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+
+    second = run_live(repository, tmp_path, "uninstall")
+
+    assert second.returncode == 0, second.stderr
+    assert second.stdout == "container live: nothing installed\n"
+    assert docker_invocations(tmp_path) == []
+    assert not installation_directory(tmp_path).exists()
+
+
+def test_update_replaces_the_installation_and_names_the_store_loss(
+    tmp_path: Path,
+) -> None:
+    repository = installed_repository(tmp_path)
+    original_project = read_record(tmp_path)["project"]
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+    shutil.rmtree(tmp_path / "docker-context")
+
+    completed = run_live(
+        repository, tmp_path, "update", ATELIER2_TEST_REQUIRE_INTENT="1"
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "container live: uninstalled" in completed.stdout
+    assert "discards the previous store" in completed.stdout
+    assert "cockpit ->" in completed.stdout
+    record = read_record(tmp_path)
+    assert record["state"] == "INSTALLED"
+    assert record["project"] != original_project
+
+
+def test_update_from_no_installation_installs_fresh_without_a_store_loss_note(
+    tmp_path: Path,
+) -> None:
+    repository = lifecycle_repository(tmp_path)
+
+    completed = run_live(
+        repository, tmp_path, "update", ATELIER2_TEST_REQUIRE_INTENT="1"
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "container live: nothing installed" in completed.stdout
+    assert "discards the previous store" not in completed.stdout
+    assert "cockpit ->" in completed.stdout
+    assert read_record(tmp_path)["state"] == "INSTALLED"
+
+
+def test_update_refuses_ambient_mode_before_tearing_down_a_good_installation(
+    tmp_path: Path,
+) -> None:
+    repository = installed_repository(tmp_path)
+    before_record = (
+        installation_directory(tmp_path) / "installation.state"
+    ).read_bytes()
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+
+    completed = run_live(repository, tmp_path, "update", ATELIER2_DEPLOYMENT="disposable")
+
+    assert completed.returncode != 0
+    assert docker_invocations(tmp_path) == []
+    assert (
+        installation_directory(tmp_path) / "installation.state"
+    ).read_bytes() == before_record
+
+
 LIFECYCLE_GUARDS = (
     "flock --nonblock 9",
     '[state]="INSTALLING"',
@@ -827,6 +995,8 @@ LIFECYCLE_GUARDS = (
     '[[ -z "${temporary_descriptor}" ]] || rm -f -- "${temporary_descriptor}"',
     'docker stop --time 30 "${record[container_id]}"',
     'docker start "${record[container_id]}"',
+    'rm -rf -- "${installation_directory}"',
+    'docker rm --force -- "${resource}"',
 )
 
 
