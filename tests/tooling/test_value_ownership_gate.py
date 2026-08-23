@@ -175,6 +175,12 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
         "control-frame polls; the enforced spans themselves come from the "
         "attested manifest",
     ),
+    "adapters/file_runner_leases.py::_INVOCATION_POLL_SECONDS": SpelledValue(
+        1,
+        "owner with a seam: how often a publisher re-reads a launcher's own "
+        "peer material while the deadline its caller stated runs out -- "
+        "mirrors docker_carrier.py's own _POLL_INTERVAL_SECONDS",
+    ),
 }
 """Every bare literal the operator families still contain, each with its owner.
 
