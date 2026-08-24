@@ -291,13 +291,6 @@ class RunnerTerminalEvidenceStore(AgentAttemptReader, Protocol):
         tombstone: RunnerTerminalEvidenceAckTombstone,
     ) -> AgentAttempt: ...
 
-    def rebind_after_acknowledged_never_launched(
-        self,
-        execution: AgentAttemptExecution,
-        no_launch_tombstone: RunnerTerminalEvidenceAckTombstone,
-        fresh_binding: RunnerGenerationBinding,
-    ) -> AgentAttempt: ...
-
 
 class AgentAttemptStore(AgentAttemptReader, Protocol):
     def iter_driverless_attempts(self, page_limit: PageLimit) -> Iterator[AgentAttempt]:

@@ -133,10 +133,6 @@ class AgentConfigurationCatalog(Protocol):
         self, revision: AgentConfigurationRevision
     ) -> PublishAgentConfigurationRevisionResult: ...
 
-    def auth_profile_revision(
-        self, revision_hash: AuthProfileRevisionHash
-    ) -> AuthProfileRevision | None: ...
-
     def agent_configuration_revision(
         self, revision_hash: AgentConfigurationRevisionHash
     ) -> tuple[AgentConfigurationRevision, AuthProfileRevision] | None: ...
