@@ -13,6 +13,7 @@ exactly-once behaviour are proven against the real store in
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import get_args
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,7 +22,11 @@ from httpx import Response
 from atelier2.api.app import create_app
 from atelier2.api.projection.runs import run_resource
 from atelier2.api.references import encode_public_run_reference
-from atelier2.api.wire.resources import RunCancellabilityResource, RunResourceV3
+from atelier2.api.wire.resources import (
+    RunCancellabilityResource,
+    RunNotCancellableReasonName,
+    RunResourceV3,
+)
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
     AgentAttemptId,
@@ -44,7 +49,12 @@ from atelier2.contracts.run_projections import (
     RunProjection,
 )
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
-from atelier2.contracts.workflows_v3 import AgentNodeV3, WorkflowGraphV3
+from atelier2.contracts.workflows_v3 import (
+    AgentNodeV3,
+    NodeOutput,
+    WaitNodeV3,
+    WorkflowGraphV3,
+)
 from atelier2.ports.agent_attempts import (
     RunCancellationAccepted,
     RunCancellationCommandConflict,
@@ -371,6 +381,49 @@ def _projection(
     )
 
 
+WAIT_NODE_ID = "approve"
+
+
+def _wait_graph() -> WorkflowGraphV3:
+    """A one-node graph parked on a Wait -- a live run here runs no agent to stop."""
+    return WorkflowGraphV3(
+        format_version=3,
+        name="One wait no cancel can reach",
+        nodes=(
+            WaitNodeV3(
+                id=WAIT_NODE_ID,
+                type="wait",
+                prompt="Approve this candidate before it lands.",
+                outputs=(
+                    NodeOutput.model_validate(
+                        {"name": "ok", "schema": {"ref": "approval", "revision": "1"}}
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+def _started_on_non_agent_node() -> RunProjection:
+    """A STARTED V3 run whose current node runs no agent this cancel could stop."""
+    return RunProjection(
+        RunV3(
+            RUN_ID,
+            REVISION_HASH,
+            AgentBindingSet(()).binding_set_hash,
+            (),
+            RunState.STARTED,
+            WAIT_NODE_ID,
+            0,
+            0,
+            RunConfigurationRevisionHash("c" * 64),
+        ),
+        _wait_graph(),
+        None,
+        (),
+    )
+
+
 def _cancellation(projection: RunProjection) -> RunCancellabilityResource:
     resource = run_resource(projection)
     assert isinstance(resource, RunResourceV3)
@@ -388,48 +441,64 @@ def test_a_live_started_agent_run_is_shown_cancellable_with_its_fence() -> None:
 
 
 @pytest.mark.parametrize(
-    ("state", "attempt_state", "terminal_hash", "reason"),
+    ("projection", "reason"),
     [
         (
-            RunState.STARTED,
-            None,
-            None,
+            _projection(RunState.STARTED, None),
             RunCancellationRefusal.BETWEEN_NODES,
         ),
         (
-            RunState.STARTED,
-            PublicAgentAttemptState.CANCEL_REQUESTED,
-            None,
+            _projection(RunState.STARTED, PublicAgentAttemptState.CANCEL_REQUESTED),
             RunCancellationRefusal.ALREADY_CANCELLING,
         ),
         (
-            RunState.WAITING_INPUT,
-            None,
-            None,
+            _projection(RunState.WAITING_INPUT, None),
             RunCancellationRefusal.WAITING_FOR_YOU,
         ),
         (
-            RunState.CANCELLED,
-            PublicAgentAttemptState.CANCELLED,
-            Sha256Hash.of(b"ended"),
+            _started_on_non_agent_node(),
+            RunCancellationRefusal.NODE_RUNS_NO_AGENT,
+        ),
+        (
+            _projection(
+                RunState.CANCELLED,
+                PublicAgentAttemptState.CANCELLED,
+                terminal_hash=Sha256Hash.of(b"ended"),
+            ),
             RunCancellationRefusal.ALREADY_ENDED,
         ),
     ],
-    ids=["between-nodes", "already-cancelling", "waiting-for-you", "already-ended"],
+    ids=[
+        "between-nodes",
+        "already-cancelling",
+        "waiting-for-you",
+        "node-runs-no-agent",
+        "already-ended",
+    ],
 )
 def test_a_non_cancellable_run_is_shown_as_such_with_its_reason(
-    state: RunState,
-    attempt_state: PublicAgentAttemptState | None,
-    terminal_hash: Sha256Hash | None,
+    projection: RunProjection,
     reason: RunCancellationRefusal,
 ) -> None:
-    cancellation = _cancellation(
-        _projection(state, attempt_state, terminal_hash=terminal_hash)
-    )
+    cancellation = _cancellation(projection)
 
     assert cancellation.cancellable is False
     assert cancellation.target_node_execution_id is None
     assert cancellation.reason == reason.value
+
+
+def test_the_wire_reason_literal_and_the_refusal_enum_cannot_drift() -> None:
+    """Every refusal the enum owns has exactly one wire spelling, and no more.
+
+    The projection casts `RunCancellationRefusal` values into the wire's
+    `RunNotCancellableReasonName` Literal, so pyright cannot see a rename or a new
+    reason drift the two apart. This set equality is that missing guard: extend or
+    rename either side without the other and this fails before serve time, where a
+    run in the un-spelled reason would 500 on read.
+    """
+    assert set(get_args(RunNotCancellableReasonName)) == {
+        refusal.value for refusal in RunCancellationRefusal
+    }
 
 
 def test_the_route_requires_the_json_media_type() -> None:

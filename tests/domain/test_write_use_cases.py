@@ -107,6 +107,7 @@ from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.orders import InlineOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_cancellations import CancelRunRequest
+from atelier2.contracts.run_projections import RunCancellationRefusal
 from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import SchemaDocumentRefusal
 from atelier2.contracts.tool_grants_v3 import ToolGrantRefusal
@@ -149,7 +150,6 @@ from atelier2.ports.agent_attempts import (
 from atelier2.ports.agent_attempts import (
     RunCancellationOvertakenBySuccess as DurableRunOvertakenBySuccess,
 )
-from atelier2.ports.agent_attempts import RunCancellationRefusal
 from atelier2.ports.agent_attempts import (
     RunCancellationRunMissing as DurableRunCancellationRunMissing,
 )
