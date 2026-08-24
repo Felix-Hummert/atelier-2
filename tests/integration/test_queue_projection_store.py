@@ -28,6 +28,8 @@ from atelier2.contracts.queue_projection import (
     QueueAdmissionRationale,
     QueueAdmissionRevisionConflict,
     QueueItemAdmitted,
+    QueueItemId,
+    QueueItemSnapshot,
     QueueItemState,
     QueueProjectionRevision,
     TrackerItemReference,
@@ -35,6 +37,7 @@ from atelier2.contracts.queue_projection import (
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.ports.published_revisions import CatalogLineageFounded
+from atelier2.ports.queue_projection import AdmittedQueueItemsPage
 
 
 @dataclass(frozen=True)
@@ -69,8 +72,8 @@ def _founded_workflow_lineage(engine: Engine, name: str) -> CatalogLineage:
     return result.lineage
 
 
-def _reference() -> WorkItemReference:
-    return WorkItemReference(ProjectId("project1"), TrackerItemReference("gh:79"))
+def _reference(tracker_item: str = "gh:79") -> WorkItemReference:
+    return WorkItemReference(ProjectId("project1"), TrackerItemReference(tracker_item))
 
 
 def _row(engine: Engine, item_id: str) -> tuple[object, ...] | None:
@@ -320,3 +323,89 @@ def test_an_admission_survives_a_process_restart(tmp_path: Path) -> None:
         assert row[5] == lineage.lineage_id.value
     finally:
         reopened_engine.dispose()
+
+
+def test_listing_an_empty_queue_answers_an_empty_page(harness: QueueHarness) -> None:
+    page = harness.store.list_admitted_items(None, 50)
+
+    assert page == AdmittedQueueItemsPage((), None)
+
+
+def test_listing_admitted_items_carries_each_ones_binding_and_rationale(
+    harness: QueueHarness,
+) -> None:
+    lineage = _founded_workflow_lineage(harness.engine, "triage")
+    reference = _reference()
+    admission = QueueAdmission(
+        lineage.lineage_id, QueueAdmissionRationale("matches the triage rule")
+    )
+    outcome = harness.store.admit(
+        AdmitQueueItem(reference, admission, QueueProjectionRevision(0))
+    )
+    assert isinstance(outcome, QueueItemAdmitted)
+
+    page = harness.store.list_admitted_items(None, 50)
+
+    assert page == AdmittedQueueItemsPage(
+        (
+            QueueItemSnapshot(
+                reference,
+                QueueItemState.ADMITTED,
+                QueueProjectionRevision(1),
+                admission,
+            ),
+        ),
+        None,
+    )
+
+
+def test_listing_admitted_items_omits_items_still_only_observed(
+    harness: QueueHarness,
+) -> None:
+    reference = _reference()
+    with harness.engine.connect() as connection:
+        connection.execute(
+            queue_items.insert().values(
+                item_id=reference.item_id.value,
+                project_id=reference.project.value,
+                tracker_item_reference=reference.tracker_item.value,
+                state=QueueItemState.OBSERVED.value,
+                state_version=0,
+                workflow_lineage_id=None,
+                admission_rationale=None,
+            )
+        )
+        connection.commit()
+
+    page = harness.store.list_admitted_items(None, 50)
+
+    assert page == AdmittedQueueItemsPage((), None)
+
+
+def test_listing_admitted_items_pages_by_item_id_and_reports_where_to_resume(
+    harness: QueueHarness,
+) -> None:
+    lineage = _founded_workflow_lineage(harness.engine, "triage")
+    admission = QueueAdmission(
+        lineage.lineage_id, QueueAdmissionRationale("matches the triage rule")
+    )
+    references = [_reference(f"gh:{number}") for number in range(3)]
+    for reference in references:
+        outcome = harness.store.admit(
+            AdmitQueueItem(reference, admission, QueueProjectionRevision(0))
+        )
+        assert isinstance(outcome, QueueItemAdmitted)
+    expected_order = sorted(references, key=lambda reference: reference.item_id.value)
+
+    first_page = harness.store.list_admitted_items(None, 2)
+
+    assert isinstance(first_page, AdmittedQueueItemsPage)
+    assert len(first_page.items) == 2
+    assert [item.item_reference for item in first_page.items] == expected_order[:2]
+    assert first_page.next_after == QueueItemId(expected_order[1].item_id.value)
+
+    second_page = harness.store.list_admitted_items(first_page.next_after, 2)
+
+    assert isinstance(second_page, AdmittedQueueItemsPage)
+    assert [item.item_reference for item in second_page.items] == expected_order[2:]
+    assert second_page.next_after is None
