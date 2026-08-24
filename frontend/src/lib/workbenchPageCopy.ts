@@ -1,3 +1,5 @@
+import { PRODUCT_NAME } from "./productName";
+
 /**
  * Copy the Workbench surface renders: the pinned decisions that need the
  * operator, the conversation typed into the composer, and the one honest thing
@@ -35,7 +37,7 @@ export const workbenchPageCopy = {
   emptyDescription:
     "The conductor that turns what you say into runs is not built yet. Until then, start work from Workflows in the rail.",
   youLabel: "You",
-  houseLabel: "Atelier",
+  houseLabel: PRODUCT_NAME,
   composerLabel: "Message",
   send: "Send",
   /**

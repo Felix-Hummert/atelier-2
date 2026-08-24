@@ -8,6 +8,7 @@
     type ReconciliationDeterminationInput,
     type ReconciliationMutation
   } from "../lib/mutationJournal";
+  import { PRODUCT_NAME } from "../lib/productName";
   import InfoHint from "./InfoHint.svelte";
 
   type WaitingReconciliation = Extract<Run["waiting"], { type: "WAITING_RECONCILIATION" }>;
@@ -230,7 +231,7 @@
     onkeydown={containDialogFocus}
   >
     <h2 id="absence-title">Execute this exact effect?</h2>
-    <p>Atelier will execute the exact request once.</p>
+    <p>{PRODUCT_NAME} will execute the exact request once.</p>
     <div class="dialog-actions">
       <button
         class="quiet"

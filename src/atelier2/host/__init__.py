@@ -7,7 +7,7 @@ import json
 import os
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from atelier2.adapters.agent_workspaces import (
@@ -19,6 +19,7 @@ from atelier2.adapters.claude_subscription import (
     ClaudeExecutableUnsupported,
     ClaudeManagedPolicyPresent,
     ClaudeSubscriptionSettings,
+    attest_atelier_doors_invocation,
     attest_no_managed_policy,
     attest_workspace_tool_invocation,
     verify_claude_capability,
@@ -67,6 +68,11 @@ from atelier2.host.serving import (
     GitHubEffectDeployment,
     HostSettings,
     LiveGitHubOpenPrRunPending,
+    # `serving` owns how the doors vector is composed -- door tools, server
+    # name, this instance's own loopback address -- so the command line borrows
+    # that composition for its attest instead of re-spelling the vector, which
+    # would let the attested and the launched invocation drift apart.
+    _atelier_doors_settings,
     api_limits,
     event_poll_backoff,
     serve,
@@ -252,6 +258,7 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             project_root=_declared_project_root(parser, parsed),
             claude_subscription=claude.settings,
             claude_workspace_tools=parsed.claude_workspace_tools,
+            claude_atelier_doors=parsed.claude_atelier_doors,
             claude_start_refusal=claude.start_refusal,
             claude_workspace_tools_start_refusal=claude.workspace_tools_start_refusal,
             grok_subscription=grok.settings,
@@ -269,6 +276,7 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             runner_core_identity_directory=parsed.runner_core_identity_directory,
             runner_accept_timeout_seconds=parsed.runner_accept_timeout_seconds,
         )
+        settings = _atelier_doors_attested(settings)
     except ValueError as refusal:
         parser.error(str(refusal))
     try:
@@ -549,6 +557,12 @@ def _claude_subscription_settings(
                 "deployment, so it needs --claude-executable and "
                 "--claude-credential-directory beside it"
             )
+        if parsed.claude_atelier_doors:
+            parser.error(
+                "--claude-atelier-doors arms a third executor of the Claude "
+                "deployment, so it needs --claude-executable and "
+                "--claude-credential-directory beside it"
+            )
         return _DeclaredSubscription(None)
     if any(value is None for value in declared):
         parser.error(
@@ -582,6 +596,31 @@ def _claude_subscription_settings(
         except ClaudeExecutableUnsupported as error:
             tools_refusal = str(error)
     return _DeclaredSubscription(settings, workspace_tools_start_refusal=tools_refusal)
+
+
+def _atelier_doors_attested(settings: HostSettings) -> HostSettings:
+    """Arming the doors executor always attests its exact launch vector.
+
+    The doors twin of the workspace-tool attest above: startability, not a
+    version answer, probed once at every serve rather than at the first bound
+    node. It runs after `HostSettings` because the attested vector embeds this
+    instance's own bound address, whose composition `serving` owns. A
+    deployment already named unstartable is not probed again, and a failure
+    names this one executor unstartable while the house still serves.
+    """
+
+    deployment = settings.claude_subscription
+    if (
+        not settings.claude_atelier_doors
+        or deployment is None
+        or settings.claude_start_refusal is not None
+    ):
+        return settings
+    try:
+        attest_atelier_doors_invocation(_atelier_doors_settings(deployment, settings))
+    except ClaudeExecutableUnsupported as error:
+        return replace(settings, claude_atelier_doors_start_refusal=str(error))
+    return settings
 
 
 def _grok_subscription_settings(
@@ -714,6 +753,18 @@ def _argument_parser() -> argparse.ArgumentParser:
             "and run commands where the attempt stands. It runs as this user "
             "and is no sandbox; only a node whose binding requests the "
             "headless_with_tools capability reaches it"
+        ),
+    )
+    serve_parser.add_argument(
+        "--claude-atelier-doors",
+        action="store_true",
+        help=(
+            "also serve the Claude executor whose invocation may choose, "
+            "start and observe catalog runs through this instance's own "
+            "loopback MCP door -- real billed children behind one node. "
+            "Arming it always attests the exact door-bearing invocation; "
+            "routine use additionally waits on the billed conformance probe "
+            "the executor names"
         ),
     )
     serve_parser.add_argument("--grok-executable", type=Path)

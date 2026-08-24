@@ -7,6 +7,7 @@
     createReconcileCommandId as makeReconcileCommandId,
     createRunId as makeRunId
   } from "./lib/mutationJournal";
+  import { PRODUCT_NAME } from "./lib/productName";
   import { cockpitRoute } from "./lib/route";
   import WorkshopShell from "./components/WorkshopShell.svelte";
   import WorkbenchPage from "./pages/WorkbenchPage.svelte";
@@ -40,7 +41,7 @@
   }
 </script>
 
-<svelte:head><meta name="theme-color" content="#f2efe7" /><title>Atelier 2</title></svelte:head>
+<svelte:head><meta name="theme-color" content="#f2efe7" /><title>{PRODUCT_NAME}</title></svelte:head>
 
 <WorkshopShell bind:this={workshopShell} {route} {navigate}>
   {#if route.page === "chat"}

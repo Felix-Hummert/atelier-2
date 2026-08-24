@@ -3,6 +3,7 @@ import { expect, test, type Locator, type Page, type Route } from "@playwright/t
 
 import { shortFingerprint } from "../../src/lib/fingerprint";
 import { NAMED_AGENT_CHOICE_STORAGE_KEY } from "../../src/lib/namedAgentChoice";
+import { PRODUCT_NAME } from "../../src/lib/productName";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { projectPageCopy } from "../../src/lib/projectPageCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
@@ -41,7 +42,8 @@ test("the target-UI shell names today's doors and does not fake the rest", async
   await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
 
   const rail = page.getByRole("navigation", { name: "Workshop" });
-  await expect(rail.getByText("atelier", { exact: true })).toBeVisible();
+  await expect(rail.getByText(PRODUCT_NAME, { exact: true })).toBeVisible();
+  await expect(page).toHaveTitle(PRODUCT_NAME);
   await expect(rail.getByRole("link", { name: "Board" })).toBeVisible();
   await expect(rail.getByRole("link", { name: "Workflows" })).toBeVisible();
   await expect(rail.getByRole("link", { name: "History" })).toBeVisible();
@@ -1270,7 +1272,7 @@ test("mobile Found and Absent reconcile exact durable runs", async ({ browser })
   const execute = page.getByRole("button", { name: "Execute" });
   await expect(page.getByRole("dialog", { name: "Execute this exact effect?" })).toBeVisible();
   await expect(cancel).toBeFocused();
-  await expect(page.getByText("Atelier will execute the exact request once.")).toBeVisible();
+  await expect(page.getByText(`${PRODUCT_NAME} will execute the exact request once.`)).toBeVisible();
   await page.screenshot({ path: "test-results/absent-confirm-390x844.png", fullPage: true });
   await page.keyboard.press("Shift+Tab");
   await expect(execute).toBeFocused();
