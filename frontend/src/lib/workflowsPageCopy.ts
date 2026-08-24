@@ -10,7 +10,6 @@ import type { CatalogNameState } from "./catalogName";
  * inline in a page.
  */
 export const workflowsPageCopy = {
-  eyebrow: "Atelier",
   title: "Workflows",
   emptyTitle: "No named workflows yet",
   emptyDescription:
@@ -35,19 +34,6 @@ export const workflowsPageCopy = {
   retiredNote: "Retired",
   retiredNotice: "This workflow's catalog lineage was retired. Starting it is not offered here."
 } as const;
-
-/**
- * How big a workflow is, in a word a reader knows.
- *
- * "format 3" is this repository's own vocabulary and says nothing to someone
- * who has not read it (operator ruling 23.08.); the document's version lives
- * in the start door's expert reveal, where it can matter. A document whose
- * format declares no node count says nothing rather than guessing one.
- */
-export function workflowSizeFact(nodeCount: number | null): string | null {
-  if (nodeCount === null) return null;
-  return nodeCount === 1 ? "1 step" : `${nodeCount} steps`;
-}
 
 /**
  * The short state a card or detail header wears beside a name that is not

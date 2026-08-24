@@ -8,12 +8,15 @@ import { humanMove, runStanding, type RunStanding } from "./runState";
  *
  * The mockup's fourth group, Queued, has no owner yet: no served run state
  * names a run as queued (`AnyRun["state"]` is STARTED, WAITING_INPUT,
- * WAITING_RECONCILIATION, COMPLETED or FAILED). A future sequencing source
- * (#79) adds that group instead of this one inventing a queue from nothing.
+ * WAITING_RECONCILIATION, COMPLETED, FAILED or CANCELLED). A future
+ * sequencing source (#79) adds that group instead of this one inventing a
+ * queue from nothing.
  *
- * A failed run groups under Running, not Done: it is still the thing the
- * operator is tracking, not a landed result. `StudioPage.svelte` reads a
- * row's group to decide its section, and its `standing` to decide its mark.
+ * A failed or cancelled run groups under Done, not Running: it is no longer
+ * moving, so showing it under a heading that says "Running" would be a state
+ * lie (#581) -- the row's own mark and sentence still say plainly that it
+ * did not succeed. `StudioPage.svelte` reads a row's group to decide its
+ * section, and its `standing` to decide its mark.
  */
 export const BOARD_GROUPS = ["needsYou", "running", "done"] as const;
 export type BoardGroup = (typeof BOARD_GROUPS)[number];
@@ -23,6 +26,7 @@ export type BoardRowStatus =
   | { kind: "waitingReconciliation" }
   | { kind: "running"; nodeId: string }
   | { kind: "failed"; nodeId: string }
+  | { kind: "cancelled" }
   | { kind: "completed" };
 
 export type MiniPipelineDot = { nodeId: string; state: NodeState };
@@ -70,9 +74,7 @@ export function projectBoardGroups(
   const done = rows.filter((row) => row.group === "done");
   return {
     needsYou: rows.filter((row) => row.group === "needsYou"),
-    running: rows
-      .filter((row) => row.group === "running")
-      .sort((a, b) => runningRank(a) - runningRank(b)),
+    running: rows.filter((row) => row.group === "running"),
     // Reuses the one newest-first owner (runList.ts) rather than a second
     // implementation; a Done row with no activity stamp sorts to the end.
     done: newestActivityFirst(done.map((row) => row.run)).map(
@@ -97,13 +99,10 @@ function boardRow(run: AnyRun, workflowNames: ReadonlyMap<string, string | null>
 
 function boardGroup(standing: RunStanding): BoardGroup {
   if (standing === "waiting") return "needsYou";
-  if (standing === "done") return "done";
-  return "running";
-}
-
-/** A running row reads before a failed one within Running, as the mockup orders them. */
-function runningRank(row: BoardRow): number {
-  return row.status.kind === "failed" ? 1 : 0;
+  if (standing === "running") return "running";
+  // Failed, cancelled and done are all runs that stopped moving: none of them
+  // belongs under a heading that says "Running" (#581).
+  return "done";
 }
 
 function rowStatus(run: AnyRun): BoardRowStatus {
@@ -111,6 +110,7 @@ function rowStatus(run: AnyRun): BoardRowStatus {
   if (run.state === "WAITING_RECONCILIATION") return { kind: "waitingReconciliation" };
   if (run.state === "COMPLETED") return { kind: "completed" };
   if (run.state === "FAILED") return { kind: "failed", nodeId: failedNodeId(run) };
+  if (run.state === "CANCELLED") return { kind: "cancelled" };
   return { kind: "running", nodeId: currentNodeId(run) };
 }
 

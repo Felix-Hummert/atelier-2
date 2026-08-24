@@ -121,7 +121,7 @@ describe("a version 3 run in the cockpit", () => {
     expect(screen.queryByRole("button", { name: runPageCopy.readAgain })).toBeNull();
   });
 
-  it("proves(a-run-carries-when-it-started-and-ended): shows the run's exact facts inline, honestly omitting a timestamp that has not arrived, with no reveal to find them behind", async () => {
+  it("proves(a-run-carries-when-it-started-and-ended): shows the run's exact facts in the same line as its state, honestly omitting a timestamp that has not arrived and a duration its own state sentence already carries, with no reveal to find them behind", async () => {
     render(App, {
       props: { cockpitApi: api(v3Run()), mutationJournal: new MutationJournal(sessionStorage) }
     });
@@ -131,8 +131,46 @@ describe("a version 3 run in the cockpit", () => {
     const standing = screen.getByLabelText("Where this run stands");
     expect(standing.textContent).toContain("Running");
     expect(standing.textContent).toMatch(/for \d/);
-    expect(screen.getByText(/started .* · duration/).textContent).not.toContain("ended");
+    expect(standing.textContent).toMatch(/started \d/);
+    // A run still going never repeats its own "for" reading as a second,
+    // separately labelled duration fact (Zeiten-Hierarchie, operator ruling
+    // 23.08.).
+    expect(standing.textContent).not.toContain("duration");
+    expect(standing.textContent).not.toContain("ended");
     expect(screen.queryByText("Exact time")).toBeNull();
+  });
+
+  it("proves(a-done-run-reads-the-time-since-it-landed): a finished run's relative reading is how long ago it ended, never how long it took to run", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-08-18T17:00:12Z"));
+    try {
+      render(App, {
+        props: {
+          cockpitApi: api(
+            v3Run({
+              state: "COMPLETED",
+              node_rail: [
+                { node_id: "implement", state: "succeeded", attempt: null },
+                { node_id: "review", state: "succeeded", attempt: null }
+              ],
+              ended_at: "2026-08-18T15:00:12Z"
+            })
+          ),
+          mutationJournal: new MutationJournal(sessionStorage)
+        }
+      });
+
+      await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+
+      const standing = screen.getByLabelText("Where this run stands");
+      expect(standing.textContent).toContain("Done");
+      // Two hours passed between the run ending and now -- not the twelve
+      // seconds the run itself took to complete.
+      expect(standing.textContent).toMatch(/2 h ago/);
+      expect(standing.textContent).toMatch(/started .* · ended .* · duration 12 s/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("proves(a-chain-run-is-watched-while-it-runs): moves the node that finished to Done on the one picture of the run", async () => {
@@ -886,15 +924,15 @@ describe("a failed node on the run page", () => {
     await fireEvent.click(screen.getByRole("tab", { name: runPageCopy.tabEvidence }));
     await screen.findByText("No receipt.");
     const who = await screen.findByRole("region", { name: "Who" });
-    expect(within(who).getByText("Usage").closest("p")?.textContent).toMatch(/not recorded$/);
+    expect(within(who).getByText("Usage").closest("p")?.textContent).toMatch(/^Usage not recorded/);
     expect(within(who).getByText("Resolved model").closest("p")?.textContent).toMatch(
-      /not recorded$/
+      /^Resolved model not recorded/
     );
     // The facts line under the node's title is the one place duration shows now
     // -- every tab, not only Evidence (the "Done" chip it replaces, 23.08.).
     const panel = screen.getByRole("complementary");
     await within(panel).findByText(/duration 12 s/);
-    expect(screen.queryByText(/yet/)).toBeNull();
+    expect(within(panel).queryByText(/yet/)).toBeNull();
   });
 
   it("proves(a-failed-node-shows-the-stored-reason-on-the-run-page): shows the stored reason beside the state that says the run failed", async () => {
@@ -1001,7 +1039,7 @@ describe("the click into a node", () => {
     expect(screen.getByText(shortFingerprint("e".repeat(64))).isConnected).toBe(true);
   });
 
-  it("groups each evidence fact with its own explanation, never a neighbour's", async () => {
+  it("groups each evidence fact with its own explanation, never a neighbour's, and says \"Seals\" once for the whole list, not once per fact", async () => {
     render(App, {
       props: {
         cockpitApi: api(v3Run(), { getNodeDetail: vi.fn(async () => nodeDetail() as never) }),
@@ -1013,6 +1051,12 @@ describe("the click into a node", () => {
     await openNodeTab(/implement/, runPageCopy.tabEvidence);
 
     const thisRun = await screen.findByRole("region", { name: runPageCopy.evidenceRun });
+    // The list's one sentence about what a fingerprint seals stands once,
+    // above the list, instead of a "Seals" wallpapered across every fact
+    // beneath it (#579's befund 7.5).
+    expect(within(thisRun).getByText(runPageCopy.evidenceRunIntro).isConnected).toBe(true);
+    expect(within(thisRun).queryAllByText(/^Seals /)).toEqual([]);
+
     const groups = within(thisRun).getAllByRole("group");
     // The reading order a person meets these facts in, and the sentence each
     // one carries -- read together, inside the same accessible group, so a
@@ -1031,7 +1075,8 @@ describe("the click into a node", () => {
     fieldsInOrder.forEach((field, index) => {
       const group = groups[index];
       if (group === undefined) throw new Error(`no evidence group rendered for ${field.label}`);
-      expect(within(group).getByText(`Seals ${field.seals}.`)).toBeTruthy();
+      const sentence = `${field.seals.charAt(0).toUpperCase()}${field.seals.slice(1)}.`;
+      expect(within(group).getByText(sentence)).toBeTruthy();
       // No neighbour's label leaked into this group's own accessible content.
       const otherLabels = fieldsInOrder.filter((_, other) => other !== index).map((f) => f.label);
       for (const otherLabel of otherLabels) {
@@ -1052,7 +1097,7 @@ describe("the click into a node", () => {
     await openNodeTab(/implement/, runPageCopy.tabEvidence);
 
     const who = await screen.findByRole("region", { name: "Who" });
-    expect(within(who).getByText("Usage").closest("p")?.textContent).toMatch(/not recorded$/);
+    expect(within(who).getByText("Usage").closest("p")?.textContent).toMatch(/^Usage not recorded/);
     expect(screen.queryByText(/not recorded yet/)).toBeNull();
   });
 
@@ -1099,7 +1144,6 @@ describe("the click into a node", () => {
     await openNodeTab(/implement/, runPageCopy.tabResult);
 
     await screen.findByText(runPageCopy.waitAnswerNotReadable);
-    expect(screen.getByText(runPageCopy.waitAnswerNotReadableSource).isConnected).toBe(true);
     expect(screen.queryByText(runPageCopy.outputEmptyEnded)).toBeNull();
   });
 
@@ -1278,7 +1322,7 @@ describe("the click into a node", () => {
     expect(within(who).getByText("Declared model").isConnected).toBe(true);
     expect(within(who).getByText("sonnet").isConnected).toBe(true);
     const resolved = within(who).getByText("Resolved model").closest("p");
-    expect(resolved?.textContent).toMatch(/not recorded$/);
+    expect(resolved?.textContent).toMatch(/^Resolved model not recorded/);
     expect(resolved?.textContent).not.toContain("sonnet");
     await fireEvent.click(within(who).getByRole("button", { name: "Why resolved model is missing" }));
     expect(
@@ -1309,7 +1353,7 @@ describe("the click into a node", () => {
     expect(within(who).queryByText("Declared model")).toBeNull();
     expect(within(who).queryByText("sonnet")).toBeNull();
     expect(within(who).getByText("Resolved model").closest("p")?.textContent).toMatch(
-      /not recorded yet$/
+      /^Resolved model not recorded yet/
     );
   });
 });

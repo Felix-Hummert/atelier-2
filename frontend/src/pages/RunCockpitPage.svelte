@@ -867,7 +867,6 @@
   {#if snapshot.confirmed !== null}
     <header class="run-header">
       <div>
-        <p class="eyebrow">Durable run</p>
         <h1 id="run-title">{headerTitle}</h1>
         <p class="run-identity">
           <ProofAnchor

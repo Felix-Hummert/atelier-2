@@ -52,7 +52,7 @@ test("the target-UI shell names today's doors and does not fake the rest", async
   await expect(rail.getByText("Profile", { exact: true })).toBeVisible();
   // Only Settings and Profile are still marked later; every rail destination
   // opens a page now.
-  await expect(rail.getByText("(later)", { exact: true })).toHaveCount(1);
+  await expect(rail.getByText("Not built yet", { exact: true })).toHaveCount(1);
 
   await rail.getByRole("link", { name: "History" }).click();
   await expect(page.getByRole("heading", { name: "History" })).toBeVisible();
@@ -2898,7 +2898,11 @@ test("Needs you names a run that is waiting for a person, by its catalog name", 
   const needsYou = page.getByRole("region", { name: /^Needs you/ });
   const row = needsYou.getByRole("link", { name: /Waiting in the studio/ });
   await expect(row).toBeVisible();
-  await expect(row).toContainText("Answer");
+  // A V3 wait carries its own inline "Answer here" disclosure inside this same
+  // card (#572, Leonardo-Gate 23.08.): the card names the deed, the row link
+  // itself stays the quiet door to the whole run.
+  const card = row.locator("xpath=ancestor::li[1]");
+  await expect(card.getByRole("button", { name: "Answer here" })).toBeVisible();
   const boardLink = page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: /Board/ });
   await expect(boardLink).toContainText(/[1-9]/);
 

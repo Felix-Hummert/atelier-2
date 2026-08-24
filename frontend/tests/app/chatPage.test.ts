@@ -56,18 +56,18 @@ async function say(words: string): Promise<void> {
 }
 
 describe("the chat door", () => {
-  it("teaches where work starts today instead of leaving an empty room", async () => {
+  it("teaches where work starts today instead of leaving an empty room, with no button duplicating the rail's own door", async () => {
     openChat();
     const { screen } = testingLibrary;
 
     expect((await screen.findByRole("heading", { name: "Chat" })).isConnected).toBe(true);
     expect(screen.getByText(chatPageCopy.emptyDescription).isConnected).toBe(true);
-    expect(
-      screen.getByRole("link", { name: chatPageCopy.emptyNext }).getAttribute("href")
-    ).toBe("/atelier/workflows");
+    // The rail already carries a door to Workflows; the empty state names it
+    // in a sentence rather than repeating it as a second button (#579).
+    expect(screen.queryByRole("link", { name: "Open Workflows" })).toBeNull();
   });
 
-  it("keeps what was said and answers that the conductor is not connected", async () => {
+  it("keeps what was said and answers that the conductor is not connected, naming no board or issue number", async () => {
     openChat();
     const { screen, within } = testingLibrary;
     await screen.findByRole("heading", { name: "Chat" });
@@ -76,10 +76,11 @@ describe("the chat door", () => {
 
     const transcript = screen.getByRole("list", { name: chatPageCopy.transcriptLabel });
     expect(within(transcript).getByText(/Finish the preview door/).isConnected).toBe(true);
-    // No invented answer, and no pretence that anything started: the missing
-    // door is named with the vision that owns it.
+    // No invented answer, no pretence that anything started, and no internal
+    // vision or issue number leaked into the operator's own conversation
+    // (Adressaten-Regel, operator ruling 23.08.).
     const answer = within(transcript).getByText(new RegExp("No conductor is connected"));
-    expect(answer.textContent).toContain(chatPageCopy.conductorAbsentSource);
+    expect(answer.textContent).not.toMatch(/#\d/);
   });
 
   it("empties the composer after sending, so the same words cannot be sent twice by accident", async () => {

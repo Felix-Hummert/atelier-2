@@ -88,10 +88,9 @@
 <section class="history-page surface" aria-labelledby="history-title">
   <header class="surface-head history-head">
     <div>
-      <p class="eyebrow">{wrapDisplayCopy(historyPageCopy.eyebrow)}</p>
       <h1 id="history-title">{wrapDisplayCopy(historyPageCopy.title)}</h1>
     </div>
-    <span class="period-chip">{periodChipLabel(HISTORY_PERIOD_DAYS)}</span>
+    <span class="period-note">{periodChipLabel(HISTORY_PERIOD_DAYS)}</span>
   </header>
 
   {#if history.confirmed === null && history.request.state === "loading"}
@@ -166,14 +165,12 @@
     gap: var(--space-3);
   }
 
-  .period-chip {
+  /* Plain text, not a chip: nothing here is a filter yet, so nothing may look
+     like a button that would start one (operator ruling 23.08.). */
+  .period-note {
     flex: none;
-    border: var(--edge) solid var(--line);
-    border-radius: var(--r-pill);
-    padding: 0 var(--space-3);
     font-size: var(--text-xs);
     color: var(--ink-dim);
-    background: var(--panel2);
   }
 
   .status {
@@ -213,6 +210,7 @@
 
   .col-duration {
     flex: none;
+    width: var(--duration-column);
   }
 
   .history-rows {
@@ -246,8 +244,8 @@
 
   .row-name {
     flex: none;
+    width: var(--name-column);
     font-weight: var(--weight-strong);
-    max-width: var(--name-column);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -269,6 +267,7 @@
 
   .row-duration {
     flex: none;
+    width: var(--duration-column);
     color: var(--ink-dim);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
@@ -281,10 +280,11 @@
   }
 
   /**
-   * Names each row's three fragments (Name/Result/Took) for a screen reader
-   * without repeating the header aloud for every row -- sighted eyes already
-   * read the column from `.history-head-row`'s alignment, and duplicating
-   * that header once per row would be visual noise rather than a label.
+   * Names each row's three fragments (Name/Result/Duration) for a screen
+   * reader without repeating the header aloud for every row -- sighted eyes
+   * already read the column from `.history-head-row`'s alignment, and
+   * duplicating that header once per row would be visual noise rather than a
+   * label.
    */
   .visually-hidden {
     position: absolute;
@@ -298,17 +298,13 @@
     border: 0;
   }
 
+  /* The header keeps naming its columns at every width (operator ruling
+     23.08.): a promise a narrow screen hides while the data still sits in
+     columns is a geometry the header no longer honestly describes. */
   @media (max-width: 32rem) {
-    .row-name {
-      max-width: var(--name-column-narrow);
-    }
-
+    .row-name,
     .col-name {
       width: var(--name-column-narrow);
-    }
-
-    .history-head-row {
-      display: none;
     }
   }
 </style>

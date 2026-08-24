@@ -121,7 +121,7 @@ const surfaces: readonly {
         await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
       },
       pseudoReady: async (page) => {
-        await expect(page.getByText("[[[ Project ]]]", { exact: true })).toBeVisible();
+        await expect(page.getByText("[[[ Project defaults ]]]", { exact: true })).toBeVisible();
       }
     },
     {
@@ -264,7 +264,7 @@ test("core surfaces render owned display strings under a pseudo-locale", async (
     await expect(rail.getByText("[[[ History ]]]", { exact: true })).toBeVisible();
     // Only Settings and Profile are still marked later; every rail destination
     // opens a page, so none of them wears the marker any more.
-    await expect(rail.getByText("[[[ (later) ]]]", { exact: true })).toHaveCount(1);
+    await expect(rail.getByText("[[[ Not built yet ]]]", { exact: true })).toHaveCount(1);
     await expect(rail.getByText("[[[ switch project ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ Settings ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ Profile ]]]", { exact: true })).toBeVisible();
@@ -293,7 +293,6 @@ test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio keep
     await page.setViewportSize(viewport);
     await page.goto("/atelier?pseudo-locale=1");
     await page.evaluate(() => window.scrollTo(0, 0));
-    await expect(page.getByText("[[[ Atelier ]]]", { exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "[[[ Board ]]]" })).toBeVisible();
     // Starting a workflow lives in Workflows, not the Board head (#532): no
     // Start control of any kind sits beside the live indicator.
@@ -310,7 +309,6 @@ test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio keep
     await page.goto("/atelier?pseudo-locale=1");
     await page.evaluate(() => window.scrollTo(0, 0));
 
-    await expect(page.getByText("[[[ Atelier ]]]", { exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "[[[ Board ]]]" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "[[[ Nothing is running ]]]" })).toBeVisible();
     await expect(

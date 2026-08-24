@@ -5,8 +5,6 @@
   import { currentChatTranscript, sendChatTurn, type ChatMessage } from "../lib/chatTranscript";
   import { wrapDisplayCopy } from "../lib/displayCopy";
 
-  export let navigate: (path: string) => void;
-
   let transcript: readonly ChatMessage[] = currentChatTranscript();
   let typed = "";
   let composer: { focus(): void };
@@ -39,7 +37,6 @@
 
 <section class="chat-page surface" aria-labelledby="chat-title">
   <header class="surface-head">
-    <p class="eyebrow">{wrapDisplayCopy(chatPageCopy.eyebrow)}</p>
     <h1 id="chat-title">{wrapDisplayCopy(chatPageCopy.title)}</h1>
   </header>
 
@@ -47,11 +44,6 @@
     <div class="chat-empty card empty-state">
       <h2>{wrapDisplayCopy(chatPageCopy.emptyTitle)}</h2>
       <p>{wrapDisplayCopy(chatPageCopy.emptyDescription)}</p>
-      <a
-        class="button primary"
-        href="/atelier/workflows"
-        onclick={(event) => { event.preventDefault(); navigate("/atelier/workflows"); }}
-      >{wrapDisplayCopy(chatPageCopy.emptyNext)}</a>
     </div>
   {:else}
     <ol class="chat-transcript" aria-label={wrapDisplayCopy(chatPageCopy.transcriptLabel)}>
@@ -60,9 +52,6 @@
           <p class="chat-message">
             <span class="chat-speaker">{wrapDisplayCopy(speakerLabels[message.speaker])}</span>
             {message.text}
-            {#if message.source !== null}
-              <span class="chat-source">{message.source}</span>
-            {/if}
           </p>
         </li>
       {/each}
@@ -133,16 +122,6 @@
     color: var(--ink-dim);
     font-size: var(--text-2xs);
     font-weight: var(--weight-strong);
-  }
-
-  .chat-source {
-    justify-self: start;
-    border: var(--edge) solid var(--line);
-    border-radius: var(--r-pill);
-    padding: 0 var(--space-2);
-    color: var(--ink-dim);
-    background: var(--chip);
-    font-size: var(--text-2xs);
   }
 
   .chat-composer {

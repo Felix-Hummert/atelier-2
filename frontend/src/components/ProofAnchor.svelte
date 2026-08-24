@@ -16,6 +16,20 @@
   export let label: string;
   export let seals: string;
   export let value: string;
+  /**
+   * Whether this anchor's own sentence opens with the word "Seals".
+   *
+   * A list of several anchors in a row (the node panel's run evidence,
+   * #579's befund 7.5) saying "Seals" six times reads as wallpaper, not six
+   * facts; a caller that already says it once for the whole list passes
+   * `false` here and this prints only what each anchor seals, its first
+   * letter capitalised so the sentence still reads whole on its own.
+   */
+  export let sealsPrefix = true;
+
+  $: sealsSentence = sealsPrefix
+    ? `Seals ${seals}.`
+    : `${seals.charAt(0).toUpperCase()}${seals.slice(1)}.`;
 
   let copied = false;
 
@@ -42,5 +56,5 @@
       {copied ? "Copied" : "Copy"}
     </button>
   </span>
-  <span class="proof-seals">Seals {seals}.</span>
+  <span class="proof-seals">{sealsSentence}</span>
 </span>

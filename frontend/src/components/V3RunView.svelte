@@ -91,21 +91,28 @@
   $: standing = runStanding(run.state);
 
   /**
-   * The state sentence keeps its relative words ("Done 2 min ago"); the exact
-   * facts line beneath it is what used to hide behind an "Exact time" reveal
-   * link (operator ruling 23.08.: always-visible facts, not a link a person
-   * has to find first). A missing timestamp drops its own fact rather than
-   * showing a placeholder.
+   * The state sentence's relative reading: "for" counts up while the run is
+   * still going, "ago" reads the time since it landed -- read off the
+   * timestamp each word is actually about (started for "for", ended for
+   * "ago"), never the other one, so a run that ended an hour ago cannot read
+   * "45 s ago" because that happens to be how long it took to run.
    */
   $: relativeStanding =
-    run.started_at == null
-      ? null
-      : ageLabel(
-          run.started_at,
-          new Date(),
-          run.ended_at == null ? "for" : "ago",
-          run.ended_at ?? undefined
-        );
+    run.ended_at != null
+      ? ageLabel(run.ended_at, new Date(), "ago")
+      : run.started_at == null
+        ? null
+        : ageLabel(run.started_at, new Date(), "for");
+  /**
+   * The exact facts beside the state sentence -- what used to hide behind an
+   * "Exact time" reveal link (operator ruling 23.08.: always-visible facts,
+   * not a link a person has to find first) and now stands in the same line
+   * as the sentence rather than a competing one beneath it (operator ruling
+   * 23.08., Zeiten-Hierarchie). A run still going never gets a duration fact:
+   * its "for" reading above is already that same elapsed span, and saying it
+   * twice is the redundancy the ruling names. A missing timestamp drops its
+   * own fact rather than showing a placeholder.
+   */
   $: runFacts = whenFacts(run.started_at ?? null, run.ended_at ?? null, new Date());
   $: runFactLine = [
     runFacts.startedExact === null
@@ -114,7 +121,7 @@
     runFacts.endedExact === null
       ? null
       : `${wrapDisplayCopy(runPageCopy.ended)} ${runFacts.endedExact}`,
-    runFacts.durationWords === null
+    runFacts.durationWords === null || run.ended_at == null
       ? null
       : `${wrapDisplayCopy(runPageCopy.duration)} ${runFacts.durationWords}`
   ]
@@ -474,10 +481,8 @@
       <span class="run-standing-mark run-standing-{standing}" aria-hidden="true">{standingMarks[standing]}</span>
       <strong class="run-standing-word run-standing-{standing}">{wrapDisplayCopy(standingWords[standing])}</strong>
       {#if relativeStanding !== null}<span>{relativeStanding}</span>{/if}
+      {#if runFactLine !== ""}<span class="run-facts">· {runFactLine}</span>{/if}
     </p>
-    {#if runFactLine !== ""}
-      <p class="run-facts">{runFactLine}</p>
-    {/if}
   </header>
 
   {#if stopped !== null}
@@ -590,10 +595,14 @@
     margin: 0;
   }
 
+  /* Dimmed and italic reads as prose about the run, not a system line, so a
+     reader never has to guess what kind of sentence this is (operator ruling
+     23.08.). */
   .run-description {
     margin: 0;
     max-width: var(--reading-width);
     color: var(--ink-dim);
+    font-style: italic;
   }
 
   .run-standing {
@@ -608,8 +617,9 @@
     font-size: var(--text-md);
   }
 
+  /* The exact facts read as a quiet clause of the same sentence, not a second
+     one -- one hierarchy, not two competing lines (operator ruling 23.08.). */
   .run-facts {
-    margin: 0;
     color: var(--ink-dim);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;

@@ -18,7 +18,7 @@
   } from "../lib/readResource";
   import { readEveryRevision } from "../lib/runPages";
   import { groupSavedWorkflows } from "../lib/savedWorkflows";
-  import { catalogStateNote, workflowSizeFact, workflowsPageCopy } from "../lib/workflowsPageCopy";
+  import { catalogStateNote, workflowsPageCopy } from "../lib/workflowsPageCopy";
 
   export let cockpitApi: CockpitApi;
   export let navigate: (path: string) => void;
@@ -55,9 +55,6 @@
   $: previews = graph !== null && graph.workflow_format_version === 3 ? graph.node_previews : null;
   $: loops = graph !== null && graph.workflow_format_version === 3 ? graph.loops : [];
   $: selectedPreview = previews?.find((preview) => preview.id === selectedNodeId) ?? null;
-  $: sizeFact = workflowSizeFact(
-    graph !== null && graph.workflow_format_version === 3 ? graph.node_count : null
-  );
 
   /**
    * `name` is read once, on mount, the same way `RunCockpitPage` reads
@@ -142,16 +139,12 @@
   {:else if graph !== null}
     <header class="surface-head detail-head">
       <div>
-        <p class="eyebrow">{wrapDisplayCopy(workflowsPageCopy.eyebrow)}</p>
         <h1 id="workflow-detail-title">{name}</h1>
         {#if catalogNote !== null}
           <p class="note">{wrapDisplayCopy(catalogNote)}</p>
         {/if}
         {#if graph.workflow_format_version === 3 && graph.description !== null}
-          <p class="muted">{graph.description}</p>
-        {/if}
-        {#if sizeFact !== null}
-          <p class="fact">{sizeFact}</p>
+          <p class="muted description">{graph.description}</p>
         {/if}
       </div>
       <button
@@ -169,7 +162,7 @@
     {/if}
 
     {#if previews !== null}
-      <WorkflowGraphDrawing {previews} {loops} showLegend={true} onSelect={selectNode} {selectedNodeId} />
+      <WorkflowGraphDrawing {previews} {loops} onSelect={selectNode} {selectedNodeId} />
     {:else}
       <p class="muted">{wrapDisplayCopy(workflowsPageCopy.graphUnavailable)}</p>
     {/if}
@@ -185,10 +178,10 @@
     color: var(--ink-dim);
   }
 
-  .fact {
-    margin: var(--space-1) 0 0;
-    color: var(--ink-dim);
-    font-size: var(--text-xs);
+  /* A description reads as prose about the workflow, not a system line, the
+     same visual marker the run page's own description wears. */
+  .description {
+    font-style: italic;
   }
 
   .note {
