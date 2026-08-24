@@ -181,21 +181,43 @@ encryption**: the ciphertext lives in a dedicated secret store; each secret is
 encrypted under its own data key; the data key is wrapped by a
 key-encryption-key held **outside** the store — a KMS, a Vault, an HSM, or a
 host-provided key, the backend being an open operator decision (listed below). The
-secret is decrypted **only at the point of use**: inside the adapter making
-the outgoing platform call, or inside the runner cage for a provider process,
-for the duration of that use, and is never written back anywhere. A dump of
-the secret store alone yields ciphertext without its KEK; a dump of the app
-database alone yields references. Neither alone leaks a secret.
+secret is decrypted **only at the point of use** — and under §4's coupling
+that point is always in Core: the adapter making the outgoing platform call,
+for the duration of that call, never written back anywhere. A provider
+process in a cage authenticates with a runner-local credential (§4), never
+with a server-held one. A dump of the secret store alone yields ciphertext
+without its KEK; a dump of the app database alone yields references. Neither
+alone leaks a secret — a sentence that bounds **offline** artifacts only: a
+live, fully compromised server reaches the KEK exactly as its own
+decrypt-at-use path does, so a live full compromise must be assumed to expose
+every server-held tier-B plaintext, and recovery is rotating every tier-B
+secret. That exposure is precisely why reference-before-vault and the
+runner-local source exist.
+
+**The KEK has a lifecycle of its own.** It is rotatable: rotation re-wraps
+every data key under the new KEK, and no ciphertext remains reachable only
+through the old one. A KEK compromise is therefore recoverable without
+re-depositing every secret — rotate the KEK, re-wrap the data keys — because
+the KEK wraps keys, never the secrets themselves.
 
 **The secret store is a separate boundary from the app database.** Different
 store, different access path, never joined in one query, one backup or one
-volume. Today's built form of that boundary is the operator-owned file
-referenced by path and read-only mounted into the cage (ADR 0009's 2026-08-22
-credential-ingress amendment); the OS keyring and a secrets manager are the
+volume. Today's built predecessor of that boundary is the operator-owned file
+referenced by path; on the one-machine bootstrap the same file also stands in
+for the runner-local mapping, mounted read-only into the cage (ADR 0009's
+2026-08-22 credential-ingress amendment) — one file playing both roles on one
+host is exactly what §4's two sources pull apart, and under §4's coupling the
+grown server-held store never inherits that mount. The OS keyring and a
+secrets manager are the
 named backends the same reference shape grows into (#557). A UI that lets a
 user deposit a token writes into the secret store through the credential
 channel and never into the app database — depositing is the one operator/user
-hand-action #557 reserves; secrets never travel through chat or agents.
+hand-action #557 reserves; secrets never travel through chat or agents. The
+deposit route itself carries obligations: it is TLS-terminated end to end,
+its request body is never logged, traced or captured by any middleware, and
+the value it carries is written only into the credential channel — the one
+moment a secret legitimately transits the server is granted no second
+destination.
 
 Both tiers describe the **server-held** source; §4 names the second source,
 for which the server stores nothing at all.
@@ -208,9 +230,9 @@ first-class, and every Account carries exactly one (operator requirement,
 24.08.2026):
 
 - **Server-held.** The Atelier server holds the Account under §3's storage
-  tiers, resolves it, and provisions the use **by reference**. This is the
-  source for what the server itself needs — reading work items, publishing
-  effects — and for runs on a server-local or otherwise trusted runner.
+  tiers and resolves it in Core. This is the source for what the server
+  itself performs — reading work items, publishing effects — and for nothing
+  else: it feeds no cage (the coupling below).
 - **Runner-local.** The credential value lives **only on the runner host** —
   a separate machine, typically inside a company's own network with its own
   egress — as a mounted secret file, a host keyring entry, or a provider-CLI
@@ -232,11 +254,34 @@ that the source is part of the Account model, not an accident of deployment.
 | | Server-held | Runner-local |
 | --- | --- | --- |
 | Who holds the value | the server's secret store (§3), encrypted at rest | only the runner host: mounted file, keyring, or CLI login |
-| Who resolves it | the server, at the outgoing call or when provisioning the cage | the runner, from its install-time role mapping |
-| What crosses the wire | a reference; for delegated modes at most a short-lived scoped token into the cage | the role reference only — never any secret material |
+| Who resolves it | the server, at the outgoing call in Core | the runner, from its install-time role mapping |
+| What crosses the wire | nothing: the value is resolved and used in Core and crosses to no worker | the role reference only — never any secret material |
 | Threat surface | server compromise reaches ciphertext and the KEK path (§3 bounds it) | server compromise reaches **nothing**: the server never had the value |
 | Revocation | rotate or revoke in installation settings (§8 layering) | revoke on the runner host, where the company's access control already is |
-| When to use | the server's own platform calls; trusted or server-local runners; tenants who deposit keys | enterprise runners in a private network; any tenant unwilling to hand a token to an external server |
+| When to use | what Core itself performs: platform effects and reads for tenants who deposit keys | every runner-executed use; enterprise runners in a private network; any tenant unwilling to hand a token to an external server |
+
+**The one coupling: the axes are selectable, but not fully independent, and
+this record says so instead of faking it.** A server-held Account may
+authenticate only Core-performed use — X-locus effects and server-side reads.
+A runner-*executed* provider process, and a runner-executed effect or read
+under locus Y (§5–§6), **requires a runner-local Account**: feeding a
+server-held secret into a cage — an `api_key` handed to a runner, or any
+server-held value or token minted from one crossing the service toward a
+worker — would make Atelier exactly the secret-distribution channel ADR 0009
+§6 forbids, and is refused by name (`credential-source-locus-mismatch`) at
+binding resolution, before any lease or provider start. This coupling is what
+*preserves* ADR 0009 §6 unchanged: under every admissible combination, no
+secret crosses the service in either direction — Core-held values are used in
+Core, runner-held values are used in the runner, and the wire carries
+references only.
+
+The coupling's named consequence for provider keys: agent attempts execute in
+cages, so a provider `api_key` that authenticates attempts must be
+runner-local — placed on the runner host, not deposited at the server. A
+*server-held* provider key can serve only a Core-performed provider call, of
+which none exists today; binding one to an attempt refuses
+(`credential-source-locus-mismatch`) instead of the key leaking into the
+cage.
 
 **Runner-local is the preferred enterprise topology.** A company's sensitive
 tokens stay on their runner, in their network, governed by access control
@@ -326,8 +371,11 @@ accident. The safe default on every axis is the simplest built form:
 `subscription` where a provider CLI login exists, server-held for a deposited
 secret, X for an effect. Every other value is an explicit opt-in with a
 fail-loud guardrail: no mode downgrade (§2), no source fallback (§4), no
-unverifiable Y (§5). Y-support remains PROPOSED end to end; nothing performs
-an effect outside Core today.
+unverifiable Y (§5). They carry exactly one coupling, stated in §4 rather
+than hidden: a server-held Account authenticates only Core-performed use, so
+every runner-executed use requires a runner-local Account
+(`credential-source-locus-mismatch`). Y-support remains PROPOSED end to end;
+nothing performs an effect outside Core today.
 
 ### 6. Display and platform reads: the same locus axis, mirrored
 
@@ -355,7 +403,13 @@ unconnected read refuses with ADR 0010's own refusals, never returns an
 invented empty state), and no silent trust-downgrade — a runner-fetched
 platform fact is recorded as ADR 0010 §6 already requires of every observed
 fact, with its provenance, here including *who fetched it*, and is never
-presented as server-verified when it is not.
+presented as server-verified when it is not. That provenance is load-bearing
+beyond display: observed platform facts feed #79's ready model and #8's
+measurements, so a fabricating runner under Y-read could steer automation,
+not just a screen. The Y amendment must therefore name which automation may
+consume facts whose only provenance is a runner's report — display is safe by
+the labeling above; anything that *acts* on such a fact is a decision that
+amendment owns.
 
 **The honest consequence of running fully runner-local (Y everywhere): the
 server never reads the platform directly.** A runner in the enterprise
@@ -386,10 +440,18 @@ discipline as locus Y.
    store holds it, encrypted — and for a runner-local Account (§4) the value
    additionally never reaches the server at all, in any channel. *Threat:*
    database dump, log aggregation, prompt exfiltration, evidence-export leak.
-   *Enforcement:* the credential-channel canary
-   (`tests/domain/test_credential_channel.py`) refuses any durable column or
-   serialized API field named for a credential channel, extended over the
-   Account tables and resources this record adds.
+   *Enforcement, stated precisely because the canary must evolve without
+   weakening:* the name canaries
+   (`tests/domain/test_credential_channel.py`) keep guarding every
+   value-*leaving* surface — durable columns, API fields, wire models — with
+   **no** exemption, extended over the Account tables and resources this
+   record adds. The source-wide name scan gains exactly **one** enumerated
+   owner: the secret-store adapter package becomes the sole module permitted
+   to name `secret`/`credential`, because a store that may not say its own
+   name cannot exist. And for the encrypted path the real enforcement is the
+   value-level required proofs below — a dump without the KEK yields nothing,
+   a projection after a run carries no value — with the name canary as the
+   name-channel tripwire, not the whole control.
 2. **Reference before vault.** Where a provider holds a login Atelier can
    point at, Atelier stores nothing; a secret is stored only where no
    delegated form exists or the operator chose a key. *Threat:* Atelier
@@ -402,17 +464,26 @@ discipline as locus Y.
 4. **Per-tenant isolation and least handoff.** An Account belongs to exactly
    one tenant; a user reaches only Accounts their tenancy owns; and a cage
    receives exactly the one credential the one run's binding names — by
-   reference, resolved at the trust boundary — never the store, never a second
-   Account (ADR 0009 §5: a runner reads no credential outside its bound
-   profile). *Threat:* cross-tenant access; a compromised run harvesting the
-   installation's whole credential set.
+   reference, resolved at the trust boundary, and under §4's coupling never a
+   server-held value — never the store, never a second Account (ADR 0009 §5:
+   a runner reads no credential outside its bound profile). Layered
+   resolution (§8) **never selects an Account outside the requesting
+   project's owning tenancy**: in a multi-tenant deployment the installation
+   default is per-tenant, and a fallthrough that would cross a tenancy
+   boundary refuses (`account-tenant-mismatch`) instead of resolving.
+   *Threat:* cross-tenant access, including by defaulting rather than by
+   request; a compromised run harvesting the installation's whole credential
+   set.
 5. **Rotation and revocation are live paths, not documentation.** Delegated
    modes rotate themselves (short-lived tokens) and are revocable at the
    provider by the user. A stored key has a named rotation path: the ciphertext
    is replaced under the same Account identity, the old value is never
-   journaled, and every later use resolves the new value. *Threat:* leaked
-   key, lost device, user offboarding, a revoked grant that keeps working
-   because a long-lived copy survived.
+   journaled, and every later use resolves the new value. The KEK rotates too
+   (§3): rotation re-wraps every data key, and no ciphertext survives
+   reachable only through the old KEK. *Threat:* leaked key, lost device,
+   user offboarding, a revoked grant that keeps working because a long-lived
+   copy survived; a KEK compromise with no recovery path short of
+   re-depositing everything.
 6. **Store/DB separation with the KEK outside both.** Compromise of any single
    system — app DB, secret store, or backup of either — yields references or
    ciphertext, never plaintext. *Threat:* single-system compromise; a backup
@@ -442,10 +513,15 @@ layer, and not re-decided:
   reference, tenant — but its value is placed on the runner host at install
   and never deposited at the server.
 - **The project, and each linked source, occupies roles with an Account.** The
-  installation default is one-Account-for-all; a project or a single linked
-  source may override it with a source-specific Account. Most specific wins:
-  link > project default > installation default — the same resolution shape
-  as the casting table.
+  installation default is one-Account-for-all **within one tenancy** — in a
+  multi-tenant deployment the installation default is per-tenant, never a
+  deployment-wide pool. A project or a single linked source may override its
+  tenant's default with a source-specific Account. Most specific wins:
+  link > project default > installation (tenant) default — the same
+  resolution shape as the casting table — and no step of that fallthrough may
+  cross a tenancy boundary: a resolution that would refuses
+  (`account-tenant-mismatch`, invariant 4) instead of selecting a neighbor's
+  Account.
 - **The workflow declares only generic account roles and enforcement
   classes** — secret reach, network egress, source checkout, later
   computer-use (#557's grant vocabulary) — never a token, a provider name or
@@ -522,20 +598,24 @@ refusals and are not renamed.
 | `account-secret-store-unavailable` | the secret store or its KEK cannot be reached at the point of use | point of use |
 | `account-revoked` | a use resolves an Account whose grant or key was revoked; the refusal names revocation, not absence | point of use |
 | `effect-locus-unverifiable` | an effect binding opts into locus Y while its declared readback cannot positively prove the claimed outcome (§5, invariant 8) | binding resolution |
+| `credential-source-locus-mismatch` | a binding pairs a server-held Account with a runner-executed use — a provider process in a cage, or a Y-locus effect or read (§4's coupling) | binding resolution |
 
 ## Threat model
 
 | Threat | Covering control |
 | --- | --- |
 | App-database dump | references only, never values (invariants 1, 6; canary) |
-| Full server compromise (external/SaaS deployment) | runner-local source (§4): the value was never on the server — for provider credentials today, for platform-effect tokens under the Y opt-in (§5); server-held delegated grants are revoked at the provider |
+| Full server compromise (external/SaaS deployment) | runner-local source (§4): the value was never on the server — for provider credentials today, for platform-effect tokens under the Y opt-in (§5). For server-held Accounts the honest bound: a **live** compromise exposes every tier-B plaintext, because the running server legitimately reaches the KEK (§3 bounds offline dumps only) — recovery is rotating every tier-B secret, and delegated grants are additionally revoked at the provider |
 | Secret-store dump or store backup leak | ciphertext only; KEK held outside the store (§3 tier B) |
+| KEK compromise | rotate the KEK and re-wrap every data key; no ciphertext survives reachable only through the old KEK (§3, invariant 5) — the secrets themselves need no re-deposit |
 | Log, prompt, event or dossier leak | value never enters any of them (invariant 1; canary; ADR 0009 §6) |
 | Cross-tenant access | Account-to-tenant binding plus access control (invariant 4; §9) |
 | Insider with app-DB access | sees references |
 | Insider with store access | sees ciphertext; KEK access is a separate, separately controlled system |
-| Compromised runner/cage | holds one credential for one run, by reference; delegated modes hand it only a short-lived scoped token; revocation stops new bindings (ADR 0009 §4/§10) |
+| Compromised runner/cage — runner-local short-lived forms | the cage holds one runner-local credential for one run (§4's coupling: never a server-held value); a delegated runner-local form exposes at most a short-lived scoped token; revocation stops new bindings (ADR 0009 §4/§10) |
+| Compromised runner/cage — `subscription`, the BUILT mode, and this slice's sharpest residual | the cage holds a **long-lived login**: the operator's CLI credential directory is mounted readable (ADR 0009's 2026-08-22 amendment), including the OAuth refresh token, and HTTPS egress is permitted (ADR 0009's 2026-08-23 egress amendment) — so a prompt-injected or otherwise compromised tool-using run can read and exfiltrate it, or print it into its own answer, which becomes a durable record the *name* canary cannot catch. Containments: the egress bounds, provider-side revocation of the login, and known-value scrubbing of run output before it becomes durable — scrubbing is a control this record requires or, until built, a **named gap** the operator accepts at approval |
 | Compromised runner forging an effect (locus Y) | only readback-verifiable effects may opt into Y, and a receipt commits only on Core's own readback, never on the runner's report (invariant 8; §5) |
+| Compromised runner abusing a runner-local platform token beyond its leased intent (locus Y) | a coarse token (a PAT) cannot be scoped per-intent, so a compromised runner holding one can perform real platform effects outside any lease; the control is grant and token scoping — an App installation token or fine-grained per-repository token over a broad PAT — and a coarse PAT remains a **named residual on the tenant's side**, bounded by the tenant's own rotation and audit |
 | Lost device / user offboarding | delegated grant revoked at the provider; stored key rotated under the same Account identity (invariant 5) |
 | Revoked credential mid-operation | fail loud with a named refusal; no downgrade, no silent retry (invariant 7) |
 
@@ -565,6 +645,16 @@ refusals and are not renamed.
   enterprise topology for effects — bounded by invariant 8 to the effects a
   readback can prove; fully runner-local display costs the runner-read lane,
   through which a runner becomes the deployment's eyes on the platform.
+- The three axes are honest about their one coupling rather than faking full
+  independence: a server-held Account never feeds a cage, which keeps ADR
+  0009 §6 intact and costs the convenience of "deposit a provider key at the
+  server and run attempts with it" — a provider key for attempts is placed
+  runner-local instead.
+- The built `subscription` slice keeps its sharpest residual visible instead
+  of papered over: a cage holding a mounted long-lived login with permitted
+  HTTPS egress is exfiltratable by a compromised run, contained by egress
+  bounds, provider-side revocation and output scrubbing (or its named gap) —
+  the operator approves this record seeing that row.
 - `AuthMode` gains two members; every hash frame that carries a mode already
   carries it as a value, so existing revisions keep their identities and new
   modes produce new ones.
@@ -611,10 +701,28 @@ Listed, deliberately not decided here:
 - Rotating a stored key replaces the ciphertext under the same Account
   identity, the old value is not recoverable from any journal or backup path
   Atelier writes, and the next use resolves the new value.
+- Rotating the KEK re-wraps every data key: after rotation every stored
+  secret still resolves, and no ciphertext remains decryptable only through
+  the old KEK.
 - Revoking a delegated grant stops the next use with `account-revoked`; no
   long-lived derivative of the grant keeps working.
 - A binding to a mode the Account does not carry refuses without downgrade,
   per provider, both directions (delegated↔key).
+- A binding pairing a server-held Account with a runner-executed use refuses
+  (`credential-source-locus-mismatch`) before any lease or provider start,
+  and no credential material — value, token, or derivative — crosses the
+  service toward the worker on the refusal path or any admissible path.
+- The source-wide name scan admits exactly one owner: outside the enumerated
+  secret-store adapter package, no module names a credential channel — the
+  canary's single exemption is itself asserted, so a second one fails the
+  suite.
+- The tenant fallthrough proof: a project whose own and whose tenant's
+  defaults are unset does not resolve another tenant's installation Account —
+  the resolution refuses (`account-tenant-mismatch`) rather than selecting
+  it.
+- Known-value scrubbing, when built: a run whose output embeds a bound
+  credential value does not produce a durable record containing it; until
+  built, this proof's absence is the named gap the threat table carries.
 - For a runner-local Account, the lease and every server-side channel carry
   only the non-secret role reference; a full server-side dump — app DB, secret
   store, logs, events, API projection — after such a run contains no byte of
@@ -651,15 +759,22 @@ environment or a CLI's configuration instead of the bound Account (ADR 0010
 §2's inheritance rule, generalized); a second credential store beside the
 Account store; a tenant resolving another tenant's Account; a secret traveling
 through chat, an agent conversation or an agent-writable surface; a delegated
-mode built by storing the access token instead of minting it; a runner-local
+mode built by storing the access token instead of minting it; a server-held
+secret, or any token minted from one, crossing the service toward a cage or
+worker (§4's coupling); a runner-local
 credential value crossing to the server in any channel, or a runner resolving
 a role its lease did not bind; an effect receipt committed under locus Y from
 the runner's report instead of Core's own readback, or Y bound to an effect
-whose readback cannot prove its outcome; or an Account table that stores the
-value "temporarily".
+whose readback cannot prove its outcome; a layered resolution selecting an
+Account across a tenancy boundary; a second module naming a credential
+channel beyond the enumerated secret-store package; or an Account table that
+stores the value "temporarily".
 
 ## Supersedes
 
-None. This record generalizes ADR 0009 §6 and ADR 0010 §3 without changing
-either; ADR 0010's connection record is extended to name an Account as its
-credential reference, and everything else it binds stands.
+None. This record's source/locus coupling (§4) **preserves ADR 0009 §6
+unchanged** — under every admissible axis combination no secret crosses the
+service, which is that rule kept, not amended — and ADR 0010 §3's discipline
+holds identically for both sources. ADR 0010's connection record is extended
+to name an Account as its credential reference, and everything else it binds
+stands.
