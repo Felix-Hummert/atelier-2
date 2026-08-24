@@ -391,7 +391,12 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "wait_answers.state": _values(WaitAnswerState),
     "node_receipts_v3.disposition": _values(PersistedReceiptDisposition),
     "published_revisions.kind": _values(RevisionKind),
-    "tool_redemptions.capability": _values(ToolGrantCapability),
+    # A tool redemption is the exec-shaped record -- a command, an exit code, a
+    # hash of what it said -- so only an exec-shaped capability ever lands here.
+    # OPEN_PR is redeemed as a platform effect and answers with an
+    # EffectReceipt, so it belongs to effect_receipts and never to this column.
+    "tool_redemptions.capability": _values(ToolGrantCapability)
+    - {ToolGrantCapability.OPEN_PR.value},
     "catalog_lineages.kind": _values(RevisionKind),
     "catalog_lineage_retirements.state": _values(CatalogRetirementState),
     "queue_items.state": _values(QueueItemState),

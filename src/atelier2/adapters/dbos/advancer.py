@@ -4,9 +4,18 @@ from typing import Any
 
 import sqlalchemy as sa
 
-from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
+from atelier2.adapters.dbos.effect_store import (
+    commit_resolution,
+    encode_readback,
+    intent_snapshot_from_record,
+    load_intent,
+)
 from atelier2.adapters.dbos.run_transitions import load_graph, load_run
-from atelier2.adapters.dbos.schema import effect_intents, run_events
+from atelier2.adapters.dbos.schema import (
+    effect_intents,
+    published_revisions,
+    run_events,
+)
 from atelier2.contracts.effects import (
     CanonicalRequest,
     EffectAdapterBinding,
@@ -22,15 +31,29 @@ from atelier2.contracts.executions import (
     logical_effect_key_for,
 )
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.run_bindings import RunBindingConflict
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.tool_grants_v3 import (
+    DeclaredToolGrant,
+    ToolGrantCapability,
+    ToolGrantRefused,
+    read_tool_grant_document,
+)
 from atelier2.contracts.workflows import ActionNode, AgentNode, AgentNodeV2
 from atelier2.contracts.workflows_v3 import (
     ANY_ACTION_NODE_KINDS,
     ActionNodeV3,
     AgentNodeV3,
     AnyWorkflowDocument,
+    AnyWorkflowDocumentNode,
     WorkflowGraphV3,
 )
+from atelier2.ports.agent_tool_effects import (
+    AgentToolEffectPending,
+    redeem_prepared_tool_effect,
+)
+from atelier2.ports.effects import EffectAdapter
 
 
 class EffectIntentIdentityConflict(RuntimeError):
@@ -39,6 +62,18 @@ class EffectIntentIdentityConflict(RuntimeError):
 
 class RunEffectConflict(RuntimeError):
     """A V1 run cannot prepare this effect against its durable run binding."""
+
+
+class AgentEffectRedemptionPending(RuntimeError):
+    """An agent-node effect readback could name no outcome, so nothing is durable yet.
+
+    Only an authoritative absence licenses this runtime to open the pull
+    request, and only a found effect confirms one; an `UNKNOWN` readback is
+    neither. Resolving it is the operator reconciliation `ports.effects` already
+    owns for every other effect, against live GitHub (`#430`); this slice drives
+    a fake platform that can prove its own absence, so it never reaches here and
+    fails loud rather than guessing when it would.
+    """
 
 
 def graph_action_intent(
@@ -99,6 +134,19 @@ def prepare_graph_action(
     effect_adapter_binding: EffectAdapterBinding,
 ) -> EffectIntentSnapshot:
     intent = graph_action_intent(session, run_id, revision_hash, effect_adapter_binding)
+    return prepared_effect_intent(session, intent)
+
+
+def prepared_effect_intent(session: Any, intent: EffectIntent) -> EffectIntentSnapshot:
+    """Record this intent PREPARED, or return the one already durably prepared.
+
+    The logical key is the effect's durable identity: a retry that derives the
+    same key from the same immutable node must find the same intent, and a key
+    that already belongs to a different intent is a contradiction rather than a
+    second preparation. Recording it before any adapter is asked is what lets a
+    redemption that never reaches its destination leave a named PREPARED intent
+    behind instead of an effect nobody durably asked for.
+    """
     existing_record = (
         session.execute(
             sa.select(effect_intents).where(
@@ -137,6 +185,139 @@ def prepare_graph_action(
         EffectIntentState.PREPARED,
         EffectIntentStateVersion(0),
     )
+
+
+def read_pinned_tool_grant(
+    session: Any, node: AnyWorkflowDocumentNode
+) -> DeclaredToolGrant | None:
+    """The grant this node pinned, read from the revision the document pins by hash.
+
+    A V3 `tools` entry pins its published revision by that revision's own hash,
+    so reading the registry under it is reading exactly what the run
+    configuration froze rather than resolving a second time. The bytes are
+    immutable and were already read as a grant when the run was bound; a
+    registry that cannot answer for them now contradicts a run that has already
+    started. Both redemption paths read the grant here -- the binding to carry
+    an exec-shaped one, the effect preparation to open a pull request for an
+    effect-shaped one -- so the two never read it two different ways.
+    """
+    if not isinstance(node, AgentNodeV3) or not node.tools:
+        return None
+    pinned = node.tools[0]
+    document = session.scalar(
+        sa.select(published_revisions.c.document).where(
+            published_revisions.c.kind == RevisionKind.TOOL.value,
+            published_revisions.c.revision_hash == pinned.revision,
+        )
+    )
+    if document is None:
+        raise RunBindingConflict("the pinned tool revision left the registry")
+    grant = read_tool_grant_document(bytes(document))
+    if isinstance(grant, ToolGrantRefused):
+        raise RunBindingConflict(f"the pinned tool revision is no grant: {grant}")
+    return DeclaredToolGrant(PublishedRevisionHash(pinned.revision), grant.capability)
+
+
+def graph_agent_open_pr_intent(
+    session: Any,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    round_ordinal: int,
+    effect_adapter_binding: EffectAdapterBinding,
+) -> EffectIntent | None:
+    """The pull-request this agent node's own grant opens, or nothing where none does.
+
+    The request bytes are the node's own durable output, read back from its
+    `AGENT_COMPLETED` event rather than trusted from memory, because the same
+    provider bytes the run kept are what the pull request must carry. The
+    effect binds to the connected repo the adapter names -- not to a
+    `project_source` tree-pin -- because a pull request targets a repository,
+    not a tree state, so an `open-pr` grant needs no pinned source at all. The
+    logical key is derived from this node's own execution identity, which makes
+    it deterministic, collision-free, and distinct from the key an Action of the
+    same operation would derive from its own node.
+    """
+    grant = read_pinned_tool_grant(
+        session, load_graph(session, revision_hash).node(node_id)
+    )
+    if grant is None or grant.capability is not ToolGrantCapability.OPEN_PR:
+        return None
+    execution_id = NodeExecutionId.for_node(
+        run_id, revision_hash, node_id, round_ordinal
+    )
+    binding = EffectBinding(
+        logical_effect_key_for(execution_id),
+        run_id,
+        revision_hash,
+        effect_adapter_binding.adapter_revision,
+        effect_adapter_binding.destination,
+        effect_adapter_binding.operational_identity,
+    )
+    return EffectIntent(binding, CanonicalRequest(_agent_output(session, execution_id)))
+
+
+def prepare_graph_agent_open_pr(
+    session: Any,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    round_ordinal: int,
+    effect_adapter_binding: EffectAdapterBinding,
+) -> str | None:
+    """Prepare this agent node's own pull-request intent, or nothing where none is.
+
+    The logical key it returns is what the redemption step then loads: the two
+    are separate durable steps so a PREPARED intent is committed before any
+    adapter is asked, exactly as the effect-shaped redemption port requires.
+    """
+    intent = graph_agent_open_pr_intent(
+        session, run_id, revision_hash, node_id, round_ordinal, effect_adapter_binding
+    )
+    if intent is None:
+        return None
+    return prepared_effect_intent(session, intent).intent.binding.logical_key.value
+
+
+def redeem_agent_open_pr(
+    session: Any,
+    adapter: EffectAdapter,
+    logical_key: str,
+    revision_hash: str,
+) -> str:
+    """Redeem one PREPARED agent pull-request intent through the shared adapter.
+
+    Readback runs before create, so a redemption retried after the pull request
+    already exists is recognized rather than opened twice. The receipt reaches
+    the same `effect_receipts` row an Action's confirmation writes, through the
+    same `commit_resolution`, so what an operator reads back is one effect
+    whichever authorization opened it. An `UNKNOWN` readback confirms nothing and
+    is refused loud rather than guessed at.
+    """
+    intent = load_intent(session, logical_key, revision_hash)
+    redemption = redeem_prepared_tool_effect(intent, adapter)
+    if isinstance(redemption, AgentToolEffectPending):
+        raise AgentEffectRedemptionPending(
+            "an agent open-pr readback named no outcome; nothing may be confirmed yet"
+        )
+    return commit_resolution(
+        session, logical_key, revision_hash, encode_readback(redemption.receipt)
+    ).value
+
+
+def _agent_output(session: Any, execution_id: NodeExecutionId) -> bytes:
+    record = session.execute(
+        sa.select(run_events.c.payload, run_events.c.payload_hash).where(
+            run_events.c.node_execution_id == execution_id.value,
+            run_events.c.event_kind == RunEventKind.AGENT_COMPLETED.value,
+        )
+    ).one_or_none()
+    if record is None:
+        raise RunEffectConflict("agent open-pr grant has no durable agent output")
+    payload = bytes(record.payload)
+    if Sha256Hash.of(payload).value != record.payload_hash:
+        raise RunEffectConflict("agent output binding changed")
+    return payload
 
 
 def _action_predecessor(
