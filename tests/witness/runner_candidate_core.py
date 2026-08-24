@@ -203,7 +203,10 @@ def _bootstrap(root: Path, handoff: Path, scenario: str):
         DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
         run_id = RunId("runner-candidate/one")
         started = DbosDurableRunStarter(
-            runtime.engine, runtime.settings, runner_registry
+            runtime.engine,
+            runtime.settings,
+            runner_registry,
+            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(
                 run_id,

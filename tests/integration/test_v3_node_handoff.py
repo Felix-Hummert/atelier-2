@@ -287,7 +287,10 @@ def test_the_reviewer_is_handed_what_the_coder_actually_wrote(
     )
 
     created = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     assert isinstance(created, DurableRunCreated), created
 
@@ -318,7 +321,10 @@ def test_a_line_that_hands_nothing_on_still_tells_each_node_only_its_own_sentenc
     )
 
     created = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     assert isinstance(created, DurableRunCreated), created
 
@@ -443,7 +449,10 @@ def test_a_chained_run_reads_back_with_the_attempt_of_the_node_that_was_handed_w
     )
     revision_hash = WorkflowRevisionHash(workflow.revision_hash.value)
     created = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     assert isinstance(created, DurableRunCreated), created
     store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)

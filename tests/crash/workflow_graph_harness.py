@@ -115,6 +115,10 @@ class HarnessEffectAdapterFactory:
     def binding(self) -> EffectAdapterBinding:
         return self._delegate.binding
 
+    @property
+    def proves_absence(self) -> bool:
+        return self._delegate.proves_absence
+
     def open(self) -> HarnessEffectAdapter:
         return HarnessEffectAdapter(self._delegate.open(), self._force_unknown_marker)
 
@@ -212,7 +216,10 @@ def seed_v3(
         workflow = WorkflowRevision(document)
         DbosWorkflowRevisionPublisher(lease.engine).publish(workflow)
         started = DbosDurableRunStarter(
-            lease.engine, lease.settings, lease.agent_executor_registry
+            lease.engine,
+            lease.settings,
+            lease.agent_executor_registry,
+            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(
                 RunId(run_id),

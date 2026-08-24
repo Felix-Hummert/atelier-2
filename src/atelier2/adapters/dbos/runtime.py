@@ -367,6 +367,7 @@ class _BoundRuntime:
     agent_executors_v2: tuple[tuple[AgentExecutorManifestEntry, AgentExecutorV2], ...]
     effect_adapter_binding: EffectAdapterBinding
     effect_adapter: EffectAdapter
+    effect_adapter_proves_absence: bool
     agent_process_supervisor: AgentProcessSupervisor | None
     agent_workspace_owner: LocalAgentAttemptWorkspaceOwner | None
     declared_project: DeclaredProject | None
@@ -981,6 +982,9 @@ def _open_binding(
                     (registry_entry.manifest_entry, registry_entry.factory.open())
                 )
         adapter = effect_factory.open()
+        # Read once, here, from the composed factory: this is the single answer
+        # every run-start path binds to, so no start can assume a different one.
+        effect_adapter_proves_absence = effect_factory.proves_absence
         datasource = SQLAlchemyDatasource.create(
             sqlite_url(settings.database_path), engine=engine
         )
@@ -1061,6 +1065,7 @@ def _open_binding(
         tuple(agent_executors_v2),
         effect_binding,
         adapter,
+        effect_adapter_proves_absence,
         agent_process_supervisor,
         agent_workspace_owner,
         declared_project_source,
@@ -1308,7 +1313,10 @@ class _DbosProcessOwner:
             DbosQueueProjectionStore(bound.engine),
             DbosCatalogStore(bound.engine),
             DbosDurableRunStarter(
-                bound.engine, bound.settings, bound.agent_executor_registry
+                bound.engine,
+                bound.settings,
+                bound.agent_executor_registry,
+                bound.effect_adapter_proves_absence,
             ),
         )
 
@@ -1403,6 +1411,10 @@ class DbosRuntime:
     @property
     def effect_adapter_binding(self) -> EffectAdapterBinding:
         return self._held().effect_adapter_binding
+
+    @property
+    def effect_adapter_proves_absence(self) -> bool:
+        return self._held().effect_adapter_proves_absence
 
     def launch(self) -> None:
         _PROCESS_OWNER.launch(self._held())

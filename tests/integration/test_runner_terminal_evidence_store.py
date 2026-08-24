@@ -191,7 +191,10 @@ def _v3_armed(
     workflow, bindings = publish_v3_workflow(runtime)
     run_id = RunId(run_name)
     started = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
     )
@@ -1156,6 +1159,7 @@ def test_grant_bound_runner_evidence_is_refused_before_any_commit(
             runtime.engine,
             runtime.settings,
             runtime.agent_executor_registry,
+            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
         )

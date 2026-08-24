@@ -136,7 +136,10 @@ def _v3_prepared(
     workflow, bindings = publish_v3_workflow(root_runtime)
     run_id = RunId(run_name)
     started = DbosDurableRunStarter(
-        root_runtime.engine, root_runtime.settings, root_runtime.agent_executor_registry
+        root_runtime.engine,
+        root_runtime.settings,
+        root_runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
     )

@@ -251,7 +251,10 @@ def api_ports(runtime: DbosRuntime) -> ApiPorts:
     return ApiPorts(
         workflow_revision_publisher=DbosWorkflowRevisionPublisher(runtime.engine),
         published_run_starter=DbosDurableRunStarter(
-            runtime.engine, runtime.settings, runtime.agent_executor_registry
+            runtime.engine,
+            runtime.settings,
+            runtime.agent_executor_registry,
+            effect_adapter_proves_absence=True,
         ),
         wait_answerer=DbosWaitAnswerer(
             runtime.engine, runtime.settings.application_version
@@ -947,7 +950,10 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
         workflow = WorkflowRevision(HOST_DOCUMENT)
         DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
         starter = DbosDurableRunStarter(
-            runtime.engine, runtime.settings, runtime.agent_executor_registry
+            runtime.engine,
+            runtime.settings,
+            runtime.agent_executor_registry,
+            effect_adapter_proves_absence=True,
         )
         refused = starter.start_published(
             StartPublishedRunRequestV2(

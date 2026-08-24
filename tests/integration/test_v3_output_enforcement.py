@@ -269,7 +269,10 @@ def armed_attempt(
         (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
     )
     created = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     assert isinstance(created, DurableRunCreated), created
 

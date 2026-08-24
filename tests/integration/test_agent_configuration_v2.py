@@ -180,7 +180,10 @@ def _api_client(runtime: DbosRuntime) -> TestClient:
                     runtime.engine
                 ),
                 published_run_starter=DbosDurableRunStarter(
-                    runtime.engine, runtime.settings, runtime.agent_executor_registry
+                    runtime.engine,
+                    runtime.settings,
+                    runtime.agent_executor_registry,
+                    effect_adapter_proves_absence=True,
                 ),
                 wait_answerer=DbosWaitAnswerer(
                     runtime.engine, runtime.settings.application_version
@@ -603,7 +606,10 @@ def test_start_refuses_unattested_capability_before_enqueue_or_provider_process(
 
     monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", unexpected_enqueue)
     result = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(
             RunId("capability/refused"), workflow.revision_hash, bindings
@@ -654,7 +660,10 @@ def test_v2_start_against_an_empty_registry_creates_no_durable_run_or_attempt(
             AgentExecutorRegistry((publication_factory,)),
         )
         result = DbosDurableRunStarter(
-            runtime.engine, runtime.settings, runtime.agent_executor_registry
+            runtime.engine,
+            runtime.settings,
+            runtime.agent_executor_registry,
+            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(
                 RunId("empty-registry/refused"), workflow.revision_hash, bindings
@@ -693,7 +702,10 @@ def test_nonterminal_v2_restart_with_an_empty_registry_refuses_before_cgroup_acc
         seeded, AgentExecutionCapability.HEADLESS
     )
     result = DbosDurableRunStarter(
-        seeded.engine, seeded.settings, seeded.agent_executor_registry
+        seeded.engine,
+        seeded.settings,
+        seeded.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(
             RunId("empty-registry/restart"), workflow.revision_hash, bindings
@@ -743,7 +755,10 @@ nodes:
             seeded, AgentExecutionCapability.HEADLESS, document=document
         )
         started = DbosDurableRunStarter(
-            seeded.engine, seeded.settings, seeded.agent_executor_registry
+            seeded.engine,
+            seeded.settings,
+            seeded.agent_executor_registry,
+            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
         )
@@ -807,7 +822,10 @@ def test_restart_refuses_unattested_nonterminal_capability_before_factory_open(
         seeded, AgentExecutionCapability.INTERACTIVE
     )
     started = DbosDurableRunStarter(
-        seeded.engine, seeded.settings, seeded.agent_executor_registry
+        seeded.engine,
+        seeded.settings,
+        seeded.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(
             RunId("capability/restart"), workflow.revision_hash, bindings
@@ -1017,7 +1035,10 @@ def test_bound_unstarted_v2_run_fails_without_an_attempt_when_executor_is_unavai
             seeded, AgentExecutionCapability.HEADLESS
         )
         started = DbosDurableRunStarter(
-            seeded.engine, seeded.settings, seeded.agent_executor_registry
+            seeded.engine,
+            seeded.settings,
+            seeded.agent_executor_registry,
+            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
         )
@@ -1121,7 +1142,10 @@ nodes:
         )
         assert isinstance(
             DbosDurableRunStarter(
-                seeded.engine, seeded.settings, seeded.agent_executor_registry
+                seeded.engine,
+                seeded.settings,
+                seeded.agent_executor_registry,
+                effect_adapter_proves_absence=True,
             ).start_published(
                 StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
             ),
@@ -1184,7 +1208,10 @@ def test_prepared_v2_attempt_is_cleaned_before_unavailable_executor_refusal(
             seeded, AgentExecutionCapability.HEADLESS
         )
         started = DbosDurableRunStarter(
-            seeded.engine, seeded.settings, seeded.agent_executor_registry
+            seeded.engine,
+            seeded.settings,
+            seeded.agent_executor_registry,
+            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
         )
@@ -1290,7 +1317,10 @@ def test_prepared_v2_attempt_is_cleaned_through_durable_node_when_executor_is_un
             seeded, AgentExecutionCapability.HEADLESS
         )
         started = DbosDurableRunStarter(
-            seeded.engine, seeded.settings, seeded.agent_executor_registry
+            seeded.engine,
+            seeded.settings,
+            seeded.agent_executor_registry,
+            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
         )
@@ -1504,7 +1534,10 @@ def test_completed_v2_history_reopens_without_process_supervision(
             first, AgentExecutionCapability.HEADLESS
         )
         started = DbosDurableRunStarter(
-            first.engine, first.settings, first.agent_executor_registry
+            first.engine,
+            first.settings,
+            first.agent_executor_registry,
+            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
         )
@@ -1550,7 +1583,10 @@ def test_two_provider_configs_survive_restart_and_drive_their_exact_executors(
     workflow, bindings = _publish_matrix(first)
     run_id = RunId("provider-neutral/restart")
     result = DbosDurableRunStarter(
-        first.engine, first.settings, first.agent_executor_registry
+        first.engine,
+        first.settings,
+        first.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
     )
@@ -1644,7 +1680,10 @@ nodes:
         (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
     )
     started = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
     )
@@ -2185,7 +2224,10 @@ def test_v2_output_bound_is_checked_before_atomic_receipt_event_and_run_cas(
         workflow, bindings = _publish_matrix(runtime)
         run_id = RunId(f"output/{output_size}")
         started = DbosDurableRunStarter(
-            runtime.engine, runtime.settings, runtime.agent_executor_registry
+            runtime.engine,
+            runtime.settings,
+            runtime.agent_executor_registry,
+            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
         )

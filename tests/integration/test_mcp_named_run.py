@@ -127,7 +127,10 @@ def application(runtime: DbosRuntime) -> FastAPI:
         ports=ApiPorts(
             workflow_revision_publisher=DbosWorkflowRevisionPublisher(runtime.engine),
             published_run_starter=DbosDurableRunStarter(
-                runtime.engine, runtime.settings, runtime.agent_executor_registry
+                runtime.engine,
+                runtime.settings,
+                runtime.agent_executor_registry,
+                effect_adapter_proves_absence=True,
             ),
             wait_answerer=DbosWaitAnswerer(
                 runtime.engine, runtime.settings.application_version

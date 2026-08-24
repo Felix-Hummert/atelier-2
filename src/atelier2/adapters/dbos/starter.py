@@ -403,7 +403,7 @@ class DbosDurableRunStarter:
         engine: Engine,
         settings: DbosRuntimeSettings,
         agent_executor_registry: AgentExecutorRegistry,
-        effect_adapter_proves_absence: bool = True,
+        effect_adapter_proves_absence: bool,
     ) -> None:
         self._engine = engine
         self._settings = settings
@@ -414,11 +414,10 @@ class DbosDurableRunStarter:
         # authored `open-pr` grant has no safe reconciliation path and is
         # refused at admission (`#430`/`#431`); the Action path is unaffected.
         #
-        # The default is the pre-existing invariant: the loopback and fake
-        # adapters both prove absence, so every caller that composed one of them
-        # -- which was every caller until the live-GitHub adapter -- is admitting
-        # exactly as before. Only the composition that binds the live adapter
-        # passes `False` (`atelier2.host.serving`).
+        # This is required, not defaulted: every construction site must pass the
+        # composed adapter's own answer, so no start path -- the API route or the
+        # queue auto-start -- can begin a run against a non-absence-proving adapter
+        # without the admission guard reading the real value.
         self._effect_adapter_proves_absence = effect_adapter_proves_absence
 
     def start_published(
