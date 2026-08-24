@@ -44,8 +44,13 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.executions import RunEventKind, WaitAnswerState
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import (
+    MAXIMUM_CONNECTION_ACTOR_CHARACTERS,
+    MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS,
     MAXIMUM_PROJECT_ID_CHARACTERS,
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
+    MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
+    MAXIMUM_SOURCE_KIND_CHARACTERS,
+    SourceConnectionAuthMethod,
 )
 from atelier2.contracts.node_records_v3 import (
     MAXIMUM_KIND_TOKEN_CHARACTERS,
@@ -400,6 +405,9 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "catalog_lineages.kind": _values(RevisionKind),
     "catalog_lineage_retirements.state": _values(CatalogRetirementState),
     "queue_items.state": _values(QueueItemState),
+    "host_project_source_connection_revisions.auth_method": _values(
+        SourceConnectionAuthMethod
+    ),
 }
 
 UNDECLARED_VOCABULARIES: frozenset[str] = frozenset(
@@ -472,6 +480,7 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "artifacts.artifact_hash",
         "auth_profile_revisions.revision_hash",
         "host_project_root_revisions.revision_hash",
+        "host_project_source_connection_revisions.revision_hash",
         "host_occupancy_revisions.revision_hash",
         "host_occupancy_revisions.lineage_id",
         "host_occupancy_bindings.revision_hash",
@@ -547,6 +556,21 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "auth_profile_revisions.provider_id": PROVIDER_ID_BOUND,
     "host_project_root_revisions.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
     "host_project_root_revisions.root_path": MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
+    "host_project_source_connection_revisions.project_id": (
+        MAXIMUM_PROJECT_ID_CHARACTERS
+    ),
+    "host_project_source_connection_revisions.source_kind": (
+        MAXIMUM_SOURCE_KIND_CHARACTERS
+    ),
+    "host_project_source_connection_revisions.source_address": (
+        MAXIMUM_SOURCE_ADDRESS_CHARACTERS
+    ),
+    "host_project_source_connection_revisions.credential_directory": (
+        MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS
+    ),
+    "host_project_source_connection_revisions.connected_by": (
+        MAXIMUM_CONNECTION_ACTOR_CHARACTERS
+    ),
     "host_occupancy_revisions.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
     "host_occupancy_bindings.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "run_agent_bindings.role": MAXIMUM_AGENT_FIELD_CHARACTERS,

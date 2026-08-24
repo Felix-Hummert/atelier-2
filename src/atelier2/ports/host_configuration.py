@@ -8,6 +8,7 @@ from atelier2.contracts.host_configuration import (
     OccupancyRevision,
     ProjectId,
     ProjectRootRevision,
+    ProjectSourceConnectionRevision,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
@@ -78,6 +79,43 @@ type PublishProjectRootResult = (
 )
 
 
+@dataclass(frozen=True)
+class ProjectSourceConnectionRevisionCreated:
+    revision: ProjectSourceConnectionRevision
+
+
+@dataclass(frozen=True)
+class ProjectSourceConnectionRevisionExisting:
+    revision: ProjectSourceConnectionRevision
+
+
+@dataclass(frozen=True)
+class ProjectSourceConnectionRevisionConflict:
+    pass
+
+
+@dataclass(frozen=True)
+class ProjectSourceConnectionRevisionCollision:
+    pass
+
+
+type LatestProjectSourceConnectionResult = (
+    ProjectSourceConnectionRevision
+    | None
+    | HostConfigurationReadUnavailable
+    | DurableStateCorrupt
+)
+
+type PublishProjectSourceConnectionResult = (
+    ProjectSourceConnectionRevisionCreated
+    | ProjectSourceConnectionRevisionExisting
+    | ProjectSourceConnectionRevisionConflict
+    | ProjectSourceConnectionRevisionCollision
+    | DurableWriteUnavailable
+    | DurableStateCorrupt
+)
+
+
 class HostConfigurationChannel(Protocol):
     def latest_project_root_revision(
         self, project_id: ProjectId
@@ -94,3 +132,20 @@ class HostConfigurationChannel(Protocol):
     def publish_occupancy_revision(
         self, revision: OccupancyRevision
     ) -> PublishOccupancyResult: ...
+
+
+class ProjectSourceConnectionChannel(Protocol):
+    """The channel's third family, as its own narrow protocol.
+
+    A caller composing only the connection record depends on these two answers
+    alone, so a fake or adapter serving another family does not have to grow
+    with this one.
+    """
+
+    def latest_project_source_connection_revision(
+        self, project_id: ProjectId
+    ) -> LatestProjectSourceConnectionResult: ...
+
+    def publish_project_source_connection_revision(
+        self, revision: ProjectSourceConnectionRevision
+    ) -> PublishProjectSourceConnectionResult: ...

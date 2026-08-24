@@ -1035,7 +1035,24 @@ empty collection, and unreadable or corrupt configuration stays visibly
 unavailable or corrupt. There is no HTTP project write, second project,
 pagination, project editor, or store-per-project process.
 
-The canonical store is schema V29. A fresh store is created as exact V29 and
+The channel's third family is the project-source connection record
+([ADR 0010](decisions/0010-github-platform-adapter.md) decision 2). `atelier2
+connect` is the explicit offline operator act: it appends one immutable
+revision binding a configured project to a source kind, an opaque source
+address only the connected platform adapter interprets, a credential-directory
+reference, the chosen auth method (`personal-access-token` today; the App
+method is deferred by naming), and the connecting actor. The record holds
+identities and the reference, never a credential value, and every read answers
+the same; a project without a record is refused in the
+`platform-connection-unknown` shape. Revisions are keyed per project and
+source kind so a second source stays representable, while today's read returns
+the single latest connection. Schema V33 gives the family its append-only
+table under the same immutability trigger pair the channel's other two
+families carry. No serve path composes from the record yet -- the temporary
+`--github-*` serve flags still stand, and their supersession by this record is
+the next slice.
+
+The canonical store is schema V33. A fresh store is created as exact V33 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output
@@ -1045,8 +1062,8 @@ orders a run was started with, the immutable proof of every redeemed tool
 grant, the receipt hash an agent completion binds, immutable content-addressed
 artifacts an order may name instead of carrying their bytes, the round a
 declared loop was turning when each run, event and agent receipt was written,
-the host configuration channel's project-root revisions and occupancy
-revisions, and the queue projection's admission row per work item. The catalog adapter founds a lineage
+the host configuration channel's project-root, occupancy, and project-source
+connection revisions, and the queue projection's admission row per work item. The catalog adapter founds a lineage
 and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An
 admitted name or lineage id resolves to the exact published bytes; a missing
