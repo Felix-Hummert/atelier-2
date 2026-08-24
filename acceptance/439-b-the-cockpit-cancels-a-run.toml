@@ -37,3 +37,10 @@ text = "When the page reloads while a cancel the server never confirmed still si
 [[sentence]]
 id = "a-reload-during-an-accepted-cancel-still-reads-stopping"
 text = "When the page reloads after the server accepted the cancel, the cockpit still reads 'Stopping this run' with no Retry and sends no further command, because the accepted cancel is settled."
+
+# #439 P6 proves the same control end-to-end against the real backend, in a
+# rendered browser, by keyboard alone -- the interface evidence the earlier
+# phases pinned only in unit/vitest.
+[[sentence]]
+id = "the-cockpit-cancels-a-real-run-by-keyboard"
+text = "Against the real backend, an operator reaches and confirms the cancel of a genuinely-cancellable V3 run by keyboard alone: the server's own cancelability predicate renders the control, the staged decision is keyboard-operable, and confirming drives the one audited command to a durable Cancelled standing that carries by word on a narrow phone width, with no false state and no second cancel."

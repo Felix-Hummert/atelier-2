@@ -2337,6 +2337,128 @@ test("draws a running V3 chain as a graph while a node is still working", async 
   await page.screenshot({ path: "test-results/v3-graph-running-390x844.png", fullPage: true });
 });
 
+test("proves(the-cockpit-cancels-a-real-run-by-keyboard): cancels a running V3 run by keyboard, on the real backend (#439 P6)", async ({
+  page
+}) => {
+  // The real-interface proof the earlier phases pinned only in unit/vitest: a
+  // genuinely-cancelable V3 run, seeded against the real store, is reached and
+  // stopped by keyboard alone. What is proven end-to-end here: the server's own
+  // cancelability predicate renders the control (never a mock), the staged
+  // decision is keyboard-reachable and keyboard-operable, and confirming drives
+  // the one audited command to a durable `Cancelled` standing with no false
+  // state and no second cancel. What stays at the layer that can force each
+  // branch deterministically: the cancel-wins / overtaken-by-success / terminal-
+  // retry race outcomes live in tests/integration/test_run_cancellation.py, and
+  // the uncertain/reload honesty in frontend/tests/app/v3RunCockpit.test.ts.
+  const api = "/atelier/api/v1";
+  const cancel = runPageCopy.cancel;
+  const schemaHash = await anyJsonSchema(page);
+  const workflowYaml = [
+    "format_version: 3",
+    "name: One agent an operator stops",
+    "nodes:",
+    "  - id: work",
+    "    type: agent",
+    "    role: builder",
+    "    mode: headless",
+    "    instruction: Do the one thing this chain is for.",
+    ...declaredOutput(schemaHash),
+    ""
+  ].join("\n");
+
+  const published = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: workflowYaml
+  });
+  expect(published.status()).toBe(201);
+  const revisionHash = (await published.json()).workflow_revision_hash as string;
+
+  const auth = await page.request.post(`${api}/auth-profile-revisions`, {
+    data: { profile_id: "v3-cancel", revision_number: 1, provider_id: "e2e-v3-held", auth_mode: "subscription" }
+  });
+  expect(auth.status()).toBe(201);
+  const configuration = await page.request.post(`${api}/agent-configuration-revisions`, {
+    data: {
+      model: "v3-model",
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: "held/v1",
+      requested_capability: "headless"
+    }
+  });
+  expect(configuration.status()).toBe(201);
+
+  const started = await page.request.post(`${api}/runs`, {
+    data: {
+      workflow_format_version: 2,
+      run_id: "v3/operator-cancels",
+      workflow_revision_hash: revisionHash,
+      agent_bindings: [
+        {
+          role: "builder",
+          agent_configuration_revision_hash: (await configuration.json())
+            .agent_configuration_revision_hash
+        }
+      ]
+    }
+  });
+  expect(started.status()).toBe(201);
+  const reference = (await started.json()).public_run_reference as string;
+
+  // Wait until the real server itself says this run is cancellable -- the held
+  // attempt arms and stays live -- before loading the page, so the first read
+  // the cockpit does already carries the cancel predicate.
+  await expect
+    .poll(
+      async () => {
+        const read = await page.request.get(`${api}/runs/${reference}`);
+        if (!read.ok()) return null;
+        return ((await read.json()).cancellation?.cancellable ?? null) as boolean | null;
+      },
+      { timeout: 15_000 }
+    )
+    .toBe(true);
+
+  await page.goto(`/atelier/runs/${reference}`);
+
+  // The control exists only because the real server said this run is cancellable
+  // (RunResourceV3.cancellation), not because the rail was guessed at.
+  const opener = page.getByRole("button", { name: cancel.open });
+  await expect(opener).toBeVisible({ timeout: 10_000 });
+
+  // Keyboard reachability and operability: focus lands on the opener, Enter
+  // stages the decision, the dialog traps focus between its two honest buttons,
+  // and Enter on Cancel run confirms -- no pointer at any step.
+  await opener.focus();
+  await expect(opener).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("heading", { name: cancel.question })).toBeVisible();
+  const confirmButton = page.getByRole("button", { name: cancel.confirm });
+  const dismissButton = page.getByRole("button", { name: cancel.dismiss });
+  await expect(dismissButton).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(confirmButton).toBeFocused();
+  await page.keyboard.press("Enter");
+
+  // The command was durably accepted (202): the card reads the honest in-flight
+  // word, never a grey nothing and never a premature "cancelled".
+  await expect(page.getByText(cancel.accepted).first()).toBeVisible();
+
+  // The real backend ends the run under its own cancel: the standing becomes
+  // Cancelled, and the run never re-offers a fresh cancel over a stopped run.
+  await expect(page.getByLabel("Where this run stands")).toContainText(
+    standingWords.cancelled,
+    { timeout: 20_000 }
+  );
+  await expect(opener).toHaveCount(0);
+
+  // The same stopped truth reads on a narrow phone width, carried by word.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByLabel("Where this run stands")).toContainText(
+    standingWords.cancelled
+  );
+  await assertNoSeriousAccessibilityFindings(page);
+});
+
 test("a node whose answer its own contract refuses never reports success", async ({
   page
 }) => {

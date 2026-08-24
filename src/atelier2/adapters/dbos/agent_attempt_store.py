@@ -2254,8 +2254,13 @@ class DbosAgentAttemptStore:
                 )
             current_attempt = attempt_from_record(current_record)
             if current_attempt.state in TERMINAL_AGENT_ATTEMPT_STATES:
+                # The run is still STARTED -- only its current node's attempt
+                # ended, so `already-ended` would name the run dead when it is
+                # about to move on. That is the exact standing the projection
+                # shows the operator as `between-nodes`; both paths speak one
+                # honest sentence for one durable state (#439 P6).
                 return RunCancellationNotCancellable(
-                    RunCancellationRefusal.ALREADY_ENDED
+                    RunCancellationRefusal.BETWEEN_NODES
                 )
             if current_attempt.cancellation is not None:
                 # Some other command -- the attempt route, or an earlier

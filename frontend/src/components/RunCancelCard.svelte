@@ -43,6 +43,7 @@
   let openButton: HTMLButtonElement;
   let dismissButton: HTMLButtonElement;
   let confirmButton: HTMLButtonElement;
+  let retryButton: HTMLButtonElement;
 
   const TERMINAL_STATES: ReadonlySet<RunV3["state"]> = new Set([
     "COMPLETED",
@@ -145,6 +146,7 @@
     } finally {
       busy = false;
     }
+    await focusRetryOnUncertain();
   }
 
   async function retryCancel(): Promise<void> {
@@ -155,6 +157,21 @@
       await deliverAndSettle(pending, "The exact retry could not be confirmed.");
     } finally {
       busy = false;
+    }
+    await focusRetryOnUncertain();
+  }
+
+  /**
+   * When a delivery attempt leaves the cancel unconfirmed, the Retry control is
+   * the one move left, so focus lands on it -- the same keyboard courtesy the
+   * wait card gives its own Retry (`V3AnswerCard.focusRetry`). Focus moves only
+   * after an attempt the operator made, never on the reload that merely surfaces
+   * an already-open cancel.
+   */
+  async function focusRetryOnUncertain(): Promise<void> {
+    await tick();
+    if (pending !== null && !accepted && uncertainMessage !== null) {
+      retryButton?.focus();
     }
   }
 
@@ -219,7 +236,7 @@
     {/if}
     {#if !accepted && !busy}
       <div class="actions">
-        <button type="button" disabled={busy} onclick={() => { void retryCancel(); }}>{wrapDisplayCopy(cancel.retry)}</button>
+        <button type="button" disabled={busy} bind:this={retryButton} onclick={() => { void retryCancel(); }}>{wrapDisplayCopy(cancel.retry)}</button>
         <button class="quiet" type="button" disabled={busy} onclick={() => { void discardCancel(); }}>{wrapDisplayCopy(cancel.discard)}</button>
       </div>
     {/if}

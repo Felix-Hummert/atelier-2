@@ -919,8 +919,11 @@ describe("cancelling a version 3 run from the cockpit", () => {
     await fireEvent.click(screen.getByRole("button", { name: cancel.confirm }));
 
     expect(await screen.findByText(cancel.uncertain)).toBeTruthy();
+    // Entering the uncertain state hands the keyboard the one move left: Retry.
+    const retryButton = await screen.findByRole("button", { name: cancel.retry });
+    await waitFor(() => expect(document.activeElement).toBe(retryButton));
     const firstKey = cancelRun.mock.calls[0]?.[0]?.idempotency_key;
-    await fireEvent.click(await screen.findByRole("button", { name: cancel.retry }));
+    await fireEvent.click(retryButton);
 
     await waitFor(() => expect(cancelRun).toHaveBeenCalledTimes(2));
     expect(cancelRun.mock.calls[1]?.[0]?.idempotency_key).toBe(firstKey);
