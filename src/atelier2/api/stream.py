@@ -287,7 +287,7 @@ async def stream_attention_events(
     poll_backoff: EventPollBackoff,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> AsyncIterator[ServerSentEvent]:
-    """Forward WAITING_INPUT and AGENT_FAILED across runs until the client leaves.
+    """Forward the ATTENTION_EVENT_KINDS across runs until the client leaves.
 
     The feed does not end: a terminal run is one event, not the end of the
     subscription. Backpressure and transient unavailability end regularly so
