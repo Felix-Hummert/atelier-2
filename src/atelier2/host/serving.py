@@ -17,7 +17,9 @@ from atelier2.adapters.codex_subscription import (
     CodexSubscriptionExecutorFactory,
     CodexSubscriptionSettings,
 )
-from atelier2.adapters.dbos.advancer import non_terminal_agent_open_pr_run_ids
+from atelier2.adapters.dbos.advancer import (
+    agent_open_pr_runs_pending_live_redemption,
+)
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
@@ -553,29 +555,31 @@ def _log_unstartable_executors(settings: HostSettings) -> None:
 
 
 class LiveGitHubOpenPrRunPending(RuntimeError):
-    """A non-terminal V3 run still carries an agent `open-pr` grant at live startup.
+    """A V3 run could still redeem an agent `open-pr` grant against live GitHub.
 
     Admission refuses a new agent-authored `open-pr` run against an adapter that
     cannot prove absence (`#430`/`#431`), but that door only guards the runs a
     live-GitHub instance itself admits. A run admitted earlier under the
-    absence-proving loopback adapter can still be non-terminal when the operator
-    restarts the same database with the live adapter; DBOS recovery would then
-    resume its durable redemption node against live GitHub, whose not-found
-    readback is `EffectUnknownOutcome`, and the run would end ERROR after it had
-    already committed COMPLETED. Composing the live adapter therefore refuses to
-    start while any such run is still non-terminal, so the operator lets it finish
-    or cancels it before serving live GitHub.
+    absence-proving loopback adapter can still owe its redemption when the
+    operator restarts the same database with the live adapter; DBOS recovery
+    would then resume its durable redemption node against live GitHub, whose
+    not-found readback is `EffectUnknownOutcome`, and the run would end ERROR
+    after it had already committed COMPLETED. The run may be non-terminal, or it
+    may have committed COMPLETED and crashed before the sink node's own workflow
+    finished the redemption -- either way the redemption is still owed. Composing
+    the live adapter therefore refuses to start while any such run remains, so the
+    operator lets it finish or cancels it before serving live GitHub.
     """
 
 
 def _refuse_pending_agent_open_pr_runs(runtime: DbosRuntime) -> None:
-    """Fail the live-GitHub start while any non-terminal V3 run opens its own PR.
+    """Fail the live-GitHub start while any V3 run still owes an agent open-pr PR.
 
     The dbos adapter owns the scan; this only turns a nonempty answer into the
     loud startup refusal, naming the runs the operator must let finish or cancel.
     """
 
-    blocking = non_terminal_agent_open_pr_run_ids(runtime.engine)
+    blocking = agent_open_pr_runs_pending_live_redemption(runtime.engine)
     if blocking:
         named = ", ".join(sorted(run.value for run in blocking))
         raise LiveGitHubOpenPrRunPending(

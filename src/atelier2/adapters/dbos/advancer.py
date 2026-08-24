@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import sqlalchemy as sa
@@ -17,6 +18,7 @@ from atelier2.adapters.dbos.schema import (
     run_events,
     runs,
 )
+from atelier2.adapters.dbos.workflow_ids import node_workflow_id_for
 from atelier2.contracts.effects import (
     CanonicalRequest,
     EffectAdapterBinding,
@@ -272,34 +274,125 @@ def first_agent_platform_effect_node(
     return None
 
 
-def non_terminal_agent_open_pr_run_ids(engine: sa.Engine) -> tuple[RunId, ...]:
-    """Every non-terminal V3 run whose agent node still opens its own pull request.
+# DBOS owns this table and these tokens; this module only reads them, to answer
+# whether the durable node workflow that would re-run an agent open-pr
+# redemption is still one recovery will resume. `atelier2.adapters.dbos`'s other
+# readers of `workflow_status` each keep their own narrow copy for the same
+# reason -- a shared owner is not a widening either file's scope invites today.
+_dbos_workflow_status = sa.table(
+    "workflow_status",
+    sa.column("workflow_uuid"),
+    sa.column("status"),
+)
+_RECOVERABLE_WORKFLOW_STATUSES = ("PENDING", "ENQUEUED", "DELAYED")
+"""The DBOS statuses under which a workflow is still owed its next step, so
+recovery on the next launch resumes it rather than leaving it where it lies."""
+
+
+def agent_open_pr_runs_pending_live_redemption(engine: sa.Engine) -> tuple[RunId, ...]:
+    """Every V3 run whose agent open-pr grant could still redeem against live GitHub.
 
     Admission refuses an agent-authored `open-pr` grant against an adapter that
     cannot prove absence, but that door only guards the runs that instance itself
-    starts. A run admitted earlier under an absence-proving adapter can still be
-    non-terminal when the same database is reopened against the live adapter, and
-    resuming its redemption there would end it ERROR after it committed COMPLETED
-    (`#430`/`#431`). One pass over the non-terminal V3 runs reads each run's
-    pinned grant through the same `first_agent_platform_effect_node` door
-    admission reads it, so a live-GitHub startup can refuse exactly those runs.
+    starts. A run admitted earlier under an absence-proving adapter can still owe
+    its redemption when the same database is reopened against the live adapter,
+    and resuming it there ends the run ERROR after it committed COMPLETED
+    (`#430`/`#431`). This one pass names exactly those runs so a live-GitHub
+    startup can refuse them.
+
+    A run still owes that redemption unless it has durably finished it. The
+    redemption runs inside the sink node's own durable workflow, *after* that
+    workflow committed the run COMPLETED, so blocking on the run's state alone
+    misses the crash window between the two durable steps: a COMPLETED run whose
+    node workflow is still recoverable has not redeemed yet. `_still_owes_live_redemption`
+    is the predicate that catches both the in-flight run and that window while
+    letting a run whose node workflow has already finished serve.
     """
     with engine.connect() as connection:
-        pending = connection.execute(
-            sa.select(runs.c.run_id, runs.c.revision_hash).where(
-                runs.c.workflow_format_version == int(WorkflowFormatVersion.V3),
-                runs.c.state.notin_([state.value for state in TERMINAL_RUN_STATES]),
+        blocking: list[RunId] = []
+        for record in (
+            connection.execute(
+                sa.select(
+                    runs.c.run_id,
+                    runs.c.revision_hash,
+                    runs.c.state,
+                    runs.c.current_node_id,
+                    runs.c.current_round_ordinal,
+                ).where(runs.c.workflow_format_version == int(WorkflowFormatVersion.V3))
             )
-        ).all()
-        return tuple(
-            RunId(str(run_id))
-            for run_id, revision_hash in pending
-            if first_agent_platform_effect_node(
-                connection,
-                load_graph(connection, WorkflowRevisionHash(str(revision_hash))),
-            )
-            is not None
+            .mappings()
+            .all()
+        ):
+            if _still_owes_live_redemption(
+                connection, record
+            ) and _carries_agent_open_pr_grant(connection, record):
+                blocking.append(RunId(str(record["run_id"])))
+        return tuple(blocking)
+
+
+def _still_owes_live_redemption(connection: Any, record: Mapping[Any, Any]) -> bool:
+    """Whether this run could still redeem an agent open-pr grant on a next launch.
+
+    A non-terminal run is still advancing -- or parked at input -- toward that
+    redemption. A terminal run has committed its ending, but the redemption is
+    the last thing the sink node's durable workflow does after committing
+    COMPLETED; a crash between those two durable steps leaves that workflow
+    recoverable and the redemption still owed. A terminal run whose current-node
+    workflow has already finished redeemed once under the absence-proving adapter
+    and owes nothing more, so it must not block a later live-GitHub start.
+    """
+
+    if RunState(str(record["state"])) not in TERMINAL_RUN_STATES:
+        return True
+    return _current_node_workflow_recoverable(connection, record)
+
+
+def _current_node_workflow_recoverable(
+    connection: Any, record: Mapping[Any, Any]
+) -> bool:
+    """Whether the run's current-node durable workflow is one recovery will resume.
+
+    A run reaching COMPLETED leaves its current node at the sink node that
+    completed it, so the current-node workflow is exactly the one that owes the
+    post-COMPLETED redemption. Deriving its id here reads the same
+    `node_workflow_id_for` `start_node` mints, so a recoverable status names the
+    real pending workflow rather than a guess.
+    """
+
+    node_workflow_id = node_workflow_id_for(
+        NodeExecutionId.for_node(
+            RunId(str(record["run_id"])),
+            WorkflowRevisionHash(str(record["revision_hash"])),
+            str(record["current_node_id"]),
+            int(record["current_round_ordinal"]),
         )
+    )
+    found = connection.scalar(
+        sa.select(_dbos_workflow_status.c.workflow_uuid)
+        .where(
+            _dbos_workflow_status.c.workflow_uuid == node_workflow_id,
+            _dbos_workflow_status.c.status.in_(_RECOVERABLE_WORKFLOW_STATUSES),
+        )
+        .limit(1)
+    )
+    return found is not None
+
+
+def _carries_agent_open_pr_grant(connection: Any, record: Mapping[Any, Any]) -> bool:
+    """Whether this run's graph pins an agent node that opens its own pull request.
+
+    Read through the same `first_agent_platform_effect_node` door admission reads
+    it, so the startup scan and admission never disagree about which grant an
+    agent node carries.
+    """
+
+    return (
+        first_agent_platform_effect_node(
+            connection,
+            load_graph(connection, WorkflowRevisionHash(str(record["revision_hash"]))),
+        )
+        is not None
+    )
 
 
 def graph_agent_open_pr_intent(

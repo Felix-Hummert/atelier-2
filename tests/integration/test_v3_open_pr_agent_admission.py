@@ -10,11 +10,13 @@ Action `open-pr` path, which does have `WAITING_RECONCILIATION`, is untouched, a
 a non-proving adapter admits any run that carries no agent `open-pr` grant.
 
 Admission guards only the runs a live-GitHub instance itself starts. A run
-admitted earlier under the absence-proving loopback adapter can still be
-non-terminal when the operator restarts the same database with live GitHub, so
-composing the live adapter also scans the non-terminal V3 runs and refuses to
-start while any of them still carries an agent `open-pr` grant -- a finished or
-grant-free run never blocks the start.
+admitted earlier under the absence-proving loopback adapter can still owe its
+redemption when the operator restarts the same database with live GitHub, so
+composing the live adapter also scans the V3 runs and refuses to start while any
+still owes an agent `open-pr` redemption. A run owes it while it is non-terminal,
+and still owes it in the crash window between committing COMPLETED and the sink
+node's own workflow redeeming the grant -- a run whose node workflow has finished
+that redemption, and a grant-free run, never block the start.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ import sqlalchemy as sa
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+from atelier2.adapters.dbos.workflow_ids import node_workflow_id_for
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.github import (
     GitHubEffectAdapterFactory,
@@ -37,7 +40,8 @@ from atelier2.adapters.github import (
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.runs import RunId, RunState
+from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.host.serving import (
     LiveGitHubOpenPrRunPending,
     _refuse_pending_agent_open_pr_runs,
@@ -206,5 +210,92 @@ def test_live_github_startup_serves_when_the_agent_open_pr_run_has_finished(
 ) -> None:
     _start(runtime, RUN, granted=True, proves_absence=True)
     _complete_run(runtime, RUN)
+
+    _refuse_pending_agent_open_pr_runs(runtime)
+
+
+def _current_node_workflow_id(runtime: DbosRuntime, run: RunId) -> str:
+    """The durable node workflow id the run's current node execution mints.
+
+    Derived from the run's own durable row through the same
+    `node_workflow_id_for` the runtime mints at `start_node`, so a status seeded
+    under it names the exact workflow recovery would resume.
+    """
+    with runtime.engine.connect() as connection:
+        row = (
+            connection.execute(
+                sa.select(
+                    runs.c.revision_hash,
+                    runs.c.current_node_id,
+                    runs.c.current_round_ordinal,
+                ).where(runs.c.run_id == run.value)
+            )
+            .mappings()
+            .one()
+        )
+    return node_workflow_id_for(
+        NodeExecutionId.for_node(
+            run,
+            WorkflowRevisionHash(str(row["revision_hash"])),
+            str(row["current_node_id"]),
+            int(row["current_round_ordinal"]),
+        )
+    )
+
+
+def _seed_workflow_status(runtime: DbosRuntime, workflow_id: str, status: str) -> None:
+    """Leave the node workflow in the durable status a crash or a finish leaves.
+
+    The durable runtime owns this table; a test that wants to ask about a
+    workflow left mid-flight by a crash cannot reach that status by running one.
+    """
+    with runtime.engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO workflow_status "
+                "(workflow_uuid, status, created_at, updated_at, priority) "
+                "VALUES (:workflow_id, :status, 0, 0, 0)"
+            ),
+            {"workflow_id": workflow_id, "status": status},
+        )
+
+
+def _completed_run_with_redemption_workflow(
+    runtime: DbosRuntime, run: RunId, workflow_status: str
+) -> None:
+    """A COMPLETED grant run whose sink-node redemption workflow is `workflow_status`.
+
+    The shape a crash in the post-COMPLETED, pre-redemption window leaves: the
+    sink node's workflow committed the run COMPLETED and only afterwards redeems
+    the grant, so the run reports success while its node workflow is still
+    recoverable. `workflow_status` is the durable difference between a redemption
+    still owed (recoverable) and one already finished.
+    """
+    _start(runtime, run, granted=True, proves_absence=True)
+    node_workflow_id = _current_node_workflow_id(runtime, run)
+    _complete_run(runtime, run)
+    _seed_workflow_status(runtime, node_workflow_id, workflow_status)
+
+
+def test_live_github_startup_refuses_a_completed_run_before_its_redemption_runs(
+    runtime: DbosRuntime,
+) -> None:
+    # The residual crash window (`#430`): a run committed COMPLETED and crashed
+    # before the sink node's own workflow redeemed its agent `open-pr` grant, so
+    # its node workflow is still recoverable. Recovery on a live-GitHub restart
+    # would resume it and end the run ERROR after it had reported success, so the
+    # start refuses it even though its run state is already terminal.
+    _completed_run_with_redemption_workflow(runtime, RUN, "PENDING")
+
+    with pytest.raises(LiveGitHubOpenPrRunPending) as refusal:
+        _refuse_pending_agent_open_pr_runs(runtime)
+
+    assert RUN.value in str(refusal.value)
+
+
+def test_live_github_startup_serves_when_the_completed_redemption_workflow_finished(
+    runtime: DbosRuntime,
+) -> None:
+    _completed_run_with_redemption_workflow(runtime, RUN, "SUCCESS")
 
     _refuse_pending_agent_open_pr_runs(runtime)
