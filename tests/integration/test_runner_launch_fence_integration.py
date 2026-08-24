@@ -19,10 +19,8 @@ gone before its own terminal evidence ever lands, no matter which side of
   exception for that: `commit_runner_terminal_evidence`'s `NEVER_LAUNCHED`
   branch requires `state is PREPARED`, and `arm()` already left `PREPARED`
   behind. The one legal path forward is the same one every other post-arm
-  loss takes -- `RunnerInvocationLost` -> `POSSIBLY_RAN` -- never the
-  pre-arm rebind gate (`#15-A`'s
-  `test_acked_never_launched_is_the_only_pre_arm_rebind`, reachable only for
-  a crash strictly before Core ever processes `READY`).
+  loss takes -- `RunnerInvocationLost` -> `POSSIBLY_RAN` -- never a second
+  placement.
 - **C2** -- the runner did receive `LAUNCH` and reported `STARTED`, and is
   then gone with its journal destroyed (nothing to reread on any
   reconnect). The honest ending is identical to C1's for the identical
@@ -33,10 +31,9 @@ gone before its own terminal evidence ever lands, no matter which side of
 
 `#15-A` already proved every store primitive these cuts land on
 (`arm_runner_invocation`, `commit_runner_terminal_evidence`'s
-`RunnerInvocationLost` and `NEVER_LAUNCHED` branches,
-`rebind_after_acknowledged_never_launched`) idempotent and CAS-guarded in
-isolation; this file proves the two wire-level crash points actually reach
-them the way the design intends, against a real store.
+`RunnerInvocationLost` and `NEVER_LAUNCHED` branches) idempotent and
+CAS-guarded in isolation; this file proves the two wire-level crash points
+actually reach them the way the design intends, against a real store.
 """
 
 from __future__ import annotations
@@ -82,21 +79,12 @@ from tests.integration.test_runner_session_resume import (
 from tests.scenarios.api import durable_queries
 
 
-def _never_launched_rebind_is_refused(
+def _foreign_arm_is_refused(
     store: DbosAgentAttemptStore,
     execution: AgentAttemptExecution,
     binding: RunnerGenerationBinding,
     invocation: RunnerInvocationId,
-    tombstone: RunnerTerminalEvidenceAckTombstone,
 ) -> None:
-    fresh = RunnerGenerationBinding(
-        execution.attempt_id,
-        execution.request.request_hash,
-        RunnerGenerationId(f"{binding.generation_id.value}-fresh"),
-        RunnerManifestId.of(binding.manifest_id.value.encode("ascii") + b"-fresh"),
-    )
-    with pytest.raises(RunnerBindingConflict):
-        store.rebind_after_acknowledged_never_launched(execution, tombstone, fresh)
     foreign_invocation = RunnerInvocationId(f"foreign-{invocation.value}")
     with pytest.raises(RunnerBindingConflict):
         store.arm_runner_invocation(execution, binding, foreign_invocation)
@@ -171,12 +159,11 @@ def test_c1_ready_processed_durably_arms_before_launch_is_ever_constructed(
         )
         fixture.store.mark_runner_evidence_acknowledged(fixture.execution, tombstone)
 
-        _never_launched_rebind_is_refused(
+        _foreign_arm_is_refused(
             fixture.store,
             fixture.execution,
             fixture.binding,
             fixture.invocation,
-            tombstone,
         )
     finally:
         fixture.runtime.close()
@@ -237,12 +224,11 @@ def test_c2_post_arm_loss_with_a_destroyed_journal_converges_to_possibly_ran(
         )
         fixture.store.mark_runner_evidence_acknowledged(fixture.execution, tombstone)
 
-        _never_launched_rebind_is_refused(
+        _foreign_arm_is_refused(
             fixture.store,
             fixture.execution,
             fixture.binding,
             fixture.invocation,
-            tombstone,
         )
     finally:
         fixture.runtime.close()
