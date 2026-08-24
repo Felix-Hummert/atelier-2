@@ -11,10 +11,15 @@ from __future__ import annotations
 from http import HTTPStatus
 from typing import assert_never
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
-from atelier2.api._support import parse_limit, resource_response, run_control_query
+from atelier2.api._support import (
+    parse_limit,
+    require_json_media_dependency,
+    resource_response,
+    run_control_query,
+)
 from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import ApiProblem
@@ -62,6 +67,7 @@ QUEUE_ITEMS_PATH = API_PREFIX + "/queue-items"
 async def admit_queue_item_route(
     request: AdmitQueueItemRequestResource,
     context: ApiContext = api_context_dependency,
+    _media: None = Depends(require_json_media_dependency),
 ) -> JSONResponse:
     """Admit one observed item, or answer the queue's own refusal by name."""
 

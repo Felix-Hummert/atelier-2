@@ -123,6 +123,25 @@ def test_admitting_the_same_item_again_is_idempotent(runtime: DbosRuntime) -> No
     assert repeated.json() == first.json()
 
 
+def test_admitting_with_a_non_json_content_type_is_refused(
+    runtime: DbosRuntime,
+) -> None:
+    api = durable_api_client(runtime)
+
+    refused = api.post(
+        QUEUE_ADMISSIONS_PATH,
+        content=b"project_id: project1",
+        headers={"content-type": "text/plain"},
+    )
+
+    assert refused.status_code == 415, refused.text
+    assert refused.json()["type"].endswith(":unsupported-media-type")
+    # The wrong media type admits nothing: the queue stays empty.
+    listed = api.get(QUEUE_ITEMS_PATH)
+    assert listed.status_code == 200, listed.text
+    assert listed.json() == {"items": [], "next_after": None}
+
+
 def test_admitting_against_a_stale_revision_is_a_conflict(runtime: DbosRuntime) -> None:
     api = durable_api_client(runtime)
     lineage_id = founded_workflow_lineage(api)
