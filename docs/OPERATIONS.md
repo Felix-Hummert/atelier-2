@@ -415,6 +415,60 @@ and named here rather than left for an operator to discover.
   `--maximum-journal-bytes` above. That closes the lease-chosen half; the image
   itself is what you declared with `--runner-image`.
 
+## Serve as the lease writer (`#540` C-3.6)
+
+Serve itself can be composed as the process that *writes* the leases the
+launcher above claims — the fake-free-only slice of the live cutover, over
+`atelier2.adapters.file_runner_leases.FileRunnerLeasePublisher`; Serve never
+touches Docker. Its Runner-lease deployment is one group of `HostSettings`
+answers — a lease root, the Runner image and its declared digest, the
+console's own container name, a directory holding the console's
+`ca.crt`/`core.crt`/`core.key`, and an accept deadline — declared together or
+refused by name at start; there is no `atelier2 serve` command-line flag for
+any of them yet, so reaching this composition today means constructing
+`HostSettings` directly rather than through the packaged CLI. Only the fixed
+fake-free candidate is served this way; a real provider over a Runner lease
+waits on `#15` and B-3.
+
+**Every start withdraws its own open leases first**, before anything else
+touches the lease directory: a lease this exact process published and never
+saw claimed before its own restart would otherwise sit `open` until some
+launcher happens to poll past it — and a launcher that does, hours later,
+would start a Runner container for an Attempt whose driving workflow this
+process no longer owns. Withdrawal is one-way here: it moves the lease to
+`withdrawn/` and deletes the attempt material, so a recovered workflow that
+republishes is answered `RunnerLeaseExisting` and no fresh open lease
+reappears — that Attempt is stranded non-terminal for #585 (below) to
+converge, not retried automatically. A lease a launcher already claimed loses
+this race harmlessly and is left for its launcher.
+
+**Every start also names, once, every Runner-lease Attempt no workflow still
+owes its next move** — a `runner_lease_attempt_driverless` log line per
+Attempt (run, node and attempt id), plus a total count. Nothing durable is
+written and no evidence is invented; each Attempt named this way stays exactly
+`POSSIBLY_RAN`/armed for you to read.
+
+**At most one Runner Attempt runs at a time.** The Core session listener binds
+one fixed port (`atelier2.adapters.runner_tls.CORE_SESSION_PORT`) per Serve
+process, so a second, concurrent Runner-lease Attempt waits for the first to
+release rather than failing — logged as `agent_attempt_awaiting_runner_slot`.
+No run ends unsuccessfully only because another Runner Attempt was already
+running.
+
+**Two named gaps, until their own items land.** (i) A Runner-lease Attempt a
+launcher never claims has no way to `CANCELLED` yet; the durable close is
+Kind #584 (`#540`), gated before `#439` P4. (ii) A Serve crash mid-session
+leaves its Attempt `LAUNCH_ARMED`/`POSSIBLY_RAN` and its run `STARTED` —
+nothing here reads the launcher's own retained journal back yet; that source
+is Kind #585 (`#540`), required before C-4's live cutover. A workflow that
+does recover and republishes its own already-withdrawn lease does not fail
+fast today — it polls the deleted attempt paths for the full accept deadline
+before reporting a timeout; that fast-fail is #585's too. **Until #585
+lands: wait for a running Runner-lease agent node to finish, or cancel its
+run, before restarting or updating this deployment** — a restart kills the
+driving workflow mid-session exactly as an uncontained crash would, and this
+line falls with #585.
+
 ## Stable local Serve installation
 
 From a clean committed checkout, install the one stable provider-free console:
