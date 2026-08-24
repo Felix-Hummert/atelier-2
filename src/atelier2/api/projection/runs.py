@@ -29,6 +29,8 @@ from atelier2.api.wire.resources import (
     NoWaitingResource,
     NoWaitingResourceV2,
     PublicAttemptStateName,
+    RunCancellabilityResource,
+    RunNotCancellableReasonName,
     RunReceiptResource,
     RunResource,
     RunResourceV2,
@@ -45,6 +47,8 @@ from atelier2.contracts.agents import AgentReceiptV2
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_projections import (
     NodeDetail,
+    PublicAgentAttemptState,
+    RunCancellationRefusal,
     RunProjection,
 )
 from atelier2.contracts.runs import RunState
@@ -53,6 +57,11 @@ from atelier2.contracts.workflows import (
     WorkflowGraphV2,
     WorkflowNode,
     WorkflowNodeV2,
+)
+from atelier2.contracts.workflows_v3 import AgentNodeV3
+
+_LIVE_ATTEMPT_STATES = frozenset(
+    {PublicAgentAttemptState.PREPARED, PublicAgentAttemptState.POSSIBLY_RAN}
 )
 
 
@@ -134,6 +143,51 @@ def run_resource(projection: RunProjection) -> AnyRunResource:
     )
 
 
+def _run_not_cancellable_reason(
+    projection: RunProjection, run: RunV3
+) -> RunCancellationRefusal | None:
+    """Why this run cannot be operator-cancelled now, or nothing when it can.
+
+    The closed predicate #439 D3 makes the server own: a run is cancellable only
+    while it is STARTED on an agent node whose live attempt this cancel could
+    stop. Every other standing is a named reason, never a silent no.
+    """
+    if run.state in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}:
+        return RunCancellationRefusal.ALREADY_ENDED
+    if run.state in {RunState.WAITING_INPUT, RunState.WAITING_RECONCILIATION}:
+        return RunCancellationRefusal.WAITING_FOR_YOU
+    if not isinstance(projection.graph.node(run.current_node_id), AgentNodeV3):
+        return RunCancellationRefusal.NODE_RUNS_NO_AGENT
+    attempt = projection.current_agent_attempt
+    if attempt is None or attempt.state not in _LIVE_ATTEMPT_STATES:
+        if attempt is not None and attempt.state is (
+            PublicAgentAttemptState.CANCEL_REQUESTED
+        ):
+            return RunCancellationRefusal.ALREADY_CANCELLING
+        return RunCancellationRefusal.BETWEEN_NODES
+    return None
+
+
+def _run_cancellability(
+    projection: RunProjection, run: RunV3
+) -> RunCancellabilityResource:
+    reason = _run_not_cancellable_reason(projection, run)
+    if reason is not None:
+        return RunCancellabilityResource(
+            cancellable=False,
+            reason=cast(RunNotCancellableReasonName, reason.value),
+            target_node_execution_id=None,
+        )
+    attempt = projection.current_agent_attempt
+    if attempt is None:
+        raise ValueError("a cancellable run has a live attempt to fence on")
+    return RunCancellabilityResource(
+        cancellable=True,
+        reason=None,
+        target_node_execution_id=attempt.node_execution_id.value,
+    )
+
+
 def _run_resource_v3(projection: RunProjection, run: RunV3) -> RunResourceV3:
     """One V3 run rendered in its own shape, along the edge its author declared."""
     return RunResourceV3(
@@ -175,6 +229,7 @@ def _run_resource_v3(projection: RunProjection, run: RunV3) -> RunResourceV3:
         # A run resource says where the snapshot stands, so no event has
         # overtaken it here; the event stream carries its own rail.
         node_rail=node_rail_resources(project_node_rail(projection, ())),
+        cancellation=_run_cancellability(projection, run),
         terminal_hash=None if run.terminal_hash is None else run.terminal_hash.value,
         latest_event_cursor=(
             None

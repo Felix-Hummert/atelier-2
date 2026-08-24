@@ -116,6 +116,7 @@ from atelier2.contracts.run_cancellations import (
     RunCancelCommandId,
     is_operator_run_cancel,
 )
+from atelier2.contracts.run_projections import RunCancellationRefusal
 from atelier2.contracts.runs import (
     TERMINAL_RUN_STATES,
     RunId,
@@ -160,7 +161,6 @@ from atelier2.ports.agent_attempts import (
     RunCancellationCommandConflict,
     RunCancellationNotCancellable,
     RunCancellationOvertakenBySuccess,
-    RunCancellationRefusal,
     RunCancellationResult,
     RunCancellationRunMissing,
     RunCancellationTerminalRetry,

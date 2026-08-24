@@ -43,6 +43,7 @@ from atelier2.application.admit_queue_item import (
 )
 from atelier2.application.answer_wait import answer_wait_result
 from atelier2.application.cancel_agent_attempt import cancel_agent_attempt
+from atelier2.application.cancel_run import cancel_run_result
 from atelier2.application.occupancy import (
     get_occupancy_revision,
     publish_occupancy_revision,
@@ -248,6 +249,14 @@ def bound_use_cases(
         ),
         cancel_agent_attempt=lambda request: cancel_agent_attempt(
             request, ports.agent_attempt_canceller
+        ),
+        cancel_run=lambda run_id, idempotency_key, expected_node_execution_id: (
+            cancel_run_result(
+                run_id,
+                idempotency_key,
+                expected_node_execution_id,
+                ports.agent_attempt_canceller,
+            )
         ),
         reconcile_run=lambda request: reconcile_run(
             request, ports.run_queries, ports.reconcile_commander

@@ -1043,6 +1043,44 @@ class RunResourceV2(ApiModel):
         return self
 
 
+# The reason vocabulary the wire spells is `RunCancellationRefusal`'s closed set
+# (its owner in `contracts/run_projections.py`), written out here because the
+# wire schema may name no contract enum inline; `api/projection/runs.py` casts
+# the enum's value into it, past pyright, so
+# `test_the_wire_reason_literal_and_the_refusal_enum_cannot_drift` pins the two
+# spellings to set equality and fails the moment either side drifts.
+RunNotCancellableReasonName = Literal[
+    "between-nodes",
+    "waiting-for-you",
+    "node-runs-no-agent",
+    "already-cancelling",
+    "already-ended",
+]
+
+
+class RunCancellabilityResource(ApiModel):
+    """Whether this V3 run can be operator-cancelled right now, said by the server.
+
+    #439 D3 makes the server the owner of this predicate rather than letting the
+    cockpit guess it from the rail. A cancellable run carries the
+    `target_node_execution_id` the client fences its command on; a run that
+    cannot be cancelled carries the closed reason token that names why, so the
+    cockpit shows the operator sentence instead of a grey nothing.
+    """
+
+    cancellable: bool
+    reason: RunNotCancellableReasonName | None
+    target_node_execution_id: str | None = Field(pattern=SHA256_HASH_PATTERN)
+
+    @model_validator(mode="after")
+    def validate_predicate_shape(self) -> RunCancellabilityResource:
+        if self.cancellable != (self.target_node_execution_id is not None):
+            raise ValueError("a cancellable run names its target node execution")
+        if self.cancellable != (self.reason is None):
+            raise ValueError("a non-cancellable run names exactly one reason")
+        return self
+
+
 class RunResourceV3(ApiModel):
     """One V3 run as it reads back: its own format, never a V2 one renumbered.
 
@@ -1090,6 +1128,7 @@ class RunResourceV3(ApiModel):
     ]
     current_node_id: str = Field(min_length=1)
     node_rail: tuple[NodeRailResource, ...] = Field(min_length=1)
+    cancellation: RunCancellabilityResource
     terminal_hash: str | None = Field(pattern=SHA256_HASH_PATTERN)
     latest_event_cursor: str | None = Field(pattern=EVENT_CURSOR_PATTERN)
     started_at: str | None = None

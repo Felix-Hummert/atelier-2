@@ -26,6 +26,7 @@ from atelier2.api.openapi import (
     PROJECT_PATH,
     PROJECT_ROOT_PATH,
     PROJECTS_PATH,
+    RUN_CANCELLATION_PATH,
 )
 from atelier2.api.references import (
     CATALOG_LINEAGE_ID_PATTERN,
@@ -104,6 +105,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/runs/{public_ref}/answers",
     API_PREFIX + "/runs/{public_ref}/reconciliations",
     CANCELLATION_PATH,
+    RUN_CANCELLATION_PATH,
     EVENT_PATH,
     ATTENTION_EVENT_PATH,
     API_PREFIX + "/queue-admissions",
@@ -197,6 +199,7 @@ EXPECTED_ROUTE_SEQUENCE = (
         API_PREFIX + "/runs/{public_ref}/reconciliations",
         "reconcile_run_route",
     ),
+    ("POST", RUN_CANCELLATION_PATH, "cancel_run_route"),
     ("GET", EVENT_PATH, "event_stream_route"),
     ("GET", ATTENTION_EVENT_PATH, "attention_event_stream_route"),
     ("POST", API_PREFIX + "/queue-admissions", "admit_queue_item_route"),
@@ -229,6 +232,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/runs/{public_ref}/answers", "post"): {"200", "202"},
     (API_PREFIX + "/runs/{public_ref}/reconciliations", "post"): {"200", "202"},
     (CANCELLATION_PATH, "post"): {"200", "202"},
+    (RUN_CANCELLATION_PATH, "post"): {"200", "202"},
     (EVENT_PATH, "get"): {"200"},
     (ATTENTION_EVENT_PATH, "get"): {"200"},
 }

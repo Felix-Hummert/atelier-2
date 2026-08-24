@@ -217,3 +217,20 @@ class CancelAgentAttemptRequestResource(ApiModel):
     command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     expected_attempt_state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
     replacement: Literal["NONE", "ONE"]
+
+
+class CancelRunRequestResource(ApiModel):
+    """One operator's confirmed V3 run-cancel, in the words #439 D2 settled.
+
+    The client sends only the `idempotency_key` it repeats on retry; the durable
+    command id is minted server-side into the reserved run-cancel namespace, so a
+    command outside it is unrepresentable. `expected_node_execution_id` is D2's
+    fence: it binds run, revision, node and declared-loop round in the one value
+    the store recomputes rather than trusts, and the client writes back exactly
+    the `cancellation.target_node_execution_id` the run resource just served it.
+    """
+
+    idempotency_key: str = Field(
+        min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS
+    )
+    expected_node_execution_id: str = Field(pattern=SHA256_HASH_PATTERN)
