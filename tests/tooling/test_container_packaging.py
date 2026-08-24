@@ -31,6 +31,14 @@ CI = PROJECT_ROOT / ".github" / "workflows" / "ci.yml"
 
 SOURCE_COMMIT = "ATELIER2_SOURCE_COMMIT"
 SOURCE_TREE = "ATELIER2_SOURCE_TREE"
+RUNNER_LEASE_CARRIERS = {
+    "ATELIER2_RUNNER_LEASE_ROOT": "--runner-lease-root",
+    "ATELIER2_RUNNER_IMAGE": "--runner-image",
+    "ATELIER2_RUNNER_IMAGE_DIGEST": "--runner-image-digest",
+    "ATELIER2_RUNNER_CONSOLE_CONTAINER": "--runner-console-container",
+    "ATELIER2_RUNNER_CORE_IDENTITY_DIRECTORY": "--runner-core-identity-directory",
+    "ATELIER2_RUNNER_ACCEPT_TIMEOUT_SECONDS": "--runner-accept-timeout-seconds",
+}
 DIRTY_TREE_REFUSAL = "container snapshot: source tree must be clean"
 PROJECT_NAME = re.compile(r"^atelier2-[0-9a-f]{16}$")
 
@@ -331,6 +339,54 @@ if sys.argv[-5:] == ["down", "--volumes", "--rmi", "local", "--remove-orphans"] 
     Path(sys.argv[sys.argv.index("-f") + 1]).parent.chmod(0o500)
 """,
     )
+
+
+def install_serve_stub(directory: Path) -> None:
+    write_stub(
+        directory / "atelier2",
+        """\
+import json
+import os
+import sys
+from pathlib import Path
+
+Path(os.environ["ATELIER2_TEST_SERVE_RECORD"]).write_text(
+    json.dumps(sys.argv[1:]), encoding="utf-8"
+)
+""",
+    )
+
+
+def packaged_serve_arguments(
+    tmp_path: Path, declared: dict[str, str] | None = None
+) -> list[str]:
+    bin_directory = tmp_path / "bin"
+    bin_directory.mkdir(exist_ok=True)
+    install_serve_stub(bin_directory)
+    record = tmp_path / "serve-arguments.json"
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name not in RUNNER_LEASE_CARRIERS
+    }
+    environment.update(
+        {
+            "PATH": f"{bin_directory}{os.pathsep}{os.environ['PATH']}",
+            "ATELIER2_TEST_SERVE_RECORD": str(record),
+            SOURCE_COMMIT: "0" * 40,
+            SOURCE_TREE: "1" * 40,
+            **(declared or {}),
+        }
+    )
+    completed = subprocess.run(
+        ["sh", str(CONTAINER_SERVE)],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(record.read_text(encoding="utf-8"))
 
 
 def install_git_stub(directory: Path) -> None:
@@ -711,12 +767,52 @@ def test_compose_guard_rejects_authority_and_static_resource_mutations() -> None
             assert_isolated_compose(mutated)
 
 
-def test_serve_has_no_provider_or_runner_vector() -> None:
+def test_serve_has_no_provider_or_credential_vector() -> None:
     serve = CONTAINER_SERVE.read_text(encoding="utf-8")
     assert "--host 0.0.0.0" in serve
     assert "--port 8422" in serve
-    for forbidden in ("claude", "codex", "grok", "credential", "scratch", "runner"):
+    for forbidden in ("claude", "codex", "grok", "credential", "scratch"):
         assert forbidden not in serve.lower()
+
+
+def test_undeclared_runner_lease_deployment_serves_runner_free(tmp_path: Path) -> None:
+    arguments = packaged_serve_arguments(tmp_path)
+    assert arguments[0] == "serve"
+    assert not any(argument.startswith("--runner") for argument in arguments)
+
+
+def test_serve_carries_every_declared_runner_lease_value_unchanged(
+    tmp_path: Path,
+) -> None:
+    declared = {
+        "ATELIER2_RUNNER_LEASE_ROOT": "/srv/atelier2/runner lease root",
+        "ATELIER2_RUNNER_IMAGE": "atelier2-runner:candidate",
+        "ATELIER2_RUNNER_IMAGE_DIGEST": f"sha256:{'a' * 64}",
+        "ATELIER2_RUNNER_CONSOLE_CONTAINER": "atelier2-console",
+        "ATELIER2_RUNNER_CORE_IDENTITY_DIRECTORY": "/srv/atelier2/console-identity",
+        "ATELIER2_RUNNER_ACCEPT_TIMEOUT_SECONDS": "30.0",
+    }
+
+    baseline = packaged_serve_arguments(tmp_path)
+    carried = packaged_serve_arguments(tmp_path, declared)
+
+    assert carried == baseline + [
+        token
+        for name, flag in RUNNER_LEASE_CARRIERS.items()
+        for token in (flag, declared[name])
+    ]
+
+
+def test_serve_carries_a_partial_runner_lease_declaration_for_serve_to_refuse(
+    tmp_path: Path,
+) -> None:
+    baseline = packaged_serve_arguments(tmp_path)
+
+    carried = packaged_serve_arguments(
+        tmp_path, {"ATELIER2_RUNNER_IMAGE": "atelier2-runner:candidate"}
+    )
+
+    assert carried == baseline + ["--runner-image", "atelier2-runner:candidate"]
 
 
 def test_clean_tree_starts_one_random_project_and_prints_scoped_teardown(
