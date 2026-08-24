@@ -65,7 +65,7 @@ class AttentionEventPage:
 
 @dataclass(frozen=True)
 class AttentionCursorUnknown:
-    """Last-Event-ID is not a WAITING_INPUT or AGENT_FAILED event with a V22 instant."""
+    """Last-Event-ID is not an attention-kind event with a V22 instant."""
 
 
 type ReadAttentionEventPageResult = (

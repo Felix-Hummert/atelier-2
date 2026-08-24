@@ -16,6 +16,7 @@ from atelier2.api.references import (
 )
 from atelier2.api.wire.resources import InvalidFieldResource, ProblemResource
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationRefusal
+from atelier2.contracts.agent_definitions import AgentDefinitionRefusal
 from atelier2.contracts.artifacts import ArtifactRefusal
 from atelier2.contracts.budgets_v3 import BudgetRevisionRefusal
 from atelier2.contracts.schemas_v3 import SchemaDocumentRefusal
@@ -187,6 +188,35 @@ ADAPTER_OPERATION_DOCUMENT_PROBLEM_CODES = tuple(
 )
 
 
+def agent_definition_document_problem_code(refusal: AgentDefinitionRefusal) -> str:
+    """The problem code one agent-definition refusal becomes on the wire.
+
+    The authoring contract already names each fault in the hyphenated problem
+    vocabulary, so the author reads the same shape as a schema or tool-grant
+    refusal. The contract token itself still stands in the detail.
+    """
+
+    return f"agent-definition-{refusal.value}"
+
+
+def _agent_definition_document_problems() -> dict[str, ProblemDefinition]:
+    return {
+        agent_definition_document_problem_code(refusal): ProblemDefinition(
+            422,
+            "Invalid agent definition document",
+            "The document is not an agent definition this catalog publishes "
+            f"({refusal.value}).",
+        )
+        for refusal in AgentDefinitionRefusal
+    }
+
+
+AGENT_DEFINITION_DOCUMENT_PROBLEM_CODES = tuple(
+    agent_definition_document_problem_code(refusal)
+    for refusal in AgentDefinitionRefusal
+)
+
+
 @dataclass(frozen=True)
 class ProblemDefinition:
     status: int
@@ -349,6 +379,12 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         409,
         "Adapter operation revision collision",
         "Stop and inspect durable adapter operation revision integrity.",
+    ),
+    **_agent_definition_document_problems(),
+    "agent-definition-revision-collision": ProblemDefinition(
+        409,
+        "Agent definition revision collision",
+        "Stop and inspect durable agent definition revision integrity.",
     ),
     "unsupported-media-type": ProblemDefinition(
         415,
