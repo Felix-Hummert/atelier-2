@@ -17,6 +17,21 @@ DEFAULT_SERVICE_URL = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
 ADDRESSABLE_SCHEMES = frozenset({"http", "https"})
 
 
+def is_loopback_host(host: str) -> bool:
+    """Whether this host string is a literal loopback IP address.
+
+    A name resolves elsewhere at connect or bind time, so a host this function
+    cannot read as an address is not trusted as loopback. This is the single
+    owner of that host-level trust rule; callers add why a non-loopback host is
+    refused for their boundary.
+    """
+
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
 def is_loopback_service_url(service_url: str) -> bool:
     """Whether this client address is a literal loopback host.
 
@@ -30,7 +45,4 @@ def is_loopback_service_url(service_url: str) -> bool:
     host = address.hostname
     if address.scheme not in ADDRESSABLE_SCHEMES or not host:
         return False
-    try:
-        return ipaddress.ip_address(host.strip("[]")).is_loopback
-    except ValueError:
-        return False
+    return is_loopback_host(host)

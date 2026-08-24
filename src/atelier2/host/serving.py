@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ipaddress
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -70,7 +69,7 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.pages import PageLimit
-from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT
+from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, is_loopback_host
 from atelier2.host.logging import configure_process_logging
 from atelier2.host.webhook_delivery import (
     WebhookDeliveryLoop,
@@ -393,7 +392,7 @@ class HostSettings:
             raise ValueError(
                 "a scratch root without a provider executor serves nothing"
             )
-        if billed and not _is_loopback(self.host):
+        if billed and not is_loopback_host(self.host):
             raise ValueError(
                 f"serving {' and '.join(billed)} subscription agents requires a "
                 f"loopback bind, not {self.host!r}: starting a billed provider is "
@@ -422,19 +421,6 @@ class HostSettings:
         # travel the same way as the ones above -- the command line catches this
         # constructor, and nothing below it.
         self.runtime_settings()
-
-
-def _is_loopback(host: str) -> bool:
-    """Only a literal loopback address proves the bind stays on this machine.
-
-    A name resolves elsewhere at bind time, so a host this function cannot read
-    as an address is refused rather than trusted.
-    """
-
-    try:
-        return ipaddress.ip_address(host.strip("[]")).is_loopback
-    except ValueError:
-        return False
 
 
 def _require_start_refusal(
