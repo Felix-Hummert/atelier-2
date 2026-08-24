@@ -1,0 +1,190 @@
+"""The HTTP door kind `agent_definition` was missing: authored bytes in, hash out.
+
+The authoring format (#66) could already parse, stability-check, and package a
+Markdown agent definition, but no surface published it. These tests drive the
+real route against the real store and read the published bytes back by their
+hash — because the sentence this door is worth anything for is not "the bytes
+were stored" but "the exact authored definition comes back out".
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from httpx import Response
+
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
+from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.adapters.markdown_agent_definitions import parse_agent_definition
+from atelier2.api.openapi import API_PREFIX
+from atelier2.contracts.agent_definitions import DeclaredTools
+from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.ports.published_revisions import (
+    PublishedRevisionFound,
+    PublishedRevisionMissing,
+)
+from tests.scenarios.agents import agent_scratch_root
+from tests.scenarios.api import durable_api_client
+
+DEFINITION_PATH = f"{API_PREFIX}/agent-definition-revisions"
+THE_DEFINITION = (
+    b"---\n"
+    b"name: stage-name-witness\n"
+    b"description: Watches the stage and names what it sees.\n"
+    b"model: sonnet\n"
+    b"tools: Read, Grep\n"
+    b"---\n"
+    b"\nYou watch the stage and name what you see.\n"
+)
+
+
+@pytest.fixture
+def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
+    started = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "agent-definition-door-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
+        LoopbackEffectAdapterFactory(
+            tmp_path / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+        ExactOutputAgentExecutorFactory(),
+    )
+    started.initialize_storage()
+    try:
+        yield started
+    finally:
+        started.close()
+
+
+def publish(api: TestClient, document: bytes) -> Response:
+    return api.post(
+        DEFINITION_PATH, content=document, headers={"content-type": "text/markdown"}
+    )
+
+
+@pytest.mark.proves("the-published-revision-reconstructs-the-definition")
+def test_a_published_definition_read_back_by_its_hash_is_the_identical_definition(
+    runtime: DbosRuntime,
+) -> None:
+    api = durable_api_client(runtime)
+
+    created = publish(api, THE_DEFINITION)
+    retried = publish(api, THE_DEFINITION)
+
+    assert (created.status_code, retried.status_code) == (201, 200)
+    assert created.json() == retried.json()
+    definition_hash = created.json()["agent_definition_revision_hash"]
+    assert definition_hash == PublishedRevisionHash.of(THE_DEFINITION).value
+    resolved = DbosCatalogStore(runtime.engine).resolve(
+        RevisionKind.AGENT_DEFINITION, PublishedRevisionHash(definition_hash)
+    )
+    assert isinstance(resolved, PublishedRevisionFound)
+    assert resolved.revision.kind is RevisionKind.AGENT_DEFINITION
+    assert resolved.revision.document == THE_DEFINITION
+
+    authored = parse_agent_definition(THE_DEFINITION)
+    reconstructed = parse_agent_definition(resolved.revision.document)
+    assert reconstructed == authored
+    assert reconstructed.name == "stage-name-witness"
+    assert reconstructed.description == "Watches the stage and names what it sees."
+    assert reconstructed.model == "sonnet"
+    assert isinstance(reconstructed.tools, DeclaredTools)
+    assert tuple(name.value for name in reconstructed.tools.names) == ("Grep", "Read")
+    assert (
+        reconstructed.system_prompt == "\nYou watch the stage and name what you see.\n"
+    )
+
+
+@pytest.mark.proves("the-same-file-is-the-same-revision-identity")
+def test_two_definitions_differing_only_in_prompt_are_two_distinct_revisions(
+    runtime: DbosRuntime,
+) -> None:
+    """The gap this door closes: the prompt now reaches a durable identity.
+
+    The agent-configuration revision could not tell two prompts apart, which
+    `test_todays_catalog_revision_cannot_tell_two_prompts_apart` pinned until
+    this change retired it: the definition bytes are the durable truth now.
+    """
+
+    api = durable_api_client(runtime)
+    idling = THE_DEFINITION.replace(
+        b"You watch the stage and name what you see.", b"You watch nothing."
+    )
+
+    watching_hash = publish(api, THE_DEFINITION).json()[
+        "agent_definition_revision_hash"
+    ]
+    idling_hash = publish(api, idling).json()["agent_definition_revision_hash"]
+
+    assert watching_hash != idling_hash
+
+
+@pytest.mark.proves("missing-or-unknown-frontmatter-is-refused-by-name")
+@pytest.mark.parametrize(
+    ("document", "problem_code", "named_subject"),
+    (
+        pytest.param(
+            b"You are an agent with no frontmatter.\n",
+            "agent-definition-frontmatter-missing",
+            None,
+            id="frontmatter-missing",
+        ),
+        pytest.param(
+            b"---\ndescription: A nameless agent.\n---\nBody.\n",
+            "agent-definition-field-missing",
+            "name",
+            id="required-field-missing",
+        ),
+        pytest.param(
+            b"---\nname: witness\ndescription: Watches.\ncolor: cyan\n---\nBody.\n",
+            "agent-definition-field-unknown",
+            "color",
+            id="unknown-field",
+        ),
+        pytest.param(
+            b"---\nname: [unclosed\n---\nBody.\n",
+            "agent-definition-frontmatter-unparsable",
+            None,
+            id="frontmatter-unparsable",
+        ),
+    ),
+)
+def test_a_refused_definition_is_named_by_its_own_reason(
+    runtime: DbosRuntime,
+    document: bytes,
+    problem_code: str,
+    named_subject: str | None,
+) -> None:
+    refused = publish(durable_api_client(runtime), document)
+
+    assert refused.status_code == 422
+    assert refused.json()["type"].endswith(f":{problem_code}")
+    if named_subject is not None:
+        assert named_subject in refused.json()["detail"]
+    missing = DbosCatalogStore(runtime.engine).resolve(
+        RevisionKind.AGENT_DEFINITION, PublishedRevisionHash.of(document)
+    )
+    assert isinstance(missing, PublishedRevisionMissing)
+
+
+def test_a_definition_publication_refuses_the_wrong_media_type(
+    runtime: DbosRuntime,
+) -> None:
+    refused = durable_api_client(runtime).post(
+        DEFINITION_PATH,
+        content=THE_DEFINITION,
+        headers={"content-type": "application/json"},
+    )
+
+    assert refused.status_code == 415
+    assert refused.json()["type"].endswith(":unsupported-media-type")

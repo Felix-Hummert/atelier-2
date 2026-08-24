@@ -61,7 +61,11 @@ role is resolved to one immutable, secret-free agent-configuration revision and
 authentication-profile revision; the complete matrix is frozen into that run.
 That frozen chain currently ends at the `AgentConfigurationRevision`: it binds
 model, authentication profile, executor and requested capability, but no Markdown
-agent-definition revision or system prompt. A format-3 node's executable job today
+agent-definition revision or system prompt. A Markdown agent definition itself is
+already publishable as an immutable `agent_definition` catalog revision over
+`POST /agent-definition-revisions` — exact authored bytes in, hash out, with the
+identical definition reconstructable from the stored bytes — but no
+configuration references it yet. A format-3 node's executable job today
 is its authored instruction composed with the exact named run material it reads.
 The target configuration-to-definition link is owned by
 [ADR 0007](decisions/0007-catalog-identity.md), not inferred from matching model
