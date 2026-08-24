@@ -144,7 +144,10 @@ def publish_and_run(runtime: DbosRuntime) -> None:
     workflow = WorkflowRevision(ROUND_CONTEXT_LOOP_DOCUMENT)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     started = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(
             RUN,

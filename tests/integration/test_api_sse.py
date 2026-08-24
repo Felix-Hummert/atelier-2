@@ -205,7 +205,10 @@ def _client(runtime: DbosRuntime, page_size: int = 2) -> TestClient:
         ports=ApiPorts(
             DbosWorkflowRevisionPublisher(runtime.engine),
             DbosDurableRunStarter(
-                runtime.engine, runtime.settings, runtime.agent_executor_registry
+                runtime.engine,
+                runtime.settings,
+                runtime.agent_executor_registry,
+                effect_adapter_proves_absence=True,
             ),
             DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
             DbosEffectReconcileCommander(runtime.engine, runtime.settings),

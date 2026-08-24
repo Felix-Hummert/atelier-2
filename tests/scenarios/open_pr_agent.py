@@ -141,6 +141,9 @@ def create_open_pr_agent_run(
 ) -> None:
     """Create the durable run for this published workflow, without launching it."""
     started = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(run, workflow.revision_hash, bindings))
     assert isinstance(started, DurableRunCreated), started

@@ -10,6 +10,7 @@ an import.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -257,6 +258,39 @@ def test_withdraw_before_any_claim_wins_and_removes_the_attempt_directory(
     assert not (tmp_path / "leases" / "open" / f"{_LEASE_ID.value}.json").exists()
     assert (tmp_path / "leases" / "withdrawn" / f"{_LEASE_ID.value}.json").is_file()
     assert not (tmp_path / "attempts" / _LEASE_ID.value).exists()
+
+
+def test_serving_an_invocation_for_a_withdrawn_lease_fails_fast(
+    tmp_path: Path,
+) -> None:
+    """A recovered workflow republishing its own withdrawn lease is answered
+    `RunnerLeaseExisting`, and the peer material it waits on was deleted with
+    the Attempt: `#584` deferred failing fast there to `#585`. This proves it no
+    longer burns the whole accept deadline polling paths `withdraw` removed."""
+    publisher = _publisher(tmp_path)
+    publisher.publish(_request())
+    publisher.withdraw(_LEASE_ID)
+
+    started = time.monotonic()
+    result = publisher.serve_one_invocation(_LEASE_ID, deadline_seconds=30.0)
+    elapsed = time.monotonic() - started
+
+    assert result == RunnerInvocationTimedOut(_LEASE_ID)
+    assert elapsed < 5.0
+
+
+def test_serving_an_invocation_still_waits_while_the_material_stands(
+    tmp_path: Path,
+) -> None:
+    """A published, not-yet-launched lease is still waited on to its deadline:
+    the fast path is only for material that was withdrawn, never for a launcher
+    that has simply not written the peer material yet."""
+    publisher = _publisher(tmp_path)
+    publisher.publish(_request())
+
+    result = publisher.serve_one_invocation(_LEASE_ID, deadline_seconds=0.05)
+
+    assert result == RunnerInvocationTimedOut(_LEASE_ID)
 
 
 def test_withdraw_is_idempotent_once_it_has_already_won(tmp_path: Path) -> None:

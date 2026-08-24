@@ -244,7 +244,10 @@ def armed_attempt(
     workflow = WorkflowRevision(document)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     created = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
     )

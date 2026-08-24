@@ -79,6 +79,22 @@ class DurableBindingConstraintRefused:
     distinct_from: str
 
 
+@dataclass(frozen=True)
+class DurableAgentPlatformEffectUnreconcilable:
+    """This deployment's effect adapter cannot safely redeem an agent `open-pr` grant.
+
+    The named agent node carries an effect-shaped `open-pr` grant, redeemed
+    against the effect adapter after the attempt already succeeded. The composed
+    adapter cannot prove absence (a live-GitHub search is eventually consistent),
+    and an agent redemption has no Action-only `WAITING_RECONCILIATION` resting
+    place, so the run is refused at admission rather than left to raise after it
+    reported success (the `#430`/`#431` reconciliation precondition). The Action
+    node path, which does have `WAITING_RECONCILIATION`, is unaffected.
+    """
+
+    node: str
+
+
 type DurablePublishedRunResult = (
     DurableRunCreated
     | DurableRunExisting
@@ -90,6 +106,7 @@ type DurablePublishedRunResult = (
     | DurableAgentExecutorBindingUnavailable
     | DurableAgentExecutorCapabilityUnavailable
     | DurableBindingConstraintRefused
+    | DurableAgentPlatformEffectUnreconcilable
     | DurableWriteUnavailable
     | DurableStateCorrupt
     | DurableV3StartInputRefused

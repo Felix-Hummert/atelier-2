@@ -86,7 +86,12 @@ def start_published_v1_run(
         run_id,
         revision.revision_hash,
         None,
-        DbosDurableRunStarter(engine, settings, agent_executor_registry),
+        DbosDurableRunStarter(
+            engine,
+            settings,
+            agent_executor_registry,
+            effect_adapter_proves_absence=True,
+        ),
     )
     assert isinstance(result, (RunCreated, RunExisting)), result
     return result.run

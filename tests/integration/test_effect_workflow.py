@@ -97,6 +97,10 @@ class UnknownReadbackFactory:
     def binding(self) -> EffectAdapterBinding:
         return self._delegate.binding
 
+    @property
+    def proves_absence(self) -> bool:
+        return self._delegate.proves_absence
+
     def open(self) -> UnknownReadbackAdapter:
         self.opened = UnknownReadbackAdapter(self, self._delegate.open())
         return self.opened

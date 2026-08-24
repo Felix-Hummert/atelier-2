@@ -150,6 +150,8 @@ class RecordingCarrier:
     runner_exits: list[int]
     offer: bytes = json.dumps({"invocation_id": _INVOCATION}).encode("utf-8")
     journal_records: list[bool] = field(default_factory=list)
+    retained_record: bytes = b"\x00retained-terminal-record-bytes"
+    running_containers: set[str] = field(default_factory=set)
     delivery_refusal: Exception | None = None
     policy_removal_refusal: Exception | None = None
     created: dict[str, list[str]] = field(
@@ -246,7 +248,21 @@ class RecordingCarrier:
     def file_exists_in_volume(
         self, volume: str, image: str, path: PurePosixPath
     ) -> bool:
-        return self.journal_records.pop(0)
+        return self.journal_records.pop(0) if self.journal_records else False
+
+    def read_file_in_volume(
+        self, volume: str, image: str, path: PurePosixPath, maximum_bytes: int
+    ) -> bytes:
+        if volume in self.removed["volumes"]:
+            # A removed volume can no longer be read: the fake encodes the
+            # retain-before-delete invariant, so a retain that ran after the
+            # delete would fail here instead of quietly reading nothing.
+            raise CarrierRefusal(f"carrier-volume-file-unreadable: {volume}")
+        self.operations.append("read-volume")
+        return self.retained_record
+
+    def container_running(self, container: str) -> bool:
+        return container in self.running_containers
 
     def labelled_containers(self, label: str) -> tuple[str, ...]:
         return tuple(self.created["containers"])
@@ -351,9 +367,12 @@ class OpenLeases:
     def release(self, lease: RunnerLease) -> None:
         self.released.append(lease.lease_id.value)
 
-    def abandon_stale_claims(self) -> tuple[str, ...]:
-        abandoned, self.stale = self.stale, ()
-        return abandoned
+    def stale_claims(self) -> tuple[str, ...]:
+        return self.stale
+
+    def release_reconciled_claim(self, lease_id: RunnerLeaseId) -> None:
+        self.released.append(lease_id.value)
+        self.stale = tuple(name for name in self.stale if name != lease_id.value)
 
 
 def test_a_lease_document_is_claimed_by_exactly_one_launcher(tmp_path: Path) -> None:
@@ -473,6 +492,10 @@ def test_a_console_that_is_gone_does_not_stop_a_launcher_from_starting(
     launcher.reconcile_abandoned_attempts()
 
     assert any(line.startswith("reconcile-refused=") for line in announced)
+    # A refused reconcile never consumed the claim, so the next launcher's pass
+    # is handed the same lease again rather than losing it into `released`.
+    assert (directory / "claimed" / f"{interrupted}.json").is_file()
+    assert not (directory / "released" / f"{interrupted}.json").exists()
 
 
 def test_an_established_attempt_leaves_nothing_behind(tmp_path: Path) -> None:
@@ -601,6 +624,186 @@ def test_a_runner_that_retained_nothing_fails_its_attempt(tmp_path: Path) -> Non
     assert carrier.started_again == []
     assert carrier.removed["networks"] == []
     assert source.released == []
+
+
+def test_a_console_only_restart_retains_the_terminal_fact_for_serve(
+    tmp_path: Path,
+) -> None:
+    """A Runner that journaled its fact and whose single resume still could not
+    deliver it -- Core gone under a console-only restart -- has that fact laid
+    in the handoff before this alive launcher gives up, so Serve converges it on
+    its own restart rather than waiting for this launcher to itself restart."""
+    carrier = RecordingCarrier(
+        _attested_document(_manifest()), [92, 5], journal_records=[True]
+    )
+    lease = _lease(tmp_path)
+    launcher, announced = _launcher(tmp_path, carrier, OpenLeases([lease]))
+
+    with pytest.raises(AttemptRefusal, match="resumed runner"):
+        launcher.establish(lease)
+
+    retained = lease.handoff_directory / "retained-terminal-record"
+    assert retained.read_bytes() == carrier.retained_record
+    assert any(line.startswith("terminal-record-retained=") for line in announced)
+    # Left for the operator, not swept: the Attempt failed, so its objects stay.
+    assert carrier.removed["volumes"] == []
+
+
+def test_a_clean_resume_retains_nothing(tmp_path: Path) -> None:
+    """A resume that delivered cleanly leaves no retained record behind: Core
+    already has the fact, and the handoff copy is only for the fact Core never
+    got."""
+    carrier = RecordingCarrier(
+        _attested_document(_manifest()), [92, 0], journal_records=[True]
+    )
+    lease = _lease(tmp_path)
+    launcher, _announced = _launcher(tmp_path, carrier, OpenLeases([lease]))
+
+    launcher.establish(lease)
+
+    assert not (lease.handoff_directory / "retained-terminal-record").exists()
+    assert "read-volume" not in carrier.operations
+
+
+def test_a_reconciled_attempt_retains_its_fact_before_its_volume_is_removed(
+    tmp_path: Path,
+) -> None:
+    """The highest-risk ordering: an abandoned Runner's terminal fact reaches
+    the handoff strictly before reconcile deletes the journal volume that holds
+    it -- the retain reads the volume, and only then is the volume removed."""
+    interrupted = "f" * 64
+    directory = tmp_path / "leases"
+    FileRunnerLeaseSource(directory, _validation(tmp_path))
+    (directory / "claimed" / f"{interrupted}.json").write_text("{}", encoding="utf-8")
+    handoff = tmp_path / interrupted / "handoff"
+    handoff.mkdir(mode=0o700, parents=True)
+    carrier = RecordingCarrier(
+        _attested_document(_manifest()), [], journal_records=[True]
+    )
+    carrier.created["containers"].append(f"atelier2-attempt-{interrupted}-runner")
+    carrier.created["volumes"].append(f"atelier2-attempt-{interrupted}-journal")
+    launcher, announced = _launcher(
+        tmp_path, carrier, FileRunnerLeaseSource(directory, _validation(tmp_path))
+    )
+
+    launcher.reconcile_abandoned_attempts()
+
+    # The record reached the handoff (the retain read a volume the fake refuses
+    # once removed) and the volume was then removed: retain strictly precedes
+    # delete.
+    retained = handoff / "retained-terminal-record"
+    assert retained.read_bytes() == carrier.retained_record
+    assert f"atelier2-attempt-{interrupted}-journal" in carrier.removed["volumes"]
+    assert "read-volume" in carrier.operations
+    assert any(line.startswith("terminal-record-retained=") for line in announced)
+    # A removed Attempt's claim is consumed exactly once, only after its objects
+    # are gone.
+    assert list((directory / "released").glob("*.json")) == [
+        directory / "released" / f"{interrupted}.json"
+    ]
+    assert list((directory / "claimed").glob("*.json")) == []
+
+
+def test_a_reconciled_attempt_still_running_keeps_its_fact_and_volume(
+    tmp_path: Path,
+) -> None:
+    """A Runner still running is deferred whole, not half-removed: its terminal
+    fact lives only on the journal volume, so a pass that force-removed the
+    container and deleted the volume would destroy the fact rather than retain
+    it. The whole removal waits for a later pass, once the container has
+    stopped."""
+    interrupted = "f" * 64
+    directory = tmp_path / "leases"
+    FileRunnerLeaseSource(directory, _validation(tmp_path))
+    (directory / "claimed" / f"{interrupted}.json").write_text("{}", encoding="utf-8")
+    (tmp_path / interrupted / "handoff").mkdir(mode=0o700, parents=True)
+    carrier = RecordingCarrier(
+        _attested_document(_manifest()), [], journal_records=[True]
+    )
+    runner = f"atelier2-attempt-{interrupted}-runner"
+    journal = f"atelier2-attempt-{interrupted}-journal"
+    carrier.created["containers"].append(runner)
+    carrier.created["volumes"].append(journal)
+    carrier.running_containers.add(runner)
+    launcher, announced = _launcher(
+        tmp_path, carrier, FileRunnerLeaseSource(directory, _validation(tmp_path))
+    )
+
+    launcher.reconcile_abandoned_attempts()
+
+    assert not (
+        tmp_path / interrupted / "handoff" / "retained-terminal-record"
+    ).exists()
+    assert "read-volume" not in carrier.operations
+    assert carrier.removed["containers"] == []
+    assert carrier.removed["volumes"] == []
+    assert carrier.unpoliced == []
+    assert any(
+        line == f"reconcile-deferred-running={interrupted}" for line in announced
+    )
+    # The deferral is only real if the claim stays put for a later pass to
+    # complete: a claim released now would never be yielded again.
+    assert (directory / "claimed" / f"{interrupted}.json").is_file()
+    assert not (directory / "released" / f"{interrupted}.json").exists()
+
+
+def test_a_deferred_attempt_is_reconciled_on_a_later_pass_once_its_runner_stops(
+    tmp_path: Path,
+) -> None:
+    """The deferral is a promise a later pass keeps: once the Runner a first
+    reconcile stepped over has stopped, the next reconcile retains its terminal
+    fact into the handoff, removes what it left behind, and only then hands the
+    claim back -- so a launcher killed while its Runner still ran does not leave
+    permanent unreconciled residue."""
+    interrupted = "f" * 64
+    directory = tmp_path / "leases"
+    FileRunnerLeaseSource(directory, _validation(tmp_path))
+    (directory / "claimed" / f"{interrupted}.json").write_text("{}", encoding="utf-8")
+    handoff = tmp_path / interrupted / "handoff"
+    handoff.mkdir(mode=0o700, parents=True)
+    carrier = RecordingCarrier(
+        _attested_document(_manifest()), [], journal_records=[True]
+    )
+    runner = f"atelier2-attempt-{interrupted}-runner"
+    journal = f"atelier2-attempt-{interrupted}-journal"
+    carrier.created["containers"].append(runner)
+    carrier.created["volumes"].append(journal)
+    carrier.running_containers.add(runner)
+    launcher, _announced = _launcher(
+        tmp_path, carrier, FileRunnerLeaseSource(directory, _validation(tmp_path))
+    )
+
+    launcher.reconcile_abandoned_attempts()
+    carrier.running_containers.discard(runner)
+    launcher.reconcile_abandoned_attempts()
+
+    assert (
+        handoff / "retained-terminal-record"
+    ).read_bytes() == carrier.retained_record
+    assert journal in carrier.removed["volumes"]
+    assert runner in carrier.removed["containers"]
+    assert (directory / "released" / f"{interrupted}.json").is_file()
+    assert not (directory / "claimed" / f"{interrupted}.json").exists()
+
+
+def test_retaining_the_terminal_fact_twice_is_the_same_bytes(tmp_path: Path) -> None:
+    """A cross-restart second retain of one Attempt writes the same bytes it
+    already laid down and rewrites nothing, so Serve never reads a torn record
+    and two retains never disagree."""
+    carrier = RecordingCarrier(_attested_document(_manifest()), [])
+    lease = _lease(tmp_path)
+    launcher, announced = _launcher(tmp_path, carrier, OpenLeases([lease]))
+
+    launcher._retain_terminal_record(
+        "atelier2-attempt-a-journal", lease.handoff_directory, _RUNNER_IMAGE
+    )
+    launcher._retain_terminal_record(
+        "atelier2-attempt-a-journal", lease.handoff_directory, _RUNNER_IMAGE
+    )
+
+    retained = lease.handoff_directory / "retained-terminal-record"
+    assert retained.read_bytes() == carrier.retained_record
+    assert any("already-present" in line for line in announced)
 
 
 def test_a_failed_attempt_gives_the_console_back_before_it_is_reported(
@@ -830,8 +1033,11 @@ class UntilEmpty:
     def release(self, lease: RunnerLease) -> None:
         self.source.release(lease)
 
-    def abandon_stale_claims(self) -> tuple[str, ...]:
-        return self.source.abandon_stale_claims()
+    def stale_claims(self) -> tuple[str, ...]:
+        return self.source.stale_claims()
+
+    def release_reconciled_claim(self, lease_id: RunnerLeaseId) -> None:
+        self.source.release_reconciled_claim(lease_id)
 
 
 def _published(directory: Path, lease_id: str, document: str) -> None:
@@ -1162,7 +1368,7 @@ def test_a_second_launcher_refuses_before_it_reconciles_anything(
         pass
 
     assert claimed.is_file()
-    assert source.abandon_stale_claims() == (_LEASE_ID,)
+    assert source.stale_claims() == (_LEASE_ID,)
 
 
 def test_the_lock_a_dead_launcher_held_is_free_for_the_next_one(

@@ -248,7 +248,10 @@ def test_every_typed_writer_maps_connection_contention_to_unavailable(
     operations = (
         lambda: DbosWorkflowRevisionPublisher(configured).publish(revision),
         lambda: DbosDurableRunStarter(
-            configured, runtime.settings, NO_AGENT_EXECUTORS
+            configured,
+            runtime.settings,
+            NO_AGENT_EXECUTORS,
+            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequest(RunId("contended-start"), revision.revision_hash)
         ),
@@ -287,7 +290,10 @@ def test_missing_revision_is_a_typed_in_transaction_start_result(
     runtime: DbosRuntime,
 ) -> None:
     starter = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, NO_AGENT_EXECUTORS
+        runtime.engine,
+        runtime.settings,
+        NO_AGENT_EXECUTORS,
+        effect_adapter_proves_absence=True,
     )
 
     result = starter.start_published(
@@ -344,7 +350,10 @@ def test_missing_revision_start_never_acquires_a_write_lock_or_blocks_publicatio
     )
     try:
         result = DbosDurableRunStarter(
-            runtime.engine, runtime.settings, NO_AGENT_EXECUTORS
+            runtime.engine,
+            runtime.settings,
+            NO_AGENT_EXECUTORS,
+            effect_adapter_proves_absence=True,
         ).start_published(StartPublishedRunRequest(RunId("missing-lock"), requested))
     finally:
         event.remove(
@@ -367,7 +376,10 @@ def test_concurrent_start_enqueues_only_the_transaction_that_created_the_run(
         DurableRevisionCreated,
     )
     starter = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, NO_AGENT_EXECUTORS
+        runtime.engine,
+        runtime.settings,
+        NO_AGENT_EXECUTORS,
+        effect_adapter_proves_absence=True,
     )
     request = StartPublishedRunRequest(
         RunId("concurrent/start"), revision.revision_hash
@@ -757,6 +769,7 @@ def _client(
                     runtime.engine,
                     runtime.settings,
                     runtime.agent_executor_registry,
+                    effect_adapter_proves_absence=True,
                 ),
                 wait_answerer=DbosWaitAnswerer(
                     runtime.engine, runtime.settings.application_version
@@ -1495,7 +1508,10 @@ def test_start_parses_workflow_before_begin_immediate(
     )
 
     result = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, NO_AGENT_EXECUTORS
+        runtime.engine,
+        runtime.settings,
+        NO_AGENT_EXECUTORS,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequest(
             RunId("parse-before-start-lock"), revision.revision_hash
@@ -1568,7 +1584,10 @@ def test_start_rechecks_revision_bytes_after_outside_parse_without_mutation(
         )
 
     result = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, NO_AGENT_EXECUTORS
+        runtime.engine,
+        runtime.settings,
+        NO_AGENT_EXECUTORS,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequest(RunId("revision-drift-start"), revision.revision_hash)
     )

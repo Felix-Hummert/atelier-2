@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol, assert_never, cast
 
 import sqlalchemy as sa
@@ -91,6 +92,7 @@ from atelier2.application.execute_agent_attempt_on_runner import (
     ExecuteAgentAttemptOnRunnerOutcome,
 )
 from atelier2.contracts.agent_attempts import (
+    AgentAttempt,
     AgentAttemptId,
     CancelAgentAttemptRequest,
 )
@@ -358,6 +360,91 @@ def _executor_key(binding: AgentNodeBindingV2) -> AgentExecutorKey:
     return AgentExecutorKey(
         binding.resolved.auth_profile.provider_id,
         binding.resolved.configuration.executor_revision,
+    )
+
+
+AgentExecutorMap = Mapping[
+    AgentExecutorKey,
+    tuple[
+        AgentExecutorV2 | None,
+        AgentExecutorOperationalIdentity,
+        frozenset[AgentExecutionCapability],
+        AgentExecutorCarrier,
+    ],
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ReconstructedAgentAttempt:
+    """One durable Attempt rebuilt into everything a driver or a converger needs.
+
+    The `execution` is the sole reason this exists as one owner: an
+    `AgentExecutionRequestV2` is re-derived from durable truth through the same
+    `_node_binding`/`bind_node` composition that first minted it, so its
+    `request_hash` is byte-identical to the one the durable attempt already
+    carries. A second, drifting derivation would let a Serve-restart
+    convergence commit evidence under a request the store answers with
+    `RunnerBindingConflict` -- a silent failure to converge. `binding`,
+    `executor` and `carrier` are the rest of what an executing caller (the
+    replacement workflow) needs, so it never decodes the same binding twice.
+    """
+
+    execution: AgentAttemptExecution
+    binding: AgentNodeBindingV2
+    executor: AgentExecutorV2 | None
+    carrier: AgentExecutorCarrier
+
+
+def reconstruct_agent_attempt(
+    datasource: SQLAlchemyDatasource,
+    agent_executors_v2: AgentExecutorMap,
+    project: DeclaredProject | None,
+    attempt: AgentAttempt,
+) -> ReconstructedAgentAttempt:
+    """Rebuild one durable Attempt's execution from durable state, exactly.
+
+    The one owner of this reconstruction: the replacement workflow drives the
+    result, and a Serve-restart convergence (`#585`) reads its `execution` to
+    commit a retained terminal fact. Reuse rather than duplication is the whole
+    point -- the `request_hash` this yields has to match the durable attempt's,
+    and two derivations that drift would converge nothing.
+    """
+    binding = decode_node_binding(
+        _node_binding(
+            datasource,
+            attempt.run_id,
+            attempt.workflow_revision_hash,
+            attempt.node_id,
+            project,
+        )
+    )
+    if not isinstance(binding, AgentNodeBindingV2):
+        raise RunTransitionConflict("durable attempt is not a V2 agent node")
+    executor, operational_identity, declared_capabilities, carrier = agent_executors_v2[
+        _executor_key(binding)
+    ]
+    request = agent_execution_request_v2(
+        binding,
+        attempt.run_id,
+        attempt.workflow_revision_hash,
+        attempt.node_id,
+        operational_identity,
+        declared_capabilities,
+    )
+    if (
+        request.node_execution_id != attempt.node_execution_id
+        or request.request_hash != attempt.request_hash
+        or request.executor_operational_identity
+        != attempt.executor_operational_identity
+    ):
+        raise RunTransitionConflict(
+            "reconstructed request differs from its durable attempt binding"
+        )
+    return ReconstructedAgentAttempt(
+        AgentAttemptExecution(request, attempt.attempt_id, attempt.attempt_ordinal),
+        binding,
+        executor,
+        carrier,
     )
 
 
@@ -680,51 +767,23 @@ def register_durable_run_workflow(
     @DBOS.workflow(name=REPLACEMENT_WORKFLOW_NAME, max_recovery_attempts=None)
     def durable_agent_attempt_replacement(attempt_id: str) -> str:
         replacement = agent_attempt_store.load(AgentAttemptId(attempt_id))
-        binding = decode_node_binding(
-            _node_binding(
-                datasource,
-                replacement.run_id,
-                replacement.workflow_revision_hash,
-                replacement.node_id,
-                project,
-            )
+        reconstructed = reconstruct_agent_attempt(
+            datasource, agent_executors_v2, project, replacement
         )
-        if not isinstance(binding, AgentNodeBindingV2):
-            raise RunTransitionConflict("replacement attempt is not an agent node")
-        executor, operational_identity, declared_capabilities, carrier = (
-            agent_executors_v2[_executor_key(binding)]
-        )
-        if executor is None:
+        if reconstructed.executor is None:
             return RunState.STARTED.value
-        request = agent_execution_request_v2(
-            binding,
-            replacement.run_id,
-            replacement.workflow_revision_hash,
-            replacement.node_id,
-            operational_identity,
-            declared_capabilities,
-        )
-        if (
-            request.node_execution_id != replacement.node_execution_id
-            or request.request_hash != replacement.request_hash
-            or request.executor_operational_identity
-            != replacement.executor_operational_identity
-        ):
-            raise RunTransitionConflict(
-                "replacement workflow differs from its durable attempt binding"
-            )
         outcome = execute_v2_attempt(
-            carrier,
-            AgentAttemptExecution(request, replacement.attempt_id, 2),
-            executor,
-            binding,
+            reconstructed.carrier,
+            reconstructed.execution,
+            reconstructed.executor,
+            reconstructed.binding,
         )
         if isinstance(outcome, AgentAttemptSucceeded):
             redeem_agent_node_effect(
                 replacement.run_id,
                 replacement.workflow_revision_hash,
                 replacement.node_id,
-                binding.round_ordinal,
+                reconstructed.binding.round_ordinal,
             )
             match outcome.completion:
                 case RunContinues(node_id, round_ordinal):

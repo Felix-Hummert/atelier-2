@@ -30,6 +30,7 @@ from atelier2.adapters.dbos.host_configuration import (
 )
 from atelier2.adapters.dbos.names import QUEUE_NAME
 from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
+from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 from atelier2.adapters.dbos.runner_session_core import DbosRunnerSessionCore
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -43,11 +44,16 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.dbos.uncontinuable_runs import DbosUncontinuableRunStore
 from atelier2.adapters.dbos.workflow import (
+    AgentExecutorMap,
     RunnerLeaseAttemptDriver,
+    reconstruct_agent_attempt,
     register_durable_run_workflow,
 )
 from atelier2.adapters.dbos.workflow_ids import driving_workflow_id
 from atelier2.adapters.file_runner_leases import FileRunnerLeasePublisher
+from atelier2.adapters.file_runner_terminal_evidence import (
+    FileRunnerTerminalEvidenceSource,
+)
 from atelier2.adapters.free_runner_executor import free_runner_auth_reference
 from atelier2.adapters.project_verification import declared_project
 from atelier2.adapters.runner_child import REQUIRED_LANDLOCK_ABI
@@ -65,6 +71,11 @@ from atelier2.adapters.runner_tls import (
 from atelier2.application.converge_driverless_attempts import (
     converge_driverless_attempts,
 )
+from atelier2.application.converge_driverless_runner_lease_attempts import (
+    RunnerLeaseConvergenceJob,
+    RunnerLeaseConvergenceReport,
+    converge_driverless_runner_lease_attempts,
+)
 from atelier2.application.converge_uncontinuable_runs import (
     converge_uncontinuable_runs,
 )
@@ -80,6 +91,8 @@ from atelier2.contracts.agent_attempts import (
     TERMINAL_AGENT_ATTEMPT_STATES,
     AgentAttempt,
     AgentAttemptId,
+    RunnerBindingConflict,
+    RunnerGenerationBinding,
 )
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
@@ -354,6 +367,7 @@ class _BoundRuntime:
     agent_executors_v2: tuple[tuple[AgentExecutorManifestEntry, AgentExecutorV2], ...]
     effect_adapter_binding: EffectAdapterBinding
     effect_adapter: EffectAdapter
+    effect_adapter_proves_absence: bool
     agent_process_supervisor: AgentProcessSupervisor | None
     agent_workspace_owner: LocalAgentAttemptWorkspaceOwner | None
     declared_project: DeclaredProject | None
@@ -591,37 +605,123 @@ def _driverless_runner_lease_attempts(
     )
 
 
-def _log_driverless_runner_lease_attempts(
-    engine: Engine, application_version: str
-) -> None:
-    """Name every driverless Runner-lease Attempt in the start log (D-8a (2)).
+def _runner_generation_binding(attempt: AgentAttempt) -> RunnerGenerationBinding:
+    """The generation an armed Runner-lease Attempt durably bound.
 
-    No durable write and no invented evidence -- an Attempt this names stays
-    exactly `POSSIBLY_RAN`/armed for the operator to read; only the log line
-    is new.
+    Rebuilt from the attempt's own durable columns, so it names the exact
+    generation the launcher's retained evidence is stamped with. Only ever
+    called for an Attempt `_driverless_runner_lease_attempts` returned, which
+    filters on a bound `runner_manifest_id` -- so its generation is bound too
+    (`AgentAttempt` keeps the two together), and a missing one is a durable lie.
     """
+    if attempt.runner_generation_id is None or attempt.runner_manifest_id is None:
+        raise DbosRuntimeBindingConflict(
+            "a runner-lease attempt without a bound generation cannot converge"
+        )
+    return RunnerGenerationBinding(
+        attempt.attempt_id,
+        attempt.request_hash,
+        attempt.runner_generation_id,
+        attempt.runner_manifest_id,
+    )
 
-    driverless = _driverless_runner_lease_attempts(engine, application_version)
+
+def _agent_executor_map(
+    registry: AgentExecutorRegistry,
+    executors: tuple[tuple[AgentExecutorManifestEntry, AgentExecutorV2], ...],
+) -> AgentExecutorMap:
+    """Every registered executor key mapped to what a driver or converger needs.
+
+    One owner for the map the durable workflow binding is composed with and the
+    map a Serve-restart convergence reconstructs its attempts through -- the
+    opened executor where there is one, and the manifest facts either way.
+    """
+    opened = {manifest_entry.key: executor for manifest_entry, executor in executors}
+    return {
+        entry.key: (
+            opened.get(entry.key),
+            entry.manifest_entry.operational_identity,
+            entry.manifest_entry.declared_capabilities,
+            entry.manifest_entry.carrier,
+        )
+        for entry in registry.entries
+    }
+
+
+def _reconstructed_runner_lease_jobs(
+    bound: _BoundRuntime,
+    executors: AgentExecutorMap,
+    source: FileRunnerTerminalEvidenceSource,
+    driverless: tuple[AgentAttempt, ...],
+) -> tuple[list[RunnerLeaseConvergenceJob], list[tuple[AgentAttemptId, str]]]:
+    """Reconstruct each driverless Attempt into a convergence job, tolerating one.
+
+    One Attempt whose executor was removed from config between restarts
+    (`KeyError`), or whose durable binding no longer reconstructs to the request
+    it committed under (`RunTransitionConflict`/`RunnerBindingConflict`), or that
+    lost the generation it bound (`DbosRuntimeBindingConflict`), must not abort
+    the convergence of every other healthy Attempt and must not fail Serve start.
+    Such an Attempt is named and reported non-terminal -- left exactly as durable
+    as it already was, never forced -- while every reconstructable Attempt still
+    converges.
+    """
+    jobs: list[RunnerLeaseConvergenceJob] = []
+    left_nonterminal: list[tuple[AgentAttemptId, str]] = []
     for attempt in driverless:
-        _LOG.warning(
-            "Runner-lease agent attempt %s on run %s, node %s has no living driver.",
-            attempt.attempt_id.value,
-            attempt.run_id.value,
-            attempt.node_id,
+        try:
+            execution = reconstruct_agent_attempt(
+                bound.datasource, executors, bound.declared_project, attempt
+            ).execution
+            binding = _runner_generation_binding(attempt)
+        except (
+            KeyError,
+            RunTransitionConflict,
+            RunnerBindingConflict,
+            DbosRuntimeBindingConflict,
+        ) as conflict:
+            left_nonterminal.append((attempt.attempt_id, type(conflict).__name__))
+            continue
+        jobs.append(RunnerLeaseConvergenceJob(execution, binding, source))
+    return jobs, left_nonterminal
+
+
+def _log_runner_lease_convergence(report: RunnerLeaseConvergenceReport) -> None:
+    """Say what a Serve-restart convergence moved, and what it could not.
+
+    A converged Attempt reached its real terminal; one left non-terminal stays
+    exactly as durable as it already was -- its retained fact was missing,
+    corrupt, or refused -- and is named for the operator to read, never forced.
+    """
+    for attempt_id in report.converged:
+        _LOG.info(
+            "Converged Runner-lease attempt %s to its retained terminal.",
+            attempt_id.value,
             extra={
-                "event": "runner_lease_attempt_driverless",
-                "run_id": attempt.run_id.value,
-                "node_id": attempt.node_id,
-                "attempt_id": attempt.attempt_id.value,
+                "event": "runner_lease_attempt_converged",
+                "attempt_id": attempt_id.value,
             },
         )
-    if driverless:
+    for attempt_id, reason in report.left_nonterminal:
         _LOG.warning(
-            "%d Runner-lease agent attempt(s) have no living driver after start.",
-            len(driverless),
+            "Runner-lease attempt %s has no living driver and no committable "
+            "retained evidence (%s).",
+            attempt_id.value,
+            reason,
             extra={
-                "event": "runner_lease_attempts_driverless_total",
-                "count": len(driverless),
+                "event": "runner_lease_attempt_left_nonterminal",
+                "attempt_id": attempt_id.value,
+                "reason": reason,
+            },
+        )
+    if report.converged or report.left_nonterminal:
+        _LOG.info(
+            "Runner-lease convergence after start: %d converged, %d left non-terminal.",
+            len(report.converged),
+            len(report.left_nonterminal),
+            extra={
+                "event": "runner_lease_convergence_total",
+                "converged": len(report.converged),
+                "left_nonterminal": len(report.left_nonterminal),
             },
         )
 
@@ -882,6 +982,9 @@ def _open_binding(
                     (registry_entry.manifest_entry, registry_entry.factory.open())
                 )
         adapter = effect_factory.open()
+        # Read once, here, from the composed factory: this is the single answer
+        # every run-start path binds to, so no start can assume a different one.
+        effect_adapter_proves_absence = effect_factory.proves_absence
         datasource = SQLAlchemyDatasource.create(
             sqlite_url(settings.database_path), engine=engine
         )
@@ -906,22 +1009,11 @@ def _open_binding(
             runner_lease_driver = _runner_lease_attempt_driver(
                 settings, engine, attempt_store, runner_lease_publisher
             )
-        opened_agent_executors = {
-            entry.key: executor for entry, executor in agent_executors_v2
-        }
         register_durable_run_workflow(
             datasource,
             agent_executor,
             agent_binding,
-            {
-                registry_entry.key: (
-                    opened_agent_executors.get(registry_entry.key),
-                    registry_entry.manifest_entry.operational_identity,
-                    registry_entry.manifest_entry.declared_capabilities,
-                    registry_entry.manifest_entry.carrier,
-                )
-                for registry_entry in agent_registry.entries
-            },
+            _agent_executor_map(agent_registry, tuple(agent_executors_v2)),
             attempt_store,
             agent_process_supervisor,
             agent_workspace_owner,
@@ -973,6 +1065,7 @@ def _open_binding(
         tuple(agent_executors_v2),
         effect_binding,
         adapter,
+        effect_adapter_proves_absence,
         agent_process_supervisor,
         agent_workspace_owner,
         declared_project_source,
@@ -1105,15 +1198,31 @@ class _DbosProcessOwner:
             self._converge_driverless_attempts(bound)
             self._converge_uncontinuable_runs(bound)
             self._start_admitted_queue_items(bound)
-            self._inventory_driverless_runner_lease_attempts(bound)
+            self._converge_driverless_runner_lease_attempts(bound)
 
     @staticmethod
-    def _inventory_driverless_runner_lease_attempts(bound: _BoundRuntime) -> None:
-        """`#540` C-3.6 D-8a (2): name every driverless Runner-lease Attempt.
+    def _converge_driverless_runner_lease_attempts(bound: _BoundRuntime) -> None:
+        """Converge every driverless Runner-lease Attempt to its real terminal.
 
-        After the launch, same as the two convergences above: only once
+        `#540` Kind #585: after a Serve restart mid-session, a Runner-lease
+        Attempt whose driving workflow is gone stands armed (publicly
+        `POSSIBLY_RAN`) forever. The launcher lays that Attempt's own retained
+        terminal fact in its handoff directory; this reads it back over
+        `FileRunnerTerminalEvidenceSource` and commits it exactly once, so the
+        run reaches the terminal the Runner actually reported rather than the
+        `INTERRUPTED` the driverless sweep would invent.
+
+        After the launch, and last, same as the convergences above: only once
         recovery has armed every workflow that is still going to run can a
-        workflow's absence from `workflow_status` mean it is truly gone.
+        workflow's absence from `workflow_status` mean it is truly gone. The
+        reconstruction reads durable truth through the same owner the
+        replacement workflow uses (`reconstruct_agent_attempt`), so the
+        `request_hash` it commits under is exactly the one the attempt bound.
+
+        Reconstruction is per-Attempt and tolerant: an Attempt whose executor
+        left config, or whose durable binding no longer reconstructs, is left
+        non-terminal and named rather than aborting the whole sweep -- one bad
+        Attempt never blocks the others, and Serve always starts.
         """
 
         if not any(
@@ -1121,8 +1230,29 @@ class _DbosProcessOwner:
             for entry in bound.agent_executor_registry.entries
         ):
             return
-        _log_driverless_runner_lease_attempts(
+        lease_root = bound.settings.runner_lease_root
+        if lease_root is None:
+            return
+        driverless = _driverless_runner_lease_attempts(
             bound.engine, bound.settings.application_version
+        )
+        if not driverless:
+            return
+        executors = _agent_executor_map(
+            bound.agent_executor_registry, bound.agent_executors_v2
+        )
+        source = FileRunnerTerminalEvidenceSource(lease_root / "attempts")
+        jobs, left_nonterminal = _reconstructed_runner_lease_jobs(
+            bound, executors, source, driverless
+        )
+        report = converge_driverless_runner_lease_attempts(
+            jobs,
+            DbosAgentAttemptStore(bound.engine, bound.settings.application_version),
+        )
+        _log_runner_lease_convergence(
+            RunnerLeaseConvergenceReport(
+                report.converged, (*left_nonterminal, *report.left_nonterminal)
+            )
         )
 
     @staticmethod
@@ -1183,7 +1313,10 @@ class _DbosProcessOwner:
             DbosQueueProjectionStore(bound.engine),
             DbosCatalogStore(bound.engine),
             DbosDurableRunStarter(
-                bound.engine, bound.settings, bound.agent_executor_registry
+                bound.engine,
+                bound.settings,
+                bound.agent_executor_registry,
+                bound.effect_adapter_proves_absence,
             ),
         )
 
@@ -1278,6 +1411,10 @@ class DbosRuntime:
     @property
     def effect_adapter_binding(self) -> EffectAdapterBinding:
         return self._held().effect_adapter_binding
+
+    @property
+    def effect_adapter_proves_absence(self) -> bool:
+        return self._held().effect_adapter_proves_absence
 
     def launch(self) -> None:
         _PROCESS_OWNER.launch(self._held())

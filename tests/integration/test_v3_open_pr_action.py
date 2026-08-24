@@ -213,6 +213,7 @@ def test_a_v3_agent_then_action_opens_one_pull_request_through_the_github_adapte
         started_runtime.engine,
         started_runtime.settings,
         started_runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     assert isinstance(started, DurableRunCreated)
 
