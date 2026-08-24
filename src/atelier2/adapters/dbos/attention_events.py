@@ -1,4 +1,8 @@
-"""The attention feed: WAITING_INPUT and AGENT_FAILED across runs, by instant.
+"""The attention feed: the events that need an operator's hand, by instant.
+
+WAITING_INPUT, AGENT_FAILED, and ACTION_RECONCILIATION_REQUIRED across runs --
+each names a run that stands still until a person answers, judges, or
+reconciles.
 
 Pre-V22 events have no event_instants row. This feed inner-joins that table so
 those rows stay off it rather than inventing a time.
@@ -29,6 +33,7 @@ from atelier2.ports.workflow_revisions import DurableProjectionLimit
 ATTENTION_EVENT_KINDS: Final[tuple[RunEventKind, ...]] = (
     RunEventKind.WAITING_INPUT,
     RunEventKind.AGENT_FAILED,
+    RunEventKind.ACTION_RECONCILIATION_REQUIRED,
 )
 _ATTENTION_KIND_VALUES: Final[tuple[str, ...]] = tuple(
     kind.value for kind in ATTENTION_EVENT_KINDS

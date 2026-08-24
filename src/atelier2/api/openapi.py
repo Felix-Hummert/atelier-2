@@ -10,6 +10,7 @@ from fastapi.openapi.utils import get_openapi
 
 from atelier2.api.problems import (
     ADAPTER_OPERATION_DOCUMENT_PROBLEM_CODES,
+    AGENT_DEFINITION_DOCUMENT_PROBLEM_CODES,
     ARTIFACT_PROBLEM_CODES,
     BUDGET_DOCUMENT_PROBLEM_CODES,
     PROBLEM_DEFINITIONS,
@@ -201,6 +202,14 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/adapter-operation-revisions", "post"): (
         *ADAPTER_OPERATION_DOCUMENT_PROBLEM_CODES,
         "adapter-operation-revision-collision",
+        "unsupported-media-type",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (API_PREFIX + "/agent-definition-revisions", "post"): (
+        *AGENT_DEFINITION_DOCUMENT_PROBLEM_CODES,
+        "agent-definition-revision-collision",
         "unsupported-media-type",
         "temporarily-unavailable",
         "durable-state-corrupt",
@@ -550,6 +559,14 @@ def _install_publication_request_body(schema: dict[str, Any]) -> None:
         "required": True,
         "content": {
             "application/json": {"schema": {"type": "string", "format": "binary"}}
+        },
+    }
+    schema["paths"][API_PREFIX + "/agent-definition-revisions"]["post"][
+        "requestBody"
+    ] = {
+        "required": True,
+        "content": {
+            "text/markdown": {"schema": {"type": "string", "format": "binary"}}
         },
     }
 

@@ -60,6 +60,9 @@ from atelier2.application.publish_agent_configurations import (
     publish_agent_configuration_revision,
     publish_auth_profile_revision,
 )
+from atelier2.application.publish_agent_definition_revision import (
+    publish_agent_definition_revision,
+)
 from atelier2.application.publish_artifact import publish_artifact
 from atelier2.application.publish_budget_revision import publish_budget_revision
 from atelier2.application.publish_schema_revision import publish_schema_revision
@@ -197,6 +200,14 @@ def bound_use_cases(
         publish_adapter_operation_revision=lambda document: (
             publish_adapter_operation_revision(
                 document, ports.published_revision_registry
+            )
+        ),
+        publish_agent_definition_revision=lambda document: (
+            publish_agent_definition_revision(
+                document,
+                ports.agent_definition_parser,
+                ports.agent_definition_renderer,
+                ports.published_revision_registry,
             )
         ),
         publish_auth_profile_revision=(
