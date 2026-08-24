@@ -1,0 +1,16 @@
+# Triggers atelier2-auto-redeploy.service on a fixed poll interval. See that
+# unit file for install/activation steps; both are installed together.
+#
+# Two minutes: soon enough after a landing on main that "auto-redeploy" reads
+# as true, without polling GitHub more often than a lone local watcher needs
+# to.
+[Unit]
+Description=Poll origin/main for the Atelier2 auto redeploy watcher
+
+[Timer]
+OnActiveSec=2min
+OnUnitActiveSec=2min
+Unit=atelier2-auto-redeploy.service
+
+[Install]
+WantedBy=timers.target
