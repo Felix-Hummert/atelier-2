@@ -1,7 +1,7 @@
 # ADR 0017: An installation-owned Account holds every credential; delegated grants and stored keys are peer auth modes, and the app holds only references
 
 - Status: PROPOSED 2026-08-24 — draft awaiting operator approval. This record
-  decides a model; only the slices §8 names as built exist. Everything else is
+  decides a model; only the slices §9 names as built exist. Everything else is
   proposed, and nothing here claims otherwise.
 - Date: 2026-08-24
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
@@ -14,10 +14,11 @@
   holds-the-value precision, and the *Account* vocabulary ruling. Body read under
   ADR 0010 §5's canonical rule — 8,604 UTF-8 bytes, ending in one LF byte —
   `15d3e0e25cb4a049798201961bdae8484e5be99e7c24b5c4873073079375d4b1`.
-  The credential-source topology requirement of 24.08.2026 (§4: server-held
-  versus runner-local) is a further operator ruling not yet in that body;
-  operator approval of this record is its durable record until #557's journal
-  carries it.
+  The credential-source topology requirement (§4: server-held versus
+  runner-local) and the effect-execution-locus ruling (§5: both loci
+  first-class, X the default, Y an opt-in) of 24.08.2026 are further operator
+  rulings not yet in that body; operator approval of this record is their
+  durable record until #557's journal carries them.
 - Depends on: [ADR 0009](0009-runner-trust.md) (§5–§6: credentials reach a
   worker by reference, never by value; a runner reads no credential outside its
   bound profile; the credential-channel canary shape), [ADR 0010](0010-github-platform-adapter.md)
@@ -26,7 +27,7 @@
   (the project boundary a per-source Account override is scoped by)
 - Names, never decides, the dependencies owned elsewhere:
   [#82](https://github.com/FlexOr2/atelier-2/issues/82) (OIDC human login — the
-  other identity axis, §7), [#23](https://github.com/FlexOr2/atelier-2/issues/23)
+  other identity axis, §8), [#23](https://github.com/FlexOr2/atelier-2/issues/23)
   (multi-project isolation), [#540](https://github.com/FlexOr2/atelier-2/issues/540)
   (runner cutover, where installation accounts become operable),
   [#567](https://github.com/FlexOr2/atelier-2/issues/567) (project links, the
@@ -98,7 +99,7 @@ identity:
   credential is a stored key, §3 tier B); for a runner-local Account only a
   **non-secret role reference** the runner resolves on its own host — the
   server holds no secret material for it at all;
-- its **owning tenant** (§7) and a non-secret display identity so an operator
+- its **owning tenant** (§8) and a non-secret display identity so an operator
   can tell two Accounts apart without resolving either.
 
 The Account subsumes what today exists three times — the per-provider
@@ -234,7 +235,7 @@ that the source is part of the Account model, not an accident of deployment.
 | Who resolves it | the server, at the outgoing call or when provisioning the cage | the runner, from its install-time role mapping |
 | What crosses the wire | a reference; for delegated modes at most a short-lived scoped token into the cage | the role reference only — never any secret material |
 | Threat surface | server compromise reaches ciphertext and the KEK path (§3 bounds it) | server compromise reaches **nothing**: the server never had the value |
-| Revocation | rotate or revoke in installation settings (§6 layering) | revoke on the runner host, where the company's access control already is |
+| Revocation | rotate or revoke in installation settings (§7 layering) | revoke on the runner host, where the company's access control already is |
 | When to use | the server's own platform calls; trusted or server-local runners; tenants who deposit keys | enterprise runners in a private network; any tenant unwilling to hand a token to an external server |
 
 **Runner-local is the preferred enterprise topology.** A company's sensitive
@@ -244,40 +245,10 @@ sees them, and its run-execution path can stay credential-minimal. That
 strengthens, not complicates, the multi-tenant story: the server-held store
 holds only what tenants chose to deposit.
 
-**How far runner-local reaches is decided by the effect execution locus —
-an open operator decision this record presents and does not take.** The two
-credential classes execute in different places today, and the difference is
-load-bearing:
-
-- **Agent/LLM credentials (Claude, Codex, Grok)** authenticate a provider
-  process that runs *in* the runner. Runner-local holds fully: the login or
-  key lives on the runner host, and the server never sees it. That is the
-  built shape.
-- **Platform effect credentials (GitHub today)** authenticate an *effect* —
-  and under ADR 0009 §1 Core is the sole writer of product truth, so today
-  the effect is performed by Core: the agent produces an intent, and the
-  server makes the real platform call and commits the receipt
-  (`adapters/github/live_effects.py`, #430). That is exactly why the GitHub
-  token sits on the server today — and why, for platform effects under the
-  current model, "the token never reaches the server" does **not** hold.
-
-The choice, side by side; the operator decides the direction:
-
-| | X — Core performs the effect (today) | Y — Runner performs, Core verifies |
-| --- | --- | --- |
-| Who holds the platform token | the server (server-held source, §3) | the runner host (runner-local source) |
-| Who performs | Core: one central, auditable performer | the runner, inside the tenant's own network |
-| Who writes truth | Core performs *and* writes the receipt | Core's role shifts to **verifier**: it reads the platform back (ADR 0010's readback surface) and only then commits the receipt |
-| Trust implication | the platform token crosses into the server's trust domain | effect execution moves into the less-trusted worker (the boundary ADR 0009 exists for); a runner could falsify its own effect report, so Core's independent readback — not the runner's word — is what a receipt is built on, and Core still needs at least read reach for that verification |
-| Satisfies "our secrets never leave our network" | no — the platform token is on the server | yes — this is what completes the enterprise requirement for effects |
-| Cost | none beyond §3's storage discipline | building the Effect Worker lane ADR 0009 §1 already names — a separate worker role for one Core-prepared `EffectIntent`, with only Core committing the receipt — placed on the tenant's runner host under a runner-local grant; plus amendments to ADR 0009 (that placement and credential source) and ADR 0010 (execute at the worker, readback in Core) |
-
-X and Y need not be exclusive product-wide: the honest end state may follow
-the Account's own source — a deposited server-held token performed by Core, a
-runner-local one performed by its runner — but that, too, is the operator's
-call, listed with the open decisions and not taken here. Until it is taken,
-the runner-local source covers **provider credentials**; extending it to
-platform effects is exactly decision Y.
+**How far runner-local reaches for platform effects is the third axis, §5:**
+today it covers provider credentials fully — the provider process runs *in*
+the runner, so the login or key lives on the runner host and the server never
+sees it — while a platform-effect token follows the effect execution locus.
 
 **Per-role scoping holds under both sources.** The cage gives a run only the
 credential for **its** bound role — each run reads only its role, never
@@ -289,12 +260,76 @@ here applied *inside* the runner host between its cage and its own mapping. A
 role the mapping does not carry refuses (`auth-profile-unresolvable`,
 ADR 0009), with no fallback to another source.
 
-**Both axes compose with the layering (§6) and stay invisible to the
+**Both axes compose with the layering (§7) and stay invisible to the
 workflow.** A role can be occupied by a server-held Account or a runner-local
 one, in any mode the provider supports; the workflow still declares only the
 generic role, blind to source and mode alike.
 
-### 5. Invariants, each with the threat it mitigates
+### 5. Effect execution locus: the third selectable axis — Core performs by default, runner-performs is a verified opt-in
+
+Two credential classes execute in different places, and the difference is
+load-bearing for how far the runner-local source reaches:
+
+- **Agent/LLM credentials (Claude, Codex, Grok)** authenticate a provider
+  process that runs *in* the runner. Runner-local holds fully; that is the
+  built shape.
+- **Platform effect credentials (GitHub today)** authenticate an *effect* —
+  and under ADR 0009 §1 Core is the sole writer of product truth, so today
+  the effect is performed by Core: the agent produces an intent, and the
+  server makes the real platform call and commits the receipt
+  (`adapters/github/live_effects.py`, #430). That is exactly why the GitHub
+  token sits on the server today — and why, for platform effects under X
+  alone, "the token never reaches the server" does not hold.
+
+**The ruled model (operator ruling, 24.08.2026): both loci are first-class
+and selectable, exactly as `auth_mode` and the credential source are peers —
+per effect binding and per deployment, not one product-wide either/or.** The
+operator's rationale, kept here because it is the requirement: build the
+concept so both are possible from the start — X is needed for the self-hosted
+single-operator installation, Y for the enterprise "our secrets never leave
+our network" topology — rather than forcing one.
+
+- **X — Core performs** is the **safe default**: an effect binding that
+  selects no locus executes in Core. Simplest form, one central auditable
+  performer, one truth-writer.
+- **Y — the runner performs, Core verifies** is an **explicit opt-in** per
+  enterprise deployment or binding: the platform token stays runner-local,
+  and Core's role shifts from performer to verifier.
+
+| | X — Core performs (default; today) | Y — Runner performs, Core verifies (opt-in; PROPOSED) |
+| --- | --- | --- |
+| Who holds the platform token | the server (server-held source, §3) | the runner host (runner-local source) |
+| Who performs | Core: one central, auditable performer | the runner, inside the tenant's own network |
+| Who writes truth | Core performs *and* writes the receipt | Core only: it reads the platform back (ADR 0010's readback surface) and commits the receipt on what the readback proved — never on the runner's report |
+| Trust implication | the platform token crosses into the server's trust domain | effect execution moves into the less-trusted worker (the boundary ADR 0009 exists for); a runner could falsify its own effect report, so Core's independent readback is the check, and Core still needs at least read reach for it |
+| Satisfies "our secrets never leave our network" | no — the platform token is on the server | yes — this completes the enterprise requirement for effects |
+| Cost | none beyond §3's storage discipline | building the Effect Worker lane ADR 0009 §1 already names — a separate worker role for one Core-prepared `EffectIntent`, with only Core committing the receipt — placed on the tenant's runner host under a runner-local grant; plus amendments to ADR 0009 (that placement and credential source) and ADR 0010 (execute at the worker, readback in Core), in their own record before Y is built |
+
+**The guardrail that keeps "both possible" clean: Y is refused for any
+effect Core cannot reliably verify by readback.** ADR 0010 §5 already
+enumerates which operations' readback can prove what; an operation whose
+declared readback cannot positively prove the claimed outcome — the class
+that can only answer `EffectUnknownOutcome`, such as an eventually-consistent
+search standing in for an inventory — may not opt into Y, and a binding that
+tries refuses loudly at binding time (`effect-locus-unverifiable`). At run
+time the same rule holds: a Y readback that answers `UNKNOWN` routes to the
+reconciliation path `contracts.effects` already owns, and never becomes a
+receipt on the runner's word. Y silently degrading to "Core trusts the
+runner's receipt" is the one failure this axis must never have; the threat is
+a compromised runner forging an effect nobody can check, and the invariant is
+§6's number 8.
+
+**The three axes together.** An Account and its bindings now select along
+`auth_mode` (§2) × credential source (§4) × effect execution locus (§5) —
+each per account, role or binding, never product-wide by accident. The safe
+default on every axis is the simplest built form: `subscription` where a
+provider CLI login exists, server-held for a deposited secret, X for an
+effect. Every other value is an explicit opt-in with a fail-loud guardrail:
+no mode downgrade (§2), no source fallback (§4), no unverifiable Y (§5).
+Y-support remains PROPOSED end to end; nothing performs an effect outside
+Core today.
+
+### 6. Invariants, each with the threat it mitigates
 
 1. **The secret value never enters the app run/event/decision database, any
    API projection, log, prompt, dossier, lease or receipt.** Only the secret
@@ -337,8 +372,15 @@ generic role, blind to source and mode alike.
    refusal before any provider or platform call, with no fallback to another
    mode or another Account. *Threat:* silent widening; a run that "worked"
    under a credential nobody chose.
+8. **Locus Y only for effects Core can verify by readback.** An effect
+   binding may opt into runner-performed execution only where its declared
+   readback (ADR 0010 §5) can positively prove the claimed outcome; an
+   unverifiable effect refuses Y at binding time, and a Y readback answering
+   `UNKNOWN` routes to reconciliation instead of becoming a receipt.
+   *Threat:* a compromised runner forging an effect nobody can check — Y
+   silently degrading into Core trusting the runner's own report.
 
-### 6. The three layers: installation owns, project occupies, workflow declares
+### 7. The three layers: installation owns, project occupies, workflow declares
 
 The #557 settings model, restated once here because Accounts are its first
 layer, and not re-decided:
@@ -363,7 +405,7 @@ layer, and not re-decided:
 A new enforcement class is new core code with its own item; a new HTTPS API
 behind an existing class never is (#557 ruling).
 
-### 7. Human identity is a separate axis
+### 8. Human identity is a separate axis
 
 WHO may operate — the login of #82's OIDC principal — is a different fact from
 WHAT machine credential an Account holds, and the two never merge. Access
@@ -375,7 +417,7 @@ touching the Accounts themselves. ADR 0009 §9's typed actor carries who
 commanded a run; the Account carries what the run authenticated as toward the
 provider. Both appear in receipts; neither substitutes for the other.
 
-### 8. Built today, proposed next — precisely
+### 9. Built today, proposed next — precisely
 
 **Built** (verifiable in the tree at this record's date):
 
@@ -404,8 +446,10 @@ runner-local source — on one machine, without the declared per-role mapping.
 its durable reference-only tables, carrying the source axis; the `oauth` and
 `app_installation` modes; live `api_key` executors for the three providers;
 the encrypted secret store with envelope encryption and an external KEK; the
-runner-side role → local-secret mapping for the runner-local source;
-per-tenant access control; deposit/rotate/revoke surfaces; GitLab.
+runner-side role → local-secret mapping for the runner-local source; locus-Y
+effect execution (the Effect Worker on the runner host under a runner-local
+grant, after the ADR 0009/0010 amendment §5 names); per-tenant access
+control; deposit/rotate/revoke surfaces; GitLab.
 
 **The path between them is subsumption, not a parallel mechanism**: each
 bootstrap credential-directory flag becomes the first installation Account of
@@ -426,19 +470,21 @@ refusals and are not renamed.
 | `account-mode-unsupported` | a binding requires a mode the resolved Account does not carry, with no downgrade | binding resolution |
 | `account-secret-store-unavailable` | the secret store or its KEK cannot be reached at the point of use | point of use |
 | `account-revoked` | a use resolves an Account whose grant or key was revoked; the refusal names revocation, not absence | point of use |
+| `effect-locus-unverifiable` | an effect binding opts into locus Y while its declared readback cannot positively prove the claimed outcome (§5, invariant 8) | binding resolution |
 
 ## Threat model
 
 | Threat | Covering control |
 | --- | --- |
 | App-database dump | references only, never values (invariants 1, 6; canary) |
-| Full server compromise (external/SaaS deployment) | runner-local source (§4): the value was never on the server — for provider credentials today, for platform-effect tokens only under locus Y (§4); server-held delegated grants are revoked at the provider |
+| Full server compromise (external/SaaS deployment) | runner-local source (§4): the value was never on the server — for provider credentials today, for platform-effect tokens under the Y opt-in (§5); server-held delegated grants are revoked at the provider |
 | Secret-store dump or store backup leak | ciphertext only; KEK held outside the store (§3 tier B) |
 | Log, prompt, event or dossier leak | value never enters any of them (invariant 1; canary; ADR 0009 §6) |
-| Cross-tenant access | Account-to-tenant binding plus access control (invariant 4; §7) |
+| Cross-tenant access | Account-to-tenant binding plus access control (invariant 4; §8) |
 | Insider with app-DB access | sees references |
 | Insider with store access | sees ciphertext; KEK access is a separate, separately controlled system |
 | Compromised runner/cage | holds one credential for one run, by reference; delegated modes hand it only a short-lived scoped token; revocation stops new bindings (ADR 0009 §4/§10) |
+| Compromised runner forging an effect (locus Y) | only readback-verifiable effects may opt into Y, and a receipt commits only on Core's own readback, never on the runner's report (invariant 8; §5) |
 | Lost device / user offboarding | delegated grant revoked at the provider; stored key rotated under the same Account identity (invariant 5) |
 | Revoked credential mid-operation | fail loud with a named refusal; no downgrade, no silent retry (invariant 7) |
 
@@ -460,8 +506,12 @@ refusals and are not renamed.
   hand it a sensitive token: the runner-local source (§4) keeps the value on
   the company's own runner, and the server's run-execution path stays
   credential-minimal. Today that covers provider credentials; covering
-  platform-effect tokens too is exactly the open locus decision (X versus Y,
-  §4).
+  platform-effect tokens too is locus Y (§5) — an explicit opt-in whose build
+  remains PROPOSED.
+- The effect execution locus becomes a selectable third axis with X as the
+  safe default. A deployment that opts into Y pays for the Effect Worker
+  build and the ADR 0009/0010 amendment, and buys the enterprise topology
+  for effects — bounded by invariant 8 to the effects a readback can prove.
 - `AuthMode` gains two members; every hash frame that carries a mode already
   carries it as a value, so existing revisions keep their identities and new
   modes produce new ones.
@@ -473,13 +523,11 @@ refusals and are not renamed.
 
 Listed, deliberately not decided here:
 
-1. **Effect execution locus** (§4, the load-bearing one): X — Core performs
-   platform effects with a server-held token, as built today — versus Y —
-   the runner performs them under a runner-local token and Core verifies by
-   readback before committing the receipt — or per-Account, following the
-   Account's source. Y is what extends "our secrets never leave our network"
-   to platform effects, and choosing it requires amending ADR 0009 (worker
-   effect execution) and ADR 0010 (execute at the runner, readback in Core).
+1. **Locus Y enablement**: the locus model itself is ruled (§5 — both
+   first-class, X the default, Y an opt-in bounded by the verifiability
+   guardrail). Open are when Y is built, the scope of the ADR 0009/0010
+   amendment it requires, and which adapter operations are certified
+   Y-eligible first.
 2. **Secret-store and KEK backend**: operator file + host-provided key (the
    built seam grown), OS keyring, HashiCorp Vault, a cloud KMS, or an
    age/HSM-wrapped file — and which the self-hosted default is.
@@ -489,7 +537,7 @@ Listed, deliberately not decided here:
 4. **Rotation cadence for stored keys**, and whether it is enforced (refusal
    past age) or advisory (visible staleness).
 5. **Deposit scope for provider API keys**: per-installation only, or also
-   per-project — the layering (§6) supports both; the question is what the
+   per-project — the layering (§7) supports both; the question is what the
    deposit surface offers first.
 
 ## Required proofs before implementation is accepted
@@ -519,14 +567,20 @@ Listed, deliberately not decided here:
 - A runner-local runner resolves exactly the role its lease binds; a role
   outside its mapping refuses (`auth-profile-unresolvable`), and a second
   role's secret is not resolvable from inside the bound run's cage.
+- When locus Y is built: an effect binding whose declared readback cannot
+  prove its outcome refuses Y at binding time (`effect-locus-unverifiable`);
+  a runner report claiming a performed effect yields no receipt until Core's
+  own readback proves it, and a forged report over an unperformed effect
+  yields none at all — the intent routes to reconciliation; an unspecified
+  locus executes in Core.
 - Each bootstrap credential-directory flag resolves as an installation Account
   through the same resolution path the UI-deposited Account uses — one store,
   proven by the absence of a second.
 
 ## Out of scope and stop conditions
 
-This record does not decide: the effect execution locus (§4 presents X and Y;
-the operator decides); the store/KEK backend and the per-platform
+This record does not decide: the ADR 0009/0010 amendment locus Y requires
+(its own record before Y is built); the store/KEK backend and the per-platform
 defaults (the operator's open decisions above); OIDC login and session shape
 (#82); how a
 credential reaches a worker (ADR 0009 §6, unchanged); GitHub operation
@@ -544,8 +598,10 @@ Account store; a tenant resolving another tenant's Account; a secret traveling
 through chat, an agent conversation or an agent-writable surface; a delegated
 mode built by storing the access token instead of minting it; a runner-local
 credential value crossing to the server in any channel, or a runner resolving
-a role its lease did not bind; or an Account table that stores the value
-"temporarily".
+a role its lease did not bind; an effect receipt committed under locus Y from
+the runner's report instead of Core's own readback, or Y bound to an effect
+whose readback cannot prove its outcome; or an Account table that stores the
+value "temporarily".
 
 ## Supersedes
 
