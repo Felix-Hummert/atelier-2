@@ -107,6 +107,12 @@ class GitHubEffectAdapterFactory:
             AdapterOperationalIdentity(str(self.database_path.resolve())),
         )
 
+    @property
+    def proves_absence(self) -> bool:
+        # The fake platform lists every pull request it ever created, so a
+        # missing marker is an authoritative absence (ADR 0010 §5).
+        return True
+
     def open(self) -> GitHubEffectAdapter:
         database_path = self.database_path.resolve()
         database_path.parent.mkdir(parents=True, exist_ok=True)

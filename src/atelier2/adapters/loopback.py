@@ -51,6 +51,12 @@ class LoopbackEffectAdapterFactory:
             AdapterOperationalIdentity(str(self.database_path.resolve())),
         )
 
+    @property
+    def proves_absence(self) -> bool:
+        # The loopback store holds every effect it performed under its logical
+        # key, so a row that is absent is an authoritative absence.
+        return True
+
     def open(self) -> LoopbackEffectAdapter:
         database_path = self.database_path.resolve()
         database_path.parent.mkdir(parents=True, exist_ok=True)

@@ -8,6 +8,7 @@ import socket
 import subprocess
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Never
 from urllib.error import HTTPError
@@ -43,6 +44,7 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.github import GitHubCredentialUnresolvable, GitHubRepository
 from atelier2.adapters.grok_subscription import (
     GROK_SUBSCRIPTION_EXECUTOR_KEY,
     GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
@@ -74,6 +76,7 @@ from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.host import _claude_subscription_settings, main
 from atelier2.host.address import DEFAULT_HOST
 from atelier2.host.serving import (
+    GitHubEffectDeployment,
     HostSettings,
     api_limits,
     compose_application,
@@ -700,6 +703,71 @@ def test_a_scratch_root_inside_a_git_worktree_refuses_to_serve_and_says_why(
 def test_a_partly_declared_claude_deployment_refuses_to_serve(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as refusal:
         main(serve_arguments(tmp_path, "--claude-executable", str(tmp_path / "claude")))
+
+    assert refusal.value.code == 2
+
+
+def _github_credential_directory(tmp_path: Path, token: str | None) -> Path:
+    directory = tmp_path / "github-credential"
+    directory.mkdir(exist_ok=True)
+    if token is not None:
+        (directory / "token").write_text(token, encoding="utf-8")
+    return directory
+
+
+def _github_served_settings(tmp_path: Path, token: str | None) -> HostSettings:
+    settings = served_settings(tmp_path)
+    return replace(
+        settings,
+        github_effect=GitHubEffectDeployment(
+            _github_credential_directory(tmp_path, token),
+            GitHubRepository("FlexOr2", "atelier-2", "main"),
+        ),
+    )
+
+
+def test_the_github_flags_compose_the_live_open_pr_adapter(tmp_path: Path) -> None:
+    # A token file must exist because the adapter reads it by reference when it
+    # opens; a valid one lets the live factory bind without any network call.
+    _app, runtime = compose_application(
+        _github_served_settings(tmp_path, "gho_a_test_scenario_token")
+    )
+    try:
+        assert (
+            runtime.effect_adapter_binding.operational_identity.value
+            == "FlexOr2/atelier-2"
+        )
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("token", [None, "", "   \n"])
+def test_a_github_open_pr_deployment_without_a_readable_token_refuses_to_serve(
+    tmp_path: Path, token: str | None
+) -> None:
+    # Missing, empty, and whitespace-only token files each fail the whole start
+    # rather than serving open-pr silently disabled (`#430`).
+    with pytest.raises(GitHubCredentialUnresolvable):
+        compose_application(_github_served_settings(tmp_path, token))
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--github-credential-directory"],
+        ["--github-repository-owner", "FlexOr2"],
+        ["--github-repository-name", "atelier-2"],
+        ["--github-repository-base-branch", "main"],
+    ],
+)
+def test_a_partly_declared_github_open_pr_deployment_refuses_to_serve(
+    tmp_path: Path, extra: list[str]
+) -> None:
+    argument = extra + (
+        [str(tmp_path / "github-credential")] if extra[-1].endswith("directory") else []
+    )
+    with pytest.raises(SystemExit) as refusal:
+        main(serve_arguments(tmp_path, *argument))
 
     assert refusal.value.code == 2
 

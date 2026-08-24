@@ -242,6 +242,29 @@ def _effect_shaped_capability_to_open_pr(
     return grant.capability
 
 
+def first_agent_platform_effect_node(
+    session: Any, graph: AnyWorkflowDocument
+) -> str | None:
+    """The id of the first agent node whose own grant redeems as a platform effect.
+
+    Only a V3 agent node pins a tool grant, and only an effect-shaped grant
+    (`_effect_shaped_capability_to_open_pr`) is redeemed against the effect
+    adapter after the attempt already succeeded. The redemption has no
+    Action-only `WAITING_RECONCILIATION` resting place, so a destination that
+    cannot prove absence cannot safely carry it. Admission asks this question at
+    run start to refuse such a run before it advances (`#430`/`#431`), reading
+    the pinned grant through the same door `prepare_graph_agent_open_pr` reads it.
+    """
+    if not isinstance(graph, WorkflowGraphV3):
+        return None
+    for node in graph.nodes:
+        if not isinstance(node, AgentNodeV3):
+            continue
+        if _effect_shaped_capability_to_open_pr(read_pinned_tool_grant(session, node)):
+            return node.id
+    return None
+
+
 def graph_agent_open_pr_intent(
     session: Any,
     run_id: RunId,
