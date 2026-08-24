@@ -86,6 +86,12 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
     "adapters/dbos/runtime.py::_SHUTDOWN_WORKFLOW_COMPLETION_SECONDS": SpelledValue(
         1, "owner with a seam: how long shutdown waits for workflows to finish"
     ),
+    "adapters/dbos/runtime.py::_RUNNER_SESSION_CONNECTION_ATTEMPTS": SpelledValue(
+        1,
+        "stable slice invariant: one connection per Runner-lease Attempt while "
+        "the single fixed Core listener port allows only one at a time; "
+        "reconnect after a mid-session crash is Kind #585 (`#540`)'s job",
+    ),
     "adapters/dbos/workflow.py::CANCELLATION_REDRIVE_SECONDS": SpelledValue(
         1, "owner with a seam: the whole redrive ladder is decided in this one tuple"
     ),

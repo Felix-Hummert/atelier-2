@@ -401,7 +401,8 @@ def test_provider_free_composition_skips_process_supervision(
     try:
         assert runtime.agent_executor_registry.keys == frozenset()
         with pytest.raises(
-            AgentProcessSupervisorUnavailable, match="empty executor registry"
+            AgentProcessSupervisorUnavailable,
+            match="no LOCAL_PROCESS-carried executor key",
         ):
             _ = runtime.agent_process_supervisor
     finally:

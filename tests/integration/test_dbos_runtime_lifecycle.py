@@ -605,7 +605,8 @@ def test_empty_registry_runs_v1_without_process_supervision(
     )
     try:
         with pytest.raises(
-            AgentProcessSupervisorUnavailable, match="empty executor registry"
+            AgentProcessSupervisorUnavailable,
+            match="no LOCAL_PROCESS-carried executor key",
         ):
             _ = runtime.agent_process_supervisor
         assert execute_one_bootstrap(runtime) is RunState.WAITING_INPUT
@@ -623,7 +624,8 @@ def test_empty_registry_runs_v1_without_process_supervision(
     try:
         restarted.launch()
         with pytest.raises(
-            AgentProcessSupervisorUnavailable, match="empty executor registry"
+            AgentProcessSupervisorUnavailable,
+            match="no LOCAL_PROCESS-carried executor key",
         ):
             _ = restarted.agent_process_supervisor
     finally:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
+import threading
 from collections.abc import Mapping
-from typing import Any, assert_never, cast
+from typing import Any, Protocol, assert_never, cast
 
 import sqlalchemy as sa
 from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
@@ -77,6 +79,9 @@ from atelier2.application.cancel_agent_attempt import (
     continue_agent_attempt_cancellation,
 )
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
+from atelier2.application.execute_agent_attempt_on_runner import (
+    ExecuteAgentAttemptOnRunnerOutcome,
+)
 from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     CancelAgentAttemptRequest,
@@ -134,6 +139,8 @@ from atelier2.contracts.workflows_v3 import (
 )
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
+    AgentAttemptFailed,
+    AgentAttemptPossiblyRan,
     AgentAttemptStore,
     AgentAttemptSucceeded,
     AgentExecutorBindingRefusalFenced,
@@ -143,6 +150,7 @@ from atelier2.ports.agent_attempts import (
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceOwner,
     AgentExecutor,
+    AgentExecutorCarrier,
     AgentExecutorKey,
     AgentExecutorV2,
     AgentProcessRunner,
@@ -151,8 +159,30 @@ from atelier2.ports.effects import EffectAdapter
 from atelier2.ports.project_verification import (
     DeclaredProject,
 )
+from atelier2.ports.runner_leases import RunnerInvocationTimedOut
 
 CANCELLATION_REDRIVE_SECONDS = (0.1, 0.25, 0.5, 1.0, 2.0, 5.0)
+
+_LOG = logging.getLogger("atelier2")
+
+
+class RunnerLeaseAttemptDriver(Protocol):
+    """Drives one Attempt's Runner lease to a terminal outcome (`#540` C-3.6).
+
+    The one seam `register_durable_run_workflow` depends on for a
+    `RUNNER_LEASE`-carried key: a composition root supplies the concrete
+    driver (`atelier2.adapters.dbos.runtime` composes the production one,
+    over the real `atelier2.application.execute_agent_attempt_on_runner`
+    driver `#540` C-3.4 already proved), and a test supplies one wrapping the
+    same real driver over a scripted transport -- exactly the layering
+    `tests/integration/test_execute_agent_attempt_on_runner.py` already
+    established, so this dispatch seam never has to reimplement or refake the
+    session protocol itself.
+    """
+
+    def drive(
+        self, execution: AgentAttemptExecution
+    ) -> ExecuteAgentAttemptOnRunnerOutcome: ...
 
 
 def _declared_workspace_owner(
@@ -173,6 +203,16 @@ def _declared_process_runner(
             "an agent node requires the declared local agent process runner"
         )
     return runner
+
+
+def _declared_runner_lease_driver(
+    driver: RunnerLeaseAttemptDriver | None,
+) -> RunnerLeaseAttemptDriver:
+    if driver is None:
+        raise RunBindingConflict(
+            "an agent node requires the declared runner-lease attempt driver"
+        )
+    return driver
 
 
 def bootstrap_run_binding(
@@ -400,6 +440,7 @@ def register_durable_run_workflow(
             AgentExecutorV2 | None,
             AgentExecutorOperationalIdentity,
             frozenset[AgentExecutionCapability],
+            AgentExecutorCarrier,
         ],
     ],
     agent_attempt_store: AgentAttemptStore,
@@ -408,7 +449,65 @@ def register_durable_run_workflow(
     project: DeclaredProject | None,
     adapter: EffectAdapter,
     effect_binding: EffectAdapterBinding,
+    runner_lease_driver: RunnerLeaseAttemptDriver | None = None,
 ) -> None:
+    # `RUNNER_LEASE` sessions share one fixed Core listener port
+    # (`atelier2.adapters.runner_tls.CORE_SESSION_PORT`), so at most one may
+    # ever be in flight at once (`#540` C-3.6 D-8b, D1: one Runner Attempt
+    # concurrently). This gate serializes rather than fails a second arrival:
+    # no run may end unsuccessfully only because another Runner Attempt was
+    # already running.
+    runner_lease_slot = threading.Lock()
+
+    def execute_v2_attempt(
+        carrier: AgentExecutorCarrier,
+        attempt_execution: AgentAttemptExecution,
+        executor: AgentExecutorV2,
+        binding: AgentNodeBindingV2,
+    ) -> (
+        AgentAttemptSucceeded
+        | AgentAttemptFailed
+        | AgentAttemptPossiblyRan
+        | RunnerInvocationTimedOut
+    ):
+        if carrier is AgentExecutorCarrier.RUNNER_LEASE:
+            if pinned_project(binding, project) is not None:
+                raise RunBindingConflict(
+                    "a runner-lease agent node does not support a pinned "
+                    "project source yet"
+                )
+            return _execute_on_runner_lease(attempt_execution)
+        runner = _declared_process_runner(agent_process_runner)
+        return execute_agent_attempt(
+            attempt_execution,
+            executor,
+            agent_attempt_store,
+            runner,
+            _declared_workspace_owner(agent_workspace_owner),
+            pinned_project(binding, project),
+        )
+
+    def _execute_on_runner_lease(
+        execution: AgentAttemptExecution,
+    ) -> AgentAttemptSucceeded | AgentAttemptFailed | RunnerInvocationTimedOut:
+        driver = _declared_runner_lease_driver(runner_lease_driver)
+        if not runner_lease_slot.acquire(blocking=False):
+            _LOG.info(
+                "Agent attempt %s waits for the runner slot.",
+                execution.attempt_id.value,
+                extra={
+                    "event": "agent_attempt_awaiting_runner_slot",
+                    "run_id": execution.request.run_id.value,
+                    "node_id": execution.request.node_id,
+                    "attempt_id": execution.attempt_id.value,
+                },
+            )
+            runner_lease_slot.acquire()
+        try:
+            return driver.drive(execution)
+        finally:
+            runner_lease_slot.release()
+
     def start_node(
         run_id: RunId,
         revision_hash: WorkflowRevisionHash,
@@ -535,10 +634,9 @@ def register_durable_run_workflow(
         )
         if not isinstance(binding, AgentNodeBindingV2):
             raise RunTransitionConflict("replacement attempt is not an agent node")
-        runner = _declared_process_runner(agent_process_runner)
-        executor, operational_identity, declared_capabilities = agent_executors_v2[
-            _executor_key(binding)
-        ]
+        executor, operational_identity, declared_capabilities, carrier = (
+            agent_executors_v2[_executor_key(binding)]
+        )
         if executor is None:
             return RunState.STARTED.value
         request = agent_execution_request_v2(
@@ -558,13 +656,11 @@ def register_durable_run_workflow(
             raise RunTransitionConflict(
                 "replacement workflow differs from its durable attempt binding"
             )
-        outcome = execute_agent_attempt(
+        outcome = execute_v2_attempt(
+            carrier,
             AgentAttemptExecution(request, replacement.attempt_id, 2),
             executor,
-            agent_attempt_store,
-            runner,
-            _declared_workspace_owner(agent_workspace_owner),
-            pinned_project(binding, project),
+            binding,
         )
         if isinstance(outcome, AgentAttemptSucceeded):
             match outcome.completion:
@@ -579,6 +675,12 @@ def register_durable_run_workflow(
                     pass
                 case _ as unreachable:
                     assert_never(unreachable)
+        if isinstance(outcome, RunnerInvocationTimedOut):
+            # No launcher ever connected: this call minted no `AgentAttempt`
+            # of its own, so the durable state a timed-out Runner-lease
+            # replacement reports is whatever `execute_on_runner_lease`'s own
+            # `store.prepare` already left standing.
+            return agent_attempt_store.load(replacement.attempt_id).state.value
         return outcome.attempt.state.value
 
     @DBOS.workflow(name=NODE_WORKFLOW_NAME, max_recovery_attempts=None)
@@ -607,10 +709,9 @@ def register_durable_run_workflow(
             start_node(typed_run_id, typed_revision, str(successor))
             return RunState.STARTED.value
         if isinstance(binding, AgentNodeBindingV2):
-            runner = _declared_process_runner(agent_process_runner)
-            executor, operational_identity, declared_capabilities = agent_executors_v2[
-                _executor_key(binding)
-            ]
+            executor, operational_identity, declared_capabilities, carrier = (
+                agent_executors_v2[_executor_key(binding)]
+            )
             execution_request_v2 = agent_execution_request_v2(
                 binding,
                 typed_run_id,
@@ -630,14 +731,7 @@ def register_durable_run_workflow(
             )
             if executor is None:
                 return refuse_unavailable_executor(execution_request_v2)
-            outcome = execute_agent_attempt(
-                attempt_execution,
-                executor,
-                agent_attempt_store,
-                runner,
-                _declared_workspace_owner(agent_workspace_owner),
-                pinned_project(binding, project),
-            )
+            outcome = execute_v2_attempt(carrier, attempt_execution, executor, binding)
             if not isinstance(outcome, AgentAttemptSucceeded):
                 return RunState.STARTED.value
             match outcome.completion:
