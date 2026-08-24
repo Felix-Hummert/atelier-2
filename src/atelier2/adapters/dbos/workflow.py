@@ -8,7 +8,12 @@ from typing import Any, Protocol, assert_never, cast
 import sqlalchemy as sa
 from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
 
-from atelier2.adapters.dbos.advancer import prepare_graph_action
+from atelier2.adapters.dbos.advancer import (
+    prepare_graph_action,
+    prepare_graph_agent_open_pr,
+    read_pinned_tool_grant,
+    redeem_agent_open_pr,
+)
 from atelier2.adapters.dbos.continuation import (
     checkpoint_confirmed_action,
     schedule_confirmed_action_continuation,
@@ -24,6 +29,8 @@ from atelier2.adapters.dbos.names import (
     ACTION_CONTINUATION_WORKFLOW_NAME,
     ACTION_PREPARE_STEP_NAME,
     AGENT_COMMIT_STEP_NAME,
+    AGENT_EFFECT_PREPARE_STEP_NAME,
+    AGENT_EFFECT_REDEEM_STEP_NAME,
     ANSWER_COMMIT_STEP_NAME,
     ANSWER_WORKFLOW_NAME,
     BOOTSTRAP_STEP_NAME,
@@ -115,7 +122,7 @@ from atelier2.contracts.node_bindings import (
 )
 from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
 from atelier2.contracts.project_sources import ProjectSourcePin
-from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.run_bindings import RunBindingConflict
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
@@ -125,8 +132,7 @@ from atelier2.contracts.runs import (
 )
 from atelier2.contracts.tool_grants_v3 import (
     DeclaredToolGrant,
-    ToolGrantRefused,
-    read_tool_grant_document,
+    redeems_as_platform_effect,
 )
 from atelier2.contracts.workflows import (
     AgentNodeV2,
@@ -358,29 +364,19 @@ def _executor_key(binding: AgentNodeBindingV2) -> AgentExecutorKey:
 def _pinned_tool_grant(
     session: Any, node: AnyWorkflowDocumentNode
 ) -> DeclaredToolGrant | None:
-    """The grant this node pinned, read from the revision the document pins by hash.
+    """The exec-shaped grant this node's binding carries, or nothing.
 
-    A V3 `tools` entry pins its published revision by that revision's own hash, so
-    reading the registry under it is reading exactly what the run configuration
-    froze rather than resolving a second time. The bytes are immutable and were
-    already read as a grant when the run was bound; a registry that cannot answer
-    for them now contradicts a run that has already started.
+    Only an exec-shaped grant is redeemed inside the attempt's lease, so only it
+    travels in the binding beside the `project_source` it needs. An
+    effect-shaped grant -- an `open-pr` a pull request answers -- carries no
+    source and is redeemed after the attempt succeeds, straight from the
+    immutable graph where its effect is prepared, so the binding leaves it out
+    rather than force it a `project_source` it has no use for.
     """
-    if not isinstance(node, AgentNodeV3) or not node.tools:
+    grant = read_pinned_tool_grant(session, node)
+    if grant is None or redeems_as_platform_effect(grant.capability):
         return None
-    pinned = node.tools[0]
-    document = session.scalar(
-        sa.select(published_revisions.c.document).where(
-            published_revisions.c.kind == RevisionKind.TOOL.value,
-            published_revisions.c.revision_hash == pinned.revision,
-        )
-    )
-    if document is None:
-        raise RunBindingConflict("the pinned tool revision left the registry")
-    grant = read_tool_grant_document(bytes(document))
-    if isinstance(grant, ToolGrantRefused):
-        raise RunBindingConflict(f"the pinned tool revision is no grant: {grant}")
-    return DeclaredToolGrant(PublishedRevisionHash(pinned.revision), grant.capability)
+    return grant
 
 
 def _pinned_maximum_assistant_turns(
@@ -519,6 +515,45 @@ def register_durable_run_workflow(
             return driver.drive(execution)
         finally:
             runner_lease_slot.release()
+
+    def redeem_agent_node_effect(
+        run_id: RunId,
+        revision_hash: WorkflowRevisionHash,
+        node_id: str,
+        round_ordinal: int,
+    ) -> None:
+        """Redeem the pull request this agent node's own grant opened, if any.
+
+        Runs after the attempt has durably succeeded, so the request bytes are
+        the node's own kept output, and only for a node whose grant is
+        effect-shaped -- the prepare step answers with nothing for every other
+        node, which is why it may run for all of them. Preparing the intent and
+        redeeming it are two steps so a PREPARED intent is committed before the
+        adapter is ever asked, and both replay idempotently: the second reads
+        the pull request back rather than opening its twin.
+        """
+        logical_key = datasource.run_tx_step(
+            {"name": AGENT_EFFECT_PREPARE_STEP_NAME},
+            lambda: prepare_graph_agent_open_pr(
+                datasource.sql_session(),
+                run_id,
+                revision_hash,
+                node_id,
+                round_ordinal,
+                effect_binding,
+            ),
+        )
+        if logical_key is None:
+            return
+        datasource.run_tx_step(
+            {"name": AGENT_EFFECT_REDEEM_STEP_NAME},
+            lambda: redeem_agent_open_pr(
+                datasource.sql_session(),
+                adapter,
+                str(logical_key),
+                revision_hash.value,
+            ),
+        )
 
     def start_node(
         run_id: RunId,
@@ -685,6 +720,12 @@ def register_durable_run_workflow(
             binding,
         )
         if isinstance(outcome, AgentAttemptSucceeded):
+            redeem_agent_node_effect(
+                replacement.run_id,
+                replacement.workflow_revision_hash,
+                replacement.node_id,
+                binding.round_ordinal,
+            )
             match outcome.completion:
                 case RunContinues(node_id, round_ordinal):
                     start_node(
@@ -756,6 +797,9 @@ def register_durable_run_workflow(
             outcome = execute_v2_attempt(carrier, attempt_execution, executor, binding)
             if not isinstance(outcome, AgentAttemptSucceeded):
                 return RunState.STARTED.value
+            redeem_agent_node_effect(
+                typed_run_id, typed_revision, node_id, binding.round_ordinal
+            )
             match outcome.completion:
                 case RunContinues(node_id, round_ordinal):
                     start_node(typed_run_id, typed_revision, node_id, round_ordinal)

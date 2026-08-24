@@ -60,6 +60,10 @@ def seed(root: Path, run_id: str) -> None:
     child(root, "seed", run_id, DOCUMENT.hex())
 
 
+def seed_agent(root: Path, run_id: str) -> None:
+    child(root, "seed-agent", run_id)
+
+
 def recorded_pull_requests(root: Path) -> tuple[tuple[str, int, str, str], ...]:
     factory = GitHubEffectAdapterFactory(
         root / "github.sqlite",
@@ -123,3 +127,59 @@ def test_c2_crash_after_github_create_before_adapter_return_recovers_one_pr(
     assert CANARY_TOKEN.encode() not in result
     assert CANARY_TOKEN not in recovered[0][2]
     assert events[-2:] == ("ACTION_COMPLETED", "WAITING_INPUT")
+
+
+@pytest.mark.proves("a-v3-agent-node-opens-one-pr-through-its-own-open-pr-grant")
+def test_crash_after_agent_completion_before_redeem_recovers_one_pr(
+    tmp_path: Path,
+) -> None:
+    """The agent redeem runs after complete_success has advanced the run, so a crash
+    in that window must re-drive to exactly one pull request and one receipt -- the
+    run reports COMPLETED and the effect it declared is neither doubled nor lost."""
+    run_id = "agent-open-pr-after-create"
+    seed_agent(tmp_path, run_id)
+    marker = tmp_path / "crash-after-create-agent"
+
+    child(
+        tmp_path,
+        "execute",
+        run_id,
+        str(marker),
+        ADAPTER_EXECUTE_AFTER_COMMIT,
+        "after-external-commit",
+        "8",
+        expected=CRASHED,
+    )
+    assert marker.read_text() == f"{ADAPTER_EXECUTE_AFTER_COMMIT}:after-external-commit"
+    first = recorded_pull_requests(tmp_path)
+    assert len(first) == 1
+    with sqlite3.connect(tmp_path / "atelier.sqlite", timeout=30) as connection:
+        receipts = connection.execute("SELECT COUNT(*) FROM effect_receipts").fetchone()
+        assert receipts is not None and receipts[0] == 0
+
+    child(tmp_path, "execute", run_id, "NONE", "NONE", "before-record", "8")
+
+    recovered = recorded_pull_requests(tmp_path)
+    assert recovered == first
+    with sqlite3.connect(tmp_path / "atelier.sqlite", timeout=30) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM effect_receipts"
+        ).fetchone() == (1,)
+        run_state = connection.execute(
+            "SELECT state FROM runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        request_hash = str(
+            connection.execute("SELECT request_hash FROM effect_intents").fetchone()[0]
+        )
+        result = bytes(
+            connection.execute("SELECT result FROM effect_receipts").fetchone()[0]
+        )
+        agent_completions = connection.execute(
+            "SELECT COUNT(*) FROM run_events WHERE event_kind='AGENT_COMPLETED'"
+        ).fetchone()
+    assert run_state == ("COMPLETED",)
+    assert agent_completions == (1,)
+    assert body_carries_request_hash(recovered[0][2], request_hash)
+    assert b'"pr_number":1' in result
+    assert CANARY_TOKEN.encode() not in result
+    assert CANARY_TOKEN not in recovered[0][2]
