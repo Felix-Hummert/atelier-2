@@ -360,6 +360,11 @@ class _FailingAttemptStore:
             (request, disposition, process_owner_id, watchdog_generation_id)
         )
 
+    def commit_never_launched_cancellation(
+        self, request: CancelAgentAttemptRequest
+    ) -> AgentAttemptCancellationAccepted:
+        raise AssertionError(request)
+
     def mark_cancellation_owner_not_local(
         self, request: CancelAgentAttemptRequest
     ) -> AgentAttempt:

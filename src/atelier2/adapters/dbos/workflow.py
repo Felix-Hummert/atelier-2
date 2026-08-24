@@ -78,6 +78,7 @@ from atelier2.application.bind_node import (
 from atelier2.application.cancel_agent_attempt import (
     continue_agent_attempt_cancellation,
 )
+from atelier2.application.cancel_runner_attempt import cancel_runner_attempt
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.application.execute_agent_attempt_on_runner import (
     ExecuteAgentAttemptOnRunnerOutcome,
@@ -159,7 +160,7 @@ from atelier2.ports.effects import EffectAdapter
 from atelier2.ports.project_verification import (
     DeclaredProject,
 )
-from atelier2.ports.runner_leases import RunnerInvocationTimedOut
+from atelier2.ports.runner_leases import RunnerInvocationTimedOut, RunnerLeasePublisher
 
 CANCELLATION_REDRIVE_SECONDS = (0.1, 0.25, 0.5, 1.0, 2.0, 5.0)
 
@@ -213,6 +214,16 @@ def _declared_runner_lease_driver(
             "an agent node requires the declared runner-lease attempt driver"
         )
     return driver
+
+
+def _declared_runner_lease_publisher(
+    publisher: RunnerLeasePublisher | None,
+) -> RunnerLeasePublisher:
+    if publisher is None:
+        raise RunBindingConflict(
+            "cancelling a runner-lease attempt requires the declared lease publisher"
+        )
+    return publisher
 
 
 def bootstrap_run_binding(
@@ -450,6 +461,7 @@ def register_durable_run_workflow(
     adapter: EffectAdapter,
     effect_binding: EffectAdapterBinding,
     runner_lease_driver: RunnerLeaseAttemptDriver | None = None,
+    runner_lease_publisher: RunnerLeasePublisher | None = None,
 ) -> None:
     # `RUNNER_LEASE` sessions share one fixed Core listener port
     # (`atelier2.adapters.runner_tls.CORE_SESSION_PORT`), so at most one may
@@ -602,6 +614,16 @@ def register_durable_run_workflow(
             cancellation.expected_attempt_state_version,
             cancellation.replacement,
         )
+        if attempt.runner_manifest_id is not None:
+            # A runner-lease-bound attempt converges over its lease, not a local
+            # process: winning the withdraw ends it NEVER_LAUNCHED, a claimed
+            # lease defers it to the launched path without a redrive loop (#584).
+            cancel_runner_attempt(
+                request,
+                agent_attempt_store,
+                _declared_runner_lease_publisher(runner_lease_publisher),
+            )
+            return agent_attempt_store.load(attempt.attempt_id).state.value
         redrive_index = 0
         while (
             continue_agent_attempt_cancellation(

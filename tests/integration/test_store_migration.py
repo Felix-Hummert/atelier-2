@@ -34,6 +34,7 @@ from atelier2.adapters.dbos.schema import (
     _V17_AGENT_ATTEMPT_TRIGGERS,
     _V23_AGENT_ATTEMPT_TRIGGERS,
     _V24_AGENT_ATTEMPT_TRIGGERS,
+    _V27_AGENT_ATTEMPT_STATE_TRANSITION,
     _VERSION_TWENTY,
     PRODUCT_SCHEMA_HANDOFF,
     SCHEMA_VERSION,
@@ -47,6 +48,7 @@ from atelier2.adapters.dbos.schema import (
     V27_SCHEMA_HANDOFF,
     V28_SCHEMA_HANDOFF,
     V29_SCHEMA_HANDOFF,
+    V31_SCHEMA_HANDOFF,
     MigrationRequired,
     _rebuild_product_table,
     _require_product_shape,
@@ -89,6 +91,7 @@ from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL, RunId, WorkflowRevisionHash
 from atelier2.host import main
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
+from tests.integration.test_runner_terminal_evidence_store import _bound
 from tests.scenarios.agents import agent_attempt_execution
 
 ARCHIVED_RUN_ID = "live/erster-lauf-nach-der-nacht"
@@ -975,6 +978,20 @@ def _revert_runner_evidence_attempts(connection: sqlite3.Connection) -> None:
     )
 
 
+def _revert_agent_attempts_trigger_to_v27(connection: sqlite3.Connection) -> None:
+    """Restore the pre-#584 attempt trigger V27 through V31 all shared.
+
+    The current schema (#584, V32) is the first to change
+    `agent_attempts_state_transition` since V27 gave it its runner-aware form,
+    so a fixture that reverts only the version -- not the attempt table -- must
+    also swap this trigger back, or its shape no longer matches the published
+    fingerprint for the version it claims.
+    """
+
+    connection.execute("DROP TRIGGER agent_attempts_state_transition")
+    connection.execute(_V27_AGENT_ATTEMPT_STATE_TRANSITION)
+
+
 def _create_exact_v21_store(database_path: Path) -> None:
     """A current store with instants and AGENT_REFUSED removed: the published V21 shape."""
 
@@ -1158,6 +1175,7 @@ def _create_exact_v27_store(database_path: Path, *, access: bool = False) -> Non
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _revert_cancelled_run_state(connection)
+        _revert_agent_attempts_trigger_to_v27(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V27_SCHEMA_HANDOFF.version,),
@@ -1177,6 +1195,7 @@ def _create_exact_v28_store(database_path: Path) -> None:
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _revert_cancelled_run_state(connection)
+        _revert_agent_attempts_trigger_to_v27(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V28_SCHEMA_HANDOFF.version,),
@@ -1198,6 +1217,7 @@ def _create_exact_v29_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _drop_webhook_delivery_cursor_table(connection)
         _revert_cancelled_run_state(connection)
+        _revert_agent_attempts_trigger_to_v27(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V29_SCHEMA_HANDOFF.version,),
@@ -1978,3 +1998,110 @@ def test_a_foreign_trigger_name_collision_is_refused_without_altering_the_store(
         assert connection.execute(
             "SELECT version FROM atelier_schema_versions"
         ).fetchone() == (13,)
+
+
+def _create_exact_v31_store(database_path: Path) -> None:
+    """A current store with the pre-#584 attempt trigger: the published V31 shape.
+
+    V31 differs from the current schema only by the never-launched runner-cancel
+    branch #584 added to `agent_attempts_state_transition`; the fixture is a
+    fresh store with that trigger reverted to its V31 grammar. The pinned V31
+    fingerprint refuses it the moment a character drifts.
+    """
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP TRIGGER agent_attempts_state_transition")
+        connection.execute(_V27_AGENT_ATTEMPT_STATE_TRANSITION)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V31_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V31_SCHEMA_HANDOFF.version)
+
+
+def test_an_exact_v31_store_migrates_to_v32_by_a_trigger_swap(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v31_store(database_path)
+    with sqlite3.connect(database_path) as connection:
+        table_before = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_attempts'"
+        ).fetchone()
+        trigger_before = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='trigger' AND name='agent_attempts_state_transition'"
+        ).fetchone()
+    assert trigger_before is not None and "NEVER_LAUNCHED" not in trigger_before[0]
+
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 31"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    shown = capsys.readouterr()
+    assert "31" in shown.out and "32" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
+        )
+    engine.dispose()
+
+    with sqlite3.connect(database_path) as connection:
+        table_after = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_attempts'"
+        ).fetchone()
+        trigger_after = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='trigger' AND name='agent_attempts_state_transition'"
+        ).fetchone()
+    # The hop moved no table shape -- only the trigger grammar changed.
+    assert table_after == table_before
+    assert trigger_after is not None and "NEVER_LAUNCHED" in trigger_after[0]
+
+
+def test_a_populated_v31_runner_attempt_survives_the_v32_trigger_swap(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    runtime, store, execution, _binding = _bound(
+        tmp_path, "migration/v31-runner-attempt"
+    )
+    durable = store.load(execution.attempt_id)
+    assert durable.runner_manifest_id is not None
+    assert durable.runner_invocation_id is None
+    runtime.close()
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP TRIGGER agent_attempts_state_transition")
+        connection.execute(_V27_AGENT_ATTEMPT_STATE_TRANSITION)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V31_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V31_SCHEMA_HANDOFF.version)
+        predecessor_row = connection.execute("SELECT * FROM agent_attempts").fetchone()
+    assert predecessor_row is not None
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            connection.execute("SELECT * FROM agent_attempts").fetchone()
+            == predecessor_row
+        )
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (SCHEMA_VERSION,)
