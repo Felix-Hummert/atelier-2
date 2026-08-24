@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -637,7 +636,7 @@ def test_real_grantless_v3_runner_failures_keep_and_project_the_exact_new_reason
 
 
 @pytest.mark.parametrize("with_invocation", (False, True))
-def test_acked_never_launched_is_the_only_pre_arm_rebind(
+def test_acked_never_launched_commits_no_product_truth_and_refuses_arm(
     tmp_path: Path, with_invocation: bool
 ) -> None:
     runtime, store, execution, binding = _bound(
@@ -674,156 +673,20 @@ def test_acked_never_launched_is_the_only_pre_arm_rebind(
             )
 
         tombstone = _ack_tombstone(envelope)
-        fresh = RunnerGenerationBinding(
-            execution.attempt_id,
-            execution.request.request_hash,
-            RunnerGenerationId("runner-generation-2"),
-            RunnerManifestId.of(b"runner-manifest-v2"),
-        )
-        before_early_rebind = _runner_product_snapshot(runtime)
-        with pytest.raises(RunnerBindingConflict):
-            store.rebind_after_acknowledged_never_launched(execution, tombstone, fresh)
-        assert _runner_product_snapshot(runtime) == before_early_rebind
-
         acknowledged = store.mark_runner_evidence_acknowledged(execution, tombstone)
         assert (
             store.mark_runner_evidence_acknowledged(execution, tombstone)
             == acknowledged
+        )
+        assert (
+            acknowledged.runner_evidence_acceptance_phase
+            is RunnerEvidenceAcceptancePhase.ACKNOWLEDGED
         )
         if invocation is not None:
             acknowledged_snapshot = _runner_product_snapshot(runtime)
             with pytest.raises(RunnerBindingConflict):
                 store.arm_runner_invocation(execution, binding, invocation)
             assert _runner_product_snapshot(runtime) == acknowledged_snapshot
-        acknowledged_snapshot = _runner_product_snapshot(runtime)
-        for drifted in (
-            replace(
-                tombstone,
-                binding=replace(
-                    binding, manifest_id=RunnerManifestId.of(b"foreign-manifest")
-                ),
-            ),
-            replace(tombstone, invocation_id=RunnerInvocationId("foreign-invocation")),
-            replace(
-                tombstone,
-                evidence_hash=RunnerTerminalEvidenceHash.of(b"foreign-evidence"),
-            ),
-        ):
-            with pytest.raises(RunnerBindingConflict):
-                store.rebind_after_acknowledged_never_launched(
-                    execution, drifted, fresh
-                )
-        assert _runner_product_snapshot(runtime) == acknowledged_snapshot
-        rebound = store.rebind_after_acknowledged_never_launched(
-            execution, tombstone, fresh
-        )
-        retry = store.rebind_after_acknowledged_never_launched(
-            execution, tombstone, fresh
-        )
-
-        assert (
-            acknowledged.runner_evidence_acceptance_phase
-            is RunnerEvidenceAcceptancePhase.ACKNOWLEDGED
-        )
-        assert rebound.runner_generation_id == fresh.generation_id
-        assert rebound.runner_manifest_id == fresh.manifest_id
-        assert rebound.runner_invocation_id is None
-        assert rebound.runner_terminal_evidence_hash is None
-        assert (
-            rebound.runner_evidence_acceptance_phase
-            is RunnerEvidenceAcceptancePhase.NONE
-        )
-        assert retry == rebound
-        retry_snapshot = _runner_product_snapshot(runtime)
-        with pytest.raises(RunnerBindingConflict):
-            store.rebind_after_acknowledged_never_launched(
-                execution,
-                tombstone,
-                RunnerGenerationBinding(
-                    execution.attempt_id,
-                    execution.request.request_hash,
-                    fresh.generation_id,
-                    RunnerManifestId.of(b"runner-manifest-v3"),
-                ),
-            )
-        with pytest.raises(RunnerBindingConflict):
-            store.rebind_after_acknowledged_never_launched(
-                execution,
-                tombstone,
-                RunnerGenerationBinding(
-                    execution.attempt_id,
-                    execution.request.request_hash,
-                    RunnerGenerationId("runner-generation-3"),
-                    fresh.manifest_id,
-                ),
-            )
-        assert _runner_product_snapshot(runtime) == retry_snapshot
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize(
-    "target_state", ("armed", "committed", "acknowledged", "succeeded")
-)
-def test_rebind_retry_refuses_a_fresh_target_that_has_already_moved(
-    tmp_path: Path, target_state: str
-) -> None:
-    runtime, store, execution, binding = _bound(
-        tmp_path, f"runner/no-launch/retry-{target_state}"
-    )
-    try:
-        old_evidence = RunnerTerminalEvidenceEnvelope(
-            binding,
-            None,
-            RunnerCancellation(
-                "cancel-before-arm", RunnerCancellationObservation.NEVER_LAUNCHED
-            ),
-        )
-        store.commit_runner_terminal_evidence(execution, old_evidence)
-        old_tombstone = _ack_tombstone(old_evidence)
-        store.mark_runner_evidence_acknowledged(execution, old_tombstone)
-        fresh = RunnerGenerationBinding(
-            execution.attempt_id,
-            execution.request.request_hash,
-            RunnerGenerationId("runner-generation-2"),
-            RunnerManifestId.of(b"runner-manifest-v2"),
-        )
-        store.rebind_after_acknowledged_never_launched(execution, old_tombstone, fresh)
-
-        if target_state in {"armed", "succeeded"}:
-            store.arm_runner_invocation(
-                execution, fresh, RunnerInvocationId("runner-invocation-2")
-            )
-        if target_state == "succeeded":
-            store.commit_runner_terminal_evidence(
-                execution,
-                RunnerTerminalEvidenceEnvelope(
-                    fresh,
-                    RunnerInvocationId("runner-invocation-2"),
-                    RunnerProviderResult(AgentExecutionResult(b"terminal product")),
-                ),
-            )
-        elif target_state != "armed":
-            fresh_evidence = RunnerTerminalEvidenceEnvelope(
-                fresh,
-                None,
-                RunnerCancellation(
-                    "second-cancel-before-arm",
-                    RunnerCancellationObservation.NEVER_LAUNCHED,
-                ),
-            )
-            store.commit_runner_terminal_evidence(execution, fresh_evidence)
-            if target_state == "acknowledged":
-                store.mark_runner_evidence_acknowledged(
-                    execution, _ack_tombstone(fresh_evidence)
-                )
-        before = store.load(execution.attempt_id)
-
-        with pytest.raises(RunnerBindingConflict):
-            store.rebind_after_acknowledged_never_launched(
-                execution, old_tombstone, fresh
-            )
-        assert store.load(execution.attempt_id) == before
     finally:
         runtime.close()
 

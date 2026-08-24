@@ -224,9 +224,6 @@ class ScriptedCatalog:
     def publish_agent_configuration_revision(self, revision: Any) -> Any:
         return self._record(revision)
 
-    def auth_profile_revision(self, revision_hash: Any) -> Any:
-        raise AssertionError("a publication under test read the catalog back")
-
     def agent_configuration_revision(self, revision_hash: Any) -> Any:
         raise AssertionError("a publication under test read the catalog back")
 

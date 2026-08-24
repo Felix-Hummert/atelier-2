@@ -132,9 +132,6 @@ class RecordingCatalog:
             return AgentConfigurationRevisionCreated(revision, AUTH)
         return self.configuration_result
 
-    def auth_profile_revision(self, _revision_hash: object) -> None:
-        return None
-
     def agent_configuration_revision(self, _revision_hash: object) -> None:
         return None
 

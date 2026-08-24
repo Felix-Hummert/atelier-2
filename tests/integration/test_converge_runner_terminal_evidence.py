@@ -26,7 +26,6 @@ from atelier2.contracts.agent_attempts import (
     RunnerGenerationId,
     RunnerInvocationId,
     RunnerInvocationLost,
-    RunnerManifestId,
     RunnerProviderResult,
     RunnerTerminalEvidenceAckTombstone,
     RunnerTerminalEvidenceEnvelope,
@@ -210,7 +209,7 @@ def test_valid_provider_bytes_refused_by_product_schema_are_still_acknowledged(
 
 
 @pytest.mark.parametrize("crash_after_ack", (False, True))
-def test_ack_gc_tombstone_marks_core_and_survives_a_crash_before_rebind(
+def test_ack_gc_tombstone_marks_core_and_survives_a_crash(
     tmp_path: Path, crash_after_ack: bool
 ) -> None:
     runtime, store, execution, binding = _bound(
@@ -253,17 +252,6 @@ def test_ack_gc_tombstone_marks_core_and_survives_a_crash_before_rebind(
             acknowledged.runner_evidence_acceptance_phase
             is RunnerEvidenceAcceptancePhase.ACKNOWLEDGED
         )
-        fresh = RunnerGenerationBinding(
-            execution.attempt_id,
-            execution.request.request_hash,
-            RunnerGenerationId("runner-generation-2"),
-            RunnerManifestId.of(b"runner-manifest-v2"),
-        )
-        rebound = store.rebind_after_acknowledged_never_launched(
-            execution, tombstone, fresh
-        )
-
-        assert rebound.runner_generation_id == fresh.generation_id
         assert runner.acknowledgement_count(binding) == 1
         assert runner.garbage_collection_count(binding) == 1
     finally:

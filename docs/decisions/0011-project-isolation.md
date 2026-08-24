@@ -70,8 +70,8 @@
   none), `src/atelier2/adapters/dbos/runtime.py` (`DbosRuntimeBinding`,
   `DbosRuntimeBindingConflict`, the process-global runtime, and the agent-control
   root resolved as `<database>.parent/.atelier2-agent-control`),
-  `src/atelier2/host.py` (`HostSettings.database_path`, `effect_store_path`, the
-  loopback refusal). No code changed, no gate claim below; nothing here is
+  `src/atelier2/host/serving.py` (`HostSettings.database_path`, `effect_store_path`,
+  the loopback refusal). No code changed, no gate claim below; nothing here is
   implemented.
 
 ## Context
