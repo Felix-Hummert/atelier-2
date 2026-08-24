@@ -112,7 +112,6 @@
 
 <section class="surface" aria-labelledby="workflows-title">
   <header class="surface-head">
-    <p class="eyebrow">{wrapDisplayCopy(workflowsPageCopy.eyebrow)}</p>
     <h1 id="workflows-title">{wrapDisplayCopy(workflowsPageCopy.title)}</h1>
   </header>
 

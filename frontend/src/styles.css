@@ -104,6 +104,7 @@
   --popover-width: 20rem;
   --name-column: 16rem;
   --name-column-narrow: 8rem;
+  --duration-column: 6rem;
   --card-min: 14rem;
   --tile-min: 9rem;
   --scroll-box: 14rem;
@@ -317,6 +318,7 @@ button.quiet {
 
 .rail-settings small {
   font-size: var(--text-2xs);
+  white-space: nowrap;
 }
 
 .workshop-stage {

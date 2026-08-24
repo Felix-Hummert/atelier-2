@@ -178,7 +178,6 @@ describe("core surfaces read owned display strings", () => {
     feed.handlers?.opened();
     await screen.findByRole("heading", { name: "[[[ Nothing is running ]]]" });
 
-    expect(screen.getByText("[[[ Atelier ]]]").isConnected).toBe(true);
     expect(screen.getByText(wrapDisplayCopy(studioPageCopy.emptyDescription)).isConnected).toBe(true);
     expect(
       screen.getByRole("link", { name: wrapDisplayCopy(studioPageCopy.emptyStart) }).isConnected
@@ -196,13 +195,16 @@ describe("core surfaces read owned display strings", () => {
     expect(within(needsYou).getByText(`${wrapDisplayCopy(answer ?? "")} →`).isConnected).toBe(true);
     expect(within(needsYou).getByText(`${wrapDisplayCopy(reconcile ?? "")} →`).isConnected).toBe(true);
 
-    const running = screen.getByRole("region", { name: `${wrapDisplayCopy(studioPageCopy.running)} · 3` });
-    expect(within(running).getByText(`${wrapDisplayCopy(studioPageCopy.why)} →`).isConnected).toBe(true);
+    const running = screen.getByRole("region", { name: `${wrapDisplayCopy(studioPageCopy.running)} · 2` });
+    expect(within(running).queryByText(`${wrapDisplayCopy(studioPageCopy.why)} →`)).toBeNull();
 
-    const done = screen.getByRole("region", { name: `${wrapDisplayCopy(studioPageCopy.done)} · 1` });
+    // A failed run is over, not still running -- it groups with what has
+    // landed (#581), and still reads its own true word there.
+    const done = screen.getByRole("region", { name: `${wrapDisplayCopy(studioPageCopy.done)} · 2` });
     // The state word comes from the one owner every surface reads, wrapped the
     // same way -- no second copy of "Completed" living on the Board.
     expect(within(done).getByText(wrapDisplayCopy(standingWords.done)).isConnected).toBe(true);
+    expect(within(done).getByText(`${wrapDisplayCopy(studioPageCopy.why)} →`).isConnected).toBe(true);
   });
 
   it("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Studio renders both failed-read titles through the display transform", async () => {
@@ -245,7 +247,6 @@ describe("core surfaces read owned display strings", () => {
     openProjectPseudoLocale();
 
     await screen.findByRole("heading", { name: THE_ONE_PROJECT });
-    expect(screen.getByText(wrapDisplayCopy(projectPageCopy.eyebrow)).isConnected).toBe(true);
     expect(
       screen.getByRole("heading", { name: wrapDisplayCopy(projectPageCopy.workTitle) }).isConnected
     ).toBe(true);

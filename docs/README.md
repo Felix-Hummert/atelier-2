@@ -12,6 +12,7 @@ where this map and an owner disagree, the owner is right.
 | --- | --- | --- |
 | Why does this atelier exist? | Vision | [`VISION.md`](VISION.md). Desk/Doku reading of [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1); the issue wins. Copying Issue #1 into this tree is forbidden. |
 | What does the house look like? | Face | [`atelier.jpg`](atelier.jpg). One picture, one owner. The README embeds it so GitHub shows the door. Not a second logo farm. |
+| What must it feel like? | Heart | [`HEART.md`](HEART.md). The design soul every hand-built surface answers to; the clarity contract says what must be true, this says what it must feel like. |
 | What must it be able to do? | Requirements | [requirements/README.md](requirements/README.md) |
 | How is it used? | Journeys | [journeys/README.md](journeys/README.md) |
 | What does the machine count as done? | Acceptance | [requirements/README.md](requirements/README.md) |

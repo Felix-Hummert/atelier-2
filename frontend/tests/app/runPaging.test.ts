@@ -64,12 +64,11 @@ describe("the workshop reads the durable list to its end", () => {
 
   it("stops saying that reading further is unbuilt, because it is built", async () => {
     open("/atelier/project", pagedListRuns([firstPage, secondPage]));
-    await within(
-      await screen.findByRole("region", { name: projectPageCopy.workTitle })
-    ).findAllByRole("listitem");
+    const work = await screen.findByRole("region", { name: projectPageCopy.workTitle });
+    await within(work).findAllByRole("listitem");
 
-    expect(screen.queryByText(/not built yet/i)).toBeNull();
-    expect(screen.queryByText(/Not every run of this project is on this page/i)).toBeNull();
+    expect(within(work).queryByText(/not built yet/i)).toBeNull();
+    expect(within(work).queryByText(/Not every run of this project is on this page/i)).toBeNull();
   });
 
   it("names an incomplete initial read without confirming its partial rows", async () => {

@@ -54,7 +54,6 @@
   export let currentNodeId: string | null = null;
   export let selectedNodeId: string | null = null;
   export let onSelect: ((nodeId: string) => void) | null = null;
-  export let showLegend = false;
 
   const markerId = `workflow-graph-arrow-${nextMarker++}`;
 
@@ -66,16 +65,62 @@
 
   let host: HTMLElement;
   let edgePaths: EdgePath[] = [];
+  // Whether the canvas currently hides more nodes past its left/right edge --
+  // the fade in the markup below only shows on the side that is actually
+  // true, so it never claims a direction that has nothing left to scroll to
+  // (Leonardo-Gate 23.08.: a scroll cue, not a decoration).
+  let canScrollToStart = false;
+  let canScrollToEnd = false;
 
   $: layered = layerWorkflowGraph(previews);
   $: stateById = new Map(rail.map((entry) => [entry.node_id, entry.state]));
   $: segments = layered.ok === true ? segmentLayers(layered.layers, loops) : [];
   $: scheduleEdges(layered, previews);
+  $: scheduleFollowCurrent(currentNodeId);
 
   function scheduleEdges(next: typeof layered, nodes: typeof previews): void {
     void next;
     void nodes;
-    void tick().then(applyEdges);
+    void tick().then(() => {
+      applyEdges();
+      updateScrollAffordance();
+    });
+  }
+
+  /**
+   * A wider-than-its-card graph starts scrolled to whichever node the run
+   * actually needs the operator's eyes on, instead of the chain's first
+   * layer: the needs-you gate or the node currently working must never sit
+   * off the initial view at a narrow width (Leonardo-Gate 23.08. -- run
+   * cards at 390px hid the very node the run was waiting on).
+   */
+  function scheduleFollowCurrent(nodeId: string | null): void {
+    void nodeId;
+    void tick().then(() => {
+      scrollCurrentNodeIntoView();
+      updateScrollAffordance();
+    });
+  }
+
+  function scrollCurrentNodeIntoView(): void {
+    if (host == null || currentNodeId === null) return;
+    const node = host.querySelector(`[data-node-id="${CSS.escape(currentNodeId)}"]`);
+    if (!(node instanceof HTMLElement)) return;
+    const hostBox = host.getBoundingClientRect();
+    const nodeBox = node.getBoundingClientRect();
+    if (nodeBox.left >= hostBox.left && nodeBox.right <= hostBox.right) return;
+    const target = host.scrollLeft + (nodeBox.left - hostBox.left) - (host.clientWidth - nodeBox.width) / 2;
+    host.scrollLeft = Math.max(0, target);
+  }
+
+  function updateScrollAffordance(): void {
+    if (host == null) {
+      canScrollToStart = false;
+      canScrollToEnd = false;
+      return;
+    }
+    canScrollToStart = host.scrollLeft > 0;
+    canScrollToEnd = Math.ceil(host.scrollLeft + host.clientWidth) < host.scrollWidth;
   }
 
   function nodeLabel(id: string, state: NodeState | undefined): string {
@@ -229,100 +274,182 @@
 
   onMount(() => {
     applyEdges();
-    if (typeof ResizeObserver === "undefined" || host == null) return;
-    const observer = new ResizeObserver(() => applyEdges());
-    observer.observe(host);
-    return () => observer.disconnect();
+    scrollCurrentNodeIntoView();
+    updateScrollAffordance();
+    if (host == null) return;
+    host.addEventListener("scroll", updateScrollAffordance, { passive: true });
+    const cleanup = [() => host.removeEventListener("scroll", updateScrollAffordance)];
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => {
+        applyEdges();
+        // A card that narrows after mount (a window resize, not just the
+        // first paint) can turn a fit-without-scrolling graph into one that
+        // hides its current node -- the same follow the initial mount
+        // already does, run again so the needs-you gate never goes stale
+        // off-screen just because the card, not the graph, changed shape
+        // (Leonardo-Gate 23.08.).
+        scrollCurrentNodeIntoView();
+        updateScrollAffordance();
+      });
+      observer.observe(host);
+      cleanup.push(() => observer.disconnect());
+    }
+    return () => cleanup.forEach((teardown) => teardown());
   });
 </script>
 
-<section class="workflow-graph" bind:this={host} aria-label="Workflow">
-  {#if showLegend}
+<div class="workflow-graph card">
+  <details class="graph-help">
+    <summary class="reveal-affordance">What the shapes mean</summary>
     <ul class="graph-legend" aria-label="Node shapes and the loop marker">
       {#each KIND_LEGEND_ENTRIES as kind (kind)}
         <li><span class="kind-mark kind-mark-{kind}" aria-hidden="true"></span>{kindLegendLabels[kind]}</li>
       {/each}
       <li><span class="kind-mark kind-mark-loop" aria-hidden="true"></span>Loop</li>
     </ul>
-  {/if}
-  {#if !layered.ok}
-    <p class="muted" role="status">{layered.reason}</p>
-  {:else}
-    <svg class="graph-edges" aria-hidden="true">
-      <defs>
-        <marker
-          id={markerId}
-          viewBox="0 0 10 10"
-          refX="8"
-          refY="5"
-          markerWidth="6"
-          markerHeight="6"
-          orient="auto-start-reverse"
-        >
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
-        </marker>
-      </defs>
-      {#each edgePaths as edge (edge.key)}
-        <path d={edge.d} fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#{markerId})" />
-      {/each}
-    </svg>
-    {#snippet stageBody(preview: WorkflowGraphPreview, state: NodeState | undefined)}
-      <span class="pipe-shape" aria-hidden="true"><i>{state === undefined ? "" : stateGlyphs[state]}</i></span>
-      <b class="pipe-name">{preview.id}</b>
-    {/snippet}
-    {#snippet layerCard(slot: LayerSlot)}
-      <div class="graph-layer" data-layer={slot.index}>
-        {#each slot.nodes as preview (preview.id)}
-          {@const state = stateById.get(preview.id)}
-          {#if onSelect !== null}
-            <button
-              type="button"
-              class="pipe-stage"
-              class:current={preview.id === currentNodeId}
-              class:live-work={nodeIsLiveWork(state)}
-              data-node-id={preview.id}
-              data-node-kind={preview.kind}
-              data-layer={slot.index}
-              data-state={state}
-              data-live={nodeIsLiveWork(state) ? "true" : undefined}
-              aria-label={nodeLabel(preview.id, state)}
-              aria-expanded={selectedNodeId === preview.id}
-              on:click={() => onSelect?.(preview.id)}
-            >{@render stageBody(preview, state)}</button>
+  </details>
+  <div
+    class="graph-canvas-frame"
+    class:has-more-before={canScrollToStart}
+    class:has-more-after={canScrollToEnd}
+  >
+    <section class="graph-canvas" bind:this={host} aria-label="Workflow">
+      {#if !layered.ok}
+        <p class="muted" role="status">{layered.reason}</p>
+      {:else}
+      <svg class="graph-edges" aria-hidden="true">
+        <defs>
+          <marker
+            id={markerId}
+            viewBox="0 0 10 10"
+            refX="8"
+            refY="5"
+            markerWidth="6"
+            markerHeight="6"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+          </marker>
+        </defs>
+        {#each edgePaths as edge (edge.key)}
+          <path d={edge.d} fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#{markerId})" />
+        {/each}
+      </svg>
+      {#snippet stageBody(preview: WorkflowGraphPreview, state: NodeState | undefined)}
+        <span class="pipe-shape" aria-hidden="true"><i>{state === undefined ? "" : stateGlyphs[state]}</i></span>
+        <b class="pipe-name">{preview.id}</b>
+      {/snippet}
+      {#snippet layerCard(slot: LayerSlot)}
+        <div class="graph-layer" data-layer={slot.index}>
+          {#each slot.nodes as preview (preview.id)}
+            {@const state = stateById.get(preview.id)}
+            {#if onSelect !== null}
+              <button
+                type="button"
+                class="pipe-stage"
+                class:current={preview.id === currentNodeId}
+                class:live-work={nodeIsLiveWork(state)}
+                data-node-id={preview.id}
+                data-node-kind={preview.kind}
+                data-layer={slot.index}
+                data-state={state}
+                data-live={nodeIsLiveWork(state) ? "true" : undefined}
+                aria-label={nodeLabel(preview.id, state)}
+                aria-expanded={selectedNodeId === preview.id}
+                on:click={() => onSelect?.(preview.id)}
+              >{@render stageBody(preview, state)}</button>
+            {:else}
+              <span
+                class="pipe-stage"
+                data-node-id={preview.id}
+                data-node-kind={preview.kind}
+                data-layer={slot.index}
+              >{@render stageBody(preview, undefined)}</span>
+            {/if}
+          {/each}
+        </div>
+      {/snippet}
+      <div class="graph-layers">
+        {#each segments as segment (segment.key)}
+          {#if segment.kind === "loop"}
+            {@const labelId = `${markerId}-loop-${segment.loop.id}`}
+            <div class="loop-box" role="group" aria-labelledby={labelId}>
+              <span class="loop-box-label" id={labelId}>{loopLabel(segment.loop)}</span>
+              {#each segment.slots as slot (slot.index)}
+                {@render layerCard(slot)}
+              {/each}
+            </div>
           {:else}
-            <span
-              class="pipe-stage"
-              data-node-id={preview.id}
-              data-node-kind={preview.kind}
-              data-layer={slot.index}
-            >{@render stageBody(preview, undefined)}</span>
+            {@render layerCard(segment.slot)}
           {/if}
         {/each}
       </div>
-    {/snippet}
-    <div class="graph-layers">
-      {#each segments as segment (segment.key)}
-        {#if segment.kind === "loop"}
-          {@const labelId = `${markerId}-loop-${segment.loop.id}`}
-          <div class="loop-box" role="group" aria-labelledby={labelId}>
-            <span class="loop-box-label" id={labelId}>{loopLabel(segment.loop)}</span>
-            {#each segment.slots as slot (slot.index)}
-              {@render layerCard(slot)}
-            {/each}
-          </div>
-        {:else}
-          {@render layerCard(segment.slot)}
-        {/if}
-      {/each}
-    </div>
-  {/if}
-</section>
+      {/if}
+    </section>
+  </div>
+</div>
 
 <style>
+  /* Framed as a panel, `.card`'s own border and ground, so the graph reads as
+     an object on the page rather than shapes floating over bare ground -- a
+     single node draws exactly as held as a whole chain (operator ruling
+     23.08.). The help disclosure sits outside the scrollable canvas so it
+     never scrolls away with a wide graph. */
   .workflow-graph {
+    display: grid;
+    gap: var(--space-3);
+  }
+
+  /* A tap target no smaller than any other control's, the same floor
+     `.event-log summary` and `.revision-details summary` already hold to. */
+  .graph-help summary {
+    display: flex;
+    align-items: center;
+    min-height: var(--tap);
+    cursor: pointer;
+  }
+
+  /* A graph wider than its card scrolls rather than crops a node mid-shape or
+     mid-word -- composed at 390px, not squeezed (Leonardo-Gate 23.08.). The
+     frame around it carries the edge fades below; the canvas itself only
+     scrolls and snaps a full layer into place, so a rest position never
+     leaves a node half in view. */
+  .graph-canvas-frame {
+    position: relative;
+    min-width: 0;
+  }
+
+  .graph-canvas-frame::before,
+  .graph-canvas-frame::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: var(--space-6);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+
+  .graph-canvas-frame::before {
+    left: 0;
+    background: linear-gradient(to right, var(--panel2), transparent);
+  }
+
+  .graph-canvas-frame::after {
+    right: 0;
+    background: linear-gradient(to left, var(--panel2), transparent);
+  }
+
+  .graph-canvas-frame.has-more-before::before,
+  .graph-canvas-frame.has-more-after::after {
+    opacity: 1;
+  }
+
+  .graph-canvas {
     position: relative;
     overflow-x: auto;
-    padding: var(--space-4) 0 var(--space-3);
+    scroll-snap-type: x proximity;
   }
 
   .graph-edges {
@@ -348,6 +475,7 @@
     display: grid;
     justify-items: center;
     gap: var(--space-3);
+    scroll-snap-align: start;
   }
 
   /*
@@ -364,6 +492,7 @@
     border: var(--edge) dashed var(--line);
     border-radius: var(--r-lg);
     padding: var(--space-5) var(--space-2) var(--space-2);
+    scroll-snap-align: start;
   }
 
   .loop-box-label {
@@ -527,7 +656,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-4);
-    margin: 0 0 var(--space-3);
+    margin: var(--space-2) 0 0;
     padding: 0;
     list-style: none;
     font-size: var(--text-xs);

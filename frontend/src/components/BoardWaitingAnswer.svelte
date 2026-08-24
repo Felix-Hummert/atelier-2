@@ -304,11 +304,13 @@
 </div>
 
 <style>
-  /* The reveal belongs to the row above it: it lines up with the card's own
-     text, not with the surface edge. */
+  /* The reveal lives inside the same bordered card as the row above it
+     (Leonardo-Gate 23.08.): its own inline padding lines up with the row's
+     text on both sides, and its own bottom padding keeps it off the card's
+     border the way the row's top content already sits off the top one. */
   .board-answer {
     min-width: 0;
-    padding-inline: var(--space-4);
+    padding: 0 var(--space-4) var(--space-3);
   }
 
   /* The same quiet reveal the rest of the house uses: a disclosure shows

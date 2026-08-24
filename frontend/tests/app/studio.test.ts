@@ -318,14 +318,16 @@ describe("Needs you names what waits for a human", () => {
   });
 });
 
-describe("Running holds what moves and what needs a look, never a landed result", () => {
-  it("groups a failed run under Running, red, with a Why? link to the run", async () => {
+describe("Running holds only what still moves, never a landed result", () => {
+  it("keeps a failed run out of Running -- it stopped, so it groups with what is over, red, with a Why? link to the run (#581)", async () => {
     openStudio([startedRun({ public_run_reference: "run1.YQ" }), failedRun({ public_run_reference: "run1.Yg" })]);
 
-    const running = await screen.findByRole("region", { name: "Running · 2" });
-    const rows = within(running).getAllByRole("link");
-    expect(rows).toHaveLength(2);
-    const failedRow = within(running).getByText("Why? →").closest("a");
+    const running = await screen.findByRole("region", { name: "Running · 1" });
+    expect(within(running).getAllByRole("link")).toHaveLength(1);
+    expect(within(running).queryByText("Why? →")).toBeNull();
+
+    const done = screen.getByRole("region", { name: "Done today · 1" });
+    const failedRow = within(done).getByText("Why? →").closest("a");
     expect(failedRow).not.toBeNull();
     expect(within(failedRow as HTMLElement).getByText(`${standingWords.failed} · agent`).isConnected).toBe(true);
   });
@@ -620,9 +622,10 @@ describe("the board holds GET /events", () => {
 
     feed.handlers?.event(JSON.stringify(agentFailedEvent()));
 
-    const running = await screen.findByRole("region", { name: "Running · 1" });
-    expect(within(running).getByText("Why? →").isConnected).toBe(true);
+    const done = await screen.findByRole("region", { name: "Done today · 1" });
+    expect(within(done).getByText("Why? →").isConnected).toBe(true);
     expect(getRun).toHaveBeenCalledWith(publicReference);
+    expect(screen.queryByRole("region", { name: /Running/ })).toBeNull();
     expect(screen.queryByRole("region", { name: /Needs you/ })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
   });
@@ -803,7 +806,7 @@ describe("every Board control answers a named user question", () => {
         ended_at: minutesAgo(15)
       })
     ]);
-    await screen.findByRole("region", { name: "Done today · 2" });
+    await screen.findByRole("region", { name: "Done today · 3" });
     expectStudioControlsAnswerNamedQuestions([studioQuestions.openRun.id]);
 
     cleanup();

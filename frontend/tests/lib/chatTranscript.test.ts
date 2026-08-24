@@ -13,11 +13,8 @@ describe("one turn of the conversation", () => {
     ]);
   });
 
-  it("names the vision the missing conductor belongs to, so the gap has an owner", () => {
-    const [, answer] = sendChatMessage([], "start two runs");
-
-    expect(answer?.source).toBe(chatPageCopy.conductorAbsentSource);
-    expect(chatPageCopy.conductorAbsent).toContain(chatPageCopy.conductorAbsentSource);
+  it("names no board or issue number in the reply, only what is true for the operator", () => {
+    expect(chatPageCopy.conductorAbsent).not.toMatch(/#\d/);
   });
 
   it("keeps every line distinguishable across turns", () => {

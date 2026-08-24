@@ -11,6 +11,10 @@ id = "a-run-carries-when-it-started-and-ended"
 text = "A started run answers when it started. A finished run also answers when it ended. The store keeps those instants in UTC; a surface that asks how long shows age beside the state word, and the exact local stamps stand in their own facts line, visible without a reveal a person has to find first."
 
 [[sentence]]
+id = "a-done-run-reads-the-time-since-it-landed"
+text = "A finished run's relative age reads how long ago it ended, never how long the run itself took: the two facts sit beside each other, not folded into one."
+
+[[sentence]]
 id = "a-node-carries-how-long-it-ran"
 text = "Opening a node that has run answers when that execution started, when it ended, and how long it took. A node that has not started yet has no invented time. Usage and cost stay unrecorded."
 

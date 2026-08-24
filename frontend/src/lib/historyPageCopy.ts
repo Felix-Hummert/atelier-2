@@ -12,7 +12,6 @@
  * Board, on the run and in this table (operator ruling 23.08.).
  */
 export const historyPageCopy = {
-  eyebrow: "Atelier",
   title: "History",
   looking: "Looking…",
   retry: "Retry",
@@ -23,7 +22,7 @@ export const historyPageCopy = {
   emptyNext: "Open Workflows",
   columnName: "Name",
   columnResult: "Result",
-  columnDuration: "Took",
+  columnDuration: "Duration",
   durationNotRecorded: "Not recorded",
   /**
    * Only shown when a listed row carries no V3 timestamp (a V1 or V2 run):

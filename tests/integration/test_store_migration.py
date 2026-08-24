@@ -76,6 +76,7 @@ from atelier2.adapters.dbos.schema import (
     run_instants,
     runs,
     tool_redemptions,
+    webhook_delivery_cursor,
     workflow_revisions,
 )
 from atelier2.contracts.agents import (
@@ -522,6 +523,7 @@ def _create_populated_v13_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as predecessor:
         _restore_v27_access_store(predecessor)
         _drop_queue_items_table(predecessor)
+        _drop_webhook_delivery_cursor_table(predecessor)
     published = PublishedRevision(RevisionKind.WORKFLOW, b"name: lasagne\n")
     lineage = CatalogLineage(published.kind, published.revision_hash)
     configuration = "44" * 32
@@ -935,6 +937,12 @@ def _drop_queue_items_table(connection: sqlite3.Connection) -> None:
     connection.execute(f"DROP TABLE {queue_items.name}")
 
 
+def _drop_webhook_delivery_cursor_table(connection: sqlite3.Connection) -> None:
+    connection.execute("DROP TRIGGER webhook_delivery_cursor_identity_no_update")
+    connection.execute("DROP TRIGGER webhook_delivery_cursor_no_delete")
+    connection.execute(f"DROP TABLE {webhook_delivery_cursor.name}")
+
+
 def _revert_cancelled_run_state(connection: sqlite3.Connection) -> None:
     """Restore the pre-CANCELLED `runs` CHECK the #439 P1 hop widened.
 
@@ -976,6 +984,7 @@ def _create_exact_v21_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _drop_webhook_delivery_cursor_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_refused_attempts(connection)
         _drop_occupancy_channel(connection)
@@ -1010,6 +1019,7 @@ def _create_exact_v22_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _drop_webhook_delivery_cursor_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_refused_attempts(connection)
         _drop_occupancy_channel(connection)
@@ -1031,6 +1041,7 @@ def _create_exact_v23_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _drop_webhook_delivery_cursor_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_project_verification_failed_attempts(connection)
         _drop_occupancy_channel(connection)
@@ -1052,6 +1063,7 @@ def _create_exact_v24_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _drop_webhook_delivery_cursor_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
@@ -1073,6 +1085,7 @@ def _create_exact_v25_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _drop_webhook_delivery_cursor_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
@@ -1093,6 +1106,7 @@ def _create_exact_v26_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _drop_webhook_delivery_cursor_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         connection.execute(
@@ -1142,6 +1156,7 @@ def _create_exact_v27_store(database_path: Path, *, access: bool = False) -> Non
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _drop_webhook_delivery_cursor_table(connection)
         _revert_cancelled_run_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -1160,6 +1175,7 @@ def _create_exact_v28_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _drop_queue_items_table(connection)
+        _drop_webhook_delivery_cursor_table(connection)
         _revert_cancelled_run_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -1180,6 +1196,7 @@ def _create_exact_v29_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _drop_webhook_delivery_cursor_table(connection)
         _revert_cancelled_run_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -1546,6 +1563,7 @@ def test_v26_attempt_bytes_cross_v27_and_v28_unchanged_with_none_evidence(
     with sqlite3.connect(database_path) as connection:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
+        _drop_webhook_delivery_cursor_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         connection.execute(

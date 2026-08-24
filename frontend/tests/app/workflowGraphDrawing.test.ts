@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it } from "vitest";
 
 import WorkflowGraphDrawing from "../../src/components/WorkflowGraphDrawing.svelte";
@@ -149,11 +149,17 @@ describe("the V3 graph drawing", () => {
     expect(within(graph).getByRole("group", { name: "↻ until revise · max 3" })).toBeTruthy();
   });
 
-  it("names the loop marker in the legend beside the node shapes", () => {
-    render(WorkflowGraphDrawing, { props: { previews: chain, showLegend: true } });
+  it("keeps the shape legend behind one disclosure, closed until asked", async () => {
+    render(WorkflowGraphDrawing, { props: { previews: chain } });
 
+    const toggle = screen.getByText("What the shapes mean");
+    const disclosure = toggle.closest("details");
+    expect(disclosure?.hasAttribute("open")).toBe(false);
+
+    await fireEvent.click(toggle);
+
+    expect(disclosure?.hasAttribute("open")).toBe(true);
     const legend = screen.getByRole("list", { name: "Node shapes and the loop marker" });
-
     expect(within(legend).getByText("Loop").isConnected).toBe(true);
   });
 

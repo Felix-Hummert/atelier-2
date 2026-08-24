@@ -207,10 +207,7 @@
       {/if}
       {#if detail.answer === null}
         {#if endedWaitAnswerGap}
-          <p class="wait-answer-gap">
-            {wrapDisplayCopy(runPageCopy.waitAnswerNotReadable)}
-            <span class="result-source">{runPageCopy.waitAnswerNotReadableSource}</span>
-          </p>
+          <p class="wait-answer-gap">{wrapDisplayCopy(runPageCopy.waitAnswerNotReadable)}</p>
         {:else}
           <p class="muted">{wrapDisplayCopy(emptyOutputCopy(detail.state))}</p>
         {/if}
@@ -255,26 +252,28 @@
         {/if}
         <p class="who-fact">
           {wrapDisplayCopy(runPageCopy.resolvedModel)}
+          <span class="muted">{wrapDisplayCopy(notRecordedCopy(detail.state))}</span>
           <InfoHint
             label={runPageCopy.resolvedModelMissingWhy}
             exact={runPageCopy.resolvedModelMissingExact}
           />
-          <span class="muted">{wrapDisplayCopy(notRecordedCopy(detail.state))}</span>
         </p>
         <p class="who-fact">
           {wrapDisplayCopy(runPageCopy.usage)}
-          <InfoHint label={runPageCopy.usageMissingWhy} exact={runPageCopy.usageMissingExact} />
           <span class="muted">{wrapDisplayCopy(notRecordedCopy(detail.state))}</span>
+          <InfoHint label={runPageCopy.usageMissingWhy} exact={runPageCopy.usageMissingExact} />
         </p>
       </section>
 
       <section class="run-evidence-list" aria-labelledby="node-panel-run-evidence">
         <h3 id="node-panel-run-evidence">{wrapDisplayCopy(runPageCopy.evidenceRun)}</h3>
+        <p class="muted">{wrapDisplayCopy(runPageCopy.evidenceRunIntro)}</p>
         {#if detail.provenance !== null}
           <ProofAnchor
             label={wrapDisplayCopy(runPageCopy.receiptHash)}
             seals={runPageCopy.sealsReceipt}
             value={detail.provenance.receipt_hash}
+            sealsPrefix={false}
           />
         {/if}
         {#if detail.job_hash !== null}
@@ -282,6 +281,7 @@
             label={wrapDisplayCopy(runPageCopy.promptHash)}
             seals={runPageCopy.sealsPrompt}
             value={detail.job_hash}
+            sealsPrefix={false}
           />
         {/if}
         {#if detail.answer !== null}
@@ -289,22 +289,26 @@
             label={wrapDisplayCopy(runPageCopy.outputHash)}
             seals={runPageCopy.sealsOutput}
             value={detail.answer.value_hash}
+            sealsPrefix={false}
           />
         {/if}
         <ProofAnchor
           label={wrapDisplayCopy(runHeaderCopy.runIdLabel)}
           seals={runHeaderCopy.sealsRunId}
           value={runEvidence.runId}
+          sealsPrefix={false}
         />
         <ProofAnchor
           label={wrapDisplayCopy(runPageCopy.workflowRevision)}
           seals={runPageCopy.sealsWorkflow}
           value={runEvidence.workflowRevisionHash}
+          sealsPrefix={false}
         />
         <ProofAnchor
           label={wrapDisplayCopy(runPageCopy.runConfiguration)}
           seals={runPageCopy.sealsConfiguration}
           value={runEvidence.runConfigurationRevisionHash}
+          sealsPrefix={false}
         />
         <!-- A run that has not landed has no terminal fingerprint, so it gets no
              row: a label with "not yet" where a value belongs is a placeholder,
@@ -314,6 +318,7 @@
             label={wrapDisplayCopy(runPageCopy.terminalHash)}
             seals={runPageCopy.sealsTerminal}
             value={runEvidence.terminalHash}
+            sealsPrefix={false}
           />
         {/if}
         <p class="muted">{wrapDisplayCopy(runPageCopy.evidenceGap)}</p>
@@ -425,18 +430,6 @@
     gap: var(--space-2);
     margin: 0;
     color: var(--ink-dim);
-  }
-
-  /* The same quiet origin pill the chat transcript uses for a house line that
-     names the vision or issue behind it -- one look reads as one owner. */
-  .result-source {
-    justify-self: start;
-    border: var(--edge) solid var(--line);
-    border-radius: var(--r-pill);
-    padding: 0 var(--space-2);
-    color: var(--ink-dim);
-    background: var(--chip);
-    font-size: var(--text-2xs);
   }
 
   .exact {
