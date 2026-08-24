@@ -242,16 +242,23 @@ project_resources_are_owned() {
     resources="$(docker "${resource_type}" ls --quiet --filter "label=com.docker.compose.project=${record[project]}")" || return 1
     while IFS= read -r resource; do
       [[ -z "${resource}" ]] && continue
-      # An INSTALLING record has no store_source_commit/tree yet (they are
-      # only finalized once state reaches INSTALLED): a crash-recovery
-      # teardown of that half-finished install created its volume/network
-      # under the record's own (only) source_commit/tree, so that is the
-      # right identity to demand here.
-      resource_identity_is_exact "${resource_type}" "${resource}" \
-        "${record[store_source_commit]:-${record[source_commit]}}" \
-        "${record[store_source_tree]:-${record[source_tree]}}" || return 1
       if [[ "${resource_type}" == "volume" ]]; then
+        # An INSTALLING record has no store_source_commit/tree yet (they are
+        # only finalized once state reaches INSTALLED): a crash-recovery
+        # teardown of that half-finished install created its volume under
+        # the record's own (only) source_commit/tree, so that is the right
+        # identity to demand here.
+        resource_identity_is_exact volume "${resource}" \
+          "${record[store_source_commit]:-${record[source_commit]}}" \
+          "${record[store_source_tree]:-${record[source_tree]}}" || return 1
         owned_project_has_volume=1
+      else
+        # The network has no such frozen origin: Compose recreates it on
+        # every preserving update and relabels it with the currently running
+        # commit, exactly like the container -- so its identity is judged
+        # against record[source_commit/tree], never the store's origin.
+        resource_identity_is_exact network "${resource}" \
+          "${record[source_commit]}" "${record[source_tree]}" || return 1
       fi
     done <<<"${resources}"
   done

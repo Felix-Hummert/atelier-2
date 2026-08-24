@@ -972,6 +972,33 @@ def test_uninstall_removes_the_complete_installation(tmp_path: Path) -> None:
     assert reinstalled.returncode == 0, reinstalled.stderr
 
 
+def test_uninstall_after_a_preserving_update_uses_the_compose_teardown_path(
+    tmp_path: Path,
+) -> None:
+    # teardown_recorded_installation's ownership check must accept the
+    # network's post-update identity (record[source_commit/tree], relabelled
+    # by Compose on every update) exactly like verify_installed_configuration
+    # does; otherwise it wrongly disowns a healthy install's network and
+    # uninstall silently falls back to the coarse label-filtered
+    # force-removal path instead of the clean `compose down`.
+    repository = installed_repository(tmp_path)
+    commit_a_second_change(repository)
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+    shutil.rmtree(tmp_path / "docker-context")
+    update = run_live(repository, tmp_path, "update")
+    assert update.returncode == 0, update.stderr
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+
+    completed = run_live(repository, tmp_path, "uninstall")
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "container live: uninstalled\n"
+    mutations = docker_mutations(docker_invocations(tmp_path))
+    down = next(arguments for arguments in mutations if "down" in arguments)
+    assert down[-5:] == ["down", "--volumes", "--rmi", "local", "--remove-orphans"]
+    assert not any(arguments[:2] == ["network", "rm"] for arguments in mutations)
+
+
 def test_uninstall_removes_orphaned_docker_resources_without_a_record(
     tmp_path: Path,
 ) -> None:
@@ -1110,7 +1137,7 @@ def test_two_consecutive_preserving_updates_leave_status_running(
     # commit that is actually running, exactly like it judges the container.
     repository = installed_repository(tmp_path)
 
-    commit_a_change(repository, "second\n")
+    commit_a_second_change(repository)
     (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
     shutil.rmtree(tmp_path / "docker-context")
     first_update = run_live(repository, tmp_path, "update")
