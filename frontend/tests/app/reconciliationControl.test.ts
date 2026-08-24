@@ -14,6 +14,7 @@ import {
   reconciliationCommand,
   type ReconciliationMutation
 } from "../../src/lib/mutationJournal";
+import { PRODUCT_NAME } from "../../src/lib/productName";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import {
   agentCompleted,
@@ -191,7 +192,7 @@ describe("reconciliation control", () => {
     expect(reconcile).not.toHaveBeenCalled();
     const dialog = screen.getByRole("dialog", { name: "Execute this exact effect?" });
     expect(dialog).toBeInstanceOf(HTMLDialogElement);
-    expect(screen.getByText("Atelier will execute the exact request once.")).toBeTruthy();
+    expect(screen.getByText(`${PRODUCT_NAME} will execute the exact request once.`)).toBeTruthy();
     await fireEvent(dialog, new Event("cancel", { cancelable: true }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(document.activeElement).toBe(review);
