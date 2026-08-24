@@ -22,6 +22,7 @@ from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
+from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import (
     DbosWaitAnswerer,
@@ -221,6 +222,7 @@ def _client(runtime: DbosRuntime, page_size: int = 2) -> TestClient:
             DbosCatalogStore(runtime.engine),
             DbosArtifactStore(runtime.engine),
             DbosHostConfigurationChannel(runtime.engine),
+            DbosQueueProjectionStore(runtime.engine),
         ),
         limits=api_limits(event_page_size=page_size),
         event_poll_backoff=event_poll_backoff(),

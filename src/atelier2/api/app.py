@@ -27,6 +27,7 @@ from atelier2.api.routes import (
     occupancy,
     project_root,
     projects,
+    queue,
     revisions,
     runs,
 )
@@ -34,6 +35,10 @@ from atelier2.api.stream import BoundedQueryRunner, EventPollBackoff
 from atelier2.application.admit_catalog_member import (
     admit_catalog_member,
     found_catalog_lineage,
+)
+from atelier2.application.admit_queue_item import (
+    admit_queue_item,
+    list_admitted_queue_items,
 )
 from atelier2.application.answer_wait import answer_wait_result
 from atelier2.application.cancel_agent_attempt import cancel_agent_attempt
@@ -277,6 +282,12 @@ def bound_use_cases(
                 )
             )
         ),
+        admit_queue_item=lambda command: admit_queue_item(
+            command, ports.queue_projection
+        ),
+        list_admitted_queue_items=lambda after, limit: list_admitted_queue_items(
+            after, limit, ports.queue_projection
+        ),
     )
 
 
@@ -359,6 +370,7 @@ def create_app(
     app.include_router(project_root.router)
     app.include_router(runs.router)
     app.include_router(events.router)
+    app.include_router(queue.router)
 
     install_custom_openapi(app)
     return app

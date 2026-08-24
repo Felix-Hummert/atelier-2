@@ -90,6 +90,8 @@ OCCUPANCY_PATH = (
 PROJECTS_PATH = API_PREFIX + "/projects"
 PROJECT_PATH = PROJECTS_PATH + "/{public_project_reference}"
 PROJECT_ROOT_PATH = PROJECT_PATH + "/root"
+QUEUE_ADMISSIONS_PATH = API_PREFIX + "/queue-admissions"
+QUEUE_ITEMS_PATH = API_PREFIX + "/queue-items"
 
 EVENT_MODELS = (
     AgentCompletedEventResource,
@@ -412,6 +414,21 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (ATTENTION_EVENT_PATH, "get"): (
         "invalid-event-cursor",
         "not-acceptable",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (QUEUE_ADMISSIONS_PATH, "post"): (
+        "invalid-request",
+        "unsupported-media-type",
+        "queue-admission-revision-conflict",
+        "queue-admission-already-decided",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (QUEUE_ITEMS_PATH, "get"): (
+        "invalid-request",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",

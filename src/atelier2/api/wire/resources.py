@@ -43,6 +43,10 @@ from atelier2.contracts.host_configuration import (
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SERVED_PROJECTS,
 )
+from atelier2.contracts.queue_projection import (
+    MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
+    MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
+)
 from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState
 
 
@@ -593,6 +597,34 @@ class CatalogAdmissionResource(ApiModel):
     lineage_id: str = Field(pattern=SHA256_HASH_PATTERN)
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
     revision_number: int = Field(ge=1)
+
+
+class AdmittedQueueItemResource(ApiModel):
+    """One admitted queue item: its identity, its workflow binding, and why.
+
+    Every field is present because an admitted item always carries them: the
+    read door only ever answers with ADMITTED rows, and the write door only
+    answers a success with the admission it recorded. There is no `state` field
+    because the name already says the only state this resource represents.
+    """
+
+    project_id: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_ID_CHARACTERS)
+    tracker_item_reference: str = Field(
+        min_length=1, max_length=MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
+    )
+    item_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    revision: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    workflow_lineage_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    rationale: str = Field(
+        min_length=1, max_length=MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS
+    )
+
+
+class QueueItemPageResource(ApiModel):
+    """One page of admitted queue items, resumable by the cursor it ends on."""
+
+    items: tuple[AdmittedQueueItemResource, ...]
+    next_after: str | None = Field(pattern=SHA256_HASH_PATTERN)
 
 
 class WorkflowRevisionPageResource(ApiModel):
