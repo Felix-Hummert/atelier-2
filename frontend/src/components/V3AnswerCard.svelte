@@ -8,6 +8,7 @@
 </script>
 
 <script lang="ts">
+  import { decisionStatusCopy } from "../lib/decisionStatusCopy";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import type { WaitMutation } from "../lib/mutationJournal";
   import { runPageCopy } from "../lib/runPageCopy";
@@ -85,14 +86,14 @@
   <p class="eyebrow">{wrapDisplayCopy(runPageCopy.needsYou)}</p>
 
   {#if pending !== null}
-    <h2 id="v3-wait-action-title" tabindex="-1" bind:this={statusHeading}>{busy ? "Sending answer" : accepted ? "Answer pending" : "Answer uncertain"}</h2>
+    <h2 id="v3-wait-action-title" tabindex="-1" bind:this={statusHeading}>{busy ? decisionStatusCopy.sending : accepted ? decisionStatusCopy.pending : decisionStatusCopy.uncertain}</h2>
     {#if failureMessage !== null}
-      <div class="wait-alert" role="alert" aria-label="Send uncertain">
+      <div class="wait-alert" role="alert" aria-label={decisionStatusCopy.sendUncertain}>
         <span class="wait-alert-shape" aria-hidden="true">?</span>
-        <span><strong>Send uncertain</strong><small>{failureMessage}</small></span>
+        <span><strong>{decisionStatusCopy.sendUncertain}</strong><small>{failureMessage}</small></span>
       </div>
     {/if}
-    <output class="exact-answer" aria-label="Exact answer"
+    <output class="exact-answer" aria-label={decisionStatusCopy.exactAnswer}
       >{#if confirmedDecision !== null}{wrapDisplayCopy(runPageCopy.answeredPrefix)} {confirmedDecision}{:else}{pendingAnswer}{/if}</output
     >
     {#if !accepted && !busy}
@@ -134,9 +135,9 @@
 
     {#snippet sendFailedAlert()}
       {#if failureMessage !== null}
-        <div class="wait-alert" role="alert" aria-label="Send failed">
+        <div class="wait-alert" role="alert" aria-label={decisionStatusCopy.sendFailed}>
           <span class="wait-alert-shape" aria-hidden="true">!</span>
-          <span><strong>Send failed</strong><small>{failureMessage}</small></span>
+          <span><strong>{decisionStatusCopy.sendFailed}</strong><small>{failureMessage}</small></span>
         </div>
       {/if}
     {/snippet}
