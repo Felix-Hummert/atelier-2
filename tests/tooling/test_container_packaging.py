@@ -1183,6 +1183,13 @@ def test_docs_state_the_candidate_boundary() -> None:
         "ATELIER2_CLAUDE_CREDENTIALS",
         "atelier2-live.service",
         "host network",
-        "systemctl",
     ):
         assert predecessor.lower() not in operations.lower()
+    # The demolished predecessor ran the serve itself as a host system
+    # service; the auto-redeploy watcher (#508) is a per-user timer. The
+    # runbook may therefore name systemctl/journalctl only as `--user`
+    # invocations.
+    system_level_systemctl = re.search(
+        r"(?:systemctl|journalctl)(?!\s+--user\b)", operations, re.IGNORECASE
+    )
+    assert system_level_systemctl is None, system_level_systemctl.group(0)
