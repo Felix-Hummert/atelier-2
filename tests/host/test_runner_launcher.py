@@ -367,9 +367,12 @@ class OpenLeases:
     def release(self, lease: RunnerLease) -> None:
         self.released.append(lease.lease_id.value)
 
-    def abandon_stale_claims(self) -> tuple[str, ...]:
-        abandoned, self.stale = self.stale, ()
-        return abandoned
+    def stale_claims(self) -> tuple[str, ...]:
+        return self.stale
+
+    def release_reconciled_claim(self, lease_id: RunnerLeaseId) -> None:
+        self.released.append(lease_id.value)
+        self.stale = tuple(name for name in self.stale if name != lease_id.value)
 
 
 def test_a_lease_document_is_claimed_by_exactly_one_launcher(tmp_path: Path) -> None:
@@ -489,6 +492,10 @@ def test_a_console_that_is_gone_does_not_stop_a_launcher_from_starting(
     launcher.reconcile_abandoned_attempts()
 
     assert any(line.startswith("reconcile-refused=") for line in announced)
+    # A refused reconcile never consumed the claim, so the next launcher's pass
+    # is handed the same lease again rather than losing it into `released`.
+    assert (directory / "claimed" / f"{interrupted}.json").is_file()
+    assert not (directory / "released" / f"{interrupted}.json").exists()
 
 
 def test_an_established_attempt_leaves_nothing_behind(tmp_path: Path) -> None:
@@ -689,6 +696,12 @@ def test_a_reconciled_attempt_retains_its_fact_before_its_volume_is_removed(
     assert f"atelier2-attempt-{interrupted}-journal" in carrier.removed["volumes"]
     assert "read-volume" in carrier.operations
     assert any(line.startswith("terminal-record-retained=") for line in announced)
+    # A removed Attempt's claim is consumed exactly once, only after its objects
+    # are gone.
+    assert list((directory / "released").glob("*.json")) == [
+        directory / "released" / f"{interrupted}.json"
+    ]
+    assert list((directory / "claimed").glob("*.json")) == []
 
 
 def test_a_reconciled_attempt_still_running_keeps_its_fact_and_volume(
@@ -728,6 +741,49 @@ def test_a_reconciled_attempt_still_running_keeps_its_fact_and_volume(
     assert any(
         line == f"reconcile-deferred-running={interrupted}" for line in announced
     )
+    # The deferral is only real if the claim stays put for a later pass to
+    # complete: a claim released now would never be yielded again.
+    assert (directory / "claimed" / f"{interrupted}.json").is_file()
+    assert not (directory / "released" / f"{interrupted}.json").exists()
+
+
+def test_a_deferred_attempt_is_reconciled_on_a_later_pass_once_its_runner_stops(
+    tmp_path: Path,
+) -> None:
+    """The deferral is a promise a later pass keeps: once the Runner a first
+    reconcile stepped over has stopped, the next reconcile retains its terminal
+    fact into the handoff, removes what it left behind, and only then hands the
+    claim back -- so a launcher killed while its Runner still ran does not leave
+    permanent unreconciled residue."""
+    interrupted = "f" * 64
+    directory = tmp_path / "leases"
+    FileRunnerLeaseSource(directory, _validation(tmp_path))
+    (directory / "claimed" / f"{interrupted}.json").write_text("{}", encoding="utf-8")
+    handoff = tmp_path / interrupted / "handoff"
+    handoff.mkdir(mode=0o700, parents=True)
+    carrier = RecordingCarrier(
+        _attested_document(_manifest()), [], journal_records=[True]
+    )
+    runner = f"atelier2-attempt-{interrupted}-runner"
+    journal = f"atelier2-attempt-{interrupted}-journal"
+    carrier.created["containers"].append(runner)
+    carrier.created["volumes"].append(journal)
+    carrier.running_containers.add(runner)
+    launcher, _announced = _launcher(
+        tmp_path, carrier, FileRunnerLeaseSource(directory, _validation(tmp_path))
+    )
+
+    launcher.reconcile_abandoned_attempts()
+    carrier.running_containers.discard(runner)
+    launcher.reconcile_abandoned_attempts()
+
+    assert (
+        handoff / "retained-terminal-record"
+    ).read_bytes() == carrier.retained_record
+    assert journal in carrier.removed["volumes"]
+    assert runner in carrier.removed["containers"]
+    assert (directory / "released" / f"{interrupted}.json").is_file()
+    assert not (directory / "claimed" / f"{interrupted}.json").exists()
 
 
 def test_retaining_the_terminal_fact_twice_is_the_same_bytes(tmp_path: Path) -> None:
@@ -977,8 +1033,11 @@ class UntilEmpty:
     def release(self, lease: RunnerLease) -> None:
         self.source.release(lease)
 
-    def abandon_stale_claims(self) -> tuple[str, ...]:
-        return self.source.abandon_stale_claims()
+    def stale_claims(self) -> tuple[str, ...]:
+        return self.source.stale_claims()
+
+    def release_reconciled_claim(self, lease_id: RunnerLeaseId) -> None:
+        self.source.release_reconciled_claim(lease_id)
 
 
 def _published(directory: Path, lease_id: str, document: str) -> None:
@@ -1309,7 +1368,7 @@ def test_a_second_launcher_refuses_before_it_reconciles_anything(
         pass
 
     assert claimed.is_file()
-    assert source.abandon_stale_claims() == (_LEASE_ID,)
+    assert source.stale_claims() == (_LEASE_ID,)
 
 
 def test_the_lock_a_dead_launcher_held_is_free_for_the_next_one(

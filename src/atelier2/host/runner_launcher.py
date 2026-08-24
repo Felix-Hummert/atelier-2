@@ -448,7 +448,9 @@ class RunnerLeaseSource(Protocol):
 
     def release(self, lease: RunnerLease) -> None: ...
 
-    def abandon_stale_claims(self) -> tuple[str, ...]: ...
+    def stale_claims(self) -> tuple[str, ...]: ...
+
+    def release_reconciled_claim(self, lease_id: RunnerLeaseId) -> None: ...
 
 
 class AttemptCarrier(Protocol):
@@ -562,15 +564,25 @@ class FileRunnerLeaseSource:
         return None
 
     def release(self, lease: RunnerLease) -> None:
-        document = self._claimed / f"{lease.lease_id.value}.json"
-        document.rename(self._released / document.name)
+        self._release_claim(lease.lease_id.value)
 
-    def abandon_stale_claims(self) -> tuple[str, ...]:
-        stale = sorted(document.stem for document in self._claimed.glob("*.json"))
-        for lease_id in stale:
-            document = self._claimed / f"{lease_id}.json"
-            document.rename(self._released / document.name)
-        return tuple(stale)
+    def stale_claims(self) -> tuple[str, ...]:
+        """Every lease still sitting in `claimed`, named but not yet released.
+
+        Listing only: a stale claim stays in `claimed` until reconciliation has
+        actually removed what its Attempt left behind. A claim that is deferred
+        because its Runner is still running -- or one reconciliation refuses --
+        is therefore still here on the next pass, which is what makes the
+        deferral real rather than a fact renamed out of reach.
+        """
+        return tuple(sorted(document.stem for document in self._claimed.glob("*.json")))
+
+    def release_reconciled_claim(self, lease_id: RunnerLeaseId) -> None:
+        self._release_claim(lease_id.value)
+
+    def _release_claim(self, stem: str) -> None:
+        document = self._claimed / f"{stem}.json"
+        document.rename(self._released / document.name)
 
     def _decode(self, document: Path) -> RunnerLease:
         """One lease document, admitted before a single byte of it is followed.
@@ -759,8 +771,14 @@ class RunnerLauncher:
         removing it while the Runner may still be writing that fact would destroy
         it rather than retain it. The removal is left for a later pass, once
         every container this Attempt labelled has stopped.
+
+        A stale claim is only handed back to its source once its Attempt has
+        actually been removed. A deferred or refused claim stays in `claimed`,
+        so the next launcher's reconcile sees it again and can retain and remove
+        it once its Runner has stopped -- consuming the claim before the removal
+        would leave the deferral with no later pass to complete it.
         """
-        for named in self.leases.abandon_stale_claims():
+        for named in self.leases.stale_claims():
             try:
                 lease_id = admitted_lease_id(named)
                 self.announce(f"reconciled-attempt={lease_id.value}")
@@ -769,6 +787,7 @@ class RunnerLauncher:
                     continue
                 self._retain_terminal_record_before_delete(lease_id)
                 self._remove_attempt(lease_id)
+                self.leases.release_reconciled_claim(lease_id)
             except (AttemptRefusal, CarrierRefusal) as refusal:
                 self.announce(f"reconcile-refused={refusal}")
 

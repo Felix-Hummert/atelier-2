@@ -839,9 +839,11 @@ class DockerCarrier:
                 f"{completed.stderr.decode('utf-8', 'replace').strip()}"
             )
         if len(completed.stdout) > maximum_bytes:
+            # `head -c` truncated the read at the bound, so the real file is at
+            # least this large -- its true size never left the container.
             raise CarrierRefusal(
-                f"carrier-volume-file-exceeds-bound: {path} is "
-                f"{len(completed.stdout)} bytes, bound {maximum_bytes}"
+                f"carrier-volume-file-exceeds-bound: {path} is at least "
+                f"{maximum_bytes + 1} bytes, bound {maximum_bytes}"
             )
         return completed.stdout
 

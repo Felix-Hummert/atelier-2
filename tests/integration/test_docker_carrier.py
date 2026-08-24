@@ -869,8 +869,9 @@ def test_read_file_in_volume_caps_the_read_at_the_pipe_not_after(
     """The bound is enforced inside the throwaway container by `head -c`, so a
     Runner that filled its quota-free journal volume with a file far larger than
     the bound cannot drive the launcher to buffer it: at most one byte past the
-    bound ever reaches launcher memory, which is exactly the count the refusal
-    reports."""
+    bound ever reaches launcher memory. The true size never leaves the
+    container, so the refusal reports that floor -- `at least bound + 1` --
+    rather than misstating the truncated read as the file's size."""
     bound = 1024
     a_file_far_larger_than_the_bound = bound * 1_000_000
     carrier = DockerCarrier(
@@ -878,7 +879,7 @@ def test_read_file_in_volume_caps_the_read_at_the_pipe_not_after(
         _oversized_volume_reading_engine(tmp_path, a_file_far_larger_than_the_bound),
     )
 
-    with pytest.raises(CarrierRefusal, match=f"is {bound + 1} bytes"):
+    with pytest.raises(CarrierRefusal, match=f"at least {bound + 1} bytes"):
         carrier.read_file_in_volume(
             "journal-one",
             "atelier2-runner",
