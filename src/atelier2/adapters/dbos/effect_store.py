@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any, assert_never
 
 import sqlalchemy as sa
+from sqlalchemy.engine import Connection, Engine
 
 from atelier2.adapters.dbos.run_transitions import (
     commit_reconciliation_required,
@@ -15,6 +16,11 @@ from atelier2.adapters.dbos.schema import (
     effect_receipts,
     reconcile_commands,
     runs,
+)
+from atelier2.adapters.dbos.transactions import canonical_write_transaction
+from atelier2.adapters.dbos.workflow_ids import (
+    effect_workflow_id_for,
+    reconcile_workflow_id_for,
 )
 from atelier2.contracts.effects import (
     EFFECT_INTENT_VERSION_CONFIRMED_INITIAL,
@@ -34,6 +40,7 @@ from atelier2.contracts.effects import (
     EffectIntentSnapshot,
     EffectIntentState,
     EffectIntentStateVersion,
+    EffectOutcome,
     EffectReceipt,
     EffectRequestHash,
     EffectResult,
@@ -458,3 +465,188 @@ def commit_resolution(
             receipt.result.payload_hash,
         )
     return RunState.STARTED
+
+
+# DBOS owns this table and these tokens; the sweep below only reads them, and
+# only to answer whether the workflow owing an intent its resolution is dead.
+_dbos_workflow_status = sa.table(
+    "workflow_status",
+    sa.column("workflow_uuid"),
+    sa.column("status"),
+)
+_TERMINAL_NON_SUCCESS_WORKFLOW_STATUSES = (
+    "ERROR",
+    "MAX_RECOVERY_ATTEMPTS_EXCEEDED",
+    "CANCELLED",
+)
+"""The DBOS statuses under which a workflow ended without committing its
+resolution and will never run again: recovery replays only pending work, never
+a raised ending. An absent row stays out on purpose -- the node workflow that
+owes the enqueue is itself still pending, so recovery will write it."""
+
+_DRIVEN_INTENT_STATES = (
+    EffectIntentState.PREPARED.value,
+    EffectIntentState.RECONCILING.value,
+)
+"""The intent states a durable workflow is currently responsible for moving."""
+
+
+def converge_driverless_effect_intents(engine: Engine) -> tuple[LogicalEffectKey, ...]:
+    """Route every intent whose driver workflow raised to the operator door.
+
+    A prepared effect moves because `durable_effect` drives it, and a
+    reconciling one because the workflow of its owning command does. When the
+    adapter raises -- a GitHub 500, a timeout -- that workflow ends in a
+    terminal error status nothing replays, the intent stands PREPARED or
+    RECONCILING forever, the operator door refuses it, and the run is frozen
+    mid-word. This is the restart's answer, the same one
+    `converge_driverless_attempts` gives armed attempts: each such intent goes
+    to WAITING_RECONCILIATION, the state the door accepts, and never to an
+    invented absence -- routing to the operator is exactly what an in-band
+    UNKNOWN readback does (ADR 0010). Answers with the intents routed here.
+    """
+
+    return tuple(
+        logical_key
+        for logical_key in _driverless_effect_intents(engine)
+        if _route_to_reconciliation(engine, logical_key)
+    )
+
+
+def _driverless_effect_intents(engine: Engine) -> tuple[LogicalEffectKey, ...]:
+    """List candidates only; `_route_to_reconciliation` decides in its own
+    write transaction, so a workflow that resolved between the two reads costs
+    one extra read, never a wrong routing."""
+
+    with engine.connect() as connection:
+        candidates = tuple(
+            (
+                LogicalEffectKey(str(record["logical_key"])),
+                _resolving_workflow_id(record),
+            )
+            for record in connection.execute(
+                sa.select(
+                    effect_intents.c.logical_key,
+                    effect_intents.c.state,
+                    effect_intents.c.reconciliation_owner_command_id,
+                )
+                .where(effect_intents.c.state.in_(_DRIVEN_INTENT_STATES))
+                .order_by(effect_intents.c.logical_key)
+            ).mappings()
+        )
+        if not candidates:
+            return ()
+        dead = set(
+            connection.scalars(
+                sa.select(_dbos_workflow_status.c.workflow_uuid).where(
+                    _dbos_workflow_status.c.workflow_uuid.in_(
+                        tuple(workflow_id for _key, workflow_id in candidates)
+                    ),
+                    _dbos_workflow_status.c.status.in_(
+                        _TERMINAL_NON_SUCCESS_WORKFLOW_STATUSES
+                    ),
+                )
+            )
+        )
+        return tuple(key for key, workflow_id in candidates if workflow_id in dead)
+
+
+def _route_to_reconciliation(engine: Engine, logical_key: LogicalEffectKey) -> bool:
+    with canonical_write_transaction(engine) as connection:
+        record = (
+            connection.execute(
+                sa.select(effect_intents).where(
+                    effect_intents.c.logical_key == logical_key.value
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if record is None:
+            return False
+        state = EffectIntentState(str(record["state"]))
+        if state is EffectIntentState.PREPARED:
+            if not _workflow_is_dead(connection, effect_workflow_id_for(logical_key)):
+                return False
+            # The exact transition an in-band UNKNOWN readback commits: intent
+            # to WAITING_RECONCILIATION, run lifted under its
+            # ACTION_RECONCILIATION_REQUIRED event. A raised adapter exception
+            # is an outcome nobody observed, so it routes to the operator and
+            # is never turned into an absence.
+            commit_resolution(
+                connection,
+                logical_key.value,
+                str(record["workflow_revision_hash"]),
+                {"outcome": EffectOutcome.UNKNOWN.value},
+            )
+            return True
+        if state is EffectIntentState.RECONCILING:
+            owner_command_id = str(record["reconciliation_owner_command_id"])
+            if not _workflow_is_dead(
+                connection,
+                reconcile_workflow_id_for(ReconcileCommandId(owner_command_id)),
+            ):
+                return False
+            _reopen_reconciliation(connection, logical_key, owner_command_id)
+            return True
+        return False
+
+
+def _resolving_workflow_id(record: sa.RowMapping) -> str:
+    if EffectIntentState(str(record["state"])) is EffectIntentState.PREPARED:
+        return effect_workflow_id_for(LogicalEffectKey(str(record["logical_key"])))
+    return reconcile_workflow_id_for(
+        ReconcileCommandId(str(record["reconciliation_owner_command_id"]))
+    )
+
+
+def _workflow_is_dead(connection: Connection, workflow_id: str) -> bool:
+    status = connection.scalar(
+        sa.select(_dbos_workflow_status.c.status).where(
+            _dbos_workflow_status.c.workflow_uuid == workflow_id
+        )
+    )
+    return status in _TERMINAL_NON_SUCCESS_WORKFLOW_STATUSES
+
+
+def _reopen_reconciliation(
+    connection: Connection, logical_key: LogicalEffectKey, owner_command_id: str
+) -> None:
+    """Close the dead command and put the intent back behind the open door.
+
+    The command ends REJECTED_CONFLICT -- the closest word the persisted
+    vocabulary has for "recorded, but it did not take effect" -- so a retry of
+    the exact same command answers rejected instead of forever pending, and
+    the operator decides again with fresh evidence. The state version returns
+    to the WAITING constant rather than advancing: intent versions are a
+    closed lifecycle vocabulary the door and both workflows compare exactly,
+    not a counter, and reopening the door means restoring the exact coordinate
+    it accepts.
+    """
+
+    revoked = connection.execute(
+        reconcile_commands.update()
+        .where(
+            reconcile_commands.c.command_id == owner_command_id,
+            reconcile_commands.c.state == ReconcileCommandState.PENDING.value,
+        )
+        .values(state=ReconcileCommandState.REJECTED_CONFLICT.value)
+    )
+    reopened = connection.execute(
+        effect_intents.update()
+        .where(
+            effect_intents.c.logical_key == logical_key.value,
+            effect_intents.c.state == EffectIntentState.RECONCILING.value,
+            effect_intents.c.state_version == EFFECT_INTENT_VERSION_RECONCILING.value,
+            effect_intents.c.reconciliation_owner_command_id == owner_command_id,
+        )
+        .values(
+            state=EffectIntentState.WAITING_RECONCILIATION.value,
+            state_version=EFFECT_INTENT_VERSION_WAITING.value,
+            reconciliation_owner_command_id=None,
+        )
+    )
+    if revoked.rowcount != 1 or reopened.rowcount != 1:
+        raise DurableEffectConflict(
+            "a reconciling intent must own exactly one pending command"
+        )
