@@ -498,6 +498,16 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Reconciliation was rejected",
         "Reload the run before issuing another accountable command.",
     ),
+    "queue-admission-revision-conflict": ProblemDefinition(
+        409,
+        "Queue admission revision conflict",
+        "Reload the queue item and admit it against the revision it now holds.",
+    ),
+    "queue-admission-already-decided": ProblemDefinition(
+        409,
+        "Queue item is already admitted",
+        "This item is already admitted under a different workflow binding or reason.",
+    ),
     "route-not-found": ProblemDefinition(
         404, "Route not found", ROUTE_NOT_FOUND_ACTION + "."
     ),

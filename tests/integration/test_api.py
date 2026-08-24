@@ -22,6 +22,7 @@ from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
 from atelier2.adapters.dbos.queries import DbosQueries
+from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.run_transitions import (
@@ -778,6 +779,7 @@ def _client(
                 published_revision_registry=DbosCatalogStore(runtime.engine),
                 artifact_publisher=DbosArtifactStore(runtime.engine),
                 host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
+                queue_projection=DbosQueueProjectionStore(runtime.engine),
             ),
             limits=active_limits,
             event_poll_backoff=event_poll_backoff(),

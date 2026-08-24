@@ -106,6 +106,8 @@ EXPECTED_PATHS = {
     CANCELLATION_PATH,
     EVENT_PATH,
     ATTENTION_EVENT_PATH,
+    API_PREFIX + "/queue-admissions",
+    API_PREFIX + "/queue-items",
 }
 
 EXPECTED_ROUTE_SEQUENCE = (
@@ -197,6 +199,8 @@ EXPECTED_ROUTE_SEQUENCE = (
     ),
     ("GET", EVENT_PATH, "event_stream_route"),
     ("GET", ATTENTION_EVENT_PATH, "attention_event_stream_route"),
+    ("POST", API_PREFIX + "/queue-admissions", "admit_queue_item_route"),
+    ("GET", API_PREFIX + "/queue-items", "list_queue_items_route"),
 )
 
 EXPECTED_SUCCESS_STATUSES = {

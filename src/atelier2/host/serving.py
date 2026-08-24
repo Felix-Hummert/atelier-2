@@ -23,6 +23,7 @@ from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
 from atelier2.adapters.dbos.queries import DbosQueries
+from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import (
@@ -546,6 +547,7 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
                 published_revision_registry=DbosCatalogStore(runtime.engine),
                 artifact_publisher=DbosArtifactStore(runtime.engine),
                 host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
+                queue_projection=DbosQueueProjectionStore(runtime.engine),
             ),
             limits=limits,
             event_poll_backoff=settings.event_poll_backoff,
