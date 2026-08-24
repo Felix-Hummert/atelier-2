@@ -13,6 +13,8 @@ import {
   problemDefinitions,
   type Problem
 } from "../../src/api/client";
+import { cancelMutation } from "../../src/lib/mutationJournal";
+import { cancellableBlock, notCancellableBlock } from "../support/runV3";
 import { workflowRevision } from "../support/workflowV1";
 
 const PROBLEM_TYPE_PREFIX = "urn:atelier2:problem:v1:";
@@ -858,6 +860,7 @@ describe("answering a wait over the existing door", () => {
       state: "COMPLETED",
       current_node_id: "ask",
       node_rail: [{ node_id: "ask", state: "succeeded", attempt: null }],
+      cancellation: notCancellableBlock("already-ended"),
       terminal_hash: digest,
       latest_event_cursor: "event1.cnVu.1"
     };
@@ -891,6 +894,73 @@ describe("answering a wait over the existing door", () => {
     expect(String(fetcher.mock.calls[0]?.[0])).toBe("/atelier/api/v1/runs/run1.cnVu/answers");
     expect(answered).toEqual({ status: 200, value: run });
   });
+});
+
+describe("cancelling a run over its cancel door", () => {
+  const request = cancelMutation(publicReference, digest, "cancel-key-1");
+
+  function cancellingRun() {
+    return {
+      workflow_format_version: 3,
+      run_id: "v3/cancel",
+      public_run_reference: publicReference,
+      workflow_revision_hash: digest,
+      agent_binding_set_hash: "b".repeat(64),
+      run_configuration_revision_hash: "c".repeat(64),
+      agent_bindings: [],
+      state_version: 3,
+      state: "STARTED",
+      current_node_id: "review",
+      node_rail: [{ node_id: "review", state: "working", attempt: null }],
+      cancellation: notCancellableBlock("already-cancelling"),
+      terminal_hash: null,
+      latest_event_cursor: "event1.cnVu.3"
+    };
+  }
+
+  it("posts the exact command to the cancel door and decodes the run it returns", async () => {
+    const run = cancellingRun();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(run), {
+        status: 202,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const result = await createCockpitApi(fetcher).cancelRun(request);
+
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      `/atelier/api/v1/runs/${publicReference}/cancellations`
+    );
+    expect(result).toEqual({ status: 202, value: run });
+  });
+
+  it.each([
+    "run-not-cancellable",
+    "run-cancellation-command-conflict",
+    "run-cancellation-overtaken-by-success"
+  ] as const)(
+    "reads a 409 %s as a definitive refusal carrying its decoded problem, never a retryable one",
+    async (code) => {
+      const problem = {
+        type: `${PROBLEM_TYPE_PREFIX}${code}`,
+        title: problemDefinitions[code].title,
+        status: 409,
+        detail: "The server's own words for why this cancel cannot land."
+      };
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify(problem), {
+          status: 409,
+          headers: { "content-type": "application/json" }
+        })
+      );
+
+      await expect(createCockpitApi(fetcher).cancelRun(request)).rejects.toMatchObject({
+        definitive_failure: true,
+        problem
+      });
+    }
+  );
 });
 
 describe("the published agent-configuration listing", () => {
@@ -1000,6 +1070,7 @@ describe("the run listing the studio opens on", () => {
     state: "STARTED",
     current_node_id: "implement",
     node_rail: [{ node_id: "implement", state: "working", attempt: null }],
+    cancellation: cancellableBlock(),
     terminal_hash: null,
     latest_event_cursor: null
   };

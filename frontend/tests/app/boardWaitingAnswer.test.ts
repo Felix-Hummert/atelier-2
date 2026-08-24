@@ -14,6 +14,7 @@ import { MutationJournal, waitMutationId, v3WaitMutation } from "../../src/lib/m
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { studioQuestions } from "../../src/lib/studioQuestions";
 import { cockpitApiStub } from "../support/cockpitApi";
+import { notCancellableBlock } from "../support/runV3";
 
 const revisionHash = "a".repeat(64);
 const publicReference = encodePublicRunReference("v3/decide");
@@ -31,6 +32,7 @@ function waitingRun(overrides: Partial<RunV3> = {}): RunV3 {
     state: "WAITING_INPUT",
     current_node_id: "approve",
     node_rail: [{ node_id: "approve", state: "needs_you", attempt: null }],
+    cancellation: notCancellableBlock("waiting-for-you"),
     terminal_hash: null,
     latest_event_cursor: null,
     started_at: "2026-08-18T15:00:00Z",

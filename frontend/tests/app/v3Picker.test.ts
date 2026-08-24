@@ -5,6 +5,7 @@ import App from "../../src/App.svelte";
 import type { CockpitApi, RunV3 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub } from "../support/cockpitApi";
+import { cancellableBlock } from "../support/runV3";
 
 const revisionHash = "a".repeat(64);
 const authHash = "b".repeat(64);
@@ -74,6 +75,7 @@ function startedV3Run(): RunV3 {
       { node_id: "implement", state: "working", attempt: null },
       { node_id: "review", state: "queued", attempt: null }
     ],
+    cancellation: cancellableBlock(),
     terminal_hash: null,
     latest_event_cursor: null
   };

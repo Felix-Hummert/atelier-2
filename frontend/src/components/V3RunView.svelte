@@ -28,6 +28,7 @@
   import { ageLabel } from "../lib/when";
   import NodeDetailPanel from "./NodeDetailPanel.svelte";
   import ProblemNotice from "./ProblemNotice.svelte";
+  import RunCancelCard from "./RunCancelCard.svelte";
   import V3AnswerCard, { type WaitContextSource } from "./V3AnswerCard.svelte";
   import WorkflowGraphDrawing from "./WorkflowGraphDrawing.svelte";
 
@@ -549,6 +550,11 @@
     />
   {/if}
 
+  <!-- Work first, brake second (HEART "The place"): the run's own shapes lead,
+       and the cancel sits below them. It lifts itself back to the top only while
+       a cancel is actually in flight, when it is the room's news. -->
+  <RunCancelCard {run} {cockpitApi} {mutationJournal} {onRunRead} />
+
   {#if openNodeId !== null}
     {#if failure !== null}
       <ProblemNotice title="This node could not be read" message={failure} />
@@ -577,9 +583,12 @@
     gap: var(--space-5);
   }
 
+  /* The run's identity always leads the room, so it sits ahead of an in-flight
+     cancel card even when that card lifts itself toward the top. */
   .run-head {
     display: grid;
     gap: var(--space-2);
+    order: -2;
   }
 
   .run-head h1 {
