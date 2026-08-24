@@ -24,8 +24,10 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 
+from atelier2.adapters.dbos import advancer
 from atelier2.adapters.dbos.advancer import (
     AgentEffectRedemptionPending,
+    _effect_shaped_capability_to_open_pr,
     redeem_agent_open_pr,
 )
 from atelier2.adapters.dbos.effect_store import receipt_from_record
@@ -44,10 +46,14 @@ from atelier2.contracts.effects import (
     EffectUnknownOutcome,
     PerformedEffect,
 )
+from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.contracts.tool_grants_v3 import (
+    DeclaredToolGrant,
     ToolGrantAccepted,
     ToolGrantCapability,
+    ToolGrantCapabilityNotRedeemed,
     read_tool_grant_document,
     redeems_as_platform_effect,
 )
@@ -128,6 +134,56 @@ def test_open_pr_is_the_only_effect_shaped_capability() -> None:
         redeems_as_platform_effect(ToolGrantCapability.RUN_PROJECT_VERIFICATION)
         is False
     )
+
+
+def _grant(capability: ToolGrantCapability) -> DeclaredToolGrant:
+    return DeclaredToolGrant(
+        PublishedRevisionHash(Sha256Hash.of(b"any-tool-revision").value), capability
+    )
+
+
+def test_an_open_pr_grant_is_the_capability_this_preparation_opens() -> None:
+    """An `open-pr` grant is the one effect-shaped grant this preparation performs."""
+    assert (
+        _effect_shaped_capability_to_open_pr(_grant(ToolGrantCapability.OPEN_PR))
+        is ToolGrantCapability.OPEN_PR
+    )
+
+
+@pytest.mark.parametrize(
+    "grant",
+    [
+        pytest.param(None, id="no-grant"),
+        pytest.param(
+            _grant(ToolGrantCapability.RUN_PROJECT_VERIFICATION), id="exec-shaped"
+        ),
+    ],
+)
+def test_a_missing_or_exec_shaped_grant_prepares_no_open_pr_effect(
+    grant: DeclaredToolGrant | None,
+) -> None:
+    """Only an effect-shaped grant prepares a pull request; the rest prepare nothing."""
+    assert _effect_shaped_capability_to_open_pr(grant) is None
+
+
+def test_an_effect_shaped_capability_that_is_not_open_pr_is_refused_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A future effect-shaped member the open-pr preparation cannot perform fails loud.
+
+    Only `OPEN_PR` is effect-shaped today, so a stand-in effect member is forced
+    by classifying `RUN_PROJECT_VERIFICATION` as effect-shaped for this test: the
+    preparation must refuse an effect-shaped capability it does not perform by
+    name rather than drop it as an unprepared intent."""
+    monkeypatch.setattr(
+        advancer, "redeems_as_platform_effect", lambda _capability: True
+    )
+    unredeemed = ToolGrantCapability.RUN_PROJECT_VERIFICATION
+
+    with pytest.raises(ToolGrantCapabilityNotRedeemed) as refused:
+        _effect_shaped_capability_to_open_pr(_grant(unredeemed))
+
+    assert refused.value.capability is unredeemed
 
 
 def test_a_published_open_pr_document_is_a_grant_this_runtime_redeems() -> None:

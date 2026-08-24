@@ -37,8 +37,10 @@ from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.contracts.tool_grants_v3 import (
     DeclaredToolGrant,
     ToolGrantCapability,
+    ToolGrantCapabilityNotRedeemed,
     ToolGrantRefused,
     read_tool_grant_document,
+    redeems_as_platform_effect,
 )
 from atelier2.contracts.workflows import ActionNode, AgentNode, AgentNodeV2
 from atelier2.contracts.workflows_v3 import (
@@ -218,6 +220,28 @@ def read_pinned_tool_grant(
     return DeclaredToolGrant(PublishedRevisionHash(pinned.revision), grant.capability)
 
 
+def _effect_shaped_capability_to_open_pr(
+    grant: DeclaredToolGrant | None,
+) -> ToolGrantCapability | None:
+    """The effect-shaped capability this preparation opens a pull request for, or none.
+
+    A missing grant, or one `redeems_as_platform_effect` classifies as
+    exec-shaped, prepares no platform effect here -- the exec-shaped grant is
+    redeemed inside the attempt's lease instead. An effect-shaped grant that is
+    not `open-pr` has no redeemer this preparation performs, so it is refused by
+    name here rather than returned as `None` and silently left unprepared: a new
+    effect capability then fails loud where its intent would be prepared instead
+    of completing a run that opened nothing, exactly as the exec redeemer refuses
+    a capability it does not perform. `redeems_as_platform_effect` is the one
+    owner of the exec-versus-effect split both redemption paths read.
+    """
+    if grant is None or not redeems_as_platform_effect(grant.capability):
+        return None
+    if grant.capability is not ToolGrantCapability.OPEN_PR:
+        raise ToolGrantCapabilityNotRedeemed(grant.capability)
+    return grant.capability
+
+
 def graph_agent_open_pr_intent(
     session: Any,
     run_id: RunId,
@@ -227,6 +251,11 @@ def graph_agent_open_pr_intent(
     effect_adapter_binding: EffectAdapterBinding,
 ) -> EffectIntent | None:
     """The pull-request this agent node's own grant opens, or nothing where none does.
+
+    Which grants open a pull request here is `_effect_shaped_capability_to_open_pr`'s
+    decision: a node with no grant or an exec-shaped one prepares nothing, and an
+    effect-shaped grant this preparation does not perform is refused by name
+    rather than silently left unprepared.
 
     The request bytes are the node's own durable output, read back from its
     `AGENT_COMPLETED` event rather than trusted from memory, because the same
@@ -241,7 +270,7 @@ def graph_agent_open_pr_intent(
     grant = read_pinned_tool_grant(
         session, load_graph(session, revision_hash).node(node_id)
     )
-    if grant is None or grant.capability is not ToolGrantCapability.OPEN_PR:
+    if _effect_shaped_capability_to_open_pr(grant) is None:
         return None
     execution_id = NodeExecutionId.for_node(
         run_id, revision_hash, node_id, round_ordinal

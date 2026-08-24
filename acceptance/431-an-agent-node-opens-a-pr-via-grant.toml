@@ -11,6 +11,20 @@ story = "https://github.com/FlexOr2/atelier-2/issues/431"
 # key an Action of the same operation derives from its own node -- so it reuses
 # the existing effect_intents/effect_receipts tables with no schema hop. Live
 # GitHub is issue #430 and not this slice.
+#
+# OPEN SENTENCE (named limitation of this slice, unproven here):
+# The redeem step runs after complete_success has durably advanced the run --
+# for a sink agent node, to COMPLETED. If that step raises rather than crashes
+# (a crash re-drives; an exception DBOS records as terminal ERROR and never
+# re-drives), the effect is stranded with only a PREPARED effect_intents row as
+# evidence and nothing surfaces it at the run level: the run reports COMPLETED
+# while the pull request never opened. It is unreachable in this slice because
+# the composed adapter proves its own absence and never answers UNKNOWN; the
+# live GitHub adapter (#430) answers EffectUnknownOutcome on every not-found
+# readback, so composing it here without a durable, operator-visible run state
+# for that outcome would strand every first agent open-pr. The fix is #430's,
+# not this slice's -- routing the redeem-step failure into WAITING_RECONCILIATION
+# exactly as the Action path already does.
 
 [[sentence]]
 id = "a-v3-agent-node-opens-one-pr-through-its-own-open-pr-grant"

@@ -21,8 +21,6 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 
-from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
-from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
@@ -32,51 +30,23 @@ from atelier2.adapters.dbos.schema import (
     runs,
     tool_redemptions,
 )
-from atelier2.adapters.dbos.starter import (
-    DbosDurableRunStarter,
-    DbosWorkflowRevisionPublisher,
-)
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
 from atelier2.adapters.github.marker import body_carries_request_hash
-from atelier2.contracts.agents import (
-    AgentBinding,
-    AgentBindingSet,
-    AgentConfigurationRevision,
-    AgentConfigurationRevisionFormatVersion,
-    AgentExecutionCapability,
-    AgentExecutorRevision,
-    AgentRole,
-    AuthMode,
-    AuthProfileRevision,
-    ProviderId,
-)
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import RunEventKind
-from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
-from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
-from atelier2.ports.agent_configurations import (
-    AgentConfigurationRevisionCreated,
-    AuthProfileRevisionCreated,
+from atelier2.contracts.runs import RunId, RunState
+from tests.scenarios.agents import agent_scratch_root
+from tests.scenarios.open_pr_agent import (
+    PR_SPEC,
+    create_open_pr_agent_run,
+    open_pr_agent_executor_factory,
+    publish_open_pr_agent_run,
 )
-from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
-from atelier2.ports.published_revisions import (
-    PublishedRevisionCreated,
-    PublishedRevisionExisting,
-)
-from tests.scenarios.agents import RecordingAgentExecutorFactoryV2, agent_scratch_root
-from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 RUN = RunId("v3/agent-open-pr")
 UNGRANTED_RUN = RunId("v3/agent-no-grant")
-PR_SPEC = json.dumps(
-    {"title": "Ship the open-pr slice", "opened_by": "the agent itself"}
-).encode("utf-8")
 CANARY_TOKEN = "gho_atelier2_canary_token_must_not_appear"
-OPEN_PR_GRANT = json.dumps({"capability": ToolGrantCapability.OPEN_PR.value}).encode(
-    "utf-8"
-)
 
 
 @pytest.fixture
@@ -96,7 +66,7 @@ def runtime(
         ),
         github,
         ExactOutputAgentExecutorFactory(),
-        (RecordingAgentExecutorFactoryV2("exact", "exact/v1", "exact-op", PR_SPEC),),
+        (open_pr_agent_executor_factory(PR_SPEC),),
     )
     started.initialize_storage()
     try:
@@ -105,73 +75,9 @@ def runtime(
         started.close()
 
 
-def _grant_document(tools_line: str) -> bytes:
-    return (
-        b"""format_version: 3
-name: One agent that opens its own pull request
-nodes:
-  - id: implement
-    type: agent
-    role: builder
-    mode: headless
-    instruction: Draft the pull request this chain opens.
-"""
-        + tools_line.encode("ascii")
-        + declared_output()
-    )
-
-
-def _publish(
-    runtime: DbosRuntime, tools_line: str
-) -> tuple[WorkflowRevision, AgentBindingSet]:
-    for revision in (
-        ANY_JSON_SCHEMA,
-        PublishedRevision(RevisionKind.TOOL, OPEN_PR_GRANT),
-    ):
-        published = DbosCatalogStore(runtime.engine).publish_revision(revision)
-        assert isinstance(
-            published, (PublishedRevisionCreated, PublishedRevisionExisting)
-        ), published
-    catalog = DbosAgentConfigurationCatalog(
-        runtime.engine, runtime.agent_executor_registry
-    )
-    auth = AuthProfileRevision("max", 1, ProviderId("exact"), AuthMode.SUBSCRIPTION)
-    assert isinstance(
-        catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
-    )
-    configuration = AgentConfigurationRevision(
-        "opus",
-        auth.revision_hash,
-        AgentExecutorRevision("exact/v1"),
-        AgentExecutionCapability.HEADLESS,
-        AgentConfigurationRevisionFormatVersion.V2,
-    )
-    assert isinstance(
-        catalog.publish_agent_configuration_revision(configuration),
-        AgentConfigurationRevisionCreated,
-    )
-    workflow = WorkflowRevision(_grant_document(tools_line))
-    DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
-    return workflow, AgentBindingSet(
-        (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
-    )
-
-
-def _granted_tools_line() -> str:
-    revision = PublishedRevision(RevisionKind.TOOL, OPEN_PR_GRANT).revision_hash.value
-    return f"    tools:\n      - {{ref: open-pr, revision: {revision}}}\n"
-
-
-def _start(
-    runtime: DbosRuntime,
-    run: RunId,
-    workflow: WorkflowRevision,
-    bindings: AgentBindingSet,
-) -> None:
-    started = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
-    ).start_published(StartPublishedRunRequestV2(run, workflow.revision_hash, bindings))
-    assert isinstance(started, DurableRunCreated), started
+def _start(runtime: DbosRuntime, run: RunId, *, granted: bool) -> None:
+    workflow, bindings = publish_open_pr_agent_run(runtime, granted=granted)
+    create_open_pr_agent_run(runtime, run, workflow, bindings)
     runtime.launch()
 
 
@@ -220,9 +126,8 @@ def test_a_granted_agent_node_opens_one_pull_request_and_leaves_one_receipt(
     runtime: tuple[DbosRuntime, GitHubEffectAdapterFactory, Path],
 ) -> None:
     started_runtime, github, atelier_sqlite = runtime
-    workflow, bindings = _publish(started_runtime, _granted_tools_line())
 
-    _start(started_runtime, RUN, workflow, bindings)
+    _start(started_runtime, RUN, granted=True)
     _wait_for_state(started_runtime, RUN, RunState.COMPLETED)
     _wait_for_receipt(started_runtime)
 
@@ -278,6 +183,8 @@ def test_a_granted_agent_node_opens_one_pull_request_and_leaves_one_receipt(
     assert len(github.recorded_pull_requests()) == 1
 
     # No credential-shaped value reaches anything durable the redemption touched.
+    # The fake carries no real credential, so this canary is only a floor here --
+    # the live credential-by-reference proof is the live GitHub test's (#430).
     assert CANARY_TOKEN not in pull_request.body
     assert not _durable_bytes_contain(atelier_sqlite, CANARY_TOKEN)
     assert not _durable_bytes_contain(github.database_path, CANARY_TOKEN)
@@ -289,9 +196,8 @@ def test_an_agent_node_without_the_grant_opens_no_pull_request(
 ) -> None:
     """A plain agent node has no open-pr tool: it completes and opens nothing."""
     started_runtime, github, _atelier_sqlite = runtime
-    workflow, bindings = _publish(started_runtime, "")
 
-    _start(started_runtime, UNGRANTED_RUN, workflow, bindings)
+    _start(started_runtime, UNGRANTED_RUN, granted=False)
     _wait_for_state(started_runtime, UNGRANTED_RUN, RunState.COMPLETED)
 
     assert github.recorded_pull_requests() == ()
