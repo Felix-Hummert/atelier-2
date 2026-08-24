@@ -8,6 +8,13 @@ cannot safely carry it, so a run carrying such a grant is refused at admission -
 before it advances -- rather than left to raise after it reported success. The
 Action `open-pr` path, which does have `WAITING_RECONCILIATION`, is untouched, and
 a non-proving adapter admits any run that carries no agent `open-pr` grant.
+
+Admission guards only the runs a live-GitHub instance itself starts. A run
+admitted earlier under the absence-proving loopback adapter can still be
+non-terminal when the operator restarts the same database with live GitHub, so
+composing the live adapter also scans the non-terminal V3 runs and refuses to
+start while any of them still carries an agent `open-pr` grant -- a finished or
+grant-free run never blocks the start.
 """
 
 from __future__ import annotations
@@ -30,7 +37,11 @@ from atelier2.adapters.github import (
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.runs import RunId
+from atelier2.contracts.runs import RunId, RunState
+from atelier2.host.serving import (
+    LiveGitHubOpenPrRunPending,
+    _refuse_pending_agent_open_pr_runs,
+)
 from atelier2.ports.durable_runs import (
     DurableAgentPlatformEffectUnreconcilable,
     DurableRunCreated,
@@ -150,3 +161,50 @@ def test_the_live_github_adapter_cannot_prove_absence(tmp_path: Path) -> None:
     )
 
     assert live.proves_absence is False
+
+
+def _complete_run(runtime: DbosRuntime, run: RunId) -> None:
+    """Lift the run to its `COMPLETED` end without running the workflow behind it.
+
+    The startup scan reads the run's own durable state, so a test that a finished
+    run no longer blocks a live-GitHub start only needs that state to say so.
+    """
+    with runtime.engine.begin() as connection:
+        connection.execute(
+            sa.update(runs)
+            .where(runs.c.run_id == run.value)
+            .values(state=RunState.COMPLETED.value, terminal_hash="a" * 64)
+        )
+
+
+def test_live_github_startup_refuses_a_still_pending_agent_open_pr_run(
+    runtime: DbosRuntime,
+) -> None:
+    # The cross-restart edge (`#430`/`#431`): a run admitted under the absence-
+    # proving loopback adapter carries an agent `open-pr` grant and is still
+    # non-terminal when the operator restarts the same database with live GitHub.
+    # Recovery would resume its redemption against an adapter that cannot prove
+    # absence, so the start refuses it by name instead.
+    _start(runtime, RUN, granted=True, proves_absence=True)
+
+    with pytest.raises(LiveGitHubOpenPrRunPending) as refusal:
+        _refuse_pending_agent_open_pr_runs(runtime)
+
+    assert RUN.value in str(refusal.value)
+
+
+def test_live_github_startup_serves_when_no_run_carries_an_agent_open_pr_grant(
+    runtime: DbosRuntime,
+) -> None:
+    _start(runtime, RUN, granted=False, proves_absence=True)
+
+    _refuse_pending_agent_open_pr_runs(runtime)
+
+
+def test_live_github_startup_serves_when_the_agent_open_pr_run_has_finished(
+    runtime: DbosRuntime,
+) -> None:
+    _start(runtime, RUN, granted=True, proves_absence=True)
+    _complete_run(runtime, RUN)
+
+    _refuse_pending_agent_open_pr_runs(runtime)

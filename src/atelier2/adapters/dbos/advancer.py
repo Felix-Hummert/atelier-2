@@ -15,6 +15,7 @@ from atelier2.adapters.dbos.schema import (
     effect_intents,
     published_revisions,
     run_events,
+    runs,
 )
 from atelier2.contracts.effects import (
     CanonicalRequest,
@@ -33,7 +34,12 @@ from atelier2.contracts.executions import (
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import RunBindingConflict
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.runs import (
+    TERMINAL_RUN_STATES,
+    RunId,
+    RunState,
+    WorkflowRevisionHash,
+)
 from atelier2.contracts.tool_grants_v3 import (
     DeclaredToolGrant,
     ToolGrantCapability,
@@ -42,6 +48,7 @@ from atelier2.contracts.tool_grants_v3 import (
     read_tool_grant_document,
     redeems_as_platform_effect,
 )
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflows import ActionNode, AgentNode, AgentNodeV2
 from atelier2.contracts.workflows_v3 import (
     ANY_ACTION_NODE_KINDS,
@@ -263,6 +270,36 @@ def first_agent_platform_effect_node(
         if _effect_shaped_capability_to_open_pr(read_pinned_tool_grant(session, node)):
             return node.id
     return None
+
+
+def non_terminal_agent_open_pr_run_ids(engine: sa.Engine) -> tuple[RunId, ...]:
+    """Every non-terminal V3 run whose agent node still opens its own pull request.
+
+    Admission refuses an agent-authored `open-pr` grant against an adapter that
+    cannot prove absence, but that door only guards the runs that instance itself
+    starts. A run admitted earlier under an absence-proving adapter can still be
+    non-terminal when the same database is reopened against the live adapter, and
+    resuming its redemption there would end it ERROR after it committed COMPLETED
+    (`#430`/`#431`). One pass over the non-terminal V3 runs reads each run's
+    pinned grant through the same `first_agent_platform_effect_node` door
+    admission reads it, so a live-GitHub startup can refuse exactly those runs.
+    """
+    with engine.connect() as connection:
+        pending = connection.execute(
+            sa.select(runs.c.run_id, runs.c.revision_hash).where(
+                runs.c.workflow_format_version == int(WorkflowFormatVersion.V3),
+                runs.c.state.notin_([state.value for state in TERMINAL_RUN_STATES]),
+            )
+        ).all()
+        return tuple(
+            RunId(str(run_id))
+            for run_id, revision_hash in pending
+            if first_agent_platform_effect_node(
+                connection,
+                load_graph(connection, WorkflowRevisionHash(str(revision_hash))),
+            )
+            is not None
+        )
 
 
 def graph_agent_open_pr_intent(
