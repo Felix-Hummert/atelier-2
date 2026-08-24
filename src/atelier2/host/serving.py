@@ -422,6 +422,13 @@ class HostSettings:
                 "unauthenticated on this API, so the billed boundary stays on this "
                 "machine until an authenticated boundary exists"
             )
+        if self.github_effect is not None and not is_loopback_host(self.host):
+            raise ValueError(
+                f"serving the live GitHub open-pr effect requires a loopback "
+                f"bind, not {self.host!r}: starting a run is unauthenticated on "
+                "this API, so the operator's GitHub token stays on this machine "
+                "until an authenticated boundary exists"
+            )
         _require_start_refusal(
             "Claude", self.claude_subscription, self.claude_start_refusal
         )

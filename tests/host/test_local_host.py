@@ -797,6 +797,30 @@ def test_a_claude_deployment_off_loopback_refuses_to_serve(
     assert "loopback" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("bind", "serves"),
+    [
+        ("0.0.0.0", False),
+        ("::", False),
+        ("192.168.1.10", False),
+        ("localhost", False),
+        ("127.0.0.1", True),
+    ],
+)
+def test_a_github_open_pr_deployment_binds_loopback_only(
+    tmp_path: Path, bind: str, serves: bool
+) -> None:
+    # A non-loopback bind would let any network peer open PRs with the
+    # operator's token, because starting a run is unauthenticated on this API.
+    settings = _github_served_settings(tmp_path, None)
+
+    if serves:
+        assert replace(settings, host=bind).host == bind
+    else:
+        with pytest.raises(ValueError, match="loopback"):
+            replace(settings, host=bind)
+
+
 def test_an_unconformant_claude_executable_does_not_kill_serve(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
