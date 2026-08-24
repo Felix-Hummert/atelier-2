@@ -45,12 +45,14 @@ export const workbenchPageCopy = {
    */
   composerHint: "No conductor is connected yet, so your words are kept here but start nothing.",
   /**
-   * The reply every sent message gets while no conductor is connected. It says
-   * two true things: nothing was started, and the message was not thrown away.
-   * "Until you reload" is the conversation's real boundary: it survives in-app
-   * rail navigation (the module that owns it outlives the page component) but
-   * not a reload.
+   * The reply every sent message gets while no conductor is connected. The
+   * standing composer hint already carries "no conductor is connected yet"
+   * (HEART, "The ear"), so the reply drops that duplicated lead and keeps only
+   * its two unique truths: nothing was started, and the message was not thrown
+   * away. "Until you reload" is the conversation's real boundary: it survives
+   * in-app rail navigation (the module that owns it outlives the page
+   * component) but not a reload.
    */
   conductorAbsent:
-    "No conductor is connected yet, so nothing was started. Your message is kept in this conversation until you reload the page."
+    "Nothing was started. Your message is kept in this conversation until you reload the page."
 } as const;

@@ -4,7 +4,7 @@ import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { sendChatMessage } from "../../src/lib/chatTranscript";
 
 describe("one turn of the conversation", () => {
-  it("keeps what was said and answers that no conductor is connected", () => {
+  it("keeps what was said and answers that nothing was started", () => {
     const transcript = sendChatMessage([], "Finish the preview door");
 
     expect(transcript.map((message) => [message.speaker, message.text])).toEqual([

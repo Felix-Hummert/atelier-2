@@ -38,11 +38,15 @@
   });
 
   /**
-   * Every run stopped for a person, read the same way the Board reads it, so a
-   * decision is pinned here the moment it opens -- not only if the operator
-   * happened to be watching the Board when it did. A read that could not name a
-   * workflow still pins the decision under the run's own id rather than losing
-   * it, the same honesty `resolveWorkflowName` already holds to.
+   * Every run stopped for a person, read the same way the Board reads it, so
+   * every open decision is pinned. These are read fresh on each visit (this
+   * runs on mount), not streamed: a decision that opens while the operator is
+   * already sitting on the Workbench appears on the next visit, not the moment
+   * it opens. Consuming the live attention stream the Board owns
+   * (`openAttentionEvents`) is a named successor gap, not built here. A read
+   * that could not name a workflow still pins the decision under the run's own
+   * id rather than losing it, the same honesty `resolveWorkflowName` already
+   * holds to.
    */
   async function loadPins(): Promise<void> {
     const [waiting, revisions] = await Promise.all([
@@ -174,12 +178,15 @@
     background: var(--ground);
   }
 
+  /* The section title stays dim in both the empty and the populated state, the
+     Board's manners: hue belongs to a state that wants something, and here the
+     call for attention is the pinned card's clay border, not the heading. */
   .needs-you-title {
     margin: 0;
     font-size: var(--text-2xs);
     letter-spacing: var(--tracking-label);
     text-transform: uppercase;
-    color: var(--signal-attention);
+    color: var(--ink-dim);
   }
 
   .needs-you-none {

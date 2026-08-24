@@ -67,7 +67,7 @@ describe("the workbench door", () => {
     expect(screen.queryByRole("link", { name: "Open Workflows" })).toBeNull();
   });
 
-  it("keeps what was said and answers that the conductor is not connected, naming no board or issue number", async () => {
+  it("keeps what was said and answers that nothing was started, naming no board or issue number", async () => {
     openChat();
     const { screen, within } = testingLibrary;
     await screen.findByRole("heading", { name: "Workbench" });
@@ -79,7 +79,7 @@ describe("the workbench door", () => {
     // No invented answer, no pretence that anything started, and no internal
     // vision or issue number leaked into the operator's own conversation
     // (Adressaten-Regel, operator ruling 23.08.).
-    const answer = within(transcript).getByText(new RegExp("No conductor is connected"));
+    const answer = within(transcript).getByText(workbenchPageCopy.conductorAbsent);
     expect(answer.textContent).not.toMatch(/#\d/);
   });
 
@@ -120,7 +120,7 @@ describe("the workbench door", () => {
     const transcript = screen.getByRole("list", { name: workbenchPageCopy.transcriptLabel });
     expect(within(transcript).getByText(/Finish the preview door/).isConnected).toBe(true);
     expect(
-      within(transcript).getByText(new RegExp("No conductor is connected")).isConnected
+      within(transcript).getByText(workbenchPageCopy.conductorAbsent).isConnected
     ).toBe(true);
   });
 
