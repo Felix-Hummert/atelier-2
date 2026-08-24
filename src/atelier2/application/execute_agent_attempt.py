@@ -213,15 +213,16 @@ def _redeemed_via_capability(
 ) -> ProjectVerificationOutcome:
     """The one redeemer this exact capability reaches, run against this lease.
 
-    `ToolGrantCapability` holds one member today, so this dispatch has one
+    `ToolGrantCapability` holds one EXEC-shaped member, so this dispatch has one
     case -- but the case is still asked for, rather than assumed, because the
     bug this dispatch exists to keep impossible is exactly a capability that
     used to reach this point unread and got redeemed as a project verification
     regardless of what it actually named. A capability this match does not
-    recognize is refused by name instead: nothing durably constructed here
-    can carry one today, so reaching this branch is a defect in the runtime
-    that bound it, not a condition an attempt can recover from -- Phase 2
-    decides how a second capability's own redeemer joins this dispatch.
+    recognize is refused by name instead: only an exec-shaped grant is bound
+    into the lease this redeemer runs against -- the effect-shaped `open-pr` is
+    redeemed as a platform effect elsewhere -- so a capability reaching this
+    branch that this redeemer does not perform is a defect in the runtime that
+    bound it, not a condition an attempt can recover from.
     """
     match capability:
         case ToolGrantCapability.RUN_PROJECT_VERIFICATION:

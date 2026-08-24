@@ -26,6 +26,13 @@ from tests.crash.effect_harness import (
     AFTER_EXTERNAL_COMMIT,
     install_crash,
 )
+from tests.scenarios.agents import agent_scratch_root
+from tests.scenarios.open_pr_agent import (
+    PR_SPEC,
+    create_open_pr_agent_run,
+    open_pr_agent_executor_factory,
+    publish_open_pr_agent_run,
+)
 from tests.scenarios.runs import start_published_v1_run
 
 CANARY_TOKEN = "gho_atelier2_canary_token_must_not_appear"
@@ -87,9 +94,14 @@ def runtime(
     after_execute_crash_marker: Path | None = None,
 ) -> DbosRuntime:
     return DbosRuntime(
-        DbosRuntimeSettings(database, application_version),
+        DbosRuntimeSettings(
+            database,
+            application_version,
+            agent_scratch_root=agent_scratch_root(database.parent),
+        ),
         HarnessEffectAdapterFactory(external, after_execute_crash_marker),
         ExactOutputAgentExecutorFactory(),
+        (open_pr_agent_executor_factory(PR_SPEC),),
     )
 
 
@@ -114,6 +126,17 @@ def seed(
         start_published_v1_run(
             lease.engine, lease.settings, RunId(run_id), WorkflowRevision(document)
         )
+    finally:
+        lease.close()
+
+
+def seed_agent(database: Path, external: Path, version: str, run_id: str) -> None:
+    """Create one V3 agent-open-pr run, granted, without launching it yet."""
+    lease = runtime(database, external, version)
+    try:
+        lease.initialize_storage()
+        workflow, bindings = publish_open_pr_agent_run(lease, granted=True)
+        create_open_pr_agent_run(lease, RunId(run_id), workflow, bindings)
     finally:
         lease.close()
 
@@ -173,6 +196,9 @@ def main() -> None:
     elif command == "seed":
         run_id, document_hex = arguments
         seed(database, external, version, run_id, bytes.fromhex(document_hex))
+    elif command == "seed-agent":
+        (run_id,) = arguments
+        seed_agent(database, external, version, run_id)
     else:
         run_id, raw_marker, operation_name, timing, raw_wait = arguments
         execute(

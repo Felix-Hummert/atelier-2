@@ -7,10 +7,20 @@ published under the name `tool` are a grant only because someone called them one
 so this module is the reading that turns them into one -- a pure function over
 bytes, asked once by the reference resolution that binds a run.
 
-The vocabulary is closed and deliberately holds one capability. A grant naming
-anything else is refused where it was declared rather than resolved and then
-silently unredeemed, because a run started under a capability nothing performs
-would tell its author that the atelier did what the document asked.
+The vocabulary is closed. A grant naming anything outside it is refused where it
+was declared rather than resolved and then silently unredeemed, because a run
+started under a capability nothing performs would tell its author that the
+atelier did what the document asked.
+
+Two capabilities live here, and two runtimes redeem them because they have two
+different shapes. `RUN_PROJECT_VERIFICATION` is synchronous and exec-shaped -- a
+command, an exit code, a hash of what it said -- redeemed inside the attempt's
+own lease. `OPEN_PR` is an external platform effect, redeemed through the same
+durable, retryable `EffectAdapter` an Action node drives and answered with an
+`EffectReceipt` rather than an exit code. `redeems_as_platform_effect` is the
+one owner of that split, so the two runtimes never disagree about which shape a
+capability is, and the exec-shaped redemption receipt below is kept only for the
+exec-shaped capability.
 
 The redemption receipt is the other half: what the attempt that redeemed the
 grant actually ran, how it ended, and what it said. It is a record of its own
@@ -25,7 +35,7 @@ import json
 import struct
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Self
+from typing import Self, assert_never
 
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import MAXIMUM_SIGNED_INT64
@@ -44,12 +54,34 @@ MAXIMUM_VERIFICATION_COMMAND_BYTES = 4_096
 class ToolGrantCapability(StrEnum):
     """The closed set of capabilities a published tool grant may name.
 
-    One entry, because one is what this runtime redeems. A second capability
-    enters here together with the executor that performs it, so the set and the
-    performance never disagree.
+    A capability enters here together with the runtime that performs it, so the
+    set and the performance never disagree. The two members are redeemed by two
+    different runtimes -- `redeems_as_platform_effect` names which -- because an
+    exec-shaped verification and an external platform effect cannot honestly
+    share one redemption shape.
     """
 
     RUN_PROJECT_VERIFICATION = "run-project-verification"
+    OPEN_PR = "open-pr"
+
+
+def redeems_as_platform_effect(capability: ToolGrantCapability) -> bool:
+    """Whether this capability is redeemed as an external platform effect.
+
+    An effect-shaped capability is redeemed through the durable `EffectAdapter`
+    an Action node already drives, after the attempt succeeds, and answers with
+    an `EffectReceipt`; an exec-shaped one runs inside the attempt's lease and
+    answers with an exit code. The binding carries only the exec-shaped grant
+    -- an effect-shaped grant needs no `project_source` and is read straight
+    from the immutable graph where its effect is prepared -- so this predicate
+    is the one place that decides which redemption a capability takes.
+    """
+    match capability:
+        case ToolGrantCapability.OPEN_PR:
+            return True
+        case ToolGrantCapability.RUN_PROJECT_VERIFICATION:
+            return False
+    assert_never(capability)
 
 
 class ToolGrantCapabilityNotRedeemed(RuntimeError):
@@ -57,13 +89,14 @@ class ToolGrantCapabilityNotRedeemed(RuntimeError):
 
     `read_tool_grant_document` already refuses any capability outside this
     module's closed vocabulary before a run ever binds one, so a legitimately
-    constructed `DeclaredToolGrant` cannot carry this today -- the vocabulary
-    holds exactly `RUN_PROJECT_VERIFICATION`, and every reader agrees. This
+    constructed `DeclaredToolGrant` names a member every reader agrees on. This
     exception is the same refusal at the other boundary the invariant names:
-    redemption itself asks, once more, which redeemer this exact capability
-    reaches, so a second capability that ever lands beside the first without
-    its own redeemer is refused by name here rather than performed as though
-    it had asked for whichever redeemer this runtime already had.
+    the exec-shaped redeemer asks, once more, which redeemer this exact
+    capability reaches, so a capability routed to it that it does not perform --
+    the effect-shaped `OPEN_PR` reaching the verification redeemer, or a later
+    capability with no redeemer at all -- is refused by name here rather than
+    performed as though it had asked for whichever redeemer that runtime already
+    had.
     """
 
     def __init__(self, capability: ToolGrantCapability) -> None:
