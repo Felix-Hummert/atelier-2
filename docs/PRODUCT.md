@@ -148,13 +148,15 @@ second one: Serve publishes the lease a host launcher claims
 (`atelier2.adapters.file_runner_leases.FileRunnerLeasePublisher`), drives the
 accepted session to `RELEASED` over the same real transport, and never runs,
 mounts, or supervises a process itself. Exactly one such offer exists today —
-the fixed fake-free candidate — and reaching it needs a `HostSettings`
-construction naming a lease root, Runner image, image digest, console
-container, core identity directory and accept deadline together, refused by
-name if only some are declared; the packaged `atelier2 serve` command line
-does not expose these yet, so this carrier is not reachable from the shipped
-container. At most one `RUNNER_LEASE` Attempt runs at a time per Serve
-process — its Core session listener binds one fixed port — and a second,
+the fixed fake-free candidate — and reaching it names a lease root, Runner
+image, image digest, console container, core identity directory and accept
+deadline together, refused by name if only some are declared; the packaged
+`atelier2 serve` command line exposes all six as flags, and the shipped
+container entrypoint carries them from `ATELIER2_RUNNER_*` environment
+variables without validating them, so this carrier is reachable from the
+shipped container while an undeclared deployment stays runner-free — no
+runner value or identity file is baked into the image. At most one
+`RUNNER_LEASE` Attempt runs at a time per Serve process — its Core session listener binds one fixed port — and a second,
 concurrent one waits for the runner slot rather than failing. At every start
 Serve withdraws its own still-open leases and converges every `RUNNER_LEASE`
 Attempt no workflow still owes its next move: it reads the launcher's own
@@ -834,9 +836,12 @@ with the exact source identity, builds from an archived committed snapshot,
 waits for the matching health identity, and prints its exact shell-safe
 teardown command from a private candidate-lifecycle descriptor, so later
 checkout changes cannot redirect cleanup. It has no provider executable,
-credential/configuration or host-home/scratch mount, Runner service, runner
-protocol or external execution claim. The existing Core `ExactOutput` fixture
-remains Core behavior, not a packaged provider. The operator runbook is
+credential/configuration or host-home/scratch mount, Runner service, or
+external execution claim; its entrypoint can carry an operator-declared
+Runner-lease deployment from `ATELIER2_RUNNER_*` environment variables, which
+the disposable candidate leaves undeclared, so it starts runner-free. The
+existing Core `ExactOutput` fixture remains Core behavior, not a packaged
+provider. The operator runbook is
 [OPERATIONS.md](OPERATIONS.md); network hardening remains
 [ADR 0009](decisions/0009-runner-trust.md).
 

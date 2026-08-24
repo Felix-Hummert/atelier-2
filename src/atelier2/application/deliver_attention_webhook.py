@@ -12,6 +12,13 @@ At-least-once follows from that ordering alone: the cursor never advances
 before delivery succeeds, so a crash between a successful delivery and the
 cursor write reappears next call as the same event, identified the same way,
 delivered again.
+
+The cursor holds exactly one identity, so within one recorded-at second it
+cannot tell delivered siblings from pending ones: the caller passes the
+identities it already delivered at the cursor's instant as
+`excluded_identities` -- the same-instant exclusion the SSE stream uses.
+Losing that set (a restart) redelivers same-second siblings, a duplicate
+at-least-once already permits, never a loss.
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ from atelier2.application.refusals import (
     ReadUnavailable,
     WriteUnavailable,
 )
+from atelier2.contracts.runs import RunId
 from atelier2.contracts.webhook_delivery import (
     AdvanceWebhookDeliveryCursor,
     CursorAdvanceConflict,
@@ -112,8 +120,14 @@ def deliver_attention_webhook(
     queries: RunEventQueries,
     transport: WebhookTransport,
     signing_key: bytes,
+    excluded_identities: tuple[tuple[RunId, int], ...] = (),
 ) -> DeliverAttentionWebhookResult:
-    """Deliver the one attention event after the durable cursor, or say why not."""
+    """Deliver the one attention event after the durable cursor, or say why not.
+
+    `excluded_identities` are events the caller already delivered at the
+    cursor's recorded-at instant; without them, two events sharing one second
+    would pingpong the single-identity cursor forever.
+    """
 
     cursor_read = cursor_publisher.read_cursor()
     match cursor_read:
@@ -129,7 +143,9 @@ def deliver_attention_webhook(
     after_sequence = cursor_state.cursor.event_sequence if cursor_state.cursor else None
 
     # One decision delivers one event; a repeated call is phase 2's loop.
-    page = read_attention_events(after_run_id, after_sequence, 1, queries)
+    page = read_attention_events(
+        after_run_id, after_sequence, 1, queries, excluded_identities
+    )
     match page:
         case AttentionEventsRead(events):
             pass
