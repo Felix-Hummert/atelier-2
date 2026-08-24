@@ -21,8 +21,13 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
 from atelier2.contracts.host_configuration import (
+    MAXIMUM_CONNECTION_ACTOR_CHARACTERS,
+    MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS,
     MAXIMUM_PROJECT_ID_CHARACTERS,
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
+    MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
+    MAXIMUM_SOURCE_KIND_CHARACTERS,
+    SourceConnectionAuthMethod,
 )
 from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
@@ -50,15 +55,13 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head admits the never-launched runner-lease cancel
-# terminal transition (#584) -- an operator run-cancel landing on a
-# runner-lease-bound attempt that was leased but never launched converges to
-# CANCELLED under disposition NEVER_LAUNCHED, its runner binding preserved and
-# no evidence fabricated. It moves no table shape: only the fingerprinted
-# `agent_attempts_state_transition` trigger grammar changes. Predecessor is the
-# published schema that gave the webhook delivery decision its durable cursor.
+# Movable hop: this head gives the project-source connection record (#567)
+# its durable, append-only home -- one new immutable table on the host
+# configuration channel, carrying identities and a credential-directory
+# reference, never a credential value. Predecessor is the published schema
+# that admitted the never-launched runner-lease cancel transition (#584).
 # Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 31
+_HOP_PREDECESSOR_VERSION = 32
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -84,6 +87,7 @@ _VERSION_TWENTY_NINE = 29
 _VERSION_THIRTY = 30
 _VERSION_THIRTY_ONE = 31
 _VERSION_THIRTY_TWO = 32
+_VERSION_THIRTY_THREE = 33
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -142,6 +146,12 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # and no evidence fabricated -- proved only by a won lease withdraw. It rewrites
 # no row and moves no table shape; only the `agent_attempts_state_transition`
 # trigger gains one branch, so the hop is a trigger swap.
+# V33 gives the project-source connection record (#567, ADR 0010 decision 2)
+# its durable home as a third append-only family on the host configuration
+# channel: project id, source kind, an opaque source address only the
+# connected platform adapter interprets, a credential-directory reference --
+# never a credential value -- the chosen auth method, and the connecting
+# actor.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -171,6 +181,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     30: "1229c61ee62c20531cb31ed324a3b822646d56899f30be62ab1c6abebf325c3c",
     31: "60d98794edd55744b3ec2cc4f4d7b9bf7a23106b4b7f0d4b9a009042d054a419",
     32: "0cdbeaf303f2839661930234a508e141cd995b8552def9b426a52aaad1eab84e",
+    33: "f634d04c6cc525147ead8aa0dad8ef728189a6ef9554049c8a2aad56f3caeea8",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -263,6 +274,10 @@ V30_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V31_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_THIRTY_ONE,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_ONE],
+)
+V32_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_THIRTY_TWO,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_TWO],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1624,6 +1639,48 @@ webhook_delivery_cursor = sa.Table(
     sa.CheckConstraint("(run_id IS NULL) = (event_sequence IS NULL)"),
     sa.CheckConstraint("event_sequence IS NULL OR event_sequence > 0"),
 )
+host_project_source_connection_revisions = sa.Table(
+    "host_project_source_connection_revisions",
+    metadata,
+    sa.Column("revision_hash", sa.Text, primary_key=True),
+    sa.Column("project_id", sa.Text, nullable=False),
+    sa.Column("source_kind", sa.Text, nullable=False),
+    sa.Column("revision_number", sa.Integer, nullable=False),
+    sa.Column("source_address", sa.Text, nullable=False),
+    sa.Column("credential_directory", sa.Text, nullable=False),
+    sa.Column("auth_method", sa.Text, nullable=False),
+    sa.Column("connected_by", sa.Text, nullable=False),
+    sa.UniqueConstraint("project_id", "source_kind", "revision_number"),
+    sa.UniqueConstraint(
+        "revision_hash",
+        "project_id",
+        "source_kind",
+        "revision_number",
+    ),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        f"length(project_id) BETWEEN 1 AND {MAXIMUM_PROJECT_ID_CHARACTERS}"
+    ),
+    sa.CheckConstraint(
+        f"length(source_kind) BETWEEN 1 AND {MAXIMUM_SOURCE_KIND_CHARACTERS}"
+    ),
+    sa.CheckConstraint(f"revision_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
+    sa.CheckConstraint(
+        f"length(source_address) BETWEEN 1 AND {MAXIMUM_SOURCE_ADDRESS_CHARACTERS}"
+    ),
+    sa.CheckConstraint(
+        "length(credential_directory) BETWEEN 1 AND "
+        f"{MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS}"
+    ),
+    sa.CheckConstraint(
+        f"auth_method IN ('{SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN.value}')"
+    ),
+    sa.CheckConstraint(
+        f"length(connected_by) BETWEEN 1 AND {MAXIMUM_CONNECTION_ACTOR_CHARACTERS}"
+    ),
+)
 
 PRODUCT_TABLE_NAMES = frozenset(metadata.tables)
 
@@ -2357,6 +2414,18 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'host occupancy bindings are immutable');
         END
     """,
+    "host_project_source_connection_revisions_no_update": """
+        CREATE TRIGGER host_project_source_connection_revisions_no_update
+        BEFORE UPDATE ON host_project_source_connection_revisions BEGIN
+          SELECT RAISE(ABORT, 'project-source connection revisions are immutable');
+        END
+    """,
+    "host_project_source_connection_revisions_no_delete": """
+        CREATE TRIGGER host_project_source_connection_revisions_no_delete
+        BEFORE DELETE ON host_project_source_connection_revisions BEGIN
+          SELECT RAISE(ABORT, 'project-source connection revisions are immutable');
+        END
+    """,
     "queue_items_identity_no_update": """
         CREATE TRIGGER queue_items_identity_no_update
         BEFORE UPDATE OF item_id, project_id, tracker_item_reference
@@ -2552,13 +2621,18 @@ def _table_names_for_version(version: int) -> frozenset[str]:
     later = {run_instants.name, attempt_instants.name, event_instants.name}
     host_channel = {host_project_root_revisions.name}
     occupancy = {host_occupancy_revisions.name, host_occupancy_bindings.name}
+    connections = {host_project_source_connection_revisions.name}
     predecessor_tables = (
-        PRODUCT_TABLE_NAMES - {queue_items.name, webhook_delivery_cursor.name}
+        PRODUCT_TABLE_NAMES
+        - {queue_items.name, webhook_delivery_cursor.name}
+        - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    if version in {SCHEMA_VERSION, _VERSION_THIRTY_ONE}:
+    if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
+    if version in {_VERSION_THIRTY_TWO, _VERSION_THIRTY_ONE}:
+        return PRODUCT_TABLE_NAMES - connections
     if version in {_VERSION_THIRTY, _VERSION_TWENTY_NINE}:
-        return PRODUCT_TABLE_NAMES - {webhook_delivery_cursor.name}
+        return PRODUCT_TABLE_NAMES - connections - {webhook_delivery_cursor.name}
     if version == _VERSION_TWENTY_EIGHT:
         return predecessor_tables - {_V27_ACCESS_TABLE_NAME}
     if version in {_VERSION_TWENTY_SEVEN, _VERSION_TWENTY_SIX}:
@@ -3762,6 +3836,19 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _VERSION_THIRTY_ONE,
         _VERSION_THIRTY_TWO,
         _apply_v31_to_v32,
+    ),
+    _SchemaMigrationStep(
+        _VERSION_THIRTY_TWO,
+        _VERSION_THIRTY_THREE,
+        _added_table_step(
+            host_project_source_connection_revisions,
+            (
+                "host_project_source_connection_revisions_no_update",
+                "host_project_source_connection_revisions_no_delete",
+            ),
+            _VERSION_THIRTY_TWO,
+            _VERSION_THIRTY_THREE,
+        ),
     ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {

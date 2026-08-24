@@ -15,6 +15,7 @@ from atelier2.adapters.dbos.schema import (
     host_occupancy_bindings,
     host_occupancy_revisions,
     host_project_root_revisions,
+    host_project_source_connection_revisions,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.contracts.agents import AgentConfigurationRevisionHash, AgentRole
@@ -22,6 +23,7 @@ from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.host_configuration import (
     HOST_CONFIGURATION_UNREADABLE,
     PROJECT_ROOT_MISSING,
+    ConnectionActor,
     HostConfigurationUnreadable,
     OccupancyBinding,
     OccupancyBytesDisagree,
@@ -33,20 +35,33 @@ from atelier2.contracts.host_configuration import (
     ProjectRootMissing,
     ProjectRootRevision,
     ProjectRootRevisionConflict,
+    ProjectSourceConnectionBytesDisagree,
+    ProjectSourceConnectionConflict,
+    ProjectSourceConnectionHashCollision,
+    ProjectSourceConnectionRevision,
     ProjectUnknown,
+    SourceAddress,
+    SourceConnectionAuthMethod,
+    SourceKind,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 from atelier2.ports.host_configuration import (
     HostConfigurationReadUnavailable,
     LatestOccupancyResult,
     LatestProjectRootResult,
+    LatestProjectSourceConnectionResult,
     OccupancyRevisionCollision,
     OccupancyRevisionCreated,
     OccupancyRevisionExisting,
     ProjectRootRevisionCreated,
     ProjectRootRevisionExisting,
+    ProjectSourceConnectionRevisionCollision,
+    ProjectSourceConnectionRevisionConflict,
+    ProjectSourceConnectionRevisionCreated,
+    ProjectSourceConnectionRevisionExisting,
     PublishOccupancyResult,
     PublishProjectRootResult,
+    PublishProjectSourceConnectionResult,
 )
 from atelier2.ports.host_configuration import (
     OccupancyRevisionConflict as PortOccupancyRevisionConflict,
@@ -379,6 +394,119 @@ def publish_occupancy_revision(
         ) from error
 
 
+def project_source_connection_revision_from_record(
+    record: Mapping[Any, Any],
+) -> ProjectSourceConnectionRevision:
+    revision = ProjectSourceConnectionRevision(
+        ProjectId(str(record["project_id"])),
+        int(record["revision_number"]),
+        SourceKind(str(record["source_kind"])),
+        SourceAddress(str(record["source_address"])),
+        Path(str(record["credential_directory"])),
+        SourceConnectionAuthMethod(str(record["auth_method"])),
+        ConnectionActor(str(record["connected_by"])),
+    )
+    if revision.revision_hash.value != record["revision_hash"]:
+        raise ProjectSourceConnectionBytesDisagree(
+            "project-source connection bytes disagree: a stored connection "
+            "hash does not match its fields"
+        )
+    return revision
+
+
+def _latest_project_source_connection_revision(
+    connection: Connection, project_id: ProjectId
+) -> ProjectSourceConnectionRevision | None:
+    record = (
+        connection.execute(
+            sa.select(host_project_source_connection_revisions)
+            .where(
+                host_project_source_connection_revisions.c.project_id
+                == project_id.value
+            )
+            .order_by(host_project_source_connection_revisions.c.revision_number.desc())
+            .limit(1)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if record is None:
+        return None
+    return project_source_connection_revision_from_record(record)
+
+
+def latest_project_source_connection_revision(
+    engine: Engine, project_id: ProjectId
+) -> ProjectSourceConnectionRevision | None:
+    try:
+        with engine.connect() as connection:
+            return _latest_project_source_connection_revision(connection, project_id)
+    except (OperationalError, PoolTimeoutError, DatabaseError) as error:
+        raise HostConfigurationUnreadable(
+            f"{HOST_CONFIGURATION_UNREADABLE}: the project-source connection "
+            "channel could not be read"
+        ) from error
+
+
+def _write_project_source_connection_revision(
+    connection: Connection, revision: ProjectSourceConnectionRevision
+) -> ProjectSourceConnectionRevisionCreated | ProjectSourceConnectionRevisionExisting:
+    keyed = (
+        connection.execute(
+            sa.select(host_project_source_connection_revisions).where(
+                host_project_source_connection_revisions.c.project_id
+                == revision.project_id.value,
+                host_project_source_connection_revisions.c.source_kind
+                == revision.source_kind.value,
+                host_project_source_connection_revisions.c.revision_number
+                == revision.revision_number,
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if keyed is not None:
+        durable = project_source_connection_revision_from_record(keyed)
+        if durable == revision:
+            return ProjectSourceConnectionRevisionExisting(durable)
+        raise ProjectSourceConnectionConflict(
+            "project-source-connection-conflict: "
+            f"{revision.project_id.value!r} source {revision.source_kind.value!r} "
+            f"revision {revision.revision_number} already exists"
+        )
+    hashed = (
+        connection.execute(
+            sa.select(host_project_source_connection_revisions).where(
+                host_project_source_connection_revisions.c.revision_hash
+                == revision.revision_hash.value
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if hashed is not None:
+        durable = project_source_connection_revision_from_record(hashed)
+        if durable == revision:
+            return ProjectSourceConnectionRevisionExisting(durable)
+        raise ProjectSourceConnectionHashCollision(
+            "project-source-connection-collision: connection revision "
+            f"{revision.revision_hash.value} already names other fields"
+        )
+    connection.execute(
+        host_project_source_connection_revisions.insert().values(
+            revision_hash=revision.revision_hash.value,
+            project_id=revision.project_id.value,
+            source_kind=revision.source_kind.value,
+            revision_number=revision.revision_number,
+            source_address=revision.source_address.value,
+            credential_directory=str(revision.credential_directory),
+            auth_method=revision.auth_method.value,
+            connected_by=revision.connected_by.value,
+        )
+    )
+    return ProjectSourceConnectionRevisionCreated(revision)
+
+
 class DbosHostConfigurationChannel:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
@@ -438,6 +566,35 @@ class DbosHostConfigurationChannel:
             return DurableStateCorrupt()
         except HostConfigurationUnreadable:
             return DurableWriteUnavailable()
+        except (OperationalError, PoolTimeoutError):
+            return DurableWriteUnavailable()
+        except (ProjectUnknown, ValueError, TypeError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
+
+    def latest_project_source_connection_revision(
+        self, project_id: ProjectId
+    ) -> LatestProjectSourceConnectionResult:
+        try:
+            return latest_project_source_connection_revision(self._engine, project_id)
+        except HostConfigurationUnreadable as error:
+            return HostConfigurationReadUnavailable(str(error))
+        except ProjectSourceConnectionBytesDisagree:
+            return DurableStateCorrupt()
+        except (ProjectUnknown, ValueError, TypeError, RuntimeError):
+            return DurableStateCorrupt()
+
+    def publish_project_source_connection_revision(
+        self, revision: ProjectSourceConnectionRevision
+    ) -> PublishProjectSourceConnectionResult:
+        try:
+            with canonical_write_transaction(self._engine) as connection:
+                return _write_project_source_connection_revision(connection, revision)
+        except ProjectSourceConnectionConflict:
+            return ProjectSourceConnectionRevisionConflict()
+        except ProjectSourceConnectionHashCollision:
+            return ProjectSourceConnectionRevisionCollision()
+        except ProjectSourceConnectionBytesDisagree:
+            return DurableStateCorrupt()
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (ProjectUnknown, ValueError, TypeError, RuntimeError, DatabaseError):

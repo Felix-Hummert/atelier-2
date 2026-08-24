@@ -49,6 +49,7 @@ from atelier2.adapters.dbos.schema import (
     V28_SCHEMA_HANDOFF,
     V29_SCHEMA_HANDOFF,
     V31_SCHEMA_HANDOFF,
+    V32_SCHEMA_HANDOFF,
     MigrationRequired,
     _rebuild_product_table,
     _require_product_shape,
@@ -66,6 +67,7 @@ from atelier2.adapters.dbos.schema import (
     host_occupancy_bindings,
     host_occupancy_revisions,
     host_project_root_revisions,
+    host_project_source_connection_revisions,
     initialize_schema,
     node_execution_requests_v3,
     node_receipts_v3,
@@ -87,6 +89,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.catalog_v3 import CatalogLineage
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.host_configuration import ProjectId, ProjectRootRevision
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL, RunId, WorkflowRevisionHash
 from atelier2.host import main
@@ -527,6 +530,7 @@ def _create_populated_v13_store(database_path: Path) -> None:
         _restore_v27_access_store(predecessor)
         _drop_queue_items_table(predecessor)
         _drop_webhook_delivery_cursor_table(predecessor)
+        _drop_project_source_connection_table(predecessor)
     published = PublishedRevision(RevisionKind.WORKFLOW, b"name: lasagne\n")
     lineage = CatalogLineage(published.kind, published.revision_hash)
     configuration = "44" * 32
@@ -946,6 +950,16 @@ def _drop_webhook_delivery_cursor_table(connection: sqlite3.Connection) -> None:
     connection.execute(f"DROP TABLE {webhook_delivery_cursor.name}")
 
 
+def _drop_project_source_connection_table(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "DROP TRIGGER host_project_source_connection_revisions_no_update"
+    )
+    connection.execute(
+        "DROP TRIGGER host_project_source_connection_revisions_no_delete"
+    )
+    connection.execute(f"DROP TABLE {host_project_source_connection_revisions.name}")
+
+
 def _revert_cancelled_run_state(connection: sqlite3.Connection) -> None:
     """Restore the pre-CANCELLED `runs` CHECK the #439 P1 hop widened.
 
@@ -1002,6 +1016,7 @@ def _create_exact_v21_store(database_path: Path) -> None:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
+        _drop_project_source_connection_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_refused_attempts(connection)
         _drop_occupancy_channel(connection)
@@ -1037,6 +1052,7 @@ def _create_exact_v22_store(database_path: Path) -> None:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
+        _drop_project_source_connection_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_refused_attempts(connection)
         _drop_occupancy_channel(connection)
@@ -1059,6 +1075,7 @@ def _create_exact_v23_store(database_path: Path) -> None:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
+        _drop_project_source_connection_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_project_verification_failed_attempts(connection)
         _drop_occupancy_channel(connection)
@@ -1081,6 +1098,7 @@ def _create_exact_v24_store(database_path: Path) -> None:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
+        _drop_project_source_connection_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
@@ -1103,6 +1121,7 @@ def _create_exact_v25_store(database_path: Path) -> None:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
+        _drop_project_source_connection_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
@@ -1124,6 +1143,7 @@ def _create_exact_v26_store(database_path: Path) -> None:
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
+        _drop_project_source_connection_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         connection.execute(
@@ -1174,6 +1194,7 @@ def _create_exact_v27_store(database_path: Path, *, access: bool = False) -> Non
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
+        _drop_project_source_connection_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_attempts_trigger_to_v27(connection)
         connection.execute(
@@ -1194,6 +1215,7 @@ def _create_exact_v28_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
+        _drop_project_source_connection_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_attempts_trigger_to_v27(connection)
         connection.execute(
@@ -1216,6 +1238,7 @@ def _create_exact_v29_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _drop_webhook_delivery_cursor_table(connection)
+        _drop_project_source_connection_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_attempts_trigger_to_v27(connection)
         connection.execute(
@@ -1584,6 +1607,7 @@ def test_v26_attempt_bytes_cross_v27_and_v28_unchanged_with_none_evidence(
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
+        _drop_project_source_connection_table(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         connection.execute(
@@ -2013,6 +2037,7 @@ def _create_exact_v31_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _drop_project_source_connection_table(connection)
         connection.execute("DROP TRIGGER agent_attempts_state_transition")
         connection.execute(_V27_AGENT_ATTEMPT_STATE_TRANSITION)
         connection.execute(
@@ -2083,6 +2108,7 @@ def test_a_populated_v31_runner_attempt_survives_the_v32_trigger_swap(
     runtime.close()
 
     with sqlite3.connect(database_path) as connection:
+        _drop_project_source_connection_table(connection)
         connection.execute("DROP TRIGGER agent_attempts_state_transition")
         connection.execute(_V27_AGENT_ATTEMPT_STATE_TRANSITION)
         connection.execute(
@@ -2105,3 +2131,157 @@ def test_a_populated_v31_runner_attempt_survives_the_v32_trigger_swap(
         assert connection.execute(
             "SELECT version FROM atelier_schema_versions"
         ).fetchone() == (SCHEMA_VERSION,)
+
+
+def _create_exact_v32_store(database_path: Path) -> None:
+    """A current store without the connection table: the published V32 shape.
+
+    V32 differs from the current schema only by the project-source connection
+    table #567 added, so the fixture is a fresh store with that table and its
+    immutability trigger pair removed. The pinned V32 fingerprint refuses it
+    the moment a character drifts.
+    """
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _drop_project_source_connection_table(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V32_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V32_SCHEMA_HANDOFF.version)
+
+
+def test_an_exact_v32_store_migrates_to_v33_by_adding_the_connection_table(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v32_store(database_path)
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name='host_project_source_connection_revisions'"
+            ).fetchone()
+            is None
+        )
+
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 32"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    shown = capsys.readouterr()
+    assert "32" in shown.out and "33" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
+        )
+    engine.dispose()
+
+    with sqlite3.connect(database_path) as connection:
+        trigger_names = {
+            str(record[0])
+            for record in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' "
+                "AND tbl_name='host_project_source_connection_revisions'"
+            )
+        }
+    assert trigger_names == {
+        "host_project_source_connection_revisions_no_update",
+        "host_project_source_connection_revisions_no_delete",
+    }
+
+
+def test_populated_v32_host_configuration_rows_survive_the_v33_table_add(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v32_store(database_path)
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired):
+        initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        root = ProjectRootRevision(ProjectId("studio"), 1, tmp_path)
+        connection.execute(
+            "INSERT INTO host_project_root_revisions VALUES (?, ?, ?, ?)",
+            (
+                root.revision_hash.value,
+                root.project_id.value,
+                root.revision_number,
+                str(root.root_path),
+            ),
+        )
+        connection.commit()
+        predecessor_row = connection.execute(
+            "SELECT * FROM host_project_root_revisions"
+        ).fetchone()
+    assert predecessor_row is not None
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            connection.execute("SELECT * FROM host_project_root_revisions").fetchone()
+            == predecessor_row
+        )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM host_project_source_connection_revisions"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (SCHEMA_VERSION,)
+
+
+@pytest.mark.parametrize(
+    "collision_sql",
+    [
+        pytest.param(
+            "CREATE TABLE host_project_source_connection_revisions(wrong TEXT)",
+            id="table",
+        ),
+        pytest.param(
+            "CREATE VIEW host_project_source_connection_revisions AS SELECT 1 AS wrong",
+            id="view",
+        ),
+    ],
+)
+def test_a_refused_connection_table_hop_rolls_back_the_trigger_swap_before_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], collision_sql: str
+) -> None:
+    """The last step refuses, so the v31→v32 swap that already ran is undone.
+
+    V32→V33 creates the connection table; a name already holding that object
+    refuses the hop by name, after the trigger-swap step completed inside the
+    same transaction. Rollback must leave version 31 and the store logically
+    untouched.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v31_store(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(collision_sql)
+        connection.commit()
+    before = _logical_dump(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 1
+
+    shown = capsys.readouterr()
+    assert "host_project_source_connection_revisions" in shown.err
+    assert "will not alter" in shown.err
+    assert _logical_dump(database_path) == before
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (31,)
