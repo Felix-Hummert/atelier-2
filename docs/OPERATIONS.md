@@ -45,7 +45,10 @@ interrupts attempt that same cleanup and preserve the descriptor for retry when
 it fails. Successful teardown removes it. Other containers and services are not
 selected or changed. A rerun creates a new disposable candidate. The current Core
 `ExactOutput` executor can still serve its fixture; this package supplies no
-external provider or Runner.
+external provider or Runner. The entrypoint can carry an operator-declared
+Runner-lease deployment from `ATELIER2_RUNNER_*` environment variables ("Serve
+as the lease writer", below); this candidate declares none of them and starts
+runner-free.
 
 ## Disposable #301-A Runner candidate
 
@@ -420,13 +423,24 @@ and named here rather than left for an operator to discover.
 Serve itself can be composed as the process that *writes* the leases the
 launcher above claims — the fake-free-only slice of the live cutover, over
 `atelier2.adapters.file_runner_leases.FileRunnerLeasePublisher`; Serve never
-touches Docker. Its Runner-lease deployment is one group of `HostSettings`
-answers — a lease root, the Runner image and its declared digest, the
-console's own container name, a directory holding the console's
-`ca.crt`/`core.crt`/`core.key`, and an accept deadline — declared together or
-refused by name at start; there is no `atelier2 serve` command-line flag for
-any of them yet, so reaching this composition today means constructing
-`HostSettings` directly rather than through the packaged CLI. Only the fixed
+touches Docker. Its Runner-lease deployment is one group of six
+`atelier2 serve` flags — `--runner-lease-root`, `--runner-image`,
+`--runner-image-digest`, `--runner-console-container`,
+`--runner-core-identity-directory` (a directory holding the console's
+`ca.crt`/`core.crt`/`core.key`) and `--runner-accept-timeout-seconds` —
+declared together or refused by name at start; the manifest's source commit is
+the already-required `--source-commit`. The packaged container entrypoint
+carries each flag from the environment variable of the matching name
+(`ATELIER2_RUNNER_LEASE_ROOT`, `ATELIER2_RUNNER_IMAGE`,
+`ATELIER2_RUNNER_IMAGE_DIGEST`, `ATELIER2_RUNNER_CONSOLE_CONTAINER`,
+`ATELIER2_RUNNER_CORE_IDENTITY_DIRECTORY`,
+`ATELIER2_RUNNER_ACCEPT_TIMEOUT_SECONDS`) and validates none of them itself —
+the serve boundary owns the all-or-nothing refusal. The lease root must be
+bind-mounted into the container at the same absolute path the launcher was
+given, and the core-identity directory arrives as a run-time mount — mount it
+read-only; the image bakes no identity file, key, or runner value. A
+container started without these variables serves exactly as before,
+runner-free. Only the fixed
 fake-free candidate is served this way; a real provider over a Runner lease
 waits on `#15` and B-3.
 
@@ -501,6 +515,7 @@ bash scripts/container_live.sh stop
 bash scripts/container_live.sh start
 bash scripts/container_live.sh uninstall
 bash scripts/container_live.sh update
+bash scripts/container_live.sh reconcile
 ```
 
 `status` is read-only and prints exactly `RUNNING`, `STOPPED`, `INCOMPLETE`, or
@@ -546,11 +561,26 @@ recreates it, deleting the previous container as an intrinsic part of that
 one call, before startup can even be confirmed healthy. A failure at or
 after that point therefore finds the previous container already gone:
 `update` reports the true state instead — the store is migrated, the new
-container's health is unconfirmed — and names `status`, then `uninstall` or
-`update` again, as the recovery path. The durable record is untouched either
+container's health is unconfirmed — and names `status`, then `reconcile`, as
+the store-preserving recovery path. The durable record is untouched either
 way until the very end. On full success the new container starts on the
 migrated store and `update` reports the ladder's fingerprint proof alongside
 the cockpit URL.
+
+`reconcile` is that recovery: an interruption in `update`'s unprotected
+window leaves a healthy new container running beside a record that still
+names the deleted previous one, so `status` reports `DRIFTED` and every
+exact operation refuses — and before `reconcile` existed the only exits,
+`uninstall` and `update --fresh`, both discarded the store. `reconcile`
+rebuilds the durable record from the one container of the recorded Compose
+project, and publishes it only after the full exact verification proves that
+container serves the recorded store volume at its frozen origin commit, on
+the recorded engine and network, with the complete hardening, running and
+healthy. It runs no Docker mutation and never touches the volume. Anything
+it cannot prove — no or several project containers, another engine, foreign
+labels, an unhealthy container — is a named refusal that changes nothing;
+`uninstall` and `update --fresh` remain the store-discarding last resort.
+After a successful `reconcile`, `update` proceeds store-preserving again.
 
 `update --fresh` is the previous behavior: `uninstall` followed by `install`
 in one step, discarding the Compose volume and starting empty. It states

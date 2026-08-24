@@ -1,0 +1,24 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/610"
+
+# A DRIFTED RECORD RECONCILES TO THE RUNNING CONTAINER, STORE UNTOUCHED.
+#
+# An update interrupted after `compose up` has replaced the container but
+# before the record could be published leaves a healthy new container beside
+# a record naming a dead one. Every exact operation then refuses -- rightly
+# -- but the only offered exits, `uninstall` and `update --fresh`, both
+# discard the store volume: exactly when the store has become worth keeping,
+# a normal crash forced the operator to throw it away (observed live,
+# 24.08.). `reconcile` closes that gap: it rebuilds the durable record from
+# the one observably running container of the recorded Compose project, and
+# only after the full exact verification proves that container serves the
+# same store volume at its recorded frozen origin. It never guesses and
+# never mutates a Docker resource.
+
+[[sentence]]
+id = "reconcile-adopts-the-proven-running-container-and-restores-update"
+text = "After an update interrupted between compose up and the record publish, container_live.sh reconcile rebuilds the durable record from the single running healthy container of the recorded Compose project -- container, image, source, network, configuration, and descriptor identity -- publishes it only after the full exact verification passes against the recorded store volume at its frozen origin, runs no Docker mutation, and a following update proceeds store-preserving."
+
+[[sentence]]
+id = "reconcile-refuses-by-name-instead-of-guessing"
+text = "When the running container cannot be proven to belong to the recorded installation and its store -- no or several project containers, another Docker engine, foreign or mismatched identity or hardening, an unhealthy container, or an incomplete installation -- reconcile refuses with a named reason and leaves the installation record and every Docker resource untouched."
