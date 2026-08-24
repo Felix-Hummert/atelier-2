@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { AnyRun, CockpitApi, RunV3 } from "../api/client";
+  import { decisionStatusCopy } from "../lib/decisionStatusCopy";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { humanErrorMessage } from "../lib/humanRefusal";
   import { MutationJournal, waitAnswerText, type WaitMutation } from "../lib/mutationJournal";
@@ -234,10 +235,10 @@
 
       {#if pendingWait !== null}
         <p class="board-answer-status" role="status">
-          {waitBusy ? "Sending answer" : waitAccepted ? "Answer pending" : "Answer uncertain"}
+          {waitBusy ? decisionStatusCopy.sending : waitAccepted ? decisionStatusCopy.pending : decisionStatusCopy.uncertain}
         </p>
-        {@render failureAlert("Send uncertain")}
-        <output class="board-answer-value" aria-label="Exact answer"
+        {@render failureAlert(decisionStatusCopy.sendUncertain)}
+        <output class="board-answer-value" aria-label={decisionStatusCopy.exactAnswer}
           >{confirmedDecision !== null
             ? `${wrapDisplayCopy(runPageCopy.answeredPrefix)} ${confirmedDecision}`
             : pendingAnswer}</output
@@ -259,10 +260,10 @@
         {/if}
       {:else if graph.state === "loading"}
         <p class="board-answer-status" role="status">{wrapDisplayCopy(studioPageCopy.answerHereLooking)}</p>
-        {@render failureAlert("Send failed")}
+        {@render failureAlert(decisionStatusCopy.sendFailed)}
       {:else if graph.state === "failed"}
         <p class="board-answer-status">{wrapDisplayCopy(studioPageCopy.answerHereUnavailable)}</p>
-        {@render failureAlert("Send failed")}
+        {@render failureAlert(decisionStatusCopy.sendFailed)}
         <a href={runPath(run.public_run_reference)} onclick={openRun}>{wrapDisplayCopy(studioPageCopy.openToAnswer)}</a>
       {:else if graph.state === "ready" && (graph.kind === "boolean" || graph.kind === "enum")}
         <div class="board-answer-buttons" role="group" aria-label={wrapDisplayCopy(runPageCopy.answerLabel)}>
@@ -293,10 +294,10 @@
             {/each}
           {/if}
         </div>
-        {@render failureAlert("Send failed")}
+        {@render failureAlert(decisionStatusCopy.sendFailed)}
       {:else}
         <p class="board-answer-status">{wrapDisplayCopy(studioPageCopy.needsWrittenAnswer)}</p>
-        {@render failureAlert("Send failed")}
+        {@render failureAlert(decisionStatusCopy.sendFailed)}
         <a href={runPath(run.public_run_reference)} onclick={openRun}>{wrapDisplayCopy(studioPageCopy.openToAnswer)}</a>
       {/if}
     </div>

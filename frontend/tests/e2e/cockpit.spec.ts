@@ -422,6 +422,7 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
     state: "STARTED",
     current_node_id: "review",
     node_rail: [{ node_id: "review", state: "working", attempt: null }],
+    cancellation: { cancellable: false, reason: "between-nodes", target_node_execution_id: null },
     terminal_hash: null,
     latest_event_cursor: null,
     started_at: startedAt,

@@ -156,12 +156,19 @@ does not expose these yet, so this carrier is not reachable from the shipped
 container. At most one `RUNNER_LEASE` Attempt runs at a time per Serve
 process — its Core session listener binds one fixed port — and a second,
 concurrent one waits for the runner slot rather than failing. At every start
-Serve withdraws its own still-open leases and names, in the log only, every
-`RUNNER_LEASE` Attempt no workflow still owes its next move. A `RUNNER_LEASE`
-Attempt a launcher never claims has no way to `CANCELLED` yet, and a Serve
-crash mid-session leaves it durably `LAUNCH_ARMED`/`POSSIBLY_RAN` with no
-product-owned convergence back — both named gaps with their own items rather
-than silently accepted (`#540` Kind #584, Kind #585).
+Serve withdraws its own still-open leases and converges every `RUNNER_LEASE`
+Attempt no workflow still owes its next move: it reads the launcher's own
+retained terminal record back from the Attempt's handoff and commits it to the
+terminal the Runner reported, exactly once, rather than the invented
+`INTERRUPTED` a driverless sweep would write — an Attempt whose fact never
+reached the handoff is left armed and named, never forced (`#540` Kind #585).
+The launcher lays that record down out of the per-Attempt journal volume — the
+only place it lives — before the Attempt is removed, and only for an exited
+Runner, so a running one is never read mid-write. A `RUNNER_LEASE` Attempt that
+crashed between binding its generation and publishing its lease is
+manifest-bound with no lease document, so a later cancel fails loud with
+`RunnerLeaseUnknown` rather than lying; its never-launched durable close is a
+named gap with its own item (`#540` Kind #584).
 
 Every attempt is started in a scratch working directory of its own. The operator
 declares one provider-neutral scratch root, and the runtime leases from it a

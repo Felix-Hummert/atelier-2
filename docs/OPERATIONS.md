@@ -438,15 +438,22 @@ would start a Runner container for an Attempt whose driving workflow this
 process no longer owns. Withdrawal is one-way here: it moves the lease to
 `withdrawn/` and deletes the attempt material, so a recovered workflow that
 republishes is answered `RunnerLeaseExisting` and no fresh open lease
-reappears — that Attempt is stranded non-terminal for #585 (below) to
-converge, not retried automatically. A lease a launcher already claimed loses
+reappears. Such an Attempt fails fast rather than polling its own deleted
+attempt paths for the full accept deadline, and is converged to its real
+terminal at the next start (below). A lease a launcher already claimed loses
 this race harmlessly and is left for its launcher.
 
-**Every start also names, once, every Runner-lease Attempt no workflow still
-owes its next move** — a `runner_lease_attempt_driverless` log line per
-Attempt (run, node and attempt id), plus a total count. Nothing durable is
-written and no evidence is invented; each Attempt named this way stays exactly
-`POSSIBLY_RAN`/armed for you to read.
+**Every start converges every Runner-lease Attempt no workflow still owes its
+next move.** After a Serve restart mid-session such an Attempt would otherwise
+stand `LAUNCH_ARMED`/`POSSIBLY_RAN`, its run `STARTED`, forever. The launcher
+lays that Attempt's own retained terminal record in its handoff directory
+before the Attempt is ever removed; Serve reads it back and commits it to the
+terminal the Runner actually reported — exactly once, and never the invented
+`INTERRUPTED` the driverless sweep would write (`runner_lease_attempt_converged`
+per Attempt, with a `runner_lease_convergence_total`). An Attempt whose fact
+never reached the handoff — none was retained, or the record is unreadable — is
+left exactly as durable as it was and named `runner_lease_attempt_left_nonterminal`
+for you to read, never forced to a terminal it cannot prove.
 
 **At most one Runner Attempt runs at a time.** The Core session listener binds
 one fixed port (`atelier2.adapters.runner_tls.CORE_SESSION_PORT`) per Serve
@@ -455,19 +462,16 @@ release rather than failing — logged as `agent_attempt_awaiting_runner_slot`.
 No run ends unsuccessfully only because another Runner Attempt was already
 running.
 
-**Two named gaps, until their own items land.** (i) A Runner-lease Attempt a
-launcher never claims has no way to `CANCELLED` yet; the durable close is
-Kind #584 (`#540`), gated before `#439` P4. (ii) A Serve crash mid-session
-leaves its Attempt `LAUNCH_ARMED`/`POSSIBLY_RAN` and its run `STARTED` —
-nothing here reads the launcher's own retained journal back yet; that source
-is Kind #585 (`#540`), required before C-4's live cutover. A workflow that
-does recover and republishes its own already-withdrawn lease does not fail
-fast today — it polls the deleted attempt paths for the full accept deadline
-before reporting a timeout; that fast-fail is #585's too. **Until #585
-lands: wait for a running Runner-lease agent node to finish, or cancel its
-run, before restarting or updating this deployment** — a restart kills the
-driving workflow mid-session exactly as an uncontained crash would, and this
-line falls with #585.
+**One named gap, until its own item lands.** An Attempt that crashed between
+binding its Runner generation and publishing its lease is manifest-bound with
+no lease document at all; a later cancel finds nothing to withdraw and fails
+loud with `RunnerLeaseUnknown`, leaving the Attempt `CANCEL_REQUESTED` rather
+than lying about a terminal it cannot prove. Its durable close belongs to the
+never-launched cancel path (Kind #584, `#540`); the convergence above resolves
+a launched Attempt's terminal, not one that never got a lease. Restarting or
+updating this deployment mid-session no longer strands a live Runner-lease
+Attempt: the convergence above brings it to the terminal its Runner reported on
+the next start.
 
 ## Stable local Serve installation
 

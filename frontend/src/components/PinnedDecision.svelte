@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { AnyRun, CockpitApi, RunV3 } from "../api/client";
+  import { decisionStatusCopy } from "../lib/decisionStatusCopy";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { decodeUtf8Base64 } from "../lib/exactBytes";
   import { humanErrorMessage } from "../lib/humanRefusal";
@@ -237,15 +238,15 @@
 
   {#if pendingWait !== null}
     <h3 id="pinned-decision-title-{run.public_run_reference}" class="question">
-      {waitBusy ? "Sending answer" : waitAccepted ? "Answer pending" : "Answer uncertain"}
+      {waitBusy ? decisionStatusCopy.sending : waitAccepted ? decisionStatusCopy.pending : decisionStatusCopy.uncertain}
     </h3>
     {#if waitFailureMessage !== null}
-      <div class="pinned-alert" role="alert" aria-label="Send uncertain">
-        <strong>Send uncertain</strong>
+      <div class="pinned-alert" role="alert" aria-label={decisionStatusCopy.sendUncertain}>
+        <strong>{decisionStatusCopy.sendUncertain}</strong>
         <small>{waitFailureMessage}</small>
       </div>
     {/if}
-    <output class="pinned-answer" aria-label="Exact answer"
+    <output class="pinned-answer" aria-label={decisionStatusCopy.exactAnswer}
       >{confirmedDecision !== null
         ? `${wrapDisplayCopy(runPageCopy.answeredPrefix)} ${confirmedDecision}`
         : pendingAnswer}</output
@@ -283,8 +284,8 @@
     {/if}
 
     {#if waitFailureMessage !== null}
-      <div class="pinned-alert" role="alert" aria-label="Send failed">
-        <strong>Send failed</strong>
+      <div class="pinned-alert" role="alert" aria-label={decisionStatusCopy.sendFailed}>
+        <strong>{decisionStatusCopy.sendFailed}</strong>
         <small>{waitFailureMessage}</small>
       </div>
     {/if}
