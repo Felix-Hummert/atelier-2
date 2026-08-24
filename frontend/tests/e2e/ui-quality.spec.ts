@@ -98,13 +98,13 @@ const surfaces: readonly {
 }[] =
   [
     {
-      surface: "chat",
+      surface: "workbench",
       path: "/atelier/chat",
       ready: async (page) => {
-        await expect(page.getByRole("heading", { name: "Chat", exact: true })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Workbench", exact: true })).toBeVisible();
       },
       pseudoReady: async (page) => {
-        await expect(page.getByRole("heading", { name: "[[[ Chat ]]]" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "[[[ Workbench ]]]" })).toBeVisible();
       }
     },
     {
@@ -258,7 +258,7 @@ test("core surfaces render owned display strings under a pseudo-locale", async (
     }
     const rail = page.getByRole("navigation", { name: "Workshop" });
     await expect(rail.getByText("[[[ atelier ]]]", { exact: true })).toBeVisible();
-    await expect(rail.getByText("[[[ Chat ]]]", { exact: true })).toBeVisible();
+    await expect(rail.getByText("[[[ Workbench ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ Board ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ Workflows ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ History ]]]", { exact: true })).toBeVisible();

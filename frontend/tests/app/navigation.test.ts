@@ -80,7 +80,7 @@ describe("cockpit navigation", () => {
     expect(within(rail).getByRole("link", { name: "Board" }).getAttribute("aria-current")).toBe(
       "page"
     );
-    expect(within(rail).getByRole("link", { name: "Chat" }).getAttribute("href")).toBe(
+    expect(within(rail).getByRole("link", { name: "Workbench" }).getAttribute("href")).toBe(
       "/atelier/chat"
     );
     expect(within(rail).getByRole("link", { name: "Workflows" }).getAttribute("href")).toBe(
@@ -90,8 +90,8 @@ describe("cockpit navigation", () => {
       "/atelier/history"
     );
 
-    await fireEvent.click(within(rail).getByRole("link", { name: "Chat" }));
-    expect((await screen.findByRole("heading", { name: "Chat" })).isConnected).toBe(true);
+    await fireEvent.click(within(rail).getByRole("link", { name: "Workbench" }));
+    expect((await screen.findByRole("heading", { name: "Workbench" })).isConnected).toBe(true);
     expect(window.location.pathname).toBe("/atelier/chat");
 
     await fireEvent.click(

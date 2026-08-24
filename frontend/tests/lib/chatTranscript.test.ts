@@ -1,20 +1,20 @@
 import { describe, expect, it } from "vitest";
 
-import { chatPageCopy } from "../../src/lib/chatPageCopy";
+import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { sendChatMessage } from "../../src/lib/chatTranscript";
 
 describe("one turn of the conversation", () => {
-  it("keeps what was said and answers that no conductor is connected", () => {
+  it("keeps what was said and answers that nothing was started", () => {
     const transcript = sendChatMessage([], "Finish the preview door");
 
     expect(transcript.map((message) => [message.speaker, message.text])).toEqual([
       ["you", "Finish the preview door"],
-      ["house", chatPageCopy.conductorAbsent]
+      ["house", workbenchPageCopy.conductorAbsent]
     ]);
   });
 
   it("names no board or issue number in the reply, only what is true for the operator", () => {
-    expect(chatPageCopy.conductorAbsent).not.toMatch(/#\d/);
+    expect(workbenchPageCopy.conductorAbsent).not.toMatch(/#\d/);
   });
 
   it("keeps every line distinguishable across turns", () => {
@@ -24,9 +24,9 @@ describe("one turn of the conversation", () => {
     expect(new Set(second.map((message) => message.id)).size).toBe(second.length);
     expect(second.map((message) => message.text)).toEqual([
       "one",
-      chatPageCopy.conductorAbsent,
+      workbenchPageCopy.conductorAbsent,
       "two",
-      chatPageCopy.conductorAbsent
+      workbenchPageCopy.conductorAbsent
     ]);
   });
 
