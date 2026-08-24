@@ -2,9 +2,10 @@
 
 GET /events is a loop around this decision. The loop belongs to the API — how
 long to wait, when to reconnect, what the query budget allows — but what one
-page means does not: the store either answered with the next WAITING_INPUT and
-AGENT_FAILED events after a cursor, or it could not place that cursor on this
-feed, or it answered with something no sequence of writes could have produced.
+page means does not: the store either answered with the next attention events
+(the ATTENTION_EVENT_KINDS) after a cursor, or it could not place that cursor
+on this feed, or it answered with something no sequence of writes could have
+produced.
 """
 
 from __future__ import annotations

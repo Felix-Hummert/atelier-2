@@ -56,6 +56,10 @@ from atelier2.adapters.grok_subscription import (
 )
 from atelier2.adapters.http_webhook_transport import open_webhook_transport
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.adapters.markdown_agent_definitions import (
+    parse_agent_definition,
+    render_agent_definition,
+)
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
@@ -422,6 +426,13 @@ class HostSettings:
                 "unauthenticated on this API, so the billed boundary stays on this "
                 "machine until an authenticated boundary exists"
             )
+        if self.github_effect is not None and not is_loopback_host(self.host):
+            raise ValueError(
+                f"serving the live GitHub open-pr effect requires a loopback "
+                f"bind, not {self.host!r}: starting a run is unauthenticated on "
+                "this API, so the operator's GitHub token stays on this machine "
+                "until an authenticated boundary exists"
+            )
         _require_start_refusal(
             "Claude", self.claude_subscription, self.claude_start_refusal
         )
@@ -752,6 +763,8 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
                 run_queries=queries,
                 run_event_queries=queries,
                 workflow_document_parser=parse_workflow_document,
+                agent_definition_parser=parse_agent_definition,
+                agent_definition_renderer=render_agent_definition,
                 agent_configuration_catalog=DbosAgentConfigurationCatalog(
                     runtime.engine, runtime.agent_executor_registry
                 ),

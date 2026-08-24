@@ -9,6 +9,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import TypeAdapter
 
+from atelier2.adapters.markdown_agent_definitions import (
+    parse_agent_definition,
+    render_agent_definition,
+)
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.openapi import API_PREFIX
@@ -150,6 +154,8 @@ def _client(catalog: RecordingCatalog) -> TestClient:
             source_tree="tree",
             ports=api_ports(
                 workflow_document_parser=parse_executable_workflow_document,
+                agent_definition_parser=parse_agent_definition,
+                agent_definition_renderer=render_agent_definition,
                 agent_configuration_catalog=catalog,
             ),
             limits=api_limits(),
@@ -658,6 +664,8 @@ def test_v2_start_binds_roles_and_returns_the_exact_versioned_run_shape() -> Non
                 run_queries=queries,
                 workflow_revision_queries=queries,
                 workflow_document_parser=parse_executable_workflow_document,
+                agent_definition_parser=parse_agent_definition,
+                agent_definition_renderer=render_agent_definition,
                 agent_configuration_catalog=RecordingCatalog(object(), object()),
             ),
             limits=api_limits(),
