@@ -12,12 +12,14 @@ from atelier2.adapters.dbos.schema import queue_items
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
 from atelier2.contracts.queue_projection import (
     QUEUE_PROJECTION_REVISION_OBSERVED,
     AdmitQueueItem,
     QueueAdmission,
     QueueAdmissionRationale,
     QueueItemAdmitted,
+    QueueItemId,
     QueueItemSnapshot,
     QueueItemState,
     QueueProjectionRevision,
@@ -25,7 +27,12 @@ from atelier2.contracts.queue_projection import (
     WorkItemReference,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
-from atelier2.ports.queue_projection import AdmitQueueItemResult
+from atelier2.ports.queue_projection import (
+    AdmitQueueItemResult,
+    AdmittedQueueItemsPage,
+    ListAdmittedQueueItemsResult,
+    QueueReadUnavailable,
+)
 
 
 class DurableQueueAdmissionConflict(RuntimeError):
@@ -64,6 +71,9 @@ class DbosQueueProjectionStore:
     establishes that item's row, OBSERVED at revision 0 -- there is no
     separate durable "observed" write in this slice. Every transition after
     that runs `QueueItemSnapshot.admit`'s own CAS-guarded rule.
+
+    `list_admitted_items` reads the same table it writes: a plain `SELECT`
+    over rows already `ADMITTED`, no schema of its own.
     """
 
     def __init__(self, engine: Engine) -> None:
@@ -122,5 +132,40 @@ class DbosQueueProjectionStore:
                 return outcome
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
+
+    def list_admitted_items(
+        self, after: QueueItemId | None, limit: int
+    ) -> ListAdmittedQueueItemsResult:
+        if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
+            raise ValueError(
+                f"queue item page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
+            )
+        try:
+            with self._engine.connect() as connection:
+                statement = sa.select(queue_items).where(
+                    queue_items.c.state == QueueItemState.ADMITTED.value
+                )
+                if after is not None:
+                    statement = statement.where(queue_items.c.item_id > after.value)
+                records = (
+                    connection.execute(
+                        statement.order_by(queue_items.c.item_id).limit(limit + 1)
+                    )
+                    .mappings()
+                    .all()
+                )
+                has_more = len(records) > limit
+                page_records = records[:limit]
+                items = tuple(_snapshot_from_record(record) for record in page_records)
+                next_after = (
+                    QueueItemId(str(page_records[-1]["item_id"]))
+                    if has_more and page_records
+                    else None
+                )
+                return AdmittedQueueItemsPage(items, next_after)
+        except (OperationalError, PoolTimeoutError):
+            return QueueReadUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()

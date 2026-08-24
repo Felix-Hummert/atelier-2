@@ -1,9 +1,10 @@
-"""The one durable write this slice proves: admitting an observed queue item.
+"""The durable write and the durable read this slice proves.
 
 A caller resolves an item's identity and its workflow binding above this seam;
 this port owns only that the durable row advances under
 `contracts.queue_projection.QueueItemSnapshot.admit`'s own rule, or is refused
-unaltered. That resolution -- reading the named workflow's catalog lineage
+unaltered, and that an admitted item can be read back with its binding and
+rationale. That resolution -- reading the named workflow's catalog lineage
 before handing this port an admission -- has no production caller in this
 slice; it lands with the platform door in a later slice.
 
@@ -19,9 +20,15 @@ corruption.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
-from atelier2.contracts.queue_projection import AdmitQueueItem, QueueAdmissionOutcome
+from atelier2.contracts.queue_projection import (
+    AdmitQueueItem,
+    QueueAdmissionOutcome,
+    QueueItemId,
+    QueueItemSnapshot,
+)
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
 type AdmitQueueItemResult = (
@@ -29,7 +36,35 @@ type AdmitQueueItemResult = (
 )
 
 
+@dataclass(frozen=True)
+class QueueReadUnavailable:
+    """The store could not answer this read, and a later attempt may succeed."""
+
+
+@dataclass(frozen=True)
+class AdmittedQueueItemsPage:
+    """One page of admitted items, each carrying its workflow binding and rationale.
+
+    Ordered by `QueueItemId` rather than admission order, exactly as
+    `list_workflow_revisions` orders by revision hash: the cursor is a durable
+    identity a caller can resume from, not an insertion sequence this store
+    does not track.
+    """
+
+    items: tuple[QueueItemSnapshot, ...]
+    next_after: QueueItemId | None
+
+
+type ListAdmittedQueueItemsResult = (
+    AdmittedQueueItemsPage | QueueReadUnavailable | DurableStateCorrupt
+)
+
+
 class QueueProjection(Protocol):
     """The durable home of one item's admission lifecycle."""
 
     def admit(self, command: AdmitQueueItem) -> AdmitQueueItemResult: ...
+
+    def list_admitted_items(
+        self, after: QueueItemId | None, limit: int
+    ) -> ListAdmittedQueueItemsResult: ...
