@@ -805,6 +805,13 @@ class DockerCarrier:
         is the only thing mounted, and the file is refused if it crosses the
         caller's bound -- it was written by the least-trusted process on the
         host.
+
+        The bound is enforced at the pipe, not after: `head -c` caps the read
+        inside the throwaway container to `maximum_bytes + 1` bytes, so a
+        compromised Runner that wrote a multi-gigabyte file to its own quota-free
+        journal volume can never drive this launcher to buffer the whole thing
+        into memory. At most one byte past the bound ever reaches the launcher --
+        exactly enough to still detect and refuse an over-bound file.
         """
         completed = subprocess.run(
             [
@@ -816,8 +823,10 @@ class DockerCarrier:
                 "--mount",
                 f"type=volume,src={volume},dst={path.parent},volume-nocopy,readonly",
                 "--entrypoint",
-                "cat",
+                "head",
                 image,
+                "-c",
+                str(maximum_bytes + 1),
                 "--",
                 str(path),
             ],

@@ -30,6 +30,7 @@ from atelier2.adapters.dbos.host_configuration import (
 )
 from atelier2.adapters.dbos.names import QUEUE_NAME
 from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
+from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 from atelier2.adapters.dbos.runner_session_core import DbosRunnerSessionCore
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -90,6 +91,7 @@ from atelier2.contracts.agent_attempts import (
     TERMINAL_AGENT_ATTEMPT_STATES,
     AgentAttempt,
     AgentAttemptId,
+    RunnerBindingConflict,
     RunnerGenerationBinding,
 )
 from atelier2.contracts.agents import (
@@ -645,6 +647,43 @@ def _agent_executor_map(
     }
 
 
+def _reconstructed_runner_lease_jobs(
+    bound: _BoundRuntime,
+    executors: AgentExecutorMap,
+    source: FileRunnerTerminalEvidenceSource,
+    driverless: tuple[AgentAttempt, ...],
+) -> tuple[list[RunnerLeaseConvergenceJob], list[tuple[AgentAttemptId, str]]]:
+    """Reconstruct each driverless Attempt into a convergence job, tolerating one.
+
+    One Attempt whose executor was removed from config between restarts
+    (`KeyError`), or whose durable binding no longer reconstructs to the request
+    it committed under (`RunTransitionConflict`/`RunnerBindingConflict`), or that
+    lost the generation it bound (`DbosRuntimeBindingConflict`), must not abort
+    the convergence of every other healthy Attempt and must not fail Serve start.
+    Such an Attempt is named and reported non-terminal -- left exactly as durable
+    as it already was, never forced -- while every reconstructable Attempt still
+    converges.
+    """
+    jobs: list[RunnerLeaseConvergenceJob] = []
+    left_nonterminal: list[tuple[AgentAttemptId, str]] = []
+    for attempt in driverless:
+        try:
+            execution = reconstruct_agent_attempt(
+                bound.datasource, executors, bound.declared_project, attempt
+            ).execution
+            binding = _runner_generation_binding(attempt)
+        except (
+            KeyError,
+            RunTransitionConflict,
+            RunnerBindingConflict,
+            DbosRuntimeBindingConflict,
+        ) as conflict:
+            left_nonterminal.append((attempt.attempt_id, type(conflict).__name__))
+            continue
+        jobs.append(RunnerLeaseConvergenceJob(execution, binding, source))
+    return jobs, left_nonterminal
+
+
 def _log_runner_lease_convergence(report: RunnerLeaseConvergenceReport) -> None:
     """Say what a Serve-restart convergence moved, and what it could not.
 
@@ -1174,6 +1213,11 @@ class _DbosProcessOwner:
         reconstruction reads durable truth through the same owner the
         replacement workflow uses (`reconstruct_agent_attempt`), so the
         `request_hash` it commits under is exactly the one the attempt bound.
+
+        Reconstruction is per-Attempt and tolerant: an Attempt whose executor
+        left config, or whose durable binding no longer reconstructs, is left
+        non-terminal and named rather than aborting the whole sweep -- one bad
+        Attempt never blocks the others, and Serve always starts.
         """
 
         if not any(
@@ -1193,21 +1237,18 @@ class _DbosProcessOwner:
             bound.agent_executor_registry, bound.agent_executors_v2
         )
         source = FileRunnerTerminalEvidenceSource(lease_root / "attempts")
-        jobs = [
-            RunnerLeaseConvergenceJob(
-                reconstruct_agent_attempt(
-                    bound.datasource, executors, bound.declared_project, attempt
-                ).execution,
-                _runner_generation_binding(attempt),
-                source,
-            )
-            for attempt in driverless
-        ]
+        jobs, left_nonterminal = _reconstructed_runner_lease_jobs(
+            bound, executors, source, driverless
+        )
         report = converge_driverless_runner_lease_attempts(
             jobs,
             DbosAgentAttemptStore(bound.engine, bound.settings.application_version),
         )
-        _log_runner_lease_convergence(report)
+        _log_runner_lease_convergence(
+            RunnerLeaseConvergenceReport(
+                report.converged, (*left_nonterminal, *report.left_nonterminal)
+            )
+        )
 
     @staticmethod
     def _converge_driverless_attempts(bound: _BoundRuntime) -> None:

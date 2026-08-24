@@ -770,10 +770,11 @@ def _volume_reading_engine(
 ) -> Path:
     """A stand-in engine that answers one `run` by writing bytes and exiting.
 
-    It stands in for a throwaway container `cat`ting one file off a mounted
-    volume: `read_file_in_volume`'s whole shape, without a real engine or
-    volume. It records its argument vector so a test can read back how the
-    volume was mounted.
+    It stands in for a throwaway container running `head -c N` over one file on a
+    mounted volume: `read_file_in_volume`'s whole shape, without a real engine or
+    volume. Like `head -c`, it emits at most the requested number of bytes, and
+    it records its argument vector so a test can read back how the volume was
+    mounted and how the read was bounded.
     """
     log = tmp_path / "reading-engine-calls.jsonl"
     executable = tmp_path / "reading-engine"
@@ -782,10 +783,38 @@ def _volume_reading_engine(
         "import json, sys\n"
         f"open({str(log)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
         "if sys.argv[1:2] == ['run']:\n"
-        f"    sys.stdout.buffer.write({payload!r})\n"
+        "    argv = sys.argv[1:]\n"
+        "    limit = int(argv[argv.index('-c') + 1]) if '-c' in argv else None\n"
+        f"    payload = {payload!r}\n"
+        "    sys.stdout.buffer.write(payload if limit is None else payload[:limit])\n"
         "    sys.stderr.write('' if not "
         f"{returncode} else 'no such file')\n"
         f"    raise SystemExit({returncode})\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    return executable
+
+
+def _oversized_volume_reading_engine(tmp_path: Path, source_size: int) -> Path:
+    """A `head -c N` stand-in over a file of `source_size` bytes.
+
+    It emits only the `-c N` bytes the launcher asked for -- exactly as real
+    `head` truncates at the pipe -- however large the underlying file is, so a
+    test can prove the launcher never buffers more than the bound off a volume a
+    compromised Runner filled without a quota.
+    """
+    log = tmp_path / "reading-engine-calls.jsonl"
+    executable = tmp_path / "reading-engine"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        f"open({str(log)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "if sys.argv[1:2] == ['run']:\n"
+        "    argv = sys.argv[1:]\n"
+        "    requested = int(argv[argv.index('-c') + 1])\n"
+        f"    sys.stdout.buffer.write(b'x' * min({source_size}, requested))\n"
+        "    raise SystemExit(0)\n",
         encoding="utf-8",
     )
     executable.chmod(0o755)
@@ -820,7 +849,7 @@ def test_read_file_in_volume_reads_the_retained_bytes_read_only(tmp_path: Path) 
     mount = call[call.index("--mount") + 1]
     assert "src=journal-one" in mount
     assert "readonly" in mount
-    assert call[call.index("--entrypoint") + 1] == "cat"
+    assert call[call.index("--entrypoint") + 1] == "head"
 
 
 def test_read_file_in_volume_refuses_a_file_over_the_bound(tmp_path: Path) -> None:
@@ -832,6 +861,33 @@ def test_read_file_in_volume_refuses_a_file_over_the_bound(tmp_path: Path) -> No
         carrier.read_file_in_volume(
             "journal-one", "atelier2-runner", PurePosixPath("/journal/record"), 8
         )
+
+
+def test_read_file_in_volume_caps_the_read_at_the_pipe_not_after(
+    tmp_path: Path,
+) -> None:
+    """The bound is enforced inside the throwaway container by `head -c`, so a
+    Runner that filled its quota-free journal volume with a file far larger than
+    the bound cannot drive the launcher to buffer it: at most one byte past the
+    bound ever reaches launcher memory, which is exactly the count the refusal
+    reports."""
+    bound = 1024
+    a_file_far_larger_than_the_bound = bound * 1_000_000
+    carrier = DockerCarrier(
+        _POLICY_IMAGE,
+        _oversized_volume_reading_engine(tmp_path, a_file_far_larger_than_the_bound),
+    )
+
+    with pytest.raises(CarrierRefusal, match=f"is {bound + 1} bytes"):
+        carrier.read_file_in_volume(
+            "journal-one",
+            "atelier2-runner",
+            PurePosixPath("/journal/terminal-record"),
+            bound,
+        )
+
+    call = _reading_calls(tmp_path)[0]
+    assert call[call.index("-c") + 1] == str(bound + 1)
 
 
 def test_read_file_in_volume_refuses_an_unreadable_file(tmp_path: Path) -> None:

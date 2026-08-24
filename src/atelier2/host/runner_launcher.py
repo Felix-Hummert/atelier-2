@@ -753,11 +753,20 @@ class RunnerLauncher:
         that is gone took its namespace with it, and a launcher that refused to
         start because of an Attempt from a previous deployment would be an
         outage over a leftover.
+
+        An Attempt whose Runner is somehow still running is deferred whole: its
+        terminal fact lives only on the journal volume this pass would delete, so
+        removing it while the Runner may still be writing that fact would destroy
+        it rather than retain it. The removal is left for a later pass, once
+        every container this Attempt labelled has stopped.
         """
         for named in self.leases.abandon_stale_claims():
             try:
                 lease_id = admitted_lease_id(named)
                 self.announce(f"reconciled-attempt={lease_id.value}")
+                if self._attempt_containers_still_running(lease_id):
+                    self.announce(f"reconcile-deferred-running={lease_id.value}")
+                    continue
                 self._retain_terminal_record_before_delete(lease_id)
                 self._remove_attempt(lease_id)
             except (AttemptRefusal, CarrierRefusal) as refusal:
@@ -1095,26 +1104,34 @@ class RunnerLauncher:
         os.replace(temporary, target)
         self.announce(f"terminal-record-retained={target}")
 
+    def _attempt_containers_still_running(self, lease_id: RunnerLeaseId) -> bool:
+        """Whether any container this Attempt labelled is still running.
+
+        A reconcile never removes an Attempt whose Runner may still be alive:
+        `docker rm -f`ing its container and deleting its journal volume would
+        destroy the terminal fact the Runner is still producing. The removal --
+        and the retain that must precede it -- waits until every labelled
+        container has stopped, which is what makes the deferral real rather than
+        a fact quietly lost.
+        """
+        label = lease_label(lease_id)
+        return any(
+            self.carrier.container_running(container)
+            for container in self.carrier.labelled_containers(label)
+        )
+
     def _retain_terminal_record_before_delete(self, lease_id: RunnerLeaseId) -> None:
         """Retain an abandoned Runner's terminal fact before its volume is gone.
 
         Reconcile removes what a dead launcher left behind, and the journal
         volume is the only place that Attempt's terminal fact still lives -- so
         it is copied into the handoff here, strictly before `_remove_attempt`
-        deletes the volume. Only for an Attempt whose containers have all
-        stopped: reading a Runner still running could copy a fact it has not
-        finished or race a delivery it is about to make, so a still-running
-        Attempt is left for the next reconcile. A missing record is the ordinary
-        case -- a cleanly released Attempt unlinked its own -- and retains
-        nothing.
+        deletes the volume. The caller has already established that every
+        container this Attempt labelled has stopped, so this never reads a Runner
+        that is still writing. A missing record is the ordinary case -- a cleanly
+        released Attempt unlinked its own -- and retains nothing.
         """
         label = lease_label(lease_id)
-        if any(
-            self.carrier.container_running(container)
-            for container in self.carrier.labelled_containers(label)
-        ):
-            self.announce(f"terminal-record-retain-skipped-running={lease_id.value}")
-            return
         journal = next(
             (
                 volume

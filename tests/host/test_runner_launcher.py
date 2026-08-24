@@ -691,10 +691,14 @@ def test_a_reconciled_attempt_retains_its_fact_before_its_volume_is_removed(
     assert any(line.startswith("terminal-record-retained=") for line in announced)
 
 
-def test_a_reconciled_attempt_still_running_is_not_retained(tmp_path: Path) -> None:
-    """A Runner still running is never read: retaining a fact it has not
-    finished, or racing a delivery it is about to make, is exactly what the
-    exited-container gate forbids -- it is left for the next reconcile."""
+def test_a_reconciled_attempt_still_running_keeps_its_fact_and_volume(
+    tmp_path: Path,
+) -> None:
+    """A Runner still running is deferred whole, not half-removed: its terminal
+    fact lives only on the journal volume, so a pass that force-removed the
+    container and deleted the volume would destroy the fact rather than retain
+    it. The whole removal waits for a later pass, once the container has
+    stopped."""
     interrupted = "f" * 64
     directory = tmp_path / "leases"
     FileRunnerLeaseSource(directory, _validation(tmp_path))
@@ -704,8 +708,9 @@ def test_a_reconciled_attempt_still_running_is_not_retained(tmp_path: Path) -> N
         _attested_document(_manifest()), [], journal_records=[True]
     )
     runner = f"atelier2-attempt-{interrupted}-runner"
+    journal = f"atelier2-attempt-{interrupted}-journal"
     carrier.created["containers"].append(runner)
-    carrier.created["volumes"].append(f"atelier2-attempt-{interrupted}-journal")
+    carrier.created["volumes"].append(journal)
     carrier.running_containers.add(runner)
     launcher, announced = _launcher(
         tmp_path, carrier, FileRunnerLeaseSource(directory, _validation(tmp_path))
@@ -717,9 +722,11 @@ def test_a_reconciled_attempt_still_running_is_not_retained(tmp_path: Path) -> N
         tmp_path / interrupted / "handoff" / "retained-terminal-record"
     ).exists()
     assert "read-volume" not in carrier.operations
+    assert carrier.removed["containers"] == []
+    assert carrier.removed["volumes"] == []
+    assert carrier.unpoliced == []
     assert any(
-        line == f"terminal-record-retain-skipped-running={interrupted}"
-        for line in announced
+        line == f"reconcile-deferred-running={interrupted}" for line in announced
     )
 
 

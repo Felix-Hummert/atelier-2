@@ -10,8 +10,12 @@ once, and one whose fact never reached the handoff is left armed and honest.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
+import pytest
+
+from atelier2.adapters.dbos import runtime as dbos_runtime
 from atelier2.adapters.dbos.workflow import (
     AgentExecutorMap,
     reconstruct_agent_attempt,
@@ -21,6 +25,7 @@ from atelier2.adapters.file_runner_terminal_evidence import (
 )
 from atelier2.application.converge_driverless_runner_lease_attempts import (
     RunnerLeaseConvergenceJob,
+    RunnerLeaseConvergenceReport,
     converge_driverless_runner_lease_attempts,
 )
 from atelier2.application.converge_runner_terminal_evidence import (
@@ -40,6 +45,11 @@ from atelier2.contracts.runner_terminal_evidence_codec import (
     encode_runner_terminal_evidence_record,
 )
 from tests.integration.test_runner_terminal_evidence_store import _bound, _v3_armed
+from tests.scenarios.agents import (
+    agent_attempt_execution,
+    agent_execution_request_v2,
+    prepared_agent_attempt,
+)
 
 
 def _retain(attempts_root: Path, attempt_id: str, record: bytes) -> None:
@@ -220,4 +230,145 @@ def test_the_runtime_pipeline_converges_a_driverless_attempt_to_its_terminal(
         assert report.left_nonterminal == ()
         assert store.load(execution.attempt_id).state is AgentAttemptState.FAILED
     finally:
+        runtime.close()
+
+
+class _RaisesIfTouched:
+    """A host authority that fails the test the moment the sweep reads it.
+
+    The Serve-restart Runner-lease convergence must reach a Runner's own
+    retained terminal fact and nothing else: it never starts a process, owns a
+    workspace, or otherwise reaches process or host authority. Standing in for
+    those authorities with an object that raises on any attribute access turns
+    that structural property into a test that fails loudly if it is ever broken.
+    """
+
+    def __getattr__(self, name: str) -> object:
+        raise AssertionError(
+            f"the runner-lease convergence reached host authority .{name}"
+        )
+
+
+def test_one_unreconstructable_attempt_is_left_nonterminal_and_the_rest_converge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An Attempt whose executor left config between restarts raises deep in
+    reconstruction; the sweep must leave exactly that one non-terminal and
+    named, converge every healthy Attempt, and never fail Serve start over one
+    config change."""
+    runtime, store, execution, binding, invocation = _v3_armed(
+        tmp_path, "585/one-unreconstructable-attempt"
+    )
+    try:
+        envelope = RunnerTerminalEvidenceEnvelope(
+            binding,
+            invocation,
+            RunnerProviderFailure(ProcessExitSignature(9, b"provider died")),
+        )
+        attempts_root = tmp_path / "attempts-root"
+        _retain(
+            attempts_root,
+            execution.attempt_id.value,
+            encode_runner_terminal_evidence_record(envelope),
+        )
+        healthy = store.load(execution.attempt_id)
+        left_config = prepared_agent_attempt(
+            agent_attempt_execution(agent_execution_request_v2("585/executor-removed"))
+        )
+
+        original = dbos_runtime.reconstruct_agent_attempt
+
+        def reconstruct_but_one_executor_is_gone(
+            datasource: object,
+            executors: AgentExecutorMap,
+            project: object,
+            attempt: AgentAttempt,
+        ) -> object:
+            if attempt.attempt_id == left_config.attempt_id:
+                raise KeyError("agent executor removed from config")
+            return original(datasource, executors, project, attempt)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(
+            dbos_runtime,
+            "reconstruct_agent_attempt",
+            reconstruct_but_one_executor_is_gone,
+        )
+
+        jobs, left_nonterminal = dbos_runtime._reconstructed_runner_lease_jobs(
+            runtime._held(),
+            _executor_map_of(runtime),
+            FileRunnerTerminalEvidenceSource(attempts_root),
+            (left_config, healthy),
+        )
+
+        assert [job.execution.attempt_id for job in jobs] == [execution.attempt_id]
+        assert left_nonterminal == [(left_config.attempt_id, "KeyError")]
+
+        report = converge_driverless_runner_lease_attempts(jobs, store)
+        assert report.converged == (execution.attempt_id,)
+        assert report.left_nonterminal == ()
+        assert store.load(execution.attempt_id).state is AgentAttemptState.FAILED
+
+        with caplog.at_level(logging.WARNING):
+            dbos_runtime._log_runner_lease_convergence(
+                RunnerLeaseConvergenceReport(
+                    report.converged,
+                    (*left_nonterminal, *report.left_nonterminal),
+                )
+            )
+        assert any(
+            getattr(record, "event", None) == "runner_lease_attempt_left_nonterminal"
+            and getattr(record, "attempt_id", None) == left_config.attempt_id.value
+            and getattr(record, "reason", None) == "KeyError"
+            for record in caplog.records
+        )
+    finally:
+        runtime.close()
+
+
+def test_the_runner_lease_convergence_never_reaches_process_or_host_authority(
+    tmp_path: Path,
+) -> None:
+    """The convergence reads a Runner's retained fact and commits it; it must
+    never touch the process supervisor or the workspace owner. Standing those in
+    with authorities that raise on any access proves the property structurally:
+    a healthy Attempt still reaches its real terminal without either being
+    reached."""
+    runtime, store, execution, binding, invocation = _v3_armed(
+        tmp_path, "585/no-host-authority"
+    )
+    bound = runtime._held()
+    real_supervisor = bound.agent_process_supervisor
+    real_workspace_owner = bound.agent_workspace_owner
+    try:
+        envelope = RunnerTerminalEvidenceEnvelope(
+            binding,
+            invocation,
+            RunnerProviderFailure(ProcessExitSignature(9, b"provider died")),
+        )
+        attempts_root = tmp_path / "attempts-root"
+        _retain(
+            attempts_root,
+            execution.attempt_id.value,
+            encode_runner_terminal_evidence_record(envelope),
+        )
+        bound.agent_process_supervisor = _RaisesIfTouched()  # type: ignore[assignment]
+        bound.agent_workspace_owner = _RaisesIfTouched()  # type: ignore[assignment]
+
+        jobs, left_nonterminal = dbos_runtime._reconstructed_runner_lease_jobs(
+            bound,
+            _executor_map_of(runtime),
+            FileRunnerTerminalEvidenceSource(attempts_root),
+            (store.load(execution.attempt_id),),
+        )
+        report = converge_driverless_runner_lease_attempts(jobs, store)
+
+        assert left_nonterminal == []
+        assert report.converged == (execution.attempt_id,)
+        assert store.load(execution.attempt_id).state is AgentAttemptState.FAILED
+    finally:
+        bound.agent_process_supervisor = real_supervisor
+        bound.agent_workspace_owner = real_workspace_owner
         runtime.close()
