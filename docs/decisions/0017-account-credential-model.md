@@ -1,7 +1,7 @@
 # ADR 0017: An installation-owned Account holds every credential; delegated grants and stored keys are peer auth modes, and the app holds only references
 
 - Status: PROPOSED 2026-08-24 — draft awaiting operator approval. This record
-  decides a model; only the slices §9 names as built exist. Everything else is
+  decides a model; only the slices §10 names as built exist. Everything else is
   proposed, and nothing here claims otherwise.
 - Date: 2026-08-24
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
@@ -27,7 +27,7 @@
   (the project boundary a per-source Account override is scoped by)
 - Names, never decides, the dependencies owned elsewhere:
   [#82](https://github.com/FlexOr2/atelier-2/issues/82) (OIDC human login — the
-  other identity axis, §8), [#23](https://github.com/FlexOr2/atelier-2/issues/23)
+  other identity axis, §9), [#23](https://github.com/FlexOr2/atelier-2/issues/23)
   (multi-project isolation), [#540](https://github.com/FlexOr2/atelier-2/issues/540)
   (runner cutover, where installation accounts become operable),
   [#567](https://github.com/FlexOr2/atelier-2/issues/567) (project links, the
@@ -99,7 +99,7 @@ identity:
   credential is a stored key, §3 tier B); for a runner-local Account only a
   **non-secret role reference** the runner resolves on its own host — the
   server holds no secret material for it at all;
-- its **owning tenant** (§8) and a non-secret display identity so an operator
+- its **owning tenant** (§9) and a non-secret display identity so an operator
   can tell two Accounts apart without resolving either.
 
 The Account subsumes what today exists three times — the per-provider
@@ -235,7 +235,7 @@ that the source is part of the Account model, not an accident of deployment.
 | Who resolves it | the server, at the outgoing call or when provisioning the cage | the runner, from its install-time role mapping |
 | What crosses the wire | a reference; for delegated modes at most a short-lived scoped token into the cage | the role reference only — never any secret material |
 | Threat surface | server compromise reaches ciphertext and the KEK path (§3 bounds it) | server compromise reaches **nothing**: the server never had the value |
-| Revocation | rotate or revoke in installation settings (§7 layering) | revoke on the runner host, where the company's access control already is |
+| Revocation | rotate or revoke in installation settings (§8 layering) | revoke on the runner host, where the company's access control already is |
 | When to use | the server's own platform calls; trusted or server-local runners; tenants who deposit keys | enterprise runners in a private network; any tenant unwilling to hand a token to an external server |
 
 **Runner-local is the preferred enterprise topology.** A company's sensitive
@@ -260,7 +260,7 @@ here applied *inside* the runner host between its cage and its own mapping. A
 role the mapping does not carry refuses (`auth-profile-unresolvable`,
 ADR 0009), with no fallback to another source.
 
-**Both axes compose with the layering (§7) and stay invisible to the
+**Both axes compose with the layering (§8) and stay invisible to the
 workflow.** A role can be occupied by a server-held Account or a runner-local
 one, in any mode the provider supports; the workflow still declares only the
 generic role, blind to source and mode alike.
@@ -317,19 +317,69 @@ reconciliation path `contracts.effects` already owns, and never becomes a
 receipt on the runner's word. Y silently degrading to "Core trusts the
 runner's receipt" is the one failure this axis must never have; the threat is
 a compromised runner forging an effect nobody can check, and the invariant is
-§6's number 8.
+§7's number 8.
 
 **The three axes together.** An Account and its bindings now select along
-`auth_mode` (§2) × credential source (§4) × effect execution locus (§5) —
-each per account, role or binding, never product-wide by accident. The safe
-default on every axis is the simplest built form: `subscription` where a
-provider CLI login exists, server-held for a deposited secret, X for an
-effect. Every other value is an explicit opt-in with a fail-loud guardrail:
-no mode downgrade (§2), no source fallback (§4), no unverifiable Y (§5).
-Y-support remains PROPOSED end to end; nothing performs an effect outside
-Core today.
+`auth_mode` (§2) × credential source (§4) × locus (§5 for writes, mirrored
+for reads in §6) — each per account, role or binding, never product-wide by
+accident. The safe default on every axis is the simplest built form:
+`subscription` where a provider CLI login exists, server-held for a deposited
+secret, X for an effect. Every other value is an explicit opt-in with a
+fail-loud guardrail: no mode downgrade (§2), no source fallback (§4), no
+unverifiable Y (§5). Y-support remains PROPOSED end to end; nothing performs
+an effect outside Core today.
 
-### 6. Invariants, each with the threat it mitigates
+### 6. Display and platform reads: the same locus axis, mirrored
+
+Reading has the same locus question as writing, and one distinction above it
+that costs nothing and must never be blurred:
+
+- **Displaying Atelier's own state — runs, graph, decisions, queue — needs no
+  platform credential at all.** The cockpit and API project Atelier's own
+  durable truth (ADR 0003, ADR 0004); that baseline works with or without any
+  Account and is not part of this axis.
+- **Reading the connected platform's state — work items, PR/MR status,
+  repository state — needs a read credential**, and that read has exactly
+  §5's locus choice:
+  - **X-read — the server reads** (the default, and the only form anything
+    does today): the readback that exists (`open-pr`, #430) runs server-side
+    under a server-held credential, and ADR 0010 §4's polling observation is
+    decided in the same place. Simplest.
+  - **Y-read — a runner reads and reports** (opt-in, PROPOSED): the read
+    credential stays runner-local; a runner inside the tenant's network
+    fetches items and status, and the server stores and displays what the
+    runner reported — it never holds the platform token.
+
+The same guardrails carry over unchanged: fail loud (an unresolvable or
+unconnected read refuses with ADR 0010's own refusals, never returns an
+invented empty state), and no silent trust-downgrade — a runner-fetched
+platform fact is recorded as ADR 0010 §6 already requires of every observed
+fact, with its provenance, here including *who fetched it*, and is never
+presented as server-verified when it is not.
+
+**The honest consequence of running fully runner-local (Y everywhere): the
+server never reads the platform directly.** A runner in the enterprise
+network is the deployment's eyes — it fetches the items and status the
+cockpit displays. One tension is named now so the Y amendment cannot miss it:
+invariant 8 commits a Y-effect receipt only on Core's *own* readback, and a
+server that never reads the platform cannot perform one. A fully runner-local
+deployment therefore resolves that verification read inside the Y amendment's
+scope — an independent reader distinct from the performing runner, or a
+minimal server-side read credential as the one deliberate exception — and
+this record refuses only the third option outright: the performer verifying
+itself.
+
+**Pointing at a platform is token-free.** Declaring a link — this project
+tracks that GitHub or GitLab repository — is a declaration, not a use; the
+platform adapter contract (#24, ADR 0010) is generic, and GitLab is not a
+special case of it. The link *does* something — observe, import, write — only
+once a credential for that operation exists; until then each operation
+refuses with ADR 0010's `platform-connection-unknown` /
+`platform-credential-unresolvable` shapes rather than half-working.
+Runner-read is a named seam, not built; it follows the same build-when-needed
+discipline as locus Y.
+
+### 7. Invariants, each with the threat it mitigates
 
 1. **The secret value never enters the app run/event/decision database, any
    API projection, log, prompt, dossier, lease or receipt.** Only the secret
@@ -380,7 +430,7 @@ Core today.
    *Threat:* a compromised runner forging an effect nobody can check — Y
    silently degrading into Core trusting the runner's own report.
 
-### 7. The three layers: installation owns, project occupies, workflow declares
+### 8. The three layers: installation owns, project occupies, workflow declares
 
 The #557 settings model, restated once here because Accounts are its first
 layer, and not re-decided:
@@ -405,7 +455,7 @@ layer, and not re-decided:
 A new enforcement class is new core code with its own item; a new HTTPS API
 behind an existing class never is (#557 ruling).
 
-### 8. Human identity is a separate axis
+### 9. Human identity is a separate axis
 
 WHO may operate — the login of #82's OIDC principal — is a different fact from
 WHAT machine credential an Account holds, and the two never merge. Access
@@ -417,7 +467,7 @@ touching the Accounts themselves. ADR 0009 §9's typed actor carries who
 commanded a run; the Account carries what the run authenticated as toward the
 provider. Both appear in receipts; neither substitutes for the other.
 
-### 9. Built today, proposed next — precisely
+### 10. Built today, proposed next — precisely
 
 **Built** (verifiable in the tree at this record's date):
 
@@ -448,8 +498,9 @@ its durable reference-only tables, carrying the source axis; the `oauth` and
 the encrypted secret store with envelope encryption and an external KEK; the
 runner-side role → local-secret mapping for the runner-local source; locus-Y
 effect execution (the Effect Worker on the runner host under a runner-local
-grant, after the ADR 0009/0010 amendment §5 names); per-tenant access
-control; deposit/rotate/revoke surfaces; GitLab.
+grant, after the ADR 0009/0010 amendment §5 names) and its read mirror, the
+runner-read lane (§6); per-tenant access control; deposit/rotate/revoke
+surfaces; GitLab.
 
 **The path between them is subsumption, not a parallel mechanism**: each
 bootstrap credential-directory flag becomes the first installation Account of
@@ -480,7 +531,7 @@ refusals and are not renamed.
 | Full server compromise (external/SaaS deployment) | runner-local source (§4): the value was never on the server — for provider credentials today, for platform-effect tokens under the Y opt-in (§5); server-held delegated grants are revoked at the provider |
 | Secret-store dump or store backup leak | ciphertext only; KEK held outside the store (§3 tier B) |
 | Log, prompt, event or dossier leak | value never enters any of them (invariant 1; canary; ADR 0009 §6) |
-| Cross-tenant access | Account-to-tenant binding plus access control (invariant 4; §8) |
+| Cross-tenant access | Account-to-tenant binding plus access control (invariant 4; §9) |
 | Insider with app-DB access | sees references |
 | Insider with store access | sees ciphertext; KEK access is a separate, separately controlled system |
 | Compromised runner/cage | holds one credential for one run, by reference; delegated modes hand it only a short-lived scoped token; revocation stops new bindings (ADR 0009 §4/§10) |
@@ -508,10 +559,12 @@ refusals and are not renamed.
   credential-minimal. Today that covers provider credentials; covering
   platform-effect tokens too is locus Y (§5) — an explicit opt-in whose build
   remains PROPOSED.
-- The effect execution locus becomes a selectable third axis with X as the
-  safe default. A deployment that opts into Y pays for the Effect Worker
-  build and the ADR 0009/0010 amendment, and buys the enterprise topology
-  for effects — bounded by invariant 8 to the effects a readback can prove.
+- The locus becomes a selectable third axis with X as the safe default, for
+  writes and reads alike (§5, §6). A deployment that opts into Y pays for the
+  Effect Worker build and the ADR 0009/0010 amendment, and buys the
+  enterprise topology for effects — bounded by invariant 8 to the effects a
+  readback can prove; fully runner-local display costs the runner-read lane,
+  through which a runner becomes the deployment's eyes on the platform.
 - `AuthMode` gains two members; every hash frame that carries a mode already
   carries it as a value, so existing revisions keep their identities and new
   modes produce new ones.
@@ -525,9 +578,11 @@ Listed, deliberately not decided here:
 
 1. **Locus Y enablement**: the locus model itself is ruled (§5 — both
    first-class, X the default, Y an opt-in bounded by the verifiability
-   guardrail). Open are when Y is built, the scope of the ADR 0009/0010
-   amendment it requires, and which adapter operations are certified
-   Y-eligible first.
+   guardrail; §6 mirrors it for reads). Open are when Y and the runner-read
+   lane are built, the scope of the ADR 0009/0010 amendment they require —
+   including how a fully runner-local deployment performs the verification
+   read §6 names — and which adapter operations are certified Y-eligible
+   first.
 2. **Secret-store and KEK backend**: operator file + host-provided key (the
    built seam grown), OS keyring, HashiCorp Vault, a cloud KMS, or an
    age/HSM-wrapped file — and which the self-hosted default is.
@@ -537,7 +592,7 @@ Listed, deliberately not decided here:
 4. **Rotation cadence for stored keys**, and whether it is enforced (refusal
    past age) or advisory (visible staleness).
 5. **Deposit scope for provider API keys**: per-installation only, or also
-   per-project — the layering (§7) supports both; the question is what the
+   per-project — the layering (§8) supports both; the question is what the
    deposit surface offers first.
 
 ## Required proofs before implementation is accepted
