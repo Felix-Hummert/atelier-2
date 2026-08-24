@@ -23,6 +23,10 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.markdown_agent_definitions import (
+    parse_agent_definition,
+    render_agent_definition,
+)
 from atelier2.adapters.yaml_workflows import (
     parse_executable_workflow_document,
     parse_workflow_document,
@@ -289,6 +293,8 @@ def api_ports(**overrides: object) -> ApiPorts:
         "run_queries": unused,
         "run_event_queries": unused,
         "workflow_document_parser": parse_workflow_document,
+        "agent_definition_parser": parse_agent_definition,
+        "agent_definition_renderer": render_agent_definition,
         "agent_configuration_catalog": unused,
         "agent_attempt_canceller": unused,
         "catalog_resolver": unused,
@@ -449,6 +455,8 @@ def durable_asgi_app(
             run_queries=queries,
             run_event_queries=queries,
             workflow_document_parser=parse_workflow_document,
+            agent_definition_parser=parse_agent_definition,
+            agent_definition_renderer=render_agent_definition,
             agent_configuration_catalog=DbosAgentConfigurationCatalog(
                 runtime.engine, runtime.agent_executor_registry
             ),

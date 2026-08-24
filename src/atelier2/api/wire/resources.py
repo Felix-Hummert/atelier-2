@@ -115,6 +115,17 @@ class AdapterOperationRevisionResource(ApiModel):
     adapter_operation_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
 
 
+class AgentDefinitionRevisionResource(ApiModel):
+    """The hash of one published agent-definition revision, and nothing else.
+
+    Publication is bytes in, hash out, exactly as a schema's is. The document is
+    not echoed: the caller already holds the exact authored bytes they posted,
+    and the hash is their identity.
+    """
+
+    agent_definition_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+
+
 class AuthProfileRevisionResource(ApiModel):
     profile_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
