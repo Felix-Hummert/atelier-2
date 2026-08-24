@@ -16,6 +16,10 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.markdown_agent_definitions import (
+    parse_agent_definition,
+    render_agent_definition,
+)
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
@@ -44,6 +48,8 @@ app = create_app(
         queries,
         queries,
         parse_workflow_document,
+        parse_agent_definition,
+        render_agent_definition,
         DbosAgentConfigurationCatalog(engine, AgentExecutorRegistry()),
         DbosAgentAttemptStore(engine, settings.application_version),
         DbosCatalogStore(engine),

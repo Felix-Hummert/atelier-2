@@ -1,12 +1,15 @@
-"""`HostSettings`'s Runner-lease deployment (`#540` C-3.6, C-4).
+"""The `atelier serve` deployments beyond one provider's basics.
 
 `tests/host/test_local_host.py` owns every other `HostSettings`/
-`compose_application` behavior; this module owns only the Runner-lease
-deployment -- the group of fields, its all-or-nothing refusal, and the fake-
-free candidate's `RUNNER_LEASE` registration once the group is declared
-(C-3.6), and the `atelier serve` flag group that reaches that composition
-from the packaged command line (C-4).
-"""
+`compose_application` behavior; this module owns two deployments' arming. The
+Runner-lease deployment (`#540` C-3.6, C-4): the group of fields, its
+all-or-nothing refusal, the fake-free candidate's `RUNNER_LEASE` registration
+once the group is declared, and the serve flag group that reaches that
+composition. And the Claude atelier-doors arming (`#7`): the serve flag that
+arms and always attests the doors executor, its refusal without the Claude
+deployment, and its absence leaving the doors unserved --
+`tests/host/test_conductor_workflow.py` owns the composition those settings
+reach."""
 
 from __future__ import annotations
 
@@ -20,10 +23,20 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
+from atelier2.adapters.claude_subscription import (
+    CLAUDE_ATELIER_DOORS_EXECUTOR_KEY,
+    ClaudeSubscriptionSettings,
+)
 from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
 from atelier2.host import main
 from atelier2.host.serving import HostSettings, compose_application
 from atelier2.ports.agent_executions import AgentExecutorCarrier
+from tests.integration.test_claude_atelier_doors import doors_deployment, doors_flags
+from tests.integration.test_claude_subscription import (
+    INTROSPECTING_CLAUDE,
+    parsing_claude,
+)
+from tests.scenarios.agents import agent_scratch_root, claude_subscription_deployment
 
 _ACCEPT_TIMEOUT_SECONDS = 5.0
 
@@ -271,3 +284,109 @@ def test_serve_without_runner_lease_flags_keeps_todays_behavior(
     assert main(_serve_command(tmp_path)) == 0
 
     assert captured["settings"].runner_lease_root is None
+
+
+def _doors_capable_claude(tmp_path: Path) -> ClaudeSubscriptionSettings:
+    """A fake Claude whose parser reads the whole doors vector.
+
+    The reference deployment exists only to ask the production composition
+    which flags that vector carries, so the fake refuses exactly the flags a
+    real release would not know -- the shape `attest_atelier_doors_invocation`
+    insists on.
+    """
+
+    reference = doors_deployment(tmp_path, "doors-reference", INTROSPECTING_CLAUDE)
+    directory = tmp_path / "claude-deployment"
+    directory.mkdir()
+    return claude_subscription_deployment(
+        directory, parsing_claude(doors_flags(reference))
+    )
+
+
+def _claude_serve_flags(
+    tmp_path: Path, claude: ClaudeSubscriptionSettings, *extra: str
+) -> list[str]:
+    return [
+        "--agent-scratch-root",
+        str(agent_scratch_root(tmp_path)),
+        "--claude-executable",
+        str(claude.executable),
+        "--claude-credential-directory",
+        str(claude.credential_directory),
+        *extra,
+    ]
+
+
+def test_the_serve_flag_arms_and_attests_the_claude_atelier_doors_executor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One named flag beside the Claude deployment serves the doors executor.
+
+    Arming always attests: the command launches the exact door-bearing vector
+    once, so the composed settings carry no start refusal and the composition
+    registers the doors executor beside its siblings.
+    """
+
+    claude = _doors_capable_claude(tmp_path)
+    monkeypatch.setenv("PATH", claude.search_path)
+    captured = _captured_serve_settings(monkeypatch)
+
+    command = _serve_command(
+        tmp_path, *_claude_serve_flags(tmp_path, claude, "--claude-atelier-doors")
+    )
+    assert main(command) == 0
+
+    served = captured["settings"]
+    assert served.claude_atelier_doors
+    assert served.claude_atelier_doors_start_refusal is None
+    _app, runtime = compose_application(served)
+    try:
+        assert CLAUDE_ATELIER_DOORS_EXECUTOR_KEY in runtime.agent_executor_registry.keys
+    finally:
+        runtime.close()
+
+
+def test_an_unattestable_doors_vector_names_its_refusal_and_still_serves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An executable that cannot start the doors vector does not kill serve."""
+
+    directory = tmp_path / "claude-deployment"
+    directory.mkdir()
+    claude = claude_subscription_deployment(directory, parsing_claude(()))
+    monkeypatch.setenv("PATH", claude.search_path)
+    captured = _captured_serve_settings(monkeypatch)
+
+    command = _serve_command(
+        tmp_path, *_claude_serve_flags(tmp_path, claude, "--claude-atelier-doors")
+    )
+    assert main(command) == 0
+
+    served = captured["settings"]
+    assert served.claude_atelier_doors
+    assert served.claude_atelier_doors_start_refusal is not None
+    assert "atelier-doors" in served.claude_atelier_doors_start_refusal
+
+
+def test_arming_the_doors_without_a_claude_deployment_is_refused_at_the_command_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as refusal:
+        main(_serve_command(tmp_path, "--claude-atelier-doors"))
+
+    assert refusal.value.code == 2
+    assert "--claude-atelier-doors" in capsys.readouterr().err
+
+
+def test_serve_without_the_doors_flag_leaves_the_doors_unarmed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claude = _doors_capable_claude(tmp_path)
+    monkeypatch.setenv("PATH", claude.search_path)
+    captured = _captured_serve_settings(monkeypatch)
+
+    assert main(_serve_command(tmp_path, *_claude_serve_flags(tmp_path, claude))) == 0
+
+    served = captured["settings"]
+    assert not served.claude_atelier_doors
+    assert served.claude_atelier_doors_start_refusal is None

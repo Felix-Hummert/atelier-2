@@ -1,17 +1,11 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/66"
 
-# A fifth sentence is declared on issue #66 — "aus der publizierten Revision ist
-# die Definition rekonstruierbar (Anzeige im Cockpit/Preview)" — and is
-# deliberately absent here. Ruling 5300492366 on #66 keeps that sentence as
-# acceptance of the item and makes its proof due once #22, under #23, gives the
-# definition a durable home: today's agent-configuration revision carries no
-# name, description, tool declaration or system prompt, which
-# test_todays_catalog_revision_cannot_tell_two_prompts_apart pins. Declaring it
-# now would red this gate on main for a capability nobody has built, and
-# inventing a schema here to make it green is what that ruling forbids. It joins
-# this file in the change that proves it. This file therefore does not list every
-# sentence of #66.
+# The reconstruction sentence below proves the durable half of #66's fifth
+# acceptance sentence (ruling 5300492366): the published agent_definition
+# revision holds the exact authored bytes, and parsing them back yields the
+# identical definition. Showing that reconstruction in the cockpit/preview is
+# the named rest, owned by #66's Done-when.
 
 [[sentence]]
 id = "a-markdown-file-becomes-a-published-configuration-revision"
@@ -28,3 +22,7 @@ text = "An agent whose file declares no tools may use every tool, and an agent w
 [[sentence]]
 id = "the-same-file-is-the-same-revision-identity"
 text = "The same authored file is the same revision identity, and every authored difference is a different one."
+
+[[sentence]]
+id = "the-published-revision-reconstructs-the-definition"
+text = "From a published agent-definition revision, read back by its hash, the authored definition is reconstructable: name, description, model, tools, and system prompt come back identical."

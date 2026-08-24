@@ -477,28 +477,6 @@ def test_the_deployment_owns_the_auth_and_executor_the_file_never_spells() -> No
     assert revision.executor_revision == binding.executor_revision
 
 
-def test_todays_catalog_revision_cannot_tell_two_prompts_apart() -> None:
-    """The seam this change names rather than hides.
-
-    An agent-configuration revision binds model, authentication, executor, and
-    capability -- there is no field for a system prompt, a tool declaration, a
-    name, or a description. So the published revision alone cannot reconstruct
-    the definition, and issue #66's round-trip stays open until the catalog owns
-    the definition's bytes. This pins the boundary so the day it moves is
-    visible.
-    """
-
-    watching = agent_configuration_revision_for(
-        parse_agent_definition(authored_document()), deployment()
-    )
-    idling = agent_configuration_revision_for(
-        parse_agent_definition(authored_document(body="\nYou watch nothing.\n")),
-        deployment(),
-    )
-
-    assert watching.revision_hash == idling.revision_hash
-
-
 def test_an_reconstructed_agent_definition_preserves_name_description_prompt_and_tools() -> (
     None
 ):

@@ -51,6 +51,10 @@ from atelier2.adapters.grok_subscription import (
     GrokSubscriptionSettings,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.adapters.markdown_agent_definitions import (
+    parse_agent_definition,
+    render_agent_definition,
+)
 from atelier2.adapters.project_verification import PROJECT_MANIFEST_NAME
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
@@ -266,6 +270,8 @@ def api_ports(runtime: DbosRuntime) -> ApiPorts:
         run_queries=queries,
         run_event_queries=queries,
         workflow_document_parser=parse_workflow_document,
+        agent_definition_parser=parse_agent_definition,
+        agent_definition_renderer=render_agent_definition,
         agent_configuration_catalog=DbosAgentConfigurationCatalog(
             runtime.engine, runtime.agent_executor_registry
         ),
@@ -795,6 +801,30 @@ def test_a_claude_deployment_off_loopback_refuses_to_serve(
 
     assert refusal.value.code == 2
     assert "loopback" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("bind", "serves"),
+    [
+        ("0.0.0.0", False),
+        ("::", False),
+        ("192.168.1.10", False),
+        ("localhost", False),
+        ("127.0.0.1", True),
+    ],
+)
+def test_a_github_open_pr_deployment_binds_loopback_only(
+    tmp_path: Path, bind: str, serves: bool
+) -> None:
+    # A non-loopback bind would let any network peer open PRs with the
+    # operator's token, because starting a run is unauthenticated on this API.
+    settings = _github_served_settings(tmp_path, None)
+
+    if serves:
+        assert replace(settings, host=bind).host == bind
+    else:
+        with pytest.raises(ValueError, match="loopback"):
+            replace(settings, host=bind)
 
 
 def test_an_unconformant_claude_executable_does_not_kill_serve(
