@@ -1138,9 +1138,13 @@ class ClaudeAtelierDoorsExecutor:
     WHAT IT SPAWNS, said plainly because the siblings say the opposite. This
     invocation EXPECTS a descendant: Claude Code launches the door command as a
     stdio subprocess. That child speaks only the loopback HTTP API and refuses
-    any other address itself; `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` is what
-    keeps the operator's Anthropic credential out of its environment, and the
-    child needs no credential because the loopback API has none to offer.
+    any other address itself, and it needs no credential because the loopback
+    API has none to offer. What keeps the operator's Anthropic credential out
+    of the child is that the invocation's environment never carries a secret
+    value in the first place -- `CLAUDE_CONFIG_DIR` names a directory and the
+    credential stays a file on disk. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`
+    travels beside that as defense in depth: it was measured on the tool-free
+    sibling, not on an MCP stdio child.
 
     WHAT IS NOT MEASURED, said here rather than discovered later. No billed
     call has been made under this vector on any release. What is measured is
@@ -1148,10 +1152,12 @@ class ClaudeAtelierDoorsExecutor:
     spawn-detection -- that the door server is reached without safe mode and
     not with it. That a real answer fires a door, that a built-in stays
     imitation-only beside a live MCP server, that a non-listed door and a
-    second server stay unreachable, and that no customization returns through
-    safe mode's absence, are the half a billed call has to establish -- one
-    call, under the operator's gate, before routine use. Until it is run, this
-    executor is composed only where an operator armed it by name.
+    second server stay unreachable, that no customization returns through
+    safe mode's absence, that the subprocess-env scrub reaches the MCP server
+    child's observed environment, and that the `--max-turns` bound holds
+    across MCP door-call turns, are the half a billed call has to establish --
+    one call, under the operator's gate, before routine use. Until it is run,
+    this executor is composed only where an operator armed it by name.
 
     STRUCTURAL DEPENDENCY, named. The door is loopback-only, so this executor
     works only while attempts execute on the serving host itself. A runner

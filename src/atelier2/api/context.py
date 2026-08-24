@@ -34,6 +34,9 @@ from atelier2.application.publish_agent_configurations import (
     PublishAgentConfigurationRevisionResult,
     PublishAuthProfileRevisionResult,
 )
+from atelier2.application.publish_agent_definition_revision import (
+    PublishAgentDefinitionRevisionResult,
+)
 from atelier2.application.publish_artifact import PublishArtifactUseCaseResult
 from atelier2.application.publish_budget_revision import PublishBudgetRevisionResult
 from atelier2.application.publish_schema_revision import PublishSchemaRevisionResult
@@ -67,6 +70,10 @@ from atelier2.application.read_workflow_revisions import (
 )
 from atelier2.application.reconcile_effect import ReconcileRunResult
 from atelier2.application.reconcile_run import ReconcileRunRequest
+from atelier2.application.reconstruct_agent_definition import (
+    AgentDefinitionParser,
+    AgentDefinitionRenderer,
+)
 from atelier2.application.resolve_catalog_name import CatalogNameResult
 from atelier2.application.start_published_run import (
     AuthoredAgentBinding,
@@ -128,6 +135,8 @@ class ApiPorts:
     run_queries: RunQueries
     run_event_queries: RunEventQueries
     workflow_document_parser: WorkflowDocumentParser
+    agent_definition_parser: AgentDefinitionParser
+    agent_definition_renderer: AgentDefinitionRenderer
     agent_configuration_catalog: AgentConfigurationCatalog
     agent_attempt_canceller: TransactionalAgentAttemptCanceller
     catalog_resolver: CatalogResolver
@@ -177,6 +186,9 @@ class ApiUseCases:
     publish_tool_grant_revision: Callable[[bytes], PublishToolGrantRevisionResult]
     publish_adapter_operation_revision: Callable[
         [bytes], PublishAdapterOperationRevisionResult
+    ]
+    publish_agent_definition_revision: Callable[
+        [bytes], PublishAgentDefinitionRevisionResult
     ]
     publish_auth_profile_revision: Callable[
         [str, int, str, str], PublishAuthProfileRevisionResult

@@ -51,6 +51,10 @@ from atelier2.adapters.grok_subscription import (
     GrokSubscriptionSettings,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.adapters.markdown_agent_definitions import (
+    parse_agent_definition,
+    render_agent_definition,
+)
 from atelier2.adapters.project_verification import PROJECT_MANIFEST_NAME
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
@@ -266,6 +270,8 @@ def api_ports(runtime: DbosRuntime) -> ApiPorts:
         run_queries=queries,
         run_event_queries=queries,
         workflow_document_parser=parse_workflow_document,
+        agent_definition_parser=parse_agent_definition,
+        agent_definition_renderer=render_agent_definition,
         agent_configuration_catalog=DbosAgentConfigurationCatalog(
             runtime.engine, runtime.agent_executor_registry
         ),

@@ -19,6 +19,7 @@ from atelier2.api.problems import (
     PROJECTION_LIMIT_DETAIL,
     ApiProblem,
     adapter_operation_document_problem_code,
+    agent_definition_document_problem_code,
     budget_document_problem_code,
     schema_document_problem_code,
     tool_grant_document_problem_code,
@@ -35,6 +36,7 @@ from atelier2.api.wire.requests import (
 )
 from atelier2.api.wire.resources import (
     AdapterOperationRevisionResource,
+    AgentDefinitionRevisionResource,
     AnyWorkflowRevisionPageResource,
     BudgetRevisionResource,
     CatalogAdmissionResource,
@@ -57,6 +59,12 @@ from atelier2.application.publish_adapter_operation_revision import (
     AdapterOperationPublicationCreated,
     AdapterOperationPublicationExisting,
     AdapterOperationPublicationInvalid,
+)
+from atelier2.application.publish_agent_definition_revision import (
+    AgentDefinitionPublicationCollision,
+    AgentDefinitionPublicationCreated,
+    AgentDefinitionPublicationExisting,
+    AgentDefinitionPublicationInvalid,
 )
 from atelier2.application.publish_budget_revision import (
     BudgetPublicationCollision,
@@ -274,6 +282,46 @@ async def publish_adapter_operation_revision_route(
     return resource_response(
         AdapterOperationRevisionResource(
             adapter_operation_revision_hash=revision.revision_hash.value
+        ),
+        status,
+    )
+
+
+@router.post(
+    API_PREFIX + "/agent-definition-revisions",
+    response_model=AgentDefinitionRevisionResource,
+    status_code=HTTPStatus.CREATED,
+    responses={HTTPStatus.OK: {"model": AgentDefinitionRevisionResource}},
+)
+async def publish_agent_definition_revision_route(
+    request: Request, context: ApiContext = api_context_dependency
+) -> JSONResponse:
+    require_media_type(request, "text/markdown")
+    document = await request.body()
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.publish_agent_definition_revision(document),
+    )
+    match result:
+        case AgentDefinitionPublicationCreated(revision):
+            status = HTTPStatus.CREATED
+        case AgentDefinitionPublicationExisting(revision):
+            status = HTTPStatus.OK
+        case AgentDefinitionPublicationInvalid(verdict):
+            raise ApiProblem(
+                agent_definition_document_problem_code(verdict.refusal), str(verdict)
+            )
+        case AgentDefinitionPublicationCollision():
+            raise ApiProblem("agent-definition-revision-collision")
+        case WriteUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
+    return resource_response(
+        AgentDefinitionRevisionResource(
+            agent_definition_revision_hash=revision.revision_hash.value
         ),
         status,
     )

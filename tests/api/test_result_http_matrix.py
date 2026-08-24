@@ -8,6 +8,10 @@ from typing import cast
 import pytest
 from fastapi.testclient import TestClient
 
+from atelier2.adapters.markdown_agent_definitions import (
+    parse_agent_definition,
+    render_agent_definition,
+)
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
@@ -942,6 +946,8 @@ def _ports(case: RouteResultCase) -> ApiPorts:
         run_event_queries=queries,
         published_revision_registry=MatrixRegistry(case),
         workflow_document_parser=parse_executable_workflow_document,
+        agent_definition_parser=parse_agent_definition,
+        agent_definition_renderer=render_agent_definition,
         agent_configuration_catalog=queries,
     )
 

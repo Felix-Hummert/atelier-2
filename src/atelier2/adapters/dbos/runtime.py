@@ -24,6 +24,7 @@ from atelier2.adapters.agent_processes import (
 from atelier2.adapters.agent_workspaces import LocalAgentAttemptWorkspaceOwner
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.effect_store import converge_driverless_effect_intents
 from atelier2.adapters.dbos.host_configuration import (
     append_project_root,
     project_root_for,
@@ -1219,6 +1220,7 @@ class _DbosProcessOwner:
             self._start(bound)
             bound.launched = True
             self._converge_driverless_attempts(bound)
+            self._converge_driverless_effect_intents(bound)
             self._converge_uncontinuable_runs(bound)
             self._start_admitted_queue_items(bound)
             self._converge_driverless_runner_lease_attempts(bound)
@@ -1298,6 +1300,21 @@ class _DbosProcessOwner:
             supervisor,
             workspaces,
         )
+
+    @staticmethod
+    def _converge_driverless_effect_intents(bound: _BoundRuntime) -> None:
+        """Route effect intents whose durable workflow raised to the operator.
+
+        After the launch, for the same reason as the attempt sweep: only once
+        recovery has re-armed every pending workflow does a terminal
+        workflow_status row mean nothing will resolve the intent. Before the
+        uncontinuable-run sweep: routing lifts a stranded action run to
+        WAITING_RECONCILIATION, out of the STARTED rows that inventory reads,
+        so an effect nobody observed reaches the operator door instead of
+        being misread as a dead gap.
+        """
+
+        converge_driverless_effect_intents(bound.engine)
 
     @staticmethod
     def _converge_uncontinuable_runs(bound: _BoundRuntime) -> None:

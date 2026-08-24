@@ -61,7 +61,11 @@ role is resolved to one immutable, secret-free agent-configuration revision and
 authentication-profile revision; the complete matrix is frozen into that run.
 That frozen chain currently ends at the `AgentConfigurationRevision`: it binds
 model, authentication profile, executor and requested capability, but no Markdown
-agent-definition revision or system prompt. A format-3 node's executable job today
+agent-definition revision or system prompt. A Markdown agent definition itself is
+already publishable as an immutable `agent_definition` catalog revision over
+`POST /agent-definition-revisions` — exact authored bytes in, hash out, with the
+identical definition reconstructable from the stored bytes — but no
+configuration references it yet. A format-3 node's executable job today
 is its authored instruction composed with the exact named run material it reads.
 The target configuration-to-definition link is owned by
 [ADR 0007](decisions/0007-catalog-identity.md), not inferred from matching model
@@ -632,7 +636,13 @@ owns that graph contract.
 The executor still performs an Action only after authoritative absence. An
 unknown outcome becomes `WAITING_RECONCILIATION` with a durable reason; one
 accountable command may resolve it, after which initial and reconciled Actions
-share the same continuation path. Initial receipt creation commits atomically
+share the same continuation path. A raised adapter error is that same unknown
+one process later: it ends the effect or reconcile workflow in a terminal
+error status nothing replays, so a serve start routes every intent such a dead
+workflow still owed — a `PREPARED` one under the exact transition an in-band
+unknown takes, a `RECONCILING` one by closing its dead command and reopening
+the door — to `WAITING_RECONCILIATION`, never to an invented absence. Initial
+receipt creation commits atomically
 with intent confirmation. Reconciliation resolution separately commits its
 receipt, intent, command, run, and resolved event. The later `ACTION_COMPLETED`
 transition is another crash-safe transaction.
@@ -666,9 +676,10 @@ conflict); submit an accountable reconciliation; and follow the
 closed durable event history as a resumable server-sent event stream. A
 subscriber who does not already know a run holds `GET /events`; opening that
 stream is the subscription. The cockpit holds that stream, so a Wait or an
-agent failure appears without `POST /subscriptions`. The feed is closed to `WAITING_INPUT` and
-`AGENT_FAILED`, in the same envelope and `VersionedRunEventResource` the
-per-run stream emits. `Last-Event-ID` resumes by same-instant identity
+agent failure appears without `POST /subscriptions`. The feed is closed to
+`WAITING_INPUT`, `AGENT_FAILED`, and `ACTION_RECONCILIATION_REQUIRED` — the
+events that stop a run until an operator acts — in the same envelope and
+`VersionedRunEventResource` the per-run stream emits. `Last-Event-ID` resumes by same-instant identity
 exclusion: from that event1's instant T,
 `recorded_at > T OR (recorded_at == T AND (run_id, seq) not among identities
 already emitted at T)`. Last-Event-ID seeds the set with that cursor only; a
@@ -677,8 +688,8 @@ advances. Second-precision instants make two waits in one second the normal
 case, so lexicographic `(recorded_at, run_id, seq) > cursor` is not the resume
 rule. Pre-V22 events whose instant is NULL
 stay off the feed rather than inventing a time. An operator who configures a
-webhook target and a signing-key file receives the same `WAITING_INPUT` and
-`AGENT_FAILED` attention events as outbound HTTP POSTs, without a client holding
+webhook target and a signing-key file receives the same attention events as
+outbound HTTP POSTs, without a client holding
 the stream: a background delivery loop signs each payload with HMAC-SHA256 over
 its exact bytes, carries the event's `(run_id, event_sequence)` identity for the
 receiver's own dedup, and advances its one durable cursor only after a 2xx — so
