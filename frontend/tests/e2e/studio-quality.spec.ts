@@ -12,6 +12,7 @@ import {
   studioStageSelector,
   type StudioControlFacts
 } from "../../src/lib/studioQuestions";
+import { notCancellableBlock } from "../support/runV3";
 import {
   completedRun,
   revisionHash,
@@ -59,6 +60,7 @@ function listedV3Run(changes: Partial<RunV3> = {}): RunV3 {
     state: "STARTED",
     current_node_id: "review",
     node_rail: [{ node_id: "review", state: "working", attempt: null }],
+    cancellation: notCancellableBlock("between-nodes"),
     terminal_hash: null,
     latest_event_cursor: null,
     started_at: "2026-08-18T15:00:00Z",

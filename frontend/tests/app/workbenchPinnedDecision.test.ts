@@ -12,6 +12,7 @@ import { MutationJournal } from "../../src/lib/mutationJournal";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { cockpitApiStub } from "../support/cockpitApi";
+import { notCancellableBlock } from "../support/runV3";
 
 /**
  * The Workbench pins every open decision in its own non-scrolling "Needs you"
@@ -39,6 +40,7 @@ function waitingRun(overrides: Partial<RunV3> = {}): RunV3 {
     state: "WAITING_INPUT",
     current_node_id: "approve",
     node_rail: [{ node_id: "approve", state: "needs_you", attempt: null }],
+    cancellation: notCancellableBlock("waiting-for-you"),
     terminal_hash: null,
     latest_event_cursor: null,
     started_at: "2026-08-18T15:00:00Z",

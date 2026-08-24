@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   MutationJournal,
+  cancelMutation,
   startMutationV3,
   type MutationEnvelope,
   type MutationEvidence
@@ -18,7 +19,7 @@ const publicReference = "run1.cnVuLTE";
 describe("MutationJournal exact transport truth", () => {
   beforeEach(() => sessionStorage.clear());
 
-  it.each([publish(), start(), wait(), reconciliation()])(
+  it.each([publish(), start(), wait(), reconciliation(), cancel()])(
     "retains exact Unicode/raw body bytes for $kind across uncertain reload",
     async (envelope) => {
       const journal = new MutationJournal(sessionStorage);
@@ -42,7 +43,10 @@ describe("MutationJournal exact transport truth", () => {
       { ...wait(), body_base64: utf8Base64(waitBody("other")) },
       { ...reconciliation(), mutation_id: `reconciliation:${publicReference}:other` },
       { ...reconciliation(), body_base64: utf8Base64(reconciliationBody("other")) },
-      { ...reconciliation(), node_id: 42 as unknown as string }
+      { ...reconciliation(), node_id: 42 as unknown as string },
+      { ...cancel(), mutation_id: `cancel:${publicReference}:other` },
+      { ...cancel(), idempotency_key: "another-key" },
+      { ...cancel(), target: `/atelier/api/v1/runs/${publicReference}/answers` }
     ];
     for (const envelope of invalid) {
       await expect(
@@ -251,6 +255,30 @@ describe("MutationJournal exact transport truth", () => {
     }
   );
 
+  it("clears an exact cancel on the terminal 200 but keeps it on the 202-accepted reply", async () => {
+    const journal = new MutationJournal(sessionStorage);
+    await journal.prepare(cancel());
+    expect(await journal.resolve(cancel().mutation_id, httpEvidence(cancel(), 202))).toBe(false);
+    expect(await journal.get(cancel().mutation_id)).not.toBeNull();
+
+    expect(await journal.resolve(cancel().mutation_id, httpEvidence(cancel(), 200))).toBe(true);
+    expect(await journal.get(cancel().mutation_id)).toBeNull();
+  });
+
+  it("remembers a 202-accepted delivery across a reload, apart from an unconfirmed one", async () => {
+    const journal = new MutationJournal(sessionStorage);
+    await journal.prepare(cancel());
+    await journal.markAccepted(cancel().mutation_id);
+
+    const reloaded = await new MutationJournal(sessionStorage).get(cancel().mutation_id);
+    expect(reloaded?.delivery).toBe("accepted");
+
+    await journal.markUncertain(cancel().mutation_id);
+    expect((await new MutationJournal(sessionStorage).get(cancel().mutation_id))?.delivery).toBe(
+      "uncertain"
+    );
+  });
+
   it("retains a V3 start that carries the exact order bytes", async () => {
     const envelope = startMutationV3(
       "run-1",
@@ -391,9 +419,19 @@ function absenceReconciliation(): MutationEnvelope {
   };
 }
 
+function cancel(): Extract<MutationEnvelope, { kind: "cancel" }> {
+  return cancelMutation(publicReference, requestHash, "cancel-key-1");
+}
+
 function httpEvidence(envelope: MutationEnvelope, status: number): MutationEvidence {
+  const type =
+    envelope.kind === "wait"
+      ? "wait_response"
+      : envelope.kind === "cancel"
+        ? "cancel_response"
+        : "reconciliation_response";
   return {
-    type: envelope.kind === "wait" ? "wait_response" : "reconciliation_response",
+    type,
     status,
     target: envelope.target,
     request_body_base64: envelope.body_base64

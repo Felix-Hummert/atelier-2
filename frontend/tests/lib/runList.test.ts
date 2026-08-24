@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { RunV3, WorkflowRevisionDetail } from "../../src/api/client";
 import { newestActivityFirst, runActivityAt, workflowNamesOf } from "../../src/lib/runList";
+import { notCancellableBlock } from "../support/runV3";
 import {
   publicReference,
   revisionHash,
@@ -22,6 +23,7 @@ function v3Run(changes: Partial<RunV3> = {}): RunV3 {
     state: "STARTED",
     current_node_id: "review",
     node_rail: [{ node_id: "review", state: "working", attempt: null }],
+    cancellation: notCancellableBlock("between-nodes"),
     terminal_hash: null,
     latest_event_cursor: null,
     started_at: "2026-08-18T15:00:00Z",

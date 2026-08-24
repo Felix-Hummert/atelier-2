@@ -2,6 +2,7 @@
   import { tick } from "svelte";
 
   import { decodeCanonicalBase64, type Run } from "../api/client";
+  import { decisionStatusCopy } from "../lib/decisionStatusCopy";
   import {
     reconciliationCommand,
     type ReconciliationDeterminationInput,
@@ -148,9 +149,9 @@
       {busy ? "Sending decision" : accepted || waiting.pending_command !== null ? "Decision pending" : "Decision uncertain"}
     </h2>
     {#if failureMessage !== null}
-      <div class="wait-alert" role="alert" aria-label="Send uncertain">
+      <div class="wait-alert" role="alert" aria-label={decisionStatusCopy.sendUncertain}>
         <span class="wait-alert-shape" aria-hidden="true">?</span>
-        <span><strong>Send uncertain</strong><small>{failureMessage}</small></span>
+        <span><strong>{decisionStatusCopy.sendUncertain}</strong><small>{failureMessage}</small></span>
       </div>
     {/if}
     {#if visibleCommand !== null}

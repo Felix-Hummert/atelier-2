@@ -61,6 +61,12 @@ describe("the V3 graph drawing", () => {
     expect(review.classList.contains("current")).toBe(true);
     expect(review.getAttribute("data-live")).toBe("true");
     expect(implement.getAttribute("data-live")).toBeNull();
+    // The running node breathes through the graph's own round pulse ring
+    // (keyed on data-live), never the rail's rectangular breathing glow: the
+    // global "live-work" class would have drawn a box-shadow whose right edge
+    // fell into the empty gap between nodes and read as a stray vertical bar
+    // (#598).
+    expect(review.classList.contains("live-work")).toBe(false);
   });
 
   it("carries each node's kind in its shape, and shows no type token beside its name", () => {

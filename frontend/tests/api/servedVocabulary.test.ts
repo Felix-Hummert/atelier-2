@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 import {
   NODE_STATES,
   PUBLIC_ATTEMPT_STATES,
+  RUN_NOT_CANCELLABLE_REASONS,
   RUN_STATES_V3,
+  problemDefinitions,
   agentConfigurationRevisionPageSchema,
   authProfileRevisionPageSchema,
   waitAnswerSchemaV3Schema,
@@ -31,10 +33,18 @@ const servedDocument = JSON.parse(
   components: {
     schemas: Record<
       string,
-      { enum?: string[]; properties?: Record<string, { enum?: string[] }> }
+      {
+        enum?: string[];
+        properties?: Record<
+          string,
+          { enum?: string[]; const?: string; anyOf?: Array<{ enum?: string[] }> }
+        >;
+      }
     >;
   };
 };
+
+const PROBLEM_TYPE_PREFIX = "urn:atelier2:problem:v1:";
 
 describe("the served vocabulary", () => {
   it("proves(the-browser-and-the-served-contract-know-the-same-node-states): the browser decodes exactly the node states the document serves", () => {
@@ -47,6 +57,36 @@ describe("the served vocabulary", () => {
     expect([...RUN_STATES_V3]).toEqual(
       servedDocument.components.schemas.RunResourceV3?.properties?.state?.enum
     );
+  });
+
+  it("proves(the-cockpit-and-the-served-contract-know-the-same-cancel-reasons): decodes exactly the run-cancel reasons the document serves", () => {
+    const served = servedDocument.components.schemas.RunCancellabilityResource;
+    const reasonEnum = served?.properties?.reason?.anyOf?.find(
+      (option) => option.enum !== undefined
+    )?.enum;
+
+    expect([...RUN_NOT_CANCELLABLE_REASONS]).toEqual(reasonEnum);
+  });
+
+  it("proves(the-cockpit-decodes-the-served-run-cancel-problems): mirrors exactly the run-cancel problems the document serves", () => {
+    const servedRunCancelProblems = Object.values(servedDocument.components.schemas)
+      .map((schema) => schema.properties?.type?.const)
+      .filter(
+        (constant): constant is string =>
+          typeof constant === "string" && constant.startsWith(PROBLEM_TYPE_PREFIX)
+      )
+      .map((urn) => urn.slice(PROBLEM_TYPE_PREFIX.length))
+      .filter((code) => code === "run-not-cancellable" || code.startsWith("run-cancellation-"))
+      .sort();
+
+    expect(servedRunCancelProblems).toEqual([
+      "run-cancellation-command-conflict",
+      "run-cancellation-overtaken-by-success",
+      "run-not-cancellable"
+    ]);
+    for (const code of servedRunCancelProblems) {
+      expect(problemDefinitions[code as keyof typeof problemDefinitions]).toBeDefined();
+    }
   });
 
   it("decodes exactly the agent attempt states the document serves", () => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { RunV3 } from "../../src/api/client";
 import { projectBoardGroups } from "../../src/lib/boardRows";
+import { notCancellableBlock } from "../support/runV3";
 
 function v3Run(state: RunV3["state"], runId: string): RunV3 {
   return {
@@ -16,6 +17,7 @@ function v3Run(state: RunV3["state"], runId: string): RunV3 {
     state,
     current_node_id: "build",
     node_rail: [{ node_id: "build", state: state === "FAILED" ? "failed" : "succeeded", attempt: null }],
+    cancellation: notCancellableBlock("between-nodes"),
     terminal_hash: null,
     latest_event_cursor: null,
     started_at: null,

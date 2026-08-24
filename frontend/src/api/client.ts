@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type {
+  CancelMutation,
   PublishMutation,
   ReconciliationMutation,
   StartMutation,
@@ -674,16 +675,17 @@ export const RUN_NOT_CANCELLABLE_REASONS = [
   "already-ended"
 ] as const;
 
+export type RunNotCancellableReason = (typeof RUN_NOT_CANCELLABLE_REASONS)[number];
+
 /**
  * Whether a V3 run can be operator-cancelled right now, said by the server.
  *
  * #439 D3 makes this the server's predicate, not the cockpit's guess: a
  * cancellable run names the `target_node_execution_id` a cancel fences on, and a
  * run that cannot be cancelled names the closed reason token instead. The server
- * sends it on every V3 run; it is decoded as optional here so this P4 wire
- * change does not force the field onto every existing V3 fixture before the
- * cancel control that reads it lands. That control -- and tightening this to
- * required with the server -- is #439 P5's.
+ * sends it on every V3 run, so it is decoded as required here: the cancel
+ * control reads it to know whether the run can be stopped and, when it cannot,
+ * which sentence to show instead of a grey nothing.
  */
 const runCancellabilitySchema = z
   .object({
@@ -714,7 +716,7 @@ const runV3Schema = z
     state: z.enum(RUN_STATES_V3),
     current_node_id: z.string().min(1),
     node_rail: z.array(nodeRailEntrySchema).min(1),
-    cancellation: runCancellabilitySchema.optional(),
+    cancellation: runCancellabilitySchema,
     terminal_hash: sha256.nullable(),
     latest_event_cursor: eventCursor.nullable(),
     started_at: z.string().nullable().optional(),
@@ -1210,6 +1212,7 @@ export type Run = z.infer<typeof runSchema>;
 export type RunV1 = z.infer<typeof runV1Schema>;
 export type RunV2 = z.infer<typeof runV2Schema>;
 export type RunV3 = z.infer<typeof runV3Schema>;
+export type RunCancellability = z.infer<typeof runCancellabilitySchema>;
 export type AnyRun = z.infer<typeof anyRunSchema>;
 export type RunEvent = z.infer<typeof runEventSchema>;
 export type WorkflowGraph = z.infer<typeof workflowGraphSchema>;
@@ -1310,6 +1313,7 @@ export interface CockpitApi {
   start(mutation: StartMutation): Promise<HttpResult<AnyRun>>;
   answer(mutation: WaitMutation): Promise<HttpResult<AnyRun>>;
   reconcile(mutation: ReconciliationMutation): Promise<HttpResult<Run>>;
+  cancelRun(mutation: CancelMutation): Promise<HttpResult<RunV3>>;
   getRun(publicReference: string): Promise<AnyRun>;
   getNodeDetail(publicReference: string, nodeId: string): Promise<NodeDetail>;
   getWorkflowRevision(revisionHash: string): Promise<WorkflowRevisionDetail>;
@@ -1571,6 +1575,26 @@ export function createCockpitApi(
         );
       }
       return result;
+    },
+    cancelRun: async (mutation) => {
+      const result = await requestJsonResult(
+        fetcher,
+        mutation.target,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: exactBody(mutation.body_base64)
+        },
+        [200, 202],
+        anyRunSchema
+      );
+      if (!isRunV3(result.value)) {
+        throw new CockpitRequestError("The cancel response answered with a run this page cannot read.");
+      }
+      if (result.value.public_run_reference !== mutation.public_run_reference) {
+        throw new CockpitRequestError("The cancel response named a different run than the one it was for.");
+      }
+      return { status: result.status, value: result.value };
     },
     getRun: (publicReference) =>
       requestJson(

@@ -348,7 +348,6 @@
                 type="button"
                 class="pipe-stage"
                 class:current={preview.id === currentNodeId}
-                class:live-work={nodeIsLiveWork(state)}
                 data-node-id={preview.id}
                 data-node-kind={preview.kind}
                 data-layer={slot.index}
@@ -599,7 +598,12 @@
     font-weight: var(--weight-heavy);
   }
 
-  .pipe-stage.live-work .pipe-shape::after {
+  /* The one breathing node wears exactly one heartbeat: a pulse ring that
+     follows the node's own round shape. It is keyed off `data-live` rather than
+     a `live-work` class so it never also inherits the rail's rectangular
+     breathing glow (styles.css), whose right edge fell into the empty gap
+     between nodes and read as a stray vertical bar (#598). */
+  .pipe-stage[data-live="true"] .pipe-shape::after {
     content: "";
     position: absolute;
     inset: calc(var(--pipe-stroke) * -2.5);
