@@ -22,6 +22,7 @@ from atelier2.adapters.dbos.node_binding_codec import (
     decode_node_binding,
     encode_node_binding,
 )
+from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import (
@@ -202,6 +203,7 @@ def _api_client(runtime: DbosRuntime) -> TestClient:
                 published_revision_registry=DbosCatalogStore(runtime.engine),
                 artifact_publisher=DbosArtifactStore(runtime.engine),
                 host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
+                queue_projection=DbosQueueProjectionStore(runtime.engine),
             ),
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),

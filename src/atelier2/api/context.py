@@ -11,6 +11,10 @@ from atelier2.application.admit_catalog_member import (
     AdmitMemberResult,
     FoundLineageResult,
 )
+from atelier2.application.admit_queue_item import (
+    AdmitQueueItemOutcome,
+    ListAdmittedQueueItemsOutcome,
+)
 from atelier2.application.answer_wait import AnswerWaitResult
 from atelier2.application.cancel_agent_attempt import CancelAgentAttemptResult
 from atelier2.application.occupancy import (
@@ -81,6 +85,7 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageQuery,
 )
 from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.queue_projection import AdmitQueueItem, QueueItemId
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.ports.agent_attempts import TransactionalAgentAttemptCanceller
@@ -97,6 +102,7 @@ from atelier2.ports.published_revisions import (
     CatalogResolver,
     PublishedRevisionRegistry,
 )
+from atelier2.ports.queue_projection import QueueProjection
 from atelier2.ports.run_events import (
     RunEventQueries,
 )
@@ -127,6 +133,7 @@ class ApiPorts:
     published_revision_registry: PublishedRevisionRegistry
     artifact_publisher: ArtifactPublisher
     host_configuration_channel: HostConfigurationChannel
+    queue_projection: QueueProjection
 
 
 @dataclass(frozen=True)
@@ -230,6 +237,10 @@ class ApiUseCases:
     get_project_root_revision: Callable[[str], GetProjectRootResult]
     publish_project_root_revision: Callable[
         [str, int, str], PublishProjectRootUseCaseResult
+    ]
+    admit_queue_item: Callable[[AdmitQueueItem], AdmitQueueItemOutcome]
+    list_admitted_queue_items: Callable[
+        [QueueItemId | None, int], ListAdmittedQueueItemsOutcome
     ]
 
 
