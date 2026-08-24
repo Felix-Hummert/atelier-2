@@ -27,6 +27,7 @@ number is never reused and never renumbered.
 - [ADR 0014: A declared loop repeats a stretch of one graph, and the round is the fourth dimension of a node execution identity](0014-in-graph-rounds.md)
 - [ADR 0015: A declared verdict steers the loop's back edge, under a contract this product owns](0015-verdict-steered-continuation.md)
 - [ADR 0016: The queue projection owns one item's derived identity and its CAS-guarded admission](0016-queue-projection-identity.md)
+- [ADR 0017: An installation-owned Account holds every credential; delegated grants and stored keys are peer auth modes, and the app holds only references](0017-account-credential-model.md)
 
 Each record carries its own status, and this index deliberately does not repeat
 it, because a second copy of a status is the next thing to go stale. How much of
