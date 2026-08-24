@@ -3,11 +3,15 @@ import { writable, type Writable } from "svelte/store";
 import type { CockpitRoute } from "./route";
 
 /**
- * The four destinations the target-UI rail names (mockup v5): Chat, Board,
- * Workflows, History. Each one opens a page this cockpit serves — the rail
- * holds no disabled item, because a rail entry that cannot be clicked is a
- * promise the house does not keep. What a page cannot do yet, that page says
- * in its own words.
+ * The four destinations the target-UI rail names: Workbench, Board, Workflows,
+ * History. Each one opens a page this cockpit serves — the rail holds no
+ * disabled item, because a rail entry that cannot be clicked is a promise the
+ * house does not keep. What a page cannot do yet, that page says in its own
+ * words.
+ *
+ * The Workbench keeps the `/atelier/chat` address it grew from (issue #580):
+ * the surface became the composer plus its pinned decisions, but its served
+ * path is a durable bookmark this rename leaves untouched.
  */
 export type WorkshopDestination = {
   id: "chat" | "board" | "workflows" | "history";
@@ -16,7 +20,7 @@ export type WorkshopDestination = {
 };
 
 export const WORKSHOP_DESTINATIONS: readonly WorkshopDestination[] = [
-  { id: "chat", label: "Chat", path: "/atelier/chat" },
+  { id: "chat", label: "Workbench", path: "/atelier/chat" },
   { id: "board", label: "Board", path: "/atelier" },
   { id: "workflows", label: "Workflows", path: "/atelier/workflows" },
   { id: "history", label: "History", path: "/atelier/history" }

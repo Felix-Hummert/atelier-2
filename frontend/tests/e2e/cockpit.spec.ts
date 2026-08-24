@@ -45,7 +45,7 @@ test("the target-UI shell names today's doors and does not fake the rest", async
   await expect(rail.getByRole("link", { name: "Board" })).toBeVisible();
   await expect(rail.getByRole("link", { name: "Workflows" })).toBeVisible();
   await expect(rail.getByRole("link", { name: "History" })).toBeVisible();
-  await expect(rail.getByRole("link", { name: "Chat" })).toBeVisible();
+  await expect(rail.getByRole("link", { name: "Workbench" })).toBeVisible();
   await expect(rail.getByText(THE_ONE_PROJECT, { exact: true })).toBeVisible();
   await expect(rail.getByText("switch project")).toBeVisible();
   await expect(rail.getByText("Settings", { exact: true })).toBeVisible();

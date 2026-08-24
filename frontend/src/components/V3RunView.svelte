@@ -8,6 +8,7 @@
     type RunV3,
     type WorkflowRevisionDetail
   } from "../api/client";
+  import { decodeUtf8Base64 } from "../lib/exactBytes";
   import { humanErrorMessage } from "../lib/humanRefusal";
   import {
     MutationJournal,
@@ -231,16 +232,6 @@
         ) ?? null)
       : null;
 
-  function decodedText(base64: string): string | null {
-    try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(
-        Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
-      );
-    } catch {
-      return null;
-    }
-  }
-
   let waitSources: readonly WaitContextSource[] = [];
   let waitSourcesLoading = false;
   let waitContextKey = "";
@@ -268,7 +259,7 @@
           const source = await cockpitApi.getNodeDetail(run.public_run_reference, nodeId);
           return {
             nodeId,
-            text: source.answer === null ? null : decodedText(source.answer.value_base64)
+            text: source.answer === null ? null : decodeUtf8Base64(source.answer.value_base64)
           };
         } catch {
           return { nodeId, text: null };
@@ -301,7 +292,7 @@
         waitQuestion = { kind: "absent" };
         return;
       }
-      const text = decodedText(asked.job_base64);
+      const text = decodeUtf8Base64(asked.job_base64);
       if (text === null) {
         waitQuestion = { kind: "failed", message: "The wait question could not be read." };
         return;

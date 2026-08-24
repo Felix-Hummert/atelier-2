@@ -7,7 +7,7 @@ describe("the workshop rail names four destinations", () => {
     expect(
       WORKSHOP_DESTINATIONS.map((destination) => [destination.label, destination.path])
     ).toEqual([
-      ["Chat", "/atelier/chat"],
+      ["Workbench", "/atelier/chat"],
       ["Board", "/atelier"],
       ["Workflows", "/atelier/workflows"],
       ["History", "/atelier/history"]
