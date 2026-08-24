@@ -513,6 +513,25 @@ to a run that is not waiting is refused as the state conflict it is. The admitte
 answer is kept as the event's own bytes and carries the run to the next node, or, where
 the Wait node is the line's sink, to the run's own terminal hash.
 
+The same V3 run page lets the operator stop an honestly-cancellable run. Whether a
+run can be cancelled is the server's word, published on the run resource as a closed
+predicate rather than guessed from the rail: a run is cancellable only while it is
+`STARTED` on an agent node whose live attempt this cancel could stop, and every other
+standing carries its own operator sentence — between two nodes, waiting for a person, a
+node that runs no agent, already cancelling, already ended — instead of a grey disabled
+button. Cancelling is a staged decision: a real question naming the consequence,
+confirmed before the irreversible boundary, whose command travels the same audited
+pending/durably-accepted/uncertain/retry path an answer does, keyed by one idempotency
+key so a lost reply is resent as the same command and never a second cancellation. One
+durable winner is projected honestly. When a concurrent success finished before the
+cancel reached it, the run keeps going and the cockpit says so rather than reporting a
+false cancellation; when the cancel wins, the attempt's cleanup ends the run under its
+own terminal word `CANCELLED` — not `FAILED` — with a `cancelled-by-operator` receipt on
+the stopped node, and a server restart mid-cancel still lifts the run `CANCELLED` under
+the same command identity. A reload during an unconfirmed cancel stays honest, offering
+Retry and Discard rather than claiming the run is stopping, while a reload during an
+accepted cancel keeps reading "Stopping this run".
+
 What makes a V3 agent node executable now includes the shape of its answer. The
 one enforced shape is `single-json-output/v1`: exactly one declared output, whose
 whole decoded bytes are its value. A node declaring none — bytes no schema could
@@ -567,13 +586,13 @@ reason back, and an ending nothing recorded is reported as exactly that rather
 than as an empty one. Standard error stops at the receipt: the `AGENT_FAILED`
 event keeps carrying the bare failure code, so the event stream stays a bounded
 surface anybody may subscribe to. The bounded vocabulary deliberately not
-written here: the blocked receipt disposition, and, until #439 P3 gives it a
-writer, the cancelled receipt disposition on the running node and the run's
-own terminal word. #439 P1 names both tokens durably --
-`NodeReceiptReason.CANCELLED_BY_OPERATOR` and `RunState.CANCELLED` -- but no
-writer constructs either yet: a migrated store admits the run word and the API
-can serve it, and nothing produces it before an operator's V3 run-cancel
-command lands.
+written here is now only the blocked receipt disposition; the cancelled receipt
+disposition on the running node and the run's own terminal word have their
+writer. #439 named both tokens durably --
+`NodeReceiptReason.CANCELLED_BY_OPERATOR` and `RunState.CANCELLED` -- and an
+operator's V3 run-cancel command constructs them: its attempt's cleanup writes
+the `cancelled-by-operator` receipt and lifts the run `CANCELLED` under the same
+command identity, on either carrier and across a restart taken mid-cancel.
 
 An agent is authored as one markdown file. Its frontmatter is a closed set of
 `name`, `description`, an optional `model`, and an optional `tools` declaration;
@@ -637,7 +656,11 @@ node execution, while the receipt list and event page retain every round and
 stream preparation agrees with the page about the one terminal event;
 an `invalid-request` names the field and reason the validator already knew;
 answer a waiting node; cancel the current V2 Agent attempt with an optional
-single replacement; submit an accountable reconciliation; and follow the
+single replacement; cancel a V3 run through `POST /runs/{ref}/cancellations`,
+which carries only the operator's opaque idempotency key and the node execution
+its confirmation fenced on and answers the closed cancellation vocabulary
+(accepted, terminal retry, overtaken by success, not cancellable, command
+conflict); submit an accountable reconciliation; and follow the
 closed durable event history as a resumable server-sent event stream. A
 subscriber who does not already know a run holds `GET /events`; opening that
 stream is the subscription. The cockpit holds that stream, so a Wait or an

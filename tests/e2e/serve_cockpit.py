@@ -64,6 +64,10 @@ nodes:
 """
 RUN_IDS = ("found-run", "absent-run")
 TIMEOUT_SECONDS = 10.0
+# A held V3 attempt parks in `working` this long so the browser has ample margin
+# to reach and confirm the cancel by keyboard; the operator's cancel ends it far
+# sooner, so this only bounds a run nobody stops.
+HELD_ATTEMPT_SECONDS = 30.0
 
 
 class RuntimeCloser(Protocol):
@@ -177,6 +181,30 @@ class DelayedAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
         self.opened = DelayedAgentExecutor(
             self.output, [], self.lifecycle, self.provider
         )
+        return self.opened
+
+
+class HeldAgentExecutor(RecordingAgentExecutorV2):
+    """Holds a V3 node in `working` until an operator's cancel stops it.
+
+    The browser needs a genuinely live V3 attempt to reach and confirm the cancel
+    decision by keyboard (#439 P6). A short delay races the journey, so this one
+    parks the node long enough for a person to open, confirm and watch the run
+    stop -- bounded, so a forgotten run never hangs the server.
+    """
+
+    def decode_process_completion(
+        self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
+    ) -> AgentExecutionResult | AgentExecutionFailure:
+        threading.Event().wait(HELD_ATTEMPT_SECONDS)
+        return super().decode_process_completion(invocation, completion)
+
+
+class HeldAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
+    def open(self) -> RecordingAgentExecutorV2:
+        self.opens += 1
+        self.lifecycle.append(f"open:{self.provider}")
+        self.opened = HeldAgentExecutor(self.output, [], self.lifecycle, self.provider)
         return self.opened
 
 
@@ -387,6 +415,10 @@ def main() -> None:
     delayed = DelayedAgentExecutorFactory(
         "e2e-v3-slow", "delayed/v1", "e2e-delayed-process", b"V3 provider bytes"
     )
+    # Held long enough for the browser to stop it by hand (#439 P6 cancel proof).
+    held = HeldAgentExecutorFactory(
+        "e2e-v3-held", "held/v1", "e2e-held-process", b'"V3 provider bytes"'
+    )
 
     def runtime(
         settings: DbosRuntimeSettings,
@@ -394,7 +426,7 @@ def main() -> None:
         agent_factory: AgentExecutorFactory,
         agent_factories_v2: tuple[AgentExecutorFactoryV2, ...],
     ) -> DbosRuntime:
-        factories = (*agent_factories_v2, factory, immediate, delayed)
+        factories = (*agent_factories_v2, factory, immediate, delayed, held)
         # The e2e runtime root lives inside the repository checkout, which no
         # scratch root may, so the leased workspaces stand outside it.
         return DbosRuntime(

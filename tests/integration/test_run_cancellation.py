@@ -31,6 +31,8 @@ from atelier2.adapters.dbos.schema import node_receipts_v3, run_events, runs
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.projection.runs import run_resource
+from atelier2.api.wire.resources import RunResourceV3
 from atelier2.application.cancel_run import (
     CancelAccepted,
     CancelTerminalRetry,
@@ -82,6 +84,7 @@ from atelier2.ports.agent_attempts import (
     RunnerTerminalEvidenceCommitted,
 )
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
+from atelier2.ports.run_queries import RunFound
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.integration.test_runner_terminal_evidence_store import _armed, _v3_armed
 from tests.integration.test_v3_agent_start import publish as publish_v3_workflow
@@ -101,6 +104,7 @@ from tests.scenarios.agents import (
     agent_scratch_root,
     failing_agent_executor_factory,
 )
+from tests.scenarios.api import durable_queries
 
 runtime = _loop_runtime
 
@@ -726,6 +730,67 @@ def test_an_attempt_route_cancel_never_lifts_the_run(tmp_path: Path) -> None:
         assert canonical_run.state is RunState.STARTED
         assert (
             _node_receipt(runtime.engine, execution.request.node_execution_id) is None
+        )
+    finally:
+        runtime.close()
+
+
+def test_a_started_run_with_a_terminal_current_attempt_reads_between_nodes_both_ways(
+    tmp_path: Path,
+) -> None:
+    """#439 P6: one durable state, one honest sentence on both paths.
+
+    An attempt-route cancel ends this node's attempt `CANCELLED` yet leaves the
+    run `STARTED` (`is_operator_run_cancel` refuses that command's lift). A fresh
+    operator run-cancel now meets a running run whose current attempt is already
+    terminal. The projection the cockpit reads and the store's refusal to the
+    submitted command must name the *same* reason -- the run is not ended, it is
+    between nodes -- or the operator sees one sentence before pressing and a
+    different one after.
+    """
+    runtime, store, execution = _v3_prepared(tmp_path, "run-cancel/between-both-ways")
+    try:
+        prepared = store.load(execution.attempt_id)
+        attempt_route = CancelAgentAttemptRequest(
+            execution.request.run_id,
+            execution.attempt_id,
+            "attempt-route-command",
+            prepared.state_version,
+            AgentAttemptReplacement.NONE,
+        )
+        assert isinstance(
+            store.request_cancellation(attempt_route), AgentAttemptCancellationAccepted
+        )
+        terminal = store.attest_cancellation_cleanup(
+            attempt_route,
+            AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
+            _LEGACY_OWNER,
+            _LEGACY_GENERATION,
+        )
+        assert terminal.attempt.state is AgentAttemptState.CANCELLED
+        with runtime.engine.connect() as connection:
+            assert load_run(connection, execution.request.run_id).state is (
+                RunState.STARTED
+            )
+
+        submitted = store.request_run_cancellation(
+            CancelRunRequest(
+                execution.request.run_id,
+                "operator-between-both-ways-1",
+                execution.request.node_execution_id,
+            )
+        )
+        found = durable_queries(runtime.engine).get_run(execution.request.run_id)
+        assert isinstance(found, RunFound)
+        resource = run_resource(found.projection)
+        assert isinstance(resource, RunResourceV3)
+
+        assert submitted == RunCancellationNotCancellable(
+            RunCancellationRefusal.BETWEEN_NODES
+        )
+        assert resource.cancellation.cancellable is False
+        assert (
+            resource.cancellation.reason == RunCancellationRefusal.BETWEEN_NODES.value
         )
     finally:
         runtime.close()
