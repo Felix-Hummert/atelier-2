@@ -142,6 +142,13 @@ test("captures every surface at both widths", async ({ page }) => {
   const schemaHash = await anyJsonSchema(page);
   const agentHash = await immediateAgent(page);
 
+  // The Workbench before anything needs a person: the pinned region greets
+  // rather than apologises, and the composer is already within reach (#580).
+  await page.goto("/atelier/chat");
+  await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
+  await expect(page.getByText("Nothing needs you right now.")).toBeVisible();
+  await shoot(page, "workbench-empty");
+
   const iterate = await page.request.post("/atelier/api/v1/workflow-revisions", {
     headers: { "content-type": "application/yaml" },
     data: [
@@ -202,11 +209,14 @@ test("captures every surface at both widths", async ({ page }) => {
   }).toPass({ timeout: 20_000 });
 
   await page.goto("/atelier/chat");
-  await expect(page.getByRole("heading", { name: "Chat" })).toBeVisible();
-  await shoot(page, "chat-empty");
+  await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
+  // The waiting run staged above is pinned here: the decision that needs a
+  // person, held in the "Needs you" region so it never scrolls away (#580).
+  await expect(page.getByRole("heading", { name: "The review is green. Merge this, or name the blocking defect." })).toBeVisible();
+  await shoot(page, "workbench-needs-you");
   await page.getByLabel("Message").fill("Finish the preview door and fix the wait bug, in parallel.");
   await page.getByRole("button", { name: "Send" }).click();
-  await shoot(page, "chat-said");
+  await shoot(page, "workbench-said");
 
   await page.goto("/atelier");
   await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();

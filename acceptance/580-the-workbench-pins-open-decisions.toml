@@ -1,0 +1,14 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/580"
+
+# First Workbench slice: the chat surface becomes a workshop. The rail leads to
+# Workbench, the composer stays within reach, and every open decision is pinned
+# in a fixed "Needs you" region so a request can never be lost in the growing
+# stream (the lived failure mode this ruling names). A boolean or enum decision
+# is answered inline on the same audited path the Board card (#572) and the run
+# page use; a written decision links to the run page. Cards carrying artefacts
+# in either direction are a named follow-up slice, not this one.
+
+[[sentence]]
+id = "the-workbench-pins-an-open-decision-until-it-is-answered"
+text = "The Workbench holds every open decision in a fixed region that does not scroll with the conversation: the decision stays put while the operator keeps typing and survives leaving the surface and returning, until it is answered. Answering a boolean or enum decision inline sends the exact answer on the same audited path the Board card and the run page share, and the pin is retired only once the run has moved past that decision."

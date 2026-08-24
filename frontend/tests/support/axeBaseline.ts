@@ -6,13 +6,13 @@
  *
  * Every surface the rail can reach, plus the two a rail destination leads
  * into (a workflow's detail and a run), is scanned under wcag2a / wcag2aa /
- * wcag22aa. Chat and the workflow detail joined in #516: a surface that is
+ * wcag22aa. The Workbench (grown from Chat) and the workflow detail joined in #516: a surface that is
  * not on this list is a surface whose accessibility nothing checks, which is
  * how the Workflows catalog once shipped unscanned (#526).
  */
 
 export const CORE_SURFACES = [
-  "chat",
+  "workbench",
   "studio",
   "project",
   "new-run",
