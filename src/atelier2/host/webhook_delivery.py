@@ -44,6 +44,9 @@ from atelier2.application.deliver_attention_webhook import (
     NoAttentionEventsPending,
     deliver_attention_webhook,
 )
+from atelier2.contracts.runs import RunId
+from atelier2.contracts.webhook_delivery import WebhookEventPayload
+from atelier2.contracts.when import RecordedAt
 from atelier2.ports.run_events import RunEventQueries
 from atelier2.ports.webhook_delivery import WebhookDeliveryPublisher
 from atelier2.ports.webhook_transport import WebhookTransport
@@ -119,6 +122,8 @@ class WebhookDeliveryLoop:
         self._poll_interval_seconds = poll_interval_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._delivered_at_instant: set[tuple[RunId, int]] = set()
+        self._delivered_instant: RecordedAt | None = None
 
     def deliver_pending(self) -> None:
         """Deliver every currently pending event, in order, until idle or stuck.
@@ -130,10 +135,15 @@ class WebhookDeliveryLoop:
 
         while not self._stop.is_set():
             outcome = deliver_attention_webhook(
-                self._publisher, self._queries, self._transport, self._signing_key
+                self._publisher,
+                self._queries,
+                self._transport,
+                self._signing_key,
+                tuple(self._delivered_at_instant),
             )
             match outcome:
-                case AttentionWebhookDelivered():
+                case AttentionWebhookDelivered(payload):
+                    self._record_delivered(payload)
                     continue
                 case NoAttentionEventsPending():
                     return
@@ -155,6 +165,21 @@ class WebhookDeliveryLoop:
                         type(outcome).__name__,
                     )
                     return
+
+    def _record_delivered(self, payload: WebhookEventPayload) -> None:
+        """Remember what this loop delivered at the cursor's current instant.
+
+        The durable cursor holds one identity, so two attention events sharing
+        one recorded-at second would pingpong it forever (`#627`). This is the
+        SSE stream's same-instant exclusion set held between decision calls:
+        it resets when the second advances, and losing it on a restart only
+        redelivers same-second siblings -- at-least-once, never a loss.
+        """
+
+        if payload.recorded_at != self._delivered_instant:
+            self._delivered_at_instant.clear()
+            self._delivered_instant = payload.recorded_at
+        self._delivered_at_instant.add((payload.run_id, payload.event_sequence))
 
     def start(self) -> None:
         if self._thread is not None:
