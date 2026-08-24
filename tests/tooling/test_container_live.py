@@ -104,9 +104,11 @@ def wait_at(phase: str) -> None:
     while not release.exists():
         time.sleep(0.01)
 def label(name: str, origin: bool = False) -> str:
-    # A volume or network keeps its creation-time (origin) commit/tree labels
-    # for as long as a preserving update reuses it; only the container is
-    # relabelled with the currently running commit/tree on every redeploy.
+    # The volume keeps its creation-time (origin) commit/tree labels for as
+    # long as a preserving update reuses it -- Compose never touches it. The
+    # network has no such continuity: Compose recreates it on every `update`,
+    # labelling it with the currently running commit/tree just like the
+    # container.
     if drift == "label" and name == "atelier2.deployment":
         return "foreign"
     if name == "atelier2.deployment":
@@ -302,7 +304,7 @@ if arguments[:2] in (["volume", "inspect"], ["network", "inspect"]):
     elif template == "{{.Id}}" and resource_type == "network":
         print(os.environ.get("ATELIER2_TEST_INITIAL_NETWORK_ID", "f" * 64 if drift == "network" else NETWORK_ID))
     elif "index .Labels" in template:
-        print(label(template.split('"')[1], origin=True))
+        print(label(template.split('"')[1], origin=(resource_type == "volume")))
     else: raise SystemExit(47)
     raise SystemExit(0)
 if arguments and arguments[0] == "stop":
@@ -1049,10 +1051,14 @@ def test_double_uninstall_is_harmless(tmp_path: Path) -> None:
     assert not installation_directory(tmp_path).exists()
 
 
-def commit_a_second_change(repository: Path) -> None:
-    (repository / "payload.txt").write_text("second\n", encoding="utf-8")
+def commit_a_change(repository: Path, payload: str) -> None:
+    (repository / "payload.txt").write_text(payload, encoding="utf-8")
     run_git(repository, "add", "--all")
-    run_git(repository, "commit", "--quiet", "--message", "second change")
+    run_git(repository, "commit", "--quiet", "--message", f"{payload.strip()} change")
+
+
+def commit_a_second_change(repository: Path) -> None:
+    commit_a_change(repository, "second\n")
 
 
 @pytest.mark.proves("an-update-migrates-the-preserved-store-and-starts-on-it")
@@ -1090,6 +1096,39 @@ def test_update_migrates_the_preserved_store_and_starts_on_it(
     assert stopped < migrated < started_new
     removed_image = next(args for args in mutations if args[:1] == ["rmi"])
     assert removed_image[-1] == before["image_id"]
+
+
+@pytest.mark.proves("an-update-migrates-the-preserved-store-and-starts-on-it")
+def test_two_consecutive_preserving_updates_leave_status_running(
+    tmp_path: Path,
+) -> None:
+    # Compose recreates the network on every update (labelling it with the
+    # then-current commit, just like the container) while the volume is kept
+    # untouched. A network-identity check pinned to the frozen store commit
+    # (the volume's own identity) would therefore drift on the very next
+    # update; verify_installed_configuration must judge the network by the
+    # commit that is actually running, exactly like it judges the container.
+    repository = installed_repository(tmp_path)
+
+    commit_a_change(repository, "second\n")
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+    shutil.rmtree(tmp_path / "docker-context")
+    first_update = run_live(repository, tmp_path, "update")
+    assert first_update.returncode == 0, first_update.stderr
+
+    commit_a_change(repository, "third\n")
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+    shutil.rmtree(tmp_path / "docker-context")
+    second_update = run_live(repository, tmp_path, "update")
+    assert second_update.returncode == 0, second_update.stderr
+
+    record = read_record(tmp_path)
+    assert record["source_commit"] == run_git(repository, "rev-parse", "HEAD")
+    assert record["source_commit"] != record["store_source_commit"]
+
+    status = run_live(repository, tmp_path, "status")
+    assert status.returncode == 0, status.stderr
+    assert status.stdout.strip() == "RUNNING"
 
 
 @pytest.mark.proves("a-refused-migration-restarts-the-previous-container-untouched")

@@ -214,11 +214,15 @@ resource_label() {
   docker "${resource_type}" inspect --format "{{index .Labels \"${label}\"}}" "${resource}"
 }
 resource_identity_is_exact() {
-  # Volume and network identity is judged by the commit that created them
+  # The volume's identity is judged by the commit that created it
   # (record[store_source_commit/tree]), never the commit currently running
-  # (record[source_commit/tree]): a preserving `update` keeps both resources
-  # in place across every later redeploy, so their creation-time labels stay
-  # frozen at the store's origin while the running code moves on.
+  # (record[source_commit/tree]): a preserving `update` keeps the volume in
+  # place across every later redeploy, so its creation-time labels stay
+  # frozen at the store's origin while the running code moves on. The
+  # network has no such continuity: Compose recreates it on every `update`
+  # (its config hash changes with the new source labels, just like the
+  # container's), so its identity is judged against record[source_commit/tree]
+  # like the container, not the store's frozen origin.
   local resource_type="$1" resource="$2" expected_commit="$3" expected_tree="$4"
   [[ "$(resource_label "${resource_type}" "${resource}" atelier2.deployment)" == "${deployment}" ]] \
     && [[ "$(resource_label "${resource_type}" "${resource}" atelier2.source.commit)" == "${expected_commit}" ]] \
@@ -397,7 +401,7 @@ verify_installed_configuration() {
   [[ "$(docker network inspect --format '{{.Name}}' "${record[network_name]}")" == "${record[network_name]}" ]] || return 1
   [[ "$(docker network inspect --format '{{.Id}}' "${record[network_name]}")" == "${record[network_id]}" ]] || return 1
   resource_identity_is_exact network "${record[network_name]}" \
-    "${record[store_source_commit]}" "${record[store_source_tree]}" || return 1
+    "${record[source_commit]}" "${record[source_tree]}" || return 1
   [[ "$(docker_container_field '{{len .NetworkSettings.Networks}}')" == "1" ]] || return 1
   [[ "$(docker_container_field "{{with index .NetworkSettings.Networks \"${record[network_name]}\"}}{{.NetworkID}}{{end}}")" == "${record[network_id]}" ]] || return 1
   [[ "$(configuration_sha256)" == "${record[configuration_sha256]}" ]]
