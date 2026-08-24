@@ -1,29 +1,85 @@
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import Protocol
 
+import sqlalchemy as sa
+
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
+from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.schema import runs as runs_table
+from atelier2.adapters.dbos.starter import (
+    DbosDurableRunStarter,
+    DbosWorkflowRevisionPublisher,
+)
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
+from atelier2.adapters.free_runner_executor import (
+    FreeRunnerExecutorFactory,
+    FreeRunnerHoldJob,
+    FreeRunnerPrintJob,
+    encode_free_runner_job,
+    free_runner_auth_reference,
+    refuse_unbound_runner_a_request,
+)
+from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.application.run_runner_session import encode_runner_ready_payload
 from atelier2.contracts.agent_attempts import (
+    AgentAttemptId,
     RunnerBindingConflict,
     RunnerGenerationBinding,
     RunnerGenerationId,
     RunnerInvocationId,
+    RunnerProviderResult,
     RunnerTerminalEvidenceAckTombstone,
     RunnerTerminalEvidenceEnvelope,
     RunnerTerminalEvidenceHash,
     RunnerTerminalEvidenceReadback,
 )
+from atelier2.contracts.agents import (
+    AgentBinding,
+    AgentBindingSet,
+    AgentConfigurationRevision,
+    AgentConfigurationRevisionFormatVersion,
+    AgentExecutionCapability,
+    AgentExecutionRequestV2,
+    AgentExecutionResult,
+    AgentExecutorOperationalIdentity,
+    AgentExecutorRevision,
+    AgentRole,
+    AuthMode,
+    AuthProfileRevision,
+    ProviderId,
+)
+from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
+from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
+from atelier2.contracts.run_bindings import RunV3
+from atelier2.contracts.runner_manifests import (
+    ABSENT_PROVIDER_CLI,
+    RunnerManifestV1,
+    candidate_runner_manifest,
+)
+from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSessionMessage
 from atelier2.contracts.runner_terminal_evidence_codec import (
     RunnerTerminalEvidenceRecordMissing,
     decode_runner_terminal_evidence_record,
     encode_runner_terminal_evidence_record,
 )
+from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.ports.agent_attempts import (
     RunnerTerminalEvidenceAcknowledgement,
     RunnerTerminalEvidenceAcknowledgementUnavailable,
     RunnerTerminalEvidenceSourceReadback,
 )
+from atelier2.ports.agent_executions import AgentExecutorRegistry
+from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
 
 
 class SimulatedRunnerCrash(RuntimeError):
@@ -251,3 +307,243 @@ class FakeRunner:
             raise RunnerBindingConflict(
                 "runner readback differs from requested binding"
             )
+
+
+# ---------------------------------------------------------------------------
+# A durable, prepared free-runner attempt and a scripted Runner peer for it
+# (`#540` C-3.4) -- reused by `execute_agent_attempt_on_runner`'s own
+# integration test to durably prepare a run exactly as
+# `tests/witness/runner_candidate_core.py`'s Core process does, and to play
+# the Runner side of one session directly against a real `CoreRunnerSession`
+# without a socket. The transport and wire protocol themselves are already
+# pinned by `tests/integration/test_runner_session_wire.py`; what these
+# helpers exist for is standing up a caller's own composition around an
+# already-accepted session.
+# ---------------------------------------------------------------------------
+
+FREE_RUNNER_OUTPUT_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b"true")
+
+
+def _free_runner_workflow_document(
+    job: FreeRunnerPrintJob | FreeRunnerHoldJob,
+) -> bytes:
+    """The one-node workflow whose authored instruction is the job document --
+    the same shape `tests/witness/runner_candidate_core.py::_document_for`
+    builds, generalized for reuse."""
+    instruction_literal = json.dumps(encode_free_runner_job(job).decode("utf-8"))
+    return (
+        b"format_version: 3\n"
+        b"name: Prepared free Runner attempt\n"
+        b"nodes:\n"
+        b"  - id: execute\n"
+        b"    type: agent\n"
+        b"    role: runner\n"
+        b"    mode: headless\n"
+        b"    instruction: " + instruction_literal.encode("utf-8") + b"\n"
+        b"    outputs:\n"
+        b"      - name: result\n"
+        b"        schema:\n"
+        b"          ref: result-schema\n"
+        b"          revision: "
+        + FREE_RUNNER_OUTPUT_SCHEMA.revision_hash.value.encode("ascii")
+        + b"\n"
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedFreeRunnerAttempt:
+    """A durable V3 run with one free-runner agent node, started through to
+    its one attempt's readiness -- everything a Runner-lease driver needs
+    durably true before it ever calls `store.prepare`."""
+
+    runtime: DbosRuntime
+    store: DbosAgentAttemptStore
+    execution: AgentAttemptExecution
+    auth_reference: str
+
+
+def prepared_free_runner_attempt(
+    root: Path,
+    run_id_value: str,
+    job: FreeRunnerPrintJob | FreeRunnerHoldJob,
+) -> PreparedFreeRunnerAttempt:
+    workspace = root / "workspace"
+    workspace.mkdir(mode=0o700, exist_ok=True)
+    runtime = DbosRuntime(
+        DbosRuntimeSettings(
+            root / "core.sqlite3",
+            "execute-agent-attempt-on-runner-test",
+            agent_scratch_root=workspace,
+        ),
+        LoopbackEffectAdapterFactory(
+            root / "effects.sqlite3",
+            AdapterRevision("execute-agent-attempt-on-runner-test/v1"),
+            EffectDestination("execute-agent-attempt-on-runner-test"),
+        ),
+        ExactOutputAgentExecutorFactory(),
+        (),
+    )
+    runtime.initialize_storage()
+    DbosCatalogStore(runtime.engine).publish_revision(FREE_RUNNER_OUTPUT_SCHEMA)
+    runner_registry = AgentExecutorRegistry((FreeRunnerExecutorFactory(),))
+    catalog = DbosAgentConfigurationCatalog(runtime.engine, runner_registry)
+    auth = AuthProfileRevision(
+        "candidate", 1, ProviderId("fake-free"), AuthMode.API_KEY
+    )
+    catalog.publish_auth_profile_revision(auth)
+    configuration = AgentConfigurationRevision(
+        "free",
+        auth.revision_hash,
+        AgentExecutorRevision("fake-free/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    catalog.publish_agent_configuration_revision(configuration)
+    workflow = WorkflowRevision(_free_runner_workflow_document(job))
+    DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
+    run_id = RunId(run_id_value)
+    started = DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runner_registry
+    ).start_published(
+        StartPublishedRunRequestV2(
+            run_id,
+            workflow.revision_hash,
+            AgentBindingSet(
+                (AgentBinding(AgentRole("runner"), configuration.revision_hash),)
+            ),
+        )
+    )
+    if not isinstance(started, DurableRunCreated):
+        raise TypeError(f"scenario run could not start: {started!r}")
+    with runtime.engine.connect() as connection:
+        record = (
+            connection.execute(
+                sa.select(runs_table).where(runs_table.c.run_id == run_id.value)
+            )
+            .mappings()
+            .one()
+        )
+        run = run_from_record_with_bindings(connection, record)
+    if not isinstance(run, RunV3):
+        raise TypeError("scenario run did not resolve its V3 run")
+    request = AgentExecutionRequestV2(
+        NodeExecutionId.for_node(run_id, workflow.revision_hash, "execute"),
+        run_id,
+        workflow.revision_hash,
+        "execute",
+        run.agent_bindings[0],
+        AgentExecutorOperationalIdentity("free-runner-candidate"),
+        encode_free_runner_job(job),
+    )
+    refuse_unbound_runner_a_request(request)
+    execution = AgentAttemptExecution(
+        request,
+        AgentAttemptId.for_execution(request.node_execution_id, request.request_hash),
+        1,
+    )
+    store = DbosAgentAttemptStore(runtime.engine)
+    reference = free_runner_auth_reference(request.resolved_binding.auth_profile).value
+    return PreparedFreeRunnerAttempt(runtime, store, execution, reference)
+
+
+def free_runner_candidate_manifest(**overrides: object) -> RunnerManifestV1:
+    """A manifest for the fixed free-runner candidate program -- self-
+    consistent for a scripted exchange this module fully controls, rather
+    than measured against a live host the way
+    `tests/integration/test_runner_session_wire.py::_host_manifest` is."""
+    manifest = candidate_runner_manifest(
+        source_commit="a" * 40,
+        image_digest="sha256:" + "b" * 64,
+        required_landlock_abi=1,
+        executor_revision="fake-free/v1",
+        executor_operational_identity="free-runner-candidate",
+        provider_id="fake-free",
+        auth_mode="api_key",
+        requested_capability="headless",
+    )
+    return replace(manifest, **overrides) if overrides else manifest
+
+
+class RunnerSessionAdvancerLike(Protocol):
+    """The narrow shape `drive_free_runner_session_to_released` needs from a
+    session -- structurally `CoreRunnerSession`, declared here so this
+    scenario module names no application type of its own."""
+
+    def accept(self, frame: RunnerSessionFrame) -> RunnerSessionFrame | None: ...
+
+    def accept_terminal_record(
+        self, frame: RunnerSessionFrame
+    ) -> RunnerSessionFrame | None: ...
+
+
+def drive_free_runner_session_to_released(
+    session: RunnerSessionAdvancerLike,
+    binding: RunnerGenerationBinding,
+    invocation_id: RunnerInvocationId,
+    manifest: RunnerManifestV1,
+    auth_reference: str,
+    output_bytes: bytes,
+    *,
+    resend_as_tombstone: bool = False,
+) -> RunnerTerminalEvidenceEnvelope:
+    """Play the Runner side of one free-runner session directly against a
+    real, already-accepted `CoreRunnerSession`, reaching RELEASED without a
+    socket. Returns the terminal evidence envelope this exchange committed
+    (its content, not necessarily the exact bytes on the wire -- see
+    `resend_as_tombstone`), so a caller can assert against it.
+
+    `resend_as_tombstone` plays a *resumed* candidate: one whose journal
+    already tombstoned this exact evidence because it received Core's ACK
+    before this exact Core process died. TERMINAL_AVAILABLE still offers the
+    same evidence hash -- the candidate's journal fixed that fact before the
+    resume, same as any other reconnect -- but TERMINAL_RECORD carries the
+    tombstone in place of the envelope, because the envelope itself is gone
+    from the journal by then.
+    """
+
+    def _frame(
+        message: RunnerSessionMessage,
+        sequence: int,
+        payload: tuple[bytes, ...] = (),
+    ) -> RunnerSessionFrame:
+        return RunnerSessionFrame(message, sequence, binding, invocation_id, payload)
+
+    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+    ready_payload = encode_runner_ready_payload(
+        manifest, auth_reference, ABSENT_PROVIDER_CLI
+    )
+    session.accept(_frame(RunnerSessionMessage.READY, 2, ready_payload))
+    session.accept(_frame(RunnerSessionMessage.STARTED, 3, (b"\x00" * 8,)))
+    envelope = RunnerTerminalEvidenceEnvelope(
+        binding,
+        invocation_id,
+        RunnerProviderResult(AgentExecutionResult(output_bytes)),
+    )
+    evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
+    tombstone = RunnerTerminalEvidenceAckTombstone(
+        binding, invocation_id, evidence_hash
+    )
+    session.accept(
+        _frame(
+            RunnerSessionMessage.TERMINAL_AVAILABLE,
+            4,
+            (evidence_hash.value.encode("ascii"),),
+        )
+    )
+    terminal_record_payload = (
+        encode_runner_terminal_evidence_record(tombstone)
+        if resend_as_tombstone
+        else encode_runner_terminal_evidence_record(envelope)
+    )
+    session.accept_terminal_record(
+        _frame(RunnerSessionMessage.TERMINAL_RECORD, 5, (terminal_record_payload,))
+    )
+    session.accept(
+        _frame(
+            RunnerSessionMessage.ACK_TOMBSTONE,
+            6,
+            (encode_runner_terminal_evidence_record(tombstone),),
+        )
+    )
+    session.accept(_frame(RunnerSessionMessage.RELEASED, 7, (b"released",)))
+    return envelope

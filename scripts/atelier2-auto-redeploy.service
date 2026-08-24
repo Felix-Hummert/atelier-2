@@ -1,0 +1,26 @@
+# Runs one auto_redeploy.sh poll cycle, triggered by atelier2-auto-redeploy.timer.
+#
+# Install (per operator, once, no root):
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/atelier2-auto-redeploy.service scripts/atelier2-auto-redeploy.timer \
+#     ~/.config/systemd/user/
+#   Edit WorkingDirectory and ExecStart below to the absolute path of this
+#   repository's clone on this host, then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now atelier2-auto-redeploy.timer
+#
+# Inspect a run:
+#   systemctl --user status atelier2-auto-redeploy.service
+#   journalctl --user -u atelier2-auto-redeploy.service -e
+#
+# `systemctl start` on an already-active oneshot unit is a no-op rather than a
+# second concurrent run, so a poll that outlasts the timer's interval cannot
+# overlap itself; scripts/auto_redeploy.sh needs no lock of its own for that.
+# scripts/container_live.sh still serializes the redeploy itself.
+[Unit]
+Description=Atelier2 auto redeploy: pull origin/main and update the local live serve
+
+[Service]
+Type=oneshot
+WorkingDirectory=/absolute/path/to/atelier-2
+ExecStart=/absolute/path/to/atelier-2/scripts/auto_redeploy.sh
