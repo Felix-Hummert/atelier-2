@@ -42,6 +42,7 @@ from atelier2.api.wire.resources import (
     NoWaitingResource,
     NoWaitingResourceV2,
     ProblemResource,
+    RunCancellabilityResource,
     RunResource,
     RunResourceV2,
     RunResourceV3,
@@ -561,6 +562,11 @@ def chained_run_resource(
         current_node_id=CHAIN_SECOND_NODE_ID,
         node_rail=node_rail(
             NodeState.SUCCEEDED if state == "COMPLETED" else NodeState.WORKING
+        ),
+        cancellation=RunCancellabilityResource(
+            cancellable=False,
+            reason="already-ended" if state == "COMPLETED" else "between-nodes",
+            target_node_execution_id=None,
         ),
         terminal_hash=terminal_hash,
         latest_event_cursor=latest_event_cursor,

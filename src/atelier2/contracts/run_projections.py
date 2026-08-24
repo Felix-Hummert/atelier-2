@@ -81,6 +81,26 @@ def public_agent_attempt_state(
     return _PUBLIC_ATTEMPT_STATES[durable_state]
 
 
+class RunCancellationRefusal(StrEnum):
+    """Why a V3 run cannot take a *new* operator run-cancel command right now.
+
+    #439's D3 names five reasons a run cannot be cancelled. This is the closed
+    set every layer shares: the store's own truth when it refuses a submitted
+    command, and the API's `RunResourceV3.cancellation` predicate, which renders
+    the full standing so the cockpit shows the operator sentence rather than
+    guessing from the rail. It lives here, beside the run projection the API
+    reads, because a refusal token the adapter writes and the API projects is a
+    shared value with one owner -- not a shape the port seam invents. One token
+    per reason, never two spellings of the same fact.
+    """
+
+    BETWEEN_NODES = "between-nodes"
+    WAITING_FOR_YOU = "waiting-for-you"
+    NODE_RUNS_NO_AGENT = "node-runs-no-agent"
+    ALREADY_CANCELLING = "already-cancelling"
+    ALREADY_ENDED = "already-ended"
+
+
 @dataclass(frozen=True)
 class WaitingReconciliationProjection:
     intent: EffectIntentSnapshot

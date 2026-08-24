@@ -665,6 +665,42 @@ export const RUN_STATES_V3 = [
   "CANCELLED"
 ] as const;
 
+/** Why the server says a V3 run cannot be operator-cancelled; #439 D3's closed set. */
+export const RUN_NOT_CANCELLABLE_REASONS = [
+  "between-nodes",
+  "waiting-for-you",
+  "node-runs-no-agent",
+  "already-cancelling",
+  "already-ended"
+] as const;
+
+/**
+ * Whether a V3 run can be operator-cancelled right now, said by the server.
+ *
+ * #439 D3 makes this the server's predicate, not the cockpit's guess: a
+ * cancellable run names the `target_node_execution_id` a cancel fences on, and a
+ * run that cannot be cancelled names the closed reason token instead. The server
+ * sends it on every V3 run; it is decoded as optional here so this P4 wire
+ * change does not force the field onto every existing V3 fixture before the
+ * cancel control that reads it lands. That control -- and tightening this to
+ * required with the server -- is #439 P5's.
+ */
+const runCancellabilitySchema = z
+  .object({
+    cancellable: z.boolean(),
+    reason: z.enum(RUN_NOT_CANCELLABLE_REASONS).nullable(),
+    target_node_execution_id: sha256.nullable()
+  })
+  .strict()
+  .superRefine((cancellation, context) => {
+    if (cancellation.cancellable !== (cancellation.target_node_execution_id !== null)) {
+      context.addIssue({ code: "custom", message: "a cancellable run names its target node execution" });
+    }
+    if (cancellation.cancellable !== (cancellation.reason === null)) {
+      context.addIssue({ code: "custom", message: "a non-cancellable run names exactly one reason" });
+    }
+  });
+
 const runV3Schema = z
   .object({
     workflow_format_version: z.literal(3),
@@ -678,6 +714,7 @@ const runV3Schema = z
     state: z.enum(RUN_STATES_V3),
     current_node_id: z.string().min(1),
     node_rail: z.array(nodeRailEntrySchema).min(1),
+    cancellation: runCancellabilitySchema.optional(),
     terminal_hash: sha256.nullable(),
     latest_event_cursor: eventCursor.nullable(),
     started_at: z.string().nullable().optional(),
@@ -1041,6 +1078,9 @@ export const problemDefinitions = {
   "reconciliation-command-conflict": { status: 409, title: "Reconciliation command conflict" },
   "reconciliation-determination-conflict": { status: 409, title: "Reconciliation determination conflict" },
   "reconciliation-rejected": { status: 409, title: "Reconciliation was rejected" },
+  "run-not-cancellable": { status: 409, title: "Run is not cancellable" },
+  "run-cancellation-command-conflict": { status: 409, title: "Run cancellation command conflict" },
+  "run-cancellation-overtaken-by-success": { status: 409, title: "Run cancellation overtaken by success" },
   "queue-admission-revision-conflict": { status: 409, title: "Queue admission revision conflict" },
   "queue-admission-already-decided": { status: 409, title: "Queue item is already admitted" },
   "route-not-found": { status: 404, title: "Route not found" },
@@ -1145,6 +1185,9 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant("reconciliation-command-conflict", problemDefinitions["reconciliation-command-conflict"]),
   problemVariant("reconciliation-determination-conflict", problemDefinitions["reconciliation-determination-conflict"]),
   problemVariant("reconciliation-rejected", problemDefinitions["reconciliation-rejected"]),
+  problemVariant("run-not-cancellable", problemDefinitions["run-not-cancellable"]),
+  problemVariant("run-cancellation-command-conflict", problemDefinitions["run-cancellation-command-conflict"]),
+  problemVariant("run-cancellation-overtaken-by-success", problemDefinitions["run-cancellation-overtaken-by-success"]),
   problemVariant("queue-admission-revision-conflict", problemDefinitions["queue-admission-revision-conflict"]),
   problemVariant("queue-admission-already-decided", problemDefinitions["queue-admission-already-decided"]),
   problemVariant("route-not-found", problemDefinitions["route-not-found"]),

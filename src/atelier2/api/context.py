@@ -17,6 +17,7 @@ from atelier2.application.admit_queue_item import (
 )
 from atelier2.application.answer_wait import AnswerWaitResult
 from atelier2.application.cancel_agent_attempt import CancelAgentAttemptResult
+from atelier2.application.cancel_run import CancelRunResult
 from atelier2.application.occupancy import (
     GetOccupancyResult,
     PublishOccupancyUseCaseResult,
@@ -84,6 +85,7 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageId,
     CatalogLineageQuery,
 )
+from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import AdmitQueueItem, QueueItemId
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
@@ -206,6 +208,7 @@ class ApiUseCases:
     cancel_agent_attempt: Callable[
         [CancelAgentAttemptRequest], CancelAgentAttemptResult
     ]
+    cancel_run: Callable[[RunId, str, NodeExecutionId], CancelRunResult]
     resolve_catalog_name: Callable[
         [RevisionKind, CatalogLineageQuery, object], CatalogNameResult
     ]

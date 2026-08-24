@@ -112,6 +112,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AuthProfileRevisionResource.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AuthProfileRevisionResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
     "CancelAgentAttemptRequestResource.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "CancelRunRequestResource.idempotency_key": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "CatalogNameResolutionResource.display_name": (
         MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
     ),

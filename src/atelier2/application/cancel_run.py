@@ -18,6 +18,7 @@ from atelier2.contracts.agent_attempts import AgentAttempt
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.run_cancellations import CancelRunRequest
+from atelier2.contracts.run_projections import RunCancellationRefusal
 from atelier2.contracts.runs import RunId
 from atelier2.ports.agent_attempts import (
     RunCancellationAccepted as DurableAccepted,
@@ -32,14 +33,13 @@ from atelier2.ports.agent_attempts import (
     RunCancellationOvertakenBySuccess as DurableOvertakenBySuccess,
 )
 from atelier2.ports.agent_attempts import (
-    RunCancellationRefusal,
-    TransactionalAgentAttemptCanceller,
-)
-from atelier2.ports.agent_attempts import (
     RunCancellationRunMissing as DurableRunMissing,
 )
 from atelier2.ports.agent_attempts import (
     RunCancellationTerminalRetry as DurableTerminalRetry,
+)
+from atelier2.ports.agent_attempts import (
+    TransactionalAgentAttemptCanceller,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.durable_runs import DurableWriteUnavailable as PortWriteUnavailable

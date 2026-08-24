@@ -1,0 +1,15 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/439"
+
+# #439 P4 opens the operator's run-cancel HTTP door,
+# POST /runs/{public_ref}/cancellations. The client carries only its opaque
+# idempotency key and D2's expected node execution; the durable command id is
+# minted server-side into the reserved run-cancel namespace, so no request
+# field can force or bypass it. The sentence below is proven through the exact
+# application call the route wires, against the real store, so it holds the
+# durable slice the route delivers -- one command, one CANCELLED run, a retry
+# that resolves to the same command -- rather than the thin HTTP shell alone.
+
+[[sentence]]
+id = "a-v3-run-is-cancelled-once"
+text = "A V3 run the operator cancels ends exactly once: the run-cancel door takes only an opaque idempotency key and the node execution the confirmation named, mints from it one durable command inside the reserved run-cancel namespace, and the attempt that command targets, once its cleanup is attested, lifts the run to CANCELLED under that same command identity; a retry of the same idempotency key resolves to the same canonical run without minting a second cancel or writing a second event."
