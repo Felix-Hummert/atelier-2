@@ -88,6 +88,9 @@ from atelier2.contracts.runner_manifests import (
     decode_runner_manifest,
     runner_manifest_id,
 )
+from atelier2.contracts.runner_terminal_evidence_codec import (
+    MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES,
+)
 from atelier2.host.runner_identity import (
     RunnerIdentityAuthority,
     console_identity_expiry,
@@ -108,6 +111,24 @@ _IDENTITY_RECEIVER_ENTRYPOINT = "atelier2-runner-identity-receiver"
 _IDENTITY_RECEIVER_DESTINATION = PurePosixPath("/identity")
 _ATTESTATION_NAME = "inspect-attested"
 _JOURNAL_TERMINAL_RECORD = _JOURNAL_PATH / "terminal-record"
+# Where the launcher lays a Runner's own retained terminal record down in the
+# handoff directory, for Serve to converge over after a restart it never
+# reconciled (`#540` Kind #585). The bytes are the journal record verbatim, so
+# Serve decodes exactly what the Runner wrote; the name is this launcher's half
+# of a filename contract Serve reads under the same value
+# (`atelier2.adapters.file_runner_terminal_evidence`), never an import across
+# the seam -- `host` sits above `adapters`, the same way `inspect-attested` is
+# already shared by value at `file_runner_leases._ATTESTATION_NAME`.
+_RETAINED_TERMINAL_RECORD_NAME = "retained-terminal-record"
+# The suffix this launcher's own durable journal volume carries, and the
+# handoff directory segment Serve lays each Attempt's material under. Both are
+# reused when reconcile has only a lease id to work from: the journal volume is
+# found among this Attempt's labelled volumes by its suffix, and the handoff
+# directory is the same `attempt-root/<lease-id>/handoff` Serve wrote and the
+# launcher validated (`atelier2.adapters.file_runner_leases`, shared by value
+# across the seam, never by import).
+_JOURNAL_VOLUME_SUFFIX = "-journal"
+_HANDOFF_DIRECTORY_NAME = "handoff"
 _HANDOFF_NAMES = (
     "ca.crt",
     "core.crt",
@@ -488,6 +509,12 @@ class AttemptCarrier(Protocol):
         self, volume: str, image: str, path: PurePosixPath
     ) -> bool: ...
 
+    def read_file_in_volume(
+        self, volume: str, image: str, path: PurePosixPath, maximum_bytes: int
+    ) -> bytes: ...
+
+    def container_running(self, container: str) -> bool: ...
+
     def labelled_containers(self, label: str) -> tuple[str, ...]: ...
 
     def labelled_volumes(self, label: str) -> tuple[str, ...]: ...
@@ -731,6 +758,7 @@ class RunnerLauncher:
             try:
                 lease_id = admitted_lease_id(named)
                 self.announce(f"reconciled-attempt={lease_id.value}")
+                self._retain_terminal_record_before_delete(lease_id)
                 self._remove_attempt(lease_id)
             except (AttemptRefusal, CarrierRefusal) as refusal:
                 self.announce(f"reconcile-refused={refusal}")
@@ -861,7 +889,7 @@ class RunnerLauncher:
         volumes = AttemptVolumes(
             f"{lease.attempt_name}-identity",
             f"{lease.attempt_name}-handoff",
-            f"{lease.attempt_name}-journal",
+            f"{lease.attempt_name}{_JOURNAL_VOLUME_SUFFIX}",
         )
         manifest = lease.manifest
         for durable in (volumes.identity, volumes.journal):
@@ -1024,10 +1052,88 @@ class RunnerLauncher:
         resumed = self.carrier.wait_for_exit(container)
         self.announce(f"runner-exit={resumed}")
         if resumed != 0:
+            # The Runner journaled a terminal fact and its single resume still
+            # could not deliver it -- Core is gone, and a console-only restart
+            # leaves this launcher alive, so nothing else here ever reconciles
+            # this Attempt. The retained fact reaches the handoff now, where
+            # Serve converges it over on its own restart (`#585`), rather than
+            # waiting for this launcher to itself restart. Both retain gates
+            # already hold here: the container has exited (`wait_for_exit`
+            # returned) and its terminal record is present (checked above).
+            self._retain_terminal_record(
+                volumes.journal, lease.handoff_directory, lease.runner_image
+            )
             raise AttemptRefusal(
                 f"launcher-attempt-failed: {lease.lease_id.value} resumed runner "
                 f"exited {resumed}"
             )
+
+    def _retain_terminal_record(
+        self, journal_volume: str, handoff_directory: Path, runner_image: str
+    ) -> None:
+        """Copy the Runner's retained terminal record into the handoff, once.
+
+        The bytes are the journal record verbatim, read back off the durable
+        volume the exited Runner left behind (`read_file_in_volume`) and laid
+        down under a fixed name Serve reads. The write is atomic and idempotent:
+        a cross-restart second retain of the same Attempt finds the same bytes
+        already there and rewrites nothing, so Serve never reads a half-written
+        record and two retains never disagree.
+        """
+        record = self.carrier.read_file_in_volume(
+            journal_volume,
+            runner_image,
+            _JOURNAL_TERMINAL_RECORD,
+            MAXIMUM_RUNNER_TERMINAL_EVIDENCE_RECORD_BYTES,
+        )
+        target = handoff_directory / _RETAINED_TERMINAL_RECORD_NAME
+        if target.is_file() and target.read_bytes() == record:
+            self.announce(f"terminal-record-retained={target} already-present")
+            return
+        temporary = handoff_directory / f".{_RETAINED_TERMINAL_RECORD_NAME}.publish"
+        temporary.write_bytes(record)
+        os.replace(temporary, target)
+        self.announce(f"terminal-record-retained={target}")
+
+    def _retain_terminal_record_before_delete(self, lease_id: RunnerLeaseId) -> None:
+        """Retain an abandoned Runner's terminal fact before its volume is gone.
+
+        Reconcile removes what a dead launcher left behind, and the journal
+        volume is the only place that Attempt's terminal fact still lives -- so
+        it is copied into the handoff here, strictly before `_remove_attempt`
+        deletes the volume. Only for an Attempt whose containers have all
+        stopped: reading a Runner still running could copy a fact it has not
+        finished or race a delivery it is about to make, so a still-running
+        Attempt is left for the next reconcile. A missing record is the ordinary
+        case -- a cleanly released Attempt unlinked its own -- and retains
+        nothing.
+        """
+        label = lease_label(lease_id)
+        if any(
+            self.carrier.container_running(container)
+            for container in self.carrier.labelled_containers(label)
+        ):
+            self.announce(f"terminal-record-retain-skipped-running={lease_id.value}")
+            return
+        journal = next(
+            (
+                volume
+                for volume in self.carrier.labelled_volumes(label)
+                if volume.endswith(_JOURNAL_VOLUME_SUFFIX)
+            ),
+            None,
+        )
+        if journal is None or not self.carrier.file_exists_in_volume(
+            journal, self.validation.runner_image, _JOURNAL_TERMINAL_RECORD
+        ):
+            return
+        handoff = (
+            self.validation.attempt_root / lease_id.value / _HANDOFF_DIRECTORY_NAME
+        )
+        if not handoff.is_dir():
+            self.announce(f"terminal-record-retain-no-handoff={lease_id.value}")
+            return
+        self._retain_terminal_record(journal, handoff, self.validation.runner_image)
 
     def _remove_attempt(self, lease_id: RunnerLeaseId) -> None:
         """Everything one Attempt left on this host, including in the console.

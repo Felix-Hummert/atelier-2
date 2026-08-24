@@ -763,3 +763,115 @@ def test_a_chain_name_the_policy_shell_could_read_as_more_is_refused(
     escaped at render time."""
     with pytest.raises(ValueError, match="carrier-chain-name-refused"):
         AttemptChains(named, "ATELIER2-A-OUT")
+
+
+def _volume_reading_engine(
+    tmp_path: Path, payload: bytes, *, returncode: int = 0
+) -> Path:
+    """A stand-in engine that answers one `run` by writing bytes and exiting.
+
+    It stands in for a throwaway container `cat`ting one file off a mounted
+    volume: `read_file_in_volume`'s whole shape, without a real engine or
+    volume. It records its argument vector so a test can read back how the
+    volume was mounted.
+    """
+    log = tmp_path / "reading-engine-calls.jsonl"
+    executable = tmp_path / "reading-engine"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        f"open({str(log)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "if sys.argv[1:2] == ['run']:\n"
+        f"    sys.stdout.buffer.write({payload!r})\n"
+        "    sys.stderr.write('' if not "
+        f"{returncode} else 'no such file')\n"
+        f"    raise SystemExit({returncode})\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    return executable
+
+
+def _reading_calls(tmp_path: Path) -> list[list[str]]:
+    return [
+        json.loads(line)
+        for line in (tmp_path / "reading-engine-calls.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+
+
+def test_read_file_in_volume_reads_the_retained_bytes_read_only(tmp_path: Path) -> None:
+    """The bytes a Runner left on its journal volume, read back off the volume
+    itself once the container that wrote them is gone -- mounted read-only, the
+    one thing mounted."""
+    payload = b"\x00canonical-terminal-record-bytes\xff"
+    carrier = DockerCarrier(_POLICY_IMAGE, _volume_reading_engine(tmp_path, payload))
+
+    read = carrier.read_file_in_volume(
+        "journal-one",
+        "atelier2-runner",
+        PurePosixPath("/journal/terminal-record"),
+        1_000_000,
+    )
+
+    assert read == payload
+    call = _reading_calls(tmp_path)[0]
+    mount = call[call.index("--mount") + 1]
+    assert "src=journal-one" in mount
+    assert "readonly" in mount
+    assert call[call.index("--entrypoint") + 1] == "cat"
+
+
+def test_read_file_in_volume_refuses_a_file_over_the_bound(tmp_path: Path) -> None:
+    """A record over the caller's bound is refused before it is returned: it was
+    written by the least-trusted process on the host."""
+    carrier = DockerCarrier(_POLICY_IMAGE, _volume_reading_engine(tmp_path, b"x" * 64))
+
+    with pytest.raises(CarrierRefusal, match="carrier-volume-file-exceeds-bound"):
+        carrier.read_file_in_volume(
+            "journal-one", "atelier2-runner", PurePosixPath("/journal/record"), 8
+        )
+
+
+def test_read_file_in_volume_refuses_an_unreadable_file(tmp_path: Path) -> None:
+    carrier = DockerCarrier(
+        _POLICY_IMAGE, _volume_reading_engine(tmp_path, b"", returncode=1)
+    )
+
+    with pytest.raises(CarrierRefusal, match="carrier-volume-file-unreadable"):
+        carrier.read_file_in_volume(
+            "journal-one", "atelier2-runner", PurePosixPath("/journal/record"), 1024
+        )
+
+
+def test_container_running_reads_the_engine_state(tmp_path: Path) -> None:
+    running = DockerCarrier(
+        _POLICY_IMAGE, _engine(tmp_path, _attached_container(running=True))
+    )
+    assert running.container_running("attempt-runner") is True
+
+
+def test_container_running_is_false_for_a_stopped_container(tmp_path: Path) -> None:
+    stopped = DockerCarrier(
+        _POLICY_IMAGE, _engine(tmp_path, _attached_container(running=False))
+    )
+    assert stopped.container_running("attempt-runner") is False
+
+
+def test_container_running_is_false_for_a_container_that_is_gone(
+    tmp_path: Path,
+) -> None:
+    """A container the engine no longer knows is not running as far as the
+    retain gate is concerned."""
+    executable = tmp_path / "absent-engine"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "sys.stderr.write('No such container')\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+
+    assert DockerCarrier(_POLICY_IMAGE, executable).container_running("gone") is False

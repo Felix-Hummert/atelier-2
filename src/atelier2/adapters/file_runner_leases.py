@@ -207,6 +207,18 @@ class FileRunnerLeasePublisher:
         attestation_path = paths.handoff / _ATTESTATION_NAME
         deadline = time.monotonic() + deadline_seconds
         while True:
+            if not paths.root.exists():
+                # This Attempt's material was withdrawn (`#584`): a recovered
+                # workflow republished a lease whose own document sits
+                # byte-identical in `withdrawn/`, so it was answered
+                # `RunnerLeaseExisting` and no launcher will ever claim it -- the
+                # peer material this waits on can never appear. Failing fast here
+                # is what keeps that Attempt from burning the whole accept
+                # deadline polling paths `withdraw` already deleted, before
+                # `#585` converges it. The material is written whole before a
+                # lease is ever revealed, so a missing root is a withdrawal, not
+                # a publish still in flight.
+                return RunnerInvocationTimedOut(lease_id)
             if client_certificate_path.is_file() and attestation_path.is_file():
                 return RunnerPeerMaterial(
                     client_certificate_path.read_bytes(),

@@ -20,7 +20,10 @@ from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.run_transitions import RunTransitionConflict, load_run
 from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import run_events
-from atelier2.adapters.file_runner_leases import FileRunnerLeasePublisher
+from atelier2.adapters.file_runner_leases import (
+    FileRunnerLeasePublisher,
+    RunnerLeaseUnknown,
+)
 from atelier2.application.cancel_runner_attempt import (
     NeverLaunchedRunnerCancellationCommitted,
     RunnerCancellationDeferredToLaunchedPath,
@@ -155,6 +158,33 @@ def test_a_won_withdraw_ends_the_attempt_never_launched_and_lifts_the_run(
             RunEventKind.AGENT_CANCEL_REQUESTED.value,
             RunEventKind.AGENT_CANCELLED.value,
         ]
+    finally:
+        runtime.close()
+
+
+def test_a_cancel_of_a_lease_that_was_never_published_propagates_without_committing(
+    tmp_path: Path,
+) -> None:
+    """`#584` gap (a)/(b): a crash between `bind_runner_generation` and
+    `leases.publish` leaves an Attempt manifest-bound with no lease document. A
+    later cancel finds nothing to withdraw and fails loud with
+    `RunnerLeaseUnknown` -- and crucially commits no terminal, so the Attempt
+    stays `CANCEL_REQUESTED` rather than being lied about as CANCELLED. This
+    pins that fail-loud, lie-free propagation as a regression."""
+    store, _node_execution_id, request, engine, runtime, _attempt_id = (
+        _cancel_requested_never_launched(tmp_path, "never-launched/no-lease")
+    )
+    try:
+        publisher = _publisher(tmp_path)
+
+        with pytest.raises(RunnerLeaseUnknown):
+            cancel_runner_attempt(request, store, publisher)
+
+        durable = store.load(request.attempt_id)
+        assert durable.state is AgentAttemptState.CANCEL_REQUESTED
+        assert durable.cancellation is not None
+        assert durable.cancellation.disposition is None
+        assert _event_kinds(engine) == [RunEventKind.AGENT_CANCEL_REQUESTED.value]
     finally:
         runtime.close()
 

@@ -150,6 +150,8 @@ class RecordingCarrier:
     runner_exits: list[int]
     offer: bytes = json.dumps({"invocation_id": _INVOCATION}).encode("utf-8")
     journal_records: list[bool] = field(default_factory=list)
+    retained_record: bytes = b"\x00retained-terminal-record-bytes"
+    running_containers: set[str] = field(default_factory=set)
     delivery_refusal: Exception | None = None
     policy_removal_refusal: Exception | None = None
     created: dict[str, list[str]] = field(
@@ -246,7 +248,21 @@ class RecordingCarrier:
     def file_exists_in_volume(
         self, volume: str, image: str, path: PurePosixPath
     ) -> bool:
-        return self.journal_records.pop(0)
+        return self.journal_records.pop(0) if self.journal_records else False
+
+    def read_file_in_volume(
+        self, volume: str, image: str, path: PurePosixPath, maximum_bytes: int
+    ) -> bytes:
+        if volume in self.removed["volumes"]:
+            # A removed volume can no longer be read: the fake encodes the
+            # retain-before-delete invariant, so a retain that ran after the
+            # delete would fail here instead of quietly reading nothing.
+            raise CarrierRefusal(f"carrier-volume-file-unreadable: {volume}")
+        self.operations.append("read-volume")
+        return self.retained_record
+
+    def container_running(self, container: str) -> bool:
+        return container in self.running_containers
 
     def labelled_containers(self, label: str) -> tuple[str, ...]:
         return tuple(self.created["containers"])
@@ -601,6 +617,130 @@ def test_a_runner_that_retained_nothing_fails_its_attempt(tmp_path: Path) -> Non
     assert carrier.started_again == []
     assert carrier.removed["networks"] == []
     assert source.released == []
+
+
+def test_a_console_only_restart_retains_the_terminal_fact_for_serve(
+    tmp_path: Path,
+) -> None:
+    """A Runner that journaled its fact and whose single resume still could not
+    deliver it -- Core gone under a console-only restart -- has that fact laid
+    in the handoff before this alive launcher gives up, so Serve converges it on
+    its own restart rather than waiting for this launcher to itself restart."""
+    carrier = RecordingCarrier(
+        _attested_document(_manifest()), [92, 5], journal_records=[True]
+    )
+    lease = _lease(tmp_path)
+    launcher, announced = _launcher(tmp_path, carrier, OpenLeases([lease]))
+
+    with pytest.raises(AttemptRefusal, match="resumed runner"):
+        launcher.establish(lease)
+
+    retained = lease.handoff_directory / "retained-terminal-record"
+    assert retained.read_bytes() == carrier.retained_record
+    assert any(line.startswith("terminal-record-retained=") for line in announced)
+    # Left for the operator, not swept: the Attempt failed, so its objects stay.
+    assert carrier.removed["volumes"] == []
+
+
+def test_a_clean_resume_retains_nothing(tmp_path: Path) -> None:
+    """A resume that delivered cleanly leaves no retained record behind: Core
+    already has the fact, and the handoff copy is only for the fact Core never
+    got."""
+    carrier = RecordingCarrier(
+        _attested_document(_manifest()), [92, 0], journal_records=[True]
+    )
+    lease = _lease(tmp_path)
+    launcher, _announced = _launcher(tmp_path, carrier, OpenLeases([lease]))
+
+    launcher.establish(lease)
+
+    assert not (lease.handoff_directory / "retained-terminal-record").exists()
+    assert "read-volume" not in carrier.operations
+
+
+def test_a_reconciled_attempt_retains_its_fact_before_its_volume_is_removed(
+    tmp_path: Path,
+) -> None:
+    """The highest-risk ordering: an abandoned Runner's terminal fact reaches
+    the handoff strictly before reconcile deletes the journal volume that holds
+    it -- the retain reads the volume, and only then is the volume removed."""
+    interrupted = "f" * 64
+    directory = tmp_path / "leases"
+    FileRunnerLeaseSource(directory, _validation(tmp_path))
+    (directory / "claimed" / f"{interrupted}.json").write_text("{}", encoding="utf-8")
+    handoff = tmp_path / interrupted / "handoff"
+    handoff.mkdir(mode=0o700, parents=True)
+    carrier = RecordingCarrier(
+        _attested_document(_manifest()), [], journal_records=[True]
+    )
+    carrier.created["containers"].append(f"atelier2-attempt-{interrupted}-runner")
+    carrier.created["volumes"].append(f"atelier2-attempt-{interrupted}-journal")
+    launcher, announced = _launcher(
+        tmp_path, carrier, FileRunnerLeaseSource(directory, _validation(tmp_path))
+    )
+
+    launcher.reconcile_abandoned_attempts()
+
+    # The record reached the handoff (the retain read a volume the fake refuses
+    # once removed) and the volume was then removed: retain strictly precedes
+    # delete.
+    retained = handoff / "retained-terminal-record"
+    assert retained.read_bytes() == carrier.retained_record
+    assert f"atelier2-attempt-{interrupted}-journal" in carrier.removed["volumes"]
+    assert "read-volume" in carrier.operations
+    assert any(line.startswith("terminal-record-retained=") for line in announced)
+
+
+def test_a_reconciled_attempt_still_running_is_not_retained(tmp_path: Path) -> None:
+    """A Runner still running is never read: retaining a fact it has not
+    finished, or racing a delivery it is about to make, is exactly what the
+    exited-container gate forbids -- it is left for the next reconcile."""
+    interrupted = "f" * 64
+    directory = tmp_path / "leases"
+    FileRunnerLeaseSource(directory, _validation(tmp_path))
+    (directory / "claimed" / f"{interrupted}.json").write_text("{}", encoding="utf-8")
+    (tmp_path / interrupted / "handoff").mkdir(mode=0o700, parents=True)
+    carrier = RecordingCarrier(
+        _attested_document(_manifest()), [], journal_records=[True]
+    )
+    runner = f"atelier2-attempt-{interrupted}-runner"
+    carrier.created["containers"].append(runner)
+    carrier.created["volumes"].append(f"atelier2-attempt-{interrupted}-journal")
+    carrier.running_containers.add(runner)
+    launcher, announced = _launcher(
+        tmp_path, carrier, FileRunnerLeaseSource(directory, _validation(tmp_path))
+    )
+
+    launcher.reconcile_abandoned_attempts()
+
+    assert not (
+        tmp_path / interrupted / "handoff" / "retained-terminal-record"
+    ).exists()
+    assert "read-volume" not in carrier.operations
+    assert any(
+        line == f"terminal-record-retain-skipped-running={interrupted}"
+        for line in announced
+    )
+
+
+def test_retaining_the_terminal_fact_twice_is_the_same_bytes(tmp_path: Path) -> None:
+    """A cross-restart second retain of one Attempt writes the same bytes it
+    already laid down and rewrites nothing, so Serve never reads a torn record
+    and two retains never disagree."""
+    carrier = RecordingCarrier(_attested_document(_manifest()), [])
+    lease = _lease(tmp_path)
+    launcher, announced = _launcher(tmp_path, carrier, OpenLeases([lease]))
+
+    launcher._retain_terminal_record(
+        "atelier2-attempt-a-journal", lease.handoff_directory, _RUNNER_IMAGE
+    )
+    launcher._retain_terminal_record(
+        "atelier2-attempt-a-journal", lease.handoff_directory, _RUNNER_IMAGE
+    )
+
+    retained = lease.handoff_directory / "retained-terminal-record"
+    assert retained.read_bytes() == carrier.retained_record
+    assert any("already-present" in line for line in announced)
 
 
 def test_a_failed_attempt_gives_the_console_back_before_it_is_reported(
