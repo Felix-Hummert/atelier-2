@@ -25,8 +25,38 @@ from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import agent_attempts, runs
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.context import ApiContext
 from atelier2.api.references import encode_public_run_reference
-from atelier2.contracts.agents import AgentExecutionRequestV2, AgentExecutionResult
+from atelier2.application.occupancy import (
+    OccupancyRead,
+    OccupancyRevisionPublished,
+    OccupancyRevisionUnchanged,
+)
+from atelier2.application.publish_agent_configurations import (
+    AgentConfigurationRevisionPublished,
+    AgentConfigurationRevisionUnchanged,
+    AuthProfileRevisionPublished,
+    AuthProfileRevisionUnchanged,
+)
+from atelier2.application.publish_schema_revision import (
+    SchemaPublicationCreated,
+    SchemaPublicationExisting,
+)
+from atelier2.application.publish_workflow_revision import (
+    PublicationCreated,
+    PublicationExisting,
+)
+from atelier2.contracts.agents import (
+    AgentExecutionCapability,
+    AgentExecutionRequestV2,
+    AgentExecutionResult,
+)
+from atelier2.contracts.catalog_v3 import (
+    CatalogActivatedAt,
+    CatalogActor,
+    CatalogAdmissionExisting,
+    CatalogLineageFounded,
+)
 from atelier2.contracts.effects import (
     AdapterRevision,
     EffectAdapterBinding,
@@ -37,8 +67,15 @@ from atelier2.contracts.effects import (
     PerformedEffect,
 )
 from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.host import serving
+from atelier2.host.conductor_workflow import (
+    CONDUCTOR_BRIEF_SCHEMA,
+    CONDUCTOR_REPORT_SCHEMA,
+    CONDUCTOR_ROLE,
+    conductor_workflow_document,
+)
 from atelier2.host.serving import HostSettings
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
@@ -64,6 +101,15 @@ nodes:
 """
 RUN_IDS = ("found-run", "absent-run")
 TIMEOUT_SECONDS = 10.0
+# The fake conductor's fixed episode report: valid against the production
+# `CONDUCTOR_REPORT_SCHEMA`, so the browser proof sees exactly the reply a real
+# doors-armed conductor would return -- same vector, unbilled.
+CONDUCTOR_FAKE_ANSWER = "Nothing started: the workbench probe only asked for an answer."
+CONDUCTOR_FAKE_REPORT = json.dumps(
+    {"answer": CONDUCTOR_FAKE_ANSWER, "started_run_ids": []}
+).encode()
+CONDUCTOR_FAKE_PROVIDER = "e2e-conductor"
+CONDUCTOR_FAKE_REVISION = "conductor-fake/v1"
 # A held V3 attempt parks in `working` this long so the browser has ample margin
 # to reach and confirm the cancel by keyboard; the operator's cancel ends it far
 # sooner, so this only bounds a run nobody stops.
@@ -208,6 +254,14 @@ class HeldAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
         return self.opened
 
 
+def _published_schema_hash(result: object) -> str:
+    match result:
+        case SchemaPublicationCreated(revision) | SchemaPublicationExisting(revision):
+            return revision.revision_hash.value
+        case refused:
+            raise RuntimeError(f"schema publication failed: {refused!r}")
+
+
 class BrowserProofHarness:
     def __init__(
         self,
@@ -241,6 +295,21 @@ class BrowserProofHarness:
                     "body": str(self.generation).encode("ascii"),
                 }
             )
+            return
+        if (
+            scope["type"] == "http"
+            and scope.get("method") == "POST"
+            and path == "/__e2e/seed-conductor"
+        ):
+            body = await asyncio.to_thread(self.seed_conductor)
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send({"type": "http.response.body", "body": body})
             return
         if (
             scope["type"] == "http"
@@ -362,6 +431,94 @@ class BrowserProofHarness:
         self.app, self.runtime = self.recompose()
         self.generation += 1
 
+    def seed_conductor(self) -> bytes:
+        """Publish the whole conductor catalog through the production doors.
+
+        Everything the workbench needs to see a connected conductor: the brief
+        and report schemas, the production conductor document (built by its own
+        owner, `atelier2.host.conductor_workflow`), its catalog lineage, an
+        auth profile plus agent configuration bound to the fake conductor
+        executor, and the project occupancy recommending that binding for the
+        conductor role. On demand rather than at startup, so one served
+        instance proves BOTH workbench states: the honest refusal before this
+        endpoint is called, the real episode after.
+        """
+
+        context: ApiContext = self.app.state.api_context  # type: ignore[attr-defined]
+        use_cases = context.use_cases
+        brief_hash = _published_schema_hash(
+            use_cases.publish_schema_revision(CONDUCTOR_BRIEF_SCHEMA)
+        )
+        report_hash = _published_schema_hash(
+            use_cases.publish_schema_revision(CONDUCTOR_REPORT_SCHEMA)
+        )
+        document = conductor_workflow_document(brief_hash, report_hash)
+        match use_cases.publish_workflow_revision(document):
+            case PublicationCreated(projection) | PublicationExisting(projection):
+                revision = projection.revision
+            case refused_publication:
+                raise RuntimeError(
+                    f"conductor publication failed: {refused_publication!r}"
+                )
+        match use_cases.found_catalog_lineage(
+            RevisionKind.WORKFLOW,
+            PublishedRevisionHash(revision.revision_hash.value),
+            None,
+            CatalogActor("e2e-harness"),
+            CatalogActivatedAt("2026-01-01T00:00:00Z"),
+        ):
+            case CatalogLineageFounded(lineage) | CatalogAdmissionExisting(lineage):
+                lineage_id = lineage.lineage_id.value
+            case refused_admission:
+                raise RuntimeError(f"conductor admission failed: {refused_admission!r}")
+
+        match use_cases.publish_auth_profile_revision(
+            "e2e-conductor-profile", 1, CONDUCTOR_FAKE_PROVIDER, "subscription"
+        ):
+            case AuthProfileRevisionPublished(profile) | AuthProfileRevisionUnchanged(
+                profile
+            ):
+                auth_profile_hash = profile.revision_hash.value
+            case refused_profile:
+                raise RuntimeError(
+                    f"conductor auth profile failed: {refused_profile!r}"
+                )
+        match use_cases.publish_agent_configuration_revision(
+            "conductor-fake-model",
+            auth_profile_hash,
+            CONDUCTOR_FAKE_REVISION,
+            AgentExecutionCapability.HEADLESS_WITH_TOOLS.value,
+        ):
+            case AgentConfigurationRevisionPublished(
+                bound
+            ) | AgentConfigurationRevisionUnchanged(bound):
+                configuration_hash = bound.revision_hash.value
+            case refused_configuration:
+                raise RuntimeError(
+                    f"conductor configuration failed: {refused_configuration!r}"
+                )
+
+        project_id = "e2e-workshop"
+        if not isinstance(
+            use_cases.get_occupancy_revision(project_id, lineage_id), OccupancyRead
+        ):
+            match use_cases.publish_occupancy_revision(
+                project_id, lineage_id, 1, ((CONDUCTOR_ROLE, configuration_hash),)
+            ):
+                case OccupancyRevisionPublished() | OccupancyRevisionUnchanged():
+                    pass
+                case refused_occupancy:
+                    raise RuntimeError(
+                        f"conductor occupancy failed: {refused_occupancy!r}"
+                    )
+        return json.dumps(
+            {
+                "lineage_id": lineage_id,
+                "workflow_revision_hash": revision.revision_hash.value,
+                "configuration_hash": configuration_hash,
+            }
+        ).encode()
+
 
 def main() -> None:
     root = Path(os.environ["ATELIER2_E2E_ROOT"]).resolve()
@@ -419,6 +576,16 @@ def main() -> None:
     held = HeldAgentExecutorFactory(
         "e2e-v3-held", "held/v1", "e2e-held-process", b'"V3 provider bytes"'
     )
+    # The workbench chat proof (#7): a doors-shaped executor answering with the
+    # production report shape, so a browser can send a message and read the
+    # conductor's reply without a billed call.
+    conductor = RecordingAgentExecutorFactoryV2(
+        CONDUCTOR_FAKE_PROVIDER,
+        CONDUCTOR_FAKE_REVISION,
+        "e2e-conductor-process",
+        CONDUCTOR_FAKE_REPORT,
+        capability_set=frozenset({AgentExecutionCapability.HEADLESS_WITH_TOOLS}),
+    )
 
     def runtime(
         settings: DbosRuntimeSettings,
@@ -426,7 +593,7 @@ def main() -> None:
         agent_factory: AgentExecutorFactory,
         agent_factories_v2: tuple[AgentExecutorFactoryV2, ...],
     ) -> DbosRuntime:
-        factories = (*agent_factories_v2, factory, immediate, delayed, held)
+        factories = (*agent_factories_v2, factory, immediate, delayed, held, conductor)
         # The e2e runtime root lives inside the repository checkout, which no
         # scratch root may, so the leased workspaces stand outside it.
         return DbosRuntime(
