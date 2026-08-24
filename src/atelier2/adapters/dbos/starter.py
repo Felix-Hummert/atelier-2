@@ -9,6 +9,7 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from atelier2.adapters.dbos.advancer import first_agent_platform_effect_node
 from atelier2.adapters.dbos.agent_catalog import (
     agent_configuration_from_record,
     auth_profile_from_record,
@@ -90,6 +91,7 @@ from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
     AuthoredOrder,
+    DurableAgentPlatformEffectUnreconcilable,
     DurableInvalidAgentBindings,
     DurablePublishedRunResult,
     DurableRunCreated,
@@ -401,11 +403,23 @@ class DbosDurableRunStarter:
         engine: Engine,
         settings: DbosRuntimeSettings,
         agent_executor_registry: AgentExecutorRegistry,
+        effect_adapter_proves_absence: bool = True,
     ) -> None:
         self._engine = engine
         self._settings = settings
         self._agent_executor_registry = agent_executor_registry
         self._published_revisions = DbosCatalogStore(engine)
+        # Whether the deployment's composed effect adapter answers a not-found
+        # readback with an authoritative absence. When it cannot, an agent-
+        # authored `open-pr` grant has no safe reconciliation path and is
+        # refused at admission (`#430`/`#431`); the Action path is unaffected.
+        #
+        # The default is the pre-existing invariant: the loopback and fake
+        # adapters both prove absence, so every caller that composed one of them
+        # -- which was every caller until the live-GitHub adapter -- is admitting
+        # exactly as before. Only the composition that binds the live adapter
+        # passes `False` (`atelier2.host.serving`).
+        self._effect_adapter_proves_absence = effect_adapter_proves_absence
 
     def start_published(
         self, request: AnyStartPublishedRunRequest
@@ -494,6 +508,17 @@ class DbosDurableRunStarter:
                     raise RuntimeError(
                         "published revision bytes disagree with their hash"
                     )
+                # Before any row: a graph whose agent node carries an `open-pr`
+                # grant cannot be admitted against an effect adapter that cannot
+                # prove absence, because that redemption runs after the attempt
+                # already succeeded and has no Action-only WAITING_RECONCILIATION
+                # resting place (`#430`/`#431`). Read through this serialized
+                # connection so it sees the same tool revisions every other
+                # admission read does.
+                if not self._effect_adapter_proves_absence:
+                    unreconcilable = first_agent_platform_effect_node(connection, graph)
+                    if unreconcilable is not None:
+                        return DurableAgentPlatformEffectUnreconcilable(unreconcilable)
                 if isinstance(graph, WorkflowGraph):
                     if not isinstance(request, StartPublishedRunRequest):
                         return DurableInvalidAgentBindings()

@@ -17,6 +17,9 @@ from atelier2.adapters.codex_subscription import (
     CodexSubscriptionExecutorFactory,
     CodexSubscriptionSettings,
 )
+from atelier2.adapters.dbos.advancer import (
+    agent_open_pr_runs_pending_live_redemption,
+)
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
@@ -39,6 +42,11 @@ from atelier2.adapters.dbos.starter import (
 from atelier2.adapters.dbos.webhook_delivery import DbosWebhookDeliveryPublisher
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
+from atelier2.adapters.github import (
+    GitHubRepository,
+    GitHubTokenCredential,
+    LiveGitHubEffectAdapterFactory,
+)
 from atelier2.adapters.grok_subscription import (
     GrokSubscriptionExecutorFactory,
     GrokSubscriptionSettings,
@@ -75,6 +83,7 @@ from atelier2.ports.agent_executions import (
     AgentExecutorFactoryV2,
     AgentExecutorRegistration,
 )
+from atelier2.ports.effects import EffectAdapterFactory
 
 # The edge must admit exactly the largest result the durable agent contract
 # accepts, and nothing larger: a tighter bound refuses work the store would
@@ -175,6 +184,37 @@ def event_poll_backoff(
 
 
 @dataclass(frozen=True)
+class GitHubEffectDeployment:
+    """The live-GitHub `open-pr` destination this instance composes, by reference.
+
+    ADR 0010 binds a project's repository scope and its credential reference to a
+    durable project-connection record (#23/#24). That record is unbuilt, so this
+    is a deliberately temporary single-operator, single-repository slice (`#430`):
+    the operator names one credential directory and one repository at serve time,
+    and it is superseded by the connection record rather than being a second owner
+    of repository scope.
+
+    The credential reaches the adapter by reference only (ADR 0009 §6): this holds
+    the directory, and the token it names is read once when the adapter opens and
+    lives nowhere durable. Because live GitHub cannot prove absence, composing this
+    also refuses an agent-authored `open-pr` grant at admission (`#430`/`#431`).
+    """
+
+    credential_directory: Path
+    repository: GitHubRepository
+
+    def effect_adapter_factory(
+        self, adapter_revision: AdapterRevision, destination: EffectDestination
+    ) -> LiveGitHubEffectAdapterFactory:
+        return LiveGitHubEffectAdapterFactory(
+            adapter_revision,
+            destination,
+            self.repository,
+            GitHubTokenCredential(self.credential_directory),
+        )
+
+
+@dataclass(frozen=True)
 class HostSettings:
     database_path: Path
     effect_store_path: Path
@@ -240,6 +280,12 @@ class HostSettings:
     # `compose_application`. Not the project-scoped configuration channel
     # (`#425`), because the attention page is project-wide.
     webhook: WebhookDeliverySettings | None = None
+    # The live-GitHub `open-pr` destination (`#430`), declared all-or-nothing by
+    # `GitHubEffectDeployment` at the command line. `None` composes the loopback
+    # effect adapter exactly as before; a value composes the live adapter for the
+    # Action `open-pr` effect and, because it cannot prove absence, makes
+    # admission refuse an agent-authored `open-pr` grant.
+    github_effect: GitHubEffectDeployment | None = None
 
     @property
     def billed_providers(self) -> tuple[str, ...]:
@@ -508,22 +554,91 @@ def _log_unstartable_executors(settings: HostSettings) -> None:
             logger.warning(refusal)
 
 
+class LiveGitHubOpenPrRunPending(RuntimeError):
+    """A V3 run could still redeem an agent `open-pr` grant against live GitHub.
+
+    Admission refuses a new agent-authored `open-pr` run against an adapter that
+    cannot prove absence (`#430`/`#431`), but that door only guards the runs a
+    live-GitHub instance itself admits. A run admitted earlier under the
+    absence-proving loopback adapter can still owe its redemption when the
+    operator restarts the same database with the live adapter; DBOS recovery
+    would then resume its durable redemption node against live GitHub, whose
+    not-found readback is `EffectUnknownOutcome`, and the run would end ERROR
+    after it had already committed COMPLETED. The run may be non-terminal, or it
+    may have committed COMPLETED and crashed before the sink node's own workflow
+    finished the redemption -- either way the redemption is still owed. Composing
+    the live adapter therefore refuses to start while any such run remains, so the
+    operator lets it finish or cancels it before serving live GitHub.
+    """
+
+
+def _refuse_pending_agent_open_pr_runs(runtime: DbosRuntime) -> None:
+    """Fail the live-GitHub start while any V3 run still owes an agent open-pr PR.
+
+    The dbos adapter owns the scan; this only turns a nonempty answer into the
+    loud startup refusal, naming the runs the operator must let finish or cancel.
+    """
+
+    blocking = agent_open_pr_runs_pending_live_redemption(runtime.engine)
+    if blocking:
+        named = ", ".join(sorted(run.value for run in blocking))
+        raise LiveGitHubOpenPrRunPending(
+            "refusing to serve live GitHub open-pr while these runs still carry an "
+            f"agent-authored open-pr grant and have not finished: {named}. Let them "
+            "finish or cancel them before serving with --github-*."
+        )
+
+
+def _effect_adapter_factory(
+    settings: HostSettings,
+) -> tuple[EffectAdapterFactory, bool]:
+    """The one effect adapter this instance drives, and whether it proves absence.
+
+    The live-GitHub destination composes only when the operator declared it; with
+    no declaration this is the loopback adapter exactly as before. The token, when
+    the live adapter opens it, is read from the credential directory by reference
+    and never returns here (ADR 0009 §6).
+
+    The second value is the adapter's own `proves_absence` capability, read from
+    the concrete factory here and handed to admission: a destination that cannot
+    prove absence (live GitHub) makes an agent-authored `open-pr` grant
+    unreconcilable, so admission refuses it (`#430`/`#431`).
+    """
+
+    adapter_revision = AdapterRevision(settings.effect_adapter_revision)
+    destination = EffectDestination(settings.effect_destination)
+    if settings.github_effect is not None:
+        live = settings.github_effect.effect_adapter_factory(
+            adapter_revision, destination
+        )
+        return live, live.proves_absence
+    loopback = LoopbackEffectAdapterFactory(
+        settings.effect_store_path, adapter_revision, destination
+    )
+    return loopback, loopback.proves_absence
+
+
 def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
     subscription_executors = (
         *_subscription_executor_registrations(settings),
         *_runner_lease_executor_registrations(settings),
     )
+    effect_factory, effect_adapter_proves_absence = _effect_adapter_factory(settings)
     runtime = DbosRuntime(
         settings.runtime_settings(),
-        LoopbackEffectAdapterFactory(
-            settings.effect_store_path,
-            AdapterRevision(settings.effect_adapter_revision),
-            EffectDestination(settings.effect_destination),
-        ),
+        effect_factory,
         ExactOutputAgentExecutorFactory(),
         subscription_executors,
     )
     try:
+        # Before the launch that recovers durable nodes: a live adapter cannot
+        # prove absence, so a non-terminal V3 run whose agent node opens its own
+        # pull request must not be resumed against it (`#430`/`#431`). Admission
+        # already refuses such a run at start, but a cross-restart adapter swap can
+        # leave one admitted earlier under loopback, so this refuses the whole
+        # start rather than recovering it into a COMPLETED-lie.
+        if not effect_adapter_proves_absence:
+            _refuse_pending_agent_open_pr_runs(runtime)
         # One expression feeds both the reader's bound and the API's own, so the
         # promise that they cannot describe different numbers holds by
         # construction rather than by two readings agreeing today.
@@ -558,6 +673,7 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
                     runtime.engine,
                     runtime.settings,
                     runtime.agent_executor_registry,
+                    effect_adapter_proves_absence,
                 ),
                 wait_answerer=DbosWaitAnswerer(
                     runtime.engine, runtime.settings.application_version

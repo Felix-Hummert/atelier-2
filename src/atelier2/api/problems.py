@@ -248,6 +248,11 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Binding constraint refused",
         "Bind the constrained nodes to different agent configuration revisions. The constraint checks occupation, not independent judgment.",
     ),
+    "agent-platform-effect-unreconcilable": ProblemDefinition(
+        409,
+        "Agent platform effect cannot be reconciled here",
+        "This deployment's effect adapter cannot prove absence, so an agent open-pr grant has no reconciliation path. Compose an absence-proving effect adapter or move the open-pr to an Action node.",
+    ),
     "invalid-agent-attempt-id": ProblemDefinition(
         400,
         "Invalid agent attempt id",

@@ -182,7 +182,13 @@ _DRIVING_WORKFLOW_STATUSES = ("PENDING", "ENQUEUED", "DELAYED")
 """The DBOS statuses under which a workflow is still owed its next step."""
 
 
-def _attempt_from_record(record: Mapping[Any, Any]) -> AgentAttempt:
+def attempt_from_record(record: Mapping[Any, Any]) -> AgentAttempt:
+    """Rebuild the typed attempt one `agent_attempts` row records.
+
+    This module owns the row-to-attempt mapping, so a second reader that needs an
+    attempt back from its durable row -- the live-GitHub startup scan asking which
+    workflow still drives it -- reads it here rather than re-deriving the shape.
+    """
     try:
         failure = record["failure_code"]
         receipt = record["receipt_hash"]
@@ -353,7 +359,7 @@ def _load_attempt(session: Any, attempt_id: AgentAttemptId) -> AgentAttempt:
     )
     if record is None:
         raise RunTransitionConflict("agent attempt is missing")
-    return _attempt_from_record(record)
+    return attempt_from_record(record)
 
 
 def _validate_request(
@@ -943,7 +949,7 @@ class DbosAgentAttemptStore:
             if record is None:
                 _commit_unavailable_executor_refusal(connection, request)
                 return AgentExecutorBindingRefusalWritten()
-            attempt = _attempt_from_record(record)
+            attempt = attempt_from_record(record)
             if (
                 attempt.node_execution_id != request.node_execution_id
                 or attempt.request_hash != request.request_hash
@@ -1280,7 +1286,7 @@ class DbosAgentAttemptStore:
                 if after is not None:
                     query = query.where(agent_attempts.c.attempt_id > after.value)
                 candidates = tuple(
-                    _attempt_from_record(record)
+                    attempt_from_record(record)
                     for record in connection.execute(
                         query.order_by(agent_attempts.c.attempt_id).limit(
                             page_limit.value
@@ -2088,7 +2094,7 @@ class DbosAgentAttemptStore:
             )
             if record is None:
                 return AgentAttemptCancellationTargetMissing()
-            attempt = _attempt_from_record(record)
+            attempt = attempt_from_record(record)
             if attempt.run_id != request.run_id:
                 return AgentAttemptCancellationTargetMissing()
             existing = attempt.cancellation
@@ -2178,7 +2184,7 @@ class DbosAgentAttemptStore:
                 .one_or_none()
             )
             if record is not None:
-                attempt = _attempt_from_record(record)
+                attempt = attempt_from_record(record)
                 if attempt.state is AgentAttemptState.CANCEL_REQUESTED:
                     return RunCancellationAccepted(attempt)
                 if attempt.state in {
@@ -2246,7 +2252,7 @@ class DbosAgentAttemptStore:
                 return RunCancellationNotCancellable(
                     RunCancellationRefusal.BETWEEN_NODES
                 )
-            current_attempt = _attempt_from_record(current_record)
+            current_attempt = attempt_from_record(current_record)
             if current_attempt.state in TERMINAL_AGENT_ATTEMPT_STATES:
                 return RunCancellationNotCancellable(
                     RunCancellationRefusal.ALREADY_ENDED
