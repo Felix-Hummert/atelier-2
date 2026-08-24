@@ -9,7 +9,7 @@
   } from "./lib/mutationJournal";
   import { cockpitRoute } from "./lib/route";
   import WorkshopShell from "./components/WorkshopShell.svelte";
-  import ChatPage from "./pages/ChatPage.svelte";
+  import WorkbenchPage from "./pages/WorkbenchPage.svelte";
   import NewRunPage from "./pages/NewRunPage.svelte";
   import RunCockpitPage from "./pages/RunCockpitPage.svelte";
   import ProjectPage from "./pages/ProjectPage.svelte";
@@ -44,7 +44,7 @@
 
 <WorkshopShell bind:this={workshopShell} {route} {navigate}>
   {#if route.page === "chat"}
-    <ChatPage />
+    <WorkbenchPage {cockpitApi} {mutationJournal} {navigate} />
   {:else if route.page === "studio"}
     <StudioPage {cockpitApi} {mutationJournal} {navigate} />
   {:else if route.page === "project"}

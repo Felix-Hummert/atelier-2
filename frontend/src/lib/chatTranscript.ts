@@ -1,4 +1,4 @@
-import { chatPageCopy } from "./chatPageCopy";
+import { workbenchPageCopy } from "./workbenchPageCopy";
 
 /** Who said a line: the operator, or the house answering for itself. */
 export type ChatSpeaker = "you" | "house";
@@ -31,12 +31,12 @@ export function sendChatMessage(
   return [
     ...transcript,
     { id: `you-${turn}`, speaker: "you", text },
-    { id: `house-${turn}`, speaker: "house", text: chatPageCopy.conductorAbsent }
+    { id: `house-${turn}`, speaker: "house", text: workbenchPageCopy.conductorAbsent }
   ];
 }
 
 /**
- * The conversation as this module holds it, so it outlives the Chat page
+ * The conversation as this module holds it, so it outlives the Workbench page
  * component being torn down and rebuilt by in-app rail navigation -- to the
  * operator that is not "closing the page" the reply promises to keep talking
  * about (Klarheitsvertrag Punkt 12, Epic #516). A reload starts a fresh
