@@ -297,8 +297,9 @@ sees it — while a platform-effect token follows the effect execution locus.
 
 **Per-role scoping holds under both sources.** The cage gives a run only the
 credential for **its** bound role — each run reads only its role, never
-"every agent reads everything." Server-held: the server provisions exactly
-the one referenced credential. Runner-local: the runner's mapping resolves
+"every agent reads everything." Server-held: Core resolves exactly the one
+referenced credential for its own call — it feeds no cage (the coupling
+above). Runner-local: the runner's mapping resolves
 exactly the one role the lease names, and ADR 0009 §5's prohibition — a
 runner reads no credential outside its bound profile — is the enforcement,
 here applied *inside* the runner host between its cage and its own mapping. A
@@ -307,8 +308,9 @@ ADR 0009), with no fallback to another source.
 
 **Both axes compose with the layering (§8) and stay invisible to the
 workflow.** A role can be occupied by a server-held Account or a runner-local
-one, in any mode the provider supports; the workflow still declares only the
-generic role, blind to source and mode alike.
+one, in any mode the provider supports and any use its source admits under
+the coupling above; the workflow still declares only the generic role, blind
+to source and mode alike.
 
 ### 5. Effect execution locus: the third selectable axis — Core performs by default, runner-performs is a verified opt-in
 
