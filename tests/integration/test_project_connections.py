@@ -41,6 +41,7 @@ from atelier2.contracts.host_configuration import (
     SourceConnectionAuthMethod,
     SourceKind,
 )
+from atelier2.host import main
 from atelier2.ports.host_configuration import (
     ProjectSourceConnectionRevisionConflict,
 )
@@ -248,3 +249,83 @@ def test_no_flow_and_no_stored_byte_carries_the_credential_value(
     with sqlite3.connect(tmp_path / "atelier.sqlite") as connection:
         full_projection = "\n".join(connection.iterdump())
     assert CANARY_TOKEN not in full_projection
+
+
+def _connect_command(
+    tmp_path: Path,
+    credential_directory: Path,
+    *,
+    project_id: str = "studio",
+) -> list[str]:
+    return [
+        "connect",
+        "--database",
+        str(tmp_path / "atelier.sqlite"),
+        "--project-id",
+        project_id,
+        "--source-kind",
+        "github",
+        "--source-address",
+        "acme/studio",
+        "--credential-directory",
+        str(credential_directory),
+        "--auth-method",
+        "personal-access-token",
+        "--actor",
+        "felix",
+    ]
+
+
+def test_the_connect_command_writes_the_revision_the_channel_reads_back(
+    connected_workshop: tuple[Engine, Path],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine, credential_directory = connected_workshop
+    engine.dispose()
+
+    assert main(_connect_command(tmp_path, credential_directory)) == 0
+    assert "revision 1" in capsys.readouterr().out
+
+    assert main(_connect_command(tmp_path, credential_directory)) == 0
+    assert "unchanged" in capsys.readouterr().out
+
+    reopened = opened_channel(tmp_path)
+    try:
+        read = get_project_source_connection(
+            "studio", DbosHostConfigurationChannel(reopened)
+        )
+        assert isinstance(read, ProjectSourceConnectionRead)
+        assert read.revision.revision_number == 1
+        assert read.revision.source_address == SourceAddress("acme/studio")
+    finally:
+        reopened.dispose()
+
+
+def test_the_connect_command_refuses_an_unrooted_project(
+    connected_workshop: tuple[Engine, Path],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine, credential_directory = connected_workshop
+    engine.dispose()
+
+    exit_code = main(
+        _connect_command(tmp_path, credential_directory, project_id="unrooted")
+    )
+
+    assert exit_code == 1
+    assert "project-unknown" in capsys.readouterr().err
+
+
+def test_the_connect_command_does_not_create_a_store(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    credential_directory = tmp_path / "credential"
+    credential_directory.mkdir()
+
+    exit_code = main(_connect_command(tmp_path, credential_directory))
+
+    assert exit_code == 1
+    assert "does not create a store" in capsys.readouterr().err
+    assert not (tmp_path / "atelier.sqlite").exists()

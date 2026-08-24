@@ -1,4 +1,4 @@
-"""The operator's command line: serve, run, resolve, migrate, or speak MCP."""
+"""The operator's command line: serve, run, resolve, migrate, connect, or speak MCP."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import assert_never
 
 from atelier2.adapters.agent_workspaces import (
     AgentScratchRootRefused,
@@ -32,7 +33,13 @@ from atelier2.adapters.codex_subscription import (
     attest_codex_containment,
     verify_codex_capability,
 )
-from atelier2.adapters.dbos.schema import StoreMigrationRefused
+from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
+from atelier2.adapters.dbos.runtime import create_canonical_engine
+from atelier2.adapters.dbos.schema import (
+    StoreMigrationRefused,
+    UnsupportedSchemaVersion,
+    initialize_schema,
+)
 from atelier2.adapters.github import GitHubCredentialUnresolvable, GitHubRepository
 from atelier2.adapters.grok_subscription import (
     GrokExecutableUnsupported,
@@ -41,7 +48,21 @@ from atelier2.adapters.grok_subscription import (
     verify_grok_capability,
 )
 from atelier2.adapters.project_verification import declared_project
+from atelier2.application.project_connections import (
+    ConnectionProjectUnknown,
+    ProjectSourceConnectionCollision,
+    ProjectSourceConnectionConflict,
+    ProjectSourceConnectionPublished,
+    ProjectSourceConnectionUnchanged,
+    UnpublishableConnection,
+    connect_project_source,
+)
+from atelier2.application.refusals import (
+    DurableStateCorrupt,
+    WriteUnavailable,
+)
 from atelier2.contracts.host_configuration import (
+    PROJECT_UNKNOWN,
     HostConfigurationUnreadable,
     ProjectId,
     ProjectRootMissing,
@@ -80,6 +101,19 @@ from atelier2.host.serving import (
 from atelier2.host.webhook_delivery import WebhookDeliverySettings
 from atelier2.ports.project_source import ProjectSourceUnavailable
 from atelier2.ports.project_verification import ProjectVerificationUndeclared
+
+CONNECT_DESCRIPTION = """\
+Connect a configured project to its external source.
+
+This command is offline, like migrate: it does not serve and does not create
+a store. It appends one immutable connection revision on the host
+configuration channel, binding the project to a source kind, an opaque
+source address the connected platform adapter interprets, a
+credential-directory reference, the chosen auth method, and the connecting
+actor. The credential value itself never enters the record; the host
+resolves it from the named directory at composition. Repeating the exact
+same connect changes nothing.
+"""
 
 MIGRATE_DESCRIPTION = """\
 Raise an existing canonical store to the current product schema.
@@ -196,6 +230,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         return _resolve(parser, parsed)
     if parsed.command == "migrate":
         return _migrate(parsed)
+    if parsed.command == "connect":
+        return _connect(parsed)
     if parsed.command == "mcp":
         return execute_mcp(parsed.service, sys.stdin.buffer, sys.stdout.buffer)
     parser.error("a command is required")
@@ -353,6 +389,83 @@ def _migrate(parsed: argparse.Namespace) -> int:
         return 1
     print(describe_migration(report))
     return 0
+
+
+def _connect(parsed: argparse.Namespace) -> int:
+    if not parsed.database.is_file() or parsed.database.stat().st_size == 0:
+        print(
+            f"{parsed.database} is not a database file; "
+            "this command does not create a store",
+            file=sys.stderr,
+        )
+        return 1
+    engine = create_canonical_engine(parsed.database)
+    try:
+        try:
+            initialize_schema(engine)
+        except UnsupportedSchemaVersion as refusal:
+            print(refusal, file=sys.stderr)
+            return 1
+        channel = DbosHostConfigurationChannel(engine)
+        result = connect_project_source(
+            parsed.project_id,
+            parsed.source_kind,
+            parsed.source_address,
+            parsed.credential_directory,
+            parsed.auth_method,
+            parsed.actor,
+            channel,
+            channel,
+        )
+    finally:
+        engine.dispose()
+    match result:
+        case ProjectSourceConnectionPublished(revision):
+            print(
+                f"connected project {revision.project_id.value!r} to "
+                f"{revision.source_kind.value} source "
+                f"{revision.source_address.value!r} as revision "
+                f"{revision.revision_number}"
+            )
+            return 0
+        case ProjectSourceConnectionUnchanged(revision):
+            print(
+                f"project {revision.project_id.value!r} is already connected to "
+                f"{revision.source_kind.value} source "
+                f"{revision.source_address.value!r}; revision "
+                f"{revision.revision_number} is unchanged"
+            )
+            return 0
+        case ConnectionProjectUnknown():
+            print(
+                f"{PROJECT_UNKNOWN}: the project id is malformed or has no "
+                "configured root",
+                file=sys.stderr,
+            )
+            return 1
+        case UnpublishableConnection():
+            print(
+                "the given values do not make one connection revision",
+                file=sys.stderr,
+            )
+            return 1
+        case ProjectSourceConnectionConflict() | ProjectSourceConnectionCollision():
+            print(
+                "the connection revision collides with one already recorded",
+                file=sys.stderr,
+            )
+            return 1
+        case WriteUnavailable(detail):
+            print(
+                detail or "the configuration channel could not be written",
+                file=sys.stderr,
+            )
+            return 1
+        case DurableStateCorrupt():
+            print("the configuration channel is corrupt", file=sys.stderr)
+            return 1
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _resolve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
@@ -823,6 +936,36 @@ def _argument_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     migrate_parser.add_argument("--database", type=Path, required=True)
+    connect_parser = commands.add_parser(
+        "connect",
+        help="connect a configured project to its external source, offline",
+        description=CONNECT_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    connect_parser.add_argument("--database", type=Path, required=True)
+    connect_parser.add_argument("--project-id", required=True)
+    connect_parser.add_argument(
+        "--source-kind",
+        required=True,
+        help="which platform adapter family interprets the source address",
+    )
+    connect_parser.add_argument(
+        "--source-address",
+        required=True,
+        help="the source's address inside its platform, in that platform's words",
+    )
+    connect_parser.add_argument(
+        "--credential-directory",
+        type=Path,
+        required=True,
+        help="where the host resolves the credential; never the credential itself",
+    )
+    connect_parser.add_argument("--auth-method", required=True)
+    connect_parser.add_argument(
+        "--actor",
+        required=True,
+        help="the operator accountable for this connect",
+    )
     resolve_parser = commands.add_parser(
         "resolve",
         help="ask a served Atelier which revision a workflow name holds",
