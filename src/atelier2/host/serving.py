@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -8,6 +9,8 @@ import uvicorn
 from fastapi import FastAPI
 
 from atelier2.adapters.claude_subscription import (
+    ClaudeAtelierDoorsExecutorFactory,
+    ClaudeAtelierDoorsSettings,
     ClaudeSubscriptionExecutorFactory,
     ClaudeSubscriptionSettings,
     ClaudeWorkspaceToolExecutorFactory,
@@ -74,6 +77,10 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.pages import PageLimit
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, is_loopback_host
+from atelier2.host.conductor_workflow import (
+    CONDUCTOR_DOOR_SERVER_NAME,
+    CONDUCTOR_DOOR_TOOLS,
+)
 from atelier2.host.logging import configure_process_logging
 from atelier2.host.webhook_delivery import (
     WebhookDeliveryLoop,
@@ -248,8 +255,19 @@ class HostSettings:
     the serving user. An operator says yes to that once, here, and never as a
     side effect of naming an executable.
     """
+    claude_atelier_doors: bool = False
+    """Whether the Claude deployment also serves the atelier-doors executor.
+
+    A third, separately armed grant of the same deployment: it lets a node's
+    own process choose, start and observe catalog runs through the serving
+    host's own MCP door -- real billed children behind one node. An operator
+    says yes to that once, here, and never as a side effect of naming an
+    executable. Routine use additionally waits on the billed conformance probe
+    the executor's docstring names.
+    """
     claude_start_refusal: str | None = None
     claude_workspace_tools_start_refusal: str | None = None
+    claude_atelier_doors_start_refusal: str | None = None
     grok_subscription: GrokSubscriptionSettings | None = None
     grok_workspace_tools: bool = False
     """Whether the Grok deployment also serves its tool-bearing executor.
@@ -387,6 +405,11 @@ class HostSettings:
                 "serving the Claude workspace-tool executor needs the Claude "
                 "deployment it is a second executor of"
             )
+        if self.claude_atelier_doors and self.claude_subscription is None:
+            raise ValueError(
+                "serving the Claude atelier-doors executor needs the Claude "
+                "deployment it is a third executor of"
+            )
         if self.grok_workspace_tools and self.grok_subscription is None:
             raise ValueError(
                 "serving the Grok workspace-tool executor needs the Grok "
@@ -410,6 +433,11 @@ class HostSettings:
             "Claude workspace-tool",
             self.claude_subscription if self.claude_workspace_tools else None,
             self.claude_workspace_tools_start_refusal,
+        )
+        _require_start_refusal(
+            "Claude atelier-doors",
+            self.claude_subscription if self.claude_atelier_doors else None,
+            self.claude_atelier_doors_start_refusal,
         )
         _require_start_refusal("Grok", self.grok_subscription, self.grok_start_refusal)
         _require_start_refusal(
@@ -469,6 +497,19 @@ def _subscription_executor_registrations(
         *(
             (
                 _subscription_registration(
+                    ClaudeAtelierDoorsExecutorFactory(
+                        _atelier_doors_settings(claude_subscription, settings)
+                    ),
+                    settings.claude_start_refusal is not None
+                    or settings.claude_atelier_doors_start_refusal is not None,
+                ),
+            )
+            if (claude_subscription is not None and settings.claude_atelier_doors)
+            else ()
+        ),
+        *(
+            (
+                _subscription_registration(
                     GrokSubscriptionExecutorFactory(grok_subscription),
                     settings.grok_start_refusal is not None,
                 ),
@@ -508,6 +549,47 @@ def _subscription_registration(
     return AgentExecutorRegistration.startable(factory)
 
 
+def _atelier_doors_settings(
+    claude_subscription: ClaudeSubscriptionSettings, settings: HostSettings
+) -> ClaudeAtelierDoorsSettings:
+    """The doors deployment, composed from facts each of their own owners holds.
+
+    The door tools and server name come from the conductor contract
+    (`atelier2.host.conductor_workflow`), which draws them from the MCP door
+    vocabulary -- no literal is re-spelled here. The door command is this
+    serving process launching its own stdio door (`atelier2 mcp`, the
+    subcommand `atelier2.host` itself defines) with the same interpreter that
+    serves, against the same loopback address this deployment binds. Whether
+    that address is really loopback stays the door child's own refusal.
+    """
+
+    return ClaudeAtelierDoorsSettings(
+        claude_subscription,
+        CONDUCTOR_DOOR_SERVER_NAME,
+        tuple(tool.value for tool in CONDUCTOR_DOOR_TOOLS),
+        (
+            sys.executable,
+            "-m",
+            "atelier2",
+            "mcp",
+            "--service",
+            _own_service_url(settings),
+        ),
+    )
+
+
+def _own_service_url(settings: HostSettings) -> str:
+    """Where this deployment's own API answers, as a client address.
+
+    The bracket form is IPv6's URL grammar: a bare colon-carrying host would
+    read as a port separator.
+    """
+
+    host = settings.host
+    address = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    return f"http://{address}:{settings.port}"
+
+
 def _runner_lease_executor_registrations(
     settings: HostSettings,
 ) -> tuple[AgentExecutorRegistration, ...]:
@@ -535,6 +617,7 @@ def _log_unstartable_executors(settings: HostSettings) -> None:
     for refusal in (
         settings.claude_start_refusal,
         settings.claude_workspace_tools_start_refusal,
+        settings.claude_atelier_doors_start_refusal,
         settings.grok_start_refusal,
         settings.grok_workspace_tools_start_refusal,
         settings.codex_start_refusal,

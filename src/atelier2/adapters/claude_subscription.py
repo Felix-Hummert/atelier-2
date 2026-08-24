@@ -771,21 +771,23 @@ def _jobless_invocation_answer(
     return (answer + diagnostics).decode("utf-8", "replace")
 
 
-def attest_workspace_tool_invocation(
+def _attest_invocation_parses(
     settings: ClaudeSubscriptionSettings,
-    timeout_seconds: float = _PROBE_TIMEOUT_SECONDS,
+    arguments: tuple[str, ...],
+    served_subject: str,
+    timeout_seconds: float,
 ) -> None:
-    """Refuse an executable that cannot start this executor's exact invocation.
+    """The shared half of every invocation attestation in this module.
 
     A version answer is not startability. A copy of this CLI has passed
     `--version` and then failed to spawn its real invocation at all, which is
     the observation this attestation exists for (#301, operator ruling of the
-    night of 18.08.). So it launches the argument vector the workspace-tool
-    executor really prepares -- every flag, the deployment's own environment --
-    and hands it no job: a CLI that read the whole vector reaches its own
-    missing-input refusal, and a CLI that did not stops at the argument it could
-    not read. Neither reaches a model, so the attestation is free and runs at
-    every composition rather than at the first run that binds a node.
+    night of 18.08.). So it launches the argument vector an executor really
+    prepares -- every flag, the deployment's own environment -- and hands it no
+    job: a CLI that read the whole vector reaches its own missing-input refusal,
+    and a CLI that did not stops at the argument it could not read. Neither
+    reaches a model, so the attestation is free and runs at every composition
+    rather than at the first run that binds a node.
 
     The negative observation only means something if this executable can still
     make the positive one, so the control runs beside it: the same vector with
@@ -794,12 +796,11 @@ def attest_workspace_tool_invocation(
     release that stopped saying it looks like.
     """
 
-    arguments = _workspace_tool_arguments(settings.executable, _INVOCATION_PROBE_MODEL)
     started = _jobless_invocation_answer(settings, arguments, timeout_seconds)
     if _ARGUMENT_REFUSAL_MARKER in started:
         raise ClaudeExecutableUnsupported(
             "the Claude executable refused an argument of this executor's "
-            f"invocation: {started.strip()}. Serving workspace-tool agents "
+            f"invocation: {started.strip()}. Serving {served_subject} "
             "needs every flag of that vector to exist and parse, because each "
             "one is a containment decision this executor states"
         )
@@ -813,6 +814,20 @@ def attest_workspace_tool_invocation(
             "missing flag out of exactly that refusal, so an executable that "
             "never states one cannot be attested by it"
         )
+
+
+def attest_workspace_tool_invocation(
+    settings: ClaudeSubscriptionSettings,
+    timeout_seconds: float = _PROBE_TIMEOUT_SECONDS,
+) -> None:
+    """Refuse an executable that cannot start the workspace-tool invocation."""
+
+    _attest_invocation_parses(
+        settings,
+        _workspace_tool_arguments(settings.executable, _INVOCATION_PROBE_MODEL),
+        "workspace-tool agents",
+        timeout_seconds,
+    )
 
 
 @dataclass(frozen=True)
@@ -939,3 +954,280 @@ class ClaudeWorkspaceToolExecutorFactory:
 
     def open(self) -> ClaudeWorkspaceToolExecutor:
         return ClaudeWorkspaceToolExecutor(self.settings)
+
+
+CLAUDE_ATELIER_DOORS_EXECUTOR_KEY = AgentExecutorKey(
+    ProviderId("anthropic"),
+    AgentExecutorRevision("claude-atelier-doors/v1"),
+)
+# A third operation of the same CLI, beside the tool-free and workspace-tool
+# ones. Its distinguishing decision is the tool surface it opens -- the
+# product's own MCP doors instead of built-ins -- and that decision is what an
+# operational identity stands for, so every durable attempt record keeps saying
+# which of the three ran.
+CLAUDE_ATELIER_DOORS_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
+    "headless-atelier-doors-print-json/v1"
+)
+
+# Claude Code's allowlistable name for one MCP tool: `mcp__<server>__<tool>`.
+# The grammar is this provider's and lives here; the server and tool names it
+# is applied to arrive from their own typed owner through the composition root,
+# never re-spelled in this module.
+_MCP_TOOL_NAME_TEMPLATE = "mcp__{server}__{tool}"
+# An atelier-doors episode is a small, fixed shape: read the brief, list the
+# catalog (one door call plus reading its result), start a run (one), observe
+# it (one), then a closing answer. Six tool-result turns cover that with
+# headroom while staying small enough that no unbounded subscription loop hides
+# behind it -- and small because each further turn could start one more billed
+# child run: the door dedups only an exact repeated run identity, never
+# distinct starts, so this bound is the per-episode ceiling on started
+# children. A pinned node budget replaces it at launch, exactly as it does for
+# the workspace-tool executor.
+_ATELIER_DOORS_MAXIMUM_TURNS = "6"
+
+
+@dataclass(frozen=True)
+class ClaudeAtelierDoorsSettings:
+    """The deployment values one Claude atelier-doors executor may use.
+
+    `deployment` is the same validated Claude deployment the other two
+    executors of this module use -- executable, credential directory, and the
+    bubblewrap-bearing search path the subprocess scrub insists on. The three
+    door fields arrive from the composition root, because each names a fact
+    another layer owns: `door_server_name` and `door_tools` are the MCP door
+    vocabulary (`atelier2.host.mcp_tools`), and `door_command` is the serving
+    host's own way of launching its stdio MCP door against its own loopback
+    address. This module owns only the Claude grammar those facts are spelled
+    in. Whether the named service is loopback is the door child's own refusal
+    (`atelier2.host.mcp_command`), the single owner of that trust rule.
+    """
+
+    deployment: ClaudeSubscriptionSettings
+    door_server_name: str
+    door_tools: tuple[str, ...]
+    door_command: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.door_server_name.strip():
+            raise ValueError("the atelier door server name must be nonempty")
+        if not self.door_tools or any(not tool.strip() for tool in self.door_tools):
+            raise ValueError(
+                "the atelier door tools must be a nonempty list of nonempty names"
+            )
+        if not self.door_command or any(not part for part in self.door_command):
+            raise ValueError(
+                "the atelier door command must be a nonempty argument vector"
+            )
+
+    @property
+    def allowed_door_tools(self) -> tuple[str, ...]:
+        """The door tools under Claude Code's `mcp__<server>__<tool>` grammar."""
+
+        return tuple(
+            _MCP_TOOL_NAME_TEMPLATE.format(server=self.door_server_name, tool=tool)
+            for tool in self.door_tools
+        )
+
+    def door_mcp_config(self) -> str:
+        """The `--mcp-config` JSON naming exactly one server: the atelier door.
+
+        Keyed by the door's own server name so the allowlisted
+        `mcp__<server>__<tool>` names resolve to it. With `--strict-mcp-config`
+        beside it, no user or project configuration can add a second server.
+        """
+
+        return json.dumps(
+            {
+                "mcpServers": {
+                    self.door_server_name: {
+                        "command": self.door_command[0],
+                        "args": list(self.door_command[1:]),
+                    }
+                }
+            },
+            separators=(",", ":"),
+        )
+
+
+def _atelier_doors_arguments(
+    settings: ClaudeAtelierDoorsSettings,
+    model: str,
+    maximum_assistant_turns: int | None = None,
+) -> tuple[str, ...]:
+    """The exact argument vector one atelier-doors invocation is launched with.
+
+    `--safe-mode` is deliberately absent, by measurement rather than choice: on
+    this repository's probe (24.08., spawn-detection against a fake MCP server,
+    no model reached) safe mode prevented the `--mcp-config` server from being
+    spawned at all, so a safe-mode call could never reach a door. What safe mode
+    was carrying for the sibling executors -- no plugins, no skills, no hooks,
+    no `CLAUDE.md` discovery -- must here be held by the surviving flags
+    (`--setting-sources=`, `--disable-slash-commands`, strict single-server MCP
+    config), and that they hold it alone is exactly what the billed conformance
+    probe below has to establish before routine use.
+    """
+
+    return (
+        str(settings.deployment.executable),
+        _PRINT_FLAG,
+        _OUTPUT_FORMAT_FLAG,
+        _JSON_OUTPUT_FORMAT,
+        _MODEL_FLAG,
+        model,
+        _NO_TOOLS,
+        _ALLOWED_TOOLS_FLAG,
+        ",".join(settings.allowed_door_tools),
+        _NO_SETTING_SOURCES,
+        _STRICT_MCP_CONFIG_FLAG,
+        _MCP_CONFIG_FLAG,
+        settings.door_mcp_config(),
+        _DISABLE_SLASH_COMMANDS_FLAG,
+        _NO_CHROME_FLAG,
+        _NO_SESSION_PERSISTENCE_FLAG,
+        _MAXIMUM_TURNS_FLAG,
+        (
+            str(maximum_assistant_turns)
+            if maximum_assistant_turns is not None
+            else _ATELIER_DOORS_MAXIMUM_TURNS
+        ),
+    )
+
+
+def attest_atelier_doors_invocation(
+    settings: ClaudeAtelierDoorsSettings,
+    timeout_seconds: float = _PROBE_TIMEOUT_SECONDS,
+) -> None:
+    """Refuse an executable that cannot start the atelier-doors invocation."""
+
+    _attest_invocation_parses(
+        settings.deployment,
+        _atelier_doors_arguments(settings, _INVOCATION_PROBE_MODEL),
+        "atelier-doors agents",
+        timeout_seconds,
+    )
+
+
+@dataclass(frozen=True)
+class ClaudeAtelierDoorsExecutor:
+    """One headless `claude --print` call that may operate the atelier's doors.
+
+    The third sibling of this module, and the first executor in this repository
+    whose tools reach the product's own API instead of the workspace: the
+    invocation loads exactly one MCP server -- the serving host's own
+    `atelier2 mcp` stdio door against its loopback address -- and pre-approves
+    exactly the door tools the composition root named. The conductor (#7) is
+    its first consumer: an agent that chooses, starts and observes catalog
+    workflows through the same public doors the browser uses.
+
+    WHAT IT GRANTS. No built-in tool: `--tools=` removes every one, measured on
+    the tool-free executor to leave a shell request as printed imitation text.
+    What remains reachable is the named MCP door server and, without asking,
+    only the `--allowedTools` list -- the doors the composition root granted.
+    The door process may see more tools than the allowlist pre-approves
+    (narrowing is the allowlist's, not a narrower server's); a tool outside the
+    list is not pre-approved and a headless call cannot interactively approve
+    anything.
+
+    WHAT IT KEEPS, AND THE ONE FLAG IT DROPS. `--setting-sources=`, a strict
+    single-server MCP configuration, no slash commands, no Chrome, no session
+    persistence, no prompt history, no retries -- all the sibling executors'
+    containment, unchanged. `--safe-mode` is dropped by measurement: safe mode
+    prevents any `--mcp-config` server from spawning, so it and a door cannot
+    coexist (see `_atelier_doors_arguments`).
+
+    WHAT IT SPAWNS, said plainly because the siblings say the opposite. This
+    invocation EXPECTS a descendant: Claude Code launches the door command as a
+    stdio subprocess. That child speaks only the loopback HTTP API and refuses
+    any other address itself; `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` is what
+    keeps the operator's Anthropic credential out of its environment, and the
+    child needs no credential because the loopback API has none to offer.
+
+    WHAT IS NOT MEASURED, said here rather than discovered later. No billed
+    call has been made under this vector on any release. What is measured is
+    that the vector parses whole (the attestation above), and -- unbilled, by
+    spawn-detection -- that the door server is reached without safe mode and
+    not with it. That a real answer fires a door, that a built-in stays
+    imitation-only beside a live MCP server, that a non-listed door and a
+    second server stay unreachable, and that no customization returns through
+    safe mode's absence, are the half a billed call has to establish -- one
+    call, under the operator's gate, before routine use. Until it is run, this
+    executor is composed only where an operator armed it by name.
+
+    STRUCTURAL DEPENDENCY, named. The door is loopback-only, so this executor
+    works only while attempts execute on the serving host itself. A runner
+    cutover that moves attempts into containers breaks the door's
+    reachability unless an authenticated machine credential (ADR 0009) lands
+    first.
+    """
+
+    settings: ClaudeAtelierDoorsSettings
+
+    def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
+        binding = request.resolved_binding
+        if binding.auth_profile.auth_mode is not AuthMode.SUBSCRIPTION:
+            raise ClaudeSubscriptionAuthModeUnsupported(
+                "the Claude atelier-doors executor serves subscription profiles only"
+            )
+        settings = self.settings
+        return AgentProcessCommand(
+            _atelier_doors_arguments(
+                settings,
+                binding.configuration.model,
+                request.maximum_assistant_turns,
+            ),
+            _credential_environment(settings.deployment),
+            # The job travels through standard input so no prompt ever appears
+            # in the process table of a host the operator shares.
+            request.job_bytes,
+            standard_output_frame_bytes=CLAUDE_SUBSCRIPTION_FRAME_BYTES,
+        )
+
+    def decode_process_completion(
+        self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
+    ) -> AgentExecutionResult | AgentExecutionFailure:
+        """The answer travels inside the process result, so the invocation is
+        not consulted: this executor holds no state to correlate."""
+
+        del invocation
+        return _decoded_claude_answer(completion)
+
+    def release_credential_channel(self, command: AgentProcessCommand) -> None:
+        """Nothing to take back: `CLAUDE_CONFIG_DIR` names the operator's own
+        credential directory, and this executor copies it nowhere."""
+
+        del command
+
+    def close(self) -> None:
+        return
+
+
+@dataclass(frozen=True)
+class ClaudeAtelierDoorsExecutorFactory:
+    """The host-composed factory for one Claude atelier-doors executor."""
+
+    settings: ClaudeAtelierDoorsSettings
+
+    @property
+    def key(self) -> AgentExecutorKey:
+        return CLAUDE_ATELIER_DOORS_EXECUTOR_KEY
+
+    @property
+    def operational_identity(self) -> AgentExecutorOperationalIdentity:
+        return CLAUDE_ATELIER_DOORS_OPERATIONAL_IDENTITY
+
+    @property
+    def declared_capabilities(self) -> frozenset[AgentExecutionCapability]:
+        """Only headless-with-tools, exactly like the workspace sibling.
+
+        The capability says a node asked for a tool-bearing call; WHICH tools
+        is this executor's declared contract, selected by the binding's
+        executor revision and never by the capability (see the capability's own
+        docstring). Plain `HEADLESS` is missing so a text-only node can never
+        be answered with an invocation that reaches the product's doors, and
+        interactive is missing because there is no terminal here.
+        """
+
+        return frozenset({AgentExecutionCapability.HEADLESS_WITH_TOOLS})
+
+    def open(self) -> ClaudeAtelierDoorsExecutor:
+        return ClaudeAtelierDoorsExecutor(self.settings)
