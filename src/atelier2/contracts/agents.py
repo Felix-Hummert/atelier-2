@@ -112,8 +112,13 @@ The durable runtime drives every attempt itself and stands at no terminal, so an
 executor declaring only `INTERACTIVE` would name one no run could ever reach.
 The two members differ in what the invocation may touch, not in who drives it:
 `HEADLESS` is one text-in/text-out call, `HEADLESS_WITH_TOOLS` is a call whose
-process may also use the provider's own tools inside the workspace its attempt
-leased.
+process may also use tools the bound executor grants it. Which tools those are
+is the bound executor's declared contract, not this capability's: one executor
+grants workspace tools where the attempt stands, another grants the product's
+own API doors, and the capability only says that the node asked for a
+tool-bearing call at all. The narrower question -- which executor, and therefore
+which tools -- is answered by the binding's executor revision, which the
+capability never selects.
 """
 
 
