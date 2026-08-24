@@ -23,11 +23,13 @@ from atelier2.adapters.agent_processes import (
 )
 from atelier2.adapters.agent_workspaces import LocalAgentAttemptWorkspaceOwner
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.host_configuration import (
     append_project_root,
     project_root_for,
 )
 from atelier2.adapters.dbos.names import QUEUE_NAME
+from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.runner_session_core import DbosRunnerSessionCore
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
@@ -70,6 +72,9 @@ from atelier2.application.execute_agent_attempt_on_runner import (
     ExecuteAgentAttemptOnRunnerOutcome,
     RunnerAttemptLeaseMaterial,
     execute_agent_attempt_on_runner,
+)
+from atelier2.application.start_admitted_queue_items import (
+    start_admitted_queue_items,
 )
 from atelier2.contracts.agent_attempts import (
     TERMINAL_AGENT_ATTEMPT_STATES,
@@ -1099,6 +1104,7 @@ class _DbosProcessOwner:
             bound.launched = True
             self._converge_driverless_attempts(bound)
             self._converge_uncontinuable_runs(bound)
+            self._start_admitted_queue_items(bound)
             self._inventory_driverless_runner_lease_attempts(bound)
 
     @staticmethod
@@ -1154,6 +1160,31 @@ class _DbosProcessOwner:
 
         converge_uncontinuable_runs(
             DbosUncontinuableRunStore(bound.engine, bound.settings.application_version)
+        )
+
+    @staticmethod
+    def _start_admitted_queue_items(bound: _BoundRuntime) -> None:
+        """Start the bound workflow of every admitted queue item, idempotently.
+
+        After the convergence sweeps, and once DBOS is launched: starting a run
+        enqueues its driver, so this belongs with the launch that arms the
+        queue, not before it. The sweep derives each run's identity from the
+        item and its resolved head, so a relaunch re-derives the same id and the
+        starter answers `RunExisting` -- no admitted item is started twice.
+        Surfaced per-item refusals are the queue's own view a later slice wires
+        to the operator; a durable lie or an unreadable queue raises here.
+        """
+
+        # Local import: `starter` imports `DbosRuntimeSettings` from this module,
+        # so importing it at module scope would close a cycle.
+        from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+
+        start_admitted_queue_items(
+            DbosQueueProjectionStore(bound.engine),
+            DbosCatalogStore(bound.engine),
+            DbosDurableRunStarter(
+                bound.engine, bound.settings, bound.agent_executor_registry
+            ),
         )
 
     def initialize_storage(self, bound: _BoundRuntime) -> None:
