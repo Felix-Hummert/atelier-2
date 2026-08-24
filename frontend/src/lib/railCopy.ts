@@ -1,3 +1,5 @@
+import { PRODUCT_NAME } from "./productName";
+
 /**
  * Static copy the rail renders outside its four destinations: the brand
  * wordmark, the project-switcher slot, the Settings/Profile footer, and the
@@ -8,7 +10,7 @@
  * a second hardcoded copy.
  */
 export const railCopy = {
-  brand: "atelier",
+  brand: PRODUCT_NAME,
   later: "Not built yet",
   switchProject: "switch project",
   switchProjectHint: "One project today — a real switcher comes later.",
