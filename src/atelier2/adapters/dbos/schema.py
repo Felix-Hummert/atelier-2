@@ -50,12 +50,12 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head admits CANCELLED as a run ending, so an operator's
-# run-cancel command (#439) has a terminal word of its own instead of
-# borrowing FAILED. Predecessor is the published schema with the queue
-# projection's durable admission row.
+# Movable hop: this head gives the webhook delivery decision (#433 phase 1)
+# its one durable cursor -- a singleton row on the attention feed, CAS-guarded
+# the same way the queue projection's admission row already is. Predecessor
+# is the published schema that admits CANCELLED as a run ending.
 # Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 29
+_HOP_PREDECESSOR_VERSION = 30
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -79,6 +79,7 @@ _VERSION_TWENTY_SEVEN = 27
 _VERSION_TWENTY_EIGHT = 28
 _VERSION_TWENTY_NINE = 29
 _VERSION_THIRTY = 30
+_VERSION_THIRTY_ONE = 31
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -123,9 +124,14 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # through OBSERVED to ADMITTED under a named catalog workflow binding. V30
 # admits CANCELLED as a run ending, so an operator's run-cancel command (#439)
 # ends the run under its own word instead of standing STARTED with nothing to
-# continue it or borrowing FAILED for something the operator chose. No writer
-# constructs it yet -- #439 P1 gives the word its durable home; P3 gives it a
-# writer. The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
+# continue it or borrowing FAILED for something the operator chose. V31 gives
+# the webhook delivery decision (#433 phase 1) its one durable cursor: a
+# singleton row on the attention feed, naming the last delivered event's
+# identity and a CAS revision an advance must name to move it, guarded the
+# same way the queue projection's admission row already is. No writer built
+# above it yet -- phase 1 proves the cursor and the delivery decision behind
+# a fake transport; phase 2 gives it a real network edge and a loop.
+# The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     7: "0bf32217a1254ee64d84c4ed629244600d542211ac655e4405a0df51f857081b",
@@ -152,6 +158,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     28: "8e15796b7361796fc5c70e9c1682ddf58b967dea7fb112127366cfca600c9b36",
     29: "06e1d67be5f39569e7661321c063f7ea84c95efba2906519e7473a6f2016b640",
     30: "1229c61ee62c20531cb31ed324a3b822646d56899f30be62ab1c6abebf325c3c",
+    31: "60d98794edd55744b3ec2cc4f4d7b9bf7a23106b4b7f0d4b9a009042d054a419",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -236,6 +243,10 @@ V28_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V29_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_TWENTY_NINE,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_TWENTY_NINE],
+)
+V30_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_THIRTY,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1580,6 +1591,23 @@ queue_items = sa.Table(
         "AND admission_rationale IS NULL)"
     ),
 )
+webhook_delivery_cursor = sa.Table(
+    "webhook_delivery_cursor",
+    metadata,
+    sa.Column("cursor_id", sa.Text, primary_key=True),
+    sa.Column(
+        "run_id",
+        sa.Text,
+        sa.ForeignKey("runs.run_id"),
+        nullable=True,
+    ),
+    sa.Column("event_sequence", sa.Integer, nullable=True),
+    sa.Column("revision", sa.Integer, nullable=False),
+    sa.CheckConstraint("cursor_id = 'attention-events'"),
+    sa.CheckConstraint("revision >= 0"),
+    sa.CheckConstraint("(run_id IS NULL) = (event_sequence IS NULL)"),
+    sa.CheckConstraint("event_sequence IS NULL OR event_sequence > 0"),
+)
 
 PRODUCT_TABLE_NAMES = frozenset(metadata.tables)
 
@@ -2309,6 +2337,19 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'queue items are immutable');
         END
     """,
+    "webhook_delivery_cursor_identity_no_update": """
+        CREATE TRIGGER webhook_delivery_cursor_identity_no_update
+        BEFORE UPDATE OF cursor_id
+        ON webhook_delivery_cursor BEGIN
+          SELECT RAISE(ABORT, 'webhook delivery cursor identity is immutable');
+        END
+    """,
+    "webhook_delivery_cursor_no_delete": """
+        CREATE TRIGGER webhook_delivery_cursor_no_delete
+        BEFORE DELETE ON webhook_delivery_cursor BEGIN
+          SELECT RAISE(ABORT, 'the webhook delivery cursor is never deleted');
+        END
+    """,
 }
 
 
@@ -2478,13 +2519,13 @@ def _table_names_for_version(version: int) -> frozenset[str]:
     later = {run_instants.name, attempt_instants.name, event_instants.name}
     host_channel = {host_project_root_revisions.name}
     occupancy = {host_occupancy_revisions.name, host_occupancy_bindings.name}
-    predecessor_tables = (PRODUCT_TABLE_NAMES - {queue_items.name}) | {
-        _V27_ACCESS_TABLE_NAME
-    }
+    predecessor_tables = (
+        PRODUCT_TABLE_NAMES - {queue_items.name, webhook_delivery_cursor.name}
+    ) | {_V27_ACCESS_TABLE_NAME}
     if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
-    if version == _VERSION_TWENTY_NINE:
-        return PRODUCT_TABLE_NAMES
+    if version in {_VERSION_THIRTY, _VERSION_TWENTY_NINE}:
+        return PRODUCT_TABLE_NAMES - {webhook_delivery_cursor.name}
     if version == _VERSION_TWENTY_EIGHT:
         return predecessor_tables - {_V27_ACCESS_TABLE_NAME}
     if version in {_VERSION_TWENTY_SEVEN, _VERSION_TWENTY_SIX}:
@@ -3411,6 +3452,19 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         ),
     ),
     _SchemaMigrationStep(_VERSION_TWENTY_NINE, _VERSION_THIRTY, _apply_v29_to_v30),
+    _SchemaMigrationStep(
+        _VERSION_THIRTY,
+        _VERSION_THIRTY_ONE,
+        _added_table_step(
+            webhook_delivery_cursor,
+            (
+                "webhook_delivery_cursor_identity_no_update",
+                "webhook_delivery_cursor_no_delete",
+            ),
+            _VERSION_THIRTY,
+            _VERSION_THIRTY_ONE,
+        ),
+    ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
