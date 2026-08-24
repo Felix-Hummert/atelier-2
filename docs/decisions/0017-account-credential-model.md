@@ -244,6 +244,41 @@ sees them, and its run-execution path can stay credential-minimal. That
 strengthens, not complicates, the multi-tenant story: the server-held store
 holds only what tenants chose to deposit.
 
+**How far runner-local reaches is decided by the effect execution locus —
+an open operator decision this record presents and does not take.** The two
+credential classes execute in different places today, and the difference is
+load-bearing:
+
+- **Agent/LLM credentials (Claude, Codex, Grok)** authenticate a provider
+  process that runs *in* the runner. Runner-local holds fully: the login or
+  key lives on the runner host, and the server never sees it. That is the
+  built shape.
+- **Platform effect credentials (GitHub today)** authenticate an *effect* —
+  and under ADR 0009 §1 Core is the sole writer of product truth, so today
+  the effect is performed by Core: the agent produces an intent, and the
+  server makes the real platform call and commits the receipt
+  (`adapters/github/live_effects.py`, #430). That is exactly why the GitHub
+  token sits on the server today — and why, for platform effects under the
+  current model, "the token never reaches the server" does **not** hold.
+
+The choice, side by side; the operator decides the direction:
+
+| | X — Core performs the effect (today) | Y — Runner performs, Core verifies |
+| --- | --- | --- |
+| Who holds the platform token | the server (server-held source, §3) | the runner host (runner-local source) |
+| Who performs | Core: one central, auditable performer | the runner, inside the tenant's own network |
+| Who writes truth | Core performs *and* writes the receipt | Core's role shifts to **verifier**: it reads the platform back (ADR 0010's readback surface) and only then commits the receipt |
+| Trust implication | the platform token crosses into the server's trust domain | effect execution moves into the less-trusted worker (the boundary ADR 0009 exists for); a runner could falsify its own effect report, so Core's independent readback — not the runner's word — is what a receipt is built on, and Core still needs at least read reach for that verification |
+| Satisfies "our secrets never leave our network" | no — the platform token is on the server | yes — this is what completes the enterprise requirement for effects |
+| Cost | none beyond §3's storage discipline | building the Effect Worker lane ADR 0009 §1 already names — a separate worker role for one Core-prepared `EffectIntent`, with only Core committing the receipt — placed on the tenant's runner host under a runner-local grant; plus amendments to ADR 0009 (that placement and credential source) and ADR 0010 (execute at the worker, readback in Core) |
+
+X and Y need not be exclusive product-wide: the honest end state may follow
+the Account's own source — a deposited server-held token performed by Core, a
+runner-local one performed by its runner — but that, too, is the operator's
+call, listed with the open decisions and not taken here. Until it is taken,
+the runner-local source covers **provider credentials**; extending it to
+platform effects is exactly decision Y.
+
 **Per-role scoping holds under both sources.** The cage gives a run only the
 credential for **its** bound role — each run reads only its role, never
 "every agent reads everything." Server-held: the server provisions exactly
@@ -397,7 +432,7 @@ refusals and are not renamed.
 | Threat | Covering control |
 | --- | --- |
 | App-database dump | references only, never values (invariants 1, 6; canary) |
-| Full server compromise (external/SaaS deployment) | runner-local source (§4): the value was never on the server; server-held delegated grants are revoked at the provider |
+| Full server compromise (external/SaaS deployment) | runner-local source (§4): the value was never on the server — for provider credentials today, for platform-effect tokens only under locus Y (§4); server-held delegated grants are revoked at the provider |
 | Secret-store dump or store backup leak | ciphertext only; KEK held outside the store (§3 tier B) |
 | Log, prompt, event or dossier leak | value never enters any of them (invariant 1; canary; ADR 0009 §6) |
 | Cross-tenant access | Account-to-tenant binding plus access control (invariant 4; §7) |
@@ -424,7 +459,9 @@ refusals and are not renamed.
 - An enterprise can run Atelier's server outside its network and still never
   hand it a sensitive token: the runner-local source (§4) keeps the value on
   the company's own runner, and the server's run-execution path stays
-  credential-minimal.
+  credential-minimal. Today that covers provider credentials; covering
+  platform-effect tokens too is exactly the open locus decision (X versus Y,
+  §4).
 - `AuthMode` gains two members; every hash frame that carries a mode already
   carries it as a value, so existing revisions keep their identities and new
   modes produce new ones.
@@ -436,15 +473,22 @@ refusals and are not renamed.
 
 Listed, deliberately not decided here:
 
-1. **Secret-store and KEK backend**: operator file + host-provided key (the
+1. **Effect execution locus** (§4, the load-bearing one): X — Core performs
+   platform effects with a server-held token, as built today — versus Y —
+   the runner performs them under a runner-local token and Core verifies by
+   readback before committing the receipt — or per-Account, following the
+   Account's source. Y is what extends "our secrets never leave our network"
+   to platform effects, and choosing it requires amending ADR 0009 (worker
+   effect execution) and ADR 0010 (execute at the runner, readback in Core).
+2. **Secret-store and KEK backend**: operator file + host-provided key (the
    built seam grown), OS keyring, HashiCorp Vault, a cloud KMS, or an
    age/HSM-wrapped file — and which the self-hosted default is.
-2. **Default method per platform**: GitHub App vs. OAuth device flow vs. PAT
+3. **Default method per platform**: GitHub App vs. OAuth device flow vs. PAT
    as the recommended (never forced, ADR 0010 §2) default; subscription vs.
    API key as the recommended default per AI provider.
-3. **Rotation cadence for stored keys**, and whether it is enforced (refusal
+4. **Rotation cadence for stored keys**, and whether it is enforced (refusal
    past age) or advisory (visible staleness).
-4. **Deposit scope for provider API keys**: per-installation only, or also
+5. **Deposit scope for provider API keys**: per-installation only, or also
    per-project — the layering (§6) supports both; the question is what the
    deposit surface offers first.
 
@@ -481,7 +525,8 @@ Listed, deliberately not decided here:
 
 ## Out of scope and stop conditions
 
-This record does not decide: the store/KEK backend and the per-platform
+This record does not decide: the effect execution locus (§4 presents X and Y;
+the operator decides); the store/KEK backend and the per-platform
 defaults (the operator's open decisions above); OIDC login and session shape
 (#82); how a
 credential reaches a worker (ADR 0009 §6, unchanged); GitHub operation
