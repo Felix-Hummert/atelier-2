@@ -399,6 +399,18 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         watchdog_generation_id: WatchdogGenerationId | None,
     ) -> AgentAttemptCancellationAccepted: ...
 
+    def commit_never_launched_cancellation(
+        self, request: CancelAgentAttemptRequest
+    ) -> AgentAttemptCancellationAccepted:
+        """End a runner-lease attempt leased but never launched, under cancel.
+
+        Called only once its caller has *won* the lease withdraw -- the sole
+        proof the attempt never launched. Preserves the runner binding, keeps
+        `runner_invocation_id` NULL, fabricates no evidence, and settles the
+        disposition `NEVER_LAUNCHED`. Idempotent on the durable terminal row.
+        """
+        ...
+
     def mark_cancellation_owner_not_local(
         self, request: CancelAgentAttemptRequest
     ) -> AgentAttempt: ...

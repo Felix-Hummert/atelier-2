@@ -334,16 +334,17 @@ def _forbidden(*_args: object, **_kwargs: object) -> Never:
 def _scripted_driver_factory(
     tracking: _DriveTracking,
 ) -> Callable[
-    [DbosRuntimeSettings, Engine, DbosAgentAttemptStore], _ScriptedLeaseDriver
+    [DbosRuntimeSettings, Engine, DbosAgentAttemptStore, FileRunnerLeasePublisher],
+    _ScriptedLeaseDriver,
 ]:
     def build(
-        settings: DbosRuntimeSettings, engine: Engine, store: DbosAgentAttemptStore
+        settings: DbosRuntimeSettings,
+        engine: Engine,
+        store: DbosAgentAttemptStore,
+        leases: FileRunnerLeasePublisher,
     ) -> _ScriptedLeaseDriver:
         assert settings.runner_lease_root is not None
         lease_root = settings.runner_lease_root
-        leases = FileRunnerLeasePublisher(
-            lease_root / "leases", lease_root / "attempts"
-        )
         return _ScriptedLeaseDriver(
             store, store, engine, leases, lease_root / "attempts", tracking
         )

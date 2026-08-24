@@ -50,12 +50,15 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head gives the webhook delivery decision (#433 phase 1)
-# its one durable cursor -- a singleton row on the attention feed, CAS-guarded
-# the same way the queue projection's admission row already is. Predecessor
-# is the published schema that admits CANCELLED as a run ending.
+# Movable hop: this head admits the never-launched runner-lease cancel
+# terminal transition (#584) -- an operator run-cancel landing on a
+# runner-lease-bound attempt that was leased but never launched converges to
+# CANCELLED under disposition NEVER_LAUNCHED, its runner binding preserved and
+# no evidence fabricated. It moves no table shape: only the fingerprinted
+# `agent_attempts_state_transition` trigger grammar changes. Predecessor is the
+# published schema that gave the webhook delivery decision its durable cursor.
 # Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 30
+_HOP_PREDECESSOR_VERSION = 31
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -80,6 +83,7 @@ _VERSION_TWENTY_EIGHT = 28
 _VERSION_TWENTY_NINE = 29
 _VERSION_THIRTY = 30
 _VERSION_THIRTY_ONE = 31
+_VERSION_THIRTY_TWO = 32
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -131,6 +135,13 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # same way the queue projection's admission row already is. No writer built
 # above it yet -- phase 1 proves the cursor and the delivery decision behind
 # a fake transport; phase 2 gives it a real network edge and a loop.
+# V32 admits the never-launched runner-lease cancel terminal transition
+# (#584): an operator run-cancel on a runner-lease-bound attempt leased but
+# never launched (runner_manifest_id set, runner_invocation_id IS NULL) may
+# end CANCELLED under disposition NEVER_LAUNCHED, its runner binding preserved
+# and no evidence fabricated -- proved only by a won lease withdraw. It rewrites
+# no row and moves no table shape; only the `agent_attempts_state_transition`
+# trigger gains one branch, so the hop is a trigger swap.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -159,6 +170,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     29: "06e1d67be5f39569e7661321c063f7ea84c95efba2906519e7473a6f2016b640",
     30: "1229c61ee62c20531cb31ed324a3b822646d56899f30be62ab1c6abebf325c3c",
     31: "60d98794edd55744b3ec2cc4f4d7b9bf7a23106b4b7f0d4b9a009042d054a419",
+    32: "0cdbeaf303f2839661930234a508e141cd995b8552def9b426a52aaad1eab84e",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -247,6 +259,10 @@ V29_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V30_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_THIRTY,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY],
+)
+V31_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_THIRTY_ONE,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_ONE],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -2016,6 +2032,23 @@ _PRODUCT_TRIGGERS = {
              AND NEW.runner_evidence_acceptance_phase = 'CORE_COMMITTED'
              AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
             OR
+            (OLD.state = 'CANCEL_REQUESTED'
+             AND OLD.runner_manifest_id IS NOT NULL
+             AND OLD.runner_manifest_id = NEW.runner_manifest_id
+             AND OLD.runner_generation_id = NEW.runner_generation_id
+             AND OLD.runner_invocation_id IS NULL
+             AND NEW.runner_invocation_id IS NULL
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.runner_evidence_acceptance_phase = 'NONE'
+             AND OLD.runner_terminal_evidence_hash IS NULL
+             AND NEW.runner_terminal_evidence_hash IS NULL
+             AND OLD.replacement = 'NONE'
+             AND NEW.state = 'CANCELLED' AND NEW.process_phase = 'NONE'
+             AND OLD.cancellation_command_id = NEW.cancellation_command_id
+             AND NEW.redrive_state = 'CLEANUP_ATTESTED'
+             AND NEW.cancellation_disposition = 'NEVER_LAUNCHED'
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+            OR
             (OLD.state = NEW.state
              AND OLD.process_phase = NEW.process_phase
              AND OLD.process_owner_id IS NEW.process_owner_id
@@ -2522,7 +2555,7 @@ def _table_names_for_version(version: int) -> frozenset[str]:
     predecessor_tables = (
         PRODUCT_TABLE_NAMES - {queue_items.name, webhook_delivery_cursor.name}
     ) | {_V27_ACCESS_TABLE_NAME}
-    if version == SCHEMA_VERSION:
+    if version in {SCHEMA_VERSION, _VERSION_THIRTY_ONE}:
         return PRODUCT_TABLE_NAMES
     if version in {_VERSION_THIRTY, _VERSION_TWENTY_NINE}:
         return PRODUCT_TABLE_NAMES - {webhook_delivery_cursor.name}
@@ -3058,6 +3091,246 @@ _V24_AGENT_ATTEMPT_TRIGGERS = {
 }
 
 
+_V27_AGENT_ATTEMPT_STATE_TRANSITION = """
+        CREATE TRIGGER agent_attempts_state_transition
+        BEFORE UPDATE ON agent_attempts
+        WHEN NOT (
+          OLD.attempt_id = NEW.attempt_id
+          AND OLD.node_execution_id = NEW.node_execution_id
+          AND OLD.request_hash = NEW.request_hash
+          AND OLD.executor_operational_identity = NEW.executor_operational_identity
+          AND OLD.run_id = NEW.run_id
+          AND OLD.workflow_revision_hash = NEW.workflow_revision_hash
+          AND OLD.node_id = NEW.node_id
+          AND OLD.attempt_ordinal = NEW.attempt_ordinal
+          AND NEW.state_version > OLD.state_version
+          AND (
+            (OLD.state = 'PREPARED' AND OLD.state_version = 0
+             AND OLD.runner_manifest_id IS NULL
+             AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
+             AND NEW.state = 'PREPARED' AND NEW.state_version = 1
+             AND NEW.process_phase = 'WATCHDOG_READY'
+             AND NEW.runner_manifest_id IS NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state = 'PREPARED'
+             AND OLD.runner_manifest_id IS NULL
+             AND NEW.state = 'LAUNCH_ARMED'
+             AND NEW.process_phase IN ('NONE', 'LAUNCH_AUTHORIZED')
+             AND NEW.runner_manifest_id IS NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state = 'LAUNCH_ARMED'
+             AND OLD.runner_manifest_id IS NULL
+             AND OLD.process_phase = 'LAUNCH_AUTHORIZED'
+             AND NEW.state = 'LAUNCH_ARMED'
+             AND NEW.process_phase = 'PROCESS_OBSERVED'
+             AND NEW.runner_manifest_id IS NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state = 'LAUNCH_ARMED'
+             AND OLD.runner_manifest_id IS NULL
+             AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
+             AND NEW.state = 'SUCCEEDED'
+             AND NEW.runner_manifest_id IS NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NOT NULL
+             AND NEW.cancellation_command_id IS NULL
+             AND EXISTS (
+               SELECT 1 FROM agent_receipts_v2 AS receipt
+               WHERE receipt.receipt_hash = NEW.receipt_hash
+                 AND receipt.request_hash = NEW.request_hash
+                 AND receipt.executor_operational_identity = NEW.executor_operational_identity
+                 AND receipt.node_execution_id = NEW.node_execution_id
+                 AND receipt.run_id = NEW.run_id
+                 AND receipt.workflow_revision_hash = NEW.workflow_revision_hash
+                 AND receipt.node_id = NEW.node_id
+             ))
+            OR
+            (OLD.state = 'LAUNCH_ARMED'
+             AND OLD.runner_manifest_id IS NULL
+             AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
+             AND NEW.state = 'FAILED'
+             AND NEW.failure_code IN
+               ('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED',
+                'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED',
+                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED')
+             AND NEW.runner_manifest_id IS NULL
+             AND NEW.receipt_hash IS NULL
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state IN ('PREPARED', 'LAUNCH_ARMED')
+             AND OLD.cancellation_command_id IS NULL
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.state = 'CANCEL_REQUESTED'
+             AND NEW.cancellation_command_id IS NOT NULL
+             AND NEW.cancellation_expected_state_version = OLD.state_version
+             AND (OLD.runner_manifest_id IS NULL OR NEW.replacement = 'NONE')
+             AND OLD.runner_manifest_id IS NEW.runner_manifest_id
+             AND OLD.runner_generation_id IS NEW.runner_generation_id
+             AND OLD.runner_invocation_id IS NEW.runner_invocation_id
+             AND OLD.runner_terminal_evidence_hash IS NEW.runner_terminal_evidence_hash
+             AND OLD.runner_evidence_acceptance_phase = NEW.runner_evidence_acceptance_phase
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+            OR
+            (OLD.state = 'CANCEL_REQUESTED'
+             AND OLD.runner_manifest_id IS NULL
+             AND NEW.state = 'CANCEL_REQUESTED'
+             AND OLD.cancellation_command_id = NEW.cancellation_command_id
+             AND NEW.redrive_state = 'OWNER_NOT_LOCAL'
+             AND NEW.runner_manifest_id IS NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+            OR
+            (OLD.state = 'CANCEL_REQUESTED'
+             AND OLD.runner_manifest_id IS NULL
+             AND NEW.state IN ('CANCELLED', 'INTERRUPTED')
+             AND OLD.cancellation_command_id = NEW.cancellation_command_id
+             AND NEW.process_phase = 'CLEANUP_ATTESTED'
+             AND NEW.redrive_state = 'CLEANUP_ATTESTED'
+             AND NEW.cancellation_disposition IS NOT NULL
+             AND NEW.runner_manifest_id IS NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+            OR
+            (OLD.state = 'PREPARED' AND OLD.process_phase = 'NONE'
+             AND OLD.runner_manifest_id IS NULL
+             AND OLD.runner_generation_id IS NULL
+             AND OLD.runner_invocation_id IS NULL
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.state = 'PREPARED' AND NEW.process_phase = 'NONE'
+             AND NEW.runner_manifest_id IS NOT NULL
+             AND NEW.runner_generation_id IS NOT NULL
+             AND NEW.runner_invocation_id IS NULL
+             AND NEW.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state = 'PREPARED' AND OLD.process_phase = 'NONE'
+             AND OLD.runner_manifest_id = NEW.runner_manifest_id
+             AND OLD.runner_generation_id = NEW.runner_generation_id
+             AND OLD.runner_invocation_id IS NULL
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.state = 'LAUNCH_ARMED' AND NEW.process_phase = 'NONE'
+             AND NEW.runner_invocation_id IS NOT NULL
+             AND NEW.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state = 'PREPARED' AND OLD.process_phase = 'NONE'
+             AND OLD.runner_manifest_id = NEW.runner_manifest_id
+             AND OLD.runner_generation_id = NEW.runner_generation_id
+             AND OLD.runner_invocation_id IS NULL
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.state = 'PREPARED' AND NEW.process_phase = 'NONE'
+             AND NEW.runner_terminal_evidence_hash IS NOT NULL
+             AND NEW.runner_evidence_acceptance_phase = 'CORE_COMMITTED'
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state = 'LAUNCH_ARMED'
+             AND OLD.runner_manifest_id = NEW.runner_manifest_id
+             AND OLD.runner_generation_id = NEW.runner_generation_id
+             AND OLD.runner_invocation_id = NEW.runner_invocation_id
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.state = 'LAUNCH_ARMED'
+             AND NEW.runner_terminal_evidence_hash IS NOT NULL
+             AND NEW.runner_evidence_acceptance_phase = 'CORE_COMMITTED'
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state IN ('LAUNCH_ARMED', 'CANCEL_REQUESTED')
+             AND OLD.runner_manifest_id = NEW.runner_manifest_id
+             AND OLD.runner_generation_id = NEW.runner_generation_id
+             AND OLD.runner_invocation_id = NEW.runner_invocation_id
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND (OLD.state <> 'CANCEL_REQUESTED' OR OLD.replacement = 'NONE')
+             AND NEW.state = 'SUCCEEDED'
+             AND NEW.runner_terminal_evidence_hash IS NOT NULL
+             AND NEW.runner_evidence_acceptance_phase = 'CORE_COMMITTED'
+             AND NEW.cancellation_command_id IS NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NOT NULL
+             AND EXISTS (
+               SELECT 1 FROM agent_receipts_v2 AS receipt
+               WHERE receipt.receipt_hash = NEW.receipt_hash
+                 AND receipt.request_hash = NEW.request_hash
+                 AND receipt.executor_operational_identity = NEW.executor_operational_identity
+                 AND receipt.node_execution_id = NEW.node_execution_id
+                 AND receipt.run_id = NEW.run_id
+                 AND receipt.workflow_revision_hash = NEW.workflow_revision_hash
+                 AND receipt.node_id = NEW.node_id
+             ))
+            OR
+            (OLD.state IN ('LAUNCH_ARMED', 'CANCEL_REQUESTED')
+             AND OLD.runner_manifest_id = NEW.runner_manifest_id
+             AND OLD.runner_generation_id = NEW.runner_generation_id
+             AND OLD.runner_invocation_id = NEW.runner_invocation_id
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND (OLD.state <> 'CANCEL_REQUESTED' OR OLD.replacement = 'NONE')
+             AND NEW.state = 'FAILED'
+             AND NEW.runner_terminal_evidence_hash IS NOT NULL
+             AND NEW.runner_evidence_acceptance_phase = 'CORE_COMMITTED'
+             AND NEW.cancellation_command_id IS NULL
+             AND NEW.failure_code IN
+               ('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED',
+                'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED',
+                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED')
+             AND NEW.receipt_hash IS NULL)
+            OR
+            (OLD.state = 'CANCEL_REQUESTED'
+             AND OLD.runner_manifest_id = NEW.runner_manifest_id
+             AND OLD.runner_generation_id = NEW.runner_generation_id
+             AND OLD.runner_invocation_id = NEW.runner_invocation_id
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND OLD.replacement = 'NONE'
+             AND NEW.state = 'CANCELLED' AND NEW.process_phase = 'NONE'
+             AND OLD.cancellation_command_id = NEW.cancellation_command_id
+             AND NEW.redrive_state = 'CLEANUP_ATTESTED'
+             AND NEW.cancellation_disposition IN
+               ('EXITED_BEFORE_SIGNAL', 'REAPED_AFTER_TERM', 'REAPED_AFTER_KILL')
+             AND NEW.runner_terminal_evidence_hash IS NOT NULL
+             AND NEW.runner_evidence_acceptance_phase = 'CORE_COMMITTED'
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+            OR
+            (OLD.state = NEW.state
+             AND OLD.process_phase = NEW.process_phase
+             AND OLD.process_owner_id IS NEW.process_owner_id
+             AND OLD.watchdog_generation_id IS NEW.watchdog_generation_id
+             AND OLD.cancellation_command_id IS NEW.cancellation_command_id
+             AND OLD.cancellation_expected_state_version IS NEW.cancellation_expected_state_version
+             AND OLD.replacement IS NEW.replacement
+             AND OLD.redrive_state IS NEW.redrive_state
+             AND OLD.cancellation_disposition IS NEW.cancellation_disposition
+             AND OLD.cancellation_workflow_id IS NEW.cancellation_workflow_id
+             AND OLD.failure_code IS NEW.failure_code
+             AND OLD.receipt_hash IS NEW.receipt_hash
+             AND OLD.runner_manifest_id = NEW.runner_manifest_id
+             AND OLD.runner_generation_id = NEW.runner_generation_id
+             AND OLD.runner_invocation_id IS NEW.runner_invocation_id
+             AND OLD.runner_terminal_evidence_hash = NEW.runner_terminal_evidence_hash
+             AND OLD.runner_evidence_acceptance_phase = 'CORE_COMMITTED'
+             AND NEW.runner_evidence_acceptance_phase = 'ACKNOWLEDGED')
+            OR
+            (OLD.state = 'PREPARED' AND NEW.state = 'PREPARED'
+             AND OLD.process_phase = 'NONE' AND NEW.process_phase = 'NONE'
+             AND OLD.runner_manifest_id IS NOT NULL
+             AND OLD.runner_generation_id IS NOT NULL
+             AND OLD.runner_evidence_acceptance_phase = 'ACKNOWLEDGED'
+             AND NEW.runner_manifest_id IS NOT NULL
+             AND NEW.runner_generation_id IS NOT NULL
+             AND NEW.runner_generation_id <> OLD.runner_generation_id
+             AND NEW.runner_invocation_id IS NULL
+             AND NEW.runner_terminal_evidence_hash IS NULL
+             AND NEW.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.cancellation_command_id IS NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+          )
+        ) BEGIN
+          SELECT RAISE(ABORT, 'invalid agent attempt transition');
+        END
+    """
+_V27_AGENT_ATTEMPT_TRIGGERS = {
+    "agent_attempts_state_transition": _V27_AGENT_ATTEMPT_STATE_TRANSITION,
+    "agent_attempts_no_delete": _PRODUCT_TRIGGERS["agent_attempts_no_delete"],
+}
+
+
 def _apply_v16_to_v17(connection: sqlite3.Connection) -> None:
     """Admit the refusal's own failure code, and keep every stored row.
 
@@ -3330,6 +3603,7 @@ def _apply_v26_to_v27(connection: sqlite3.Connection) -> None:
         _VERSION_TWENTY_SIX,
         _VERSION_TWENTY_SEVEN,
         {agent_attempts.c.runner_evidence_acceptance_phase.name: "'NONE'"},
+        trigger_source=_V27_AGENT_ATTEMPT_TRIGGERS,
     )
     _raise_declared_version(connection, _VERSION_TWENTY_SIX, _VERSION_TWENTY_SEVEN)
 
@@ -3373,6 +3647,25 @@ def _apply_v29_to_v30(connection: sqlite3.Connection) -> None:
         _VERSION_THIRTY,
     )
     _raise_declared_version(connection, _VERSION_TWENTY_NINE, _VERSION_THIRTY)
+
+
+_AGENT_ATTEMPTS_STATE_TRANSITION_TRIGGER = "agent_attempts_state_transition"
+
+
+def _apply_v31_to_v32(connection: sqlite3.Connection) -> None:
+    """Admit the never-launched runner-lease cancel terminal transition (#584).
+
+    No table shape moves and no row is rewritten: the only change is one added
+    branch on the `agent_attempts_state_transition` trigger, so the hop drops
+    that trigger and reinstalls the current declaration in its place. Every
+    stored attempt row is already legal under the unchanged CHECK constraints;
+    the fingerprint the migration runner takes after this step is what proves
+    the swapped trigger matches a freshly built v32 store, byte for byte.
+    """
+
+    connection.execute(f"DROP TRIGGER {_AGENT_ATTEMPTS_STATE_TRANSITION_TRIGGER}")
+    connection.execute(_PRODUCT_TRIGGERS[_AGENT_ATTEMPTS_STATE_TRANSITION_TRIGGER])
+    _raise_declared_version(connection, _VERSION_THIRTY_ONE, _VERSION_THIRTY_TWO)
 
 
 @dataclass(frozen=True)
@@ -3464,6 +3757,11 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
             _VERSION_THIRTY,
             _VERSION_THIRTY_ONE,
         ),
+    ),
+    _SchemaMigrationStep(
+        _VERSION_THIRTY_ONE,
+        _VERSION_THIRTY_TWO,
+        _apply_v31_to_v32,
     ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {

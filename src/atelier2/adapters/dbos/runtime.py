@@ -621,8 +621,33 @@ def _log_driverless_runner_lease_attempts(
         )
 
 
+def _open_runner_lease_publisher(
+    settings: DbosRuntimeSettings,
+) -> FileRunnerLeasePublisher:
+    """The one Runner-lease publisher this binding drives and withdraws through.
+
+    Composed once and shared: the attempt driver publishes leases through it,
+    and the cancellation workflow withdraws a never-launched attempt's lease
+    through the same directories (`#584`). Its own start-time cleanup -- pulling
+    back every lease this exact process left `open` before a restart -- runs
+    here, before either caller does anything else.
+    """
+
+    lease_root = settings.runner_lease_root
+    if lease_root is None:
+        raise DbosRuntimeBindingConflict(
+            "a runner-lease deployment requires the declared lease root"
+        )
+    leases = FileRunnerLeasePublisher(lease_root / "leases", lease_root / "attempts")
+    _withdraw_open_runner_leases(leases, lease_root / "leases" / "open")
+    return leases
+
+
 def _runner_lease_attempt_driver(
-    settings: DbosRuntimeSettings, engine: Engine, store: DbosAgentAttemptStore
+    settings: DbosRuntimeSettings,
+    engine: Engine,
+    store: DbosAgentAttemptStore,
+    leases: FileRunnerLeasePublisher,
 ) -> RunnerLeaseAttemptDriver:
     """Compose the real Runner-lease driver from a fully declared deployment.
 
@@ -635,11 +660,9 @@ def _runner_lease_attempt_driver(
     """
 
     identity = settings.runner_core_identity_directory
-    lease_root = settings.runner_lease_root
     accept_timeout = settings.runner_accept_timeout_seconds
     if (
         identity is None
-        or lease_root is None
         or accept_timeout is None
         or settings.runner_image is None
         or settings.runner_image_digest is None
@@ -669,8 +692,6 @@ def _runner_lease_attempt_driver(
     context.load_cert_chain(identity / "core.crt", identity / "core.key")
     context.load_verify_locations(cafile=identity / "ca.crt")
     context.verify_mode = ssl.CERT_REQUIRED
-    leases = FileRunnerLeasePublisher(lease_root / "leases", lease_root / "attempts")
-    _withdraw_open_runner_leases(leases, lease_root / "leases" / "open")
     transport = RunnerLeaseSessionListener(
         context,
         ca_certificate,
@@ -747,6 +768,7 @@ def _open_binding(
     agent_process_supervisor: AgentProcessSupervisor | None = None
     agent_workspace_owner: LocalAgentAttemptWorkspaceOwner | None = None
     runner_lease_driver: RunnerLeaseAttemptDriver | None = None
+    runner_lease_publisher: FileRunnerLeasePublisher | None = None
     try:
         initialize_schema(engine)
         if settings.bootstrap_project_root is not None:
@@ -875,8 +897,9 @@ def _open_binding(
             # of attempts that ended before the restart are removed.
             agent_workspace_owner.reconcile(attempt_store)
         if runner_lease_keys:
+            runner_lease_publisher = _open_runner_lease_publisher(settings)
             runner_lease_driver = _runner_lease_attempt_driver(
-                settings, engine, attempt_store
+                settings, engine, attempt_store, runner_lease_publisher
             )
         opened_agent_executors = {
             entry.key: executor for entry, executor in agent_executors_v2
@@ -901,6 +924,7 @@ def _open_binding(
             adapter,
             effect_binding,
             runner_lease_driver,
+            runner_lease_publisher,
         )
     except BaseException as original:
         cleanup_errors: list[BaseException] = []
