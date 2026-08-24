@@ -792,6 +792,75 @@ class DockerCarrier:
             ]
         )
 
+    def read_file_in_volume(
+        self, volume: str, image: str, path: PurePosixPath, maximum_bytes: int
+    ) -> bytes:
+        """Read one bounded file out of a volume, from a throwaway container.
+
+        The same shape as `file_exists_in_volume`, and used where a container
+        that once wrote the file has already exited: the volume outlives it, so
+        a launcher reads the retained bytes back off the volume itself rather
+        than out of a process that is no longer there
+        (`atelier2.host.runner_launcher`). The volume is mounted read-only and
+        is the only thing mounted, and the file is refused if it crosses the
+        caller's bound -- it was written by the least-trusted process on the
+        host.
+
+        The bound is enforced at the pipe, not after: `head -c` caps the read
+        inside the throwaway container to `maximum_bytes + 1` bytes, so a
+        compromised Runner that wrote a multi-gigabyte file to its own quota-free
+        journal volume can never drive this launcher to buffer the whole thing
+        into memory. At most one byte past the bound ever reaches the launcher --
+        exactly enough to still detect and refuse an over-bound file.
+        """
+        completed = subprocess.run(
+            [
+                str(self.executable),
+                "run",
+                "--rm",
+                "--user",
+                "root",
+                "--mount",
+                f"type=volume,src={volume},dst={path.parent},volume-nocopy,readonly",
+                "--entrypoint",
+                "head",
+                image,
+                "-c",
+                str(maximum_bytes + 1),
+                "--",
+                str(path),
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise CarrierRefusal(
+                f"carrier-volume-file-unreadable: {volume} {path}: "
+                f"{completed.stderr.decode('utf-8', 'replace').strip()}"
+            )
+        if len(completed.stdout) > maximum_bytes:
+            # `head -c` truncated the read at the bound, so the real file is at
+            # least this large -- its true size never left the container.
+            raise CarrierRefusal(
+                f"carrier-volume-file-exceeds-bound: {path} is at least "
+                f"{maximum_bytes + 1} bytes, bound {maximum_bytes}"
+            )
+        return completed.stdout
+
+    def container_running(self, container: str) -> bool:
+        """Whether a container still runs, answering false for one that is gone.
+
+        A launcher retaining an exited Runner's terminal fact before it removes
+        the Attempt must never read a Runner that is still writing: this is the
+        gate that keeps that read to a container that has already stopped, or is
+        gone entirely.
+        """
+        try:
+            document = self.inspect_container(container)
+        except CarrierRefusal:
+            return False
+        return bool((document.get("State") or {}).get("Running"))
+
     def labelled_containers(self, label: str) -> tuple[str, ...]:
         return self._labelled(["ps", "--all", "--no-trunc", "--quiet"], label)
 

@@ -1,6 +1,6 @@
 # ADR 0009: One trust boundary separates the coordinating service from every worker
 
-- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-22, 2026-08-23; disposable #301-A candidate 2026-08-22 — no live Runner availability
+- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-22, 2026-08-23, 2026-08-24; disposable #301-A candidate 2026-08-22 — no live Runner availability
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
 - Decision authority: [Issue #21](https://github.com/FlexOr2/atelier-2/issues/21),
@@ -265,6 +265,29 @@ stronger promise, but one deployment component more, and the operator chose the
 declared base network plus the per-Attempt fence instead. IPv6 gets a blanket
 reject in the base policy and no per-Attempt chain, because Attempt networks
 are IPv4 and no Attempt ever opens an IPv6 path to widen.
+
+**2026-08-24 amendment (Operator-Ruling A, `#540` Kind #585): the launcher
+retains one terminal fact for Serve, one way, as a file.** A Runner journals
+its terminal fact and then tries to deliver it to Core; a Serve restarted
+mid-session never receives that delivery, and the fact lives only in the
+per-Attempt journal volume, which no process but the launcher may read. So the
+launcher copies that record — verbatim, the Runner's own canonical bytes — out
+of the journal volume into the Attempt's handoff directory, which Serve already
+wrote and can read, and Serve converges the Attempt over it on its own restart.
+This does not widen the launcher's authority: reading a durable volume it owns
+and writing the handoff directory it already writes the attestation into are
+both authority the launcher already holds; the copy fires only for a Runner
+container that has **exited** and only once its terminal record is **present**,
+never before the launcher's single resume nor while the container still runs, so
+it can neither copy a fact the Runner has not finished nor race a delivery the
+Runner is about to make. The direction is the only new fact, and it is
+deliberately narrow: this is a launcher→handoff **file copy**, not a second
+reader of the journal volume. Serve still never touches the journal, holds no
+carrier authority, and reads only a plain host file — the trust boundary of
+sec. 2 is unchanged, gaining one one-way seam the compromised-Serve model
+already covers (Serve can distort a file under its own attempt root, which
+corrupts only its own Attempt's convergence, exactly as amendment (a) already
+says of everything else under that root).
 
 **Identity validity is bounded by what it identifies (`#540` C-3.3).** The
 installation's authority stands for about a year, the console's own leaf for
