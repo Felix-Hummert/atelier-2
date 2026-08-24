@@ -29,3 +29,11 @@ text = "When the agent finishes before the cancel lands, the cockpit tells the o
 [[sentence]]
 id = "a-run-that-cannot-be-cancelled-shows-why"
 text = "A run the server says cannot be cancelled shows the closed reason in the operator's words instead of a cancel button or a grey disabled nothing."
+
+[[sentence]]
+id = "a-reload-during-an-unconfirmed-cancel-does-not-lie"
+text = "When the page reloads while a cancel the server never confirmed still sits in the durable journal, the cockpit offers Retry and Discard rather than claiming the run is already stopping, and Retry resends the exact same command the first attempt carried."
+
+[[sentence]]
+id = "a-reload-during-an-accepted-cancel-still-reads-stopping"
+text = "When the page reloads after the server accepted the cancel, the cockpit still reads 'Stopping this run' with no Retry and sends no further command, because the accepted cancel is settled."
