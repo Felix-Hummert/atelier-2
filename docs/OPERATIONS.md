@@ -588,6 +588,40 @@ that plainly in its own output, and only when a volume actually existed to
 lose — a sweep that only ever found a stray container or network never
 claims a store was lost.
 
+**Auto-redeploy is the one deploy way: a landing on `main` reaches this
+installation without an operator hand.** A systemd user timer
+(`scripts/atelier2-auto-redeploy.timer`, a two-minute poll) runs
+`scripts/auto_redeploy.sh`, which fetches `origin/main` and reads the commit
+the serve itself reports on its health endpoint. Only when they differ does
+it fast-forward the deploy checkout and call the `update` above — the same
+one redeploy command, so the watcher adds no second deploy path; it only
+decides whether to call it. It refuses, changing nothing, when it cannot
+safely tell the current state: an unreachable or malformed health answer, a
+serve not reporting `serving`, or a dirty or non-`main` deploy checkout.
+After `update` it re-reads health and fails unless the new commit is
+actually being served.
+
+Enable it once per host, from the deploy checkout, no root:
+
+```bash
+mkdir -p ~/.config/systemd/user
+sed "s|/absolute/path/to/atelier-2|${PWD}|" \
+  scripts/atelier2-auto-redeploy.service \
+  > ~/.config/systemd/user/atelier2-auto-redeploy.service
+cp scripts/atelier2-auto-redeploy.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now atelier2-auto-redeploy.timer
+```
+
+A cycle that refuses — including an `update` refusing a drifted identity or
+a refused store — exits nonzero and leaves the previously served commit
+running; the failed `atelier2-auto-redeploy.service` run is what carries it
+to you (`systemctl --user status atelier2-auto-redeploy.service`,
+`journalctl --user -u atelier2-auto-redeploy.service -e`), and the timer's
+next poll fails the same visible way until you act. The watcher never runs
+`reconcile` or `update --fresh` itself: adopting or discarding the store
+stays your hand, through the paragraphs above.
+
 This slice deliberately has no copy, preview, activation, rollback, or
 acceptance command. The stable console exposes current Core/V1 provider-free
 behavior only; it adds no provider or Runner. Use the disposable candidate
@@ -696,6 +730,11 @@ Stable local lifecycle:
 
 Those jobs exercise the recipes and lifecycle scripts with a fake `docker`.
 They do not build a real image.
+
+Auto-redeploy watcher (against a real local git repository pair and doubles
+for `container_live.sh` and the health endpoint):
+
+`uv run --locked pytest --dist loadgroup -n auto tests/tooling/test_auto_redeploy.py`
 
 Store migration:
 

@@ -195,43 +195,6 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked --all-groups
 
-      - name: Prepare the disposable user manager and trace tool
-        run: |
-          set -euo pipefail
-          apt_update_ok=false
-          for attempt in 1 2 3; do
-            if timeout 90 sudo apt-get update; then
-              apt_update_ok=true
-              break
-            fi
-            echo "apt-get update attempt ${attempt} failed or timed out after 90s" >&2
-          done
-          if [ "${apt_update_ok}" != true ]; then
-            echo "::error::apt-get update did not succeed after 3 attempts (90s each) — failing the step instead of hanging until the job timeout" >&2
-            exit 1
-          fi
-          if ! timeout 90 sudo apt-get install --yes strace; then
-            echo "::error::apt-get install strace did not succeed within 90s — failing the step instead of hanging until the job timeout" >&2
-            exit 1
-          fi
-          uid="$(id -u)"
-          state="${RUNNER_TEMP}/atelier2-user-manager-state"
-          linger="$(loginctl show-user "${uid}" --property=Linger --value)"
-          active="$(systemctl is-active "user@${uid}.service" || true)"
-          printf '%s\n%s\n' "${linger}" "${active}" > "${state}"
-          sudo loginctl enable-linger "${uid}"
-          sudo systemctl start "user@${uid}.service"
-          test -S "/run/user/${uid}/bus"
-          printf 'XDG_RUNTIME_DIR=/run/user/%s\n' "${uid}" >> "${GITHUB_ENV}"
-          printf 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "${uid}" >> "${GITHUB_ENV}"
-          manifest="${RUNNER_TEMP}/atelier2-units-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          install -m 0600 /dev/null "${manifest}"
-          printf 'ATELIER2_SYSTEMD_UNIT_MANIFEST=%s\n' "${manifest}" >> "${GITHUB_ENV}"
-          env -i \
-            LC_ALL=C SYSTEMD_COLORS=0 SYSTEMD_URLIFY=0 \
-            XDG_RUNTIME_DIR="/run/user/${uid}" \
-            systemctl --user is-system-running
-
       - name: Check architecture contracts
         run: uv run --locked python scripts/check_architecture.py
 
@@ -282,52 +245,9 @@ jobs:
             --setenv=UV_PYTHON="${UV_PYTHON}" \
             --setenv=UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR}" \
             --setenv=UV_CACHE_DIR="${UV_CACHE_DIR}" \
-            --setenv=XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
-            --setenv=DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS}" \
-            --setenv=ATELIER2_SYSTEMD_UNIT_MANIFEST="${ATELIER2_SYSTEMD_UNIT_MANIFEST}" \
             "${uv_path}" run --locked pytest --dist loadgroup -n auto \
               --ignore=tests/crash tests -q \
               --junitxml="${GITHUB_WORKSPACE}/reports/quality.junit.xml"
-
-      - name: Test user-manager restart recovery last and alone
-        run: |
-          set -euo pipefail
-          unit="atelier2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-manager-restart"
-          cleanup() {
-            status="$1"
-            trap - EXIT INT TERM
-            sudo systemctl stop "${unit}.service" >/dev/null 2>&1 || true
-            sudo systemctl reset-failed "${unit}.service" >/dev/null 2>&1 || true
-            exit "${status}"
-          }
-          trap 'cleanup "$?"' EXIT
-          trap 'cleanup 130' INT
-          trap 'cleanup 143' TERM
-          uv_path="$(command -v uv)"
-          sudo systemd-run --quiet --wait --collect --pipe \
-            --unit="${unit}" \
-            --uid="$(id -u)" \
-            --gid="$(id -g)" \
-            --property=Type=exec \
-            --property=Delegate=yes \
-            --property=DelegateSubgroup=workload \
-            --property=KillMode=control-group \
-            --property=TimeoutStopSec=30s \
-            --working-directory="${GITHUB_WORKSPACE}" \
-            --setenv=HOME="${HOME}" \
-            --setenv=PATH="${PATH}" \
-            --setenv=CI="${CI:-true}" \
-            --setenv=GITHUB_ACTIONS="${GITHUB_ACTIONS:-true}" \
-            --setenv=GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
-            --setenv=UV_PYTHON="${UV_PYTHON}" \
-            --setenv=UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR}" \
-            --setenv=UV_CACHE_DIR="${UV_CACHE_DIR}" \
-            --setenv=XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
-            --setenv=DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS}" \
-            --setenv=ATELIER2_SYSTEMD_UNIT_MANIFEST="${ATELIER2_SYSTEMD_UNIT_MANIFEST}" \
-            --setenv=ATELIER2_ALLOW_USER_MANAGER_RESTART=1 \
-            "${uv_path}" run --locked pytest -n 0 -q \
-              tests/systemd/test_direct_systemd_lifecycle.py::test_user_manager_restart_preserves_each_durable_recovery_state
 
       - name: Upload the quality run report
         if: ${{ !cancelled() }}
@@ -338,54 +258,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           overwrite: true
-
-      - name: Restore the runner user-manager state
-        if: ${{ always() }}
-        run: |
-          set -uo pipefail
-          uid="$(id -u)"
-          state="${RUNNER_TEMP}/atelier2-user-manager-state"
-          if [[ ! -f "${state}" ]]; then
-            exit 0
-          fi
-          mapfile -t previous < "${state}"
-          cleanup_status=0
-          if ! sudo systemctl start "user@${uid}.service"; then
-            cleanup_status=1
-          fi
-          manifest="${ATELIER2_SYSTEMD_UNIT_MANIFEST:-}"
-          if [[ -n "${manifest}" && -f "${manifest}" ]]; then
-            mapfile -t units < <(sort -u "${manifest}")
-            for unit in "${units[@]}"; do
-              if [[ ! "${unit}" =~ ^atelier2-agent-[0-9a-f]{64}\.service$ ]]; then
-                echo "refusing malformed direct-systemd unit manifest entry: ${unit}" >&2
-                cleanup_status=1
-                continue
-              fi
-              timeout 10 systemctl --user stop "${unit}" >/dev/null 2>&1 || true
-              timeout 10 systemctl --user reset-failed "${unit}" >/dev/null 2>&1 || true
-              state_deadline=$((SECONDS + 10))
-              while [[ "$(timeout 3 systemctl --user show "${unit}" --property=LoadState --value 2>/dev/null || true)" != "not-found" ]]; do
-                if (( SECONDS >= state_deadline )); then
-                  echo "direct-systemd unit remained after cleanup: ${unit}" >&2
-                  cleanup_status=1
-                  break
-                fi
-                sleep 0.1
-              done
-            done
-          fi
-          if [[ "${previous[1]}" != "active" ]]; then
-            sudo systemctl stop "user@${uid}.service" || cleanup_status=1
-          else
-            sudo systemctl start "user@${uid}.service" || cleanup_status=1
-          fi
-          if [[ "${previous[0]}" != "yes" ]]; then
-            sudo loginctl disable-linger "${uid}" || cleanup_status=1
-          else
-            sudo loginctl enable-linger "${uid}" || cleanup_status=1
-          fi
-          exit "${cleanup_status}"
 
   crash-recovery:
     name: Crash recovery

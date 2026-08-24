@@ -152,14 +152,6 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
     "adapters/grok_subscription.py::_VERSION_PROBE_TIMEOUT_SECONDS": SpelledValue(
         1, "third spelling of the shared probe patience; see the claude entry"
     ),
-    "adapters/systemd_agent_collector.py::_PROCESS_EXIT_OBSERVATION_SECONDS": (
-        SpelledValue(
-            1, "owner with a seam: how long an exit is observed before collection"
-        )
-    ),
-    "adapters/systemd_agent_processes.py::_MAXIMUM_SYSTEMD_SECONDS": SpelledValue(
-        1, "systemd's own protocol bound on timespans -- a foreign constant"
-    ),
     "adapters/dbos/queries.py::busy_timeout_seconds": SpelledValue(
         1,
         "constructor seam with its own named range refusal directly below it; "

@@ -190,21 +190,6 @@ class DbosAgentConfigurationCatalog(AgentConfigurationCatalog):
         except (ValueError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()
 
-    def auth_profile_revision(
-        self, revision_hash: AuthProfileRevisionHash
-    ) -> AuthProfileRevision | None:
-        with self._engine.connect() as connection:
-            record = (
-                connection.execute(
-                    sa.select(auth_profile_revisions).where(
-                        auth_profile_revisions.c.revision_hash == revision_hash.value
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
-        return None if record is None else auth_profile_from_record(record)
-
     def agent_configuration_revision(
         self, revision_hash: AgentConfigurationRevisionHash
     ) -> tuple[AgentConfigurationRevision, AuthProfileRevision] | None:
