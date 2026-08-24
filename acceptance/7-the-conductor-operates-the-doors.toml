@@ -1,0 +1,26 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/7"
+
+# Phase B of the conductor (#7): the first executor whose tools reach the
+# product's own API, and the workflow document that consumes it. Offline
+# proofs only -- the billed conformance probe (door fires, built-ins stay
+# imitation, no customization returns without safe mode) is a separate
+# operator-gated step and is deliberately NOT a sentence here: no offline test
+# may claim it.
+#
+# What is deliberately absent, and why:
+#
+#   - NO answer_wait, NO publish_artifact in the grant. The conductor chooses,
+#     starts and observes; humans answer the waits of started runs.
+#   - NO --safe-mode. Measured (spawn-detection, unbilled): safe mode prevents
+#     any --mcp-config server from spawning, so it and a door cannot coexist.
+#   - NO real-run sentence. A billed call under this vector has not been made;
+#     routine use waits on the operator-gated probe.
+
+[[sentence]]
+id = "the-doors-vector-admits-exactly-the-granted-doors"
+text = "The Claude atelier-doors executor prepares an argument vector with no --safe-mode, --tools= removing every built-in, --allowedTools naming exactly the composed door tools under the mcp__<server>__<tool> grammar, and a strict single-server --mcp-config whose one server is the serving host's own atelier2 mcp door command."
+
+[[sentence]]
+id = "the-conductor-document-carries-its-own-fence"
+text = "The conductor workflow document parses under the production V3 grammar as one agent node whose instruction names only the three granted doors and carries the recursion-fence sentence, and the builder refuses a document that lost the fence or authors an order naming the conductor itself."
