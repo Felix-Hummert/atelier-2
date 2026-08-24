@@ -234,6 +234,35 @@ def test_a_partial_runner_lease_flag_group_is_refused_at_the_command_line(
     assert refusal.value.code == 2
 
 
+@pytest.mark.parametrize(
+    ("flag", "malformed"),
+    (
+        ("--runner-image-digest", "not-a-digest"),
+        ("--source-commit", "dev"),
+    ),
+)
+def test_a_malformed_runner_lease_format_is_refused_at_the_command_line(
+    tmp_path: Path, flag: str, malformed: str
+) -> None:
+    """A nonempty-but-malformed digest or source commit fails at the parser.
+
+    Both values pass the nonempty guard, so only the runner manifest's format
+    contract rejects them. `DbosRuntimeSettings` enforces that format at the
+    serve boundary and `_serve` surfaces the refusal as exit 2, rather than
+    starting green and failing deep in the first lease attempt. The well-formed
+    group still composes -- `test_the_serve_flags_compose_the_fake_free_runner_
+    lease_executor` above is that positive guard.
+    """
+
+    lease = _declared_runner_lease(tmp_path)
+    command = _serve_command(tmp_path, *_runner_lease_flags(lease), flag, malformed)
+
+    with pytest.raises(SystemExit) as refusal:
+        main(command)
+
+    assert refusal.value.code == 2
+
+
 def test_serve_without_runner_lease_flags_keeps_todays_behavior(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -118,6 +118,12 @@ from atelier2.contracts.host_configuration import (
 )
 from atelier2.contracts.runner_leases import RunnerLeaseId
 from atelier2.contracts.runner_manifests import (
+    _COMMIT as RUNNER_SOURCE_COMMIT_FORMAT,
+)
+from atelier2.contracts.runner_manifests import (
+    _IMAGE_DIGEST as RUNNER_IMAGE_DIGEST_FORMAT,
+)
+from atelier2.contracts.runner_manifests import (
     RunnerManifestV1,
     candidate_runner_manifest,
 )
@@ -249,6 +255,23 @@ class DbosRuntimeSettings:
             value = getattr(self, name)
             if value is not None and not value.strip():
                 raise ValueError(f"{name} must be nonempty")
+        # A Runner manifest rejects a malformed digest or source commit per
+        # attempt; validating the same formats here keeps a typo in the
+        # `atelier serve` flags a command-line refusal rather than a first-lease
+        # traceback. The manifest owns the format contract; we reuse it.
+        if self.runner_image_digest is not None and (
+            RUNNER_IMAGE_DIGEST_FORMAT.fullmatch(self.runner_image_digest) is None
+        ):
+            raise ValueError(
+                "runner_image_digest must be a sha256:<64 lowercase hex> digest"
+            )
+        if self.runner_lease_source_commit is not None and (
+            RUNNER_SOURCE_COMMIT_FORMAT.fullmatch(self.runner_lease_source_commit)
+            is None
+        ):
+            raise ValueError(
+                "runner_lease_source_commit must be a full 40-character commit SHA"
+            )
 
     @property
     def runner_lease_declared(self) -> bool:
