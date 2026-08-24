@@ -481,8 +481,6 @@
     <p class="stopped" role="alert"><strong>{stopped[0]}:</strong> {stopped[1]}</p>
   {/if}
 
-  <RunCancelCard {run} {cockpitApi} {mutationJournal} {onRunRead} />
-
   {#if !streamSilent && projection !== null}
     <p class="stream-stale" role="status">
       <span>{wrapDisplayCopy(runPageCopy.streamStale)}</span>
@@ -552,6 +550,11 @@
     />
   {/if}
 
+  <!-- Work first, brake second (HEART "The place"): the run's own shapes lead,
+       and the cancel sits below them. It lifts itself back to the top only while
+       a cancel is actually in flight, when it is the room's news. -->
+  <RunCancelCard {run} {cockpitApi} {mutationJournal} {onRunRead} />
+
   {#if openNodeId !== null}
     {#if failure !== null}
       <ProblemNotice title="This node could not be read" message={failure} />
@@ -580,9 +583,12 @@
     gap: var(--space-5);
   }
 
+  /* The run's identity always leads the room, so it sits ahead of an in-flight
+     cancel card even when that card lifts itself toward the top. */
   .run-head {
     display: grid;
     gap: var(--space-2);
+    order: -2;
   }
 
   .run-head h1 {

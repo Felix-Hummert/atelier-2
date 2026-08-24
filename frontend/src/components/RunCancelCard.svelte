@@ -64,6 +64,7 @@
 
   let loadedFor = "";
   $: void loadPending(run.public_run_reference);
+  $: void forgetCancelOnTerminal(run.state, run.public_run_reference);
 
   async function loadPending(publicRunReference: string): Promise<void> {
     if (publicRunReference === loadedFor) return;
@@ -74,6 +75,24 @@
     }
     const found = await loadPendingCancelForRun(mutationJournal, publicRunReference);
     pending = found;
+    accepted = found !== null && found.delivery === "accepted";
+  }
+
+  /**
+   * Once the stream carries the run to a terminal state, an accepted cancel has
+   * done its work: the journal entry is spent, so it is discarded rather than
+   * left to linger in storage forever (`loadPending` already hides it).
+   */
+  async function forgetCancelOnTerminal(
+    state: RunV3["state"],
+    publicRunReference: string
+  ): Promise<void> {
+    if (!TERMINAL_STATES.has(state)) return;
+    const found = await loadPendingCancelForRun(mutationJournal, publicRunReference);
+    if (found !== null) {
+      await mutationJournal.discard(found.mutation_id);
+    }
+    pending = null;
     accepted = false;
   }
 
@@ -182,9 +201,13 @@
 {#if terminal}
   <!-- Done is quiet: the run standing already carries the ending. -->
 {:else if pending !== null}
-  <section class="cancel cancel-working" aria-labelledby="run-cancel-title">
-    <p class="eyebrow eyebrow-working">{wrapDisplayCopy(cancel.eyebrow)}</p>
-    <h2 id="run-cancel-title">{busy ? wrapDisplayCopy(cancel.sending) : wrapDisplayCopy(cancel.accepted)}</h2>
+  <!-- A cancel is in flight, so this card is the news and lifts to the top of the
+       room; only a genuinely-accepted (202) cancel says "Stopping this run", while
+       one whose reply was never confirmed says so honestly and offers Retry/Discard,
+       the same shape the wait card uses on reload. -->
+  <section class="cancel cancel-working cancel-hoist" aria-labelledby="run-cancel-title">
+    <p class="eyebrow">{wrapDisplayCopy(cancel.eyebrow)}</p>
+    <h2 id="run-cancel-title">{busy ? wrapDisplayCopy(cancel.sending) : accepted ? wrapDisplayCopy(cancel.accepted) : wrapDisplayCopy(cancel.uncertain)}</h2>
     {#if accepted && !busy}
       <p class="cancel-note">{wrapDisplayCopy(cancel.acceptedNote)}</p>
     {/if}
@@ -193,6 +216,8 @@
         <span class="wait-alert-shape" aria-hidden="true">?</span>
         <span><strong>{wrapDisplayCopy(cancel.uncertain)}</strong><small>{uncertainMessage}</small></span>
       </div>
+    {/if}
+    {#if !accepted && !busy}
       <div class="actions">
         <button type="button" disabled={busy} onclick={() => { void retryCancel(); }}>{wrapDisplayCopy(cancel.retry)}</button>
         <button class="quiet" type="button" disabled={busy} onclick={() => { void discardCancel(); }}>{wrapDisplayCopy(cancel.discard)}</button>
@@ -214,7 +239,7 @@
   </section>
 {:else if run.cancellation.cancellable}
   <section class="cancel" aria-labelledby="run-cancel-title">
-    <p class="eyebrow eyebrow-working">{wrapDisplayCopy(cancel.eyebrow)}</p>
+    <p id="run-cancel-title" class="eyebrow">{wrapDisplayCopy(cancel.eyebrow)}</p>
     <button
       class="cancel-open"
       type="button"
@@ -273,6 +298,12 @@
     border-color: var(--signal-live);
   }
 
+  /* A cancel in flight is the room's news, so it lifts above the run's own
+     shapes; the idle brake stays where it sits, below the work. */
+  .cancel-hoist {
+    order: -1;
+  }
+
   .eyebrow {
     margin: 0;
     color: var(--ink-dim);
@@ -282,11 +313,7 @@
     text-transform: uppercase;
   }
 
-  .eyebrow-working {
-    color: var(--signal-failure);
-  }
-
-  .cancel-working .eyebrow-working {
+  .cancel-working .eyebrow {
     color: var(--signal-live);
   }
 

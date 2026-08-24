@@ -121,7 +121,7 @@ export function cancelReasonSentence(
 ): string {
   switch (reason) {
     case "between-nodes":
-      return "No agent is running that this cancel could stop. The run is moving to its next step — read it again and stop it there.";
+      return "No agent is running that this cancel could stop. When the next agent starts, the cancel returns here.";
     case "waiting-for-you":
       return "This run is waiting for your answer, not running. Answer it or leave it as it stands.";
     case "node-runs-no-agent":

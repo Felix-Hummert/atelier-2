@@ -10,8 +10,16 @@ import {
   cancelMutationId,
   createCancelIdempotencyKey,
   MutationJournal,
-  type CancelMutation
+  type CancelMutation,
+  type MutationDelivery
 } from "./mutationJournal";
+
+/**
+ * A cancel the durable journal still holds for a run, carrying how far it got
+ * on the wire so a reload can tell an accepted (202) cancel that is genuinely
+ * stopping the run from one that was never confirmed.
+ */
+export type PendingCancel = CancelMutation & { delivery: MutationDelivery };
 
 /**
  * The one audited path a V3 run-cancel travels, the same discipline the wait
@@ -98,11 +106,11 @@ export async function deliverCancel(
       );
     }
     if (result.status === 202) {
-      const uncertain = await mutationJournal.markUncertain(mutation.mutation_id);
-      if (uncertain.kind !== "cancel") {
+      const accepted = await mutationJournal.markAccepted(mutation.mutation_id);
+      if (accepted.kind !== "cancel") {
         throw new Error("The accepted request belongs to another operation.");
       }
-      return { kind: "cancelling", pending: uncertain, run: result.value };
+      return { kind: "cancelling", pending: accepted, run: result.value };
     }
     return { kind: "cancelled", run: result.value };
   } catch (error) {
@@ -143,15 +151,16 @@ async function settleCancelFailure(
  * Reads whichever cancel the durable journal still holds for this run, so a
  * reload while a cancel is in flight shows it as pending rather than offering a
  * fresh one. Keyed by the run, not the step, so a reload finds it even after the
- * server's predicate stopped naming a cancellable target.
+ * server's predicate stopped naming a cancellable target. Its `delivery` rides
+ * along so the card can tell an accepted (202) cancel from an unconfirmed one.
  */
 export async function loadPendingCancelForRun(
   mutationJournal: MutationJournal,
   publicRunReference: string
-): Promise<CancelMutation | null> {
+): Promise<PendingCancel | null> {
   const entries = await mutationJournal.entries();
   const entry = entries.find(
     (candidate) => candidate.kind === "cancel" && candidate.public_run_reference === publicRunReference
   );
-  return entry === undefined ? null : (entry as CancelMutation);
+  return entry === undefined ? null : (entry as PendingCancel);
 }

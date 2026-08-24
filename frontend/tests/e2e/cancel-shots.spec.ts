@@ -83,7 +83,7 @@ function revision(): WorkflowRevisionDetail {
   };
 }
 
-async function routeRun(page: Page, run: RunV3): Promise<void> {
+async function routeRun(page: Page, run: RunV3, cancel: "accept" | "fail" = "accept"): Promise<void> {
   await page.route(`**/atelier/api/v1/runs/${publicReference}`, async (route: Route) => {
     await route.fulfill({ json: run });
   });
@@ -94,6 +94,10 @@ async function routeRun(page: Page, run: RunV3): Promise<void> {
     await route.fulfill({ json: revision() });
   });
   await page.route(`**/atelier/api/v1/runs/${publicReference}/cancellations`, async (route: Route) => {
+    if (cancel === "fail") {
+      await route.abort();
+      return;
+    }
     await route.fulfill({
       status: 202,
       json: { ...run, cancellation: notCancellableBlock("already-cancelling") }
@@ -133,8 +137,25 @@ test("cancel control states", async ({ page }) => {
   await page.getByText(cancel.accepted).first().waitFor();
   await shoot(page, "confirmed");
 
-  // 4. A non-cancelable run showing its reason. Clear the journalled cancel from
-  //    scene 3 first, so this run reads as a fresh non-cancelable one.
+  // 4. A reload during a cancel the server never confirmed: the card reads
+  //    "Cancel uncertain" with Retry/Discard, never a false "Stopping this run".
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  await page.evaluate(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+  await routeRun(page, baseRun(), "fail");
+  await page.goto(`/atelier/runs/${publicReference}`);
+  await page.getByRole("button", { name: cancel.open }).click();
+  await page.getByRole("button", { name: cancel.confirm }).click();
+  await page.getByText(cancel.uncertain).first().waitFor();
+  // Reload: the durable journal, not the lost reply, decides what the card says.
+  await page.goto(`/atelier/runs/${publicReference}`);
+  await page.getByRole("button", { name: cancel.retry }).waitFor();
+  await shoot(page, "uncertain-reload");
+
+  // 5. A non-cancelable run showing its reason. Clear the journalled cancel
+  //    first, so this run reads as a fresh non-cancelable one.
   await page.unrouteAll({ behavior: "ignoreErrors" });
   await page.evaluate(() => {
     localStorage.clear();

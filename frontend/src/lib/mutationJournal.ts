@@ -4,7 +4,17 @@ import {
 } from "../api/client";
 import { sha256Hex } from "./exactBytes";
 
-export type MutationDelivery = "prepared" | "uncertain";
+/**
+ * How far a journaled mutation got on the wire.
+ *
+ * `prepared` is saved but not yet known to have reached the server; `uncertain`
+ * was sent without a confirming response, so a retry replays the exact command;
+ * `accepted` carries the server's own durable 202 -- the command is committed
+ * server-side and only its terminal effect is still arriving. A cancel needs
+ * that third word so a reload can still say "Stopping this run" honestly for an
+ * accepted cancel while offering Retry/Discard for one that was never confirmed.
+ */
+export type MutationDelivery = "prepared" | "uncertain" | "accepted";
 
 interface MutationBase {
   mutation_id: string;
@@ -447,6 +457,19 @@ export class MutationJournal {
     return uncertain;
   }
 
+  async markAccepted(mutationId: string): Promise<JournalEntry> {
+    const entries = await this.entries();
+    const index = entries.findIndex((entry) => entry.mutation_id === mutationId);
+    const current = entries[index];
+    if (index < 0 || current === undefined) {
+      throw new Error("cannot mark an unknown mutation accepted");
+    }
+    const accepted = { ...current, delivery: "accepted" } as JournalEntry;
+    entries[index] = accepted;
+    this.write(entries);
+    return accepted;
+  }
+
   async get(mutationId: string): Promise<JournalEntry | null> {
     return (await this.entries()).find((entry) => entry.mutation_id === mutationId) ?? null;
   }
@@ -506,7 +529,12 @@ export class MutationJournal {
 }
 
 async function requireJournalEntry(value: unknown): Promise<JournalEntry> {
-  if (!isRecord(value) || (value.delivery !== "prepared" && value.delivery !== "uncertain")) {
+  if (
+    !isRecord(value) ||
+    (value.delivery !== "prepared" &&
+      value.delivery !== "uncertain" &&
+      value.delivery !== "accepted")
+  ) {
     throw new Error("mutation journal entry has an unknown delivery state");
   }
   const envelope = { ...value };

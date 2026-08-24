@@ -265,6 +265,20 @@ describe("MutationJournal exact transport truth", () => {
     expect(await journal.get(cancel().mutation_id)).toBeNull();
   });
 
+  it("remembers a 202-accepted delivery across a reload, apart from an unconfirmed one", async () => {
+    const journal = new MutationJournal(sessionStorage);
+    await journal.prepare(cancel());
+    await journal.markAccepted(cancel().mutation_id);
+
+    const reloaded = await new MutationJournal(sessionStorage).get(cancel().mutation_id);
+    expect(reloaded?.delivery).toBe("accepted");
+
+    await journal.markUncertain(cancel().mutation_id);
+    expect((await new MutationJournal(sessionStorage).get(cancel().mutation_id))?.delivery).toBe(
+      "uncertain"
+    );
+  });
+
   it("retains a V3 start that carries the exact order bytes", async () => {
     const envelope = startMutationV3(
       "run-1",

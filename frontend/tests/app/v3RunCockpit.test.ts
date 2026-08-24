@@ -3,8 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
 import { CockpitRequestError, type CockpitApi, type RunV3 } from "../../src/api/client";
+import RunCancelCard from "../../src/components/RunCancelCard.svelte";
+import { prepareCancel } from "../../src/lib/cancelRunDelivery";
 import { shortFingerprint } from "../../src/lib/fingerprint";
-import { MutationJournal } from "../../src/lib/mutationJournal";
+import { cancelMutationId, MutationJournal } from "../../src/lib/mutationJournal";
 import { runHeaderCopy } from "../../src/lib/runPages";
 import { cancelReasonSentence, runPageCopy } from "../../src/lib/runPageCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
@@ -923,6 +925,86 @@ describe("cancelling a version 3 run from the cockpit", () => {
     await waitFor(() => expect(cancelRun).toHaveBeenCalledTimes(2));
     expect(cancelRun.mock.calls[1]?.[0]?.idempotency_key).toBe(firstKey);
     expect(await screen.findByText(cancel.accepted)).toBeTruthy();
+  });
+
+  it("proves(a-reload-during-an-unconfirmed-cancel-does-not-lie): offers Retry/Discard rather than claiming the run is stopping, and Retry resends the exact same command", async () => {
+    const journal = () => new MutationJournal(sessionStorage);
+    const cancelRun = vi
+      .fn<CockpitApi["cancelRun"]>()
+      .mockRejectedValueOnce(new CockpitRequestError("The workshop could not be reached."))
+      .mockResolvedValue({
+        status: 202,
+        value: v3Run({ cancellation: notCancellableBlock("already-cancelling") })
+      });
+
+    render(App, { props: { cockpitApi: api(v3Run(), { cancelRun }), mutationJournal: journal() } });
+    await openStagedDecision();
+    await fireEvent.click(screen.getByRole("button", { name: cancel.confirm }));
+    expect(await screen.findByText(cancel.uncertain)).toBeTruthy();
+    const firstKey = cancelRun.mock.calls[0]?.[0]?.idempotency_key;
+
+    // Reload: a fresh page reads the same durable journal for a cancel the server
+    // never confirmed.
+    cleanup();
+    render(App, { props: { cockpitApi: api(v3Run(), { cancelRun }), mutationJournal: journal() } });
+
+    expect(await screen.findByText(cancel.uncertain)).toBeTruthy();
+    expect(screen.queryByText(cancel.accepted)).toBeNull();
+    const retry = await screen.findByRole("button", { name: cancel.retry });
+    expect(screen.getByRole("button", { name: cancel.discard })).toBeTruthy();
+
+    await fireEvent.click(retry);
+    await waitFor(() => expect(cancelRun).toHaveBeenCalledTimes(2));
+    expect(cancelRun.mock.calls[1]?.[0]?.idempotency_key).toBe(firstKey);
+    expect(await screen.findByText(cancel.accepted)).toBeTruthy();
+  });
+
+  it("proves(a-reload-during-an-accepted-cancel-still-reads-stopping): keeps 'Stopping this run' with no Retry for a cancel the server accepted", async () => {
+    const journal = () => new MutationJournal(sessionStorage);
+    const cancelRun = vi.fn<CockpitApi["cancelRun"]>().mockResolvedValue({
+      status: 202,
+      value: v3Run({ cancellation: notCancellableBlock("already-cancelling") })
+    });
+
+    render(App, { props: { cockpitApi: api(v3Run(), { cancelRun }), mutationJournal: journal() } });
+    await openStagedDecision();
+    await fireEvent.click(screen.getByRole("button", { name: cancel.confirm }));
+    expect(await screen.findByText(cancel.accepted)).toBeTruthy();
+    // Wait for the durable 202 acceptance before the reload, so the page reads a
+    // settled cancel rather than one still on the wire.
+    await waitFor(async () =>
+      expect(
+        (await journal().get(cancelMutationId(publicReference, targetNodeExecutionId)))?.delivery
+      ).toBe("accepted")
+    );
+
+    cleanup();
+    render(App, { props: { cockpitApi: api(v3Run(), { cancelRun }), mutationJournal: journal() } });
+
+    expect(await screen.findByText(cancel.accepted)).toBeTruthy();
+    expect(screen.queryByText(cancel.uncertain)).toBeNull();
+    expect(screen.queryByRole("button", { name: cancel.retry })).toBeNull();
+    expect(screen.queryByRole("button", { name: cancel.open })).toBeNull();
+    expect(cancelRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards a spent cancel from the journal once the run reaches its cancelled terminal", async () => {
+    const journal = new MutationJournal(sessionStorage);
+    const prepared = await prepareCancel(journal, publicReference, targetNodeExecutionId);
+    await journal.markAccepted(prepared.mutation_id);
+
+    render(RunCancelCard, {
+      props: {
+        run: v3Run({ state: "CANCELLED", cancellation: notCancellableBlock("already-ended") }),
+        cockpitApi: api(v3Run()),
+        mutationJournal: journal
+      }
+    });
+
+    await waitFor(async () =>
+      expect(await journal.get(cancelMutationId(publicReference, targetNodeExecutionId))).toBeNull()
+    );
+    expect(screen.queryByText(cancel.accepted)).toBeNull();
   });
 
   it("proves(a-run-that-cannot-be-cancelled-shows-why): shows the server's reason instead of a cancel button when the run cannot be cancelled", async () => {
