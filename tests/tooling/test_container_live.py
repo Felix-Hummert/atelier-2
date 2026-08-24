@@ -1230,6 +1230,182 @@ def test_update_reports_the_true_state_when_the_new_container_is_unconfirmed(
     assert not any(args[:1] == ["start"] for args in mutations)
 
 
+def interrupted_update_repository(tmp_path: Path) -> Path:
+    """A healthy new container beside a record still naming the dead old one.
+
+    Exactly the state an update crash between `compose up` and the record
+    publish leaves behind: the drifted state reconcile exists to recover.
+    """
+    repository = installed_repository(tmp_path)
+    commit_a_second_change(repository)
+    shutil.rmtree(tmp_path / "docker-context")
+    interrupted = run_live(repository, tmp_path, "update", ATELIER2_TEST_FAIL_UP="1")
+    assert interrupted.returncode != 0
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+    return repository
+
+
+@pytest.mark.proves("reconcile-adopts-the-proven-running-container-and-restores-update")
+def test_reconcile_adopts_the_running_container_after_an_interrupted_update(
+    tmp_path: Path,
+) -> None:
+    repository = interrupted_update_repository(tmp_path)
+    before = read_record(tmp_path)
+    assert run_live(repository, tmp_path, "status").stdout == "DRIFTED\n"
+    refused_update = run_live(repository, tmp_path, "update")
+    assert refused_update.returncode != 0
+    assert "reconcile" in refused_update.stderr
+
+    completed = run_live(repository, tmp_path, "reconcile")
+
+    assert completed.returncode == 0, completed.stderr
+    assert "reconciled to running container" in completed.stdout
+    record = read_record(tmp_path)
+    assert record["state"] == "INSTALLED"
+    assert record["container_id"] == UPDATED_CONTAINER_ID
+    assert record["image_id"] == UPDATED_IMAGE_ID
+    assert record["source_commit"] == run_git(repository, "rev-parse", "HEAD")
+    assert record["source_tree"] == run_git(repository, "rev-parse", "HEAD^{tree}")
+    assert record["project"] == before["project"]
+    assert record["volume_name"] == before["volume_name"]
+    assert record["network_name"] == before["network_name"]
+    assert record["store_source_commit"] == before["store_source_commit"]
+    assert record["store_source_tree"] == before["store_source_tree"]
+    assert docker_mutations(docker_invocations(tmp_path)) == []
+    assert run_live(repository, tmp_path, "status").stdout == "RUNNING\n"
+
+
+@pytest.mark.proves("reconcile-adopts-the-proven-running-container-and-restores-update")
+def test_update_runs_store_preserving_after_reconcile(tmp_path: Path) -> None:
+    repository = interrupted_update_repository(tmp_path)
+    reconciled = run_live(repository, tmp_path, "reconcile")
+    assert reconciled.returncode == 0, reconciled.stderr
+    before = read_record(tmp_path)
+    commit_a_change(repository, "third\n")
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+    shutil.rmtree(tmp_path / "docker-context")
+
+    completed = run_live(repository, tmp_path, "update")
+
+    assert completed.returncode == 0, completed.stderr
+    assert "fingerprint" in completed.stdout
+    assert "cockpit ->" in completed.stdout
+    record = read_record(tmp_path)
+    assert record["project"] == before["project"]
+    assert record["volume_name"] == before["volume_name"]
+    assert record["store_source_commit"] == before["store_source_commit"]
+    assert record["source_commit"] == run_git(repository, "rev-parse", "HEAD")
+
+
+def test_reconcile_on_an_exact_installation_changes_nothing(tmp_path: Path) -> None:
+    repository = installed_repository(tmp_path)
+    before_record = (
+        installation_directory(tmp_path) / "installation.state"
+    ).read_bytes()
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+
+    completed = run_live(repository, tmp_path, "reconcile")
+
+    assert completed.returncode == 0, completed.stderr
+    assert "nothing to reconcile" in completed.stdout
+    assert (
+        installation_directory(tmp_path) / "installation.state"
+    ).read_bytes() == before_record
+    assert docker_mutations(docker_invocations(tmp_path)) == []
+
+
+@pytest.mark.proves("reconcile-refuses-by-name-instead-of-guessing")
+@pytest.mark.parametrize(
+    ("settings", "refusal"),
+    (
+        ({"ATELIER2_TEST_DRIFT": "label"}, "refusing to adopt"),
+        ({"ATELIER2_TEST_DRIFT": "mount"}, "refusing to adopt"),
+        ({"ATELIER2_TEST_DRIFT": "restart"}, "refusing to adopt"),
+        ({"ATELIER2_TEST_DRIFT": "health"}, "not healthy"),
+        ({"ATELIER2_TEST_INITIAL_ENGINE_ID": "different-engine"}, "engine identity"),
+    ),
+    ids=(
+        "foreign-deployment-label",
+        "wrong-store-mount",
+        "drifted-restart-policy",
+        "unhealthy-container",
+        "different-docker-engine",
+    ),
+)
+def test_reconcile_refuses_an_unprovable_container_and_changes_nothing(
+    tmp_path: Path, settings: dict[str, str], refusal: str
+) -> None:
+    repository = interrupted_update_repository(tmp_path)
+    before_record = (
+        installation_directory(tmp_path) / "installation.state"
+    ).read_bytes()
+
+    completed = run_live(repository, tmp_path, "reconcile", **settings)
+
+    assert completed.returncode != 0
+    assert refusal in completed.stderr
+    assert (
+        installation_directory(tmp_path) / "installation.state"
+    ).read_bytes() == before_record
+    assert docker_mutations(docker_invocations(tmp_path)) == []
+
+
+@pytest.mark.proves("reconcile-refuses-by-name-instead-of-guessing")
+def test_reconcile_refuses_when_no_project_container_exists_to_adopt(
+    tmp_path: Path,
+) -> None:
+    repository = interrupted_update_repository(tmp_path)
+    before_record = (
+        installation_directory(tmp_path) / "installation.state"
+    ).read_bytes()
+    state_path = tmp_path / "docker-state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["container_removed"] = True
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    completed = run_live(repository, tmp_path, "reconcile")
+
+    assert completed.returncode != 0
+    assert "exactly one container" in completed.stderr
+    assert (
+        installation_directory(tmp_path) / "installation.state"
+    ).read_bytes() == before_record
+    assert docker_mutations(docker_invocations(tmp_path)) == []
+
+
+@pytest.mark.proves("reconcile-refuses-by-name-instead-of-guessing")
+def test_reconcile_refuses_an_incomplete_installation(tmp_path: Path) -> None:
+    repository = lifecycle_repository(tmp_path)
+    failed_install = run_live(
+        repository,
+        tmp_path,
+        "install",
+        ATELIER2_TEST_FAIL_UP="1",
+        ATELIER2_TEST_FAIL_DOWN="1",
+    )
+    assert failed_install.returncode != 0
+    assert read_record(tmp_path)["state"] == "INSTALLING"
+    (tmp_path / "docker-record.jsonl").write_text("", encoding="utf-8")
+
+    completed = run_live(repository, tmp_path, "reconcile")
+
+    assert completed.returncode != 0
+    assert "never completed" in completed.stderr
+    assert read_record(tmp_path)["state"] == "INSTALLING"
+    assert docker_invocations(tmp_path) == []
+
+
+@pytest.mark.proves("reconcile-refuses-by-name-instead-of-guessing")
+def test_reconcile_without_an_installation_refuses(tmp_path: Path) -> None:
+    repository = lifecycle_repository(tmp_path)
+
+    completed = run_live(repository, tmp_path, "reconcile")
+
+    assert completed.returncode != 0
+    assert "nothing installed" in completed.stderr
+    assert docker_invocations(tmp_path) == []
+
+
 @pytest.mark.proves("fresh-explicitly-names-the-store-it-discards")
 def test_update_fresh_wipes_the_store_and_names_it(tmp_path: Path) -> None:
     repository = installed_repository(tmp_path)
@@ -1336,7 +1512,9 @@ def test_update_rejects_unrecognized_extra_arguments(tmp_path: Path) -> None:
     assert docker_invocations(tmp_path) == []
 
 
-@pytest.mark.parametrize("command", ("install", "status", "stop", "start", "uninstall"))
+@pytest.mark.parametrize(
+    "command", ("install", "status", "stop", "start", "uninstall", "reconcile")
+)
 def test_single_argument_commands_reject_extra_arguments(
     tmp_path: Path, command: str
 ) -> None:
@@ -1365,6 +1543,8 @@ LIFECYCLE_GUARDS = (
     'docker stop --time 30 "${update_old_container_id}"',
     'docker start "${update_old_container_id}"',
     'fail "store migration refused',
+    '[[ "${candidate}" =~ ^[0-9a-f]{64}$ ]]',
+    'fail "the running container does not match',
 )
 
 

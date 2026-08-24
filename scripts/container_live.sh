@@ -11,12 +11,12 @@ fail() {
 }
 
 if (($# < 1)); then
-  fail "expected exactly one command: install, status, stop, start, uninstall, or update"
+  fail "expected exactly one command: install, status, stop, start, uninstall, update, or reconcile"
 fi
 command="$1"
 fresh=0
 case "${command}" in
-  install | status | stop | start | uninstall)
+  install | status | stop | start | uninstall | reconcile)
     (($# == 1)) || fail "${command} takes no arguments"
     ;;
   update)
@@ -346,7 +346,7 @@ cleanup_update_process() {
       docker start "${update_old_container_id}" >/dev/null \
         || echo "container live: failed update cleanup is incomplete; run: docker start ${update_old_container_id}" >&2
     else
-      echo "container live: the store is already migrated and the previous container no longer exists to restart; run 'container_live.sh status' to see the new container's state, then 'uninstall' or 'update' again" >&2
+      echo "container live: the store is already migrated and the previous container no longer exists to restart; run 'container_live.sh status' to see the new container's state, then 'reconcile' to adopt a healthy new container store-preserving, or 'uninstall' or 'update --fresh'" >&2
     fi
   fi
   exit "${original_status}"
@@ -666,7 +666,7 @@ update_preserving_store() {
     return
   fi
   verify_installed_configuration \
-    || fail "installed identity drifted; resolve with status, then uninstall or update --fresh"
+    || fail "installed identity drifted; run reconcile to adopt the running container store-preserving, or uninstall / update --fresh to discard the store"
   assert_host_units_are_off
 
   update_old_container_id="${record[container_id]}"
@@ -743,6 +743,57 @@ update_preserving_store() {
   echo "container live: cockpit -> http://127.0.0.1:${published_port}/atelier/"
 }
 
+# Rebuilds the durable record from the one observably running container of
+# the recorded Compose project -- the store-preserving recovery for an
+# update interrupted after `compose up` replaced the container but before
+# the record could be published. It adopts nothing on faith: the rebuilt
+# record is only published after the full exact verification passes against
+# the live container -- the same store volume at its recorded frozen origin,
+# the recorded network, the complete hardening, port, and health -- and any
+# mismatch refuses by name, leaving the record and every Docker resource
+# untouched. The store volume is never modified; reconcile runs no Docker
+# mutation at all.
+reconcile_installation() {
+  [[ -e "${installation_directory}" ]] || fail "nothing installed to reconcile"
+  acquire_existing_lock
+  [[ -e "${record_file}" ]] \
+    || fail "no installation record to reconcile; run install or update"
+  read_record \
+    || fail "installation record is unreadable; resolve with uninstall or update --fresh"
+  [[ "${record[state]}" == "INSTALLED" ]] \
+    || fail "installation never completed; resolve with install or update"
+  if verify_installed_configuration && container_is_healthy; then
+    echo "container live: nothing to reconcile; the installation is exact"
+    return
+  fi
+  [[ "$(docker_engine_id)" == "${record[engine_id]}" ]] \
+    || fail "Docker engine identity drifted; reconcile cannot adopt another engine"
+  local candidate
+  candidate="$(docker ps --all --quiet --filter "label=com.docker.compose.project=${record[project]}")" \
+    || fail "project ${record[project]} containers are unavailable"
+  [[ "${candidate}" =~ ^[0-9a-f]{64}$ ]] \
+    || fail "reconcile needs exactly one container in project ${record[project]}; found none or several"
+  record[container_id]="${candidate}"
+  record[source_commit]="$(docker_container_field '{{index .Config.Labels "atelier2.source.commit"}}')"
+  record[source_tree]="$(docker_container_field '{{index .Config.Labels "atelier2.source.tree"}}')"
+  record[image_id]="$(docker_container_field '{{.Image}}')"
+  record[network_id]="$(docker network inspect --format '{{.Id}}' "${record[network_name]}")" \
+    || fail "network ${record[network_name]} is unavailable"
+  record[configuration_sha256]="$(configuration_sha256)"
+  validate_private_file "${descriptor_file}" "${descriptor_size_limit}" \
+    || fail "installation descriptor drifted; resolve with uninstall or update --fresh"
+  record[descriptor_sha256]="$(sha256sum -- "${descriptor_file}" | cut -d ' ' -f 1)"
+  record_is_valid \
+    || fail "the running container carries no valid installation identity; refusing to adopt it"
+  verify_installed_configuration \
+    || fail "the running container does not match this installation's store, network, and hardening; refusing to adopt it"
+  container_is_healthy \
+    || fail "the running container is not healthy; refusing to adopt it"
+  publish_record
+  echo "container live: reconciled to running container ${record[container_id]}"
+  echo "container live: store-preserving update is available again"
+}
+
 update_installation() {
   assert_ambient_container_mode_is_forbidden
   if ((fresh)); then
@@ -764,4 +815,5 @@ case "${command}" in
   start) start_container ;;
   uninstall) uninstall_installation ;;
   update) update_installation ;;
+  reconcile) reconcile_installation ;;
 esac
