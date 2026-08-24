@@ -266,7 +266,10 @@ def start(
     *orders: RunInput,
 ) -> object:
     return DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV3(
             run_id, workflow.revision_hash, bindings, tuple(orders)
@@ -398,7 +401,10 @@ def test_an_authored_order_reaches_the_agent(
     run_id = RunId("v3/authored")
 
     created = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV3(
             run_id,
@@ -992,7 +998,10 @@ def start_authored(
     *orders: AuthoredOrder,
 ) -> object:
     return DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV3(
             run_id, workflow.revision_hash, bindings, orders=tuple(orders)
@@ -1219,7 +1228,10 @@ def application(runtime: DbosRuntime) -> FastAPI:
         ports=ApiPorts(
             workflow_revision_publisher=DbosWorkflowRevisionPublisher(runtime.engine),
             published_run_starter=DbosDurableRunStarter(
-                runtime.engine, runtime.settings, runtime.agent_executor_registry
+                runtime.engine,
+                runtime.settings,
+                runtime.agent_executor_registry,
+                effect_adapter_proves_absence=True,
             ),
             wait_answerer=DbosWaitAnswerer(
                 runtime.engine, runtime.settings.application_version

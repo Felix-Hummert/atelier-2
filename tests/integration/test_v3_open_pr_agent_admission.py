@@ -52,7 +52,11 @@ from atelier2.contracts.agents import (
     AgentExecutionRequestHash,
     AgentExecutorOperationalIdentity,
 )
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.effects import (
+    AdapterRevision,
+    EffectAdapterBinding,
+    EffectDestination,
+)
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.host.serving import (
@@ -64,6 +68,7 @@ from atelier2.ports.durable_runs import (
     DurableRunCreated,
     StartPublishedRunRequestV2,
 )
+from atelier2.ports.effects import EffectAdapter
 from tests.scenarios.agents import agent_scratch_root
 from tests.scenarios.open_pr_agent import (
     PR_SPEC,
@@ -73,6 +78,30 @@ from tests.scenarios.open_pr_agent import (
 
 RUN = RunId("v3/agent-open-pr-admission")
 AGENT_OPEN_PR_NODE = "implement"
+
+
+class _NonProvingEffectAdapterFactory:
+    """A composed factory whose adapter cannot prove absence, over a proving one.
+
+    The fake-GitHub factory proves absence, so a test that wants the live-GitHub
+    shape -- a not-found readback that is never an authoritative absence -- without
+    a live network wraps it to answer `proves_absence` False. It exists only to
+    exercise the value the runtime composes and threads to every start path.
+    """
+
+    def __init__(self, delegate: GitHubEffectAdapterFactory) -> None:
+        self._delegate = delegate
+
+    @property
+    def binding(self) -> EffectAdapterBinding:
+        return self._delegate.binding
+
+    @property
+    def proves_absence(self) -> bool:
+        return False
+
+    def open(self) -> EffectAdapter:
+        return self._delegate.open()
 
 
 @pytest.fixture
@@ -178,6 +207,50 @@ def test_the_live_github_adapter_cannot_prove_absence(tmp_path: Path) -> None:
     )
 
     assert live.proves_absence is False
+
+
+def test_a_composed_non_proving_adapter_refuses_at_the_queue_auto_start_starter(
+    tmp_path: Path,
+) -> None:
+    # The trap `#430` named: the queue auto-start builds its starter from
+    # `bound.effect_adapter_proves_absence`, so a silent default could once have
+    # admitted an agent `open-pr` run against a non-proving adapter without the
+    # guard. The runtime now owns the composed value, and the queue path threads
+    # it, so composing a non-proving adapter must reach the starter as False and
+    # refuse the run through the exact expression the queue path constructs.
+    runtime = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "queue-auto-start-non-proving-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
+        _NonProvingEffectAdapterFactory(
+            GitHubEffectAdapterFactory(
+                tmp_path / "github.sqlite",
+                AdapterRevision("github-open-pr-v1"),
+                EffectDestination("platform"),
+            )
+        ),
+        ExactOutputAgentExecutorFactory(),
+        (open_pr_agent_executor_factory(PR_SPEC),),
+    )
+    runtime.initialize_storage()
+    try:
+        assert runtime.effect_adapter_proves_absence is False
+        workflow, bindings = publish_open_pr_agent_run(runtime, granted=True)
+        starter = DbosDurableRunStarter(
+            runtime.engine,
+            runtime.settings,
+            runtime.agent_executor_registry,
+            runtime.effect_adapter_proves_absence,
+        )
+        result = starter.start_published(
+            StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
+        )
+    finally:
+        runtime.close()
+
+    assert result == DurableAgentPlatformEffectUnreconcilable(AGENT_OPEN_PR_NODE)
 
 
 def _complete_run(runtime: DbosRuntime, run: RunId) -> None:

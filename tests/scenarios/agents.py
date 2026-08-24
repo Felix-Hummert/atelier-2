@@ -349,7 +349,10 @@ def claude_subscription_start(
         runtime, model, requested_capability, executor_revision
     )
     started = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(
             RunId(run_name),

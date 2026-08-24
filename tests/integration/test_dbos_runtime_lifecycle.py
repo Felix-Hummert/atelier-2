@@ -103,6 +103,10 @@ class CountingFactory:
     def binding(self) -> EffectAdapterBinding:
         return self._delegate.binding
 
+    @property
+    def proves_absence(self) -> bool:
+        return self._delegate.proves_absence
+
     def open(self) -> CountingAdapter:
         self.opens += 1
         self.opened = CountingAdapter(self._delegate.open())
@@ -682,6 +686,12 @@ class BaseExceptionEffectFactory:
     @property
     def binding(self) -> EffectAdapterBinding:
         return self.binding_value
+
+    @property
+    def proves_absence(self) -> bool:
+        # This double exists to fail its open, so the runtime never reaches the
+        # composed proves_absence read; the value only satisfies the protocol.
+        return True
 
     def open(self) -> Never:
         self.lifecycle.append("open:effect")

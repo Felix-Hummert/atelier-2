@@ -229,6 +229,7 @@ def test_a_v3_line_runs_both_its_nodes_without_a_hand_reaching_in(
         started_runtime.engine,
         started_runtime.settings,
         started_runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     assert isinstance(started, DurableRunCreated)
 
@@ -421,7 +422,10 @@ def test_the_terminal_hash_recomputes_only_under_the_binding_the_run_had(
     started, _ = runtime
     workflow, bindings = publish_two_node_line(started)
     DbosDurableRunStarter(
-        started.engine, started.settings, started.agent_executor_registry
+        started.engine,
+        started.settings,
+        started.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     started.launch()
     wait_for_state(started, RunState.COMPLETED)
@@ -495,7 +499,10 @@ def test_the_finished_line_can_have_its_events_read_back(
     started, _ = runtime
     workflow, bindings = publish_two_node_line(started)
     DbosDurableRunStarter(
-        started.engine, started.settings, started.agent_executor_registry
+        started.engine,
+        started.settings,
+        started.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     started.launch()
     wait_for_state(started, RunState.COMPLETED)

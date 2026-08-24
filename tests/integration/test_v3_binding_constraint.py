@@ -154,7 +154,10 @@ def publish(
 
 def starter_of(runtime: DbosRuntime) -> DbosDurableRunStarter:
     return DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     )
 
 

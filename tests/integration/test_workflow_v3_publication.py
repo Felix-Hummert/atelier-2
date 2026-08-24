@@ -90,6 +90,7 @@ def _client(runtime: DbosRuntime) -> TestClient:
                     runtime.engine,
                     runtime.settings,
                     runtime.agent_executor_registry,
+                    effect_adapter_proves_absence=True,
                 ),
                 wait_answerer=DbosWaitAnswerer(
                     runtime.engine, runtime.settings.application_version

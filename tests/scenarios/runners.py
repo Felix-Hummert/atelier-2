@@ -403,7 +403,10 @@ def prepared_free_runner_attempt(
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     run_id = RunId(run_id_value)
     started = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runner_registry
+        runtime.engine,
+        runtime.settings,
+        runner_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(
             run_id,

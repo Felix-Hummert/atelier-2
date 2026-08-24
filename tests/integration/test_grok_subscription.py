@@ -913,7 +913,10 @@ def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
         workflow = WorkflowRevision(HOST_DOCUMENT)
         DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
         starter = DbosDurableRunStarter(
-            runtime.engine, runtime.settings, runtime.agent_executor_registry
+            runtime.engine,
+            runtime.settings,
+            runtime.agent_executor_registry,
+            effect_adapter_proves_absence=True,
         )
         refused = starter.start_published(
             StartPublishedRunRequestV2(
@@ -1179,7 +1182,10 @@ def grok_subscription_start(
     workflow = WorkflowRevision(HOST_DOCUMENT)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     started = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(
             RunId(run_name),

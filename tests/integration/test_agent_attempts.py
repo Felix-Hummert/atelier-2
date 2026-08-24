@@ -152,7 +152,10 @@ def attempt_request(
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     run_id = RunId(run_name)
     started = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(
             run_id,

@@ -589,33 +589,28 @@ def _refuse_pending_agent_open_pr_runs(runtime: DbosRuntime) -> None:
         )
 
 
-def _effect_adapter_factory(
-    settings: HostSettings,
-) -> tuple[EffectAdapterFactory, bool]:
-    """The one effect adapter this instance drives, and whether it proves absence.
+def _effect_adapter_factory(settings: HostSettings) -> EffectAdapterFactory:
+    """The one effect adapter this instance drives.
 
     The live-GitHub destination composes only when the operator declared it; with
     no declaration this is the loopback adapter exactly as before. The token, when
     the live adapter opens it, is read from the credential directory by reference
     and never returns here (ADR 0009 §6).
 
-    The second value is the adapter's own `proves_absence` capability, read from
-    the concrete factory here and handed to admission: a destination that cannot
-    prove absence (live GitHub) makes an agent-authored `open-pr` grant
-    unreconcilable, so admission refuses it (`#430`/`#431`).
+    Whether the composed adapter proves absence is read back from the runtime that
+    binds it (`runtime.effect_adapter_proves_absence`), so the runtime is the one
+    owner of that answer rather than a second reading here that must agree.
     """
 
     adapter_revision = AdapterRevision(settings.effect_adapter_revision)
     destination = EffectDestination(settings.effect_destination)
     if settings.github_effect is not None:
-        live = settings.github_effect.effect_adapter_factory(
+        return settings.github_effect.effect_adapter_factory(
             adapter_revision, destination
         )
-        return live, live.proves_absence
-    loopback = LoopbackEffectAdapterFactory(
+    return LoopbackEffectAdapterFactory(
         settings.effect_store_path, adapter_revision, destination
     )
-    return loopback, loopback.proves_absence
 
 
 def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
@@ -623,13 +618,16 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
         *_subscription_executor_registrations(settings),
         *_runner_lease_executor_registrations(settings),
     )
-    effect_factory, effect_adapter_proves_absence = _effect_adapter_factory(settings)
     runtime = DbosRuntime(
         settings.runtime_settings(),
-        effect_factory,
+        _effect_adapter_factory(settings),
         ExactOutputAgentExecutorFactory(),
         subscription_executors,
     )
+    # A destination that cannot prove absence (live GitHub) makes an agent-authored
+    # `open-pr` grant unreconcilable, so admission refuses it (`#430`/`#431`). The
+    # runtime composed the adapter, so it owns this answer for every start path.
+    effect_adapter_proves_absence = runtime.effect_adapter_proves_absence
     try:
         # Before the launch that recovers durable nodes: a live adapter cannot
         # prove absence, so a non-terminal V3 run whose agent node opens its own

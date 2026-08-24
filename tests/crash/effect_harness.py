@@ -88,6 +88,10 @@ class HarnessEffectAdapterFactory:
     def binding(self) -> EffectAdapterBinding:
         return self._delegate.binding
 
+    @property
+    def proves_absence(self) -> bool:
+        return self._delegate.proves_absence
+
     def open(self) -> HarnessEffectAdapter:
         return HarnessEffectAdapter(
             self._delegate.open(),

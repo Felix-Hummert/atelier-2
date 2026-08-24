@@ -99,6 +99,10 @@ class UnknownAdapterFactory:
     def binding(self) -> EffectAdapterBinding:
         return self._delegate.binding
 
+    @property
+    def proves_absence(self) -> bool:
+        return self._delegate.proves_absence
+
     def open(self) -> UnknownAdapter:
         return UnknownAdapter(self._delegate.open(), self._marker)
 

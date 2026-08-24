@@ -168,7 +168,10 @@ def publish_verdict_loop(
 def start_and_run(runtime: DbosRuntime) -> WorkflowRevision:
     workflow, bindings = publish_verdict_loop(runtime)
     started = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     assert isinstance(started, DurableRunCreated), started
     runtime.launch()
