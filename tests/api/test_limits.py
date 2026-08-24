@@ -10,6 +10,10 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from atelier2.adapters.markdown_agent_definitions import (
+    parse_agent_definition,
+    render_agent_definition,
+)
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits, RequestBodyLimitMiddleware
@@ -70,6 +74,8 @@ def client_for(mutations: RecordingMutationPorts, limits: ApiLimits) -> TestClie
                 published_run_starter=mutations,
                 wait_answerer=mutations,
                 workflow_document_parser=parse_executable_workflow_document,
+                agent_definition_parser=parse_agent_definition,
+                agent_definition_renderer=render_agent_definition,
             ),
             limits=limits,
             event_poll_backoff=event_poll_backoff(),
