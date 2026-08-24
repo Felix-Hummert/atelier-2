@@ -300,11 +300,73 @@ export function reconciliationCommand(mutation: ReconciliationMutation): Reconci
   return value as ReconciliationCommand;
 }
 
+/**
+ * One operator's confirmed V3 run-cancel, journaled before it reaches the wire.
+ *
+ * The client carries only the opaque `idempotency_key` it repeats on retry;
+ * #439's server mints the durable command id into its reserved namespace, so a
+ * lost response replays the exact same command instead of minting a second
+ * cancel. `expected_node_execution_id` is D2's fence -- the exact
+ * `cancellation.target_node_execution_id` the run just served -- so a cancel
+ * confirmed in one loop round can never stop another round's attempt. The
+ * journal identity keys on that target, so a run that moved to a new round
+ * offers a fresh cancel rather than replaying the stale one.
+ */
+export interface CancelMutation extends MutationBase {
+  kind: "cancel";
+  content_type: "application/json";
+  public_run_reference: string;
+  expected_node_execution_id: string;
+  idempotency_key: string;
+}
+
+export function createCancelIdempotencyKey(): string {
+  return `cancel-${globalThis.crypto.randomUUID()}`;
+}
+
+export function cancelMutationId(
+  publicRunReference: string,
+  expectedNodeExecutionId: string
+): string {
+  return `cancel:${publicRunReference}:${expectedNodeExecutionId}`;
+}
+
+export function cancelMutation(
+  publicRunReference: string,
+  expectedNodeExecutionId: string,
+  idempotencyKey: string
+): CancelMutation {
+  if (
+    decodePublicRunReference(publicRunReference) === null ||
+    !digestPattern.test(expectedNodeExecutionId) ||
+    idempotencyKey.length === 0
+  ) {
+    throw new Error("invalid cancel identity or idempotency key");
+  }
+  const body = new TextEncoder().encode(
+    JSON.stringify({
+      idempotency_key: idempotencyKey,
+      expected_node_execution_id: expectedNodeExecutionId
+    })
+  );
+  return {
+    mutation_id: cancelMutationId(publicRunReference, expectedNodeExecutionId),
+    kind: "cancel",
+    target: `/atelier/api/v1/runs/${publicRunReference}/cancellations`,
+    content_type: "application/json",
+    body_base64: encodeBase64(body),
+    public_run_reference: publicRunReference,
+    expected_node_execution_id: expectedNodeExecutionId,
+    idempotency_key: idempotencyKey
+  };
+}
+
 export type MutationEnvelope =
   | PublishMutation
   | StartMutation
   | WaitMutation
-  | ReconciliationMutation;
+  | ReconciliationMutation
+  | CancelMutation;
 
 export type JournalEntry = MutationEnvelope & { delivery: MutationDelivery };
 
@@ -328,6 +390,7 @@ export type MutationEvidence =
     })
   | (RequestBoundEvidence & { type: "wait_response" })
   | (RequestBoundEvidence & { type: "reconciliation_response" })
+  | (RequestBoundEvidence & { type: "cancel_response" })
   | {
       type: "wait_answered";
       public_run_reference: string;
@@ -471,6 +534,9 @@ async function requireEnvelope(envelope: MutationEnvelope): Promise<void> {
       return;
     case "reconciliation":
       await requireReconciliation(envelope as ReconciliationMutation);
+      return;
+    case "cancel":
+      requireCancel(envelope as CancelMutation);
       return;
     default:
       throw new Error("invalid mutation journal envelope");
@@ -706,6 +772,31 @@ async function requireReconciliation(envelope: ReconciliationMutation): Promise<
   }
 }
 
+function requireCancel(envelope: CancelMutation): void {
+  requireExactKeys(envelope, envelopeKeys(envelope));
+  const route = /^\/atelier\/api\/v1\/runs\/(run1\.[A-Za-z0-9_-]+)\/cancellations$/.exec(
+    envelope.target
+  );
+  const publicReference = route?.[1];
+  const body = requireJsonBody(envelope.body_base64);
+  requireExactKeys(body, ["idempotency_key", "expected_node_execution_id"]);
+  if (
+    envelope.content_type !== "application/json" ||
+    publicReference === undefined ||
+    decodePublicRunReference(publicReference) === null ||
+    envelope.public_run_reference !== publicReference ||
+    typeof body.idempotency_key !== "string" ||
+    body.idempotency_key.length === 0 ||
+    envelope.idempotency_key !== body.idempotency_key ||
+    typeof body.expected_node_execution_id !== "string" ||
+    !digestPattern.test(body.expected_node_execution_id) ||
+    envelope.expected_node_execution_id !== body.expected_node_execution_id ||
+    envelope.mutation_id !== cancelMutationId(publicReference, body.expected_node_execution_id)
+  ) {
+    throw new Error("invalid cancel mutation envelope");
+  }
+}
+
 async function evidenceMatches(
   entry: JournalEntry,
   evidence: MutationEvidence
@@ -746,6 +837,12 @@ async function evidenceMatches(
       return (
         evidence.type === "reconciliation_resolved" &&
         (await reconciliationEvidenceMatches(entry, evidence))
+      );
+    case "cancel":
+      return (
+        evidence.type === "cancel_response" &&
+        evidence.status === 200 &&
+        requestEvidenceMatches(entry, evidence)
       );
   }
 }
@@ -868,6 +965,13 @@ function envelopeKeys(envelope: MutationEnvelope): string[] {
         "request_base64",
         "request_hash",
         "result_hash"
+      ];
+    case "cancel":
+      return [
+        ...common,
+        "public_run_reference",
+        "expected_node_execution_id",
+        "idempotency_key"
       ];
   }
 }

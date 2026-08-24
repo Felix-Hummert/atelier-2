@@ -1,3 +1,4 @@
+import type { RunNotCancellableReason } from "../api/client";
 import type { NodeState } from "./runProjection";
 
 /**
@@ -86,8 +87,51 @@ export const runPageCopy = {
   sealsWorkflow: "the exact document this run followed",
   sealsConfiguration: "the agents and inputs this run started under",
   sealsTerminal: "the finished result, so a later reader can prove it was not altered",
-  sealsEvent: "this durable event"
+  sealsEvent: "this durable event",
+  cancel: {
+    /** The label above the control, in state hue only where it asks something. */
+    eyebrow: "Stop this run",
+    /** The button that opens the staged decision — never fires the cancel itself. */
+    open: "Cancel this run",
+    /** The staged decision (HEART "Decision as stage"): a real question, honest buttons. */
+    question: "Cancel this run?",
+    consequence: "The agent working now is stopped and the run ends here. This cannot be undone.",
+    confirm: "Cancel run",
+    dismiss: "Keep running",
+    /** In flight, in the operator's words. */
+    sending: "Stopping this run",
+    accepted: "Stopping this run",
+    acceptedNote: "The run will end once the agent lets go.",
+    /** A network failure or unconfirmed reply keeps the exact command for these. */
+    uncertain: "Cancel uncertain",
+    retry: "Retry",
+    discard: "Discard"
+  }
 } as const;
+
+/**
+ * The sentence the cockpit shows when the server says a run cannot be cancelled
+ * right now -- #439 D3's closed reason set in the operator's words, never a raw
+ * token and never a grey disabled button. The server owns *whether*; this owns
+ * *how it reads*.
+ */
+export function cancelReasonSentence(
+  reason: RunNotCancellableReason,
+  currentNodeId: string
+): string {
+  switch (reason) {
+    case "between-nodes":
+      return "No agent is running that this cancel could stop. The run is moving to its next step — read it again and stop it there.";
+    case "waiting-for-you":
+      return "This run is waiting for your answer, not running. Answer it or leave it as it stands.";
+    case "node-runs-no-agent":
+      return `${currentNodeId} runs no agent, so there is nothing here to stop.`;
+    case "already-cancelling":
+      return "This run is already being cancelled.";
+    case "already-ended":
+      return "This run has already ended.";
+  }
+}
 
 const ENDED_NODE_STATES: ReadonlySet<NodeState> = new Set([
   "failed",

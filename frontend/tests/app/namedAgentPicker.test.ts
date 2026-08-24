@@ -16,6 +16,7 @@ import {
   namedAgentLabel
 } from "../../src/lib/namedAgentChoice";
 import { cockpitApiStub } from "../support/cockpitApi";
+import { cancellableBlock } from "../support/runV3";
 
 const revisionHash = "a".repeat(64);
 const authHash = "b".repeat(64);
@@ -101,6 +102,7 @@ function startedV3Run(): RunV3 {
     state: "STARTED",
     current_node_id: "implement",
     node_rail: [{ node_id: "implement", state: "working", attempt: null }],
+    cancellation: cancellableBlock(),
     terminal_hash: null,
     latest_event_cursor: null
   };

@@ -1,0 +1,31 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/439"
+
+# #439 P5 gives the V3 cockpit the operator's cancel control. The server owns
+# whether a run can be stopped and, if not, why; the cockpit reads that
+# predicate rather than guessing it from the rail, stages the decision as a real
+# question with honest buttons, and drives the P4 route through the same audited
+# pending/uncertain/retry path the wait answer uses. The sentences below are
+# proven through the real cockpit surface (a rendered browser DOM) and the real
+# wire client, so they hold the observable behaviour rather than an internal
+# shape.
+
+[[sentence]]
+id = "the-cockpit-and-the-served-contract-know-the-same-cancel-reasons"
+text = "The cockpit decodes exactly the run-cancel reasons the served contract publishes: a reason added on one side alone fails a test."
+
+[[sentence]]
+id = "the-cockpit-decodes-the-served-run-cancel-problems"
+text = "The cockpit mirrors exactly the three run-cancel problems the served contract publishes -- run-not-cancellable, run-cancellation-command-conflict and run-cancellation-overtaken-by-success -- so a 409 carrying one of them is a definitive refusal the client already understands rather than an undocumented status it would offer to retry."
+
+[[sentence]]
+id = "the-cockpit-cancels-a-running-v3-run"
+text = "From a cancellable V3 run, the cockpit stages the cancel as a real question with honest confirm and dismiss buttons; confirming posts one command carrying a client-generated idempotency key and the node execution the server named, on the same audited journal path the wait answer uses, and the control does not reappear while the run is stopping."
+
+[[sentence]]
+id = "a-run-that-finished-first-is-not-called-cancelled"
+text = "When the agent finishes before the cancel lands, the cockpit tells the operator the run moved on in the server's own honest words, never a false cancelled, discards the journalled command, and offers no retry, because no retry can change that answer."
+
+[[sentence]]
+id = "a-run-that-cannot-be-cancelled-shows-why"
+text = "A run the server says cannot be cancelled shows the closed reason in the operator's words instead of a cancel button or a grey disabled nothing."

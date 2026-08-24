@@ -7,6 +7,7 @@ import {
   projectHistoryRows,
   withinHistoryPeriod
 } from "../../src/lib/historyRows";
+import { notCancellableBlock } from "../support/runV3";
 import { completedRun, publicReference, revisionHash } from "../support/workflowV1";
 
 function v1Failed(changes: Partial<RunV1> = {}): RunV1 {
@@ -26,6 +27,7 @@ function v3Run(changes: Partial<RunV3> = {}): RunV3 {
     state: "COMPLETED",
     current_node_id: "final",
     node_rail: [{ node_id: "final", state: "succeeded", attempt: null }],
+    cancellation: notCancellableBlock("already-ended"),
     terminal_hash: revisionHash,
     latest_event_cursor: null,
     started_at: "2026-08-18T15:00:00Z",

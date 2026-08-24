@@ -5,6 +5,7 @@ import App from "../../src/App.svelte";
 import { CockpitRequestError, type CockpitApi, type RunV3 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub } from "../support/cockpitApi";
+import { cancellableBlock } from "../support/runV3";
 import { utf8Base64 } from "../support/exactBytes";
 
 const revisionHash = "a".repeat(64);
@@ -89,6 +90,7 @@ function startedRun(): RunV3 {
     state: "STARTED",
     current_node_id: "cook",
     node_rail: [{ node_id: "cook", state: "working", attempt: null }],
+    cancellation: cancellableBlock(),
     terminal_hash: null,
     latest_event_cursor: null
   };

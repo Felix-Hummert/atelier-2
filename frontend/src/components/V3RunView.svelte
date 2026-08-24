@@ -28,6 +28,7 @@
   import { ageLabel } from "../lib/when";
   import NodeDetailPanel from "./NodeDetailPanel.svelte";
   import ProblemNotice from "./ProblemNotice.svelte";
+  import RunCancelCard from "./RunCancelCard.svelte";
   import V3AnswerCard, { type WaitContextSource } from "./V3AnswerCard.svelte";
   import WorkflowGraphDrawing from "./WorkflowGraphDrawing.svelte";
 
@@ -479,6 +480,8 @@
   {#if stopped !== null}
     <p class="stopped" role="alert"><strong>{stopped[0]}:</strong> {stopped[1]}</p>
   {/if}
+
+  <RunCancelCard {run} {cockpitApi} {mutationJournal} {onRunRead} />
 
   {#if !streamSilent && projection !== null}
     <p class="stream-stale" role="status">
