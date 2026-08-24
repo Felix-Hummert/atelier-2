@@ -3,7 +3,9 @@
 The delivery decision (`deliver_attention_webhook`) is exercised against the
 real DBOS store on both sides -- the attention feed it reads through the
 unchanged `read_attention_events`, and the webhook delivery cursor it reads
-and conditionally advances -- with only the outgoing call faked.
+and conditionally advances -- with only the outgoing call faked. The
+same-second regression (`#627`) drives phase 2's `WebhookDeliveryLoop`
+instead, because the exclusion set that breaks the livelock lives there.
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ from atelier2.contracts.webhook_delivery import (
     WebhookEventPayload,
 )
 from atelier2.contracts.when import RecordedAt
+from atelier2.host.webhook_delivery import WebhookDeliveryLoop
 from atelier2.ports.webhook_delivery import (
     AdvanceWebhookDeliveryCursorResult,
     ReadWebhookDeliveryCursorResult,
@@ -63,6 +66,8 @@ from atelier2.ports.webhook_transport import (
 from tests.scenarios.api import durable_queries
 
 SECRET = b"a-test-signing-secret"
+FIRST_EVENT_AT = RecordedAt("2026-08-23T09:00:00Z")
+NEXT_SECOND_AT = RecordedAt("2026-08-23T09:00:01Z")
 WAIT_DOCUMENT = b"""format_version: 1
 start: pause
 nodes:
@@ -190,6 +195,9 @@ def _insert_attention_event(
 
 def _seed_two_attention_events(
     engine: Engine,
+    *,
+    first_at: RecordedAt = FIRST_EVENT_AT,
+    second_at: RecordedAt = NEXT_SECOND_AT,
 ) -> tuple[RunId, RunId]:
     revision = WorkflowRevision(WAIT_DOCUMENT)
     run_a, run_b = RunId("run-a"), RunId("run-b")
@@ -199,12 +207,8 @@ def _seed_two_attention_events(
                 revision_hash=revision.revision_hash.value, document=revision.document
             )
         )
-        _insert_attention_event(
-            connection, run_a, revision, at=RecordedAt("2026-08-23T09:00:00Z")
-        )
-        _insert_attention_event(
-            connection, run_b, revision, at=RecordedAt("2026-08-23T09:00:01Z")
-        )
+        _insert_attention_event(connection, run_a, revision, at=first_at)
+        _insert_attention_event(connection, run_b, revision, at=second_at)
     return run_a, run_b
 
 
@@ -239,6 +243,46 @@ def test_two_new_events_are_each_delivered_once_and_the_cursor_lands_on_the_seco
     ]
     assert harness.publisher.read_cursor() == WebhookDeliveryCursorState(
         WebhookDeliveryCursor(run_b, 1), WebhookDeliveryCursorRevision(2)
+    )
+
+
+def test_two_events_sharing_one_second_are_each_delivered_once_and_the_feed_continues(
+    harness: WebhookHarness,
+) -> None:
+    run_a, run_b = _seed_two_attention_events(harness.engine, second_at=FIRST_EVENT_AT)
+    transport = _RecordingWebhookTransport([Delivered(), Delivered()])
+    loop = WebhookDeliveryLoop(harness.publisher, harness.queries, transport, SECRET)
+
+    loop.deliver_pending()
+    # An idle poll pass must not redeliver the same-second sibling either.
+    loop.deliver_pending()
+
+    assert [_identity(payload) for payload in transport.calls] == [
+        (run_a, 1),
+        (run_b, 1),
+    ]
+    assert harness.publisher.read_cursor() == WebhookDeliveryCursorState(
+        WebhookDeliveryCursor(run_b, 1), WebhookDeliveryCursorRevision(2)
+    )
+
+    run_c = RunId("run-c")
+    with harness.engine.begin() as connection:
+        _insert_attention_event(
+            connection,
+            run_c,
+            WorkflowRevision(WAIT_DOCUMENT),
+            at=RecordedAt("2026-08-23T09:00:02Z"),
+        )
+    transport.outcomes.append(Delivered())
+    loop.deliver_pending()
+
+    assert [_identity(payload) for payload in transport.calls] == [
+        (run_a, 1),
+        (run_b, 1),
+        (run_c, 1),
+    ]
+    assert harness.publisher.read_cursor() == WebhookDeliveryCursorState(
+        WebhookDeliveryCursor(run_c, 1), WebhookDeliveryCursorRevision(3)
     )
 
 
