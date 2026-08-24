@@ -56,6 +56,24 @@ and a token; the agent does not inherit them. The issue's own words:
 > nie als Roh-`git push` im Provider-CLI-Stream, nie mit Token in der
 > Agent-Lease."
 
+## The march route (ruled 24.08.2026)
+
+The flagship product review of 24.08.2026 —
+[Issue #637](https://github.com/FlexOr2/atelier-2/issues/637) is its record —
+ended in an operator ruling on sequence and moat. Sequence: the live
+end-to-end loop comes first — a real chain landing a real pull request under a
+real budget, provably — before any further workflow-language feature,
+migration-ladder growth, or bespoke isolation mechanics; the workflow language
+is frozen without usage evidence, and the isolation-adoption and dbos-core
+visions are parked
+([#632](https://github.com/FlexOr2/atelier-2/issues/632),
+[#634](https://github.com/FlexOr2/atelier-2/issues/634)). Moat: what this
+product defends is provider-neutrality over the operator's own subscriptions,
+evidence-first execution — byte-pinned revisions, receipts, an honest
+UNKNOWN — and a catalogue of proven, measured workflows. Provider-native
+surfaces — chat orchestration, parallel agents, cockpit dashboards — are
+commodities: kept thin and fast, never the moat.
+
 ## What this page does not claim
 
 Issue #1 also names a V1 success, a *Nicht V1* exclusion list, and a dated
