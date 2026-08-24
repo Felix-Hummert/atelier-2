@@ -7,7 +7,11 @@ from atelier2.contracts.agent_attempts import (
     ProcessExitSignature,
 )
 from atelier2.contracts.executions import AgentAttemptExecution
-from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
+from atelier2.contracts.tool_grants_v3 import (
+    ToolGrantCapability,
+    ToolGrantCapabilityNotRedeemed,
+    ToolRedemptionReceipt,
+)
 from atelier2.ports.agent_attempts import (
     AgentAttemptClaimedByThisCall,
     AgentAttemptExecutionOutcome,
@@ -25,6 +29,7 @@ from atelier2.ports.agent_executions import (
 )
 from atelier2.ports.project_verification import (
     PinnedProjectSource,
+    ProjectVerificationOutcome,
     ProjectVerificationUnavailable,
 )
 
@@ -174,23 +179,52 @@ def _redeemed(
 ) -> ToolRedemptionReceipt | None:
     """What redeeming this node's grant ran, or nothing where no grant was pinned.
 
-    The verification runs before the attempt is durably terminal, so its evidence
-    reaches the store in the same write that keeps the provider's own receipt: a
-    redemption durably missing beside a succeeded attempt would say a grant was
-    never redeemed, which is exactly the thing this evidence exists to answer.
+    Which redeemer answers is read from the capability the pinned grant
+    actually names, not assumed: a grant is redeemed by the one redeemer its
+    own capability reaches, never by whichever redeemer this runtime happens
+    to carry. The verification runs before the attempt is durably terminal, so
+    its evidence reaches the store in the same write that keeps the provider's
+    own receipt: a redemption durably missing beside a succeeded attempt would
+    say a grant was never redeemed, which is exactly the thing this evidence
+    exists to answer.
     """
     if project is None or project.grant is None:
         return None
+    grant = project.grant
+    outcome = _redeemed_via_capability(grant.capability, project, lease)
     request = execution.request
-    outcome = project.verifications.run(project.pin, lease)
     return ToolRedemptionReceipt.of(
         request.node_execution_id,
         request.run_id,
         request.workflow_revision_hash,
         request.node_id,
         execution.attempt_id,
-        project.grant,
+        grant,
         outcome.command,
         outcome.exit_code,
         outcome.standard_output_hash,
     )
+
+
+def _redeemed_via_capability(
+    capability: ToolGrantCapability,
+    project: PinnedProjectSource,
+    lease: AgentAttemptWorkspaceLease,
+) -> ProjectVerificationOutcome:
+    """The one redeemer this exact capability reaches, run against this lease.
+
+    `ToolGrantCapability` holds one member today, so this dispatch has one
+    case -- but the case is still asked for, rather than assumed, because the
+    bug this dispatch exists to keep impossible is exactly a capability that
+    used to reach this point unread and got redeemed as a project verification
+    regardless of what it actually named. A capability this match does not
+    recognize is refused by name instead: nothing durably constructed here
+    can carry one today, so reaching this branch is a defect in the runtime
+    that bound it, not a condition an attempt can recover from -- Phase 2
+    decides how a second capability's own redeemer joins this dispatch.
+    """
+    match capability:
+        case ToolGrantCapability.RUN_PROJECT_VERIFICATION:
+            return project.verifications.run(project.pin, lease)
+        case _:
+            raise ToolGrantCapabilityNotRedeemed(capability)

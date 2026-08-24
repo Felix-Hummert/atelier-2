@@ -52,6 +52,25 @@ class ToolGrantCapability(StrEnum):
     RUN_PROJECT_VERIFICATION = "run-project-verification"
 
 
+class ToolGrantCapabilityNotRedeemed(RuntimeError):
+    """A pinned grant names a capability no redeemer in this runtime performs.
+
+    `read_tool_grant_document` already refuses any capability outside this
+    module's closed vocabulary before a run ever binds one, so a legitimately
+    constructed `DeclaredToolGrant` cannot carry this today -- the vocabulary
+    holds exactly `RUN_PROJECT_VERIFICATION`, and every reader agrees. This
+    exception is the same refusal at the other boundary the invariant names:
+    redemption itself asks, once more, which redeemer this exact capability
+    reaches, so a second capability that ever lands beside the first without
+    its own redeemer is refused by name here rather than performed as though
+    it had asked for whichever redeemer this runtime already had.
+    """
+
+    def __init__(self, capability: ToolGrantCapability) -> None:
+        super().__init__(f"no redeemer in this runtime performs {capability.value!r}")
+        self.capability = capability
+
+
 class ToolGrantRefusal(StrEnum):
     """Why published bytes are not a tool grant, as a stable token."""
 
