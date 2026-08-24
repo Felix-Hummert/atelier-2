@@ -14,9 +14,11 @@ admitted earlier under the absence-proving loopback adapter can still owe its
 redemption when the operator restarts the same database with live GitHub, so
 composing the live adapter also scans the V3 runs and refuses to start while any
 still owes an agent `open-pr` redemption. A run owes it while it is non-terminal,
-and still owes it in the crash window between committing COMPLETED and the sink
-node's own workflow redeeming the grant -- a run whose node workflow has finished
-that redemption, and a grant-free run, never block the start.
+and still owes it in the crash window between committing COMPLETED and whichever
+workflow still drives a sink-node attempt redeeming the grant -- the node workflow
+of the original attempt, or the replacement workflow of one that was cancelled and
+replaced. A run whose sink-node attempts have all finished driving, and a
+grant-free run, never block the start.
 """
 
 from __future__ import annotations
@@ -28,9 +30,9 @@ import pytest
 import sqlalchemy as sa
 
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import runs
+from atelier2.adapters.dbos.schema import agent_attempts, runs
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
-from atelier2.adapters.dbos.workflow_ids import node_workflow_id_for
+from atelier2.adapters.dbos.workflow_ids import driving_workflow_id
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.github import (
     GitHubEffectAdapterFactory,
@@ -39,6 +41,17 @@ from atelier2.adapters.github import (
     LiveGitHubEffectAdapterFactory,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.contracts.agent_attempts import (
+    AGENT_ATTEMPT_ORDINAL,
+    REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
+    AgentAttempt,
+    AgentAttemptId,
+    AgentAttemptState,
+)
+from atelier2.contracts.agents import (
+    AgentExecutionRequestHash,
+    AgentExecutorOperationalIdentity,
+)
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
@@ -214,12 +227,14 @@ def test_live_github_startup_serves_when_the_agent_open_pr_run_has_finished(
     _refuse_pending_agent_open_pr_runs(runtime)
 
 
-def _current_node_workflow_id(runtime: DbosRuntime, run: RunId) -> str:
-    """The durable node workflow id the run's current node execution mints.
+def _seed_current_node_attempt(runtime: DbosRuntime, run: RunId, ordinal: int) -> str:
+    """Seed the run's current node one attempt and return the workflow driving it.
 
-    Derived from the run's own durable row through the same
-    `node_workflow_id_for` the runtime mints at `start_node`, so a status seeded
-    under it names the exact workflow recovery would resume.
+    The startup scan asks `driving_workflow_id` which workflow still owes each
+    attempt of the current node its next move, so a test that wants to leave a
+    redemption owed seeds the real attempt the scan reads and takes the driving id
+    from the same production owner. An ordinal-1 attempt is driven by its node
+    workflow, an ordinal-2 replacement by its replacement workflow.
     """
     with runtime.engine.connect() as connection:
         row = (
@@ -233,18 +248,50 @@ def _current_node_workflow_id(runtime: DbosRuntime, run: RunId) -> str:
             .mappings()
             .one()
         )
-    return node_workflow_id_for(
-        NodeExecutionId.for_node(
-            run,
-            WorkflowRevisionHash(str(row["revision_hash"])),
-            str(row["current_node_id"]),
-            int(row["current_round_ordinal"]),
-        )
+    revision_hash = WorkflowRevisionHash(str(row["revision_hash"]))
+    node_id = str(row["current_node_id"])
+    execution_id = NodeExecutionId.for_node(
+        run, revision_hash, node_id, int(row["current_round_ordinal"])
     )
+    request_hash = AgentExecutionRequestHash("b" * 64)
+    attempt = AgentAttempt(
+        AgentAttemptId.for_execution(execution_id, request_hash, ordinal),
+        execution_id,
+        request_hash,
+        AgentExecutorOperationalIdentity("seed-executor"),
+        run,
+        revision_hash,
+        node_id,
+        ordinal,
+        AgentAttemptState.PREPARED,
+        0,
+    )
+    with runtime.engine.begin() as connection:
+        connection.execute(
+            agent_attempts.insert().values(
+                attempt_id=attempt.attempt_id.value,
+                node_execution_id=attempt.node_execution_id.value,
+                request_hash=attempt.request_hash.value,
+                executor_operational_identity=(
+                    attempt.executor_operational_identity.value
+                ),
+                run_id=attempt.run_id.value,
+                workflow_revision_hash=attempt.workflow_revision_hash.value,
+                node_id=attempt.node_id,
+                attempt_ordinal=attempt.attempt_ordinal,
+                state=attempt.state.value,
+                state_version=attempt.state_version,
+                process_phase=attempt.process_phase.value,
+                runner_evidence_acceptance_phase=(
+                    attempt.runner_evidence_acceptance_phase.value
+                ),
+            )
+        )
+    return driving_workflow_id(attempt)
 
 
 def _seed_workflow_status(runtime: DbosRuntime, workflow_id: str, status: str) -> None:
-    """Leave the node workflow in the durable status a crash or a finish leaves.
+    """Leave a workflow in the durable status a crash or a finish leaves.
 
     The durable runtime owns this table; a test that wants to ask about a
     workflow left mid-flight by a crash cannot reach that status by running one.
@@ -260,21 +307,23 @@ def _seed_workflow_status(runtime: DbosRuntime, workflow_id: str, status: str) -
         )
 
 
-def _completed_run_with_redemption_workflow(
-    runtime: DbosRuntime, run: RunId, workflow_status: str
+def _completed_run_owing_redemption(
+    runtime: DbosRuntime, run: RunId, ordinal: int, workflow_status: str
 ) -> None:
-    """A COMPLETED grant run whose sink-node redemption workflow is `workflow_status`.
+    """A COMPLETED grant run whose sink-node attempt is driven by `workflow_status`.
 
     The shape a crash in the post-COMPLETED, pre-redemption window leaves: the
-    sink node's workflow committed the run COMPLETED and only afterwards redeems
-    the grant, so the run reports success while its node workflow is still
-    recoverable. `workflow_status` is the durable difference between a redemption
-    still owed (recoverable) and one already finished.
+    workflow driving the sink node's attempt committed the run COMPLETED and only
+    afterwards redeems the grant, so the run reports success while that workflow
+    is still recoverable. `ordinal` selects which driving workflow owes it -- the
+    node workflow of the original attempt, or the replacement workflow of one that
+    was cancelled and replaced -- and `workflow_status` is the durable difference
+    between a redemption still owed (recoverable) and one already finished.
     """
     _start(runtime, run, granted=True, proves_absence=True)
-    node_workflow_id = _current_node_workflow_id(runtime, run)
+    driving_id = _seed_current_node_attempt(runtime, run, ordinal)
     _complete_run(runtime, run)
-    _seed_workflow_status(runtime, node_workflow_id, workflow_status)
+    _seed_workflow_status(runtime, driving_id, workflow_status)
 
 
 def test_live_github_startup_refuses_a_completed_run_before_its_redemption_runs(
@@ -285,7 +334,7 @@ def test_live_github_startup_refuses_a_completed_run_before_its_redemption_runs(
     # its node workflow is still recoverable. Recovery on a live-GitHub restart
     # would resume it and end the run ERROR after it had reported success, so the
     # start refuses it even though its run state is already terminal.
-    _completed_run_with_redemption_workflow(runtime, RUN, "PENDING")
+    _completed_run_owing_redemption(runtime, RUN, AGENT_ATTEMPT_ORDINAL, "PENDING")
 
     with pytest.raises(LiveGitHubOpenPrRunPending) as refusal:
         _refuse_pending_agent_open_pr_runs(runtime)
@@ -296,6 +345,35 @@ def test_live_github_startup_refuses_a_completed_run_before_its_redemption_runs(
 def test_live_github_startup_serves_when_the_completed_redemption_workflow_finished(
     runtime: DbosRuntime,
 ) -> None:
-    _completed_run_with_redemption_workflow(runtime, RUN, "SUCCESS")
+    _completed_run_owing_redemption(runtime, RUN, AGENT_ATTEMPT_ORDINAL, "SUCCESS")
+
+    _refuse_pending_agent_open_pr_runs(runtime)
+
+
+def test_live_github_startup_refuses_a_completed_run_before_its_replacement_redeems(
+    runtime: DbosRuntime,
+) -> None:
+    # The last window of the same lie (`#430`): the sink attempt was cancelled with
+    # a replacement, the replacement succeeded and committed the run COMPLETED, then
+    # the process crashed before the replacement workflow redeemed the grant. That
+    # replacement workflow -- not the node workflow -- is the one still driving the
+    # attempt, so a live-GitHub restart would resume it and end the run ERROR after
+    # it reported success unless the start refuses it here too.
+    _completed_run_owing_redemption(
+        runtime, RUN, REPLACEMENT_AGENT_ATTEMPT_ORDINAL, "PENDING"
+    )
+
+    with pytest.raises(LiveGitHubOpenPrRunPending) as refusal:
+        _refuse_pending_agent_open_pr_runs(runtime)
+
+    assert RUN.value in str(refusal.value)
+
+
+def test_live_github_startup_serves_when_the_completed_replacement_workflow_finished(
+    runtime: DbosRuntime,
+) -> None:
+    _completed_run_owing_redemption(
+        runtime, RUN, REPLACEMENT_AGENT_ATTEMPT_ORDINAL, "SUCCESS"
+    )
 
     _refuse_pending_agent_open_pr_runs(runtime)

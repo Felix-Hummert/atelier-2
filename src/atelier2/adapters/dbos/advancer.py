@@ -5,6 +5,7 @@ from typing import Any
 
 import sqlalchemy as sa
 
+from atelier2.adapters.dbos.agent_attempt_store import attempt_from_record
 from atelier2.adapters.dbos.effect_store import (
     commit_resolution,
     encode_readback,
@@ -13,12 +14,13 @@ from atelier2.adapters.dbos.effect_store import (
 )
 from atelier2.adapters.dbos.run_transitions import load_graph, load_run
 from atelier2.adapters.dbos.schema import (
+    agent_attempts,
     effect_intents,
     published_revisions,
     run_events,
     runs,
 )
-from atelier2.adapters.dbos.workflow_ids import node_workflow_id_for
+from atelier2.adapters.dbos.workflow_ids import driving_workflow_id
 from atelier2.contracts.effects import (
     CanonicalRequest,
     EffectAdapterBinding,
@@ -275,10 +277,10 @@ def first_agent_platform_effect_node(
 
 
 # DBOS owns this table and these tokens; this module only reads them, to answer
-# whether the durable node workflow that would re-run an agent open-pr
-# redemption is still one recovery will resume. `atelier2.adapters.dbos`'s other
-# readers of `workflow_status` each keep their own narrow copy for the same
-# reason -- a shared owner is not a widening either file's scope invites today.
+# whether a workflow that would re-run an agent open-pr redemption is still one
+# recovery will resume. `atelier2.adapters.dbos`'s other readers of
+# `workflow_status` each keep their own narrow copy for the same reason -- a
+# shared owner is not a widening either file's scope invites today.
 _dbos_workflow_status = sa.table(
     "workflow_status",
     sa.column("workflow_uuid"),
@@ -301,12 +303,14 @@ def agent_open_pr_runs_pending_live_redemption(engine: sa.Engine) -> tuple[RunId
     startup can refuse them.
 
     A run still owes that redemption unless it has durably finished it. The
-    redemption runs inside the sink node's own durable workflow, *after* that
-    workflow committed the run COMPLETED, so blocking on the run's state alone
-    misses the crash window between the two durable steps: a COMPLETED run whose
-    node workflow is still recoverable has not redeemed yet. `_still_owes_live_redemption`
-    is the predicate that catches both the in-flight run and that window while
-    letting a run whose node workflow has already finished serve.
+    redemption runs inside whichever workflow still drives an attempt of the sink
+    node -- the node workflow of the original attempt, or the replacement workflow
+    of one that was cancelled and replaced -- *after* that workflow committed the
+    run COMPLETED, so blocking on the run's state alone misses the crash window
+    between the two durable steps: a COMPLETED run one of whose sink-node attempts
+    is still driven has not redeemed yet. `_still_owes_live_redemption` is the
+    predicate that catches both the in-flight run and that window while letting a
+    run whose sink-node attempts have all finished driving serve.
     """
     with engine.connect() as connection:
         blocking: list[RunId] = []
@@ -335,42 +339,56 @@ def _still_owes_live_redemption(connection: Any, record: Mapping[Any, Any]) -> b
 
     A non-terminal run is still advancing -- or parked at input -- toward that
     redemption. A terminal run has committed its ending, but the redemption is
-    the last thing the sink node's durable workflow does after committing
-    COMPLETED; a crash between those two durable steps leaves that workflow
-    recoverable and the redemption still owed. A terminal run whose current-node
-    workflow has already finished redeemed once under the absence-proving adapter
-    and owes nothing more, so it must not block a later live-GitHub start.
+    the last thing the driving workflow of a sink-node attempt does after
+    committing COMPLETED; a crash between those two durable steps leaves that
+    workflow recoverable and the redemption still owed. A terminal run all of
+    whose sink-node attempts have finished driving redeemed once under the
+    absence-proving adapter and owes nothing more, so it must not block a later
+    live-GitHub start.
     """
 
     if RunState(str(record["state"])) not in TERMINAL_RUN_STATES:
         return True
-    return _current_node_workflow_recoverable(connection, record)
+    return _current_node_attempt_still_driving(connection, record)
 
 
-def _current_node_workflow_recoverable(
+def _current_node_attempt_still_driving(
     connection: Any, record: Mapping[Any, Any]
 ) -> bool:
-    """Whether the run's current-node durable workflow is one recovery will resume.
+    """Whether any attempt of the run's current node is still owed its next move.
 
     A run reaching COMPLETED leaves its current node at the sink node that
-    completed it, so the current-node workflow is exactly the one that owes the
-    post-COMPLETED redemption. Deriving its id here reads the same
-    `node_workflow_id_for` `start_node` mints, so a recoverable status names the
-    real pending workflow rather than a guess.
+    completed it, and the post-COMPLETED redemption runs inside whichever workflow
+    still drives one of that node's attempts. `driving_workflow_id` is the one
+    owner of that mapping -- the node workflow for the original attempt, the
+    replacement workflow for one that was cancelled and replaced -- so asking it
+    for every attempt of the node covers both crash windows without enumerating
+    either workflow form here. A recoverable status under any of those ids names a
+    redemption recovery would still resume.
     """
 
-    node_workflow_id = node_workflow_id_for(
-        NodeExecutionId.for_node(
-            RunId(str(record["run_id"])),
-            WorkflowRevisionHash(str(record["revision_hash"])),
-            str(record["current_node_id"]),
-            int(record["current_round_ordinal"]),
-        )
+    execution_id = NodeExecutionId.for_node(
+        RunId(str(record["run_id"])),
+        WorkflowRevisionHash(str(record["revision_hash"])),
+        str(record["current_node_id"]),
+        int(record["current_round_ordinal"]),
     )
+    driving_ids = [
+        driving_workflow_id(attempt_from_record(attempt_record))
+        for attempt_record in connection.execute(
+            sa.select(agent_attempts).where(
+                agent_attempts.c.node_execution_id == execution_id.value
+            )
+        )
+        .mappings()
+        .all()
+    ]
+    if not driving_ids:
+        return False
     found = connection.scalar(
         sa.select(_dbos_workflow_status.c.workflow_uuid)
         .where(
-            _dbos_workflow_status.c.workflow_uuid == node_workflow_id,
+            _dbos_workflow_status.c.workflow_uuid.in_(driving_ids),
             _dbos_workflow_status.c.status.in_(_RECOVERABLE_WORKFLOW_STATUSES),
         )
         .limit(1)
