@@ -29,7 +29,12 @@ from atelier2.contracts.catalog_v3 import (
 )
 from atelier2.contracts.host_configuration import (
     MAXIMUM_OCCUPANCY_BINDINGS,
+    MAXIMUM_PROJECT_ID_CHARACTERS,
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
+)
+from atelier2.contracts.queue_projection import (
+    MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
+    MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
 )
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
@@ -75,6 +80,27 @@ class AdmitCatalogMemberRequestResource(ApiModel):
     workflow_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
     actor: str = Field(min_length=1, max_length=MAXIMUM_CATALOG_ACTOR_CHARACTERS)
     activated_at: str = Field(pattern=CATALOG_ACTIVATED_AT_PATTERN)
+
+
+class AdmitQueueItemRequestResource(ApiModel):
+    """Admit one observed work item into the queue under one workflow binding.
+
+    The item is named by its project and its tracker reference, the pair the
+    core derives one durable identity from; the caller never states that id.
+    `expected_revision` is the revision the caller inspected, so a stale
+    admission is refused rather than silently overwriting a decision it never
+    saw -- a freshly observed item is at revision 0.
+    """
+
+    project_id: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_ID_CHARACTERS)
+    tracker_item_reference: str = Field(
+        min_length=1, max_length=MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
+    )
+    workflow_lineage_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    rationale: str = Field(
+        min_length=1, max_length=MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS
+    )
+    expected_revision: int = Field(ge=0, le=MAX_SIGNED_INT64)
 
 
 class PublishAuthProfileRevisionRequestResource(ApiModel):
@@ -191,3 +217,20 @@ class CancelAgentAttemptRequestResource(ApiModel):
     command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     expected_attempt_state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
     replacement: Literal["NONE", "ONE"]
+
+
+class CancelRunRequestResource(ApiModel):
+    """One operator's confirmed V3 run-cancel, in the words #439 D2 settled.
+
+    The client sends only the `idempotency_key` it repeats on retry; the durable
+    command id is minted server-side into the reserved run-cancel namespace, so a
+    command outside it is unrepresentable. `expected_node_execution_id` is D2's
+    fence: it binds run, revision, node and declared-loop round in the one value
+    the store recomputes rather than trusts, and the client writes back exactly
+    the `cancellation.target_node_execution_id` the run resource just served it.
+    """
+
+    idempotency_key: str = Field(
+        min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS
+    )
+    expected_node_execution_id: str = Field(pattern=SHA256_HASH_PATTERN)

@@ -23,6 +23,7 @@ from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
 from atelier2.adapters.dbos.queries import DbosQueries
+from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import (
@@ -35,12 +36,15 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.dbos.webhook_delivery import DbosWebhookDeliveryPublisher
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
+from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
 from atelier2.adapters.grok_subscription import (
     GrokSubscriptionExecutorFactory,
     GrokSubscriptionSettings,
     GrokWorkspaceToolExecutorFactory,
 )
+from atelier2.adapters.http_webhook_transport import open_webhook_transport
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
@@ -60,7 +64,14 @@ from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.pages import PageLimit
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT
 from atelier2.host.logging import configure_process_logging
+from atelier2.host.webhook_delivery import (
+    WebhookDeliveryLoop,
+    WebhookDeliverySettings,
+    resolve_signing_key,
+    webhook_delivery_lifespan,
+)
 from atelier2.ports.agent_executions import (
+    AgentExecutorCarrier,
     AgentExecutorFactoryV2,
     AgentExecutorRegistration,
 )
@@ -210,6 +221,25 @@ class HostSettings:
     grok_workspace_tools_start_refusal: str | None = None
     codex_subscription: CodexSubscriptionSettings | None = None
     codex_start_refusal: str | None = None
+    # The Runner-lease deployment (`#540` C-3.6): declared together or not at
+    # all -- `DbosRuntimeSettings.__post_init__`, reached through
+    # `runtime_settings()` below, owns that refusal so it stays one owner
+    # rather than a second copy of the same rule here. `source_commit` above
+    # doubles as the manifest's own provenance fact once this deployment is
+    # declared; it is not repeated as a seventh flag.
+    runner_lease_root: Path | None = None
+    runner_image: str | None = None
+    runner_image_digest: str | None = None
+    runner_console_container: str | None = None
+    runner_core_identity_directory: Path | None = None
+    runner_accept_timeout_seconds: float | None = None
+    # The cross-project attention feed's outbound delivery (`#433` phase 2):
+    # declared all-or-nothing by `WebhookDeliverySettings`, which owns the URL
+    # and the signing-key file path. `None` serves the API with no delivery
+    # loop; a value starts the first lifespan background task in
+    # `compose_application`. Not the project-scoped configuration channel
+    # (`#425`), because the attention page is project-wide.
+    webhook: WebhookDeliverySettings | None = None
 
     @property
     def billed_providers(self) -> tuple[str, ...]:
@@ -241,6 +271,15 @@ class HostSettings:
             bootstrap_project_root=self.project_root,
             agent_termination_grace_seconds=self.agent_termination_grace_seconds,
             sqlite_lock_timeout_seconds=self.sqlite_lock_timeout_seconds,
+            runner_lease_root=self.runner_lease_root,
+            runner_image=self.runner_image,
+            runner_image_digest=self.runner_image_digest,
+            runner_console_container=self.runner_console_container,
+            runner_core_identity_directory=self.runner_core_identity_directory,
+            runner_accept_timeout_seconds=self.runner_accept_timeout_seconds,
+            runner_lease_source_commit=(
+                self.source_commit if self.runner_lease_root is not None else None
+            ),
         )
 
     def __post_init__(self) -> None:
@@ -250,6 +289,16 @@ class HostSettings:
         object.__setattr__(self, "database_path", database_path)
         object.__setattr__(self, "effect_store_path", effect_store_path)
         object.__setattr__(self, "frontend_dist", frontend_dist)
+        if self.runner_lease_root is not None:
+            object.__setattr__(
+                self, "runner_lease_root", self.runner_lease_root.resolve()
+            )
+        if self.runner_core_identity_directory is not None:
+            object.__setattr__(
+                self,
+                "runner_core_identity_directory",
+                self.runner_core_identity_directory.resolve(),
+            )
         if database_path == effect_store_path:
             raise ValueError("durable database and effect store must be distinct")
         if self.project_root is not None and self.project_id is None:
@@ -423,6 +472,27 @@ def _subscription_registration(
     return AgentExecutorRegistration.startable(factory)
 
 
+def _runner_lease_executor_registrations(
+    settings: HostSettings,
+) -> tuple[AgentExecutorRegistration, ...]:
+    """The fake-free candidate as this deployment's one `RUNNER_LEASE` offer.
+
+    `#540` C-3.6's slice: only the fixed fake-free candidate is served this
+    way, and only once the whole Runner-lease deployment is declared
+    (`DbosRuntimeSettings.__post_init__`, reached through
+    `runtime_settings()`, refuses a partial declaration by name). Real
+    providers over a Runner lease wait on `#15` and B-3.
+    """
+
+    if settings.runner_lease_root is None:
+        return ()
+    return (
+        AgentExecutorRegistration.startable(
+            FreeRunnerExecutorFactory(), AgentExecutorCarrier.RUNNER_LEASE
+        ),
+    )
+
+
 def _log_unstartable_executors(settings: HostSettings) -> None:
     logger = logging.getLogger("atelier2")
     seen: set[str] = set()
@@ -439,7 +509,10 @@ def _log_unstartable_executors(settings: HostSettings) -> None:
 
 
 def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
-    subscription_executors = _subscription_executor_registrations(settings)
+    subscription_executors = (
+        *_subscription_executor_registrations(settings),
+        *_runner_lease_executor_registrations(settings),
+    )
     runtime = DbosRuntime(
         settings.runtime_settings(),
         LoopbackEffectAdapterFactory(
@@ -456,9 +529,27 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
         # construction rather than by two readings agreeing today.
         limits = settings.limits
         queries = DbosQueries(runtime.engine, durable_projection_limit(limits))
+        webhook = settings.webhook
+        if webhook is not None:
+            # The signing key is read once, here, and lives only in the loop
+            # that holds it (ADR 0009 §6). A key file that will not resolve
+            # fails the whole start rather than serving with delivery quietly
+            # off.
+            signing_key = resolve_signing_key(webhook.signing_key_path)
+            transport = open_webhook_transport(webhook.target_url)
+            delivery_loop = WebhookDeliveryLoop(
+                DbosWebhookDeliveryPublisher(runtime.engine),
+                queries,
+                transport,
+                signing_key,
+            )
+            lifespan = webhook_delivery_lifespan(delivery_loop, transport)
+        else:
+            lifespan = None
         app = create_app(
             source_commit=settings.source_commit,
             source_tree=settings.source_tree,
+            lifespan=lifespan,
             ports=ApiPorts(
                 workflow_revision_publisher=DbosWorkflowRevisionPublisher(
                     runtime.engine
@@ -489,6 +580,7 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
                 published_revision_registry=DbosCatalogStore(runtime.engine),
                 artifact_publisher=DbosArtifactStore(runtime.engine),
                 host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
+                queue_projection=DbosQueueProjectionStore(runtime.engine),
             ),
             limits=limits,
             event_poll_backoff=settings.event_poll_backoff,

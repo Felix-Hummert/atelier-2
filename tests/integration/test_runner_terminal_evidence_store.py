@@ -137,7 +137,7 @@ def _bound(
     runtime.initialize_storage()
     request = attempt_request(runtime, run_name)
     execution = agent_attempt_execution(request)
-    store = DbosAgentAttemptStore(runtime.engine)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
     store.prepare(execution)
     binding = _binding(execution, generation)
     store.bind_runner_generation(execution, binding)
@@ -218,7 +218,7 @@ def _v3_armed(
         AgentAttemptId.for_execution(request.node_execution_id, request.request_hash),
         1,
     )
-    store = DbosAgentAttemptStore(runtime.engine)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
     store.prepare(execution)
     binding = _binding(execution)
     store.bind_runner_generation(execution, binding)

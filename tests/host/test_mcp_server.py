@@ -29,6 +29,7 @@ from atelier2.api.wire.resources import (
     ArtifactResource,
     CatalogNameResolutionResource,
     NodeRailResource,
+    RunCancellabilityResource,
     RunResourceV3,
     VersionedWorkflowRevisionPageResource,
     WorkflowRevisionSummaryResourceV2,
@@ -299,6 +300,11 @@ def started_run() -> RunResourceV3:
             NodeRailResource(
                 node_id="implement", state=NodeState.WORKING, attempt=None
             ),
+        ),
+        cancellation=RunCancellabilityResource(
+            cancellable=False,
+            reason="between-nodes",
+            target_node_execution_id=None,
         ),
         terminal_hash=None,
         latest_event_cursor=None,

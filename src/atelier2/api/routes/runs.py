@@ -35,6 +35,7 @@ from atelier2.api.wire.requests import (
     AnyStartRunRequestResource,
     ArtifactOrderResource,
     CancelAgentAttemptRequestResource,
+    CancelRunRequestResource,
     InlineOrderResource,
     ReconcileRunRequestResource,
     StartRunRequestResourceV2,
@@ -69,6 +70,15 @@ from atelier2.application.cancel_agent_attempt import (
     CancellationStale,
     CommandConflict,
     ReplacementNotAllowed,
+)
+from atelier2.application.cancel_run import (
+    CancelAccepted,
+    CancelCommandConflict,
+    CancelNotCancellable,
+    CancelOvertakenBySuccess,
+    CancelRunMissing,
+    CancelTerminalRetry,
+    MalformedIdempotencyKey,
 )
 from atelier2.application.read_runs import (
     NodeDetailRead,
@@ -125,6 +135,7 @@ from atelier2.contracts.effects import (
     ReconcileActor,
     ReconcileCommandId,
 )
+from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
 from atelier2.contracts.run_cancellations import is_operator_run_cancel
 from atelier2.contracts.runs import RunId, RunState
@@ -527,6 +538,69 @@ async def reconcile_run_route(
             raise ApiProblem("temporarily-unavailable", detail)
         case ProjectionTooLarge():
             raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
+    return resource_response(await _run_resource_of(run_id, context), status)
+
+
+@router.post(
+    API_PREFIX + "/runs/{public_ref}/cancellations",
+    response_model=AnyRunResource,
+    status_code=HTTPStatus.ACCEPTED,
+    responses={HTTPStatus.OK: {"model": AnyRunResource}},
+)
+async def cancel_run_route(
+    public_ref: str,
+    body: CancelRunRequestResource,
+    context: ApiContext = api_context_dependency,
+    _media: None = Depends(require_json_media_dependency),
+) -> JSONResponse:
+    """Cancel one honestly cancellable V3 run under one operator command.
+
+    The client carries only its `idempotency_key`; the durable command id is
+    minted server-side into the reserved run-cancel namespace, so no request
+    field can force or bypass it. `expected_node_execution_id` is #439 D2's
+    fence, so a confirmation read in one loop round cannot stop another round's
+    attempt.
+    """
+    run_id = decode_public_reference(public_ref, context.limits)
+    expected_node_execution_id = NodeExecutionId(body.expected_node_execution_id)
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.cancel_run(
+            run_id, body.idempotency_key, expected_node_execution_id
+        ),
+    )
+    match result:
+        case CancelAccepted():
+            status = HTTPStatus.ACCEPTED
+        case CancelTerminalRetry():
+            status = HTTPStatus.OK
+        case CancelOvertakenBySuccess():
+            raise ApiProblem("run-cancellation-overtaken-by-success")
+        case CancelNotCancellable(reason):
+            raise ApiProblem(
+                "run-not-cancellable",
+                detail=f"This run cannot be cancelled right now: {reason}.",
+            )
+        case CancelCommandConflict():
+            raise ApiProblem("run-cancellation-command-conflict")
+        case CancelRunMissing():
+            raise ApiProblem("run-not-found")
+        case MalformedIdempotencyKey():
+            raise ApiProblem(
+                "invalid-request",
+                invalid_fields=(
+                    InvalidFieldResource(
+                        path="body/idempotency_key",
+                        reason="no run-cancel command can be minted from this key",
+                    ),
+                ),
+            )
+        case WriteUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:

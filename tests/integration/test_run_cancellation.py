@@ -31,6 +31,11 @@ from atelier2.adapters.dbos.schema import node_receipts_v3, run_events, runs
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.application.cancel_run import (
+    CancelAccepted,
+    CancelTerminalRetry,
+    cancel_run_result,
+)
 from atelier2.contracts.agent_attempts import (
     AgentAttemptCancellationDisposition,
     AgentAttemptId,
@@ -60,7 +65,10 @@ from atelier2.contracts.node_records_v3 import (
     read_stored_node_receipt_reason,
 )
 from atelier2.contracts.run_bindings import RunV3
-from atelier2.contracts.run_cancellations import CancelRunRequest
+from atelier2.contracts.run_cancellations import (
+    CancelRunRequest,
+    is_operator_run_cancel,
+)
 from atelier2.contracts.runs import RunId, RunState
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
@@ -394,6 +402,72 @@ def test_terminal_retry_is_canonical_and_writes_no_new_event(tmp_path: Path) -> 
         # #439 P3: the attestation that ended the attempt already lifted the
         # run, in the same transaction -- the retry names that same ending.
         assert canonical_run.state is RunState.CANCELLED
+        assert _cancel_event_kinds(runtime.engine) == [
+            RunEventKind.AGENT_CANCEL_REQUESTED.value,
+            RunEventKind.AGENT_CANCELLED.value,
+        ]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.proves("a-v3-run-is-cancelled-once")
+def test_a_v3_run_is_cancelled_once_through_the_route_application_path(
+    tmp_path: Path,
+) -> None:
+    """#439 P4: the run the operator cancel route ends, ended exactly once.
+
+    Driven through `cancel_run_result` -- the exact application call the HTTP
+    route wires, with the real store -- so this proves the durable slice the
+    route delivers rather than the thin shell. The route hands only the
+    operator's opaque idempotency key; the durable command id is minted inside
+    the reserved namespace, the attempt's cleanup lifts the run to `CANCELLED`,
+    and a retry of the same key resolves to the same command and the same
+    canonical run without minting a second cancel or writing a second event.
+    """
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(attempt_request(runtime, "run-cancel/once"))
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        store.prepare(execution)
+
+        accepted = cancel_run_result(
+            execution.request.run_id,
+            "operator-once-1",
+            execution.request.node_execution_id,
+            store,
+        )
+        assert isinstance(accepted, CancelAccepted)
+        cancellation = accepted.attempt.cancellation
+        assert cancellation is not None
+        assert is_operator_run_cancel(cancellation.command_id)
+
+        cleanup_request = CancelAgentAttemptRequest(
+            execution.request.run_id,
+            accepted.attempt.attempt_id,
+            cancellation.command_id,
+            cancellation.expected_attempt_state_version,
+            cancellation.replacement,
+        )
+        terminal = store.attest_cancellation_cleanup(
+            cleanup_request,
+            AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
+            None,
+            None,
+        )
+        assert terminal.attempt.state is AgentAttemptState.CANCELLED
+
+        retry = cancel_run_result(
+            execution.request.run_id,
+            "operator-once-1",
+            execution.request.node_execution_id,
+            store,
+        )
+
+        assert isinstance(retry, CancelTerminalRetry)
+        assert retry.run.state is RunState.CANCELLED
         assert _cancel_event_kinds(runtime.engine) == [
             RunEventKind.AGENT_CANCEL_REQUESTED.value,
             RunEventKind.AGENT_CANCELLED.value,

@@ -8,6 +8,7 @@ from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
+from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntimeSettings, create_canonical_engine
@@ -45,6 +46,7 @@ app = create_app(
         DbosCatalogStore(engine),
         DbosArtifactStore(engine),
         DbosHostConfigurationChannel(engine),
+        DbosQueueProjectionStore(engine),
     ),
     limits=api_limits(event_page_size=2),
     event_poll_backoff=event_poll_backoff(),

@@ -35,6 +35,22 @@ state machine. Cancellation returns `202` while cleanup is pending and `200` for
 an exact terminal retry. Stale, terminal, non-current, conflicting-command, and
 forbidden-replacement requests are distinct closed problems.
 
+A V3 run is cancelled through `POST /runs/{public_ref}/cancellations`, distinct
+from the attempt door above. Its body carries only the operator's opaque
+`idempotency_key` and D2's `expected_node_execution_id`; the durable command id
+is minted server-side into a reserved namespace, so no request field can name a
+command or force that namespace. It returns `202` while the run's cleanup is
+pending and `200` for an exact terminal retry, on the same versioned run
+resource the other doors serve. Beyond the pending/terminal pair it carries a
+third exit the attempt door does not: when a concurrent success ended the
+targeted attempt before the cancel landed, the run kept going, so naming it
+terminal would lie -- that race answers `409
+run-cancellation-overtaken-by-success` rather than a false `200`. A run that is
+not cancellable and a conflicting-command retry are their own distinct closed
+problems (`run-not-cancellable`, `run-cancellation-command-conflict`), and
+whether a run can be cancelled at all is the server's own
+`RunResourceV3.cancellation` predicate, not the cockpit's guess.
+
 A value that crosses from an answer into the next request is named for what it
 identifies, not for where it stands: a workflow's revision hash is
 `workflow_revision_hash` and its format version `workflow_format_version` on

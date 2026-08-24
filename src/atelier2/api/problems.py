@@ -498,6 +498,33 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Reconciliation was rejected",
         "Reload the run before issuing another accountable command.",
     ),
+    "run-not-cancellable": ProblemDefinition(
+        409,
+        "Run is not cancellable",
+        "Reload the run to see where it stands; no live agent this cancel could "
+        "stop is running.",
+    ),
+    "run-cancellation-command-conflict": ProblemDefinition(
+        409,
+        "Run cancellation command conflict",
+        "Use a new idempotency_key or retry the exact original run-cancel command.",
+    ),
+    "run-cancellation-overtaken-by-success": ProblemDefinition(
+        409,
+        "Run cancellation overtaken by success",
+        "The agent finished before this cancel reached it; its result stands and "
+        "the run moved on.",
+    ),
+    "queue-admission-revision-conflict": ProblemDefinition(
+        409,
+        "Queue admission revision conflict",
+        "Reload the queue item and admit it against the revision it now holds.",
+    ),
+    "queue-admission-already-decided": ProblemDefinition(
+        409,
+        "Queue item is already admitted",
+        "This item is already admitted under a different workflow binding or reason.",
+    ),
     "route-not-found": ProblemDefinition(
         404, "Route not found", ROUTE_NOT_FOUND_ACTION + "."
     ),

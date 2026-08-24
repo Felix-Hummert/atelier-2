@@ -25,6 +25,7 @@ from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.run_cancellations import CancelRunRequest
+from atelier2.contracts.run_projections import RunCancellationRefusal
 from atelier2.contracts.runner_terminal_evidence_codec import (
     RunnerTerminalEvidenceRecordCorrupt,
     RunnerTerminalEvidenceRecordMissing,
@@ -204,26 +205,6 @@ type AgentAttemptCancellationResult = (
 )
 
 
-class RunCancellationRefusal(StrEnum):
-    """Why the store's own truth refuses a *new* run-cancel command right now.
-
-    #439's D3 names five reasons a run cannot be cancelled. This is the closed
-    set both sides share: this module's store-truth refusal today, and #439
-    P4's later `RunCancellability` projection, which renders the full
-    predicate -- including the reasons no CAS transaction here ever has to
-    decide because no command was submitted to observe them (`ALREADY_ENDED`
-    of a *specific attempt* the run has already moved past, for instance,
-    collapses into `BETWEEN_NODES` before a fresh command can reach it). One
-    token per reason, never two spellings of the same fact.
-    """
-
-    BETWEEN_NODES = "between-nodes"
-    WAITING_FOR_YOU = "waiting-for-you"
-    NODE_RUNS_NO_AGENT = "node-runs-no-agent"
-    ALREADY_CANCELLING = "already-cancelling"
-    ALREADY_ENDED = "already-ended"
-
-
 @dataclass(frozen=True)
 class RunCancellationAccepted:
     """A genuinely new command moved the run's live attempt to `CANCEL_REQUESTED`."""
@@ -398,6 +379,18 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         process_owner_id: AgentProcessOwnerId | None,
         watchdog_generation_id: WatchdogGenerationId | None,
     ) -> AgentAttemptCancellationAccepted: ...
+
+    def commit_never_launched_cancellation(
+        self, request: CancelAgentAttemptRequest
+    ) -> AgentAttemptCancellationAccepted:
+        """End a runner-lease attempt leased but never launched, under cancel.
+
+        Called only once its caller has *won* the lease withdraw -- the sole
+        proof the attempt never launched. Preserves the runner binding, keeps
+        `runner_invocation_id` NULL, fabricates no evidence, and settles the
+        disposition `NEVER_LAUNCHED`. Idempotent on the durable terminal row.
+        """
+        ...
 
     def mark_cancellation_owner_not_local(
         self, request: CancelAgentAttemptRequest

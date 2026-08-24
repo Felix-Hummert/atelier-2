@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
@@ -51,11 +52,29 @@ class AgentExecutorKey:
     executor_revision: AgentExecutorRevision
 
 
+class AgentExecutorCarrier(StrEnum):
+    """Which authority starts one executor key's process (`#540` C-3.6).
+
+    A registration's own fact, not the factory's: the same executor could in
+    principle be offered either way, and it is the composition root -- never
+    the executor adapter itself -- that decides which authority a served key
+    answers under. `LOCAL_PROCESS` is Serve's own `AgentProcessSupervisor`,
+    the durable runtime's original and still-default carrier; `RUNNER_LEASE`
+    is a per-Attempt Runner container a host launcher establishes from a
+    published lease (`atelier2.ports.runner_leases`), and Serve never spawns
+    or supervises a process for it directly.
+    """
+
+    LOCAL_PROCESS = "local_process"
+    RUNNER_LEASE = "runner_lease"
+
+
 @dataclass(frozen=True)
 class AgentExecutorManifestEntry:
     key: AgentExecutorKey
     operational_identity: AgentExecutorOperationalIdentity
     declared_capabilities: frozenset[AgentExecutionCapability]
+    carrier: AgentExecutorCarrier = AgentExecutorCarrier.LOCAL_PROCESS
 
 
 @dataclass(frozen=True)
@@ -299,23 +318,33 @@ class AgentExecutorRegistration:
     factory: AgentExecutorFactoryV2 | None
 
     @classmethod
-    def startable(cls, factory: AgentExecutorFactoryV2) -> AgentExecutorRegistration:
+    def startable(
+        cls,
+        factory: AgentExecutorFactoryV2,
+        carrier: AgentExecutorCarrier = AgentExecutorCarrier.LOCAL_PROCESS,
+    ) -> AgentExecutorRegistration:
         return cls(
             AgentExecutorManifestEntry(
                 factory.key,
                 factory.operational_identity,
                 frozenset(factory.declared_capabilities),
+                carrier,
             ),
             factory,
         )
 
     @classmethod
-    def unavailable(cls, factory: AgentExecutorFactoryV2) -> AgentExecutorRegistration:
+    def unavailable(
+        cls,
+        factory: AgentExecutorFactoryV2,
+        carrier: AgentExecutorCarrier = AgentExecutorCarrier.LOCAL_PROCESS,
+    ) -> AgentExecutorRegistration:
         return cls(
             AgentExecutorManifestEntry(
                 factory.key,
                 factory.operational_identity,
                 frozenset(factory.declared_capabilities),
+                carrier,
             ),
             None,
         )
@@ -407,6 +436,9 @@ class AgentExecutorRegistry:
         self, key: AgentExecutorKey
     ) -> frozenset[AgentExecutionCapability]:
         return self._by_key[key].manifest_entry.declared_capabilities
+
+    def carrier(self, key: AgentExecutorKey) -> AgentExecutorCarrier:
+        return self._by_key[key].manifest_entry.carrier
 
     def is_startable(
         self, key: AgentExecutorKey, capability: AgentExecutionCapability

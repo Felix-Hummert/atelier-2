@@ -29,6 +29,7 @@ from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
+from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import (
@@ -270,6 +271,7 @@ def api_ports(runtime: DbosRuntime) -> ApiPorts:
         published_revision_registry=DbosCatalogStore(runtime.engine),
         artifact_publisher=DbosArtifactStore(runtime.engine),
         host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
+        queue_projection=DbosQueueProjectionStore(runtime.engine),
     )
 
 
@@ -401,7 +403,8 @@ def test_provider_free_composition_skips_process_supervision(
     try:
         assert runtime.agent_executor_registry.keys == frozenset()
         with pytest.raises(
-            AgentProcessSupervisorUnavailable, match="empty executor registry"
+            AgentProcessSupervisorUnavailable,
+            match="no LOCAL_PROCESS-carried executor key",
         ):
             _ = runtime.agent_process_supervisor
     finally:

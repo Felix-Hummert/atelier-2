@@ -116,6 +116,7 @@ from atelier2.contracts.run_cancellations import (
     RunCancelCommandId,
     is_operator_run_cancel,
 )
+from atelier2.contracts.run_projections import RunCancellationRefusal
 from atelier2.contracts.runs import (
     TERMINAL_RUN_STATES,
     RunId,
@@ -160,7 +161,6 @@ from atelier2.ports.agent_attempts import (
     RunCancellationCommandConflict,
     RunCancellationNotCancellable,
     RunCancellationOvertakenBySuccess,
-    RunCancellationRefusal,
     RunCancellationResult,
     RunCancellationRunMissing,
     RunCancellationTerminalRetry,
@@ -1737,6 +1737,98 @@ class DbosAgentAttemptStore:
         _lift_run_under_operator_cancel(connection, terminal)
         return RunnerTerminalEvidenceCommitted(terminal, evidence_hash)
 
+    def commit_never_launched_cancellation(
+        self, request: CancelAgentAttemptRequest
+    ) -> AgentAttemptCancellationAccepted:
+        """End one leased-but-never-launched runner attempt under operator cancel.
+
+        The only proof this transition ever runs on is a *won* lease withdraw,
+        which its caller (`cancel_runner_attempt`) has already obtained; this
+        write never re-derives it. The terminal row keeps the attempt's runner
+        binding (`runner_manifest_id`/`runner_generation_id` preserved) so it
+        stays legible as a runner attempt, leaves `runner_invocation_id` NULL
+        and fabricates no evidence -- acceptance phase stays `NONE`, the
+        terminal evidence hash stays NULL -- and records disposition
+        `NEVER_LAUNCHED` on the redrive axis, with `process_phase` `NONE`
+        because a runner-bound row may never carry `CLEANUP_ATTESTED`.
+
+        Idempotent: a re-run after the commit already landed reads the durable
+        terminal row and returns it without a second CAS, event or run lift,
+        exactly like `attest_cancellation_cleanup`'s own terminal short-circuit.
+        """
+
+        with canonical_write_transaction(self._engine) as connection:
+            attempt = _load_attempt(connection, request.attempt_id)
+            if attempt.runner_manifest_id is None:
+                raise RunTransitionConflict(
+                    "never-launched cancellation requires a runner-bound attempt"
+                )
+            cancellation = attempt.cancellation
+            if cancellation is None or not cancellation.matches(request):
+                raise RunTransitionConflict(
+                    "never-launched cancel differs from its cancellation command"
+                )
+            if attempt.state in {
+                AgentAttemptState.CANCELLED,
+                AgentAttemptState.INTERRUPTED,
+            }:
+                if (
+                    cancellation.disposition
+                    is not AgentAttemptCancellationDisposition.NEVER_LAUNCHED
+                ):
+                    raise RunTransitionConflict(
+                        "never-launched cancel retry differs from durable disposition"
+                    )
+                return AgentAttemptCancellationAccepted(
+                    attempt,
+                    True,
+                    self._replacement_attempt_id(connection, attempt),
+                )
+            if attempt.state is not AgentAttemptState.CANCEL_REQUESTED:
+                raise RunTransitionConflict(
+                    "only a requested cancellation can commit never-launched"
+                )
+            if attempt.runner_invocation_id is not None:
+                raise RunTransitionConflict(
+                    "a launched runner attempt cannot commit never-launched"
+                )
+            updated = connection.execute(
+                agent_attempts.update()
+                .where(
+                    agent_attempts.c.attempt_id == attempt.attempt_id.value,
+                    agent_attempts.c.state == AgentAttemptState.CANCEL_REQUESTED.value,
+                    agent_attempts.c.state_version == attempt.state_version,
+                    agent_attempts.c.cancellation_command_id == request.command_id,
+                    agent_attempts.c.runner_invocation_id.is_(None),
+                )
+                .values(
+                    state=AgentAttemptState.CANCELLED.value,
+                    state_version=attempt.state_version + 1,
+                    redrive_state=AgentAttemptRedriveState.CLEANUP_ATTESTED.value,
+                    cancellation_disposition=(
+                        AgentAttemptCancellationDisposition.NEVER_LAUNCHED.value
+                    ),
+                )
+            )
+            if updated.rowcount != 1:
+                raise RunTransitionConflict(
+                    "never-launched cancellation lost its attempt CAS"
+                )
+            record_attempt_ended(connection, attempt.attempt_id.value)
+            terminal = _load_attempt(connection, attempt.attempt_id)
+            _insert_attempt_event(
+                connection,
+                terminal,
+                RunEventKind.AGENT_CANCELLED,
+                command=terminal.cancellation,
+            )
+            _lift_run_under_operator_cancel(connection, terminal)
+            return AgentAttemptCancellationAccepted(
+                terminal,
+                True,
+                self._replacement_attempt_id(connection, terminal),
+            )
+
     def mark_runner_evidence_acknowledged(
         self,
         execution: AgentAttemptExecution,
@@ -2193,6 +2285,13 @@ class DbosAgentAttemptStore:
         the two callers name that in their own, different vocabularies
         (`Stale` for a client-supplied version; `CommandConflict` for a
         server-resolved one), so the naming stays here.
+
+        Every accepted command -- local-process and runner-lease alike --
+        enqueues the one carrier-aware cancellation workflow in this same
+        transaction. A runner-lease-bound attempt used to return here with
+        nothing enqueued, which left an operator's run-cancel stamped
+        `CANCEL_REQUESTED` with no owner to converge it (#584); the workflow
+        itself now dispatches on the durable carrier.
         """
         workflow_id = cancellation_workflow_id_for(request)
         updated = connection.execute(
@@ -2224,8 +2323,6 @@ class DbosAgentAttemptStore:
             RunEventKind.AGENT_CANCEL_REQUESTED,
             command=accepted.cancellation,
         )
-        if accepted.runner_manifest_id is not None:
-            return accepted
         if self._application_version is None:
             raise RunTransitionConflict(
                 "cancellation submission requires the runtime application version"

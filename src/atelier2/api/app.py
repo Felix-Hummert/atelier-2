@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.types import Lifespan
 
 from atelier2.api.context import (
     ApiContext,
@@ -27,6 +28,7 @@ from atelier2.api.routes import (
     occupancy,
     project_root,
     projects,
+    queue,
     revisions,
     runs,
 )
@@ -35,8 +37,13 @@ from atelier2.application.admit_catalog_member import (
     admit_catalog_member,
     found_catalog_lineage,
 )
+from atelier2.application.admit_queue_item import (
+    admit_queue_item,
+    list_admitted_queue_items,
+)
 from atelier2.application.answer_wait import answer_wait_result
 from atelier2.application.cancel_agent_attempt import cancel_agent_attempt
+from atelier2.application.cancel_run import cancel_run_result
 from atelier2.application.occupancy import (
     get_occupancy_revision,
     publish_occupancy_revision,
@@ -243,6 +250,14 @@ def bound_use_cases(
         cancel_agent_attempt=lambda request: cancel_agent_attempt(
             request, ports.agent_attempt_canceller
         ),
+        cancel_run=lambda run_id, idempotency_key, expected_node_execution_id: (
+            cancel_run_result(
+                run_id,
+                idempotency_key,
+                expected_node_execution_id,
+                ports.agent_attempt_canceller,
+            )
+        ),
         reconcile_run=lambda request: reconcile_run(
             request, ports.run_queries, ports.reconcile_commander
         ),
@@ -277,6 +292,12 @@ def bound_use_cases(
                 )
             )
         ),
+        admit_queue_item=lambda command: admit_queue_item(
+            command, ports.queue_projection
+        ),
+        list_admitted_queue_items=lambda after, limit: list_admitted_queue_items(
+            after, limit, ports.queue_projection
+        ),
     )
 
 
@@ -289,6 +310,7 @@ def create_app(
     event_poll_backoff: EventPollBackoff,
     frontend_dist: Path | None = None,
     served_project_id: ProjectId | None = None,
+    lifespan: Lifespan[FastAPI] | None = None,
 ) -> FastAPI:
     if not source_commit:
         raise ValueError("source_commit must be injected at application construction")
@@ -301,6 +323,7 @@ def create_app(
         openapi_url=openapi_document_path,
         docs_url=None,
         redoc_url=None,
+        lifespan=lifespan,
     )
     install_problem_handlers(
         app,
@@ -359,6 +382,7 @@ def create_app(
     app.include_router(project_root.router)
     app.include_router(runs.router)
     app.include_router(events.router)
+    app.include_router(queue.router)
 
     install_custom_openapi(app)
     return app

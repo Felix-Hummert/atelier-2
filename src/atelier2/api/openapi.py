@@ -84,12 +84,15 @@ ATTENTION_EVENT_PATH = API_PREFIX + "/events"
 CANCELLATION_PATH = (
     API_PREFIX + "/runs/{public_ref}/agent-attempts/{attempt_id}/cancellations"
 )
+RUN_CANCELLATION_PATH = API_PREFIX + "/runs/{public_ref}/cancellations"
 OCCUPANCY_PATH = (
     API_PREFIX + "/projects/{public_project_reference}/occupancy/{lineage_id}"
 )
 PROJECTS_PATH = API_PREFIX + "/projects"
 PROJECT_PATH = PROJECTS_PATH + "/{public_project_reference}"
 PROJECT_ROOT_PATH = PROJECT_PATH + "/root"
+QUEUE_ADMISSIONS_PATH = API_PREFIX + "/queue-admissions"
+QUEUE_ITEMS_PATH = API_PREFIX + "/queue-items"
 
 EVENT_MODELS = (
     AgentCompletedEventResource,
@@ -398,6 +401,18 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
+    (RUN_CANCELLATION_PATH, "post"): (
+        "invalid-public-run-reference",
+        "invalid-request",
+        "unsupported-media-type",
+        "run-not-found",
+        "run-not-cancellable",
+        "run-cancellation-command-conflict",
+        "run-cancellation-overtaken-by-success",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
     (EVENT_PATH, "get"): (
         "invalid-public-run-reference",
         "invalid-event-cursor",
@@ -412,6 +427,21 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (ATTENTION_EVENT_PATH, "get"): (
         "invalid-event-cursor",
         "not-acceptable",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (QUEUE_ADMISSIONS_PATH, "post"): (
+        "invalid-request",
+        "unsupported-media-type",
+        "queue-admission-revision-conflict",
+        "queue-admission-already-decided",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (QUEUE_ITEMS_PATH, "get"): (
+        "invalid-request",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -753,6 +783,7 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
                 "path",
             ),
             (CANCELLATION_PATH, "post", "public_ref", "path"),
+            (RUN_CANCELLATION_PATH, "post", "public_ref", "path"),
             (
                 API_PREFIX + "/runs/{public_ref}/answers",
                 "post",
@@ -820,6 +851,7 @@ def _install_versioned_run_unions(schema: dict[str, Any]) -> None:
         (API_PREFIX + "/runs", "post", ("200", "201")),
         (API_PREFIX + "/runs/{public_ref}", "get", ("200",)),
         (CANCELLATION_PATH, "post", ("200", "202")),
+        (RUN_CANCELLATION_PATH, "post", ("200", "202")),
         (API_PREFIX + "/runs/{public_ref}/answers", "post", ("200", "202")),
         (
             API_PREFIX + "/runs/{public_ref}/reconciliations",

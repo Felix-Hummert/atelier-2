@@ -134,9 +134,34 @@ tombstone; missing, corrupt, oversized and unavailable-ACK outcomes remain
 distinct without inventing evidence. This is proven against a byte-backed test
 Fake and, for the #301-A disposable witness candidate (`src/atelier2/runner/`,
 its adapters, and `application/run_runner_session.py`), a real session codec,
-TLS-authenticated transport, journal, and Landlock-confined child; no deployed
-runtime composes it, and it remains a disposable proof, not a packaged,
-deployed Runner.
+TLS-authenticated transport, journal, and Landlock-confined child; the
+witness itself remains a disposable proof, not a packaged, deployed Runner,
+but Serve can now compose the same real driver as an executor's dispatch
+carrier (`#540` C-3.6, below).
+
+Dispatch names which authority starts one executor key's process (`#540`
+C-3.6): a registration declares itself `LOCAL_PROCESS` or `RUNNER_LEASE`, and
+only a `LOCAL_PROCESS` key needs Serve's own process supervisor, cgroup and
+scratch root — a deployment serving nothing but `RUNNER_LEASE` keys starts
+without any of them. `RUNNER_LEASE` reuses the driver above rather than a
+second one: Serve publishes the lease a host launcher claims
+(`atelier2.adapters.file_runner_leases.FileRunnerLeasePublisher`), drives the
+accepted session to `RELEASED` over the same real transport, and never runs,
+mounts, or supervises a process itself. Exactly one such offer exists today —
+the fixed fake-free candidate — and reaching it needs a `HostSettings`
+construction naming a lease root, Runner image, image digest, console
+container, core identity directory and accept deadline together, refused by
+name if only some are declared; the packaged `atelier2 serve` command line
+does not expose these yet, so this carrier is not reachable from the shipped
+container. At most one `RUNNER_LEASE` Attempt runs at a time per Serve
+process — its Core session listener binds one fixed port — and a second,
+concurrent one waits for the runner slot rather than failing. At every start
+Serve withdraws its own still-open leases and names, in the log only, every
+`RUNNER_LEASE` Attempt no workflow still owes its next move. A `RUNNER_LEASE`
+Attempt a launcher never claims has no way to `CANCELLED` yet, and a Serve
+crash mid-session leaves it durably `LAUNCH_ARMED`/`POSSIBLY_RAN` with no
+product-owned convergence back — both named gaps with their own items rather
+than silently accepted (`#540` Kind #584, Kind #585).
 
 Every attempt is started in a scratch working directory of its own. The operator
 declares one provider-neutral scratch root, and the runtime leases from it a
@@ -619,7 +644,16 @@ live holder adds each identity it emits and resets the set when the second
 advances. Second-precision instants make two waits in one second the normal
 case, so lexicographic `(recorded_at, run_id, seq) > cursor` is not the resume
 rule. Pre-V22 events whose instant is NULL
-stay off the feed rather than inventing a time. A served V2
+stay off the feed rather than inventing a time. An operator who configures a
+webhook target and a signing-key file receives the same `WAITING_INPUT` and
+`AGENT_FAILED` attention events as outbound HTTP POSTs, without a client holding
+the stream: a background delivery loop signs each payload with HMAC-SHA256 over
+its exact bytes, carries the event's `(run_id, event_sequence)` identity for the
+receiver's own dedup, and advances its one durable cursor only after a 2xx — so
+a receiver sees every attention event at least once, and a stuck receiver holds
+the cursor on its event rather than skipping ahead. The signing key is read once
+from its file at startup and never re-read; a webhook declared with only one of
+the two settings fails the start rather than delivering to nowhere. A served V2
 run also names the state of every node of the revision it is bound to, so a reader
 is told where each node stands instead of computing it: one pure function in the
 core derives that rail from the run snapshot, that revision, and the events since,

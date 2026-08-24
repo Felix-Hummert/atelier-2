@@ -49,6 +49,10 @@ from atelier2.contracts.host_configuration import (
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SERVED_PROJECTS,
 )
+from atelier2.contracts.queue_projection import (
+    MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
+    MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
+)
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
 WIRE_MODULES: tuple[ModuleType, ...] = (requests, resources, events)
@@ -108,6 +112,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AuthProfileRevisionResource.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AuthProfileRevisionResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
     "CancelAgentAttemptRequestResource.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "CancelRunRequestResource.idempotency_key": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "CatalogNameResolutionResource.display_name": (
         MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
     ),
@@ -158,6 +163,20 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     ),
     "InvalidFieldResource.path": MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     "InvalidFieldResource.reason": MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
+    "AdmitQueueItemRequestResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "AdmitQueueItemRequestResource.tracker_item_reference": (
+        MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
+    ),
+    "AdmitQueueItemRequestResource.rationale": (
+        MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS
+    ),
+    "AdmittedQueueItemResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "AdmittedQueueItemResource.tracker_item_reference": (
+        MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
+    ),
+    "AdmittedQueueItemResource.rationale": (
+        MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS
+    ),
 }
 
 

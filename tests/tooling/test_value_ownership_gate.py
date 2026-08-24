@@ -86,6 +86,12 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
     "adapters/dbos/runtime.py::_SHUTDOWN_WORKFLOW_COMPLETION_SECONDS": SpelledValue(
         1, "owner with a seam: how long shutdown waits for workflows to finish"
     ),
+    "adapters/dbos/runtime.py::_RUNNER_SESSION_CONNECTION_ATTEMPTS": SpelledValue(
+        1,
+        "stable slice invariant: one connection per Runner-lease Attempt while "
+        "the single fixed Core listener port allows only one at a time; "
+        "reconnect after a mid-session crash is Kind #585 (`#540`)'s job",
+    ),
     "adapters/dbos/workflow.py::CANCELLATION_REDRIVE_SECONDS": SpelledValue(
         1, "owner with a seam: the whole redrive ladder is decided in this one tuple"
     ),
@@ -104,6 +110,18 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
         1,
         "owner with a seam: how often the carrier re-reads a container's own "
         "surface while the deadline its caller stated runs out",
+    ),
+    "adapters/http_webhook_transport.py::DEFAULT_TIMEOUT_SECONDS": SpelledValue(
+        1,
+        "owner with a seam: the webhook edge's per-POST HTTP timeout budget, "
+        "a keyword-only parameter of open_webhook_transport, named once beside "
+        "the client it bounds",
+    ),
+    "host/webhook_delivery.py::DEFAULT_POLL_INTERVAL_SECONDS": SpelledValue(
+        1,
+        "owner with a seam: how often the webhook delivery loop re-reads the "
+        "attention feed while idle, a keyword-only parameter of "
+        "WebhookDeliveryLoop, named once beside the loop it paces",
     ),
     "adapters/agent_processes.py::MAXIMUM_AGENT_CONTROL_REQUEST_ATTEMPTS": SpelledValue(
         1, "owner with a seam: control-frame retry budget, named once"
