@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.types import Lifespan
 
 from atelier2.api.context import (
     ApiContext,
@@ -309,6 +310,7 @@ def create_app(
     event_poll_backoff: EventPollBackoff,
     frontend_dist: Path | None = None,
     served_project_id: ProjectId | None = None,
+    lifespan: Lifespan[FastAPI] | None = None,
 ) -> FastAPI:
     if not source_commit:
         raise ValueError("source_commit must be injected at application construction")
@@ -321,6 +323,7 @@ def create_app(
         openapi_url=openapi_document_path,
         docs_url=None,
         redoc_url=None,
+        lifespan=lifespan,
     )
     install_problem_handlers(
         app,

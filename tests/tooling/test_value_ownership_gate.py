@@ -111,6 +111,18 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
         "owner with a seam: how often the carrier re-reads a container's own "
         "surface while the deadline its caller stated runs out",
     ),
+    "adapters/http_webhook_transport.py::DEFAULT_TIMEOUT_SECONDS": SpelledValue(
+        1,
+        "owner with a seam: the webhook edge's per-POST HTTP timeout budget, "
+        "a keyword-only parameter of open_webhook_transport, named once beside "
+        "the client it bounds",
+    ),
+    "host/webhook_delivery.py::DEFAULT_POLL_INTERVAL_SECONDS": SpelledValue(
+        1,
+        "owner with a seam: how often the webhook delivery loop re-reads the "
+        "attention feed while idle, a keyword-only parameter of "
+        "WebhookDeliveryLoop, named once beside the loop it paces",
+    ),
     "adapters/agent_processes.py::MAXIMUM_AGENT_CONTROL_REQUEST_ATTEMPTS": SpelledValue(
         1, "owner with a seam: control-frame retry budget, named once"
     ),

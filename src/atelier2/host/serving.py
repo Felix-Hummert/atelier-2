@@ -36,6 +36,7 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.dbos.webhook_delivery import DbosWebhookDeliveryPublisher
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
 from atelier2.adapters.grok_subscription import (
@@ -43,6 +44,7 @@ from atelier2.adapters.grok_subscription import (
     GrokSubscriptionSettings,
     GrokWorkspaceToolExecutorFactory,
 )
+from atelier2.adapters.http_webhook_transport import open_webhook_transport
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
@@ -62,6 +64,12 @@ from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.pages import PageLimit
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT
 from atelier2.host.logging import configure_process_logging
+from atelier2.host.webhook_delivery import (
+    WebhookDeliveryLoop,
+    WebhookDeliverySettings,
+    resolve_signing_key,
+    webhook_delivery_lifespan,
+)
 from atelier2.ports.agent_executions import (
     AgentExecutorCarrier,
     AgentExecutorFactoryV2,
@@ -225,6 +233,13 @@ class HostSettings:
     runner_console_container: str | None = None
     runner_core_identity_directory: Path | None = None
     runner_accept_timeout_seconds: float | None = None
+    # The cross-project attention feed's outbound delivery (`#433` phase 2):
+    # declared all-or-nothing by `WebhookDeliverySettings`, which owns the URL
+    # and the signing-key file path. `None` serves the API with no delivery
+    # loop; a value starts the first lifespan background task in
+    # `compose_application`. Not the project-scoped configuration channel
+    # (`#425`), because the attention page is project-wide.
+    webhook: WebhookDeliverySettings | None = None
 
     @property
     def billed_providers(self) -> tuple[str, ...]:
@@ -514,9 +529,27 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
         # construction rather than by two readings agreeing today.
         limits = settings.limits
         queries = DbosQueries(runtime.engine, durable_projection_limit(limits))
+        webhook = settings.webhook
+        if webhook is not None:
+            # The signing key is read once, here, and lives only in the loop
+            # that holds it (ADR 0009 §6). A key file that will not resolve
+            # fails the whole start rather than serving with delivery quietly
+            # off.
+            signing_key = resolve_signing_key(webhook.signing_key_path)
+            transport = open_webhook_transport(webhook.target_url)
+            delivery_loop = WebhookDeliveryLoop(
+                DbosWebhookDeliveryPublisher(runtime.engine),
+                queries,
+                transport,
+                signing_key,
+            )
+            lifespan = webhook_delivery_lifespan(delivery_loop, transport)
+        else:
+            lifespan = None
         app = create_app(
             source_commit=settings.source_commit,
             source_tree=settings.source_tree,
+            lifespan=lifespan,
             ports=ApiPorts(
                 workflow_revision_publisher=DbosWorkflowRevisionPublisher(
                     runtime.engine
