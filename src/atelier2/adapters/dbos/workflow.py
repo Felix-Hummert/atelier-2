@@ -885,11 +885,16 @@ def register_durable_run_workflow(
                 DBOS.start_workflow(durable_effect, logical_key, revision_hash)
             return RunState.STARTED.value
         if isinstance(binding, WaitNodeBinding):
+            wait_round_ordinal = binding.round_ordinal
             datasource.run_tx_step(
                 {"name": WAIT_COMMIT_STEP_NAME},
                 lambda: (
                     commit_waiting_input(
-                        datasource.sql_session(), typed_run_id, typed_revision, node_id
+                        datasource.sql_session(),
+                        typed_run_id,
+                        typed_revision,
+                        node_id,
+                        wait_round_ordinal,
                     ).state.value
                 ),
             )
@@ -1009,13 +1014,28 @@ def register_durable_run_workflow(
         return state
 
     @DBOS.workflow(name=ANSWER_WORKFLOW_NAME, max_recovery_attempts=None)
-    def durable_answer(run_id: str, revision_hash: str, node_id: str) -> str:
+    def durable_answer(
+        run_id: str,
+        revision_hash: str,
+        node_id: str,
+        round_ordinal: int = FIRST_ROUND_ORDINAL,
+    ) -> str:
+        """Apply the answer one execution of one waiting node was given.
+
+        The round has a default because an answer enqueued before a pause could
+        stand in a round named only the node, and the one round such a run could
+        have paused in is the first.
+        """
         typed_run_id = RunId(run_id)
         typed_revision = WorkflowRevisionHash(revision_hash)
 
         def apply() -> list[str]:
             answer = load_wait_answer(
-                datasource.sql_session(), typed_run_id, typed_revision, node_id
+                datasource.sql_session(),
+                typed_run_id,
+                typed_revision,
+                node_id,
+                round_ordinal,
             ).answer
             transition = commit_wait_answered(datasource.sql_session(), answer)
             return [transition.current_node_id, transition.state.value]
@@ -1032,6 +1052,11 @@ def register_durable_run_workflow(
             tuple[str, str],
             tuple(datasource.run_tx_step({"name": ANSWER_COMMIT_STEP_NAME}, apply)),
         )
+        # The heir starts in the round the answered pause stood in. That is the
+        # exact round while a Wait may not stand inside a loop body, because
+        # every node outside a loop stands in the first round; legalising one
+        # there has to widen this step to report the target round, which is a
+        # change to a recorded step's shape and not a change of argument.
         if RunState(state) is RunState.STARTED:
-            start_node(typed_run_id, typed_revision, head)
+            start_node(typed_run_id, typed_revision, head, round_ordinal)
         return state

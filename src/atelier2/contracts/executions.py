@@ -387,18 +387,27 @@ class TransitionSnapshot:
 
 @dataclass(frozen=True)
 class WaitAnswer:
+    """The bytes one person gave to one exact execution of one waiting node.
+
+    The round is what makes it exact. A node a declared loop turns pauses once
+    per round, and an answer that named only the node would let a message typed
+    for round two be applied to round three -- so the round is part of the
+    identity the execution id is checked against, never a label beside it.
+    """
+
     run_id: RunId
     revision_hash: WorkflowRevisionHash
     node_id: str
     node_execution_id: NodeExecutionId
     answer_bytes: bytes
+    round_ordinal: int = FIRST_ROUND_ORDINAL
     answer_hash: Sha256Hash = field(init=False)
 
     def __post_init__(self) -> None:
         if self.node_id == "":
             raise ValueError("answer node id must be nonempty")
         if self.node_execution_id != NodeExecutionId.for_node(
-            self.run_id, self.revision_hash, self.node_id
+            self.run_id, self.revision_hash, self.node_id, self.round_ordinal
         ):
             raise ValueError("answer execution identity differs from its node binding")
         object.__setattr__(self, "answer_hash", Sha256Hash.of(self.answer_bytes))

@@ -95,7 +95,10 @@ def v1_run(node_id: str = NODE_ID, state: RunState = RunState.STARTED) -> Run:
 
 
 def v2_run(
-    document: bytes = V2_DOCUMENT, node_id: str = NODE_ID, role: str = "builder"
+    document: bytes = V2_DOCUMENT,
+    node_id: str = NODE_ID,
+    role: str = "builder",
+    round_ordinal: int = FIRST_ROUND_ORDINAL,
 ) -> RunV2:
     resolved = resolved_agent_binding(role)
     return RunV2(
@@ -109,6 +112,7 @@ def v2_run(
         node_id,
         0,
         0,
+        current_round_ordinal=round_ordinal,
     )
 
 
@@ -173,6 +177,14 @@ def test_each_node_kind_binds_its_own_form_without_a_store(
     run: AnyRun, document: bytes, node_id: str, expected: NodeBinding
 ) -> None:
     assert bound(run, document, node_id) == expected
+
+
+@pytest.mark.proves("a-node-binding-is-decided-where-no-store-can-be-reached")
+def test_a_wait_node_binds_the_round_its_run_is_turning() -> None:
+    """The pause carries the round, so a recovery replays the execution that paused."""
+    run = v2_run(node_id="pause", round_ordinal=A_LATER_ROUND)
+
+    assert bound(run, V2_DOCUMENT, "pause") == WaitNodeBinding(A_LATER_ROUND)
 
 
 @pytest.mark.proves("a-node-binding-is-decided-where-no-store-can-be-reached")
@@ -268,6 +280,7 @@ def test_a_grant_bound_without_a_pinned_source_is_not_a_binding_at_all() -> None
         ),
         ActionNodeBinding(),
         WaitNodeBinding(),
+        WaitNodeBinding(A_LATER_ROUND),
         SubworkflowNodeBinding((2, 3)),
     ),
     ids=[
@@ -278,6 +291,7 @@ def test_a_grant_bound_without_a_pinned_source_is_not_a_binding_at_all() -> None
         "agent-v2 with a turn bound",
         "action",
         "wait",
+        "wait in a later round",
         "subworkflow",
     ],
 )
@@ -369,12 +383,24 @@ def test_the_one_legacy_row_still_means_headless_under_the_first_format() -> Non
     )
 
 
+@pytest.mark.proves(
+    "a-durable-binding-row-is-read-back-only-in-a-shape-this-engine-writes"
+)
+def test_a_wait_row_written_before_rounds_existed_still_means_the_first_round() -> None:
+    """The exact shape written while a pause could stand in one round only."""
+    assert decode_node_binding({"type": "wait"}) == WaitNodeBinding(FIRST_ROUND_ORDINAL)
+
+
 @pytest.mark.parametrize(
     ("encoded", "refusal"),
     (
         ({"type": "agent-v4"}, "names no form this adapter writes"),
         ({"job": "build it"}, "names no form this adapter writes"),
         ({"type": "wait", "answer": 3}, "a key its form does not declare"),
+        (
+            {"type": "wait", "round_ordinal": "2"},
+            "round_ordinal as a value of the wrong type",
+        ),
         ({"type": "subworkflow", "left": 2}, "a key its form declares"),
         ({"type": "subworkflow", "left": 2, "right": "3"}, "value of the wrong type"),
         (written(requested_capability=ABSENT), "contract is only partly encoded"),
@@ -404,6 +430,7 @@ def test_the_one_legacy_row_still_means_headless_under_the_first_format() -> Non
         "unknown form",
         "no form at all",
         "extra key on a closed form",
+        "wait round of the wrong type",
         "missing key",
         "operand of the wrong type",
         "capability without its version",

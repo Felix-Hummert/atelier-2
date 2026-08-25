@@ -26,7 +26,11 @@ from dbos import DBOS
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.names import ANSWER_WORKFLOW_NAME
-from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
+from atelier2.adapters.dbos.run_store import (
+    DbosWaitAnswerer,
+    commit_wait_answered,
+    load_wait_answer,
+)
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import run_events, runs, wait_answers
 from atelier2.adapters.dbos.starter import (
@@ -65,7 +69,12 @@ from atelier2.contracts.executions import (
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_projections import NodeState
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
+    RunId,
+    RunState,
+    WorkflowRevision,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -528,6 +537,76 @@ def test_the_answer_that_carries_a_run_on_reports_it_started_the_next_node(
             NodeExecutionId.for_node(RUN, workflow.revision_hash, "review")
         ),
     )
+
+
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_a_stored_answer_names_the_exact_execution_of_the_node_it_answers(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """The row is keyed by execution and round, not by the node the person saw.
+
+    A node a declared loop turns pauses once per round, so an answer that named
+    only run and node would let a message typed for one round be applied to a
+    later one. What is asserted is the key the store really holds.
+    """
+    started, _ = runtime
+    workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
+    wait_for_state(started, RunState.WAITING_INPUT)
+
+    assert isinstance(answer(started, workflow, ANSWER), AnswerAcceptedPending)
+
+    wait_for_state(started, RunState.COMPLETED)
+    with started.engine.connect() as connection:
+        stored = (
+            connection.execute(
+                sa.select(wait_answers).where(wait_answers.c.run_id == RUN.value)
+            )
+            .mappings()
+            .one()
+        )
+        paused_event = (
+            connection.execute(
+                sa.select(run_events).where(
+                    run_events.c.run_id == RUN.value,
+                    run_events.c.event_kind == RunEventKind.WAIT_ANSWERED.value,
+                )
+            )
+            .mappings()
+            .one()
+        )
+    execution = NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE)
+    assert str(stored["node_execution_id"]) == execution.value
+    assert int(stored["round_ordinal"]) == FIRST_ROUND_ORDINAL
+    assert str(paused_event["node_execution_id"]) == execution.value
+    assert int(paused_event["round_ordinal"]) == FIRST_ROUND_ORDINAL
+
+
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_an_answer_workflow_recovered_without_a_round_still_reaches_its_answer(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """An answer enqueued before rounds existed carries three arguments, not four.
+
+    Such a row recovers into `durable_answer` with no round, so the lookup it
+    makes is the roundless one. It has to reach the same stored answer and
+    commit the same transition, or the hop would strand every answer a
+    predecessor had already accepted.
+    """
+    started, _ = runtime
+    workflow = start_and_launch(started, WAIT_AS_THE_SINK)
+    wait_for_state(started, RunState.WAITING_INPUT)
+    assert isinstance(answer(started, workflow, ANSWER), AnswerAcceptedPending)
+    wait_for_state(started, RunState.COMPLETED)
+
+    with started.engine.connect() as connection:
+        recovered = load_wait_answer(connection, RUN, workflow.revision_hash, WAIT_NODE)
+        replayed = commit_wait_answered(connection, recovered.answer)
+
+    assert recovered.answer.answer_bytes == ANSWER
+    assert recovered.answer.round_ordinal == FIRST_ROUND_ORDINAL
+    assert recovered.state is WaitAnswerState.APPLIED
+    assert replayed.event.event_kind is RunEventKind.WAIT_ANSWERED
+    assert replayed.state is RunState.COMPLETED
 
 
 @pytest.mark.parametrize(

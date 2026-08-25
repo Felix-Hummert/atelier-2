@@ -81,10 +81,19 @@ class ActionNodeBinding:
 
 @dataclass(frozen=True)
 class WaitNodeBinding:
-    """A Wait node: the pause carries no material of its own.
+    """A Wait node: the round the pause belongs to, and nothing else.
 
     Which answer the node admits is decided where the answer arrives, so the two
     document formats have nothing to disagree about here.
+    """
+
+    round_ordinal: int = FIRST_ROUND_ORDINAL
+    """Which round of a declared loop this pause was entered in.
+
+    It travels here for the reason the Agent form's does: the binding is what a
+    recovery replays, and reading the run again at launch would ask a row that
+    may already stand in the next round, so a recovered pause would answer for
+    an execution it never was.
     """
 
 
