@@ -10,10 +10,18 @@ from sqlalchemy.engine import Engine
 
 from atelier2.adapters.dbos.node_records import keep_node_receipt
 from atelier2.adapters.dbos.run_transitions import lift_started_run
-from atelier2.adapters.dbos.schema import agent_attempts, runs
+from atelier2.adapters.dbos.schema import (
+    agent_attempts,
+    effect_intents,
+    reconcile_commands,
+    runs,
+)
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow_ids import (
+    action_continuation_workflow_id_for,
+    effect_workflow_id_for,
     node_workflow_id_for,
+    reconcile_workflow_id_for,
     replacement_workflow_id_for,
 )
 from atelier2.contracts.agent_attempts import (
@@ -24,6 +32,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptReplacement,
     AgentAttemptState,
 )
+from atelier2.contracts.effects import LogicalEffectKey, ReconcileCommandId
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.node_records_v3 import PersistedReceiptDisposition
 from atelier2.contracts.run_cancellations import is_operator_run_cancel
@@ -303,6 +312,18 @@ def _gap_has_recoverable_driver(
 
 
 def _gap_workflow_ids(connection: Any, record: Mapping[Any, Any]) -> tuple[str, ...]:
+    """Every workflow that could still owe this apparent gap its next move.
+
+    A gap is dead only once nothing is going to move the run, so every driver
+    the run can have belongs here, and two families can. The node and
+    replacement workflows of its own nodes are one. Its effect workflows are
+    the other (#645): an Action node prepares its effect and returns, so the
+    node workflow that would name it is already SUCCESS while the effect is
+    still in flight. Leaving that family out reads a healthy V3 run standing
+    on an Action node as a dead gap and ends it FAILED while its effect is
+    still going to be performed.
+    """
+
     run_id = RunId(str(record["run_id"]))
     revision_hash = WorkflowRevisionHash(str(record["revision_hash"]))
     named = {
@@ -333,7 +354,52 @@ def _gap_workflow_ids(connection: Any, record: Mapping[Any, Any]) -> tuple[str, 
             named.add(
                 node_workflow_id_for(NodeExecutionId(str(attempt.node_execution_id)))
             )
+    named.update(_effect_workflow_ids(connection, run_id))
     return tuple(named)
+
+
+def _effect_workflow_ids(connection: Any, run_id: RunId) -> tuple[str, ...]:
+    """Every durable workflow an effect of this run can still be moved by.
+
+    Three workflows carry one effect: `durable_effect` resolves it,
+    `durable_reconciliation` resolves it under an operator command instead, and
+    the action continuation carries the confirmed run onto its next node. Which
+    of them is currently owed the step is not decided here, because the intent
+    state does not say: an intent is CONFIRMED for the rest of the step in
+    which the workflow that confirmed it schedules that continuation. Naming
+    all three and letting the liveness read decide is exact -- a workflow
+    stands in a driving status only while DBOS still owes it a step, and every
+    step any of the three is owed moves this run.
+    """
+
+    logical_keys = tuple(
+        LogicalEffectKey(str(value))
+        for value in connection.scalars(
+            sa.select(effect_intents.c.logical_key).where(
+                effect_intents.c.run_id == run_id.value
+            )
+        )
+    )
+    if not logical_keys:
+        return ()
+    command_ids = connection.scalars(
+        sa.select(reconcile_commands.c.command_id).where(
+            reconcile_commands.c.logical_key.in_(
+                logical_key.value for logical_key in logical_keys
+            )
+        )
+    )
+    return (
+        *(effect_workflow_id_for(logical_key) for logical_key in logical_keys),
+        *(
+            action_continuation_workflow_id_for(logical_key)
+            for logical_key in logical_keys
+        ),
+        *(
+            reconcile_workflow_id_for(ReconcileCommandId(str(command_id)))
+            for command_id in command_ids
+        ),
+    )
 
 
 def _name_gap_ending(connection: Any, record: Mapping[Any, Any]) -> None:
