@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import assert_never
 
 import sqlalchemy as sa
@@ -15,7 +15,8 @@ from atelier2.adapters.dbos.agent_catalog import (
     auth_profile_from_record,
 )
 from atelier2.adapters.dbos.artifact_store import read_stored_artifact
-from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore, revision_owner
+from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
 from atelier2.adapters.dbos.instants import record_run_started
 from atelier2.adapters.dbos.names import QUEUE_NAME, WORKFLOW_NAME
 from atelier2.adapters.dbos.node_records import persist_bound_node_executions
@@ -45,6 +46,8 @@ from atelier2.application.bind_run_configuration import bind_run_configuration
 from atelier2.application.resolve_start_bindings import (
     AuthProfileMissingForConfiguration,
     agent_role_completeness_refusal,
+    cast_unbound_roles,
+    declared_agent_roles,
     resolve_start_bindings,
 )
 from atelier2.contracts.agents import (
@@ -56,6 +59,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.host_configuration import OccupancyRevision
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
@@ -85,6 +89,7 @@ from atelier2.contracts.workflows import (
     WorkflowGraphV2,
 )
 from atelier2.contracts.workflows_v3 import (
+    AnyWorkflowDocument,
     WorkflowGraphV3,
 )
 from atelier2.ports.agent_executions import AgentExecutorRegistry
@@ -107,6 +112,7 @@ from atelier2.ports.durable_runs import (
     StartPublishedRunRequestV3,
     V3InputRefusal,
 )
+from atelier2.ports.host_configuration import HostConfigurationReadUnavailable
 from atelier2.ports.published_revisions import PublishedRevisionResolver
 from atelier2.ports.workflow_revisions import (
     DurableRevisionCollision,
@@ -409,6 +415,7 @@ class DbosDurableRunStarter:
         self._settings = settings
         self._agent_executor_registry = agent_executor_registry
         self._published_revisions = DbosCatalogStore(engine)
+        self._host_configuration = DbosHostConfigurationChannel(engine)
         # Whether the deployment's composed effect adapter answers a not-found
         # readback with an authoritative absence. When it cannot, an agent-
         # authored `open-pr` grant has no safe reconciliation path and is
@@ -441,6 +448,62 @@ class DbosDurableRunStarter:
         """
         return self._start(request)
 
+    def _cast_against_occupancy(
+        self, request: AnyStartPublishedRunRequest, graph: AnyWorkflowDocument
+    ) -> AnyStartPublishedRunRequest | DurableWriteUnavailable | DurableStateCorrupt:
+        """The same start, with roles nobody bound filled from the served project.
+
+        The occupancy is what the operator cast in the console, and until now
+        only the manual start page read it: a caller that names no binding --
+        the conductor's start, the queue's auto-start -- was refused for a
+        matrix the project had already answered. It is decided here rather than
+        at each caller because this is where the document's roles are known and
+        where the run's binding-set hash is about to be frozen. A deployment
+        serving no project reads nothing and starts exactly what it was handed.
+        """
+        project_id = self._settings.project_id
+        if project_id is None or not isinstance(
+            graph, (WorkflowGraphV2, WorkflowGraphV3)
+        ):
+            return request
+        requested = (
+            request.agent_bindings
+            if isinstance(
+                request, (StartPublishedRunRequestV2, StartPublishedRunRequestV3)
+            )
+            else AgentBindingSet(())
+        )
+        bound = {binding.role.value for binding in requested.bindings}
+        if declared_agent_roles(graph) <= bound:
+            return request
+        with self._engine.connect() as connection:
+            lineage_id = revision_owner(
+                connection,
+                RevisionKind.WORKFLOW,
+                PublishedRevisionHash(request.revision_hash.value),
+            )
+        if lineage_id is None:
+            return request
+        latest = self._host_configuration.latest_occupancy_revision(
+            project_id, lineage_id
+        )
+        match latest:
+            case OccupancyRevision() | None:
+                cast = cast_unbound_roles(graph, requested, latest)
+            case HostConfigurationReadUnavailable():
+                return DurableWriteUnavailable()
+            case DurableStateCorrupt():
+                return DurableStateCorrupt()
+            case _ as unreachable:
+                assert_never(unreachable)
+        if cast == requested:
+            return request
+        if isinstance(request, StartPublishedRunRequest):
+            return StartPublishedRunRequestV2(
+                request.run_id, request.revision_hash, cast
+            )
+        return replace(request, agent_bindings=cast)
+
     def _start(
         self,
         request: AnyStartPublishedRunRequest,
@@ -460,6 +523,10 @@ class DbosDurableRunStarter:
             if revision.revision_hash != request.revision_hash:
                 return DurableStateCorrupt()
             graph = parse_executable_workflow_document(revision.document)
+            cast = self._cast_against_occupancy(request, graph)
+            if isinstance(cast, (DurableWriteUnavailable, DurableStateCorrupt)):
+                return cast
+            request = cast
             run_configuration: RunConfigurationRevision | None = None
             if isinstance(graph, WorkflowGraphV3):
                 if not isinstance(
