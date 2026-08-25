@@ -18,22 +18,36 @@ through the identity that lease attested rather than the path it was named by,
 and the descriptor that identity was checked on travels into git -- otherwise git
 resolves `/proc/self/fd/<n>` against its own descriptors and the check means
 nothing.
+
+Nothing here speaks a git transport. The pinned material is packed out of the
+checkout and indexed into the store as objects, because a `push` would start a
+`receive-pack` at one end and a `pre-push` at the other, and both are programs of
+the operator's choosing running inside a run that never asked for them.
 """
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 from atelier2.adapters.leased_directory import entered_leased_directory
 from atelier2.adapters.project_source import (
     GitRefused,
+    LeasedIndex,
     answered_git,
+    answered_in_lease,
     isolated_git_environment,
+    object_format_of,
 )
 from atelier2.contracts.agent_attempts import AgentAttemptId
-from atelier2.contracts.project_sources import CandidateTree, ProjectSourcePin
+from atelier2.contracts.project_sources import (
+    CandidateTree,
+    GitObjectFormat,
+    ProjectSourcePin,
+)
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
 from atelier2.ports.candidate_store import (
     CandidateCaptureConflict,
@@ -50,25 +64,24 @@ _PINNED_TREE_REF_PREFIX = "refs/atelier/pinned-trees/"
 """What roots a seeded pin, so the store keeps the material a candidate builds on."""
 
 _CAPTURE_INDEX_NAME = "capture.index"
+_PACKED_PIN_BASE_NAME = "pinned-tree"
+_WANTED_OBJECTS_NAME = "wanted-objects"
 _GITLINK_MODE = "160000"
 _STAGED_PATH_SEPARATOR = "\t"
 
+_UNFINISHED_STORE_PREFIX = ".atelier2-candidates-unfinished-"
+"""What a store being built is called, so a half-made one is never mistaken for one."""
+
+_NO_TEMPLATE = "--template="
+"""What keeps a created store hook-free from its first moment.
+
+`git init` copies a template directory into every repository it makes, and the
+default one on a machine can be replaced. An empty name copies nothing, so the
+store has no hooks directory at all rather than one somebody else filled.
+"""
+
 _NO_REF_YET = ""
 """What `git update-ref` calls the old value of a ref that must not exist yet."""
-
-
-@dataclass(frozen=True, slots=True)
-class _LeasedStaging:
-    """One capture's way into the lease and the index it stages there.
-
-    The three travel together because none of them means anything alone: the
-    descriptor is what makes the path an identity, and the index is what keeps
-    this capture out of every other one.
-    """
-
-    entered: str
-    descriptor: int
-    index: Path
 
 
 class GitCandidateTreeStore:
@@ -82,27 +95,113 @@ class GitCandidateTreeStore:
         self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
     ) -> CandidateTree:
         self._ensure_store()
-        self._seed(pin)
         with tempfile.TemporaryDirectory() as staging:
+            self._seed(pin, Path(staging))
             written = self._written(pin, lease, Path(staging) / _CAPTURE_INDEX_NAME)
         return self._anchored(CandidateTree(lease.attempt_id, written))
 
     def read(self, attempt_id: AgentAttemptId) -> CandidateTree | None:
-        self._ensure_store()
+        """The candidate this attempt captured, asked of the store and nothing else.
+
+        Never of the checkout: what a run made outlives the checkout it was
+        pinned from, and a store that could only be read while that checkout
+        still stood would be keeping the work in the wrong place. A project that
+        has captured nothing yet has no store, and that is the same answer.
+        """
+
+        if not self._store.is_dir():
+            return None
         standing = self._standing(_CANDIDATE_REF_PREFIX + attempt_id.value)
         return None if standing is None else CandidateTree(attempt_id, standing)
 
     def _ensure_store(self) -> None:
-        """Make the store exist, saying the same thing again if it already does."""
+        """Make the store exist and be one this project's objects can live in."""
 
-        self._answered(
-            ("init", "--bare", "--quiet", str(self._store)),
-            working_directory=str(self._store.parent),
-            environment=isolated_git_environment(),
-            failure=f"the candidate store at {self._store} could not be created",
-        )
+        kept_in = self._checkout_object_format()
+        if not self._store.exists():
+            self._create_store(kept_in)
+        self._refuse_unless_kept_in(kept_in)
 
-    def _seed(self, pin: ProjectSourcePin) -> None:
+    def _checkout_object_format(self) -> GitObjectFormat:
+        try:
+            return object_format_of(str(self._project_checkout))
+        except GitRefused as error:
+            raise CandidateStoreUnavailable(
+                f"the object format of {self._project_checkout} could not be read, "
+                f"so no store can be made to hold its work: {error}"
+            ) from error
+
+    def _create_store(self, kept_in: GitObjectFormat) -> None:
+        """Build the whole store beside its place, then move it in with one rename.
+
+        Two attempts of one project can finish in the same moment, and `git init`
+        is not one step: a second writer would otherwise find a repository whose
+        configuration was still being written and read a format that is not yet
+        the one it will have. A rename is one step, so a writer finds either
+        nothing there or a finished store, never half of one.
+        """
+
+        unfinished = self._unfinished_store()
+        try:
+            self._answered(
+                (
+                    "init",
+                    "--bare",
+                    "--quiet",
+                    _NO_TEMPLATE,
+                    f"--object-format={kept_in.value}",
+                    str(unfinished),
+                ),
+                working_directory=str(self._store.parent),
+                environment=isolated_git_environment(),
+                failure=f"the candidate store at {self._store} could not be created",
+            )
+            unfinished.rename(self._store)
+        except OSError as error:
+            if not self._store.is_dir():
+                raise CandidateStoreUnavailable(
+                    f"the candidate store at {self._store} could not be put in "
+                    f"place: {error}"
+                ) from error
+        finally:
+            if unfinished.exists():
+                shutil.rmtree(unfinished)
+
+    def _unfinished_store(self) -> Path:
+        try:
+            return Path(
+                tempfile.mkdtemp(
+                    dir=self._store.parent, prefix=_UNFINISHED_STORE_PREFIX
+                )
+            )
+        except OSError as error:
+            raise CandidateStoreUnavailable(
+                f"the candidate store at {self._store} could not be built beside "
+                f"its place: {error}"
+            ) from error
+
+    def _refuse_unless_kept_in(self, kept_in: GitObjectFormat) -> None:
+        """The store names objects the way the project does, or it can hold none.
+
+        An object's name *is* its hash, so a store of the other format is not a
+        store with a wrong setting -- it is a repository that this project's trees
+        cannot be written into at all.
+        """
+
+        try:
+            standing = object_format_of(str(self._store))
+        except GitRefused as error:
+            raise CandidateStoreUnavailable(
+                f"the candidate store at {self._store} could not be read: {error}"
+            ) from error
+        if standing != kept_in:
+            raise CandidateStoreUnavailable(
+                f"the candidate store at {self._store} names its objects by "
+                f"{standing.value} while {self._project_checkout} names them by "
+                f"{kept_in.value}, so no tree of this project can be kept there"
+            )
+
+    def _seed(self, pin: ProjectSourcePin, staging: Path) -> None:
         """Move the pinned tree into the store, so the store stands on its own.
 
         Only the tree travels, never the history carrying it: a tree names
@@ -110,22 +209,64 @@ class GitCandidateTreeStore:
         commits the operator's checkout holds stay where they are. Without it the
         store could not read the pin it seeds the index from, and a candidate that
         rewrote only its changed directories would name subtrees nobody has.
+
+        The move is a pack written beside the run and indexed into the store, not
+        a push: a push runs whatever `pre-push` the operator's checkout carries
+        and whatever `receive-pack` the host resolves, and neither is part of the
+        work a run was asked to do.
+
+        One pin is worked on by many attempts, so the store is asked first: a
+        pinned tree already rooted here is already whole, and packing a project
+        again for every attempt of it would be the same megabytes over and over.
         """
 
-        self._answered(
-            (
-                "push",
-                "--quiet",
-                str(self._store),
-                f"{pin.tree}:{_PINNED_TREE_REF_PREFIX}{pin.tree}",
-            ),
-            working_directory=str(self._project_checkout),
-            environment=isolated_git_environment(),
-            failure=(
-                f"the pinned tree {pin.tree} could not be moved out of "
-                f"{self._project_checkout} into the candidate store"
-            ),
-        )
+        rooted_at = _PINNED_TREE_REF_PREFIX + pin.tree
+        if self._standing(rooted_at) == pin.tree:
+            return
+        self._indexed_into_store(self._packed_out_of_checkout(pin, staging))
+        self._root(rooted_at, pin.tree)
+
+    def _packed_out_of_checkout(self, pin: ProjectSourcePin, staging: Path) -> Path:
+        """Everything the pinned tree names, as one pack file beside the run."""
+
+        wanted = staging / _WANTED_OBJECTS_NAME
+        wanted.write_text(f"{pin.tree}\n", encoding="utf-8")
+        base = staging / _PACKED_PIN_BASE_NAME
+        with wanted.open("rb") as fed:
+            named = _one_line(
+                self._answered(
+                    ("pack-objects", "--revs", "--quiet", str(base)),
+                    working_directory=str(self._project_checkout),
+                    environment=isolated_git_environment(),
+                    failure=(
+                        f"the pinned tree {pin.tree} could not be packed out of "
+                        f"{self._project_checkout}"
+                    ),
+                    standard_input=fed,
+                )
+            )
+        return base.with_name(f"{base.name}-{named}.pack")
+
+    def _indexed_into_store(self, packed: Path) -> None:
+        with packed.open("rb") as fed:
+            self._in_store(("index-pack", "--stdin"), standard_input=fed)
+
+    def _root(self, reference: str, tree: str) -> None:
+        """Anchor the seeded material, yielding to whoever anchored it first.
+
+        The ref carries the tree in its own name, so every writer of it writes
+        the same value: a refusal here means another capture of the same pin held
+        the lock, and once that ref stands at the tree there is nothing left for
+        this one to do. A refusal while it does not yet stand there is a real
+        failure and is raised, because the objects would be unreachable and a
+        later `git gc` in the store would take them.
+        """
+
+        try:
+            self._in_store(("update-ref", reference, tree))
+        except CandidateStoreUnavailable:
+            if self._standing(reference) != tree:
+                raise
 
     def _written(
         self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease, index: Path
@@ -133,7 +274,7 @@ class GitCandidateTreeStore:
         with entered_leased_directory(
             lease.working_directory, lease.device, lease.inode
         ) as (entered, descriptor):
-            staging = _LeasedStaging(entered, descriptor, index)
+            staging = LeasedIndex(entered, descriptor, index)
             self._staged(("read-tree", pin.tree), staging)
             self._staged(("add", "--all"), staging)
             self._refuse_nested_repositories(
@@ -141,18 +282,16 @@ class GitCandidateTreeStore:
             )
             return _one_line(self._staged(("write-tree",), staging))
 
-    def _staged(self, arguments: tuple[str, ...], staging: _LeasedStaging) -> bytes:
-        return self._answered(
-            arguments,
-            working_directory=staging.entered,
-            environment=isolated_git_environment(
-                GIT_DIR=str(self._store),
-                GIT_WORK_TREE=".",
-                GIT_INDEX_FILE=str(staging.index),
-            ),
-            failure="the work standing in the leased workspace could not be staged",
-            passed_descriptors=(staging.descriptor,),
-        )
+    def _staged(self, arguments: tuple[str, ...], staging: LeasedIndex) -> bytes:
+        try:
+            return answered_in_lease(
+                arguments, leased=staging, git_directory=str(self._store)
+            )
+        except GitRefused as error:
+            raise CandidateStoreUnavailable(
+                f"the work standing in the leased workspace could not be staged: "
+                f"{error}"
+            ) from error
 
     def _refuse_nested_repositories(
         self, staged: bytes, lease: AgentAttemptWorkspaceLease
@@ -198,12 +337,17 @@ class GitCandidateTreeStore:
         )
         return named or None
 
-    def _in_store(self, arguments: tuple[str, ...]) -> bytes:
+    def _in_store(
+        self,
+        arguments: tuple[str, ...],
+        standard_input: int | IO[bytes] = subprocess.DEVNULL,
+    ) -> bytes:
         return self._answered(
             arguments,
             working_directory=str(self._store.parent),
             environment=isolated_git_environment(GIT_DIR=str(self._store)),
             failure=f"the candidate store at {self._store} could not be reached",
+            standard_input=standard_input,
         )
 
     def _answered(
@@ -213,14 +357,14 @@ class GitCandidateTreeStore:
         working_directory: str,
         environment: dict[str, str],
         failure: str,
-        passed_descriptors: tuple[int, ...] = (),
+        standard_input: int | IO[bytes] = subprocess.DEVNULL,
     ) -> bytes:
         try:
             return answered_git(
                 arguments,
                 working_directory=working_directory,
                 environment=environment,
-                passed_descriptors=passed_descriptors,
+                standard_input=standard_input,
             )
         except GitRefused as error:
             raise CandidateStoreUnavailable(f"{failure}: {error}") from error

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from atelier2.adapters.project_source import LocalGitProjectSource
 from atelier2.adapters.project_verification import PROJECT_MANIFEST_NAME
-from atelier2.contracts.project_sources import ProjectSourcePin
+from atelier2.contracts.project_sources import GitObjectFormat, ProjectSourcePin
 
 COMMITTING_SCENARIO = {
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -33,11 +33,26 @@ COMMITTING_SCENARIO = {
 """Who commits and when, so a scenario's pins depend on its content alone."""
 
 
-def git_project(root: Path, files: Mapping[str, str]) -> ProjectSourcePin:
-    """A repository holding exactly these files at one commit, and the pin for it."""
+def git_project(
+    root: Path,
+    files: Mapping[str, str],
+    object_format: GitObjectFormat = GitObjectFormat.SHA1,
+) -> ProjectSourcePin:
+    """A repository holding exactly these files at one commit, and the pin for it.
+
+    The format is named because a repository's own decides how long every object
+    name in it is, and a scenario that only ever builds SHA-1 repositories can
+    say nothing about a project that chose the other one.
+    """
 
     root.mkdir(parents=True, exist_ok=True)
-    _git(root, "init", "--quiet", "--initial-branch=main")
+    _git(
+        root,
+        "init",
+        "--quiet",
+        "--initial-branch=main",
+        f"--object-format={object_format.value}",
+    )
     return commit_to_project(root, files)
 
 
