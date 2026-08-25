@@ -7,10 +7,13 @@ operator's checkout happens to hold at the time.
 
 What is unpacked into a lease is the tree alone. No `.git` travels with it, so the
 directory is material rather than a repository, and a provider that wants history
-has none. It is the *whole* tree: the material is checked out of a temporary index
-rather than exported, because an export honours `export-ignore` and would hand the
-attempt a directory that is quietly missing paths the pin carries -- paths whose
-absence a later reader could only read as the attempt having deleted them.
+has none. It is the *whole* tree, and it is the tree as the pin holds it: the
+material is checked out of a temporary index rather than exported, because an
+export honours `export-ignore` and would hand the attempt a directory that is
+quietly missing paths the pin carries -- paths whose absence a later reader could
+only read as the attempt having deleted them. The checkout runs inside a
+repository this boundary makes for it, so no `filter` the operator's own
+repository declares can rewrite a byte on the way in.
 
 Nothing here is isolation: the unpacking runs as this process's own user, into the
 blank directory the attempt leased, and that directory's own sentence about not
@@ -44,6 +47,18 @@ _HEAD_REVISION = "HEAD"
 """What git calls the commit a checkout currently stands on."""
 
 _MATERIALIZED_INDEX_NAME = "materialize.index"
+_PLUMBING_REPOSITORY_NAME = "materialize.git"
+
+_ALTERNATE_OBJECTS_FILE = ("objects", "info", "alternates")
+"""Where git is told the other object database a repository may read through."""
+
+NO_GIT_TEMPLATE = "--template="
+"""What keeps a repository this product creates free of anybody else's files.
+
+`git init` copies a template directory into every repository it makes, and the
+default one on a machine can be replaced -- with hooks, or with an
+`info/attributes` naming a filter. An empty name copies nothing at all.
+"""
 
 _INHERITED_ENVIRONMENT_NAMES = ("PATH", "LANG", "LC_ALL", "TZ")
 """The only names a git child keeps from this process: where git is, and who reads it.
@@ -278,24 +293,72 @@ class LocalGitProjectSource:
     def materialize(
         self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
     ) -> None:
-        """Check the pinned tree out into the leased directory, whole.
+        """Check the pinned tree out into the leased directory, whole and unfiltered.
 
         A checkout rather than an export: `git archive` drops every path a
         `.gitattributes` marks `export-ignore`, so the attempt would work on less
         than it was pinned to -- and whoever compared its work against the pin
         afterwards could only read those missing paths as the attempt having
         deleted them.
+
+        And out of a repository this boundary made rather than out of the
+        operator's own, because a checkout carries its own `.git/config` too. That
+        configuration can declare a `filter` driver that the project's own
+        `.gitattributes` points paths at, and the driver's smudge would write
+        content into the lease that the pinned tree does not carry. What comes
+        back is captured under no filter at all, so that content would come home
+        as work the attempt never did.
         """
 
-        git_directory = self._line(("rev-parse", "--absolute-git-dir"))
         with tempfile.TemporaryDirectory() as staging:
+            unfiltered = self._plumbing_repository(Path(staging))
             index = Path(staging) / _MATERIALIZED_INDEX_NAME
             with entered_leased_directory(
                 lease.working_directory, lease.device, lease.inode
             ) as (entered, descriptor):
                 self._checked_out(
-                    LeasedIndex(entered, descriptor, index), git_directory, pin, lease
+                    LeasedIndex(entered, descriptor, index),
+                    str(unfiltered),
+                    pin,
+                    lease,
                 )
+
+    def _plumbing_repository(self, staging: Path) -> Path:
+        """A bare repository of this boundary's own making, borrowing the source's
+        objects.
+
+        It declares no filter and copies no template, so the only thing a
+        `.gitattributes` in the pinned tree can name is a driver that does not
+        exist -- which git skips. The pinned objects are read through an alternate
+        rather than copied, so nothing is duplicated to gain that.
+        """
+
+        borrowed = self._line(
+            ("rev-parse", "--path-format=absolute", "--git-path", "objects")
+        )
+        made = staging / _PLUMBING_REPOSITORY_NAME
+        try:
+            answered_git(
+                (
+                    "init",
+                    "--bare",
+                    "--quiet",
+                    NO_GIT_TEMPLATE,
+                    f"--object-format={object_format_of(str(self._project_root)).value}",
+                    str(made),
+                ),
+                working_directory=str(staging),
+                environment=isolated_git_environment(),
+            )
+            made.joinpath(*_ALTERNATE_OBJECTS_FILE).write_text(
+                f"{borrowed}\n", encoding="utf-8"
+            )
+        except (GitRefused, OSError) as error:
+            raise ProjectSourceUnavailable(
+                f"no filter-free repository could be made to check "
+                f"{self._project_root} out of: {error}"
+            ) from error
+        return made
 
     def _checked_out(
         self,

@@ -20,6 +20,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -27,7 +28,9 @@ from pathlib import Path
 import pytest
 
 from atelier2.adapters.candidate_store import (
+    CANDIDATE_REF_PREFIX,
     CANDIDATE_STORE_DIRECTORY_NAME,
+    PINNED_TREE_REF_PREFIX,
     GitCandidateTreeStore,
 )
 from atelier2.adapters.leased_directory import LeasedDirectoryChanged
@@ -48,11 +51,13 @@ from tests.scenarios.projects import commit_to_project, git_project
 
 COMMITTED = "print('committed')\n"
 WORKED_ON = "print('what the agent made')\n"
+COMMITTED_LATER = "print('a second commit')\n"
 KEPT_OUT_OF_GIT = "*.secret\n"
 TRACKED_BUT_IGNORED = "the value a run must not lose\n"
 
 AN_ATTEMPT = AgentAttemptId("a1" * 32)
 ANOTHER_ATTEMPT = AgentAttemptId("b2" * 32)
+A_THIRD_ATTEMPT = AgentAttemptId("c3" * 32)
 
 HOSTILE_GLOBAL_CONFIGURATION = (
     '[filter "canary"]\n\tclean = sed s/./X/g\n\tsmudge = cat\n'
@@ -68,6 +73,17 @@ SYMLINK_MODE = "120000"
 
 BINARY_BODY = bytes(range(256)) * 4096
 """A megabyte with every byte value in it, so no text path can carry it by luck."""
+
+WATCHING_FOR_THE_SEED_SECONDS = 0.005
+WATCHING_GIVES_UP_AFTER_SECONDS = 10.0
+HELD_PAST_THE_SEED_SECONDS = 0.12
+"""How the one test about a lost ref lock times its handover.
+
+The lock is released relative to an event rather than to the clock: a new pack in
+the store is the capture having just seeded its material, which is the breath
+before it writes the ref and is refused. Holding on past that keeps the lock
+there for the refusal itself, which is the window under test. A capture that
+never seeds at all ends the watch rather than hanging the suite."""
 
 
 class Project:
@@ -161,6 +177,32 @@ def modes_in(store_path: Path, tree: str) -> dict[str, str]:
 
 def bytes_under(store_path: Path, tree: str, path: str) -> bytes:
     return asked_of_git(store_path, ("cat-file", "-p", f"{tree}:{path}"))
+
+
+def held_ref_lock(store_path: Path, reference: str) -> Path:
+    """Take the file git creates while it writes this ref, so nobody else can."""
+
+    lock = store_path / f"{reference}.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.touch()
+    return lock
+
+
+def publish_ref(held: Path, reference: Path, named: str) -> None:
+    """Finish the ref write this lock was taken for, the way git finishes one.
+
+    Filling the lock and renaming it into place rather than calling git, because
+    a whole subprocess is slower than the window this is measuring.
+    """
+
+    held.write_text(f"{named}\n", encoding="utf-8")
+    held.rename(reference)
+
+
+def packs_in(store_path: Path) -> set[str]:
+    """The packs this store holds; one more of them is a capture having seeded."""
+
+    return {found.name for found in (store_path / "objects" / "pack").glob("*.pack")}
 
 
 def every_file_under(root: Path) -> dict[str, bytes]:
@@ -399,6 +441,77 @@ def test_two_attempts_capturing_the_same_pin_at_once_each_keep_their_own_work(
     assert carried(project.store_path, raced[1].tree) == {"tool.py": COMMITTED}
 
 
+def test_a_capture_refused_the_ref_lock_waits_for_the_winner_and_keeps_its_work(
+    tmp_path: Path,
+) -> None:
+    """Losing a ref lock to a writer of the same tree costs a capture nothing.
+
+    git writes a ref by taking a `.lock` and renaming it into place. The lock is
+    held here from before the capture starts until after it has seeded its
+    material -- the breath before it writes that ref -- so the capture meets the
+    refusal for real, and must still come away with its work rather than with an
+    error about somebody else's write.
+    """
+
+    project = Project(tmp_path, {"tool.py": COMMITTED})
+    project.store.capture(project.pin, project.workspace(A_THIRD_ATTEMPT))
+    project.commit({"tool.py": COMMITTED_LATER})
+    rooted_at = PINNED_TREE_REF_PREFIX + project.pin.tree
+    held = held_ref_lock(project.store_path, rooted_at)
+    lease = project.workspace(ANOTHER_ATTEMPT)
+    (lease.working_directory / "tool.py").write_text(WORKED_ON, encoding="utf-8")
+    seeded_before = packs_in(project.store_path)
+    ready = threading.Barrier(2)
+
+    def hand_over() -> None:
+        ready.wait()
+        watched_until = time.monotonic() + WATCHING_GIVES_UP_AFTER_SECONDS
+        while (
+            packs_in(project.store_path) == seeded_before
+            and time.monotonic() < watched_until
+        ):
+            time.sleep(WATCHING_FOR_THE_SEED_SECONDS)
+        time.sleep(HELD_PAST_THE_SEED_SECONDS)
+        publish_ref(held, project.store_path / rooted_at, project.pin.tree)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        handing = pool.submit(hand_over)
+        ready.wait()
+        candidate = project.store.capture(project.pin, lease)
+        handing.result()
+
+    assert project.store.read(ANOTHER_ATTEMPT) == candidate
+    assert carried(project.store_path, candidate.tree) == {"tool.py": WORKED_ON}
+
+
+def test_a_pinned_tree_rooted_at_other_material_is_refused_and_left_standing(
+    tmp_path: Path,
+) -> None:
+    """A ref names its own tree, so a ref standing elsewhere is a lie, not a stale value.
+
+    Overwriting it would keep the lie and hand the next capture material that is
+    not what its pin says it is.
+    """
+
+    project = Project(tmp_path, {"tool.py": COMMITTED})
+    first = project.workspace(AN_ATTEMPT)
+    (first.working_directory / "tool.py").write_text(WORKED_ON, encoding="utf-8")
+    other = project.store.capture(project.pin, first)
+    rooted_at = PINNED_TREE_REF_PREFIX + project.pin.tree
+    asked_of_git(project.store_path, ("update-ref", rooted_at, other.tree))
+
+    with pytest.raises(CandidateStoreUnavailable, match=other.tree):
+        project.store.capture(project.pin, project.workspace(ANOTHER_ATTEMPT))
+
+    assert (
+        said_by_git(
+            project.store_path, ("for-each-ref", "--format=%(objectname)", rooted_at)
+        ).strip()
+        == other.tree
+    )
+    assert project.store.read(ANOTHER_ATTEMPT) is None
+
+
 def test_one_attempt_claiming_other_work_is_refused_rather_than_overwritten(
     tmp_path: Path,
 ) -> None:
@@ -457,6 +570,18 @@ def test_a_store_that_is_no_repository_refuses_instead_of_claiming_a_candidate(
 
     with pytest.raises(CandidateStoreUnavailable, match=str(project.store_path)):
         project.store.capture(project.pin, lease)
+
+
+def test_reading_a_store_that_is_no_directory_refuses_rather_than_saying_nothing(
+    tmp_path: Path,
+) -> None:
+    """A project whose kept work is corrupt is not a project whose attempt made none."""
+
+    project = Project(tmp_path, {"tool.py": COMMITTED})
+    project.store_path.write_text("not a repository", encoding="utf-8")
+
+    with pytest.raises(CandidateStoreUnavailable, match=str(project.store_path)):
+        project.store.read(AN_ATTEMPT)
 
 
 def test_a_store_naming_objects_the_other_way_refuses_before_it_is_written_into(
@@ -601,8 +726,8 @@ def test_a_capture_under_a_hostile_environment_keeps_the_work_and_nothing_else(
     assert said_by_git(
         project.store_path, ("for-each-ref", "--format=%(refname)")
     ).splitlines() == [
-        f"refs/atelier/candidates/{AN_ATTEMPT.value}",
-        f"refs/atelier/pinned-trees/{project.pin.tree}",
+        CANDIDATE_REF_PREFIX + AN_ATTEMPT.value,
+        PINNED_TREE_REF_PREFIX + project.pin.tree,
     ]
     assert not any(Path(hostile[name]).exists() for name in _HIJACKED_PATH_NAMES)
 

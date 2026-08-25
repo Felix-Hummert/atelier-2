@@ -65,6 +65,18 @@ def commit_to_project(root: Path, files: Mapping[str, str]) -> ProjectSourcePin:
     return LocalGitProjectSource(root).head()
 
 
+def declared_in_checkout(root: Path, settings: Mapping[str, str]) -> None:
+    """Write these settings into this repository's own `.git/config`.
+
+    A project's local configuration is neither the machine's nor the product's:
+    it travels with the checkout, and a scenario needs it to say what happens
+    when a project declares something the product must not act on.
+    """
+
+    for name, value in settings.items():
+        _git(root, "config", name, value)
+
+
 def write_into_checkout(root: Path, files: Mapping[str, str]) -> None:
     """Change the working copy alone, leaving every commit as it stands."""
 

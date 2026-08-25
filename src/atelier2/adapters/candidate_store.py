@@ -30,11 +30,13 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import IO
 
 from atelier2.adapters.leased_directory import entered_leased_directory
 from atelier2.adapters.project_source import (
+    NO_GIT_TEMPLATE,
     GitRefused,
     LeasedIndex,
     answered_git,
@@ -58,10 +60,22 @@ from atelier2.ports.candidate_store import (
 CANDIDATE_STORE_DIRECTORY_NAME = ".atelier2-candidates.git"
 """The one name the store has, derived beside the database like the root's parts."""
 
-_CANDIDATE_REF_PREFIX = "refs/atelier/candidates/"
+CANDIDATE_REF_PREFIX = "refs/atelier/candidates/"
+"""Where one attempt's work is anchored, under that attempt's own identity."""
 
-_PINNED_TREE_REF_PREFIX = "refs/atelier/pinned-trees/"
+PINNED_TREE_REF_PREFIX = "refs/atelier/pinned-trees/"
 """What roots a seeded pin, so the store keeps the material a candidate builds on."""
+
+_LOCK_HANDOVER_LOOKS = 5
+_LOCK_HANDOVER_PAUSE_SECONDS = 0.05
+"""How long a refused writer waits for the one holding the ref lock to finish.
+
+git writes a ref by taking a `.lock`, writing into it, then renaming it into
+place: a writer refused inside that window sees no value where the winner is
+about to put one, a few milliseconds away. Four short pauses are a fifth of a
+second in all -- long enough for a local rename, short enough that a ref nobody
+is writing fails promptly instead of holding a capture open.
+"""
 
 _CAPTURE_INDEX_NAME = "capture.index"
 _PACKED_PIN_BASE_NAME = "pinned-tree"
@@ -71,14 +85,6 @@ _STAGED_PATH_SEPARATOR = "\t"
 
 _UNFINISHED_STORE_PREFIX = ".atelier2-candidates-unfinished-"
 """What a store being built is called, so a half-made one is never mistaken for one."""
-
-_NO_TEMPLATE = "--template="
-"""What keeps a created store hook-free from its first moment.
-
-`git init` copies a template directory into every repository it makes, and the
-default one on a machine can be replaced. An empty name copies nothing, so the
-store has no hooks directory at all rather than one somebody else filled.
-"""
 
 _NO_REF_YET = ""
 """What `git update-ref` calls the old value of a ref that must not exist yet."""
@@ -106,12 +112,20 @@ class GitCandidateTreeStore:
         Never of the checkout: what a run made outlives the checkout it was
         pinned from, and a store that could only be read while that checkout
         still stood would be keeping the work in the wrong place. A project that
-        has captured nothing yet has no store, and that is the same answer.
+        has captured nothing yet has no store, and that is the same answer --
+        but something standing in the store's place that is not a directory is
+        not, because "this attempt captured nothing" would turn a project's lost
+        work into a fact about the attempt.
         """
 
-        if not self._store.is_dir():
+        if not self._store.exists():
             return None
-        standing = self._standing(_CANDIDATE_REF_PREFIX + attempt_id.value)
+        if not self._store.is_dir():
+            raise CandidateStoreUnavailable(
+                f"the candidate store at {self._store} is not a directory, so "
+                "nothing this project kept can be read from it"
+            )
+        standing = self._standing(CANDIDATE_REF_PREFIX + attempt_id.value)
         return None if standing is None else CandidateTree(attempt_id, standing)
 
     def _ensure_store(self) -> None:
@@ -148,7 +162,7 @@ class GitCandidateTreeStore:
                     "init",
                     "--bare",
                     "--quiet",
-                    _NO_TEMPLATE,
+                    NO_GIT_TEMPLATE,
                     f"--object-format={kept_in.value}",
                     str(unfinished),
                 ),
@@ -220,7 +234,7 @@ class GitCandidateTreeStore:
         again for every attempt of it would be the same megabytes over and over.
         """
 
-        rooted_at = _PINNED_TREE_REF_PREFIX + pin.tree
+        rooted_at = PINNED_TREE_REF_PREFIX + pin.tree
         if self._standing(rooted_at) == pin.tree:
             return
         self._indexed_into_store(self._packed_out_of_checkout(pin, staging))
@@ -252,21 +266,31 @@ class GitCandidateTreeStore:
             self._in_store(("index-pack", "--stdin"), standard_input=fed)
 
     def _root(self, reference: str, tree: str) -> None:
-        """Anchor the seeded material, yielding to whoever anchored it first.
+        """Anchor the seeded material, never moving an anchor somebody else set.
 
-        The ref carries the tree in its own name, so every writer of it writes
-        the same value: a refusal here means another capture of the same pin held
-        the lock, and once that ref stands at the tree there is nothing left for
-        this one to do. A refusal while it does not yet stand there is a real
-        failure and is raised, because the objects would be unreachable and a
-        later `git gc` in the store would take them.
+        The write is a compare-and-set against "no ref yet", like a candidate's
+        own: the ref carries its tree in its own name, so a ref standing at
+        anything else means this store was told something untrue, and quietly
+        overwriting it would keep the lie rather than surface it. Losing the race
+        to a writer of the same tree is no failure -- that writer is stating the
+        same fact -- but a refusal with nothing standing there at all is, because
+        the seeded objects would be unreachable and a later `git gc` would take
+        them.
         """
 
         try:
-            self._in_store(("update-ref", reference, tree))
-        except CandidateStoreUnavailable:
-            if self._standing(reference) != tree:
+            self._in_store(("update-ref", reference, tree, _NO_REF_YET))
+        except CandidateStoreUnavailable as refusal:
+            standing = self._settled(reference)
+            if standing == tree:
+                return
+            if standing is None:
                 raise
+            raise CandidateStoreUnavailable(
+                f"{reference} in {self._store} stands at {standing} rather than "
+                f"at the tree {tree} it is named for, so this store has been told "
+                "something untrue and the capture will not overwrite it"
+            ) from refusal
 
     def _written(
         self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease, index: Path
@@ -312,14 +336,15 @@ class GitCandidateTreeStore:
         The write is a compare-and-set against "no ref yet" rather than a plain
         update, so two captures of one attempt cannot race into one overwriting
         the other. Losing that race is not a failure: the winner is asked what it
-        anchored, and only work that differs is a contradiction.
+        anchored -- once it has finished writing it -- and only work that differs
+        is a contradiction.
         """
 
-        reference = _CANDIDATE_REF_PREFIX + candidate.attempt_id.value
+        reference = CANDIDATE_REF_PREFIX + candidate.attempt_id.value
         try:
             self._in_store(("update-ref", reference, candidate.tree, _NO_REF_YET))
         except CandidateStoreUnavailable as refusal:
-            standing = self._standing(reference)
+            standing = self._settled(reference)
             if standing == candidate.tree:
                 return candidate
             if standing is None:
@@ -330,6 +355,22 @@ class GitCandidateTreeStore:
                 "one attempt claim two different pieces of work"
             ) from refusal
         return candidate
+
+    def _settled(self, reference: str) -> str | None:
+        """What this ref stands at once whoever holds its lock has finished.
+
+        A writer refused the lock is a few milliseconds ahead of the value it
+        needs, not wrong about it, so the question is asked again a few times
+        before "nothing stands here" is believed.
+        """
+
+        for look in range(_LOCK_HANDOVER_LOOKS):
+            if look:
+                time.sleep(_LOCK_HANDOVER_PAUSE_SECONDS)
+            standing = self._standing(reference)
+            if standing is not None:
+                return standing
+        return None
 
     def _standing(self, reference: str) -> str | None:
         named = _one_line(
