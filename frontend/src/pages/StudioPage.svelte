@@ -20,6 +20,7 @@
     type AttentionHold
   } from "../lib/attentionHold";
   import { BOARD_GROUPS, projectBoardGroups, type BoardGroups } from "../lib/boardRows";
+  import { onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { humanErrorMessage } from "../lib/humanRefusal";
   import type { MutationJournal } from "../lib/mutationJournal";
@@ -76,10 +77,14 @@
   onMount(() => {
     void load();
     holdAttention();
+    // A read that failed while the connection was lost is worth asking again
+    // on its own once it returns, with no reload (#700).
+    const unsubscribeConnection = onConnectionRecovered(() => { void load(); });
     return () => {
       disposed = true;
       stream?.close();
       stream = null;
+      unsubscribeConnection();
     };
   });
 

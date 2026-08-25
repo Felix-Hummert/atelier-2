@@ -5,6 +5,7 @@
   import ReadState from "../components/ReadState.svelte";
   import { catalogHeadsOf, catalogNameStateOf, type CatalogNameState } from "../lib/catalogName";
   import { catalogWorkflowRows, type CatalogWorkflowRow } from "../lib/catalogRows";
+  import { onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { humanErrorMessage } from "../lib/humanRefusal";
   import {
@@ -39,6 +40,9 @@
 
   onMount(() => {
     void loadWorkflows();
+    // A read that failed while the connection was lost is worth asking again
+    // on its own once it returns, with no reload (#700).
+    return onConnectionRecovered(() => { void loadWorkflows(); });
   });
 
   async function loadWorkflows(): Promise<void> {
@@ -78,7 +82,12 @@
         catalogWorkflowRows(reading.revisions, catalogByName)
       );
     } catch (error) {
-      failureMessage = humanErrorMessage(error, workflowsPageCopy.listUnavailable);
+      // A message identical to the failed read's own title would just repeat
+      // it a second time (#700's own fallback for a round trip that never
+      // happened is exactly that title); only a genuinely more specific
+      // reading is worth this second line.
+      const message = humanErrorMessage(error, workflowsPageCopy.listUnavailable);
+      failureMessage = message === workflowsPageCopy.listUnavailable ? null : message;
       workflows = failRead(workflows, begun.generation, {
         kind: "unavailable",
         title: workflowsPageCopy.listUnavailable

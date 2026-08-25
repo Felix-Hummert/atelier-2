@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { get } from "svelte/store";
 
   import { isRunV3, type AnyRun, type CockpitApi, type RunV3 } from "../api/client";
   import PinnedDecision from "../components/PinnedDecision.svelte";
@@ -17,7 +16,7 @@
     sendConductorMessage,
     type ConductorConnection
   } from "../lib/conductorEpisode";
-  import { connectionState, restartNoticeCopy, type ConnectionStatus } from "../lib/connectionState";
+  import { connectionState, onConnectionRecovered, restartNoticeCopy } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import type { MutationJournal } from "../lib/mutationJournal";
   import { runPath } from "../lib/route";
@@ -73,15 +72,10 @@
     });
     // A read that failed while the connection was lost stays failed once the
     // connection returns until something asks again -- reload was the only
-    // way out (#700). The edge from "reconnecting" back to "connected" is
-    // that ask, for every read this page took on mount.
-    let previousConnection: ConnectionStatus = get(connectionState);
-    const unsubscribeConnection = connectionState.subscribe((value) => {
-      if (previousConnection === "reconnecting" && value === "connected") {
-        void loadPins();
-        void resolveConductor();
-      }
-      previousConnection = value;
+    // way out (#700).
+    const unsubscribeConnection = onConnectionRecovered(() => {
+      void loadPins();
+      void resolveConductor();
     });
     return () => {
       unsubscribe();

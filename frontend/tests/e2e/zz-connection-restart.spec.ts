@@ -27,7 +27,11 @@ const widths = [
  * Which composer hint the Workbench starts on depends on whether an earlier
  * test in this run seeded a conductor -- not this test's question, and not
  * something it may assume either way (the suite runs one shared server, one
- * worker). Every assertion below reads only the restart line itself.
+ * worker). What this test does own is that the hint returns to that exact
+ * same honest sentence once the connection recovers, not merely to
+ * *something other than* the restart line -- a composer stuck naming a read
+ * that "could not be read" would still pass a weaker check (the live bug
+ * this test now pins).
  */
 test("shows the calm restart line on the open workbench, and clears it on its own with no reload", async ({ page }) => {
   test.setTimeout(120_000);
@@ -37,6 +41,7 @@ test("shows the calm restart line on the open workbench, and clears it on its ow
   const composerHint = page.locator(".composer-hint");
   await expect(composerHint).toBeVisible();
   await expect(composerHint).not.toHaveText(restartNoticeCopy);
+  const healthyComposerHint = await composerHint.textContent();
   await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeEnabled();
 
   const restarted = await page.request.post("/__e2e/recompose");
@@ -63,11 +68,14 @@ test("shows the calm restart line on the open workbench, and clears it on its ow
   await expect(notice).toContainText(restartNoticeCopy);
 
   // Back on the workbench the issue names, with no network call of its own:
-  // it already reads the one central store.
+  // it already reads the one central store. The ear (HEART) speaks the line
+  // itself as its own composer hint here, so the shell's top banner stays
+  // silent on this one room -- the same fact said once, not twice.
   await page.getByRole("link", { name: "Workbench" }).click();
   await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
   await expect(composerHint).toHaveText(restartNoticeCopy);
   await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeDisabled();
+  await expect(page.getByRole("status").filter({ hasText: "restarting" })).toHaveCount(0);
 
   for (const viewport of widths) {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
@@ -86,8 +94,12 @@ test("shows the calm restart line on the open workbench, and clears it on its ow
   }).toPass({ timeout: 20_000 });
 
   // No page.reload() anywhere above: the notice clearing and Send
-  // re-enabling on their own is the automatic recovery itself.
+  // re-enabling on their own is the automatic recovery itself. The composer
+  // hint returns to the exact sentence it held before the outage -- not
+  // merely something other than the restart line -- proving the read behind
+  // it (#700's own declared minimum: the conductor-link read) was asked
+  // again on its own, not left stuck on a stale failure.
   await expect(notice).toBeHidden({ timeout: 20_000 });
-  await expect(composerHint).not.toHaveText(restartNoticeCopy);
+  await expect(composerHint).toHaveText(healthyComposerHint ?? "");
   await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeEnabled();
 });

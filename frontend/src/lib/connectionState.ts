@@ -29,6 +29,21 @@ export function reportConnectionLost(): void {
   status.set("reconnecting");
 }
 
+/**
+ * Runs `onRecovered` once, every time the store crosses from "reconnecting"
+ * back to "connected" -- the moment a page's own reads, which failed while
+ * the workshop was unreachable, are worth asking again on their own, with no
+ * reload (#700). A read that failed for a real, unrelated reason is not this
+ * function's question: it only ever fires on the edge back to healthy.
+ */
+export function onConnectionRecovered(onRecovered: () => void): () => void {
+  let previous: ConnectionStatus = "connected";
+  return connectionState.subscribe((value) => {
+    if (previous === "reconnecting" && value === "connected") onRecovered();
+    previous = value;
+  });
+}
+
 const PROBE_INTERVAL_MS = 3_000;
 /** ~5 minutes at the interval above -- well past a host redeploy's ~30s gap,
  * bounded so a tab left open through a real, longer outage does not poll

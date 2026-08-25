@@ -1449,7 +1449,13 @@ export class CockpitRequestError extends Error {
   constructor(
     message: string,
     readonly problem: Problem | null = null,
-    readonly definitive_failure = false
+    readonly definitive_failure = false,
+    /** The round trip itself never happened -- not a 4xx/5xx the server
+     * answered with, and not a contract violation in what it did answer
+     * (#700). The one throw site that catches a failed `fetch` sets this;
+     * every other one names a specific violation whose own message stays
+     * worth reading. */
+    readonly transport_failure = false
   ) {
     super(message);
   }
@@ -1860,7 +1866,7 @@ async function requestJsonResult<T>(
     // a 4xx/5xx the server actually answered with, so this is the one signal
     // that means the workshop cannot be reached at all.
     reportConnectionLost();
-    throw new CockpitRequestError(errorMessage(error));
+    throw new CockpitRequestError(errorMessage(error), null, false, true);
   }
   reportConnectionRestored();
   let value: unknown;

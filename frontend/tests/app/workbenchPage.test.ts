@@ -186,9 +186,10 @@ describe("the workbench door", () => {
       );
     });
 
-    // The global top-of-shell notice and the composer's own hint both name
-    // it -- two honest readings of one store, never a page-local error.
-    expect(screen.getAllByText(restartNoticeCopy).length).toBeGreaterThanOrEqual(2);
+    // The ear (HEART) names its own state in one sentence; the shell's top
+    // banner stays silent on this one room so the fact is said exactly once,
+    // never as a page-local echo of the same line (#700).
+    expect(screen.getAllByText(restartNoticeCopy)).toHaveLength(1);
     expect(document.querySelector(".composer-hint")?.textContent).toBe(restartNoticeCopy);
     expect(screen.queryByText(workbenchPageCopy.composerHint)).toBeNull();
     // Nothing was sent: the word stays exactly where it was typed.
