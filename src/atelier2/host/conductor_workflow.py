@@ -113,7 +113,11 @@ CONDUCTOR_BRIEF_SCHEMA = _canonical_schema_bytes(
 # message set in motion. JSON on purpose -- the probe (#7, 25.08.) proved that
 # a prose instruction under a JSON output schema refuses every real run
 # (`output-schema-refused: instance-not-json`), so schema and instruction are
-# built here from the same two field names.
+# built here from the same two field names. The instruction below still asks
+# for one bare JSON object, but no episode's correctness rests on the model
+# obeying that sentence: asking in prose made the same brief succeed or refuse
+# by coin flip (#663), and what an answer's declared value is now has an owner
+# in the executor decode path (`declared_instance_in_answer`).
 CONDUCTOR_REPORT_SCHEMA = _canonical_schema_bytes(
     {
         "type": "object",
