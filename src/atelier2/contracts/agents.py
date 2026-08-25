@@ -5,6 +5,7 @@ import struct
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 
+from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash, frame
@@ -377,7 +378,18 @@ class AgentExecutionRequest:
 
 @dataclass(frozen=True)
 class AgentExecutionResult:
+    """What one execution answered, and what it did to get there where that is known.
+
+    The transcript is optional because it is a fact about the provider's wire
+    format, not about this contract: an executor whose CLI publishes a
+    structured stream decodes one, and an executor whose CLI publishes only a
+    final answer leaves it `None` rather than inventing a shape. It is already
+    bounded and redacted when it arrives -- `AttemptTranscript` is the only way
+    to make one -- so the terminal write keeps it without judging it again.
+    """
+
     output_bytes: bytes
+    transcript: AttemptTranscript | None = None
 
 
 @dataclass(frozen=True)
