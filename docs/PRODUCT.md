@@ -813,16 +813,7 @@ behind the name, not the reading title. The live event line names which node
 finished and does not paste the output the node already holds. A STARTED run paints the working node
 as live work, not as a finished card, and shows new events from the existing
 SSE door as they arrive. Empty, connecting, and failed stream states are each
-named as themselves. A lost server -- a host redeploy's restart, not a
-4xx/5xx the server actually answered with -- is named once, centrally: every
-REST call and every durable-event stream reports into one connection store
-(`api/client.ts`), and while it reads unreachable the whole cockpit shows one
-calm line above every room instead of a per-page error, the Workbench
-disables Send under the same line rather than its ordinary no-conductor
-refusal, and a page holding no open stream of its own runs a bounded probe
-against the existing health read until a round trip succeeds again — no
-reload (#700 stage 1; zero-downtime redeploys are a later, separate stage).
-The process log is not on that door — it stays in the
+named as themselves. The process log is not on that door — it stays in the
 lease (#104) — and the page says so rather than inventing a progress bar. The
 live event line stays open until the events it has applied match the latest
 cursor the run itself names, so a run that has already ended still shows every
