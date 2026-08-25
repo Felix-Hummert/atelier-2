@@ -15,7 +15,10 @@ from dataclasses import dataclass
 
 import pytest
 
-from atelier2.application.resolve_references import resolve_declared_reference
+from atelier2.application.resolve_references import (
+    ReferenceResolution,
+    resolve_declared_reference,
+)
 from atelier2.contracts.agents import MAXIMUM_SIGNED_INT64
 from atelier2.contracts.budgets_v3 import (
     MAXIMUM_BUDGET_REVISION_DOCUMENT_BYTES,
@@ -80,7 +83,7 @@ class OneRevisionRegistry:
         return PublishedRevisionMissing()
 
 
-def resolution_of(document: bytes) -> ResolvedReference | ReferenceRefusal:
+def resolution_of(document: bytes) -> ReferenceResolution:
     """What the seam a run start uses answers for these exact published bytes."""
     revision = PublishedRevision(RevisionKind.BUDGET_POLICY, document)
     declared = DeclaredReference(

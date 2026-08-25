@@ -60,6 +60,7 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionExisting,
     PublishedRevisionFound,
     PublishedRevisionMissing,
+    PublishedRevisionsUnavailable,
 )
 
 
@@ -587,3 +588,17 @@ def test_a_failed_alias_write_leaves_the_whole_catalog_untouched(
 
     assert isinstance(result, DurableWriteUnavailable | DurableStateCorrupt)
     assert _catalog_snapshot(harness) == before
+
+
+def test_a_resolve_the_store_cannot_serve_answers_unavailable(
+    harness: CatalogHarness,
+) -> None:
+    """A registry outage on the start or read path is a refusal, never a 500 (#701)."""
+    with harness.engine.begin() as connection:
+        connection.execute(sa.text("DROP TABLE published_revisions"))
+
+    resolved = harness.catalog.resolve(
+        RevisionKind.SCHEMA, PublishedRevisionHash("a" * 64)
+    )
+
+    assert resolved == PublishedRevisionsUnavailable()

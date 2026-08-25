@@ -38,11 +38,14 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow_ids import bootstrap_workflow_id_for
-from atelier2.adapters.yaml_workflows import (
-    WorkflowFormatNotExecutable,
-    parse_executable_workflow_document,
+from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.application.evaluate_executability import (
+    DocumentNotExecutable,
+    ExecutableDocument,
+    evaluate_executability,
 )
-from atelier2.application.bind_run_configuration import bind_run_configuration
+from atelier2.application.refusals import DurableStateCorrupt as RegistryCorrupt
+from atelier2.application.refusals import ReadUnavailable as RegistryUnavailable
 from atelier2.application.resolve_start_bindings import (
     AuthProfileMissingForConfiguration,
     agent_role_completeness_refusal,
@@ -64,10 +67,7 @@ from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import RunV2, RunV3
-from atelier2.contracts.run_configuration_v3 import (
-    ReferenceResolutionRefused,
-    RunConfigurationRevision,
-)
+from atelier2.contracts.run_configuration_v3 import RunConfigurationRevision
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
     RunId,
@@ -82,7 +82,6 @@ from atelier2.contracts.schemas_v3 import (
     read_instance_document,
     read_schema_document,
 )
-from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflows import (
     WorkflowGraph,
@@ -113,38 +112,12 @@ from atelier2.ports.durable_runs import (
     V3InputRefusal,
 )
 from atelier2.ports.host_configuration import HostConfigurationReadUnavailable
-from atelier2.ports.published_revisions import PublishedRevisionResolver
 from atelier2.ports.workflow_revisions import (
     DurableRevisionCollision,
     DurableRevisionCreated,
     DurableRevisionExisting,
     DurableRevisionPublicationResult,
 )
-
-
-def _v3_run_configuration(
-    graph: WorkflowGraphV3,
-    revision_hash: WorkflowRevisionHash,
-    binding_set: AgentBindingSet,
-    resolver: PublishedRevisionResolver,
-) -> RunConfigurationRevision:
-    """The exact snapshot a V3 run is bound to, with every reference resolved.
-
-    This used to refuse any declared reference, because the admitted shape could
-    not carry one and no resolver stood on this path. A `graph_inputs` entry is a
-    declared `schema` reference, so admitting orders meant giving that resolution
-    its production caller rather than writing a second one: `bind_run_configuration`
-    already freezes the matrix, and a run whose own configuration nobody resolved
-    is exactly what it exists to prevent.
-
-    """
-    return bind_run_configuration(
-        revision_hash,
-        graph,
-        SubworkflowBinding(),
-        binding_set.binding_set_hash,
-        resolver,
-    )
 
 
 def _supplied_orders(request: AnyStartPublishedRunRequest) -> tuple[RunInput, ...]:
@@ -522,7 +495,19 @@ class DbosDurableRunStarter:
             revision = WorkflowRevision(revision_document)
             if revision.revision_hash != request.revision_hash:
                 return DurableStateCorrupt()
-            graph = parse_executable_workflow_document(revision.document)
+            graph = parse_workflow_document(revision.document)
+            executability = evaluate_executability(graph, self._published_revisions)
+            match executability:
+                case ExecutableDocument():
+                    pass
+                case DocumentNotExecutable():
+                    return DurableRunFormatNotExecutable()
+                case RegistryUnavailable():
+                    return DurableWriteUnavailable()
+                case RegistryCorrupt():
+                    return DurableStateCorrupt()
+                case _ as unreachable:
+                    assert_never(unreachable)
             cast = self._cast_against_occupancy(request, graph)
             if isinstance(cast, (DurableWriteUnavailable, DurableStateCorrupt)):
                 return cast
@@ -533,18 +518,11 @@ class DbosDurableRunStarter:
                     request, (StartPublishedRunRequestV2, StartPublishedRunRequestV3)
                 ):
                     return DurableInvalidAgentBindings()
-                run_configuration = _v3_run_configuration(
-                    graph,
+                run_configuration = RunConfigurationRevision(
                     WorkflowRevisionHash(revision.revision_hash.value),
-                    request.agent_bindings,
-                    self._published_revisions,
+                    request.agent_bindings.binding_set_hash,
+                    executability.resolutions,
                 )
-        except (WorkflowFormatNotExecutable, ReferenceResolutionRefused):
-            # A reference the document pins that no published revision answers --
-            # or answers with bytes this product cannot read as a schema -- is a
-            # statement about the document, not about the store: the same answer
-            # an uninterpreted node kind gets, for the same reason.
-            return DurableRunFormatNotExecutable()
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):

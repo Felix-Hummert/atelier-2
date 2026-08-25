@@ -56,6 +56,7 @@ from atelier2.ports.durable_runs import (
 from atelier2.ports.published_revisions import (
     CatalogNameFound,
     CatalogNameMissing,
+    CatalogReferenceLookup,
     CatalogRevisionPosition,
     ResolveCatalogNameResult,
     ResolvePublishedRevisionResult,
@@ -167,7 +168,7 @@ class _FakeCatalog:
         kind: RevisionKind,
         lineage_id: CatalogLineageId,
         revision_hash: PublishedRevisionHash,
-    ) -> ResolvePublishedRevisionResult:
+    ) -> CatalogReferenceLookup:
         raise NotImplementedError("the sweep resolves head by name")
 
     def resolve(
