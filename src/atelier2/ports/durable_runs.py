@@ -14,6 +14,7 @@ from atelier2.contracts.orders import (
 )
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.schemas_v3 import InstanceSchemaViolation
 
 
 @dataclass(frozen=True)
@@ -149,6 +150,13 @@ class DurableV3StartInputRefused:
     name: str
     refusal: V3InputRefusal
     detail: str | None = None
+    violation: InstanceSchemaViolation | None = None
+    """The field a `VALUE_REFUSED` schema violation is about, when it names one.
+
+    `None` for every other refusal -- an input the graph never declared or never
+    supplied is not about a field inside its value -- and for a `VALUE_REFUSED`
+    whose earliest violation has no addressable pointer either.
+    """
 
 
 @dataclass(frozen=True)

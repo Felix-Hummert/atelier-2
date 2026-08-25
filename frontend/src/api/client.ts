@@ -1060,6 +1060,7 @@ export const problemDefinitions = {
   "schema-unsupported-dialect": { status: 422, title: "Invalid schema document" },
   "schema-not-a-schema": { status: 422, title: "Invalid schema document" },
   "schema-revision-collision": { status: 409, title: "Schema revision collision" },
+  "schema-revision-not-found": { status: 404, title: "Schema revision not found" },
   "budget-document-too-large": { status: 422, title: "Invalid budget document" },
   "budget-document-not-utf8": { status: 422, title: "Invalid budget document" },
   "budget-not-a-budget-object": { status: 422, title: "Invalid budget document" },
@@ -1184,6 +1185,7 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant("schema-unsupported-dialect", problemDefinitions["schema-unsupported-dialect"]),
   problemVariant("schema-not-a-schema", problemDefinitions["schema-not-a-schema"]),
   problemVariant("schema-revision-collision", problemDefinitions["schema-revision-collision"]),
+  problemVariant("schema-revision-not-found", problemDefinitions["schema-revision-not-found"]),
   problemVariant("budget-document-too-large", problemDefinitions["budget-document-too-large"]),
   problemVariant("budget-document-not-utf8", problemDefinitions["budget-document-not-utf8"]),
   problemVariant("budget-not-a-budget-object", problemDefinitions["budget-not-a-budget-object"]),
@@ -1850,7 +1852,7 @@ function problemVariant<
     status: z.literal(definition.status),
     detail: z.string()
   };
-  if (code === "invalid-request") {
+  if (code === "invalid-request" || code === "run-input-refused") {
     return z
       .object({
         ...fields,

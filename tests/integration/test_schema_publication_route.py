@@ -180,3 +180,46 @@ def test_a_schema_publication_refuses_the_wrong_media_type(
 
     assert refused.status_code == 415
     assert refused.json()["type"].endswith(":unsupported-media-type")
+
+
+def test_a_published_schema_is_read_back_byte_identical_over_get(
+    runtime: DbosRuntime,
+) -> None:
+    """A caller holding only the hash (#678) reads back what the publisher wrote.
+
+    Before this route the wire's own comment on `orders.schema` said as much: a
+    caller that wants the bytes already holds the published revision -- a
+    promise about the publisher, never about a browser. This is the door that
+    makes it true for one too.
+    """
+    api = client(runtime)
+    published = api.post(
+        SCHEMA_PATH, content=MEAL_SCHEMA, headers={"content-type": "application/json"}
+    )
+    schema_hash = published.json()["schema_revision_hash"]
+
+    read = api.get(f"{SCHEMA_PATH}/{schema_hash}")
+
+    assert read.status_code == 200
+    assert read.headers["content-type"] == "application/json"
+    assert read.content == MEAL_SCHEMA
+
+
+def test_reading_an_unpublished_schema_hash_answers_not_found(
+    runtime: DbosRuntime,
+) -> None:
+    never_published = PublishedRevisionHash.of(b"nobody published this").value
+
+    read = client(runtime).get(f"{SCHEMA_PATH}/{never_published}")
+
+    assert read.status_code == 404
+    assert read.json()["type"].endswith(":schema-revision-not-found")
+
+
+def test_reading_a_malformed_hash_answers_invalid_revision_hash(
+    runtime: DbosRuntime,
+) -> None:
+    read = client(runtime).get(f"{SCHEMA_PATH}/not-a-sha-256-hash")
+
+    assert read.status_code == 400
+    assert read.json()["type"].endswith(":invalid-revision-hash")

@@ -43,7 +43,10 @@ from atelier2.application.publish_agent_definition_revision import (
 )
 from atelier2.application.publish_artifact import PublishArtifactUseCaseResult
 from atelier2.application.publish_budget_revision import PublishBudgetRevisionResult
-from atelier2.application.publish_schema_revision import PublishSchemaRevisionResult
+from atelier2.application.publish_schema_revision import (
+    GetSchemaRevisionResult,
+    PublishSchemaRevisionResult,
+)
 from atelier2.application.publish_tool_grant_revision import (
     PublishToolGrantRevisionResult,
 )
@@ -195,6 +198,7 @@ class ApiUseCases:
     publish_workflow_revision: Callable[[bytes], PublishWorkflowRevisionResult]
     publish_artifact: Callable[[bytes], PublishArtifactUseCaseResult]
     publish_schema_revision: Callable[[bytes], PublishSchemaRevisionResult]
+    get_schema_revision: Callable[[PublishedRevisionHash], GetSchemaRevisionResult]
     publish_budget_revision: Callable[[bytes], PublishBudgetRevisionResult]
     publish_tool_grant_revision: Callable[[bytes], PublishToolGrantRevisionResult]
     publish_adapter_operation_revision: Callable[

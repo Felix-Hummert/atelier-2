@@ -69,7 +69,10 @@ from atelier2.application.publish_agent_definition_revision import (
 )
 from atelier2.application.publish_artifact import publish_artifact
 from atelier2.application.publish_budget_revision import publish_budget_revision
-from atelier2.application.publish_schema_revision import publish_schema_revision
+from atelier2.application.publish_schema_revision import (
+    get_schema_revision,
+    publish_schema_revision,
+)
 from atelier2.application.publish_tool_grant_revision import publish_tool_grant_revision
 from atelier2.application.publish_workflow_revision import (
     WorkflowPublicationLimits,
@@ -197,6 +200,9 @@ def bound_use_cases(
         ),
         publish_schema_revision=lambda document: publish_schema_revision(
             document, ports.published_revision_registry
+        ),
+        get_schema_revision=lambda revision_hash: get_schema_revision(
+            revision_hash, ports.published_revision_registry
         ),
         publish_budget_revision=lambda document: publish_budget_revision(
             document, ports.published_revision_registry

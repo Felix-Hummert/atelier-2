@@ -13,6 +13,7 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.orders import AuthoredOrderValue
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.schemas_v3 import InstanceSchemaViolation
 from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
     DurableAgentConfigurationRevisionMissing,
@@ -97,6 +98,7 @@ class RunInputRefused:
     name: str
     refusal: V3InputRefusal
     detail: str | None
+    violation: InstanceSchemaViolation | None = None
 
 
 @dataclass(frozen=True)
@@ -190,8 +192,8 @@ def start_published_run(
             return BindingConstraintRefused(node, distinct_from)
         case DurableAgentPlatformEffectUnreconcilable(node):
             return AgentPlatformEffectUnreconcilable(node)
-        case DurableV3StartInputRefused(name, refusal, detail):
-            return RunInputRefused(name, refusal, detail)
+        case DurableV3StartInputRefused(name, refusal, detail, violation):
+            return RunInputRefused(name, refusal, detail, violation)
         case DurableWriteUnavailable():
             return WriteUnavailable()
         case PortDurableStateCorrupt():

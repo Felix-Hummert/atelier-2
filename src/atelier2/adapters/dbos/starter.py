@@ -302,7 +302,7 @@ def _refused_order(
                 )
         if isinstance(verdict, InstanceRefused):
             return DurableV3StartInputRefused(
-                name, V3InputRefusal.VALUE_REFUSED, str(verdict)
+                name, V3InputRefusal.VALUE_REFUSED, str(verdict), verdict.violation
             )
     return None
 

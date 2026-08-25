@@ -12,7 +12,11 @@ from dataclasses import dataclass
 from typing import assert_never
 
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
-from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
+from atelier2.contracts.revisions_v3 import (
+    PublishedRevision,
+    PublishedRevisionHash,
+    RevisionKind,
+)
 from atelier2.contracts.schemas_v3 import SchemaRefused, read_schema_document
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.durable_runs import DurableWriteUnavailable
@@ -20,7 +24,9 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionCollision,
     PublishedRevisionCreated,
     PublishedRevisionExisting,
+    PublishedRevisionFound,
     PublishedRevisionRegistry,
+    PublishedRevisionResolver,
 )
 
 
@@ -75,3 +81,35 @@ def publish_schema_revision(
             return DurableStateCorrupt()
         case _ as unreachable:
             assert_never(unreachable)
+
+
+@dataclass(frozen=True)
+class SchemaRevisionRead:
+    revision: PublishedRevision
+
+
+@dataclass(frozen=True)
+class SchemaRevisionNotFound:
+    pass
+
+
+type GetSchemaRevisionResult = SchemaRevisionRead | SchemaRevisionNotFound
+
+
+def get_schema_revision(
+    revision_hash: PublishedRevisionHash, resolver: PublishedRevisionResolver
+) -> GetSchemaRevisionResult:
+    """The published bytes one `schema` reference pins, or that none do.
+
+    `resolve` is lineage-free by design (ADR 0007): a `schema` revision is
+    named by hash alone, never by a catalog name, so this read asks nothing
+    more than a reference already carries. A hash published under another
+    kind answers the same as one nobody published -- `schema-revisions`
+    speaks for the `schema` kind alone, exactly as it publishes for it alone.
+    """
+    resolved = resolver.resolve(RevisionKind.SCHEMA, revision_hash)
+    if not isinstance(resolved, PublishedRevisionFound):
+        return SchemaRevisionNotFound()
+    if resolved.revision.kind is not RevisionKind.SCHEMA:
+        return SchemaRevisionNotFound()
+    return SchemaRevisionRead(resolved.revision)
