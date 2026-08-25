@@ -31,6 +31,7 @@
   import { readEveryRevision } from "../lib/runPages";
 
   export let cockpitApi: CockpitApi;
+  export let navigate: (path: string) => void;
 
   type ReadFailure =
     | { kind: "unavailable"; title: string }
@@ -178,6 +179,11 @@
             {:else if row.state?.kind === "not-executable"}
               <span class="entry-state failed">{wrapDisplayCopy(catalogPageCopy.notExecutable)}</span>
             {/if}
+            {#if row.newerRevisionAvailable}
+              <span class="entry-state attention"
+                >{wrapDisplayCopy(catalogPageCopy.newerRevisionAvailable)}</span
+              >
+            {/if}
           </div>
           <p class="entry-line">{row.description ?? wrapDisplayCopy(catalogPageCopy.noDescription)}</p>
           {#if row.state?.kind === "not-executable"}
@@ -194,6 +200,13 @@
                   ? catalogPageCopy.admitting
                   : catalogPageCopy.admit
               )}</button
+            >
+          {:else if row.state?.kind === "startable"}
+            <a
+              class="button"
+              href="/atelier/workflows"
+              onclick={(event) => { event.preventDefault(); navigate("/atelier/workflows"); }}
+              >{wrapDisplayCopy(catalogPageCopy.start)}</a
             >
           {/if}
         </li>
@@ -312,7 +325,8 @@
     font-size: var(--text-2xs);
   }
 
-  .entry button {
+  .entry button,
+  .entry a.button {
     margin-top: var(--space-2);
   }
 

@@ -11,10 +11,13 @@ import type { CatalogNameState } from "./catalogName";
  */
 export const workflowsPageCopy = {
   title: "Workflows",
-  emptyTitle: "No named workflows yet",
-  emptyDescription:
-    "A published document becomes a card here once it carries a name — publish one from the start door.",
-  emptyNext: "Publish a workflow",
+  // The literal room sentence (operator ruling #684): this room admits only
+  // startable workflows and every card leads to starting one -- never a
+  // browsable library, which is the Catalog's sentence, not this room's.
+  lead: "Start a workflow — every admitted, startable workflow this workshop can run right now.",
+  emptyTitle: "Nothing is admitted yet",
+  emptyDescription: "A workflow becomes startable here once the catalog admits it.",
+  emptyNext: "Open the catalog",
   listUnavailable: "Workflows unavailable",
   listIncomplete: "Workflows incomplete",
   noDescription: "No description.",
