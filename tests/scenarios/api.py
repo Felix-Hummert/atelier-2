@@ -38,11 +38,13 @@ from atelier2.api.openapi import API_PREFIX
 from atelier2.api.stream import EventPollBackoff
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.application.read_run_events import ReadRunEventsResult, read_run_events
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_projections import (
     RunProjection,
 )
 from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
+from atelier2.ports.issue_observation import TrackerItemSource
 from atelier2.ports.run_events import (
     RunEventQueries,
 )
@@ -426,6 +428,8 @@ def durable_asgi_app(
     runtime: DbosRuntime,
     limits: ApiLimits | None = None,
     poll_backoff: EventPollBackoff | None = None,
+    served_project_id: ProjectId | None = None,
+    tracker_item_source: TrackerItemSource | None = None,
 ) -> FastAPI:
     """The ASGI app in front of one real durable runtime.
 
@@ -469,16 +473,21 @@ def durable_asgi_app(
             artifact_publisher=DbosArtifactStore(runtime.engine),
             host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
             queue_projection=DbosQueueProjectionStore(runtime.engine),
+            tracker_item_source=tracker_item_source,
         ),
         limits=api_limits() if limits is None else limits,
         event_poll_backoff=event_poll_backoff()
         if poll_backoff is None
         else poll_backoff,
+        served_project_id=served_project_id,
     )
 
 
 def durable_api_client(
-    runtime: DbosRuntime, limits: ApiLimits | None = None
+    runtime: DbosRuntime,
+    limits: ApiLimits | None = None,
+    served_project_id: ProjectId | None = None,
+    tracker_item_source: TrackerItemSource | None = None,
 ) -> TestClient:
     """The real HTTP boundary in front of one real durable runtime.
 
@@ -487,7 +496,14 @@ def durable_api_client(
     claims an HTTP answer asks for it here.
     """
 
-    return TestClient(durable_asgi_app(runtime, limits))
+    return TestClient(
+        durable_asgi_app(
+            runtime,
+            limits,
+            served_project_id=served_project_id,
+            tracker_item_source=tracker_item_source,
+        )
+    )
 
 
 def stream_projection_limit() -> WorkflowPublicationLimits:

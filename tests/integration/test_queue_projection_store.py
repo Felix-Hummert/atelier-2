@@ -37,7 +37,11 @@ from atelier2.contracts.queue_projection import (
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.ports.published_revisions import CatalogLineageFounded
-from atelier2.ports.queue_projection import AdmittedQueueItemsPage
+from atelier2.ports.queue_projection import (
+    AdmittedQueueItemsPage,
+    ObservedQueueItemsPage,
+    QueueItemsObserved,
+)
 
 
 @dataclass(frozen=True)
@@ -380,6 +384,95 @@ def test_listing_admitted_items_omits_items_still_only_observed(
     page = harness.store.list_admitted_items(None, 50)
 
     assert page == AdmittedQueueItemsPage((), None)
+
+
+def test_observing_fresh_references_creates_one_observed_row_each(
+    harness: QueueHarness,
+) -> None:
+    references = (_reference("gh:1"), _reference("gh:2"))
+
+    outcome = harness.store.observe(references)
+
+    assert outcome == QueueItemsObserved(observed=2, newly_observed=2)
+    page = harness.store.list_observed_items(None, 50)
+    assert isinstance(page, ObservedQueueItemsPage)
+    assert {item.item_reference for item in page.items} == set(references)
+    assert all(
+        item.state is QueueItemState.OBSERVED
+        and item.revision == QueueProjectionRevision(0)
+        and item.admission is None
+        for item in page.items
+    )
+
+
+def test_observing_the_same_references_again_adds_nothing(
+    harness: QueueHarness,
+) -> None:
+    references = (_reference("gh:1"), _reference("gh:2"))
+    assert harness.store.observe(references) == QueueItemsObserved(2, 2)
+
+    repeated = harness.store.observe((*references, _reference("gh:3")))
+
+    assert repeated == QueueItemsObserved(observed=3, newly_observed=1)
+    assert _row_count(harness.engine) == 3
+
+
+def test_observing_an_already_admitted_item_never_rewinds_its_admission(
+    harness: QueueHarness,
+) -> None:
+    lineage = _founded_workflow_lineage(harness.engine, "triage")
+    reference = _reference()
+    admission = QueueAdmission(
+        lineage.lineage_id, QueueAdmissionRationale("matches the triage rule")
+    )
+    admitted = harness.store.admit(
+        AdmitQueueItem(reference, admission, QueueProjectionRevision(0))
+    )
+    assert isinstance(admitted, QueueItemAdmitted)
+    admitted_row = _row(harness.engine, reference.item_id.value)
+
+    outcome = harness.store.observe((reference,))
+
+    assert outcome == QueueItemsObserved(observed=1, newly_observed=0)
+    assert _row(harness.engine, reference.item_id.value) == admitted_row
+
+
+def test_observing_an_empty_batch_writes_nothing(harness: QueueHarness) -> None:
+    assert harness.store.observe(()) == QueueItemsObserved(0, 0)
+    assert _row_count(harness.engine) == 0
+
+
+def test_listing_observed_items_omits_the_admitted_and_pages_by_item_id(
+    harness: QueueHarness,
+) -> None:
+    lineage = _founded_workflow_lineage(harness.engine, "triage")
+    references = [_reference(f"gh:{number}") for number in range(1, 5)]
+    assert harness.store.observe(tuple(references)) == QueueItemsObserved(4, 4)
+    admitted = harness.store.admit(
+        AdmitQueueItem(
+            references[0],
+            QueueAdmission(
+                lineage.lineage_id, QueueAdmissionRationale("matches the triage rule")
+            ),
+            QueueProjectionRevision(0),
+        )
+    )
+    assert isinstance(admitted, QueueItemAdmitted)
+    expected_order = sorted(
+        references[1:], key=lambda reference: reference.item_id.value
+    )
+
+    first_page = harness.store.list_observed_items(None, 2)
+
+    assert isinstance(first_page, ObservedQueueItemsPage)
+    assert [item.item_reference for item in first_page.items] == expected_order[:2]
+    assert first_page.next_after == QueueItemId(expected_order[1].item_id.value)
+
+    second_page = harness.store.list_observed_items(first_page.next_after, 2)
+
+    assert isinstance(second_page, ObservedQueueItemsPage)
+    assert [item.item_reference for item in second_page.items] == expected_order[2:]
+    assert second_page.next_after is None
 
 
 def test_listing_admitted_items_pages_by_item_id_and_reports_where_to_resume(

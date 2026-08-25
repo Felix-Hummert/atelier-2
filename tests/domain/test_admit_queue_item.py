@@ -61,6 +61,12 @@ class FakeQueueProjection:
         self.list_calls.append((after, limit))
         return self.list_answer
 
+    def observe(self, references: Any) -> Any:
+        raise AssertionError("the admission use-cases never observe")
+
+    def list_observed_items(self, after: QueueItemId | None, limit: int) -> Any:
+        raise AssertionError("the admission use-cases never read the observed list")
+
 
 def _reference() -> WorkItemReference:
     return WorkItemReference(ProjectId("project1"), TrackerItemReference("gh:79"))

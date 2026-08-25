@@ -44,6 +44,10 @@ from atelier2.application.admit_queue_item import (
 from atelier2.application.answer_wait import answer_wait_result
 from atelier2.application.cancel_agent_attempt import cancel_agent_attempt
 from atelier2.application.cancel_run import cancel_run_result
+from atelier2.application.import_project_source_issues import (
+    import_project_source_issues,
+    list_observed_queue_items,
+)
 from atelier2.application.occupancy import (
     get_occupancy_revision,
     publish_occupancy_revision,
@@ -307,6 +311,12 @@ def bound_use_cases(
             command, ports.queue_projection
         ),
         list_admitted_queue_items=lambda after, limit: list_admitted_queue_items(
+            after, limit, ports.queue_projection
+        ),
+        import_project_source_issues=lambda: import_project_source_issues(
+            served_project_id, ports.tracker_item_source, ports.queue_projection
+        ),
+        list_observed_queue_items=lambda after, limit: list_observed_queue_items(
             after, limit, ports.queue_projection
         ),
     )

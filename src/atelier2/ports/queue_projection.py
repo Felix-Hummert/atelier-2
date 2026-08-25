@@ -28,6 +28,7 @@ from atelier2.contracts.queue_projection import (
     QueueAdmissionOutcome,
     QueueItemId,
     QueueItemSnapshot,
+    WorkItemReference,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
@@ -60,10 +61,54 @@ type ListAdmittedQueueItemsResult = (
 )
 
 
+@dataclass(frozen=True)
+class QueueItemsObserved:
+    """How one observation batch landed: what was new, against what was handed in.
+
+    Identity does the deduplication (`QueueItemId` derives from project and
+    tracker reference), so a repeated observation is counted, never rewritten:
+    `newly_observed` is the rows this write created, and the difference to
+    `observed` already existed -- observed earlier, or already admitted.
+    """
+
+    observed: int
+    newly_observed: int
+
+
+type ObserveQueueItemsResult = (
+    QueueItemsObserved | DurableWriteUnavailable | DurableStateCorrupt
+)
+
+
+@dataclass(frozen=True)
+class ObservedQueueItemsPage:
+    """One page of items still OBSERVED, awaiting the operator's admission.
+
+    Ordered by `QueueItemId` exactly as the admitted page is: the cursor is a
+    durable identity a caller can resume from, not an insertion sequence.
+    """
+
+    items: tuple[QueueItemSnapshot, ...]
+    next_after: QueueItemId | None
+
+
+type ListObservedQueueItemsResult = (
+    ObservedQueueItemsPage | QueueReadUnavailable | DurableStateCorrupt
+)
+
+
 class QueueProjection(Protocol):
     """The durable home of one item's admission lifecycle."""
 
+    def observe(
+        self, references: tuple[WorkItemReference, ...]
+    ) -> ObserveQueueItemsResult: ...
+
     def admit(self, command: AdmitQueueItem) -> AdmitQueueItemResult: ...
+
+    def list_observed_items(
+        self, after: QueueItemId | None, limit: int
+    ) -> ListObservedQueueItemsResult: ...
 
     def list_admitted_items(
         self, after: QueueItemId | None, limit: int

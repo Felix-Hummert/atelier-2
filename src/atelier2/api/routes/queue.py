@@ -1,9 +1,10 @@
-"""The queue's two HTTP doors: admit one observed item, list the admitted ones.
+"""The queue's HTTP doors: import, list what was observed, admit, list the admitted.
 
 Phase A gave the queue an application caller and a read; nothing in production
-could reach either without a door. These are those doors. Neither invents a
-domain outcome: the POST maps exactly the outcomes `admit_queue_item` already
-answers with, and the GET maps the page `list_admitted_queue_items` returns.
+could reach either without a door. These are those doors. None invents a
+domain outcome: each maps exactly the outcomes its application caller already
+answers with. The import POST is the operator's trigger of #652: the served
+host owns the connected tracker, so the request carries nothing.
 """
 
 from __future__ import annotations
@@ -21,15 +22,29 @@ from atelier2.api._support import (
     run_control_query,
 )
 from atelier2.api.context import ApiContext, api_context_dependency
-from atelier2.api.openapi import API_PREFIX
+from atelier2.api.openapi import (
+    OBSERVED_QUEUE_ITEMS_PATH,
+    PROJECT_SOURCE_IMPORT_PATH,
+    QUEUE_ADMISSIONS_PATH,
+    QUEUE_ITEMS_PATH,
+)
 from atelier2.api.problems import ApiProblem
 from atelier2.api.wire.requests import AdmitQueueItemRequestResource
 from atelier2.api.wire.resources import (
     AdmittedQueueItemResource,
     InvalidFieldResource,
+    ObservedQueueItemPageResource,
+    ObservedQueueItemResource,
+    ProjectSourceImportResource,
     QueueItemPageResource,
 )
 from atelier2.application.admit_queue_item import AdmittedQueueItemsListed
+from atelier2.application.import_project_source_issues import (
+    ObservedQueueItemsListed,
+    ProjectSourceIssuesImported,
+    ProjectSourceNotConnected,
+    SourcePayloadMalformed,
+)
 from atelier2.application.refusals import (
     DurableStateCorrupt,
     ReadUnavailable,
@@ -53,9 +68,6 @@ from atelier2.contracts.queue_projection import (
 )
 
 router = APIRouter()
-
-QUEUE_ADMISSIONS_PATH = API_PREFIX + "/queue-admissions"
-QUEUE_ITEMS_PATH = API_PREFIX + "/queue-items"
 
 
 @router.post(
@@ -138,6 +150,74 @@ async def list_queue_items_route(
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)
+
+
+@router.post(PROJECT_SOURCE_IMPORT_PATH, response_model=ProjectSourceImportResource)
+async def import_project_source_issues_route(
+    context: ApiContext = api_context_dependency,
+) -> ProjectSourceImportResource:
+    """Observe the connected tracker's open items into the queue, idempotently."""
+
+    result = await run_control_query(
+        context.control_runner,
+        context.use_cases.import_project_source_issues,
+    )
+    match result:
+        case ProjectSourceIssuesImported(observed, newly_observed):
+            return ProjectSourceImportResource(
+                observed=observed, newly_observed=newly_observed
+            )
+        case ProjectSourceNotConnected():
+            raise ApiProblem("project-source-not-connected")
+        case SourcePayloadMalformed(detail):
+            raise ApiProblem("project-source-payload-malformed", detail)
+        case ReadUnavailable(detail):
+            raise ApiProblem("project-source-unavailable", detail)
+        case WriteUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+@router.get(OBSERVED_QUEUE_ITEMS_PATH, response_model=ObservedQueueItemPageResource)
+async def list_observed_queue_items_route(
+    after: str | None = None,
+    limit: str = "50",
+    context: ApiContext = api_context_dependency,
+) -> ObservedQueueItemPageResource:
+    """List observed items awaiting admission; empty is a page, not an error."""
+
+    after_item_id = None if after is None else _parse_after(after)
+    parsed_limit = parse_limit(limit)
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.list_observed_queue_items(
+            after_item_id, parsed_limit
+        ),
+    )
+    match result:
+        case ObservedQueueItemsListed(items, next_after):
+            return ObservedQueueItemPageResource(
+                items=tuple(_observed_item_resource(snapshot) for snapshot in items),
+                next_after=None if next_after is None else next_after.value,
+            )
+        case ReadUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _observed_item_resource(snapshot: QueueItemSnapshot) -> ObservedQueueItemResource:
+    return ObservedQueueItemResource(
+        project_id=snapshot.item_reference.project.value,
+        tracker_item_reference=snapshot.item_reference.tracker_item.value,
+        item_id=snapshot.item_reference.item_id.value,
+        revision=snapshot.revision.value,
+    )
 
 
 def _parse_after(value: str) -> QueueItemId:

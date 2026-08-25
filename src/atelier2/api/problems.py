@@ -556,6 +556,24 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "The agent finished before this cancel reached it; its result stands and "
         "the run moved on.",
     ),
+    "project-source-not-connected": ProblemDefinition(
+        409,
+        "Project source not connected",
+        "Serve a project whose source is connected with `atelier2 connect` "
+        "before importing its items.",
+    ),
+    "project-source-unavailable": ProblemDefinition(
+        503,
+        "Project source unavailable",
+        "The connected platform did not answer; retry the import after it "
+        "becomes reachable.",
+    ),
+    "project-source-payload-malformed": ProblemDefinition(
+        502,
+        "Project source payload malformed",
+        "The connected platform answered with a shape its adapter refuses; "
+        "inspect the platform before retrying.",
+    ),
     "queue-admission-revision-conflict": ProblemDefinition(
         409,
         "Queue admission revision conflict",

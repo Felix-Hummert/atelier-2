@@ -638,6 +638,36 @@ class QueueItemPageResource(ApiModel):
     next_after: str | None = Field(pattern=SHA256_HASH_PATTERN)
 
 
+class ObservedQueueItemResource(ApiModel):
+    """One observed queue item, awaiting the operator's admission decision.
+
+    It carries no binding or rationale because an observed item has neither
+    yet; `revision` is what the admission door's `expected_revision` must
+    repeat, so the operator reads it from this list rather than guessing.
+    """
+
+    project_id: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_ID_CHARACTERS)
+    tracker_item_reference: str = Field(
+        min_length=1, max_length=MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
+    )
+    item_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    revision: int = Field(ge=0, le=MAX_SIGNED_INT64)
+
+
+class ObservedQueueItemPageResource(ApiModel):
+    """One page of observed queue items, resumable by the cursor it ends on."""
+
+    items: tuple[ObservedQueueItemResource, ...]
+    next_after: str | None = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class ProjectSourceImportResource(ApiModel):
+    """What one import observed: the open items seen, and how many were new."""
+
+    observed: int = Field(ge=0)
+    newly_observed: int = Field(ge=0)
+
+
 class WorkflowRevisionPageResource(ApiModel):
     items: tuple[WorkflowRevisionSummaryResource, ...]
     next_after_revision_hash: str | None = Field(pattern=REVISION_HASH_PATTERN)

@@ -1099,11 +1099,20 @@ item's row admits is OBSERVED to ADMITTED: a stale revision or an admission
 that would replace a different one already recorded is refused with the row
 provably unchanged, and repeating the exact same admission again succeeds
 without a second write. The first admission attempt for one derived identity
-also establishes that identity's row; there is no separate durable "observed"
-write yet. Resolving which lineage a workflow query names -- reading the
-catalog above this projection -- has no production caller yet; it lands with
-the platform door in a later slice. No dependency edge, no readiness, no
-priority, and no HTTP door exist for this projection yet, and nothing in it
+also establishes that identity's row, and OBSERVED rows also enter through the
+operator's issue import: `POST /atelier/api/v1/project-sources/import` on a
+served instance whose project-source connection record names a GitHub
+repository observes every open issue as one OBSERVED row (reference grammar
+`gh:<n>`, owned by the GitHub adapter), idempotent through the derived
+identity and insert-or-ignore -- a repeated import adds nothing and never
+rewinds an admission. Observed items are listable at
+`GET /atelier/api/v1/observed-queue-items`, admitted ones at
+`GET /atelier/api/v1/queue-items`, and admission runs through
+`POST /atelier/api/v1/queue-admissions`; choosing a workflow per item stays
+the operator's manual decision at that door. A poll loop, a durable cursor
+with conditional reads, rate-limit projection, and closed/label semantics are
+named deferrals of the import's first slice. No dependency edge, no
+readiness, and no priority exist for this projection yet, and nothing in it
 holds a tracker item's title, description, or comments -- REQ-QUEUE-14 keeps
 those with the tracker.
 

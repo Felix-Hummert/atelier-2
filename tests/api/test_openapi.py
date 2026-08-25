@@ -111,6 +111,8 @@ EXPECTED_PATHS = {
     ATTENTION_EVENT_PATH,
     API_PREFIX + "/queue-admissions",
     API_PREFIX + "/queue-items",
+    API_PREFIX + "/project-sources/import",
+    API_PREFIX + "/observed-queue-items",
 }
 
 EXPECTED_ROUTE_SEQUENCE = (
@@ -210,6 +212,16 @@ EXPECTED_ROUTE_SEQUENCE = (
     ("GET", ATTENTION_EVENT_PATH, "attention_event_stream_route"),
     ("POST", API_PREFIX + "/queue-admissions", "admit_queue_item_route"),
     ("GET", API_PREFIX + "/queue-items", "list_queue_items_route"),
+    (
+        "POST",
+        API_PREFIX + "/project-sources/import",
+        "import_project_source_issues_route",
+    ),
+    (
+        "GET",
+        API_PREFIX + "/observed-queue-items",
+        "list_observed_queue_items_route",
+    ),
 )
 
 EXPECTED_SUCCESS_STATUSES = {
@@ -297,8 +309,8 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head adds the agent-definition publication door
-    `POST /agent-definition-revisions` (#66 Phase A).
+    it. This head adds the issue-import door `POST /project-sources/import` and
+    the observed-items list `GET /observed-queue-items` (#652).
     Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 
