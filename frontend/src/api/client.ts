@@ -745,6 +745,23 @@ const runCancellabilitySchema = z
     }
   });
 
+/**
+ * One order a V3 run was started with: its name and the exact bytes supplied.
+ *
+ * The workflow revision's own declared order already names the schema each
+ * order pins; this mirrors only what that excerpt cannot -- the bytes the
+ * start actually carried, base64, exactly as the server's `run_inputs_v3`
+ * holds them.
+ */
+const runOrderSchema = z
+  .object({
+    name: z.string().min(1),
+    value_base64: z.string()
+  })
+  .strict();
+
+export type RunOrder = z.infer<typeof runOrderSchema>;
+
 const runV3Schema = z
   .object({
     workflow_format_version: z.literal(3),
@@ -754,6 +771,7 @@ const runV3Schema = z
     agent_binding_set_hash: sha256,
     run_configuration_revision_hash: sha256,
     agent_bindings: z.array(agentBindingV2Schema).max(100),
+    orders: z.array(runOrderSchema),
     state_version: nonnegativeSafeInteger,
     state: z.enum(RUN_STATES_V3),
     current_node_id: z.string().min(1),
