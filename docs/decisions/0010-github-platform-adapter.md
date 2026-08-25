@@ -134,8 +134,11 @@ shape.
 
 **The authentication method is the operator's choice at project-connect time, not
 this record's mandate** (operator ruling on #24, 2026-08-15). V1 carries **both**
-methods, each fully specified here, and a connected project binds exactly one of
-them as a published configuration revision under #1's live-configuration rule.
+methods, each fully specified here — **with one dated, named exception:
+`push-atelier-commit` is PAT-only until a future amendment designs its App
+installation-token handoff (2026-08-25 amendment, #642-Journal; decision 5)** —
+and a connected project binds exactly one of them as a published configuration
+revision under #1's live-configuration rule.
 
 - **Personal access token — the low-friction path, and V1 must support it.** The
   operator pastes a token when connecting the project and is done. A token scoped
@@ -368,19 +371,24 @@ force-pushes a ref that already names a commit — a second commit on an
 existing Atelier branch is a second Action node's own push, never a rewrite of
 this one's. A non-fast-forward or lease rejection from the remote is not a
 refusal in its own right: it is exactly the trigger that sends the intent to
-readback rather than a blind retry, and readback then reads one of three ways.
-The ref may still be **absent** — the rejection did not actually create
-anything, whatever the remote's reason for refusing it — and that is not
-distinguished from a fresh intent: the create is simply retried, exactly as
-any first send would be. The ref may be **present and name this push's own
-commit** — the earlier attempt's own race — which resolves to a receipt, not a
-second send. Or the ref may be **present and name a different commit**, which
-resolves through `platform-push-ref-diverged` to `UNKNOWN`. **A divergence
-carries no typed sub-reason beyond `UNKNOWN`**, because this operation owns no
-evidence at its boundary that would let it tell one divergent cause from
-another; an owner that later proves a distinguishing reason may add one, but
-this amendment does
-not invent one on the chance it might be useful.
+readback, never to a second send — **and no retry happens inside this
+operation**, whatever readback then finds. Readback reads one of two ways.
+The ref may be **present and name this push's own commit** — the earlier
+attempt's own race — which resolves to a receipt, not a second send. Or the
+ref may be **absent, or present and name a different commit**: both are
+`UNKNOWN`, and both are treated exactly alike by the no-resend rule below —
+**the ambiguous-retry rule is unconditional, so an absent ref after a
+rejection is never distinguished from a genuine divergence and never
+auto-retried as if it were a fresh intent.** A present-but-different ref
+resolves through `platform-push-ref-diverged`; an absent ref resolves through
+the ordinary "Create a content-bearing object" row below, whose unmatched scan
+is already `UNKNOWN` by that row's own rule. Either way `UNKNOWN` advances to
+`WAITING_RECONCILIATION`, and a fresh attempt is the operator's reconciliation
+decision, never the adapter's own choice to resend. **A divergence carries no
+typed sub-reason beyond `UNKNOWN`**, because this operation owns no evidence
+at its boundary that would let it tell one divergent cause from another; an
+owner that later proves a distinguishing reason may add one, but this
+amendment does not invent one on the chance it might be useful.
 
 **Its authoritative negative is `none`, unconditionally** — not
 only by default but by declaration, because the object it addresses is a ref
@@ -401,8 +409,12 @@ own bytes. The subprocess instead receives a **reference** in its constructed
 environment — the same credential-file path decision 3 already resolves the
 token from — and a git credential helper or `GIT_ASKPASS` script git itself
 invokes reads that file and answers git's credential prompt; the pushing
-process's own environment never holds the secret, only the path to it. This
-amendment adds no second credential rule: it states decision 3's existing
+process's own environment never holds the secret, only the path to it.
+**Stated exactly: the git subprocess's environment may legitimately carry the
+credential-file path — that path is a reference, not the secret — and must
+never carry the credential's own bytes; the two are not the same claim, and
+this amendment makes only the second one.** This amendment adds no second
+credential rule: it states decision 3's existing
 by-reference discipline precisely for the one transport in this record that
 shells out to a subprocess instead of calling an HTTP client library directly.
 **This amendment specifies `push-atelier-commit` for the PAT credential file
@@ -647,7 +659,9 @@ this record borrows that owner rather than opening a second vocabulary.
 
 - The operator connects a project in the way they choose, and the low-friction path
   is a first-class one rather than a concession. Neither method is a different
-  product: the same operations, receipts, refusals and secret rules hold on both.
+  product: the same operations, receipts, refusals and secret rules hold on both,
+  **except `push-atelier-commit`, PAT-only until its App handoff is designed
+  (2026-08-25 amendment, #642-Journal)**.
 - An Atelier action stops being recognizable only by a prose signature. Its typed
   actor is in Atelier's receipts under both methods, a content marker adds a
   platform-visible copy wherever an operation has a slot for one, and in the App
@@ -680,7 +694,9 @@ this record borrows that owner rather than opening a second vocabulary.
   key, no installation token and no credential path — the canary shape ADR 0009
   already uses, run once per auth method.
 - Both auth methods perform the same operations, produce the same receipt shape and
-  raise the same refusals; no operation is available in one method only.
+  raise the same refusals; no operation is available in one method only —
+  **`push-atelier-commit` is this record's one named, dated exception, PAT-only
+  until its App handoff is designed (2026-08-25 amendment, #642-Journal)**.
 - The same Action node re-executed after a crash between send and receipt leaves
   exactly one platform object, found by readback, never a twin.
 - A crash before the request leaves the adapter still finds the intent durably
@@ -755,13 +771,17 @@ this record borrows that owner rather than opening a second vocabulary.
 - **(2026-08-25 amendment, #642-Journal)** A durable projection, event, receipt,
   and log all show no credential or secret material for a `push-atelier-commit`
   run under whichever credential handoff it is specified for — the PAT file
-  today — and neither does the argument vector or the environment of the git
-  subprocess or of any credential helper or `GIT_ASKPASS` process it invokes —
-  the same canary standard the auth-method proof above already uses, extended
-  past the raw command line to the process environment and to every helper
-  process the git subprocess itself starts. A future amendment specifying the
-  App method's installation-token handoff proves the same canary against that
-  handoff before it is accepted.
+  today. **Stated exactly, to match the credential-handoff paragraph above: the
+  argument vector and the environment of the git subprocess, and of any
+  credential helper or `GIT_ASKPASS` process it invokes, may legitimately show
+  the credential-file path — that is the reference decision 3 and the
+  paragraph above name — but never the credential's own bytes; the canary
+  asserts the absence of the secret's bytes, not the absence of the reference
+  to it.** This is the same canary standard the auth-method proof above already
+  uses, extended past the raw command line to the process environment and to
+  every helper process the git subprocess itself starts. A future amendment
+  specifying the App method's installation-token handoff proves the same
+  canary against that handoff before it is accepted.
 
 ## Out of scope and stop conditions
 
@@ -774,7 +794,9 @@ isolation (#23); the durable requirement-revision store and trace format
 a webhook needs (ADR 0009 and #9 part 3).
 
 Stop implementation on: an auth method hardcoded instead of chosen per project
-connection, or either method built as a second-class path with fewer operations; a
+connection, or either method built as a second-class path with fewer operations
+beyond `push-atelier-commit`'s one named, dated PAT-only exception (2026-08-25
+amendment, #642-Journal, pending its App handoff design); a
 marker-derived actor presented as platform-proven attribution; a content-bearing
 object created without its marker, or a marker slot assumed for an operation that
 has none; a marker written into a body a human owns; a companion object created to
