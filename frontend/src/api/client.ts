@@ -27,6 +27,8 @@ const eventCursor = z.string().refine(
 const safeInteger = z.number().refine(Number.isSafeInteger, "integer must be exactly representable");
 const nonnegativeSafeInteger = safeInteger.refine((value) => value >= 0);
 const positiveSafeInteger = safeInteger.refine((value) => value > 0);
+const invalidFieldSchema = z.object({ path: z.string().min(1), reason: z.string().min(1) }).strict();
+export type InvalidField = z.infer<typeof invalidFieldSchema>;
 
 const agentNodeV1Schema = z
   .object({
@@ -143,6 +145,18 @@ const workflowDeclaredOrderSchema = z
   .strict();
 
 export { workflowDeclaredOrderSchema, workflowDeclaredSchemaSchema };
+
+/**
+ * The published bytes a `schema` revision pins, read only far enough to
+ * summarize an order for a human -- this is not a JSON Schema evaluator, and
+ * the browser must not pretend to be one. `atelier2.contracts.schemas_v3` is
+ * the one place that actually enforces the closed Draft 2020-12 profile; this
+ * type only says a schema document is JSON's own two possible schema shapes,
+ * a boolean or an object, and leaves every keyword's value unconstrained.
+ */
+const jsonSchemaDocumentSchema = z.union([z.boolean(), z.record(z.string(), z.unknown())]);
+
+export type JsonSchemaDocument = z.infer<typeof jsonSchemaDocumentSchema>;
 
 /**
  * One waiting node's answer schema, classified as far as the server's excerpt
@@ -1387,6 +1401,7 @@ export interface CockpitApi {
   getRun(publicReference: string): Promise<AnyRun>;
   getNodeDetail(publicReference: string, nodeId: string): Promise<NodeDetail>;
   getWorkflowRevision(revisionHash: string): Promise<WorkflowRevisionDetail>;
+  getSchemaRevision(schemaRevisionHash: string): Promise<JsonSchemaDocument>;
   openRunEvents(publicReference: string, handlers: RunEventHandlers): RunEventSubscription;
   openAttentionEvents(handlers: RunEventHandlers): RunEventSubscription;
 }
@@ -1725,6 +1740,14 @@ export function createCockpitApi(
       }
       return revision;
     },
+    getSchemaRevision: (schemaRevisionHash) =>
+      requestJson(
+        fetcher,
+        `/atelier/api/v1/schema-revisions/${encodeURIComponent(schemaRevisionHash)}`,
+        {},
+        [200],
+        jsonSchemaDocumentSchema
+      ),
     openRunEvents: (publicReference, handlers) => {
       if (decodePublicRunReference(publicReference) === null) {
         throw new CockpitRequestError("The run event target was not a valid public reference.");
@@ -1856,9 +1879,7 @@ function problemVariant<
     return z
       .object({
         ...fields,
-        invalid_fields: z
-          .array(z.object({ path: z.string().min(1), reason: z.string().min(1) }).strict())
-          .optional()
+        invalid_fields: z.array(invalidFieldSchema).optional()
       })
       .strict();
   }
