@@ -261,14 +261,7 @@ function settleFromEvent(rawData: string, pendingId: string): boolean {
     return true;
   }
   if (event.event === "AGENT_FAILED") {
-    const named =
-      "failure_code" in event
-        ? event.failure_code
-        : "agent-executor-binding-unavailable";
-    settleConductorLine(
-      pendingId,
-      `${conductorChatCopy.episodeFailed} ${named}`
-    );
+    settleConductorLine(pendingId, conductorChatCopy.episodeFailed);
     return true;
   }
   return false;
