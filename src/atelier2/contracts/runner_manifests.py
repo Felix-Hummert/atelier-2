@@ -8,6 +8,7 @@ from pathlib import PurePosixPath
 
 from atelier2.contracts.agent_attempts import RunnerManifestId
 from atelier2.contracts.hashing import frame
+from atelier2.contracts.runner_session_codec import RUNNER_SESSION_FRAME_DOMAIN
 
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
@@ -283,12 +284,20 @@ class RunnerManifestV1:
 
 
 def encode_runner_manifest(manifest: RunnerManifestV1) -> bytes:
-    """Encode the selected facts under their one manifest identity domain."""
+    """Encode the selected facts under their one manifest identity domain.
+
+    The third field attests which session-wire generation this manifest was
+    selected for (`contracts/runner_session_codec.py`'s own
+    `RUNNER_SESSION_FRAME_DOMAIN`, reused rather than copied here so the two
+    can never drift apart the way #672's delta review caught) -- a runner a
+    manifest names must speak the exact PREPARE shape Core's session codec
+    now emits, not a retired one.
+    """
     return frame(
         "runner-manifest/v1",
         manifest.source_commit.encode("ascii"),
         manifest.image_digest.encode("ascii"),
-        b"runner-session/v1",
+        RUNNER_SESSION_FRAME_DOMAIN,
         manifest.executor_revision.encode("utf-8"),
         manifest.executor_operational_identity.encode("utf-8"),
         manifest.provider_id.encode("utf-8"),
@@ -345,7 +354,7 @@ def _decoded_grants(fields: tuple[bytes, ...]) -> tuple[RunnerPathGrant, ...]:
 def decode_runner_manifest(encoded: bytes) -> RunnerManifestV1:
     """Decode one canonical manifest and refuse any other byte sequence."""
     fields = _decode_manifest_fields(encoded)
-    if len(fields) < _FIXED_FIELD_COUNT or fields[2] != b"runner-session/v1":
+    if len(fields) < _FIXED_FIELD_COUNT or fields[2] != RUNNER_SESSION_FRAME_DOMAIN:
         raise ValueError("runner-manifest-mismatch")
     if len(fields[23]) != 8 or len(fields[24]) != 8:
         raise ValueError("runner-manifest-mismatch")

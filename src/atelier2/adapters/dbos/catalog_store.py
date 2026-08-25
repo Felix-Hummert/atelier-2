@@ -48,6 +48,7 @@ from atelier2.ports.published_revisions import (
     CatalogMemberAdmitted,
     CatalogNameFound,
     CatalogNameMissing,
+    CatalogReferenceLookup,
     CatalogRetirementExisting,
     CatalogRevisionPosition,
     FoundCatalogLineageResult,
@@ -378,20 +379,25 @@ class DbosCatalogStore:
     def resolve(
         self, kind: RevisionKind, revision_hash: PublishedRevisionHash
     ) -> ResolvePublishedRevisionResult:
-        with self._engine.connect() as connection:
-            record = (
-                connection.execute(
-                    sa.select(published_revisions).where(
-                        published_revisions.c.kind == kind.value,
-                        published_revisions.c.revision_hash == revision_hash.value,
+        try:
+            with self._engine.connect() as connection:
+                record = (
+                    connection.execute(
+                        sa.select(published_revisions).where(
+                            published_revisions.c.kind == kind.value,
+                            published_revisions.c.revision_hash == revision_hash.value,
+                        )
                     )
+                    .mappings()
+                    .one_or_none()
                 )
-                .mappings()
-                .one_or_none()
-            )
-        if record is None:
-            return PublishedRevisionMissing()
-        return PublishedRevisionFound(published_revision_from_record(record))
+            if record is None:
+                return PublishedRevisionMissing()
+            return PublishedRevisionFound(published_revision_from_record(record))
+        except (OperationalError, PoolTimeoutError):
+            return PublishedRevisionsUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
 
     def list_revisions(
         self, kind: RevisionKind, after: PublishedRevisionHash | None, limit: int
@@ -434,7 +440,7 @@ class DbosCatalogStore:
         kind: RevisionKind,
         lineage_id: CatalogLineageId,
         revision_hash: PublishedRevisionHash,
-    ) -> ResolvePublishedRevisionResult:
+    ) -> CatalogReferenceLookup:
         with self._engine.connect() as connection:
             lineage_record = (
                 connection.execute(

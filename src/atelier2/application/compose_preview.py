@@ -12,8 +12,9 @@ from __future__ import annotations
 from collections.abc import Hashable, Iterable, Mapping
 from dataclasses import dataclass
 
+from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
 from atelier2.application.resolve_references import (
-    ReferenceResolution,
+    SettledResolution,
     declared_through,
     resolve_declared_reference,
 )
@@ -67,11 +68,13 @@ def compose_preview(
     attested: AttestedCapabilities,
     registry: PublishedRevisionRegistry,
     configuration: ConfigurationBinding,
-) -> ComposedPreview:
-    resolutions = {
-        declared: resolve_declared_reference(declared, registry)
-        for declared in declared_through(document, subworkflows)
-    }
+) -> ComposedPreview | ReadUnavailable | DurableStateCorrupt:
+    resolutions: dict[DeclaredReference, SettledResolution] = {}
+    for declared in declared_through(document, subworkflows):
+        resolution = resolve_declared_reference(declared, registry)
+        if isinstance(resolution, (ReadUnavailable, DurableStateCorrupt)):
+            return resolution
+        resolutions[declared] = resolution
     withdrawn = skills.with_unresolved(_unresolved_skills(resolutions))
     unread = withdrawn.unread(_resolved_skills(resolutions))
     readable = withdrawn.with_unread(unread)
@@ -94,7 +97,7 @@ def compose_preview(
 
 
 def _unresolved_skills(
-    resolutions: Mapping[DeclaredReference, ReferenceResolution],
+    resolutions: Mapping[DeclaredReference, SettledResolution],
 ) -> tuple[str, ...]:
     """Every pinned skill revision that resolves to nothing, so nothing was read.
 
@@ -111,7 +114,7 @@ def _unresolved_skills(
 
 
 def _resolved_skills(
-    resolutions: Mapping[DeclaredReference, ReferenceResolution],
+    resolutions: Mapping[DeclaredReference, SettledResolution],
 ) -> tuple[str, ...]:
     """Every pinned skill revision the registry does carry, whoever read it.
 
@@ -134,7 +137,7 @@ class _Derivation:
     requirements: tuple[CapabilityRequirement, ...]
     unproven: tuple[ExecutabilityRefusal, ...]
     roles: Mapping[str, ResolvedAgentBinding]
-    resolutions: Mapping[DeclaredReference, ReferenceResolution]
+    resolutions: Mapping[DeclaredReference, SettledResolution]
     unread_skills: frozenset[str]
 
 

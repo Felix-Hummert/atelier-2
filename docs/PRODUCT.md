@@ -479,8 +479,10 @@ no runtime executes a child.
 
 A valid V3 document is publishable long before all of it is executable: it
 becomes an immutable revision under the same exact-bytes hash identity as V1 and V2,
-and the revision projection names its format and says what still has no owner, while an
-invalid one is refused at publication carrying that named node and field. One shape of
+and the revision projection names its format and says what still has no owner -- an
+authored form nothing binds, or a pinned reference no published revision answers -- by
+the same two rules the start applies, so no reading promises a start the service then
+refuses; an invalid one is refused at publication carrying that named node and field. One shape of
 it runs: a single line of Agent, Wait and linear Action nodes, each entered by at most
 one dependency and followed by at most one dependent, declaring no optional form the
 runtime does not bind. `required_context` and `available_context` are parsed target
@@ -799,7 +801,14 @@ document bytes. A V3 run page draws that excerpt as topological layers and
 paints each node's state from the rail the server already walked — shape and
 colour together, no zoom, no drag. The page leads with the published workflow
 name and keeps the run id as identity. A click into a node speaks Prompt and
-Output, never Asked or Answered. The Who panel labels the receipt's model as
+Output, never Asked or Answered. A run that has ended shows its own sink
+node's declared answer as prose above the graph without a click — a declared
+object's own `answer` field as one sentence with its other non-empty fields
+named after it, a declared array as its own items, an object with no
+`answer` field as all of its fields, a bare string as itself — and the
+node's own Result tab renders the identical form, the declared bytes kept
+behind a collapsed disclosure; opening the sink node itself names that
+banner once ("Shown above") rather than repeating it. The Who panel labels the receipt's model as
 the declared configuration model and says a provider-resolved model is not
 recorded — the same honest absence as usage. A hash leads with its human
 name and is copied by a click on that named control — the hex is the proof

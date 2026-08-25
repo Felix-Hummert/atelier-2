@@ -58,8 +58,11 @@ from atelier2.api.wire.events import (
     SubworkflowCompletedEventResourceV2,
     WaitAnsweredEventResource,
     WaitAnsweredEventResourceV2,
+    WaitAnsweredEventResourceV3,
+    WaitCancelledEventResourceV3,
     WaitingInputEventResource,
     WaitingInputEventResourceV2,
+    WaitingInputEventResourceV3,
 )
 from atelier2.api.wire.resources import StreamFailureResource
 from atelier2.contracts.executions import (
@@ -132,6 +135,9 @@ EVENT_MODELS_V3 = (
     ActionReconciliationRequiredEventResourceV3,
     ActionReconciliationResolvedEventResourceV3,
     ActionCompletedEventResourceV3,
+    WaitingInputEventResourceV3,
+    WaitAnsweredEventResourceV3,
+    WaitCancelledEventResourceV3,
 )
 EVENT_NAMES = tuple(
     kind.value for kind in RunEventKind if kind not in KINDS_NO_V1_RUN_CARRIES
