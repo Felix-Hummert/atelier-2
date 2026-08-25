@@ -797,7 +797,13 @@ unknown project hash stays visibly unavailable rather than becoming the browser
 choice. Late reads do not replace manual draft values, and a failed read keeps
 same-lineage confirmed truth with one retry. Unlisted, retired, unnamable, and
 roleless workflows do not read occupancy. The agent list is empty until a
-configuration is published, and says so. It opens in the Studio rather than in
+configuration is published, and says so. That occupancy is no longer this
+picker's alone: a start that names no binding for a declared role takes it from
+the served project's occupancy at the start path itself, so the conductor's
+`start_run` and the queue's launch sweep run an occupied workflow with no hand
+on this page. An explicit binding still wins over the recommendation, only
+roles the parsed document declares are filled, and a role the project has not
+cast is still refused by name. It opens in the Studio rather than in
 that list: one screen across the
 whole workshop naming every run that waits for a human — the durable states
 `WAITING_INPUT` and `WAITING_RECONCILIATION`, each asked of the list by

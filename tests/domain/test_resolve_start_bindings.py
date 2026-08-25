@@ -9,6 +9,7 @@ import pytest
 from atelier2.application.resolve_start_bindings import (
     AuthProfileMissingForConfiguration,
     agent_role_completeness_refusal,
+    cast_unbound_roles,
     resolve_start_bindings,
 )
 from atelier2.contracts.agents import (
@@ -25,6 +26,12 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
     ResolvedAgentBinding,
+)
+from atelier2.contracts.catalog_v3 import CatalogLineageId
+from atelier2.contracts.host_configuration import (
+    OccupancyBinding,
+    OccupancyRevision,
+    ProjectId,
 )
 from atelier2.contracts.workflows import AgentNodeV2, SubworkflowNode, WorkflowGraphV2
 from atelier2.contracts.workflows_v3 import (
@@ -182,6 +189,50 @@ def _v3_graph(*, distinct_from: bool = False) -> WorkflowGraphV3:
             ),
         ),
     )
+
+
+def _occupancy(*bindings: tuple[str, str]) -> OccupancyRevision:
+    """What the operator cast on this workflow, as the project keeps it."""
+    return OccupancyRevision(
+        ProjectId("atelier"),
+        CatalogLineageId("b" * 64),
+        1,
+        tuple(
+            OccupancyBinding(AgentRole(role), AgentConfigurationRevisionHash(hash_))
+            for role, hash_ in bindings
+        ),
+    )
+
+
+def test_occupancy_fills_only_declared_roles_the_caller_left_open() -> None:
+    explicit = AgentConfigurationRevisionHash("a" * 64)
+    occupied = AgentConfigurationRevisionHash("b" * 64)
+    requested = AgentBindingSet((AgentBinding(AgentRole("builder"), explicit),))
+
+    cast = cast_unbound_roles(
+        _v3_graph(),
+        requested,
+        _occupancy(
+            ("builder", occupied.value),
+            ("merger", occupied.value),
+            ("stranger", occupied.value),
+        ),
+    )
+
+    assert cast == AgentBindingSet(
+        (
+            AgentBinding(AgentRole("builder"), explicit),
+            AgentBinding(AgentRole("merger"), occupied),
+        )
+    )
+
+
+def test_without_a_recommendation_the_requested_bindings_stand() -> None:
+    requested = AgentBindingSet(
+        (AgentBinding(AgentRole("builder"), AgentConfigurationRevisionHash("a" * 64)),)
+    )
+
+    assert cast_unbound_roles(_v3_graph(), requested, None) == requested
 
 
 @pytest.mark.parametrize(
