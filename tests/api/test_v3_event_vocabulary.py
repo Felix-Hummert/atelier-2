@@ -28,6 +28,7 @@ from atelier2.contracts.executions import (
     RunEventAgentAttemptBinding,
     RunEventKind,
 )
+from atelier2.contracts.run_cancellations import RunCancelCommandId
 from atelier2.contracts.run_events import PersistedRunEvent
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
@@ -282,6 +283,35 @@ def test_dropping_the_v3_action_mapping_reds_the_open_pr_event(
     projection = PersistedRunEvent(event, receipt, WorkflowFormatVersion.V3)
     with pytest.raises(ValueError, match="a V3 run cannot carry ACTION_COMPLETED"):
         restored_module.run_event_resource(projection, SERVED_RAIL)
+
+
+def test_format_3_wait_cancelled_names_the_command_that_ended_the_pause() -> None:
+    """The whole attestation an operator's cancel of a resting pause leaves.
+
+    It names the command and nothing else: there is no attempt behind it to
+    carry an id, an ordinal or a disposition, and inventing any of those would
+    describe machinery this event does not have.
+    """
+    command_id = RunCancelCommandId.for_key("operator-stops-the-wait").value
+    projection = v3_projection(RunEventKind.WAIT_CANCELLED, command_id.encode("utf-8"))
+
+    resource = run_event_resource(projection, SERVED_RAIL)
+
+    dumped = resource.model_dump(mode="json")
+    assert dumped["workflow_format_version"] == 3
+    assert dumped["event"] == "WAIT_CANCELLED"
+    assert dumped["command_id"] == command_id
+    assert "attempt_id" not in dumped
+    assert "disposition" not in dumped
+    assert dumped["node_rail"] == [
+        entry.model_dump(mode="json") for entry in SERVED_RAIL
+    ]
+
+
+def test_a_v1_run_cannot_carry_the_wait_cancellation_its_wire_never_learned() -> None:
+    """The V1 event schema is byte-frozen, so this kind refuses by name there."""
+    with pytest.raises(ValueError, match="a V1 run cannot carry WAIT_CANCELLED"):
+        run_event_resource(v1_projection(RunEventKind.WAIT_CANCELLED), ())
 
 
 @pytest.mark.proves("a-format-three-event-answers-in-the-shape-that-says-so")

@@ -572,4 +572,67 @@ CREATE TABLE runs (
 )
 
 """,
+    (34, "wait_answers"): """
+CREATE TABLE wait_answers (
+	run_id TEXT NOT NULL, 
+	revision_hash TEXT NOT NULL, 
+	node_id TEXT NOT NULL, 
+	node_execution_id TEXT NOT NULL, 
+	round_ordinal INTEGER NOT NULL, 
+	answer_bytes BLOB NOT NULL, 
+	answer_hash TEXT NOT NULL, 
+	answer_workflow_id TEXT NOT NULL, 
+	state TEXT NOT NULL, 
+	state_version INTEGER NOT NULL, 
+	PRIMARY KEY (node_execution_id), 
+	FOREIGN KEY(run_id, revision_hash) REFERENCES runs (run_id, revision_hash), 
+	CHECK (length(node_id) > 0), 
+	CHECK (round_ordinal >= 1), 
+	CHECK (length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (length(answer_hash) = 64 AND answer_hash NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (length(answer_workflow_id) > 0), 
+	CHECK (state IN ('PENDING', 'APPLIED')), 
+	CHECK (state_version IN (0, 1)), 
+	CHECK ((state = 'PENDING' AND state_version = 0) OR (state = 'APPLIED' AND state_version = 1)), 
+	UNIQUE (answer_workflow_id)
+)
+
+""",
+    (34, "run_events"): """
+CREATE TABLE run_events (
+	run_id TEXT NOT NULL, 
+	revision_hash TEXT NOT NULL, 
+	event_sequence INTEGER NOT NULL, 
+	node_id TEXT NOT NULL, 
+	node_execution_id TEXT NOT NULL, 
+	round_ordinal INTEGER NOT NULL, 
+	event_kind TEXT NOT NULL, 
+	payload BLOB NOT NULL, 
+	payload_hash TEXT NOT NULL, 
+	receipt_logical_key TEXT, 
+	receipt_result_hash TEXT, 
+	event_hash TEXT NOT NULL, 
+	agent_attempt_id TEXT, 
+	attempt_ordinal INTEGER, 
+	cancellation_command_id TEXT, 
+	replacement TEXT, 
+	cancellation_disposition TEXT, 
+	replacement_attempt_id TEXT, 
+	agent_receipt_hash TEXT, 
+	PRIMARY KEY (run_id, event_sequence), 
+	FOREIGN KEY(run_id, revision_hash) REFERENCES runs (run_id, revision_hash), 
+	FOREIGN KEY(receipt_logical_key, run_id, revision_hash, receipt_result_hash) REFERENCES effect_receipts (logical_key, run_id, workflow_revision_hash, result_hash), 
+	CHECK (event_sequence > 0), 
+	CHECK (length(node_id) > 0), 
+	CHECK (length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (round_ordinal >= 1), 
+	CHECK (event_kind IN ('AGENT_COMPLETED', 'AGENT_FAILED', 'AGENT_CANCEL_REQUESTED', 'AGENT_CANCELLED', 'AGENT_INTERRUPTED', 'ACTION_RECONCILIATION_REQUIRED', 'ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED', 'WAITING_INPUT', 'WAIT_ANSWERED', 'SUBWORKFLOW_COMPLETED')), 
+	CHECK (length(payload_hash) = 64 AND payload_hash NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (length(event_hash) = 64 AND event_hash NOT GLOB '*[^0-9a-f]*'), 
+	CHECK ((event_kind IN ('ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED') AND receipt_logical_key IS NOT NULL AND length(receipt_logical_key) > 0 AND receipt_result_hash IS NOT NULL AND length(receipt_result_hash) = 64 AND receipt_result_hash NOT GLOB '*[^0-9a-f]*' AND receipt_result_hash = payload_hash) OR (event_kind NOT IN ('ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED') AND receipt_logical_key IS NULL AND receipt_result_hash IS NULL)), 
+	CHECK ((agent_attempt_id IS NULL AND attempt_ordinal IS NULL AND cancellation_command_id IS NULL AND replacement IS NULL AND cancellation_disposition IS NULL AND replacement_attempt_id IS NULL) OR (length(agent_attempt_id) = 64 AND agent_attempt_id NOT GLOB '*[^0-9a-f]*' AND attempt_ordinal IN (1, 2) AND ((event_kind IN ('AGENT_COMPLETED', 'AGENT_FAILED') AND cancellation_command_id IS NULL AND replacement IS NULL AND cancellation_disposition IS NULL AND replacement_attempt_id IS NULL) OR (event_kind = 'AGENT_CANCEL_REQUESTED' AND length(cancellation_command_id) BETWEEN 1 AND 1024 AND replacement IN ('NONE', 'ONE') AND cancellation_disposition IS NULL AND replacement_attempt_id IS NULL) OR (event_kind IN ('AGENT_CANCELLED', 'AGENT_INTERRUPTED') AND length(cancellation_command_id) BETWEEN 1 AND 1024 AND replacement IN ('NONE', 'ONE') AND cancellation_disposition IS NOT NULL)))), 
+	CHECK ((event_kind = 'AGENT_COMPLETED' AND (agent_receipt_hash IS NULL OR (length(agent_receipt_hash) = 64 AND agent_receipt_hash NOT GLOB '*[^0-9a-f]*'))) OR (event_kind <> 'AGENT_COMPLETED' AND agent_receipt_hash IS NULL))
+)
+
+""",
 }

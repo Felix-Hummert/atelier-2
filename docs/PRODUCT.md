@@ -522,12 +522,14 @@ the Wait node is the line's sink, to the run's own terminal hash.
 
 The same V3 run page lets the operator stop an honestly-cancellable run. Whether a
 run can be cancelled is the server's word, published on the run resource as a closed
-predicate rather than guessed from the rail: a run is cancellable only while it is
-`STARTED` on an agent node whose live attempt this cancel could stop, and every other
-standing carries its own operator sentence — between two nodes, waiting for a person, a
-node that runs no agent, already cancelling, already ended — instead of a grey disabled
-button. Cancelling is a staged decision: a real question naming the consequence,
-confirmed before the irreversible boundary, whose command travels the same audited
+predicate rather than guessed from the rail: a run is cancellable while it is `STARTED`
+on an agent node whose live attempt this cancel could stop, and while it rests at a
+pause nobody has answered, and every other standing carries its own operator sentence —
+between two nodes, waiting for a person to resolve an Action, a node that runs no agent,
+already cancelling, already ended, an answer still being applied — instead of a grey
+disabled button. Cancelling is a staged decision: a real question naming the consequence
+this run would actually pay — a working agent stopped, or an answer nobody will now
+give — confirmed before the irreversible boundary, whose command travels the same audited
 pending/durably-accepted/uncertain/retry path an answer does, keyed by one idempotency
 key so a lost reply is resent as the same command and never a second cancellation. One
 durable winner is projected honestly. When a concurrent success finished before the
@@ -538,6 +540,18 @@ the stopped node, and a server restart mid-cancel still lifts the run `CANCELLED
 the same command identity. A reload during an unconfirmed cancel stays honest, offering
 Retry and Discard rather than claiming the run is stopping, while a reload during an
 accepted cancel keeps reading "Stopping this run".
+
+A run resting in `WAITING_INPUT` ends differently, because it holds no attempt to stop.
+The cancel writes its own attestation — a `WAIT_CANCELLED` event carrying the minted
+command id, fenced by the node execution the confirmation named — and the run reaches
+`CANCELLED` inside that one transaction, with that event folded into its terminal hash.
+Nothing converges afterwards, so the door answers with the ended run rather than with a
+cancellation still to come, and a retry of the same idempotency key reads that event
+back instead of minting a second command. One refusal outranks the cancel: an answer
+already accepted and not yet applied leaves the run waiting under the name
+`answer-in-flight`, because a message the product has told a person it took is never
+dropped to make room for a later command. A pause held open for an Action's
+reconciliation stays non-cancellable — a live intent stands behind it.
 
 What makes a V3 agent node executable now includes the shape of its answer. The
 one enforced shape is `single-json-output/v1`: exactly one declared output, whose
