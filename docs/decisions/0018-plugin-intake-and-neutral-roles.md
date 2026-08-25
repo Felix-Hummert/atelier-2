@@ -109,16 +109,15 @@ family). A workflow may separately declare a fixed model pin — the one named
 exception to this section's neutrality, since it binds that workflow to a
 provider; the role declaration itself stays neutral. Precedence per role:
 **start override** (for that run only) **> pin in the workflow** (an exact
-model id) **> model default per difficulty** (a project setting resolved
-through the project's Settings › Model defaults table to one exact model id
-for the role's difficulty) **> next higher difficulty** (#557; never silent,
-never a weaker model) **> uncast** (start refuses with a sentence). Which
-models exist is configuration, not code: Settings › Models holds a
-configuration list of exact model ids per connected provider — discovered
-through the pinned CLI where the provider lists its models, otherwise
-validated on entry, no rebuild — carrying no rating; Settings › Model defaults
-maps difficulty 1/2/3 to one model id each, the operator's own choice. The
-receipt carries the requested and the provider-confirmed model id (#434).
+model id) **> model default per difficulty** (a project setting resolved to
+one exact model id for the role's difficulty) **> next higher difficulty**
+(#557; never silent, never a weaker model) **> uncast**. Which models exist is
+configuration, not code: a project configuration holds a list of exact model
+ids per connected provider — discovered through the pinned CLI where the
+provider lists its models, otherwise validated on entry, no rebuild —
+carrying no rating; a separate project setting maps difficulty 1/2/3 to one
+model id each, the operator's own choice. The receipt carries the requested
+and the provider-confirmed model id (#434).
 Occupancy per (project, workflow lineage) is **retired, not layered**: no
 per-role exception survives outside the pin and the start override above.
 This is decided; ADR 0018 is its owner, and the contract it describes is not
