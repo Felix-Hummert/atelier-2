@@ -42,13 +42,14 @@ test("the target-UI shell names today's doors and does not fake the rest", async
   await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
 
   const rail = page.getByRole("navigation", { name: "Workshop" });
-  await expect(rail.getByText(PRODUCT_NAME, { exact: true })).toBeVisible();
+  // The brand wordmark and the project slot share one name source (#654),
+  // so the one product name stands in the rail exactly twice.
+  await expect(rail.getByText(PRODUCT_NAME, { exact: true })).toHaveCount(2);
   await expect(page).toHaveTitle(PRODUCT_NAME);
   await expect(rail.getByRole("link", { name: "Board" })).toBeVisible();
   await expect(rail.getByRole("link", { name: "Workflows" })).toBeVisible();
   await expect(rail.getByRole("link", { name: "History" })).toBeVisible();
   await expect(rail.getByRole("link", { name: "Workbench" })).toBeVisible();
-  await expect(rail.getByText(THE_ONE_PROJECT, { exact: true })).toBeVisible();
   await expect(rail.getByText("switch project")).toBeVisible();
   await expect(rail.getByText("Settings", { exact: true })).toBeVisible();
   await expect(rail.getByText("Profile", { exact: true })).toBeVisible();

@@ -25,11 +25,15 @@ describe("the workshop rail names four destinations", () => {
     // from a workflow's own detail page), not a History concern.
     expect(activeWorkshopDestination({ page: "new" })).toBe("workflows");
     expect(activeWorkshopDestination({ page: "history" })).toBe("history");
-    // A run being watched is a Board row opened, and the run page leads back
-    // to the Board -- not to History, which holds only what has finished.
-    expect(activeWorkshopDestination({ page: "run", publicReference: "run1.cnVu" })).toBe(
-      "board"
-    );
+    // A run being watched sits under the room it was opened from (#654): the
+    // Board for a Board row, the Workbench for a chat episode -- never under
+    // History, which holds only what has finished.
+    expect(
+      activeWorkshopDestination({ page: "run", publicReference: "run1.cnVu", origin: null })
+    ).toBe("board");
+    expect(
+      activeWorkshopDestination({ page: "run", publicReference: "run1.cnVu", origin: "chat" })
+    ).toBe("chat");
     // The project is the context above the four destinations, not a fifth one.
     expect(activeWorkshopDestination({ page: "project" })).toBeNull();
     expect(activeWorkshopDestination({ page: "not-found" })).toBeNull();

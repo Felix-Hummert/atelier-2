@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import App from "../../src/App.svelte";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
+import { railCopy } from "../../src/lib/railCopy";
 import { cockpitApiStub } from "../support/cockpitApi";
 
 beforeEach(() => {
@@ -66,7 +67,10 @@ describe("cockpit navigation", () => {
     await screen.findByRole("heading", { name: "Board" });
 
     const rail = screen.getByRole("navigation", { name: "Workshop" });
-    expect(within(rail).getByText(THE_ONE_PROJECT).isConnected).toBe(true);
+    // The project slot and the brand wordmark share one name source (#654),
+    // so the slot is told apart by the deferral sentence that titles it.
+    const projectSlot = within(rail).getByTitle(railCopy.switchProjectHint);
+    expect(within(projectSlot).getByText(THE_ONE_PROJECT).isConnected).toBe(true);
     expect(within(rail).getByText("switch project").isConnected).toBe(true);
     expect(within(rail).queryByRole("link", { name: new RegExp(THE_ONE_PROJECT) })).toBeNull();
     expect(within(rail).queryByRole("button", { name: new RegExp(THE_ONE_PROJECT) })).toBeNull();

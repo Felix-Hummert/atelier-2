@@ -43,8 +43,10 @@
     retainedRead,
     type RetainedRead
   } from "../lib/readResource";
+  import type { RunOrigin } from "../lib/route";
   import { runPageCopy } from "../lib/runPageCopy";
   import { runHeaderCopy, runHeaderTitle } from "../lib/runPages";
+  import { WORKSHOP_DESTINATION } from "../lib/workshop";
   import {
     decodeAndApplyDurableEvent,
     markComplete,
@@ -65,8 +67,12 @@
   export let cockpitApi: CockpitApi;
   export let mutationJournal: MutationJournal;
   export let publicReference: string;
+  /** The room the operator opened this run from; its trail leads back there. */
+  export let origin: RunOrigin | null = null;
   export let navigate: (path: string) => void;
   export let createReconcileCommandId: () => string;
+
+  $: cameFrom = WORKSHOP_DESTINATION[origin ?? "board"];
 
   interface RunSnapshot {
     run: Run;
@@ -845,7 +851,7 @@
 </script>
 
 <section aria-labelledby={v3Run !== null ? "v3-run-title" : "run-title"}>
-  <BackLink label="Board" path="/atelier" {navigate} />
+  <BackLink label={cameFrom.label} path={cameFrom.path} {navigate} />
 
   {#if v3Run !== null}
     <V3RunView

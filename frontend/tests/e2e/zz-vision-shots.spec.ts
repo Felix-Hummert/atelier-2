@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { THE_ONE_PROJECT } from "../../src/lib/project";
+
 /**
  * The mockup-comparison screenshots of every surface, at both widths and in
  * both themes.
@@ -292,6 +294,6 @@ test("captures every surface at both widths", async ({ page }) => {
   await shoot(page, "history");
 
   await page.goto("/atelier/project");
-  await expect(page.getByRole("heading", { name: "atelier-2" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
   await shoot(page, "project");
 });
