@@ -114,7 +114,6 @@ def test_a_published_definition_read_back_by_its_hash_is_the_identical_definitio
     )
 
 
-@pytest.mark.proves("a-caller-holding-the-hash-reads-the-whole-definition")
 def test_the_definition_door_answers_every_field_its_author_wrote(
     runtime: DbosRuntime,
 ) -> None:
@@ -227,7 +226,6 @@ def _scripted_definition_client(registry_answer: object) -> TestClient:
     return TestClient(app)
 
 
-@pytest.mark.proves("an-unavailable-store-is-not-told-as-a-404")
 def test_the_definition_door_answers_unavailable_rather_than_a_false_not_found() -> (
     None
 ):
