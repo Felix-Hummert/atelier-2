@@ -13,11 +13,14 @@ import type { CockpitRoute } from "./route";
  * the surface became the composer plus its pinned decisions, but its served
  * path is a durable bookmark this rename leaves untouched.
  *
- * Catalog is the newest room (#659): it is where a piece enters the atelier and
- * where everything published — workflows, agents, skills — is seen with its
- * provenance. Workflows still owns browsing a named workflow's graph and
- * starting it, so the two rooms overlap in their workflow list today; #660
- * reshapes the Catalog into the Git window and owns collapsing that overlap.
+ * Workflows and Catalog are two rooms, one vocabulary (operator ruling #684):
+ * Workflows is the start room -- only what the catalog has admitted, and
+ * every card there leads to starting it. Catalog is the library -- every
+ * published workflow, agent, and skill, with its provenance, its admission
+ * state, and the door to import or admit one. A workflow entry in the
+ * library links "Start" into the start room; the start room never repeats
+ * the library's browsing. #660's Git link is the next thing the library
+ * gains, not a second room to build.
  */
 export type WorkshopDestination = {
   id: "chat" | "board" | "workflows" | "catalog" | "history";

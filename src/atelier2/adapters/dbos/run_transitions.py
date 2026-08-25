@@ -667,7 +667,14 @@ def commit_waiting_input(
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
+    round_ordinal: int = FIRST_ROUND_ORDINAL,
 ) -> TransitionSnapshot:
+    """Rest this run at this node's pause, in the round it is already turning.
+
+    The pause moves nowhere, so source and target round are the same one: what
+    the round decides here is only which execution of the node the run is
+    resting at, and that is what the answer will have to name.
+    """
     return _commit_event(
         session,
         run_id,
@@ -678,6 +685,8 @@ def commit_waiting_input(
         RunState.STARTED,
         RunState.WAITING_INPUT,
         node_id,
+        round_ordinal=round_ordinal,
+        target_round_ordinal=round_ordinal,
     )
 
 
