@@ -47,7 +47,10 @@ from atelier2.adapters.dbos.starter import (
 from atelier2.adapters.dbos.webhook_delivery import DbosWebhookDeliveryPublisher
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
-from atelier2.adapters.github import live_github_effect_adapter_factory
+from atelier2.adapters.github import (
+    live_github_effect_adapter_factory,
+    live_github_issue_source,
+)
 from atelier2.adapters.grok_subscription import (
     GrokSubscriptionExecutorFactory,
     GrokSubscriptionSettings,
@@ -673,7 +676,9 @@ def _project_source_connection(
         engine.dispose()
 
 
-def _effect_adapter_factory(settings: HostSettings) -> EffectAdapterFactory:
+def _effect_adapter_factory(
+    settings: HostSettings, connection: ProjectSourceConnectionRevision | None
+) -> EffectAdapterFactory:
     """The one effect adapter this instance drives.
 
     The live adapter composes from the served project's source-connection
@@ -691,7 +696,6 @@ def _effect_adapter_factory(settings: HostSettings) -> EffectAdapterFactory:
 
     adapter_revision = AdapterRevision(settings.effect_adapter_revision)
     destination = EffectDestination(settings.effect_destination)
-    connection = _project_source_connection(settings)
     if connection is not None:
         if not is_loopback_host(settings.host):
             raise ValueError(
@@ -713,9 +717,12 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
         *_subscription_executor_registrations(settings),
         *_runner_lease_executor_registrations(settings),
     )
+    # Read once: the same connection record composes the effect adapter and,
+    # further down, the tracker observation source the import door drives.
+    source_connection = _project_source_connection(settings)
     runtime = DbosRuntime(
         settings.runtime_settings(),
-        _effect_adapter_factory(settings),
+        _effect_adapter_factory(settings, source_connection),
         ExactOutputAgentExecutorFactory(),
         subscription_executors,
     )
@@ -792,6 +799,11 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
                 artifact_publisher=DbosArtifactStore(runtime.engine),
                 host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
                 queue_projection=DbosQueueProjectionStore(runtime.engine),
+                tracker_item_source=(
+                    None
+                    if source_connection is None
+                    else live_github_issue_source(source_connection)
+                ),
             ),
             limits=limits,
             event_poll_backoff=settings.event_poll_backoff,

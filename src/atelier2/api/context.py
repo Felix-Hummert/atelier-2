@@ -18,6 +18,10 @@ from atelier2.application.admit_queue_item import (
 from atelier2.application.answer_wait import AnswerWaitResult
 from atelier2.application.cancel_agent_attempt import CancelAgentAttemptResult
 from atelier2.application.cancel_run import CancelRunResult
+from atelier2.application.import_project_source_issues import (
+    ImportProjectSourceIssuesOutcome,
+    ListObservedQueueItemsOutcome,
+)
 from atelier2.application.occupancy import (
     GetOccupancyResult,
     PublishOccupancyUseCaseResult,
@@ -106,6 +110,7 @@ from atelier2.ports.durable_runs import (
 )
 from atelier2.ports.effects import TransactionalEffectReconcileCommander
 from atelier2.ports.host_configuration import HostConfigurationChannel
+from atelier2.ports.issue_observation import TrackerItemSource
 from atelier2.ports.published_revisions import (
     CatalogAdmissions,
     CatalogResolver,
@@ -145,6 +150,9 @@ class ApiPorts:
     artifact_publisher: ArtifactPublisher
     host_configuration_channel: HostConfigurationChannel
     queue_projection: QueueProjection
+    # None is the honest default: a composition that serves no connected
+    # project has no tracker to observe, and the import door says so by name.
+    tracker_item_source: TrackerItemSource | None = None
 
 
 @dataclass(frozen=True)
@@ -256,6 +264,10 @@ class ApiUseCases:
     admit_queue_item: Callable[[AdmitQueueItem], AdmitQueueItemOutcome]
     list_admitted_queue_items: Callable[
         [QueueItemId | None, int], ListAdmittedQueueItemsOutcome
+    ]
+    import_project_source_issues: Callable[[], ImportProjectSourceIssuesOutcome]
+    list_observed_queue_items: Callable[
+        [QueueItemId | None, int], ListObservedQueueItemsOutcome
     ]
 
 

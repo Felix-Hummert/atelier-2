@@ -94,6 +94,8 @@ PROJECT_PATH = PROJECTS_PATH + "/{public_project_reference}"
 PROJECT_ROOT_PATH = PROJECT_PATH + "/root"
 QUEUE_ADMISSIONS_PATH = API_PREFIX + "/queue-admissions"
 QUEUE_ITEMS_PATH = API_PREFIX + "/queue-items"
+OBSERVED_QUEUE_ITEMS_PATH = API_PREFIX + "/observed-queue-items"
+PROJECT_SOURCE_IMPORT_PATH = API_PREFIX + "/project-sources/import"
 
 EVENT_MODELS = (
     AgentCompletedEventResource,
@@ -451,6 +453,20 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "internal-error",
     ),
     (QUEUE_ITEMS_PATH, "get"): (
+        "invalid-request",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (PROJECT_SOURCE_IMPORT_PATH, "post"): (
+        "project-source-not-connected",
+        "project-source-unavailable",
+        "project-source-payload-malformed",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (OBSERVED_QUEUE_ITEMS_PATH, "get"): (
         "invalid-request",
         "temporarily-unavailable",
         "durable-state-corrupt",

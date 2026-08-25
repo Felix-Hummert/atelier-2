@@ -31,6 +31,10 @@ from atelier2.ports.queue_projection import (
     AdmitQueueItemResult,
     AdmittedQueueItemsPage,
     ListAdmittedQueueItemsResult,
+    ListObservedQueueItemsResult,
+    ObservedQueueItemsPage,
+    ObserveQueueItemsResult,
+    QueueItemsObserved,
     QueueReadUnavailable,
 )
 
@@ -78,6 +82,43 @@ class DbosQueueProjectionStore:
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
+
+    def observe(
+        self, references: tuple[WorkItemReference, ...]
+    ) -> ObserveQueueItemsResult:
+        """Record every reference as an OBSERVED row, counting only what is new.
+
+        `INSERT OR IGNORE` on the derived `item_id` is the whole idempotency
+        story: a reference observed before -- or already admitted -- changes
+        nothing, so a repeated import never creates a twin and never rewinds
+        an admission.
+        """
+
+        if not references:
+            return QueueItemsObserved(0, 0)
+        try:
+            with canonical_write_transaction(self._engine) as connection:
+                newly_observed = 0
+                for reference in references:
+                    inserted = connection.execute(
+                        sa.insert(queue_items)
+                        .prefix_with("OR IGNORE")
+                        .values(
+                            item_id=reference.item_id.value,
+                            project_id=reference.project.value,
+                            tracker_item_reference=reference.tracker_item.value,
+                            state=QueueItemState.OBSERVED.value,
+                            state_version=QUEUE_PROJECTION_REVISION_OBSERVED.value,
+                            workflow_lineage_id=None,
+                            admission_rationale=None,
+                        )
+                    )
+                    newly_observed += inserted.rowcount
+                return QueueItemsObserved(len(references), newly_observed)
+        except (OperationalError, PoolTimeoutError):
+            return DurableWriteUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
 
     def admit(self, command: AdmitQueueItem) -> AdmitQueueItemResult:
         item_reference = command.item_reference
@@ -135,9 +176,29 @@ class DbosQueueProjectionStore:
         except (ValueError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()
 
+    def list_observed_items(
+        self, after: QueueItemId | None, limit: int
+    ) -> ListObservedQueueItemsResult:
+        page = self._page_in_state(QueueItemState.OBSERVED, after, limit)
+        if isinstance(page, QueueReadUnavailable | DurableStateCorrupt):
+            return page
+        return ObservedQueueItemsPage(*page)
+
     def list_admitted_items(
         self, after: QueueItemId | None, limit: int
     ) -> ListAdmittedQueueItemsResult:
+        page = self._page_in_state(QueueItemState.ADMITTED, after, limit)
+        if isinstance(page, QueueReadUnavailable | DurableStateCorrupt):
+            return page
+        return AdmittedQueueItemsPage(*page)
+
+    def _page_in_state(
+        self, state: QueueItemState, after: QueueItemId | None, limit: int
+    ) -> (
+        tuple[tuple[QueueItemSnapshot, ...], QueueItemId | None]
+        | QueueReadUnavailable
+        | DurableStateCorrupt
+    ):
         if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
             raise ValueError(
                 f"queue item page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
@@ -145,7 +206,7 @@ class DbosQueueProjectionStore:
         try:
             with self._engine.connect() as connection:
                 statement = sa.select(queue_items).where(
-                    queue_items.c.state == QueueItemState.ADMITTED.value
+                    queue_items.c.state == state.value
                 )
                 if after is not None:
                     statement = statement.where(queue_items.c.item_id > after.value)
@@ -164,7 +225,7 @@ class DbosQueueProjectionStore:
                     if has_more and page_records
                     else None
                 )
-                return AdmittedQueueItemsPage(items, next_after)
+                return items, next_after
         except (OperationalError, PoolTimeoutError):
             return QueueReadUnavailable()
         except (ValueError, RuntimeError, DatabaseError):

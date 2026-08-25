@@ -179,6 +179,11 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
         "store; mirrors SQLITE_LOCK_TIMEOUT_SECONDS' value without its owner "
         "-- a sweep follow-up on #251",
     ),
+    "adapters/github/observation.py::_ISSUES_PAGE_SIZE": SpelledValue(
+        1,
+        "GitHub's own maximum per_page for its issue listing: a protocol fact "
+        "of the platform the adapter speaks, not an operator choice",
+    ),
     "runner/session.py::_CONTROL_POLL_SECONDS": SpelledValue(
         1,
         "stable candidate invariant: the cadence of child-exit checks between "
