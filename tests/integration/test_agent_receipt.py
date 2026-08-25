@@ -12,6 +12,7 @@ from atelier2.adapters.dbos.run_store import (
     AgentReceiptConflict,
     commit_agent_completed,
 )
+from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeBindingConflict,
@@ -165,7 +166,7 @@ def test_unchanged_v1_workflow_runs_through_the_injected_executor(
 
 
 @pytest.mark.parametrize(
-    ("trigger_name", "trigger_sql"),
+    ("trigger_name", "trigger_sql", "refusal"),
     [
         (
             "fail_agent_receipt",
@@ -173,6 +174,7 @@ def test_unchanged_v1_workflow_runs_through_the_injected_executor(
                 "CREATE TRIGGER fail_agent_receipt BEFORE INSERT ON agent_receipts "
                 "BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END"
             ),
+            IntegrityError,
         ),
         (
             "fail_agent_run",
@@ -180,6 +182,7 @@ def test_unchanged_v1_workflow_runs_through_the_injected_executor(
                 "CREATE TRIGGER fail_agent_run BEFORE UPDATE ON runs "
                 "BEGIN SELECT RAISE(ABORT, 'injected run failure'); END"
             ),
+            IntegrityError,
         ),
         (
             "fail_agent_event",
@@ -188,11 +191,15 @@ def test_unchanged_v1_workflow_runs_through_the_injected_executor(
                 "WHEN NEW.event_kind='AGENT_COMPLETED' "
                 "BEGIN SELECT RAISE(ABORT, 'injected event failure'); END"
             ),
+            RunTransitionConflict,
         ),
     ],
 )
 def test_receipt_event_and_successor_are_atomic_at_each_write_boundary(
-    runtime, trigger_name: str, trigger_sql: str
+    runtime,
+    trigger_name: str,
+    trigger_sql: str,
+    refusal: type[Exception],
 ) -> None:
     run_id, revision = seeded(runtime)
     with runtime.engine.begin() as connection:
@@ -202,7 +209,7 @@ def test_receipt_event_and_successor_are_atomic_at_each_write_boundary(
         connection.execute(sa.text(trigger_sql))
 
     with (
-        pytest.raises(IntegrityError),
+        pytest.raises(refusal, match="injected"),
         canonical_write_transaction(runtime.engine) as connection,
     ):
         commit_agent_completed(
