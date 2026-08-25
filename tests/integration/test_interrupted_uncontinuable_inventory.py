@@ -17,10 +17,17 @@ store path lifts that run in the same transaction as its own attestation
 (`agent_attempt_store.py`), so reaching this net's own leftover shape needs
 the exact revert `leftover_failed` already uses below, standing in for a row
 a store from before that in-transaction lift existed would leave behind.
+
+#645 adds the Action shape this net used to misread: a healthy V3 run standing
+on an Action node has no attempt of its own and never will, so it looks exactly
+like a gap -- but the workflow that owes it its next move is the effect
+workflow, not any node workflow. Reading only node workflows named that run
+dead and failed it. `in_flight_action` below prepares that exact row.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -35,6 +42,7 @@ from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     _PRODUCT_TRIGGERS,
     agent_attempts,
+    effect_intents,
     node_execution_requests_v3,
     node_receipts_v3,
     run_events,
@@ -46,12 +54,16 @@ from atelier2.adapters.dbos.starter import (
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.dbos.uncontinuable_runs import DbosUncontinuableRunStore
-from atelier2.adapters.dbos.workflow_ids import node_workflow_id_for
+from atelier2.adapters.dbos.workflow_ids import (
+    effect_workflow_id_for,
+    node_workflow_id_for,
+)
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.converge_uncontinuable_runs import (
     converge_uncontinuable_runs,
 )
+from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.agent_attempts import (
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     STOP_AFTER_DRIVER_LOSS,
@@ -80,7 +92,12 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.effects import (
+    AdapterRevision,
+    EffectDestination,
+    EffectIntent,
+    EffectIntentState,
+)
 from atelier2.contracts.executions import (
     AgentAttemptExecution,
     NodeExecutionId,
@@ -119,14 +136,20 @@ from tests.scenarios.agents import (
     agent_scratch_root,
     failing_agent_executor_factory,
 )
+from tests.scenarios.runs import prepare_and_launch_graph_action
 
 PLAN_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
     b'{"type": "object", "properties": {"steps": {"type": "integer", '
     b'"minimum": 1}}, "required": ["steps"], "additionalProperties": false}',
 )
+OPEN_PR_OPERATION = PublishedRevision(
+    RevisionKind.ADAPTER_OPERATION,
+    json.dumps({"operation": AdapterOperationName.OPEN_PR.value}).encode("utf-8"),
+)
 NODE = "plan"
 SUCCESSOR = "review"
+ACTION = "publish"
 INSTRUCTION = b"Answer with the plan this node declared."
 THE_ANSWER_THE_SCHEMA_ADMITS = b'{"steps": 3}'
 THE_ANSWER_THE_SCHEMA_REFUSES = b"Sure! I would plan this in three steps."
@@ -174,6 +197,19 @@ def reviewed_planning_document() -> bytes:
         schema:
           ref: plan-schema
           revision: {PLAN_SCHEMA.revision_hash.value}
+""".encode()
+    )
+
+
+def action_document() -> bytes:
+    return (
+        planning_document()
+        + f"""  - id: {ACTION}
+    type: action
+    operation:
+      ref: open-pr
+      revision: {OPEN_PR_OPERATION.revision_hash.value}
+    depends_on: [{NODE}]
 """.encode()
     )
 
@@ -455,6 +491,35 @@ def silent_successor(runtime: DbosRuntime, run_id: RunId) -> AgentAttemptExecuti
     return execution
 
 
+def in_flight_action(runtime: DbosRuntime, run_id: RunId) -> EffectIntent:
+    """A healthy V3 run standing on its Action node, driven by its effect.
+
+    Every gap predicate holds -- the Agent predecessor SUCCEEDED, the Action
+    node carries no attempt and never will -- yet nothing is lost: the run's
+    next move is owed by `durable_effect`, enqueued under the running
+    application version exactly as the Action node's own workflow enqueues it.
+    """
+
+    published = DbosCatalogStore(runtime.engine).publish_revision(OPEN_PR_OPERATION)
+    assert isinstance(
+        published, (PublishedRevisionCreated, PublishedRevisionExisting)
+    ), published
+    document = action_document()
+    execution = armed_attempt(runtime, run_id, document)
+    DbosAgentAttemptStore(
+        runtime.engine, runtime.settings.application_version
+    ).complete_success(execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_ADMITS))
+    assert _run_state(runtime, run_id) == RunState.STARTED.value
+    assert _current_node(runtime, run_id) == ACTION
+    return prepare_and_launch_graph_action(
+        runtime.engine,
+        runtime.settings,
+        run_id,
+        WorkflowRevisionHash(WorkflowRevision(document).revision_hash.value),
+        runtime.effect_adapter_binding,
+    )
+
+
 def requestless_silent_successor(
     runtime: DbosRuntime, run_id: RunId
 ) -> AgentAttemptExecution:
@@ -569,6 +634,30 @@ def _attempt_state(runtime: DbosRuntime, run_id: RunId) -> str:
                 )
             )
         )
+
+
+def _intent_state(runtime: DbosRuntime, run_id: RunId) -> str:
+    with runtime.engine.connect() as connection:
+        return str(
+            connection.scalar(
+                sa.select(effect_intents.c.state).where(
+                    effect_intents.c.run_id == run_id.value
+                )
+            )
+        )
+
+
+def _end_workflow(runtime: DbosRuntime, workflow_id: str) -> None:
+    """Leave the row DBOS leaves when a workflow raises instead of crashing."""
+
+    with runtime.engine.begin() as connection:
+        ended = connection.execute(
+            sa.text(
+                "UPDATE workflow_status SET status='ERROR' WHERE workflow_uuid=:id"
+            ),
+            {"id": workflow_id},
+        )
+        assert ended.rowcount == 1
 
 
 def _event_kinds(runtime: DbosRuntime, run_id: RunId) -> tuple[str, ...]:
@@ -1022,6 +1111,57 @@ def test_converge_ends_a_silent_successor_that_never_received_a_request(
     assert _attempt_state(runtime, run_id) == AgentAttemptState.SUCCEEDED.value
     assert _event_kinds(runtime, run_id) == before_events
     assert _current_receipt(runtime, run_id) is None
+
+
+def test_converge_does_not_end_a_run_whose_effect_workflow_is_still_driving(
+    runtime: DbosRuntime,
+) -> None:
+    """#645: an Action node's driver is its effect workflow, not a node workflow.
+
+    Every gap predicate holds for a healthy in-flight Action, so reading only
+    node and replacement workflows names this living run dead and fails it --
+    the FAILED mirror of the COMPLETED lie. Dropping the effect drivers from
+    `_gap_workflow_ids` ends this run, and this test dies.
+    """
+
+    run_id = RunId("inventory/action-in-flight")
+    in_flight_action(runtime, run_id)
+
+    store = DbosUncontinuableRunStore(
+        runtime.engine, runtime.settings.application_version
+    )
+    assert store.uncontinuable_runs() == ()
+    assert converge_uncontinuable_runs(store) == ()
+    assert _run_state(runtime, run_id) == RunState.STARTED.value
+    assert _intent_state(runtime, run_id) == EffectIntentState.PREPARED.value
+    assert _current_receipt(runtime, run_id) is None
+
+
+def test_a_serve_start_routes_a_driverless_action_to_the_door_not_to_failed(
+    runtime: DbosRuntime,
+) -> None:
+    """The Action whose effect workflow really raised still reaches the operator.
+
+    #628 routes it to WAITING_RECONCILIATION before this inventory reads the
+    STARTED rows, and #645's driver check must not shield it there instead:
+    a raised `durable_effect` is not a live driver, so the run leaves STARTED
+    through the operator door (ADR 0010) rather than through FAILED.
+    """
+
+    run_id = RunId("inventory/action-driverless")
+    intent = in_flight_action(runtime, run_id)
+    _end_workflow(runtime, effect_workflow_id_for(intent.binding.logical_key))
+
+    runtime.launch()
+
+    assert _run_state(runtime, run_id) == RunState.WAITING_RECONCILIATION.value
+    assert (
+        _intent_state(runtime, run_id) == EffectIntentState.WAITING_RECONCILIATION.value
+    )
+    assert _event_kinds(runtime, run_id) == (
+        RunEventKind.AGENT_COMPLETED.value,
+        RunEventKind.ACTION_RECONCILIATION_REQUIRED.value,
+    )
 
 
 def test_converge_does_not_end_a_v1_run(runtime: DbosRuntime) -> None:
