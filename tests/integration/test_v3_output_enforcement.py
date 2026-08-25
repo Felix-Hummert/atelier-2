@@ -44,6 +44,7 @@ from atelier2.adapters.codex_subscription import (
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.artifact_store import read_stored_artifact
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.node_records import keep_node_receipt
 from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
@@ -97,6 +98,7 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
+from atelier2.contracts.artifacts import Artifact, ArtifactHash
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
     AgentAttemptExecution,
@@ -430,6 +432,58 @@ def test_an_answer_its_own_schema_refuses_never_becomes_a_success(
     assert receipt["request_hash"] == request["request_hash"]
     assert receipt["context_package_hash"] == request["context_package_hash"]
     assert (int(artifacts or 0), int(outputs or 0)) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    ("answered", "kept"),
+    [
+        pytest.param(
+            THE_ANSWER_THE_SCHEMA_REFUSES,
+            THE_ANSWER_THE_SCHEMA_REFUSES,
+            id="the exact bytes the schema read",
+        ),
+        pytest.param(b"", None, id="nothing to keep when nothing was written"),
+    ],
+)
+def test_a_refused_answer_stays_readable_under_the_hash_its_receipt_kept(
+    runtime: DbosRuntime, answered: bytes, kept: bytes | None
+) -> None:
+    """The live gap of #664: the verdict survived the refusal and the evidence did not.
+
+    A refused execution has no agent receipt and no completion event, so the
+    only record of what the provider actually wrote is the value hash its
+    `failed` receipt kept -- and that hash addressed nothing, which made the
+    episode undiagnosable: the operator was told an answer had been refused and
+    could never see the answer. The terminal write now holds those exact bytes
+    under exactly that address, so the hash an operator reads off the receipt
+    resolves to the material it names.
+
+    Bytes nobody wrote are the honest exception. There is nothing to keep, and
+    keeping nothing must not turn the failure into an exception -- that would
+    resurrect the silent `STARTED`/`LAUNCH_ARMED` zombie this whole seam exists
+    to end -- so the attempt still ends `FAILED` and the address stays empty.
+    """
+    execution = armed_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    outcome = store.complete_success(execution, AgentExecutionResult(answered))
+
+    assert isinstance(outcome, AgentAttemptFailed), outcome
+    with runtime.engine.connect() as connection:
+        stored_reason = str(
+            connection.scalar(
+                sa.select(node_receipts_v3.c.reason).where(
+                    node_receipts_v3.c.node_execution_id
+                    == execution.request.node_execution_id.value
+                )
+            )
+        )
+        _reason, _schema_revision, value_hash = read_stored_node_receipt_reason(
+            stored_reason
+        )
+        assert value_hash is not None
+        held = read_stored_artifact(connection, ArtifactHash(value_hash.value))
+    assert held == (None if kept is None else Artifact(kept))
 
 
 @pytest.mark.proves("bytes-their-own-schema-refuses-never-become-a-success")
