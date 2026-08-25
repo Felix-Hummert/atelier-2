@@ -26,6 +26,7 @@ from atelier2.contracts.schemas_v3 import (
     InstanceRefusal,
     InstanceRefused,
     SchemaAccepted,
+    declared_instance_in_answer,
     read_instance_document,
     read_schema_document,
 )
@@ -279,3 +280,60 @@ def test_a_key_that_contains_the_pointer_characters_is_unambiguous() -> None:
     assert isinstance(verdict, InstanceRefused)
     assert verdict.subject is not None
     assert verdict.subject.startswith("/a~1b~0c:"), verdict.subject
+
+
+@pytest.mark.parametrize(
+    ("wrapper", "carried"),
+    [
+        pytest.param("{answer}", True, id="bare"),
+        pytest.param("{answer}\n", True, id="trailing newline"),
+        pytest.param("  \n {answer} \n ", True, id="surrounding whitespace"),
+        pytest.param("Here is the report:\n{answer}", True, id="leading prose"),
+        pytest.param("{answer}\nThat is everything.", True, id="trailing prose"),
+        pytest.param("```json\n{answer}\n```", True, id="fenced"),
+        pytest.param("```\n{answer}\n```\nDone.", True, id="fenced and explained"),
+        pytest.param(
+            "I read the brief {carefully} and then answered:\n{answer}",
+            False,
+            id="an opener in the prose before it",
+        ),
+    ],
+)
+def test_a_declared_value_is_found_wherever_prose_wrapped_it(
+    wrapper: str, carried: bool
+) -> None:
+    """The shapes one model really returned for one brief, and the rule's own edge.
+
+    A provider asked in prose for bare JSON answers in prose, so the same brief
+    came back bare, fenced, or introduced by a sentence (#663). All of those
+    carry the value; a sentence that opens a container of its own before the
+    answer does not, because the rule reads exactly one document at the first
+    opener rather than searching every one of them.
+    """
+    meal = '{"name": "lasagne", "portions": 4}'
+    answer = wrapper.replace("{answer}", meal).encode("utf-8")
+
+    found = declared_instance_in_answer(answer, A_MEAL)
+
+    if not carried:
+        assert found is None
+        return
+    assert found is not None
+    assert read_instance_document(found, A_MEAL) == InstanceAccepted(
+        {"name": "lasagne", "portions": 4}
+    )
+
+
+def test_an_answer_carrying_no_value_the_schema_admits_is_answered_with_nothing() -> (
+    None
+):
+    """Narrowing never repairs: a wrapped value of the wrong shape stays refused."""
+    assert declared_instance_in_answer(b"I could not do that.", A_MEAL) is None
+    assert declared_instance_in_answer(b'Sorry:\n{"name": "lasagne"}\n', A_MEAL) is None
+
+
+def test_a_narrowed_value_is_still_held_to_the_profile_the_whole_answer_is() -> None:
+    """Extraction only proposes bytes; the profile alone decides about them."""
+    duplicated = b'Here:\n{"name": "a", "name": "b", "portions": 1}'
+
+    assert declared_instance_in_answer(duplicated, A_MEAL) is None

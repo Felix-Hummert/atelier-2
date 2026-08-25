@@ -11,6 +11,12 @@ only honest way to write `iterate-v1` was a chain that was not one.
 run remembers a value. What #235 is about is that the value changes what the next
 agent does, and the only channel that reaches an agent is its job. So every test
 here reads `job_bytes` off a recording provider after a real launched run.
+
+**A person is an earlier node too.** An earlier node that produced a value is not
+always an agent: a Wait node's value is the answer a person typed, and a document
+reading it is admitted by the same rule that admits any other hand-off. The last
+tests here drive that line, because a reader that only knew the agent's own
+completion would admit the document and then die where the answer should travel.
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.run_store import (
+    DbosWaitAnswerer,
     load_graph,
     load_node_outputs,
     load_run_inputs,
@@ -42,6 +49,11 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import (
     InvalidWorkflowDocument,
     parse_executable_workflow_document,
+)
+from atelier2.application.answer_wait import (
+    AnswerAcceptedPending,
+    UnanswerableWait,
+    answer_wait_result,
 )
 from atelier2.application.compose_node_job import node_job
 from atelier2.contracts.agent_attempts import AgentAttemptId
@@ -98,6 +110,9 @@ from tests.scenarios.api import durable_queries
 TEXT_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "string"}')
 PROVIDER_OUTPUT = b'"the exact sentence this node produced"'
 RUN = RunId("v3/chain")
+WAIT_NODE = "approve"
+ANSWER = b'"ship it, but shorten the second paragraph"'
+ANSWER_THE_SCHEMA_REFUSES = b"41"
 
 
 def chained_document(schema_hash: PublishedRevisionHash) -> bytes:
@@ -185,6 +200,53 @@ nodes:
 """.encode()
 
 
+def answered_document(schema_hash: PublishedRevisionHash) -> bytes:
+    """draft -> a person answers -> apply, with the answer handed on.
+
+    The applying node reads the Wait node's declared output and nothing else, so
+    the bytes it is handed can only have come from the person.
+    """
+    return f"""format_version: 3
+name: a person answers between two agents
+nodes:
+  - id: draft
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Write the thing this chain is for.
+    outputs:
+      - name: draft
+        schema:
+          ref: text-schema
+          revision: {schema_hash.value}
+  - id: {WAIT_NODE}
+    type: wait
+    prompt: Approve this candidate, or name the blocking defect.
+    depends_on: [draft]
+    outputs:
+      - name: approval
+        schema:
+          ref: text-schema
+          revision: {schema_hash.value}
+  - id: apply
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Apply what the person answered.
+    depends_on: [{WAIT_NODE}]
+    inputs:
+      - name: approval
+        from:
+          node: {WAIT_NODE}
+          output: approval
+    outputs:
+      - name: patch
+        schema:
+          ref: text-schema
+          revision: {schema_hash.value}
+""".encode()
+
+
 @pytest.fixture
 def provider() -> RecordingAgentExecutorFactoryV2:
     return RecordingAgentExecutorFactoryV2(
@@ -192,24 +254,29 @@ def provider() -> RecordingAgentExecutorFactoryV2:
     )
 
 
-@pytest.fixture
-def runtime(
-    tmp_path: Path, provider: RecordingAgentExecutorFactoryV2
-) -> Iterator[DbosRuntime]:
-    started = DbosRuntime(
+def runtime_over(root: Path, provider: RecordingAgentExecutorFactoryV2) -> DbosRuntime:
+    """A runtime over the durable state in this directory, as a restart builds one."""
+    return DbosRuntime(
         DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
+            root / "atelier.sqlite",
             "v3-chain-test",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+            agent_scratch_root=agent_scratch_root(root),
         ),
         LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
+            root / "external.sqlite",
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
         ExactOutputAgentExecutorFactory(),
         (provider,),
     )
+
+
+@pytest.fixture
+def runtime(
+    tmp_path: Path, provider: RecordingAgentExecutorFactoryV2
+) -> Iterator[DbosRuntime]:
+    started = runtime_over(tmp_path, provider)
     started.initialize_storage()
     try:
         yield started
@@ -255,6 +322,30 @@ def publish_chain(
     )
 
 
+def start_run(
+    runtime: DbosRuntime, workflow: WorkflowRevision, bindings: AgentBindingSet
+) -> None:
+    """Start the published run these bindings resolve, or fail saying why not."""
+    created = DbosDurableRunStarter(
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
+    assert isinstance(created, DurableRunCreated), created
+
+
+def answer(runtime: DbosRuntime, workflow: WorkflowRevision, value: bytes) -> object:
+    """Answer the waiting node exactly as the API route does, one layer under it."""
+    return answer_wait_result(
+        RUN,
+        workflow.revision_hash,
+        WAIT_NODE,
+        value,
+        DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
+    )
+
+
 def wait_for_state(runtime: DbosRuntime, state: RunState) -> None:
     deadline = time.monotonic() + 12
     observed = ""
@@ -286,13 +377,7 @@ def test_the_reviewer_is_handed_what_the_coder_actually_wrote(
         runtime, chained_document(TEXT_SCHEMA.revision_hash)
     )
 
-    created = DbosDurableRunStarter(
-        runtime.engine,
-        runtime.settings,
-        runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
-    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
-    assert isinstance(created, DurableRunCreated), created
+    start_run(runtime, workflow, bindings)
 
     runtime.launch()
     wait_for_state(runtime, RunState.COMPLETED)
@@ -320,13 +405,7 @@ def test_a_line_that_hands_nothing_on_still_tells_each_node_only_its_own_sentenc
         runtime, blind_document(TEXT_SCHEMA.revision_hash)
     )
 
-    created = DbosDurableRunStarter(
-        runtime.engine,
-        runtime.settings,
-        runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
-    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
-    assert isinstance(created, DurableRunCreated), created
+    start_run(runtime, workflow, bindings)
 
     runtime.launch()
     wait_for_state(runtime, RunState.COMPLETED)
@@ -448,13 +527,7 @@ def test_a_chained_run_reads_back_with_the_attempt_of_the_node_that_was_handed_w
         runtime, chained_document(TEXT_SCHEMA.revision_hash)
     )
     revision_hash = WorkflowRevisionHash(workflow.revision_hash.value)
-    created = DbosDurableRunStarter(
-        runtime.engine,
-        runtime.settings,
-        runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
-    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
-    assert isinstance(created, DurableRunCreated), created
+    start_run(runtime, workflow, bindings)
     store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
 
     coding = attempt_for(
@@ -483,3 +556,100 @@ def test_a_chained_run_reads_back_with_the_attempt_of_the_node_that_was_handed_w
     assert isinstance(found, RunFound), found
     assert found.projection.current_agent_attempt is not None
     assert PROVIDER_OUTPUT in handed
+
+
+@pytest.mark.proves("a-node-reads-the-work-of-the-node-before-it")
+def test_the_agent_after_a_wait_is_handed_the_exact_answer_the_person_typed(
+    runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
+) -> None:
+    """The earlier node whose work is read is a person, and the chain still holds.
+
+    The document declaring this hand-off was already admitted, so the only place
+    it could fail was the run: the applying node's job either carries the answer
+    or the run dies where the value should have travelled. What is asserted is the
+    person's exact bytes inside that job, announced by the node they answered --
+    and no agent's output, because this node asked for none.
+    """
+    workflow, bindings = publish_chain(
+        runtime, answered_document(TEXT_SCHEMA.revision_hash)
+    )
+    start_run(runtime, workflow, bindings)
+    runtime.launch()
+    wait_for_state(runtime, RunState.WAITING_INPUT)
+
+    accepted = answer(runtime, workflow, ANSWER)
+
+    assert isinstance(accepted, AnswerAcceptedPending), accepted
+    wait_for_state(runtime, RunState.COMPLETED)
+    drafted, applied = jobs_handed_to(provider)
+    assert drafted == b"Write the thing this chain is for."
+    assert b"--- result of approve: approval ---" in applied
+    assert ANSWER in applied
+    assert PROVIDER_OUTPUT not in applied
+
+
+@pytest.mark.proves("a-node-reads-the-work-of-the-node-before-it")
+def test_an_answer_the_waits_own_schema_refuses_hands_nothing_on(
+    runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
+) -> None:
+    """A value nothing admitted never becomes the work a later node reads.
+
+    The hand-off is only as trustworthy as the judgement in front of it, so the
+    same schema owner that reads an agent's output reads the person's answer. The
+    refusal leaves the wait open, and the answer that is finally admitted is the
+    only one the reading node ever sees.
+    """
+    workflow, bindings = publish_chain(
+        runtime, answered_document(TEXT_SCHEMA.revision_hash)
+    )
+    start_run(runtime, workflow, bindings)
+    runtime.launch()
+    wait_for_state(runtime, RunState.WAITING_INPUT)
+
+    refused = answer(runtime, workflow, ANSWER_THE_SCHEMA_REFUSES)
+
+    assert isinstance(refused, UnanswerableWait), refused
+    assert isinstance(answer(runtime, workflow, ANSWER), AnswerAcceptedPending)
+    wait_for_state(runtime, RunState.COMPLETED)
+    _, applied = jobs_handed_to(provider)
+    assert ANSWER_THE_SCHEMA_REFUSES not in applied
+    assert ANSWER in applied
+
+
+@pytest.mark.proves("a-node-reads-the-work-of-the-node-before-it")
+def test_the_answer_survives_a_restart_between_the_person_and_the_node_reading_it(
+    tmp_path: Path, provider: RecordingAgentExecutorFactoryV2
+) -> None:
+    """The runtime that hands the answer on is not the one that took the pause.
+
+    A pause is exactly where a run is most likely to outlive the process holding
+    it, so the answer must be readable from durable truth alone. The window is
+    made rather than raced: the first runtime is closed while the run waits, the
+    answer is submitted with nothing running to consume it, and only then does a
+    second runtime come up. It recovers the enqueued answer and drives the node
+    that reads it, having never seen a byte of this run in memory.
+    """
+    answering = runtime_over(tmp_path, provider)
+    answering.initialize_storage()
+    try:
+        workflow, bindings = publish_chain(
+            answering, answered_document(TEXT_SCHEMA.revision_hash)
+        )
+        start_run(answering, workflow, bindings)
+        answering.launch()
+        wait_for_state(answering, RunState.WAITING_INPUT)
+    finally:
+        answering.close()
+
+    recovered = runtime_over(tmp_path, provider)
+    try:
+        assert isinstance(answer(recovered, workflow, ANSWER), AnswerAcceptedPending)
+        recovered.launch()
+        wait_for_state(recovered, RunState.COMPLETED)
+        handed = jobs_handed_to(provider)
+    finally:
+        recovered.close()
+
+    assert len(handed) == 1, "the restarted runtime ran more than the reading node"
+    assert b"--- result of approve: approval ---" in handed[0]
+    assert ANSWER in handed[0]
