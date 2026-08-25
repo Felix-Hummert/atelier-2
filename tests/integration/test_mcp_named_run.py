@@ -8,6 +8,7 @@ import socket
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Thread
 
@@ -21,7 +22,9 @@ from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
 from atelier2.api.openapi import API_PREFIX
+from atelier2.api.references import encode_public_project_reference
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.runs import RunState
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 from atelier2.host.mcp_tools import McpToolName
@@ -35,8 +38,10 @@ from tests.scenarios.api import (
     durable_ports,
     event_poll_backoff,
 )
+from tests.scenarios.projects import declaring_verification, git_project
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
+SERVED_PROJECT = ProjectId("atelier")
 WORKFLOW_NAME = "mcp-named-line"
 ARTIFACT_WORKFLOW_NAME = "mcp-artifact-line"
 ORDER_NAME = "order"
@@ -80,15 +85,43 @@ nodes:
 def runtime(
     tmp_path: Path,
 ) -> Iterator[tuple[DbosRuntime, RecordingAgentExecutorFactoryV2]]:
-    recording = RecordingAgentExecutorFactoryV2(
-        "exact", "exact/v1", "exact-operation", PROVIDER_OUTPUT
-    )
-    started = DbosRuntime(
+    yield from _started_runtime(
         DbosRuntimeSettings(
             tmp_path / "atelier.sqlite",
             "mcp-named-run",
             agent_scratch_root=agent_scratch_root(tmp_path),
         ),
+        tmp_path,
+    )
+
+
+@pytest.fixture
+def served_runtime(
+    tmp_path: Path,
+) -> Iterator[tuple[DbosRuntime, RecordingAgentExecutorFactoryV2]]:
+    """The same runtime, serving one project whose occupancy a start may read."""
+    project_root = tmp_path / "project"
+    git_project(project_root, declaring_verification(["true"]))
+    yield from _started_runtime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "mcp-named-run",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+            project_id=SERVED_PROJECT,
+            bootstrap_project_root=project_root,
+        ),
+        tmp_path,
+    )
+
+
+def _started_runtime(
+    settings: DbosRuntimeSettings, tmp_path: Path
+) -> Iterator[tuple[DbosRuntime, RecordingAgentExecutorFactoryV2]]:
+    recording = RecordingAgentExecutorFactoryV2(
+        "exact", "exact/v1", "exact-operation", PROVIDER_OUTPUT
+    )
+    started = DbosRuntime(
+        settings,
         LoopbackEffectAdapterFactory(
             tmp_path / "external.sqlite",
             AdapterRevision("loopback-v1"),
@@ -113,6 +146,7 @@ def application(runtime: DbosRuntime) -> FastAPI:
         ),
         limits=api_limits(),
         event_poll_backoff=event_poll_backoff(),
+        served_project_id=runtime.settings.project_id,
     )
 
 
@@ -149,7 +183,15 @@ def live_server(app: FastAPI) -> Iterator[str]:
             assert not thread.is_alive()
 
 
-def publish_named_line(app: FastAPI, document: bytes = DOCUMENT) -> str:
+@dataclass(frozen=True)
+class PublishedLine:
+    """What a start needs of a published named line: its lineage, one binding."""
+
+    lineage_id: str
+    configuration_hash: str
+
+
+def publish_named_line(app: FastAPI, document: bytes = DOCUMENT) -> PublishedLine:
     """Publish the schema, the named document, its lineage and one binding."""
 
     api = TestClient(app)
@@ -194,7 +236,28 @@ def publish_named_line(app: FastAPI, document: bytes = DOCUMENT) -> str:
         },
     )
     assert configuration.status_code == 201, configuration.text
-    return str(configuration.json()["agent_configuration_revision_hash"])
+    return PublishedLine(
+        str(named.json()["lineage_id"]),
+        str(configuration.json()["agent_configuration_revision_hash"]),
+    )
+
+
+def occupy(app: FastAPI, line: PublishedLine, role: str) -> None:
+    """Cast this role on the served project, as the console's occupancy does."""
+    project = encode_public_project_reference(SERVED_PROJECT)
+    occupied = TestClient(app).put(
+        f"{API_PREFIX}/projects/{project}/occupancy/{line.lineage_id}",
+        json={
+            "revision_number": 1,
+            "bindings": [
+                {
+                    "role": role,
+                    "agent_configuration_revision_hash": line.configuration_hash,
+                }
+            ],
+        },
+    )
+    assert occupied.status_code == 201, occupied.text
 
 
 def wait_for_terminal(client: StdioMcpSession, reference: str) -> dict[str, object]:
@@ -222,7 +285,7 @@ def test_a_stdio_client_lists_the_catalog_starts_by_name_and_reads_terminal(
 ) -> None:
     started_runtime, _recording = runtime
     app = application(started_runtime)
-    configuration_hash = publish_named_line(app)
+    configuration_hash = publish_named_line(app).configuration_hash
 
     with live_server(app) as service_url:
         client = StdioMcpSession(service_url)
@@ -270,7 +333,7 @@ def test_a_stdio_client_publishes_an_artifact_starts_by_address_and_reads_termin
 ) -> None:
     started_runtime, recording = runtime
     app = application(started_runtime)
-    configuration_hash = publish_named_line(app, ORDERED_DOCUMENT)
+    configuration_hash = publish_named_line(app, ORDERED_DOCUMENT).configuration_hash
     ordered_material = json.dumps({"diff": "x" * 20_000}).encode()
     assert len(ordered_material) > MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
@@ -317,3 +380,47 @@ def test_a_stdio_client_publishes_an_artifact_starts_by_address_and_reads_termin
     assert ended["terminal_hash"] is not None
     assert recording.opened is not None
     assert ordered_material in recording.opened.requests[0].job_bytes
+
+
+@pytest.mark.proves("mcp-and-http-never-diverge")
+def test_a_stdio_start_without_bindings_runs_on_the_projects_occupancy(
+    served_runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """The conductor's start names no binding; the served project's occupancy does.
+
+    Both doors are one start: the MCP tool posts the body the HTTP door takes,
+    and the starter casts the roles nobody bound from the occupancy (#680). A
+    revision the described listing calls executable therefore starts from the
+    stdio door exactly as it does from the console (#701).
+    """
+    started_runtime, _recording = served_runtime
+    app = application(started_runtime)
+    line = publish_named_line(app)
+    occupy(app, line, "builder")
+
+    with live_server(app) as service_url:
+        client = StdioMcpSession(service_url)
+        try:
+            listed, list_failed = client.call_tool(McpToolName.LIST_WORKFLOWS.value, {})
+            assert not list_failed
+            assert isinstance(listed, dict)
+            assert [item["display_name"] for item in listed["items"]] == [WORKFLOW_NAME]
+
+            started, start_failed = client.call_tool(
+                McpToolName.START_RUN.value,
+                {"name": WORKFLOW_NAME, "run_id": "mcp/occupied-line"},
+            )
+            assert not start_failed, started
+            assert isinstance(started, dict)
+            assert started["state"] == RunState.STARTED.value
+            assert [
+                (binding["role"], binding["agent_configuration_revision_hash"])
+                for binding in started["agent_bindings"]
+            ] == [("builder", line.configuration_hash)]
+
+            started_runtime.launch()
+            ended = wait_for_terminal(client, str(started["public_run_reference"]))
+        finally:
+            client.close()
+
+    assert ended["state"] == RunState.COMPLETED.value

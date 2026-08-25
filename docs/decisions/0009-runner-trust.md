@@ -1,6 +1,6 @@
 # ADR 0009: One trust boundary separates the coordinating service from every worker
 
-- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-22, 2026-08-23, 2026-08-24; disposable #301-A candidate 2026-08-22 — no live Runner availability
+- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-22, 2026-08-23, 2026-08-24, 2026-08-25; disposable #301-A candidate 2026-08-22 — no live Runner availability
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
 - Decision authority: [Issue #21](https://github.com/FlexOr2/atelier-2/issues/21),
@@ -596,6 +596,38 @@ unchanged through the chain, so depth never launders identity.
   protocol belong to #15. Until that protocol and the #21 carrier decision are
   implemented, remote and CI bindings are represented but refused as
   unavailable rather than advertised as working.
+
+**2026-08-25 amendment (Independent review, #672): the session wire's own
+revision is explicit, not inferred from a field count.** `PREPARE` widened
+from 19 to 21 fields to carry an Attempt's declared output schema and pinned
+turn limit alongside what it already carried — the same `AgentExecutionRequestV2`
+content `#663` gave every `LOCAL_PROCESS` Attempt, now reaching a
+`RUNNER_LEASE` carrier too. A payload's field count is an implementation
+detail of one message, not a fact a peer can safely infer a whole protocol
+generation from, so the session wire now names its own generation in the
+frame domain a peer must match exactly (`runner-session/v2`, up from
+`runner-session/v1`). A frame built to that superseded domain is a real,
+well-formed peer speaking a revision this decoder no longer serves — decode
+answers it by name, `runner-session-incompatible-revision`, not by folding it
+into the generic `runner-session-noncanonical` malformed-bytes bucket. This
+keeps §10's own rule for every other boundary here: a stale peer fails loud
+and named, before anything is armed, rather than surfacing as a decode error
+indistinguishable from corruption. The manifest a Runner is selected under
+attests the same domain (`contracts/runner_manifests.py` reuses the wire
+codec's own constant rather than a second copy of the literal), so a
+manifest naming a retired revision is refused the same way a live frame is.
+
+This compatibility is asymmetric, and deliberately not smoothed over. A
+current decoder recognizes the retired `v1` domain by name because that
+literal is fixed and known today; an already-deployed pre-#672 decoder was
+never taught the current `v2` domain or the `runner-session-incompatible-
+revision` vocabulary, so it cannot read a new peer's revision, or a new
+peer's REFUSE naming that code, by name at all — it only fails at the same
+generic domain-mismatch check every other unrecognized domain hits. Forward
+compatibility (an old peer reading new traffic) is therefore strictly weaker
+than the backward compatibility proven above (a new peer reading old
+traffic): both directions fail safely, before anything is armed, but only
+one direction fails by name.
 
 ## Refusals
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import assert_never
 
+from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
 from atelier2.contracts.adapter_operations_v3 import (
     AdapterOperationRefused,
     read_adapter_operation_document,
@@ -41,12 +42,19 @@ from atelier2.contracts.tool_grants_v3 import (
 from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.ports.published_revisions import (
+    DurableStateCorrupt as PortDurableStateCorrupt,
+)
+from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
     PublishedRevisionMissing,
     PublishedRevisionResolver,
+    PublishedRevisionsUnavailable,
 )
 
-type ReferenceResolution = ResolvedReference | ReferenceRefusal
+type SettledResolution = ResolvedReference | ReferenceRefusal
+"""What a registry that answered says about one reference."""
+type ReferenceResolution = SettledResolution | ReadUnavailable | DurableStateCorrupt
+"""That, or the registry could not answer -- which is about the store, not the reference."""
 
 
 def declared_through(
@@ -97,6 +105,10 @@ def resolve_declared_reference(
                 declared,
                 f"no published {declared.kind.value} revision carries this hash",
             )
+        case PublishedRevisionsUnavailable(detail):
+            return ReadUnavailable(detail)
+        case PortDurableStateCorrupt():
+            return DurableStateCorrupt()
         case _ as unreachable:
             assert_never(unreachable)
 

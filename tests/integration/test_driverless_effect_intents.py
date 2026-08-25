@@ -13,6 +13,23 @@ frozen forever (#707). This file prepares those exact rows, models each ending
 as the `workflow_status` row DBOS leaves behind, and asks the sweep to route
 only what no live workflow owes: to WAITING_RECONCILIATION, onto the attention
 feed, and through the operator door -- never to an invented absence (ADR 0010).
+
+The key the sweep matches against is round-bound (ADR 0014): `graph_action_
+intent` used to mint it from round one's execution id unconditionally, so a
+run a declared loop had carried past round one would compare a round-aware
+recomputation against a key that still named round one and leave the intent
+alone rather than route it (#706). `logical_effect_key_for_node` is now the
+one owner both the preparer and this sweep call, so the two can never drift
+apart again. No published document can place an Action inside a declared
+loop's body -- `_unrepeatable_loop_forms` refuses that by name at every load
+of the document -- so no fixture here drives a genuinely round-two Action end
+to end; a run standing on a round-two Action is not a state this runtime can
+honestly reach at all. The tests below pin what is provable instead: round
+one stays the exact bytes every stored intent already carries, a later round
+mints its own key from the same node, and -- read as a conservative-sweep
+safety property against a malformed row rather than round-two Action evidence
+-- a key that disagrees with the round its run's own head records is never
+mistaken for the one it stands in now.
 """
 
 from __future__ import annotations
@@ -57,7 +74,12 @@ from atelier2.contracts.effects import (
     ReconcileCommandSnapshot,
     ReconcileCommandState,
 )
-from atelier2.contracts.executions import NodeExecutionId, RunEventKind
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEventKind,
+    logical_effect_key_for,
+    logical_effect_key_for_node,
+)
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.run_events import AttentionEventPage
 from tests.scenarios.agents import commit_configured_agent
@@ -486,3 +508,82 @@ def test_reconciling_intent_whose_reconcile_workflow_is_enqueued_is_left_alone(
         2,
         pending.command_id.value,
     )
+
+
+def test_action_effect_key_is_round_one_by_the_same_bytes_the_store_already_holds() -> (
+    None
+):
+    """#706, the no-migration half: round one moves nothing already stored.
+
+    `logical_effect_key_for_node` is the one owner `graph_action_intent` and
+    the #646 sweep both call now, but it must still answer round one exactly
+    as the un-rounded call every durable intent already carries did -- or
+    every Action effect this store has ever prepared would key differently
+    the next time it is recomputed.
+    """
+    revision_hash = WorkflowRevision(WORKFLOW_DOCUMENT).revision_hash
+    run_id = RunId("run-1")
+
+    assert logical_effect_key_for_node(
+        run_id, revision_hash, ACTION_NODE_ID
+    ) == logical_effect_key_for(
+        NodeExecutionId.for_node(run_id, revision_hash, ACTION_NODE_ID)
+    )
+
+
+def test_action_effect_key_mints_its_own_value_a_round_later() -> None:
+    """#706, the round-aware half: a later round is never round one's key.
+
+    `graph_action_intent` used to derive an Action's key from round one's
+    execution id no matter which round the run actually stood in, so a run a
+    declared loop had carried past round one minted the same key round one
+    would have -- and the #646 sweep, recomputing from the run's own round,
+    would never find a driverless intent honestly its own. This is the
+    contract that closes that gap: every round mints a distinct key from the
+    same node.
+    """
+    revision_hash = WorkflowRevision(WORKFLOW_DOCUMENT).revision_hash
+    run_id = RunId("run-1")
+
+    round_one = logical_effect_key_for_node(run_id, revision_hash, ACTION_NODE_ID)
+    round_two = logical_effect_key_for_node(run_id, revision_hash, ACTION_NODE_ID, 2)
+
+    assert round_two != round_one
+
+
+def test_prepared_intent_whose_key_disagrees_with_a_malformed_run_round_is_left_alone(
+    prepared: tuple[DbosRuntime, EffectIntent],
+) -> None:
+    """Conservative-sweep safety, not round-two Action evidence.
+
+    No document may declare an Action inside a loop's body
+    (`_unrepeatable_loop_forms` refuses it at every load of the document), and
+    `_require_a_round_the_graph_declares` refuses a stored run whose round
+    disagrees with what its own document permits -- so a run genuinely
+    standing on a round-two Action cannot exist here, or anywhere in this
+    runtime, today. The raw `UPDATE` below deliberately produces exactly that
+    malformed row, outside every domain constructor that would refuse it, to
+    answer a narrower question: if a round ever disagreed with what a stored
+    intent's key names -- through this defect, a future one, or plain
+    corruption -- does the sweep stay conservative rather than paper over the
+    disagreement? Mirrors `test_prepared_intent_no_workflow_will_move_
+    reaches_the_operator_door`'s #646 window (a dead Action node workflow, no
+    effect-workflow row at all); the one difference is the malformed round.
+    The sweep must still leave the intent exactly where #646 already leaves
+    one whose driver is still owed -- never a silent confirmation under a
+    round the key does not name.
+    """
+    runtime, intent = prepared
+    node_workflow_ended_before_the_enqueue(runtime, intent)
+    with runtime.engine.begin() as connection:
+        moved = connection.execute(
+            sa.text("UPDATE runs SET current_round_ordinal=2 WHERE run_id=:run_id"),
+            {"run_id": intent.binding.run_id.value},
+        )
+        assert moved.rowcount == 1
+
+    assert converge(runtime.engine, runtime.settings.application_version) == ()
+
+    assert intent_row(runtime.engine) == (EffectIntentState.PREPARED.value, 0, None)
+    with runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(runs.c.state)) == RunState.STARTED.value

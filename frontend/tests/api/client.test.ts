@@ -547,6 +547,17 @@ describe("closed API decoders", () => {
     expect(() => decodeProblem({ ...problem, type: "urn:atelier2:problem:v1:new-problem" })).toThrow();
   });
 
+  it("decodes the library-document-ambiguous problem the recognition door answers", () => {
+    const problem = decodeProblem({
+      type: "urn:atelier2:problem:v1:library-document-ambiguous",
+      title: "Document matches more than one library kind",
+      status: 422,
+      detail: "The document matches agent_definition and skill."
+    });
+    expect(problem.type).toBe("urn:atelier2:problem:v1:library-document-ambiguous");
+    expect(problem.status).toBe(422);
+  });
+
   it("decodes a published run-input-refused problem instead of calling it undocumented", () => {
     const problem = decodeProblem({
       type: "urn:atelier2:problem:v1:run-input-refused",
