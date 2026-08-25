@@ -61,7 +61,11 @@ async function shoot(page: Page, name: string): Promise<void> {
 async function completedConductorRun(page: Page): Promise<string> {
   expect((await page.request.post("/__e2e/seed-conductor")).ok()).toBeTruthy();
   await page.goto("/atelier/chat");
-  await page.reload();
+  // The precondition this journey needs is a *connected* conductor, not
+  // merely a successful seed call: this spec runs late in a shared-server
+  // suite (#742), so it proves the connection itself rather than assuming
+  // the seed above was the only thing that could have changed it.
+  await expect(page.getByText(conductorChatCopy.composerHint)).toBeVisible({ timeout: 15_000 });
   await page.getByLabel(workbenchPageCopy.composerLabel).fill("Starte nichts, antworte nur kurz.");
   await page.getByRole("button", { name: workbenchPageCopy.send }).click();
   const episodeLink = page.getByRole("link", { name: conductorChatCopy.openEpisode });
