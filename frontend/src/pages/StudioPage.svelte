@@ -263,15 +263,14 @@
   </header>
 
   <!-- A healthy stream says nothing: a permanent "live" badge is chrome and a
-       first connect is ordinary loading. Only a stream that dropped and has
-       not come back speaks (operator ruling 23.08.). -->
-  {#if streamStopped(hold) || hold.connection === "reconnecting"}
-    <p
-      class="connection connection-{hold.connection}"
-      class:connection-problem={streamStopped(hold)}
-      role="status"
-    >
-      <span aria-hidden="true">{streamStopped(hold) ? "◇" : "↻"}</span>
+       first connect is ordinary loading. A stream merely reconnecting is the
+       generic reachability loss the central connection store already names
+       once, above every room (#700); this line speaks only for what is
+       specific to this stream -- a real protocol or terminal failure
+       (operator ruling 23.08.). -->
+  {#if streamStopped(hold)}
+    <p class="connection connection-{hold.connection} connection-problem" role="status">
+      <span aria-hidden="true">◇</span>
       {wrapDisplayCopy(connectionLabel(hold))}
     </p>
   {/if}

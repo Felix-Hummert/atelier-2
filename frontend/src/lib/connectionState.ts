@@ -34,6 +34,12 @@ const PROBE_INTERVAL_MS = 3_000;
  * bounded so a tab left open through a real, longer outage does not poll
  * forever. */
 const MAXIMUM_PROBE_ATTEMPTS = 100;
+/** Once the bounded budget above is spent, a returning tab or a network that
+ * just reported `online` is worth one more try each -- but never more than
+ * one per this gap, so a burst of tab switches or online/offline flapping
+ * cannot turn the sparse fallback into the same hammering the budget exists
+ * to prevent. */
+const SPARSE_RETRY_MINIMUM_GAP_MS = 15_000;
 
 /**
  * The bounded recovery loop for a surface that holds no open stream of its
@@ -45,12 +51,24 @@ const MAXIMUM_PROBE_ATTEMPTS = 100;
  * again once a request failed -- this is the one loop that asks on their
  * behalf, a fixed number of tries against an existing cheap read, starting
  * only while the store is unhealthy and stopping the instant it is not.
+ *
+ * The interval above gives up once its budget is spent, but a tab is not:
+ * the operator returning to it (`visibilitychange`) or the OS reporting the
+ * network itself back (`online`) each earn one more try, sparsely, so a
+ * longer real outage still heals without a reload once the tab is looked at
+ * or the network returns. Each attempt carries the caller's `AbortSignal` so
+ * a still-pending probe is cancelled the instant this loop tears down rather
+ * than resolving into a component that is already gone.
  */
-export function watchConnectionRecovery(probe: () => Promise<unknown>): () => void {
+export function watchConnectionRecovery(
+  probe: (signal: AbortSignal) => Promise<unknown>
+): () => void {
   let attempts = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let current: ConnectionStatus = "connected";
   let disposed = false;
+  let controller: AbortController | null = null;
+  let lastAttemptAt = 0;
 
   function clearTimer(): void {
     if (timer !== null) {
@@ -69,15 +87,36 @@ export function watchConnectionRecovery(probe: () => Promise<unknown>): () => vo
   async function runProbe(): Promise<void> {
     timer = null;
     attempts += 1;
+    lastAttemptAt = Date.now();
+    const attemptController = new AbortController();
+    controller = attemptController;
     try {
-      await probe();
+      await probe(attemptController.signal);
     } catch {
       // The caller's own request path already reported the failure through
       // reportConnectionLost; this loop's only job is asking again.
+    } finally {
+      if (controller === attemptController) controller = null;
     }
     if (!disposed && current === "reconnecting" && attempts < MAXIMUM_PROBE_ATTEMPTS) {
       scheduleProbe();
     }
+  }
+
+  function trySparseRetry(): void {
+    if (
+      disposed ||
+      current !== "reconnecting" ||
+      attempts < MAXIMUM_PROBE_ATTEMPTS ||
+      Date.now() - lastAttemptAt < SPARSE_RETRY_MINIMUM_GAP_MS
+    ) {
+      return;
+    }
+    void runProbe();
+  }
+
+  function onVisibilityChange(): void {
+    if (document.visibilityState === "visible") trySparseRetry();
   }
 
   const unsubscribe = status.subscribe((value) => {
@@ -87,12 +126,18 @@ export function watchConnectionRecovery(probe: () => Promise<unknown>): () => vo
       clearTimer();
       return;
     }
-    if (timer === null) scheduleProbe();
+    if (timer === null && attempts < MAXIMUM_PROBE_ATTEMPTS) scheduleProbe();
   });
+
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  window.addEventListener("online", trySparseRetry);
 
   return () => {
     disposed = true;
     unsubscribe();
     clearTimer();
+    controller?.abort();
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+    window.removeEventListener("online", trySparseRetry);
   };
 }

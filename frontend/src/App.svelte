@@ -37,7 +37,7 @@
     window.addEventListener("popstate", readRoute);
     // The bounded recovery probe for whichever page holds no open stream of
     // its own (#700) -- one loop for the whole app, torn down with it.
-    const stopWatchingRecovery = watchConnectionRecovery(() => cockpitApi.health());
+    const stopWatchingRecovery = watchConnectionRecovery((signal) => cockpitApi.health(signal));
     return () => {
       window.removeEventListener("popstate", readRoute);
       stopWatchingRecovery();

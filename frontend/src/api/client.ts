@@ -1390,7 +1390,7 @@ export interface HttpResult<T> {
 
 export interface CockpitApi {
   /** The cheap read #700's bounded recovery probe reuses -- no purpose-built endpoint. */
-  health(): Promise<HealthResource>;
+  health(signal?: AbortSignal): Promise<HealthResource>;
   listRuns(after?: string, state?: AnyRun["state"]): Promise<RunPage>;
   listProjects(): Promise<ProjectList>;
   getProjectOccupancy(
@@ -1467,8 +1467,8 @@ export function createCockpitApi(
   eventSourceFactory: EventSourceFactory = (target) => new EventSource(target)
 ): CockpitApi {
   return {
-    health: () =>
-      requestJson(fetcher, "/atelier/api/v1/health", {}, [200], healthResourceSchema),
+    health: (signal?: AbortSignal) =>
+      requestJson(fetcher, "/atelier/api/v1/health", { signal }, [200], healthResourceSchema),
     listRuns: (after?: string, state?: AnyRun["state"]) =>
       requestJson(
         fetcher,

@@ -232,12 +232,7 @@
       ></textarea>
       <button class="primary" type="submit" disabled={$connectionState === "reconnecting"}>{wrapDisplayCopy(workbenchPageCopy.send)}</button>
     </div>
-    {#if $connectionState === "reconnecting"}
-      <!-- The one honest line replaces every other composer hint while the
-           connection is lost (#700): a per-page refusal here would say "no
-           conductor" for what is really "the atelier itself is unreachable". -->
-      <p class="composer-hint">{wrapDisplayCopy(restartNoticeCopy)}</p>
-    {:else if conductorLink.kind === "connected"}
+    {#if conductorLink.kind === "connected"}
       <p class="composer-hint">{wrapDisplayCopy(conductorChatCopy.composerHint)}</p>
     {:else if conductorLink.kind === "absent"}
       <p class="composer-hint">{wrapDisplayCopy(workbenchPageCopy.composerHint)}</p>
