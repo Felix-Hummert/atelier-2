@@ -74,14 +74,14 @@ any of them from returning as a fallback.
 **2026-08-26 amendment: why this record stopped pinning #21's body by
 digest.** An earlier revision bound `#21 body @ 3c1f663c…` — 7,961 UTF-8
 bytes, ending in one LF byte — and it drifted stale a third time as the item
-kept moving (the live body is now 7,326 bytes, `a6c3822c…`). The canonical
-digest rule is exact — the bytes the API serves as the issue body, hashed as
-they are, with nothing appended, re-encoded or normalized — and this record's
-first revision even got that wrong once, when a shell pipeline
-(`gh ... --jq .body`) appended a newline before hashing and bound bytes GitHub
-never served. A live issue body is not a freezable byte object, so a
-per-record human-pasted pin will always chase it; a document that must freeze
-exact bytes belongs on ADR 0010's registry, as REQ documents already do.
+kept moving. The canonical digest rule is exact — the bytes the API serves as
+the issue body, hashed as they are, with nothing appended, re-encoded or
+normalized — and this record's first revision even got that wrong once, when
+a shell pipeline (`gh ... --jq .body`) appended a newline before hashing and
+bound bytes GitHub never served. A live issue body is not a freezable byte
+object, so a per-record human-pasted pin will always chase it; a document
+that must freeze exact bytes belongs on the requirements registry in
+`docs/requirements/README.md`, as REQ documents already do.
 
 ## Decision
 
