@@ -1,11 +1,13 @@
-"""Serve-start convergence for effect intents whose durable workflow raised.
+"""Serve-start convergence for effect intents no durable workflow will move.
 
 A raised adapter exception -- a GitHub 500, a timeout -- ends `durable_effect`
 or `durable_reconciliation` in a terminal DBOS error status, and recovery
 replays only pending work, never a raised ending. Before this sweep the intent
 stood PREPARED or RECONCILING forever, the operator door refused it, and the
-run said STARTED until the store died (#628). This file prepares those exact
-rows, models the raised ending as the terminal `workflow_status` row DBOS
+run said STARTED until the store died (#628). An Action node workflow that ends
+terminally between committing its intent and enqueuing the effect leaves the
+same frozen intent under no effect-workflow row at all (#646). This file
+prepares those exact rows, models each ending as the `workflow_status` row DBOS
 leaves behind, and asks the sweep to route only what no live workflow owes:
 to WAITING_RECONCILIATION, onto the attention feed, and through the operator
 door -- never to an invented absence (ADR 0010).
@@ -27,6 +29,7 @@ from atelier2.adapters.dbos.schema import effect_intents, run_events, runs
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow_ids import (
     effect_workflow_id_for,
+    node_workflow_id_for,
     reconcile_workflow_id_for,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
@@ -51,7 +54,7 @@ from atelier2.contracts.effects import (
     ReconcileCommandSnapshot,
     ReconcileCommandState,
 )
-from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.executions import NodeExecutionId, RunEventKind
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.run_events import AttentionEventPage
 from tests.scenarios.agents import commit_configured_agent
@@ -71,6 +74,8 @@ nodes:
   - {id: action, type: action, next: waiting}
   - {id: agent, type: agent, job: job-17, output: request, next: action}
 """
+ACTION_NODE_ID = "action"
+"""The node of WORKFLOW_DOCUMENT the prepared intent belongs to."""
 
 
 @pytest.fixture
@@ -128,6 +133,35 @@ def end_workflow(engine: Engine, workflow_id: str, status: str = "ERROR") -> Non
         assert ended.rowcount == 1
 
 
+def leave_workflow(engine: Engine, workflow_id: str, status: str) -> None:
+    """Leave the row DBOS leaves for a workflow standing in that status.
+
+    The Action node workflow the fixture's intent was prepared by never ran
+    here -- the fixture calls that preparation step directly -- so its row is
+    written rather than updated.
+    """
+
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO workflow_status "
+                "(workflow_uuid,status,created_at,updated_at,priority) "
+                "VALUES (:workflow_id,:status,0,0,0)"
+            ),
+            {"workflow_id": workflow_id, "status": status},
+        )
+
+
+def action_node_workflow_id(intent: EffectIntent) -> str:
+    return node_workflow_id_for(
+        NodeExecutionId.for_node(
+            intent.binding.run_id,
+            intent.binding.workflow_revision_hash,
+            ACTION_NODE_ID,
+        )
+    )
+
+
 def converge(engine: Engine) -> tuple[LogicalEffectKey, ...]:
     return converge_driverless_effect_intents(engine)
 
@@ -150,16 +184,47 @@ def route_to_waiting(runtime: DbosRuntime, intent: EffectIntent) -> None:
     assert converge(runtime.engine) == (intent.binding.logical_key,)
 
 
+def effect_workflow_ended(status: str) -> Callable[[DbosRuntime, EffectIntent], None]:
+    def leave(runtime: DbosRuntime, intent: EffectIntent) -> None:
+        end_workflow(
+            runtime.engine, effect_workflow_id_for(intent.binding.logical_key), status
+        )
+
+    return leave
+
+
+def node_workflow_ended_before_the_enqueue(
+    runtime: DbosRuntime, intent: EffectIntent
+) -> None:
+    """The #646 window: the intent is committed, its enqueue never happened."""
+
+    _drop_workflow(runtime.engine, effect_workflow_id_for(intent.binding.logical_key))
+    leave_workflow(runtime.engine, action_node_workflow_id(intent), "ERROR")
+
+
 @pytest.mark.parametrize(
-    "status", ["ERROR", "MAX_RECOVERY_ATTEMPTS_EXCEEDED", "CANCELLED"]
+    "leave_dead_driver",
+    [
+        pytest.param(effect_workflow_ended("ERROR"), id="effect-workflow-raised"),
+        pytest.param(
+            effect_workflow_ended("MAX_RECOVERY_ATTEMPTS_EXCEEDED"),
+            id="effect-workflow-exhausted-recovery",
+        ),
+        pytest.param(
+            effect_workflow_ended("CANCELLED"), id="effect-workflow-cancelled"
+        ),
+        pytest.param(
+            node_workflow_ended_before_the_enqueue,
+            id="node-workflow-ended-before-the-enqueue",
+        ),
+    ],
 )
-def test_prepared_intent_whose_effect_workflow_raised_reaches_the_operator_door(
-    prepared: tuple[DbosRuntime, EffectIntent], status: str
+def test_prepared_intent_no_workflow_will_move_reaches_the_operator_door(
+    prepared: tuple[DbosRuntime, EffectIntent],
+    leave_dead_driver: Callable[[DbosRuntime, EffectIntent], None],
 ) -> None:
     runtime, intent = prepared
-    end_workflow(
-        runtime.engine, effect_workflow_id_for(intent.binding.logical_key), status
-    )
+    leave_dead_driver(runtime, intent)
 
     assert converge(runtime.engine) == (intent.binding.logical_key,)
 
@@ -192,22 +257,36 @@ def test_prepared_intent_whose_effect_workflow_raised_reaches_the_operator_door(
     assert isinstance(accepted, ReconciliationAcceptedPending)
 
 
+def drop_effect_workflow(runtime: DbosRuntime, intent: EffectIntent) -> None:
+    _drop_workflow(runtime.engine, effect_workflow_id_for(intent.binding.logical_key))
+
+
+def node_workflow_still_owes_the_enqueue(
+    runtime: DbosRuntime, intent: EffectIntent
+) -> None:
+    drop_effect_workflow(runtime, intent)
+    leave_workflow(runtime.engine, action_node_workflow_id(intent), "PENDING")
+
+
 @pytest.mark.parametrize(
-    "leave_driver",
+    "leave_live_driver",
     [
-        pytest.param(lambda engine, workflow_id: None, id="workflow-still-enqueued"),
+        pytest.param(lambda runtime, intent: None, id="effect-workflow-still-enqueued"),
         pytest.param(
-            lambda engine, workflow_id: _drop_workflow(engine, workflow_id),
-            id="workflow-row-absent-recovery-owes-the-enqueue",
+            drop_effect_workflow, id="no-workflow-row-recovery-owes-the-enqueue"
+        ),
+        pytest.param(
+            node_workflow_still_owes_the_enqueue,
+            id="node-workflow-still-owes-the-enqueue",
         ),
     ],
 )
 def test_prepared_intent_still_owed_a_driver_is_left_alone(
     prepared: tuple[DbosRuntime, EffectIntent],
-    leave_driver: Callable[[Engine, str], None],
+    leave_live_driver: Callable[[DbosRuntime, EffectIntent], None],
 ) -> None:
     runtime, intent = prepared
-    leave_driver(runtime.engine, effect_workflow_id_for(intent.binding.logical_key))
+    leave_live_driver(runtime, intent)
 
     assert converge(runtime.engine) == ()
 
