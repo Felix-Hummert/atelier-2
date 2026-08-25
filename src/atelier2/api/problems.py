@@ -362,6 +362,11 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Schema revision collision",
         "Stop and inspect durable schema revision integrity.",
     ),
+    "schema-revision-not-found": ProblemDefinition(
+        404,
+        "Schema revision not found",
+        "Publish the exact schema revision before reading its bytes.",
+    ),
     **_budget_document_problems(),
     "budget-revision-collision": ProblemDefinition(
         409,

@@ -86,6 +86,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/auth-profile-revisions",
     API_PREFIX + "/agent-configuration-revisions",
     API_PREFIX + "/schema-revisions",
+    API_PREFIX + "/schema-revisions/{schema_revision_hash}",
     API_PREFIX + "/budget-revisions",
     API_PREFIX + "/tool-grant-revisions",
     API_PREFIX + "/adapter-operation-revisions",
@@ -146,6 +147,11 @@ EXPECTED_ROUTE_SEQUENCE = (
         "POST",
         API_PREFIX + "/schema-revisions",
         "publish_schema_revision_route",
+    ),
+    (
+        "GET",
+        API_PREFIX + "/schema-revisions/{schema_revision_hash}",
+        "get_schema_revision_route",
     ),
     (
         "POST",
@@ -237,6 +243,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/agent-configuration-revisions", "get"): {"200"},
     (API_PREFIX + "/artifacts", "post"): {"200", "201"},
     (API_PREFIX + "/schema-revisions", "post"): {"200", "201"},
+    (API_PREFIX + "/schema-revisions/{schema_revision_hash}", "get"): {"200"},
     (API_PREFIX + "/tool-grant-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/adapter-operation-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/agent-definition-revisions", "post"): {"200", "201"},
