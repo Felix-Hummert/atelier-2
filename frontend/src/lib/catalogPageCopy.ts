@@ -11,7 +11,10 @@
  */
 export const catalogPageCopy = {
   title: "Catalog",
-  lead: "What this atelier can run, and where each piece came from.",
+  // The literal room sentence (operator ruling #684): the catalog is the
+  // library, everything published, seen with its provenance -- never the
+  // door that starts a run, which is Workflows' sentence, not this room's.
+  lead: "What the workshop has — every published workflow, agent, and skill, each with its provenance.",
 
   workflowsTitle: "Available workflows",
   workflowsEmpty: "Nothing published yet — import a workflow file below.",
@@ -49,11 +52,18 @@ export const catalogPageCopy = {
   startable: "Startable",
   notAdmitted: "Not in the catalog yet",
   notExecutable: "Not executable",
+  // The live duplicate-card finding's fix (#659, sharpened by #684): a
+  // published sibling of an admitted name shows here, under that one card,
+  // instead of wearing a second card with the same name.
+  newerRevisionAvailable: "Newer revision available",
 
   admit: "Admit into catalog",
   admitting: "Admitting…",
   admitFailed: "This workflow could not be admitted.",
   admitted: "Admitted — you can start it by name now.",
+  // A workflow entry links into the start room, never the reverse (operator
+  // ruling #684): this room shows what is published, Workflows starts it.
+  start: "Start",
 
   importWorkflowTitle: "Import a workflow",
   importWorkflowHint: "Choose a .yaml file, or paste the exact document.",

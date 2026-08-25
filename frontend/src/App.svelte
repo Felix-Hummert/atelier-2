@@ -58,7 +58,7 @@
   {:else if route.page === "workflows"}
     <WorkflowsPage {cockpitApi} {navigate} />
   {:else if route.page === "catalog"}
-    <CatalogPage {cockpitApi} />
+    <CatalogPage {cockpitApi} {navigate} />
   {:else if route.page === "workflow"}
     <WorkflowDetailPage {cockpitApi} {navigate} name={route.name} />
   {:else if route.page === "history"}
