@@ -7,7 +7,11 @@ from typing import cast
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from atelier2.api.problems import artifact_problem_code
-from atelier2.api.references import encode_event_cursor, encode_public_run_reference
+from atelier2.api.references import (
+    MAXIMUM_RUN_ORDERS,
+    encode_event_cursor,
+    encode_public_run_reference,
+)
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES, ArtifactRefusal
 from atelier2.contracts.effects import OperatorFoundEffect
@@ -117,6 +121,14 @@ class ApiLimits:
             raise ApiLimitExceeded("event cursor exceeds its character limit")
 
     def require_run_projection(self, projection: RunProjection) -> None:
+        # No durable owner bounds how many orders a run was started with, so
+        # the read admits or refuses one page at this edge -- not inside the
+        # Pydantic model, where an oversized projection would surface as an
+        # unhandled validation error instead of a named, typed refusal.
+        if len(projection.orders) > MAXIMUM_RUN_ORDERS:
+            raise ApiLimitExceeded(
+                "run projection carries more orders than the wire allows"
+            )
         self.require_field(projection.run.run_id.value)
         self.require_public_run_reference(projection.run.run_id)
         if projection.run.last_event_sequence > 0:
