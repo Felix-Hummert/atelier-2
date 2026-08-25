@@ -2,7 +2,9 @@
 
 - Status: PROPOSED 2026-08-15 — first project is the host-configuration
   mapping plus the runtime and zero-or-one HTTP reads that treat it as a
-  project; store-per-project and a second project are not implemented
+  project; store-per-project and a second project are not implemented;
+  decision 2 and the catalog-export loss list amended 2026-08-25 (candidate
+  store, operator ruling on issue #642) — decision only, unimplemented
 - Date: 2026-08-15
 - Decision authority: [Issue #23](https://github.com/FlexOr2/atelier-2/issues/23),
   SHA-256 over the exact served UTF-8 body bytes with nothing appended — 847 bytes,
@@ -173,8 +175,11 @@ This record adds no ADR 0007 kind token and needs no amendment to it.
 
 Each project owns a **project root**: a directory holding its canonical durable
 store, its effect store, its agent-control root — which already resolves beside the
-store as `<database>.parent/.atelier2-agent-control` — and its workspace and clone
-tree.
+store as `<database>.parent/.atelier2-agent-control` — its candidate store, derived
+the same way as `<database>.parent/.atelier2-candidates.git` (2026-08-25 amendment,
+#642-Journal: the project-owned bare-repository home for an attempt's captured
+candidate trees that ADR 0010 decision 5's `push-atelier-commit` pushes) — and its
+workspace and clone tree.
 
 **Nothing of a project exists outside its root**, and that is the whole rule this
 record decides. It is a **placement** rule about the product's own writes: every
@@ -360,6 +365,11 @@ will never contain:
   an importable ledger is an assertable one;
 - the **effect store** — operational state of one bound runtime, meaningless beside
   any other store;
+- the **candidate store** (`.atelier2-candidates.git`, decision 2) — an attempt's
+  captured candidate trees, deliberately lost because they are self-contained: a
+  tree object references only subtrees and blobs, never a commit, so nothing an
+  export could usefully carry follows it across installations (2026-08-25
+  amendment, #642-Journal);
 - the **project bundle** — repository, tracker connection, credential reference,
   filters, workflow rules, running state: deployment facts of this installation, and
   a credential never travels at all;
