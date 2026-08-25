@@ -7,17 +7,27 @@
     type AgentConfigurationRevisionListItem,
     type AuthProfileInput,
     type CockpitApi,
+    type InvalidField,
     type OccupancyRevision,
+    type Problem,
     type WorkflowRevisionDetail,
     type WorkflowRevisionSummary
   } from "../api/client";
   import BackLink from "../components/BackLink.svelte";
   import InfoHint from "../components/InfoHint.svelte";
+  import OrderEditor from "../components/OrderEditor.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
   import ProofAnchor from "../components/ProofAnchor.svelte";
   import { shortFingerprint } from "../lib/fingerprint";
   import ReadState from "../components/ReadState.svelte";
   import WorkflowGraphDrawing from "../components/WorkflowGraphDrawing.svelte";
+  import {
+    encodeSingleFieldOrder,
+    preValidateOrderValue,
+    summarizeOrderSchema,
+    type OrderSchemaReadFailure,
+    type OrderSchemaResource
+  } from "../lib/orderSchema";
   import {
     MutationJournal,
     createRunId as makeRunId,
@@ -89,6 +99,8 @@
     schema: { ref: string; revision: string };
     value: string;
     error: string | null;
+    fieldErrors: readonly InvalidField[];
+    schemaRead: RetainedRead<OrderSchemaResource, OrderSchemaReadFailure>;
   }
 
   interface RunDraft {
@@ -552,7 +564,9 @@
       name: order.name,
       schema: order.schema,
       value: "",
-      error: null
+      error: null,
+      fieldErrors: [],
+      schemaRead: retainedRead<OrderSchemaResource, OrderSchemaReadFailure>()
     }));
   }
 
@@ -560,19 +574,119 @@
     return `input '${name}' was refused: missing`;
   }
 
+  /**
+   * Whether a typed order is fit to send, judged as far as the browser can
+   * judge it without a round trip.
+   *
+   * A schema whose required set is exactly one string field asks for plain
+   * text (`OrderEditor`'s human editor), and any non-empty text satisfies it
+   * once wrapped -- there is nothing else in the schema to fail. Every other
+   * shape asks for JSON, pre-checked against the published schema document
+   * (`preValidateOrderValue`) so an obviously wrong shape is named before the
+   * server is asked, while a shape that check cannot see still reaches it.
+   */
   function validateOrders(orders: OrderDraft[]): boolean {
     let valid = true;
     for (const order of orders) {
-      const present = order.value.trim().length > 0;
-      order.error = present ? null : missingOrderRefusal(order.name);
-      valid &&= present;
+      order.fieldErrors = [];
+      const typed = order.value.trim();
+      if (typed.length === 0) {
+        order.error = missingOrderRefusal(order.name);
+        valid = false;
+        continue;
+      }
+      const resource = order.schemaRead.confirmed;
+      if (resource === null || resource.summary.singleRequiredStringField !== null) {
+        order.error = null;
+        continue;
+      }
+      const verdict = preValidateOrderValue(order.value, resource.document);
+      if (verdict.kind === "invalid") {
+        order.error = verdict.message;
+        order.fieldErrors = verdict.fields;
+        valid = false;
+      } else {
+        order.error = null;
+      }
     }
     draft = draft === null ? null : { ...draft, orders: [...orders] };
     return valid;
   }
 
-  function schemaHint(order: OrderDraft): string {
-    return `${order.schema.ref}@${order.schema.revision}`;
+  /** The exact bytes an order sends: the human editor's text, wrapped into the one field its schema names, or the typed JSON verbatim. */
+  function wireOrderValue(order: OrderDraft): string {
+    const field = order.schemaRead.confirmed?.summary.singleRequiredStringField;
+    return field === null || field === undefined ? order.value : encodeSingleFieldOrder(field, order.value);
+  }
+
+  async function loadOrderSchema(order: OrderDraft): Promise<void> {
+    const begun = beginRead(order.schemaRead);
+    updateOrderSchemaRead(order.name, begun.read);
+    try {
+      const document = await cockpitApi.getSchemaRevision(order.schema.revision);
+      const read = confirmRead(begun.read, begun.generation, {
+        summary: summarizeOrderSchema(document),
+        document
+      });
+      updateOrderSchemaRead(order.name, read);
+    } catch {
+      updateOrderSchemaRead(
+        order.name,
+        failRead(begun.read, begun.generation, {
+          kind: "unavailable",
+          title: "Order schema unavailable"
+        })
+      );
+    }
+  }
+
+  function updateOrderSchemaRead(
+    name: string,
+    read: RetainedRead<OrderSchemaResource, OrderSchemaReadFailure>
+  ): void {
+    if (draft === null) return;
+    draft = {
+      ...draft,
+      orders: draft.orders.map((order) => (order.name === name ? { ...order, schemaRead: read } : order))
+    };
+  }
+
+  function retryOrderSchema(name: string): void {
+    const order = draft?.orders.find((candidate) => candidate.name === name);
+    if (order !== undefined) void loadOrderSchema(order);
+  }
+
+  /**
+   * Which declared order a `run-input-refused` names, so its field pointers
+   * (`invalid_fields`) land beside the order that carried them rather than
+   * only in the top banner's prose. The wire names one order per refusal in
+   * `detail` (`input '<name>' was refused: …`), never structurally -- with one
+   * order declared this is unambiguous without reading it; with more than
+   * one, the sentence is matched against every declared name so a refusal for
+   * an order nobody typed is never guessed onto the wrong field.
+   */
+  function refusedOrderName(problem: Problem, orderNames: readonly string[]): string | null {
+    const [only] = orderNames;
+    if (orderNames.length === 1) return only ?? null;
+    return orderNames.find((name) => problem.detail.startsWith(`input '${name}' was refused`)) ?? null;
+  }
+
+  function applyOrderRefusal(error: unknown): void {
+    if (draft === null) return;
+    if (!(error instanceof CockpitRequestError) || error.problem === null) return;
+    const problem = error.problem;
+    // `Problem` is a fifty-variant discriminated union; only two of its
+    // members declare `invalid_fields`, and every one that does is proven by
+    // `problemSchema` (client.ts) to carry exactly `InvalidField[] | undefined`
+    // there, so reading it this way is a narrowing workaround, not a new claim.
+    const fields = (problem as { invalid_fields?: readonly InvalidField[] }).invalid_fields;
+    if (fields === undefined || fields.length === 0) return;
+    const name = refusedOrderName(problem, draft.orders.map((order) => order.name));
+    if (name === null) return;
+    draft = {
+      ...draft,
+      orders: draft.orders.map((order) => (order.name === name ? { ...order, fieldErrors: fields } : order))
+    };
   }
 
   async function startDraft(): Promise<void> {
@@ -601,7 +715,7 @@
               selected.runId,
               selected.revision.workflow_revision_hash,
               bound,
-              selected.orders.map((order) => ({ name: order.name, value: order.value }))
+              selected.orders.map((order) => ({ name: order.name, value: wireOrderValue(order) }))
             )
           : startMutationV2(selected.runId, selected.revision.workflow_revision_hash, bound);
     } else {
@@ -616,6 +730,7 @@
       await deliverStart(mutation);
     } catch (error) {
       if (prepared) await recordDeliveryFailure(mutation.mutation_id, error);
+      applyOrderRefusal(error);
       showFailure(error, "The run start could not be confirmed.");
     } finally {
       operation = null;
@@ -695,6 +810,7 @@
       })),
       orders: declaredOrdersOf(revision.graph)
     };
+    for (const order of draft.orders) void loadOrderSchema(order);
     if (lineageId === null || roles.length === 0) {
       clearProjectOccupancy();
       applyBindingRecommendations();
@@ -820,7 +936,7 @@
     draft = {
       ...draft,
       orders: draft.orders.map((order) =>
-        order.name === name ? { ...order, value, error: null } : order
+        order.name === name ? { ...order, value, error: null, fieldErrors: [] } : order
       )
     };
   }
@@ -1277,30 +1393,17 @@
         <p class="eyebrow">Material</p>
         <h2 id="material-list-title">Orders</h2>
         {#each draft.orders as order (order.name)}
-          <article
-            class="node-card binding-card"
-            class:node-queued={operation !== "start" && order.error === null}
-            class:node-working={operation === "start" && order.error === null}
-            class:node-needs_you={order.error !== null}
-            aria-label={`Order ${order.name}`}
-          >
-            <header class="node-header">
-              <span class="node-kind">Order</span><h3>{order.name}</h3>
-            </header>
-            <p class="muted"><code>{schemaHint(order)}</code></p>
-            <label class="named-agent">Material
-              <textarea
-                rows="6"
-                value={order.value}
-                oninput={(event) => setOrderValue(order.name, event.currentTarget.value)}
-                spellcheck="false"
-                disabled={busy}
-                aria-invalid={order.error !== null}
-                aria-label={`Material ${order.name}`}
-              ></textarea>
-            </label>
-            {#if order.error !== null}<p class="binding-error" role="alert">{order.error}</p>{/if}
-          </article>
+          <OrderEditor
+            {order}
+            value={order.value}
+            error={order.error}
+            fieldErrors={order.fieldErrors}
+            schemaRead={order.schemaRead}
+            {busy}
+            starting={operation === "start"}
+            onInput={(value) => setOrderValue(order.name, value)}
+            onRetrySchema={() => retryOrderSchema(order.name)}
+          />
         {/each}
       </section>
     {/if}
