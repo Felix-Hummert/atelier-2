@@ -84,6 +84,38 @@ def test_the_named_violation_is_the_earliest_place_not_whichever_arrived_first()
     assert "portions" not in verdict.subject
 
 
+def test_a_violated_field_is_named_by_a_pointer_a_caller_can_wire_without_parsing() -> (
+    None
+):
+    """A caller that wants one field, not prose, reads `violation` instead.
+
+    `subject` stays the human sentence; `violation.pointer` is the exact RFC
+    6901 pointer `subject` was built from, and `violation.reason` its message
+    alone -- so a caller that wants `invalid_fields` never parses `subject`.
+    """
+    verdict = read_instance_document(b'{"name": "lasagne", "portions": 0}', A_MEAL)
+
+    assert isinstance(verdict, InstanceRefused)
+    assert verdict.violation is not None
+    assert verdict.violation.pointer == "/portions"
+    assert verdict.violation.reason == "0 is less than the minimum of 1"
+
+
+def test_a_violation_with_no_addressable_field_names_no_pointer() -> None:
+    """A `required` violation at the value's own root has no RFC 6901 pointer.
+
+    The missing key is not a place in the document, so a caller asking for
+    `violation.pointer` reads `None` rather than an empty string that would
+    misname the value's root as an addressable field.
+    """
+    verdict = read_instance_document(b'{"portions": 0, "surprise": true}', A_MEAL)
+
+    assert isinstance(verdict, InstanceRefused)
+    assert verdict.violation is not None
+    assert verdict.violation.pointer is None
+    assert verdict.violation.reason == "'name' is a required property"
+
+
 @pytest.mark.parametrize(
     ("label", "document", "expected"),
     (

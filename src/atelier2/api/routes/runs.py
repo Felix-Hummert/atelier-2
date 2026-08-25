@@ -22,7 +22,11 @@ from atelier2.api._support import (
 from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.limits import ApiLimitExceeded
 from atelier2.api.openapi import API_PREFIX
-from atelier2.api.problems import PROJECTION_LIMIT_DETAIL, ApiProblem
+from atelier2.api.problems import (
+    PROJECTION_LIMIT_DETAIL,
+    ApiProblem,
+    bounded_invalid_field,
+)
 from atelier2.api.projection.runs import (
     node_detail_resource,
     run_receipt_resource,
@@ -197,11 +201,23 @@ async def start_run_route(
             raise ApiProblem("run-identity-conflict")
         case RunFormatNotExecutable():
             raise ApiProblem("workflow-format-not-executable")
-        case RunInputRefused(name, refusal, _detail):
-            # The input is named in the detail because it is what an operator
-            # fixes; the refusal token says which of the named ways it is wrong.
+        case RunInputRefused(name, refusal, detail, violation):
+            # The input is named first because it is what an operator fixes; the
+            # refusal token says which of the named ways it is wrong, and detail
+            # -- when the refusal has one -- says where and why. A violation
+            # that names one addressable field also reaches `invalid_fields`,
+            # the mechanism every other field-level refusal already answers
+            # through, so a caller need not parse this sentence to find it.
+            sentence = f"input {name!r} was refused: {refusal}"
+            if detail is not None:
+                sentence = f"{sentence}: {detail}"
+            invalid_fields = None
+            if violation is not None and violation.pointer is not None:
+                invalid_fields = (
+                    bounded_invalid_field(violation.pointer, violation.reason),
+                )
             raise ApiProblem(
-                "run-input-refused", detail=f"input {name!r} was refused: {refusal}"
+                "run-input-refused", detail=sentence, invalid_fields=invalid_fields
             )
         case InvalidAgentBindings():
             raise ApiProblem("invalid-agent-bindings")
