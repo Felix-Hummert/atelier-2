@@ -5,6 +5,7 @@ from typing import assert_never
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from atelier2.api._support import (
     parse_limit,
@@ -14,7 +15,8 @@ from atelier2.api._support import (
     run_control_query,
 )
 from atelier2.api.context import ApiContext, api_context_dependency
-from atelier2.api.openapi import API_PREFIX
+from atelier2.api.limits import ApiLimitExceeded
+from atelier2.api.openapi import API_PREFIX, LIBRARY_RECOGNITIONS_PATH
 from atelier2.api.problems import (
     PROJECTION_LIMIT_DETAIL,
     ApiProblem,
@@ -29,6 +31,14 @@ from atelier2.api.projection.workflows import (
     workflow_revision_page_resource,
 )
 from atelier2.api.references import InvalidRevisionHash, parse_revision_hash
+from atelier2.api.wire.library import (
+    DocumentNotHeldResource,
+    DocumentUnrecognizedResource,
+    KindRefusalResource,
+    LibraryRecognitionResource,
+    RecognizedAgentDefinitionResource,
+    RecognizedWorkflowResource,
+)
 from atelier2.api.wire.requests import (
     AdmitCatalogMemberRequestResource,
     FoundCatalogLineageRequestResource,
@@ -55,6 +65,9 @@ from atelier2.application.admit_catalog_member import (
     CatalogDisplayNameInvalid,
     CatalogExplicitNameRequired,
     CatalogRevisionUnpublished,
+)
+from atelier2.application.classify_definition_document import (
+    ClassifyDefinitionDocumentResult,
 )
 from atelier2.application.publish_adapter_operation_revision import (
     AdapterOperationPublicationCollision,
@@ -133,6 +146,13 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageIdMismatch,
     CatalogMemberAdmitted,
     catalog_lineage_query,
+)
+from atelier2.contracts.library_recognition import (
+    DocumentAmbiguous,
+    DocumentNotHeld,
+    DocumentUnrecognized,
+    RecognizedAgentDefinition,
+    RecognizedWorkflow,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import WorkflowRevisionHash
@@ -417,6 +437,79 @@ def _agent_definition_list_item(
         name=published.definition.name,
         description=published.definition.description,
     )
+
+
+@router.post(
+    LIBRARY_RECOGNITIONS_PATH,
+    response_model=LibraryRecognitionResource,
+    status_code=HTTPStatus.OK,
+)
+async def recognize_library_document_route(
+    request: Request,
+    file_name: str | None = None,
+    context: ApiContext = api_context_dependency,
+) -> JSONResponse:
+    """Say what a loose document is, and write nothing.
+
+    The body is opaque bytes because the caller does not know the kind -- that
+    is the question. The file name travels beside it because ADR 0018's
+    selection grammar lets a name decide what identical frontmatter cannot.
+    """
+    require_media_type(request, "application/octet-stream")
+    if file_name is not None:
+        try:
+            context.limits.require_field(file_name)
+        except ApiLimitExceeded as error:
+            raise ApiProblem("invalid-request") from error
+    document = await request.body()
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.classify_definition_document(document, file_name),
+    )
+    return resource_response(_recognition_resource(result), HTTPStatus.OK)
+
+
+def _recognition_resource(result: ClassifyDefinitionDocumentResult) -> BaseModel:
+    match result:
+        case RecognizedWorkflow(format_version, name, description):
+            return RecognizedWorkflowResource(
+                outcome="workflow",
+                workflow_format_version=format_version.value,
+                name=name,
+                description=description,
+            )
+        case RecognizedAgentDefinition(name, description, provider):
+            return RecognizedAgentDefinitionResource(
+                outcome="agent_definition",
+                name=name,
+                description=description,
+                provider_id=provider.value,
+            )
+        case DocumentNotHeld(kind, reason):
+            return DocumentNotHeldResource(
+                outcome="not_held", kind=kind.value, reason=reason
+            )
+        case DocumentUnrecognized(refusals):
+            return DocumentUnrecognizedResource(
+                outcome="unrecognized",
+                refusals=tuple(
+                    KindRefusalResource(
+                        kind=refusal.kind.value,
+                        expected=refusal.expected,
+                        refused_because=refusal.refused_because,
+                    )
+                    for refusal in refusals
+                ),
+            )
+        case DocumentAmbiguous(kinds):
+            raise ApiProblem(
+                "library-document-ambiguous",
+                "The document matches "
+                + " and ".join(kind.value for kind in kinds)
+                + ".",
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 @router.post(

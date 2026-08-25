@@ -27,6 +27,9 @@ from atelier2.ports.agent_attempts import (
     RunCancellationCommandConflict as DurableCommandConflict,
 )
 from atelier2.ports.agent_attempts import (
+    RunCancellationEndedRun as DurableEndedRun,
+)
+from atelier2.ports.agent_attempts import (
     RunCancellationNotCancellable as DurableNotCancellable,
 )
 from atelier2.ports.agent_attempts import (
@@ -50,6 +53,13 @@ class CancelAccepted:
     """A genuinely new command moved the run's live attempt to `CANCEL_REQUESTED`."""
 
     attempt: AgentAttempt
+
+
+@dataclass(frozen=True)
+class CancelEndedRun:
+    """This command ended the run itself; nothing is left to converge."""
+
+    run: AnyRun
 
 
 @dataclass(frozen=True)
@@ -91,6 +101,7 @@ class MalformedIdempotencyKey:
 
 type CancelRunResult = (
     CancelAccepted
+    | CancelEndedRun
     | CancelTerminalRetry
     | CancelOvertakenBySuccess
     | CancelNotCancellable
@@ -123,6 +134,8 @@ def cancel_run_result(
     match canceller.request_run_cancellation(request):
         case DurableAccepted(attempt):
             return CancelAccepted(attempt)
+        case DurableEndedRun(run):
+            return CancelEndedRun(run)
         case DurableTerminalRetry(run):
             return CancelTerminalRetry(run)
         case DurableOvertakenBySuccess(run):

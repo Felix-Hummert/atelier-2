@@ -25,6 +25,12 @@ export type CatalogEntryState =
 export interface CatalogWorkflowRow {
   revisionHash: string;
   title: string;
+  /**
+   * The document's own declared name, `null` for the same revisions `title`
+   * falls back to a placeholder for. The Details door (#695) needs the real
+   * name, never the placeholder, to build the workflow detail page's path.
+   */
+  name: string | null;
   description: string | null;
   /**
    * `null` where this room cannot honestly answer: the catalog is asked by
@@ -96,6 +102,7 @@ export function catalogWorkflowRows(
     return kept.map((revision, index) => ({
       revisionHash: revision.workflow_revision_hash,
       title: revision.name ?? catalogPageCopy.unnamedWorkflow,
+      name: revision.name,
       description: revision.description,
       state: workflowEntryState(revision, catalogByName),
       admittable: isAdmittable(revision),

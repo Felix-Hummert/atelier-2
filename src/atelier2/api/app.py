@@ -44,6 +44,9 @@ from atelier2.application.admit_queue_item import (
 from atelier2.application.answer_wait import answer_wait_result
 from atelier2.application.cancel_agent_attempt import cancel_agent_attempt
 from atelier2.application.cancel_run import cancel_run_result
+from atelier2.application.classify_definition_document import (
+    classify_definition_document,
+)
 from atelier2.application.import_project_source_issues import (
     import_project_source_issues,
     list_observed_queue_items,
@@ -223,6 +226,14 @@ def bound_use_cases(
                 ports.agent_definition_parser,
                 ports.agent_definition_renderer,
                 ports.published_revision_registry,
+            )
+        ),
+        classify_definition_document=lambda document, file_name: (
+            classify_definition_document(
+                document,
+                file_name,
+                ports.workflow_document_parser,
+                ports.agent_definition_parser,
             )
         ),
         list_agent_definition_revisions=(
@@ -424,7 +435,7 @@ def create_app(
     app.include_router(events.router)
     app.include_router(queue.router)
 
-    install_custom_openapi(app)
+    install_custom_openapi(app, limits)
     return app
 
 

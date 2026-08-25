@@ -70,6 +70,7 @@ _NODE_STATES_ENDED_BY_EVENT: Mapping[RunEventKind, NodeState] = {
     RunEventKind.SUBWORKFLOW_COMPLETED: NodeState.SUCCEEDED,
     RunEventKind.AGENT_FAILED: NodeState.FAILED,
     RunEventKind.AGENT_CANCELLED: NodeState.CANCELLED,
+    RunEventKind.WAIT_CANCELLED: NodeState.CANCELLED,
     RunEventKind.AGENT_INTERRUPTED: NodeState.INTERRUPTED,
 }
 _SUCCESSFUL_ENDING_KINDS = frozenset(
@@ -208,6 +209,12 @@ class _RailDerivation:
             return NodeState.SUCCEEDED
         if run.state is RunState.FAILED:
             return NodeState.FAILED
+        if run.state is RunState.CANCELLED:
+            # An agent node reaches its own `cancelled` through the attempt
+            # above, but a pause has no attempt to read -- and every caller of
+            # this rail on a run resource passes no events at all, so the run's
+            # own ending word is the only thing left that can answer honestly.
+            return NodeState.CANCELLED
         if run.state is RunState.WAITING_INPUT:
             return NodeState.NEEDS_YOU
         if run.state is RunState.WAITING_RECONCILIATION:

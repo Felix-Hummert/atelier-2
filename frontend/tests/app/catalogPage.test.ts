@@ -157,6 +157,44 @@ describe("the catalog room", () => {
     expect((await screen.findByRole("heading", { name: "Workflows" })).isConnected).toBe(true);
   });
 
+  it("opens a named workflow's own detail room from its Details door, the only one it has", async () => {
+    openCatalog({
+      ...listing([workflowSummary()]),
+      ...admittedName(),
+      getWorkflowRevision: vi.fn(async () => ({
+        workflow_revision_hash: WORKFLOW_HASH,
+        document_base64: "YQ==",
+        graph: {
+          workflow_format_version: 3 as const,
+          executable: true,
+          not_executable_reason: null,
+          node_count: 1,
+          agent_roles: [],
+          orders: [],
+          wait_answer_schemas: [],
+          node_previews: [],
+          loops: [],
+          name: WORKFLOW_NAME,
+          description: null
+        }
+      }))
+    });
+    await screen.findByText(catalogPageCopy.startable);
+
+    fireEvent.click(screen.getByRole("link", { name: catalogPageCopy.details }));
+
+    expect(
+      (await screen.findByRole("heading", { name: WORKFLOW_NAME })).isConnected
+    ).toBe(true);
+  });
+
+  it("offers no Details door for a revision that declares no name to look one up by", async () => {
+    openCatalog({ ...listing([workflowSummary({ name: null })]), ...unlistedName() });
+    await screen.findByText(catalogPageCopy.unnamedWorkflow);
+
+    expect(screen.queryByRole("link", { name: catalogPageCopy.details })).toBeNull();
+  });
+
   it("offers admission for a published workflow the catalog does not hold yet", async () => {
     openCatalog({ ...listing([workflowSummary()]), ...unlistedName() });
 
