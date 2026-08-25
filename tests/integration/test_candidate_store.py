@@ -584,6 +584,36 @@ def test_reading_a_store_that_is_no_directory_refuses_rather_than_saying_nothing
         project.store.read(AN_ATTEMPT)
 
 
+@pytest.mark.parametrize(
+    "a_repository_stands_there",
+    [True, False],
+    ids=["a real bare repository outside the root", "nothing at all"],
+)
+def test_a_store_reached_through_a_symbolic_link_is_refused_on_both_ways(
+    tmp_path: Path, a_repository_stands_there: bool
+) -> None:
+    """A project keeps what its attempts made in its own root, not where a link points.
+
+    Following the link would put every candidate somewhere the root does not own,
+    and a link pointing nowhere would answer "this attempt captured nothing" for
+    work that was never kept at all.
+    """
+
+    project = Project(tmp_path, {"tool.py": COMMITTED})
+    lease = project.workspace(AN_ATTEMPT)
+    elsewhere = tmp_path / "outside-the-root"
+    if a_repository_stands_there:
+        asked_of_git(project.checkout, ("init", "--bare", "--quiet", str(elsewhere)))
+    project.store_path.symlink_to(elsewhere)
+
+    with pytest.raises(CandidateStoreUnavailable, match=str(project.store_path)):
+        project.store.capture(project.pin, lease)
+    with pytest.raises(CandidateStoreUnavailable, match=str(project.store_path)):
+        project.store.read(AN_ATTEMPT)
+
+    assert not (elsewhere / "refs" / "atelier").exists()
+
+
 def test_a_store_naming_objects_the_other_way_refuses_before_it_is_written_into(
     tmp_path: Path,
 ) -> None:

@@ -5,7 +5,8 @@ product and written only by it. It is not the operator's checkout: that checkout
 is read for what a run was pinned to and never written, and a project keeps
 nothing of itself outside its own root. So the candidate of every attempt lands
 here, beside the project's database, and a re-clone of the checkout leaves it
-untouched.
+untouched. "Inside the root" is checked and not assumed: a symbolic link standing
+where the store belongs is refused rather than followed out.
 
 What is captured is what `git add --all` would have staged in the pinned checkout
 itself. That is why the index is seeded from the pinned tree first: a file that is
@@ -95,7 +96,10 @@ class GitCandidateTreeStore:
 
     def __init__(self, project_checkout: Path, database_path: Path) -> None:
         self._project_checkout = project_checkout.resolve()
-        self._store = (database_path.parent / CANDIDATE_STORE_DIRECTORY_NAME).resolve()
+        # The root is resolved and the store's own name is left as it is: resolving
+        # the whole path would follow a link standing where the store belongs, and
+        # the store's place is a fact about the root rather than about that link.
+        self._store = database_path.parent.resolve() / CANDIDATE_STORE_DIRECTORY_NAME
 
     def capture(
         self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
@@ -118,6 +122,7 @@ class GitCandidateTreeStore:
         work into a fact about the attempt.
         """
 
+        self._refuse_a_linked_store()
         if not self._store.exists():
             return None
         if not self._store.is_dir():
@@ -131,10 +136,33 @@ class GitCandidateTreeStore:
     def _ensure_store(self) -> None:
         """Make the store exist and be one this project's objects can live in."""
 
+        self._refuse_a_linked_store()
         kept_in = self._checkout_object_format()
-        if not self._store.exists():
+        if not self._a_store_stands():
             self._create_store(kept_in)
         self._refuse_unless_kept_in(kept_in)
+
+    def _refuse_a_linked_store(self) -> None:
+        """The store is a directory in the root, never a door out of it.
+
+        A link standing where the store belongs -- left there before this project
+        was ever served, or put there after -- would take every candidate it keeps
+        somewhere its root does not own, and a link pointing nowhere would read as
+        an attempt that captured nothing. Neither is followed, on the way in or on
+        the way out.
+        """
+
+        if self._store.is_symlink():
+            raise CandidateStoreUnavailable(
+                f"the candidate store at {self._store} is a symbolic link, and a "
+                "project keeps what its attempts made inside its own root rather "
+                "than wherever a link points"
+            )
+
+    def _a_store_stands(self) -> bool:
+        """Whether the store is in place as a directory of the root's own."""
+
+        return self._store.is_dir() and not self._store.is_symlink()
 
     def _checkout_object_format(self) -> GitObjectFormat:
         try:
@@ -172,7 +200,7 @@ class GitCandidateTreeStore:
             )
             unfinished.rename(self._store)
         except OSError as error:
-            if not self._store.is_dir():
+            if not self._a_store_stands():
                 raise CandidateStoreUnavailable(
                     f"the candidate store at {self._store} could not be put in "
                     f"place: {error}"
