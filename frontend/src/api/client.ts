@@ -777,10 +777,6 @@ const runOrderSchema = z
 
 export type RunOrder = z.infer<typeof runOrderSchema>;
 
-/** No durable owner caps how many orders one run can be started with; the
- * wire decides it, once -- the same bound `api/references.py` owns. */
-const MAXIMUM_RUN_ORDERS = 100;
-
 const runV3Schema = z
   .object({
     workflow_format_version: z.literal(3),
@@ -790,7 +786,7 @@ const runV3Schema = z
     agent_binding_set_hash: sha256,
     run_configuration_revision_hash: sha256,
     agent_bindings: z.array(agentBindingV2Schema).max(100),
-    orders: z.array(runOrderSchema).max(MAXIMUM_RUN_ORDERS),
+    orders: z.array(runOrderSchema),
     state_version: nonnegativeSafeInteger,
     state: z.enum(RUN_STATES_V3),
     current_node_id: z.string().min(1),
