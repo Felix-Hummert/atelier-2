@@ -130,6 +130,8 @@ export function cancelReasonSentence(
       return "This run is already being cancelled.";
     case "already-ended":
       return "This run has already ended.";
+    case "answer-in-flight":
+      return "Your answer to this run is still being applied. Once it has landed, the cancel returns here.";
   }
 }
 

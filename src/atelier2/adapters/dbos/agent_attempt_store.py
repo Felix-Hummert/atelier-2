@@ -822,6 +822,43 @@ def _wait_cancellation_from_event_log(
     return RunCancellationEndedRun(load_run(connection, run_id))
 
 
+def _cancel_resting_wait(
+    connection: Any,
+    run: RunV3,
+    node_execution_id: NodeExecutionId,
+    command_id: str,
+) -> RunCancellationResult:
+    """End a run resting at a pause, in the transaction that resolved it.
+
+    Nothing is enqueued and nothing converges later: a pause has no attempt to
+    stop, so the command writes its own attestation and the run is over when
+    this returns. That is why the answer is `EndedRun` rather than `Accepted` --
+    there is no cleanup an operator could still be waiting on.
+
+    A pending answer is the one thing that refuses. The product has already told
+    a person their message was taken, and applying it is a separate transaction
+    away, so ending the run here would drop it silently; the operator is told to
+    retry once that message has landed.
+    """
+    pending_answer = connection.scalar(
+        sa.select(wait_answers.c.node_execution_id).where(
+            wait_answers.c.node_execution_id == node_execution_id.value,
+            wait_answers.c.state == WaitAnswerState.PENDING.value,
+        )
+    )
+    if pending_answer is not None:
+        return RunCancellationNotCancellable(RunCancellationRefusal.ANSWER_IN_FLIGHT)
+    commit_wait_cancelled(
+        connection,
+        run.run_id,
+        run.revision_hash,
+        run.current_node_id,
+        command_id,
+        run.current_round_ordinal,
+    )
+    return RunCancellationEndedRun(load_run(connection, run.run_id))
+
+
 def _unavailable_executor_cleanup_command_id(attempt_id: AgentAttemptId) -> str:
     return (
         f"{AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value}:{attempt_id.value}"
@@ -2184,10 +2221,6 @@ class DbosAgentAttemptStore:
                 return RunCancellationNotCancellable(
                     RunCancellationRefusal.ALREADY_ENDED
                 )
-            # A reconciliation pause keeps `waiting-for-you`: an Action's live
-            # intent stands behind it, and ending the run there would abandon
-            # it. So does any pause a format-3 line did not write, because
-            # `WAIT_CANCELLED` is a kind only the V3 wire publishes (#668).
             resting_wait_run = (
                 run
                 if run.state is RunState.WAITING_INPUT and isinstance(run, RunV3)
@@ -2197,6 +2230,10 @@ class DbosAgentAttemptStore:
                 RunState.WAITING_INPUT,
                 RunState.WAITING_RECONCILIATION,
             }
+            # A reconciliation pause keeps `waiting-for-you`: an Action's live
+            # intent stands behind it, and ending the run there would abandon
+            # it. So does any pause a format-3 line did not write, because
+            # `WAIT_CANCELLED` is a kind only the V3 wire publishes (#668).
             if waiting_for_a_person and resting_wait_run is None:
                 return RunCancellationNotCancellable(
                     RunCancellationRefusal.WAITING_FOR_YOU
@@ -2214,7 +2251,7 @@ class DbosAgentAttemptStore:
                 )
 
             if resting_wait_run is not None:
-                return self._cancel_resting_wait(
+                return _cancel_resting_wait(
                     connection, resting_wait_run, live_node_execution_id, command_id
                 )
 
@@ -2270,45 +2307,6 @@ class DbosAgentAttemptStore:
             if committed is None:
                 return RunCancellationCommandConflict()
             return RunCancellationAccepted(committed)
-
-    def _cancel_resting_wait(
-        self,
-        connection: Any,
-        run: RunV3,
-        node_execution_id: NodeExecutionId,
-        command_id: str,
-    ) -> RunCancellationResult:
-        """End a run resting at a pause, in the transaction that resolved it.
-
-        Nothing is enqueued and nothing converges later: a pause has no attempt
-        to stop, so the command writes its own attestation and the run is over
-        when this returns. That is why the answer is `EndedRun` rather than
-        `Accepted` -- there is no cleanup an operator could still be waiting on.
-
-        A pending answer is the one thing that refuses. The product has already
-        told a person their message was taken, and applying it is a separate
-        transaction away, so ending the run here would drop it silently; the
-        operator is told to retry once that message has landed.
-        """
-        pending_answer = connection.scalar(
-            sa.select(wait_answers.c.node_execution_id).where(
-                wait_answers.c.node_execution_id == node_execution_id.value,
-                wait_answers.c.state == WaitAnswerState.PENDING.value,
-            )
-        )
-        if pending_answer is not None:
-            return RunCancellationNotCancellable(
-                RunCancellationRefusal.ANSWER_IN_FLIGHT
-            )
-        commit_wait_cancelled(
-            connection,
-            run.run_id,
-            run.revision_hash,
-            run.current_node_id,
-            command_id,
-            run.current_round_ordinal,
-        )
-        return RunCancellationEndedRun(load_run(connection, run.run_id))
 
     def _commit_new_cancellation(
         self,
