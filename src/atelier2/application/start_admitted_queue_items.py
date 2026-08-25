@@ -62,10 +62,12 @@ from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.durable_runs import DurablePublishedRunStarter
+from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.published_revisions import (
     CatalogNameFound,
     CatalogNameMissing,
     CatalogResolver,
+    PublishedRevisionsUnavailable,
 )
 from atelier2.ports.queue_projection import AdmittedQueueItemsPage, QueueProjection
 
@@ -216,6 +218,11 @@ def _resolve_head(
         case CatalogNameMissing():
             raise QueueItemWorkflowUnresolved(
                 f"admitted workflow lineage {lineage_id.value} does not resolve at head"
+            )
+        case PublishedRevisionsUnavailable() | PortDurableStateCorrupt():
+            raise QueueAutoStartUnavailable(
+                f"the catalog could not resolve workflow lineage {lineage_id.value}"
+                " for auto-start"
             )
         case _ as unreachable:
             assert_never(unreachable)

@@ -4,6 +4,7 @@ from dataclasses import fields
 
 import pytest
 
+from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
 from atelier2.application.resolve_catalog_name import (
     CatalogNameInvalidPosition,
     CatalogNameLineageRetired,
@@ -24,12 +25,13 @@ from atelier2.contracts.revisions_v3 import (
     PublishedRevisionHash,
     RevisionKind,
 )
+from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.published_revisions import (
     CatalogNameFound,
-    CatalogReferenceLookup,
     CatalogRevisionPosition,
     PublishedRevisionFound,
     PublishedRevisionMissing,
+    PublishedRevisionsUnavailable,
     ResolveCatalogNameResult,
     ResolvePublishedRevisionResult,
 )
@@ -44,7 +46,7 @@ class ScriptedCatalogResolver:
     def __init__(
         self,
         *,
-        reference_answer: CatalogReferenceLookup | None = None,
+        reference_answer: ResolvePublishedRevisionResult | None = None,
         name_answers: dict[
             tuple[CatalogNameQuery, CatalogRevisionPosition], ResolveCatalogNameResult
         ]
@@ -69,7 +71,7 @@ class ScriptedCatalogResolver:
         kind: RevisionKind,
         lineage_id: CatalogLineageId,
         revision_hash: PublishedRevisionHash,
-    ) -> CatalogReferenceLookup:
+    ) -> ResolvePublishedRevisionResult:
         self.reference_calls.append((kind, lineage_id, revision_hash))
         if self.reference_answer is None:
             raise AssertionError("no reference answer was scripted")
@@ -122,7 +124,7 @@ def test_reference_resolution_refuses_a_nonmember_or_mismatched_answer(
     requested = _published_workflow()
     lineage_id = _lineage_id(requested)
     if answer_kind == "missing":
-        answer: CatalogReferenceLookup = PublishedRevisionMissing()
+        answer: ResolvePublishedRevisionResult = PublishedRevisionMissing()
     elif answer_kind == "wrong_hash":
         answer = PublishedRevisionFound(_published_workflow(b"name: another\n"))
     else:
@@ -228,7 +230,7 @@ def test_name_resolution_refuses_when_its_named_member_does_not_resolve(
     revision = _published_workflow()
     lineage_id = _lineage_id(revision)
     display_name = CatalogLineageDisplayName("lasagne")
-    reference_answer: CatalogReferenceLookup = (
+    reference_answer: ResolvePublishedRevisionResult = (
         PublishedRevisionMissing()
         if stored_answer == "missing_member"
         else PublishedRevisionFound(_published_workflow(b"name: other\n"))
@@ -278,3 +280,90 @@ def test_name_resolution_refuses_invalid_positions_before_calling_the_port(
         RevisionKind.WORKFLOW, query, position, catalog
     ) == CatalogNameInvalidPosition(position)
     assert catalog.name_calls == []
+
+
+@pytest.mark.parametrize(
+    ("port_answer", "expected"),
+    [
+        (
+            PublishedRevisionsUnavailable("store asleep"),
+            ReadUnavailable("store asleep"),
+        ),
+        (PortDurableStateCorrupt(), DurableStateCorrupt()),
+    ],
+)
+def test_reference_resolution_becomes_this_layers_own_refusal(
+    port_answer: ResolvePublishedRevisionResult, expected: object
+) -> None:
+    """A store failure resolving a reference is this layer's refusal, not a raise."""
+    revision = _published_workflow()
+    lineage_id = _lineage_id(revision)
+    catalog = ScriptedCatalogResolver(reference_answer=port_answer)
+
+    assert (
+        resolve_catalog_reference(
+            RevisionKind.WORKFLOW, lineage_id, revision.revision_hash, catalog
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("port_answer", "expected"),
+    [
+        (
+            PublishedRevisionsUnavailable("store asleep"),
+            ReadUnavailable("store asleep"),
+        ),
+        (PortDurableStateCorrupt(), DurableStateCorrupt()),
+    ],
+)
+def test_name_resolution_carries_a_reference_store_failure_through(
+    port_answer: ResolvePublishedRevisionResult, expected: object
+) -> None:
+    """`resolve_catalog_name` also asks the reference the name resolved to; a
+    store failure there is the same refusal, not a 500 the name lookup hides."""
+    revision = _published_workflow()
+    lineage_id = _lineage_id(revision)
+    display_name = CatalogLineageDisplayName("lasagne")
+    catalog = ScriptedCatalogResolver(
+        reference_answer=port_answer,
+        name_answers={
+            (display_name, "head"): CatalogNameFound(
+                lineage_id,
+                revision.revision_hash,
+                1,
+                display_name,
+                retired=False,
+            )
+        },
+    )
+
+    assert (
+        resolve_catalog_name(RevisionKind.WORKFLOW, display_name, "head", catalog)
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("port_answer", "expected"),
+    [
+        (
+            PublishedRevisionsUnavailable("store asleep"),
+            ReadUnavailable("store asleep"),
+        ),
+        (PortDurableStateCorrupt(), DurableStateCorrupt()),
+    ],
+)
+def test_name_resolution_becomes_this_layers_own_refusal(
+    port_answer: ResolveCatalogNameResult, expected: object
+) -> None:
+    """A store failure resolving the name itself is this layer's refusal too,
+    never a raise -- the same as a failure resolving the reference it names."""
+    query = CatalogLineageDisplayName("lasagne")
+    catalog = ScriptedCatalogResolver(name_answers={(query, "head"): port_answer})
+
+    assert (
+        resolve_catalog_name(RevisionKind.WORKFLOW, query, "head", catalog) == expected
+    )
+    assert catalog.reference_calls == []

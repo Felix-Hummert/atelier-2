@@ -44,6 +44,7 @@ from atelier2.ports.published_revisions import (
     CatalogNameFound,
     CatalogNameMissing,
     CatalogResolver,
+    PublishedRevisionsUnavailable,
 )
 
 
@@ -133,12 +134,16 @@ def _known_project(
 
 def _known_workflow_lineage(
     lineage_id: CatalogLineageId, catalog: CatalogResolver
-) -> OccupancyLineageInvalid | None:
+) -> OccupancyLineageInvalid | ReadUnavailable | DurableStateCorrupt | None:
     match catalog.resolve_name(RevisionKind.WORKFLOW, lineage_id, "head"):
         case CatalogNameFound():
             return None
         case CatalogNameMissing():
             return OccupancyLineageInvalid()
+        case PublishedRevisionsUnavailable(detail):
+            return ReadUnavailable(detail)
+        case PortDurableStateCorrupt():
+            return DurableStateCorrupt()
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -213,6 +218,8 @@ def publish_occupancy_revision(
         return known
     known_lineage = _known_workflow_lineage(lineage, catalog)
     if known_lineage is not None:
+        if isinstance(known_lineage, ReadUnavailable):
+            return WriteUnavailable(known_lineage.detail)
         return known_lineage
     match channel.publish_occupancy_revision(revision):
         case PortOccupancyRevisionCreated(stored):
