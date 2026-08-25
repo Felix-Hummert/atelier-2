@@ -64,6 +64,8 @@ from atelier2.ports.queue_projection import (
     AdmitQueueItemResult,
     AdmittedQueueItemsPage,
     ListAdmittedQueueItemsResult,
+    ListObservedQueueItemsResult,
+    ObserveQueueItemsResult,
     QueueReadUnavailable,
 )
 
@@ -124,6 +126,14 @@ class _FakeQueue:
 
     def admit(self, command: AdmitQueueItem) -> AdmitQueueItemResult:
         raise NotImplementedError("the sweep never admits")
+
+    def observe(self, references: object) -> ObserveQueueItemsResult:
+        raise NotImplementedError("the sweep never observes")
+
+    def list_observed_items(
+        self, after: QueueItemId | None, limit: int
+    ) -> ListObservedQueueItemsResult:
+        raise NotImplementedError("the sweep never reads the observed list")
 
 
 class _FakeCatalog:

@@ -177,6 +177,10 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AdmittedQueueItemResource.rationale": (
         MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS
     ),
+    "ObservedQueueItemResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "ObservedQueueItemResource.tracker_item_reference": (
+        MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
+    ),
 }
 
 
