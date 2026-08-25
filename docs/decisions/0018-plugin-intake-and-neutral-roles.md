@@ -1,8 +1,10 @@
 # ADR 0018: Provider-bound plugins, neutral roles — how agents, skills, MCP and workflows enter the catalog and reach a run
 
-- Status: PROPOSED 2026-08-25 — awaiting independent review + operator approval.
-  Decision 6 is the only place that says what exists; everything else is proposed
-  and claims nothing about the tree.
+- Status: ACCEPTED 2026-08-25 — operator approval on issue #660 after two
+  independent adversarial reviews (PASS on delta); see
+  [PR #676](https://github.com/FlexOr2/atelier-2/pull/676). Acceptance decides the
+  model, not its existence: decision 6 is the only place that says what is built,
+  and everything else here is proposed and claims nothing about the tree.
 - Date: 2026-08-25
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
   (files in git are the source of truth; a run configuration pins exactly; no
@@ -91,6 +93,14 @@ the role rather than asserted portability. This record makes no "runs anywhere"
 claim. What the atelier writes neutrally is what it owns — the conductor and the
 house's core workflows (`host/conductor_workflow.py`).
 
+**A casting may name a whole plugin, not only one agent** (PROPOSED, on §4's
+unmeasured operation). The role says what the occurrence may do; the casting
+supplies the provider *and* the plugin travelling with it, optionally naming one
+of its agents as the entry agent. The provider then uses that plugin's own
+sub-agents, skills and admitted MCP servers as it would at home, inside the
+containment vector. A plugin cast this way is **one casting unit**: its
+ingredients are not cast separately.
+
 ### 2. The plugin is the intake unit, and its intake is atomic
 
 A **plugin** is a provider-bound package: agents, skills, MCP declaration and
@@ -108,6 +118,24 @@ rendered **whole** (§4); nothing is decomposed into atelier-shaped parts.
   ADR 0007 decision 3 requires, and is equally all-or-nothing.
 - **A single-file import is the exception path**: a loose agent file is a
   one-file plugin under the same rules.
+
+**Catalog building blocks vs plugin baggage.** A building block gets its own
+catalog entry because something references, casts or blesses it individually:
+
+| Building block | Why it gets an entry |
+| --- | --- |
+| `workflow` | runs consume it; the only provider-neutral block, because the grammar is ours |
+| `agent_definition` | cast onto a role (#557); provider-bound, shown with its provider mark |
+| `mcp_server` | blessed individually, since starting a process is a trust boundary; its declaration form is de-facto shared, its execution provider-bound |
+| `skill` | referenced by agents, so a reference resolves and the revision is provable; `SKILL.md` is de-facto shared, but no portability is claimed until an executor loads one |
+
+Everything else is **baggage**: hooks (not executed; the notice is shown),
+commands, settings, the plugin manifest, marketplace metadata and provider-only
+fields get no entry, travel with the plugin, are rendered into the scratch root
+as the provider expects, and are neither shown nor translated — whatever the
+containment vector does not allow simply has no effect. Nothing is mapped to a
+generic form: the catalog **knows** what a plugin contains and translates none of
+it, because the role and the reference are neutral and the file is not.
 
 ### 3. Git is the only authoring truth; the catalog is a window
 
@@ -328,6 +356,7 @@ The names below are proposed with the model; each joins the snake_case `*Refusal
   while a file missing a required field is still refused.
 - A catalog entry whose provider has no configured executor renders as an
   unstartable state and raises no run-start refusal.
+- A cast plugin's sub-agent delegation works under the measured vector.
 - Casting one role with a Claude agent and with a Codex agent produces two runs
   whose receipts name their own provider, and no run configuration contains a
   translated model name.
