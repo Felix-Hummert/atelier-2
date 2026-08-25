@@ -28,6 +28,7 @@ number is never reused and never renumbered.
 - [ADR 0015: A declared verdict steers the loop's back edge, under a contract this product owns](0015-verdict-steered-continuation.md)
 - [ADR 0016: The queue projection owns one item's derived identity and its CAS-guarded admission](0016-queue-projection-identity.md)
 - [ADR 0017: An installation-owned Account holds every credential; delegated grants and stored keys are peer auth modes, and the app holds only references](0017-account-credential-model.md)
+- [ADR 0018: An imported plugin stays provider-bound and is passed through whole; neutrality lives in the role and its casting](0018-plugin-intake-and-neutral-roles.md)
 
 Each record carries its own status, and this index deliberately does not repeat
 it, because a second copy of a status is the next thing to go stale. How much of
