@@ -769,7 +769,14 @@ document bytes. A V3 run page draws that excerpt as topological layers and
 paints each node's state from the rail the server already walked — shape and
 colour together, no zoom, no drag. The page leads with the published workflow
 name and keeps the run id as identity. A click into a node speaks Prompt and
-Output, never Asked or Answered. The Who panel labels the receipt's model as
+Output, never Asked or Answered. A run that has ended shows its own sink
+node's declared answer as prose above the graph without a click — a declared
+object's own `answer` field as one sentence with its other non-empty fields
+named after it, a declared array as its own items, an object with no
+`answer` field as all of its fields, a bare string as itself — and the
+node's own Result tab renders the identical form, the declared bytes kept
+behind a collapsed disclosure; opening the sink node itself names that
+banner once ("Shown above") rather than repeating it. The Who panel labels the receipt's model as
 the declared configuration model and says a provider-resolved model is not
 recorded — the same honest absence as usage. A hash leads with its human
 name and is copied by a click on that named control — the hex is the proof

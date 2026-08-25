@@ -15,20 +15,31 @@
 
 {#if result.kind === "text"}
   <p class="readable-result-text">{result.text}</p>
+{:else if result.kind === "object"}
+  {#if result.sentence !== null}
+    <p class="readable-result-text">{result.sentence}</p>
+  {/if}
+  {#if result.fields.length > 0}
+    <dl class="readable-result-fields">
+      {#each result.fields as field (field.label)}
+        <div>
+          <dt>{field.label}</dt>
+          <dd>{field.value}</dd>
+        </div>
+      {/each}
+    </dl>
+  {/if}
 {:else}
-  <dl class="readable-result-fields">
-    {#each result.fields as field (field.label)}
-      <div>
-        <dt>{field.label}</dt>
-        <dd>{field.value}</dd>
-      </div>
+  <ul class="readable-result-items">
+    {#each result.items as item, index (index)}
+      <li>{item}</li>
     {/each}
-  </dl>
+  </ul>
 {/if}
 {#if result.raw !== null}
   <details class="readable-result-raw">
-    <summary class="reveal-affordance">{wrapDisplayCopy(runResultCopy.raw)}</summary>
-    <pre>{result.raw}</pre>
+    <summary class="reveal-affordance">{wrapDisplayCopy(runResultCopy.exactText)}</summary>
+    <pre class="exact">{result.raw}</pre>
   </details>
 {/if}
 
@@ -55,8 +66,22 @@
     overflow-wrap: anywhere;
   }
 
-  .readable-result-raw pre {
+  .readable-result-items {
+    margin: 0;
+    padding-left: var(--space-5);
+  }
+
+  .readable-result-items li {
+    overflow-wrap: anywhere;
+  }
+
+  /* The one exact-bytes box every reveal in the house shares (Prompt tab,
+     Evidence, this disclosure): same padding, same chip background, same
+     scroll-box bound once a value runs long. */
+  .exact {
     margin: var(--space-2) 0 0;
+    max-height: var(--scroll-box);
+    overflow: auto;
     padding: var(--space-3);
     border-radius: var(--r);
     background: var(--chip);

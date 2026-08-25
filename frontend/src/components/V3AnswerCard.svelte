@@ -13,6 +13,7 @@
   import type { WaitMutation } from "../lib/mutationJournal";
   import { runPageCopy } from "../lib/runPageCopy";
   import { confirmedDecisionLabel, decisionLabel } from "../lib/waitDecision";
+  import ReadableResult from "./ReadableResult.svelte";
 
   /**
    * The one card that carries a decision the run is waiting on.
@@ -126,7 +127,7 @@
             {#if source.text === null}
               <p class="muted">{wrapDisplayCopy(runPageCopy.answerContextUnreadable)}</p>
             {:else}
-              <pre>{source.text}</pre>
+              <ReadableResult decodedAnswer={source.text} />
             {/if}
           </article>
         {/each}
@@ -241,18 +242,6 @@
   .decision-context {
     display: grid;
     gap: var(--space-2);
-  }
-
-  .decision-source pre {
-    margin: 0;
-    max-height: var(--scroll-box);
-    overflow: auto;
-    padding: var(--space-3);
-    border-radius: var(--r);
-    background: var(--chip);
-    font-size: var(--text-xs);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
   }
 
   .muted {

@@ -7,14 +7,21 @@ import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 
 /**
  * #716: a finished run's page shows its own result without a click, and the
- * node panel's Result tab renders the identical readable form with the raw
- * JSON behind a collapsed "Raw" disclosure.
+ * node panel's Result tab renders the identical readable form with the exact
+ * JSON behind a collapsed "Exact text" disclosure -- except for the run's own
+ * sink node, whose answer the banner already shows: opening that one node
+ * names the banner once ("Shown above") rather than rendering the same
+ * sentence and the same disclosure a second time (head decision on the #731
+ * review).
  *
  * The scenario is the exact one the issue was filed against: the harness's
  * fake conductor episode (`/__e2e/seed-conductor` in `tests/e2e/serve_cockpit.py`)
  * answers with `CONDUCTOR_REPORT_SCHEMA`'s own shape --
  * `{"answer": "...", "started_run_ids": []}` -- the same declared object the
- * bug report's screenshot showed printed as a raw JSON line.
+ * bug report's screenshot showed printed as a raw JSON line. Its one node is
+ * also the run's sink, so this journey is the duplicate-answer case; the
+ * node panel's ordinary rendering of a non-sink node's own answer is proven
+ * at the component level in `tests/app/readableResultDisplay.test.ts`.
  */
 const CONDUCTOR_FAKE_ANSWER =
   "Nothing started: the workbench probe only asked for an answer.";
@@ -72,17 +79,17 @@ test("a finished run's own result reads above the graph, unclicked, never as a r
   await expect(outcome.getByText(CONDUCTOR_FAKE_REPORT_RAW)).not.toBeVisible();
   await shoot(page, "run-outcome-unclicked");
 
-  // The node panel's Result tab renders the identical readable sentence, the
-  // exact JSON kept behind a disclosure the operator has not opened.
+  // "conduct" is the run's own sink node -- opening it never renders its
+  // answer a second time; it names the banner once instead.
   await page.getByRole("button", { name: "conduct — Done" }).click();
   const panel = page.getByRole("complementary");
-  await expect(panel.getByText(CONDUCTOR_FAKE_ANSWER, { exact: true })).toBeVisible();
-  const rawToggle = panel.getByText(runResultCopy.raw, { exact: true });
-  await expect(rawToggle).toBeVisible();
-  await expect(panel.getByText(CONDUCTOR_FAKE_REPORT_RAW)).not.toBeVisible();
-  await shoot(page, "run-node-result-collapsed");
+  const shownAbove = panel.getByRole("link", { name: runResultCopy.shownAbove });
+  await expect(shownAbove).toBeVisible();
+  await expect(shownAbove).toHaveAttribute("href", "#run-outcome");
+  await expect(panel.getByText(CONDUCTOR_FAKE_ANSWER, { exact: true })).toHaveCount(0);
+  await expect(panel.getByText(runResultCopy.exactText, { exact: true })).toHaveCount(0);
+  await shoot(page, "run-node-result-shown-above");
 
-  await rawToggle.click();
-  await expect(panel.getByText(CONDUCTOR_FAKE_REPORT_RAW)).toBeVisible();
-  await shoot(page, "run-node-result-raw-open");
+  await shownAbove.click();
+  await expect(page).toHaveURL(/#run-outcome$/);
 });

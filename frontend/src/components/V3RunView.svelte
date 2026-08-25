@@ -18,7 +18,7 @@
   import { whenFacts, type StreamProjection } from "../lib/runProjection";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { runPageCopy } from "../lib/runPageCopy";
-  import { runStanding, standingMarks, standingWords } from "../lib/runState";
+  import { runHasEnded, runStanding, standingMarks, standingWords } from "../lib/runState";
   import { protocolDetail, protocolTitle } from "../lib/streamStatus";
   import {
     deliverWaitAnswer,
@@ -100,34 +100,50 @@
    * What the run's own sink node wrote, read the same way a click into that
    * node would read it (#716) -- the one owner for a node's answer, never a
    * second derivation from the event stream. A run still going or still
-   * waiting asks nothing here: `current_node_id` only names the node that
-   * closed the line once the run itself has ended.
+   * waiting asks nothing here.
+   *
+   * `current_node_id` is the run's own name for that node, read for two
+   * different reasons depending on how the run ended: a `COMPLETED` run
+   * names its sink there, an invariant `run_transitions.py` enforces at
+   * write time (`is_sink_node`), so this read is exact. A `FAILED` or
+   * `CANCELLED` run carries no such guarantee -- `current_node_id` there is
+   * only wherever the line stopped, which may have written no answer at
+   * all. Reading it anyway is still correct: this banner shows nothing
+   * unless that node did write one, and a node that failed before writing
+   * answers with `answer: null`, which the check below already reads as
+   * "no banner".
    */
   let outcomeDetail: NodeDetail | null = null;
+  let outcomeFailure: string | null = null;
   let outcomeKey = "";
-  $: runEnded = standing === "done" || standing === "failed" || standing === "cancelled";
+  $: runEnded = runHasEnded(run.state);
   $: if (runEnded) void loadOutcome(run.public_run_reference, run.current_node_id);
 
   async function loadOutcome(publicRunReference: string, nodeId: string): Promise<void> {
     const key = `${publicRunReference}:${nodeId}`;
     if (key === outcomeKey) return;
     outcomeKey = key;
-    let read: NodeDetail | null;
     try {
-      read = (await cockpitApi.getNodeDetail(publicRunReference, nodeId)) ?? null;
-    } catch {
-      read = null;
+      const read = (await cockpitApi.getNodeDetail(publicRunReference, nodeId)) ?? null;
+      if (outcomeKey !== key) return;
+      outcomeDetail = read;
+      outcomeFailure = null;
+    } catch (error) {
+      if (outcomeKey !== key) return;
+      // Never a permanently poisoned key: a later trigger (a fresh read of
+      // this same run, exactly as `openNode` already retries a failed node
+      // read) tries again instead of staying silent forever.
+      outcomeKey = "";
+      outcomeFailure = error instanceof Error ? error.message : String(error);
     }
-    if (outcomeKey !== key) return;
-    outcomeDetail = read;
   }
 
   /**
    * The sink's answer, decoded once here (#716) -- a missing answer (a wait
-   * node ended the line, or the fetch above failed) and undecodable bytes both
-   * read as "nothing to show", which is honest: this banner only ever adds to
-   * what the graph and the node panel already prove, never a second, lesser
-   * source of the same fact.
+   * node ended the line, a node that failed before writing one, or bytes
+   * that do not decode as UTF-8) reads as "nothing to show", which is
+   * honest: this banner only ever adds to what the graph and the node panel
+   * already prove, never a second, lesser source of the same fact.
    */
   $: outcomeText =
     outcomeDetail === null || outcomeDetail.answer === null
@@ -523,8 +539,10 @@
     <p class="stopped" role="alert"><strong>{stopped[0]}:</strong> {stopped[1]}</p>
   {/if}
 
-  {#if outcomeText !== null}
-    <section class="run-outcome card" aria-label={wrapDisplayCopy(runPageCopy.tabResult)}>
+  {#if outcomeFailure !== null}
+    <ProblemNotice title="This run's result could not be read" message={outcomeFailure} />
+  {:else if outcomeText !== null}
+    <section id="run-outcome" class="run-outcome card" aria-label={wrapDisplayCopy(runPageCopy.tabResult)}>
       <ReadableResult decodedAnswer={outcomeText} />
     </section>
   {/if}
@@ -612,6 +630,7 @@
         onClose={closeNode}
         readsFrom={readsFrom(detail.node_id)}
         railAttempt={rail.find((entry) => entry.node_id === detail?.node_id)?.attempt ?? null}
+        resultShownAbove={outcomeText !== null && detail.node_id === run.current_node_id}
         runEvidence={{
           runId: run.run_id,
           workflowRevisionHash: run.workflow_revision_hash,
@@ -697,6 +716,13 @@
     background: color-mix(in srgb, var(--signal-failure) var(--wash), var(--panel2));
     color: var(--signal-failure);
     overflow-wrap: anywhere;
+  }
+
+  /* An outcome nobody bounded could grow past a screen's worth of fields --
+     the same scroll-box every exact-bytes reveal in the house clamps to. */
+  .run-outcome {
+    max-height: var(--scroll-box);
+    overflow: auto;
   }
 
   .stream-stale {

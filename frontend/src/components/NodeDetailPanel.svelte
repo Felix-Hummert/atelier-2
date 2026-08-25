@@ -24,6 +24,7 @@
 <script lang="ts">
   import type { NodeDetail, RunV3 } from "../api/client";
   import { wrapDisplayCopy } from "../lib/displayCopy";
+  import { decodeUtf8Base64 } from "../lib/exactBytes";
   import {
     emptyOutputCopy,
     emptyPromptCopy,
@@ -32,6 +33,7 @@
     runPageCopy
   } from "../lib/runPageCopy";
   import { runHeaderCopy } from "../lib/runPages";
+  import { runResultCopy } from "../lib/runResultCopy";
   import { whenFacts } from "../lib/runProjection";
   import { stateLabels } from "./StateMark.svelte";
   import InfoHint from "./InfoHint.svelte";
@@ -49,6 +51,13 @@
    * the run, never a second count this panel keeps for itself.
    */
   export let railAttempt: RunV3["node_rail"][number]["attempt"] = null;
+  /**
+   * True when this is the run's own sink node and the run page already shows
+   * its answer above the graph (#716) -- the Result tab then names that one
+   * fact once, with a link back up to it, rather than rendering the same
+   * sentence and the same disclosure a second time.
+   */
+  export let resultShownAbove = false;
 
   /**
    * The facts line that replaces the "Done" chip (operator ruling 23.08.):
@@ -150,19 +159,17 @@
     detail.state === "succeeded" && detail.answer === null && detail.provenance === null;
 
   /**
-   * The bytes are decoded here and nowhere else.
-   *
-   * The wire carries base64 so arbitrary provider output never passes through a
-   * UTF-8 decode on its way out of the store. A reader wants to read it, so the
-   * decode happens at the last possible moment -- and the hash beside it is the
-   * server's, not one this page computed, so what is shown can be checked
-   * against the receipt rather than trusted.
+   * The wire carries base64 so arbitrary provider output never passes through
+   * a UTF-8 decode on its way out of the store. A reader wants to read it, so
+   * the decode happens at the last possible moment, through the one shared
+   * decoder (`decodeUtf8Base64`) every reader of stored bytes uses -- not a
+   * second decode this panel keeps for itself. The hash beside each value is
+   * still the server's, not one this page computed, so what is shown can be
+   * checked against the receipt rather than trusted. Bytes that fail to
+   * decode read as unreadable rather than as replacement characters.
    */
-  function decoded(base64: string): string {
-    return new TextDecoder().decode(
-      Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
-    );
-  }
+  $: answerText = detail.answer === null ? null : decodeUtf8Base64(detail.answer.value_base64);
+  $: jobText = detail.job_base64 === null ? null : decodeUtf8Base64(detail.job_base64);
 </script>
 
 <aside class="node-panel" aria-labelledby="node-panel-title">
@@ -212,8 +219,14 @@
         {:else}
           <p class="muted">{wrapDisplayCopy(emptyOutputCopy(detail.state))}</p>
         {/if}
+      {:else if answerText === null}
+        <p class="muted">{wrapDisplayCopy(runResultCopy.unreadable)}</p>
+      {:else if resultShownAbove}
+        <p class="result-shown-above">
+          <a href="#run-outcome">{wrapDisplayCopy(runResultCopy.shownAbove)}</a>
+        </p>
       {:else}
-        <ReadableResult decodedAnswer={decoded(detail.answer.value_base64)} />
+        <ReadableResult decodedAnswer={answerText} />
       {/if}
     {:else if tab === "input"}
       {#if readsFrom.length === 0}
@@ -230,8 +243,10 @@
     {:else if tab === "prompt"}
       {#if detail.job_base64 === null}
         <p class="muted">{wrapDisplayCopy(emptyPromptCopy(detail.state))}</p>
+      {:else if jobText === null}
+        <p class="muted">{wrapDisplayCopy(runResultCopy.unreadable)}</p>
       {:else}
-        <pre class="exact">{decoded(detail.job_base64)}</pre>
+        <pre class="exact">{jobText}</pre>
       {/if}
     {:else if tab === "log"}
       <p class="muted">{wrapDisplayCopy(runPageCopy.processLogInLease)}</p>
@@ -433,8 +448,21 @@
     color: var(--ink-dim);
   }
 
+  .result-shown-above {
+    margin: 0;
+    color: var(--ink-dim);
+    font-size: var(--text-sm);
+  }
+
+  /* The Prompt tab's own exact-bytes box -- kept value-for-value the same as
+     `ReadableResult.svelte`'s own `.exact` (Svelte scopes each component's
+     CSS, so the two files cannot share one rule without a global style, and
+     `styles.css` is under another lane's exact-scope claim while this fix
+     lands). */
   .exact {
     margin: 0;
+    max-height: var(--scroll-box);
+    overflow: auto;
     padding: var(--space-3);
     border-radius: var(--r);
     background: var(--chip);
