@@ -64,7 +64,7 @@ from atelier2.contracts.executions import (
     WaitAnswerSnapshot,
     WaitAnswerState,
     is_canonical_integer_bytes,
-    logical_effect_key_for,
+    logical_effect_key_for_node,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
@@ -653,10 +653,14 @@ def commit_action_completed(
     if len(actions) != 1:
         raise RunTransitionConflict("confirmed intent graph has no single Action")
     action = actions[0]
-    execution_id = NodeExecutionId.for_node(run_id, revision_hash, action.id)
+    round_ordinal = session.execute(
+        sa.select(runs.c.current_round_ordinal).where(runs.c.run_id == run_id.value)
+    ).scalar_one_or_none()
     if (
-        not isinstance(action, ANY_ACTION_NODE_KINDS)
-        or logical_key != logical_effect_key_for(execution_id)
+        round_ordinal is None
+        or not isinstance(action, ANY_ACTION_NODE_KINDS)
+        or logical_key
+        != logical_effect_key_for_node(run_id, revision_hash, action.id, round_ordinal)
         or intent.binding.workflow_revision_hash != revision_hash
         or receipt.intent != intent
     ):

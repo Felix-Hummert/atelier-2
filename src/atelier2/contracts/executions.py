@@ -454,6 +454,29 @@ def logical_effect_key_for(execution_id: NodeExecutionId) -> LogicalEffectKey:
     return LogicalEffectKey(f"atelier2-node-effect-{digest.value}")
 
 
+def logical_effect_key_for_node(
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    round_ordinal: int = FIRST_ROUND_ORDINAL,
+) -> LogicalEffectKey:
+    """The logical effect key of one node's exact, round-bound execution.
+
+    Every reader that must agree a key belongs to *this* execution -- the
+    preparer that mints it, the completer that checks it still owns the run's
+    current node, and the convergence sweep that routes a stranded one home --
+    derives it from the same four coordinates: run, revision, node and round.
+    A caller that reconstructs `NodeExecutionId.for_node` by hand and forgets
+    the round silently reuses round one's key for every later round, and a
+    round-aware reader then finds a key that owns nothing it can match. This is
+    the one owner of that composition, so the mistake cannot be made a second
+    time in a fourth call site (#706).
+    """
+    return logical_effect_key_for(
+        NodeExecutionId.for_node(run_id, revision_hash, node_id, round_ordinal)
+    )
+
+
 def terminal_hash_for(
     revision_hash: WorkflowRevisionHash, event_hashes: tuple[Sha256Hash, ...]
 ) -> Sha256Hash:
