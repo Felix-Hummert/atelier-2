@@ -78,6 +78,7 @@ from atelier2.application.cancel_agent_attempt import (
 from atelier2.application.cancel_run import (
     CancelAccepted,
     CancelCommandConflict,
+    CancelEndedRun,
     CancelNotCancellable,
     CancelOvertakenBySuccess,
     CancelRunMissing,
@@ -604,7 +605,9 @@ async def cancel_run_route(
     match result:
         case CancelAccepted():
             status = HTTPStatus.ACCEPTED
-        case CancelTerminalRetry():
+        case CancelEndedRun() | CancelTerminalRetry():
+            # The run is already over when either answer is given, so there is
+            # nothing left to accept: the reader gets the ended run itself.
             status = HTTPStatus.OK
         case CancelOvertakenBySuccess():
             raise ApiProblem("run-cancellation-overtaken-by-success")

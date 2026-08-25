@@ -10,7 +10,7 @@
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { humanErrorMessage } from "../lib/humanRefusal";
   import { MutationJournal, type CancelMutation } from "../lib/mutationJournal";
-  import { cancelReasonSentence, runPageCopy } from "../lib/runPageCopy";
+  import { cancelConsequence, cancelReasonSentence, runPageCopy } from "../lib/runPageCopy";
 
   /**
    * The one control that stops a running V3 agent (#439 P5).
@@ -281,7 +281,7 @@
     onkeydown={containDialogFocus}
   >
     <h2 id="run-cancel-question">{wrapDisplayCopy(cancel.question)}</h2>
-    <p>{wrapDisplayCopy(cancel.consequence)}</p>
+    <p>{wrapDisplayCopy(cancelConsequence(run.state))}</p>
     <div class="dialog-actions">
       <button
         class="quiet"

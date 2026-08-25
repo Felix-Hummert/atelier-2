@@ -233,6 +233,20 @@ class RunCancellationOvertakenBySuccess:
 
 
 @dataclass(frozen=True)
+class RunCancellationEndedRun:
+    """This command ended the run itself, with nothing left to converge (#668).
+
+    A run resting at a pause has no attempt to stop, so the command's own
+    attestation is the last thing written and the run is already `CANCELLED`
+    when this answer is given. Distinct from `RunCancellationTerminalRetry`,
+    which reports an *earlier* command whose cleanup has since ended the run:
+    both hand back a terminal run, but only one of them is news.
+    """
+
+    run: AnyRun
+
+
+@dataclass(frozen=True)
 class RunCancellationNotCancellable:
     reason: RunCancellationRefusal
 
@@ -249,6 +263,7 @@ class RunCancellationRunMissing:
 
 type RunCancellationResult = (
     RunCancellationAccepted
+    | RunCancellationEndedRun
     | RunCancellationTerminalRetry
     | RunCancellationOvertakenBySuccess
     | RunCancellationNotCancellable
