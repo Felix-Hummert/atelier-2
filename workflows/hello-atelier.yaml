@@ -1,0 +1,18 @@
+format_version: 3
+name: hello-atelier
+description: >-
+  The smallest executable line the workshop can run: one agent node, role
+  greeter, that answers a single fixed question. Its shape is the Catalog's
+  first proof that an authored workflow document is a real definition
+  source, not only a database row (#660).
+nodes:
+  - id: greet
+    type: agent
+    role: greeter
+    mode: headless
+    instruction: Answer the fixed question, "What is the Atelier?", in one sentence.
+    outputs:
+      - name: answer
+        schema:
+          ref: hello_atelier_answer
+          revision: "1f2e3d4c5b6a798897a6b5c4d3e2f1a0b1c2d3e4f5061728394a5b6c7d8e9f0"
