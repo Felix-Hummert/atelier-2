@@ -41,15 +41,35 @@ def read_stored_artifact(
     return stored
 
 
-class DbosArtifactStore:
-    """Content-addressed material over the V19 `artifacts` table.
+def keep_artifact(
+    connection: sa.Connection, artifact: Artifact
+) -> ArtifactCreated | ArtifactExisting:
+    """Hold these exact bytes under their address, on the caller's own connection.
 
     Publication reads before it writes rather than inserting `OR IGNORE`, because
     the two answers are different facts a caller acts on: the address it already
     had, or the bytes this call put there. A stored row whose content disagrees
     with its own address is corruption of the one property the address promises,
-    so it is raised where it is seen instead of being answered as an artifact.
+    so `read_stored_artifact` raises it where it is seen instead of answering it
+    as an artifact.
+
+    A caller already inside a transaction keeps the material and the record that
+    names it in the same write, so no record can name bytes this store never got.
     """
+    existing = read_stored_artifact(connection, artifact.artifact_hash)
+    if existing is not None:
+        return ArtifactExisting(existing)
+    connection.execute(
+        artifacts.insert().values(
+            artifact_hash=artifact.artifact_hash.value,
+            content=artifact.content,
+        )
+    )
+    return ArtifactCreated(artifact)
+
+
+class DbosArtifactStore:
+    """Content-addressed material over the V19 `artifacts` table."""
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
@@ -57,16 +77,7 @@ class DbosArtifactStore:
     def publish_artifact(self, artifact: Artifact) -> PublishArtifactResult:
         try:
             with canonical_write_transaction(self._engine) as connection:
-                existing = read_stored_artifact(connection, artifact.artifact_hash)
-                if existing is not None:
-                    return ArtifactExisting(existing)
-                connection.execute(
-                    artifacts.insert().values(
-                        artifact_hash=artifact.artifact_hash.value,
-                        content=artifact.content,
-                    )
-                )
-                return ArtifactCreated(artifact)
+                return keep_artifact(connection, artifact)
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):

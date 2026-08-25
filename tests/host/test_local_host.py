@@ -25,17 +25,11 @@ from atelier2.adapters.claude_subscription import (
     CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY,
     ClaudeSubscriptionSettings,
 )
-from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
-from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
-from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.host_configuration import (
     DbosHostConfigurationChannel,
     append_project_root,
 )
-from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
-from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
-from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import (
     SQLITE_LOCK_TIMEOUT_SECONDS,
     AgentProcessSupervisorUnavailable,
@@ -58,12 +52,7 @@ from atelier2.adapters.grok_subscription import (
     GrokSubscriptionSettings,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.adapters.markdown_agent_definitions import (
-    parse_agent_definition,
-    render_agent_definition,
-)
 from atelier2.adapters.project_verification import PROJECT_MANIFEST_NAME
-from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
 from atelier2.api.limits import ApiLimitExceeded, base64_characters_for
@@ -119,7 +108,7 @@ from tests.scenarios.agents import (
     claude_subscription_deployment,
 )
 from tests.scenarios.api import api_limits as scenario_api_limits
-from tests.scenarios.api import durable_queries
+from tests.scenarios.api import durable_ports
 from tests.scenarios.api import event_poll_backoff as scenario_event_poll_backoff
 from tests.scenarios.open_pr_agent import (
     PR_SPEC,
@@ -272,40 +261,8 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
 
 
 def api_ports(runtime: DbosRuntime) -> ApiPorts:
-    queries = durable_queries(runtime.engine)
-    return ApiPorts(
-        workflow_revision_publisher=DbosWorkflowRevisionPublisher(runtime.engine),
-        published_run_starter=DbosDurableRunStarter(
-            runtime.engine,
-            runtime.settings,
-            runtime.agent_executor_registry,
-            effect_adapter_proves_absence=True,
-        ),
-        wait_answerer=DbosWaitAnswerer(
-            runtime.engine, runtime.settings.application_version
-        ),
-        reconcile_commander=DbosEffectReconcileCommander(
-            runtime.engine, runtime.settings
-        ),
-        workflow_revision_queries=queries,
-        run_queries=queries,
-        run_event_queries=queries,
-        workflow_document_parser=parse_workflow_document,
-        agent_definition_parser=parse_agent_definition,
-        agent_definition_renderer=render_agent_definition,
-        agent_configuration_catalog=DbosAgentConfigurationCatalog(
-            runtime.engine, runtime.agent_executor_registry
-        ),
-        agent_attempt_canceller=DbosAgentAttemptStore(
-            runtime.engine, runtime.settings.application_version
-        ),
-        catalog_resolver=DbosCatalogStore(runtime.engine),
-        catalog_admissions=DbosCatalogStore(runtime.engine),
-        published_revision_registry=DbosCatalogStore(runtime.engine),
-        published_revision_listing=DbosCatalogStore(runtime.engine),
-        artifact_publisher=DbosArtifactStore(runtime.engine),
-        host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
-        queue_projection=DbosQueueProjectionStore(runtime.engine),
+    return durable_ports(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
     )
 
 
