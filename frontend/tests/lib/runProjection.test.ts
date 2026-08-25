@@ -6,6 +6,7 @@ import {
   markConnecting,
   markLive,
   projectNodeRail,
+  readableResult,
   restartStreamProjection,
   streamProjection,
   type AgentAttemptProjection,
@@ -492,3 +493,39 @@ function v2ReplacementScenario(
     }
   };
 }
+
+describe("a node's declared answer read as prose (#716)", () => {
+  it("reads a bare string as itself, with nothing behind a Raw disclosure", () => {
+    expect(readableResult("Three German sentences about code review.")).toEqual({
+      kind: "text",
+      text: "Three German sentences about code review.",
+      raw: null
+    });
+  });
+
+  it("reads a declared object's own answer field as the one sentence, keeping the raw bytes behind it", () => {
+    const raw = '{"answer":"The workflow could not be started.","started_run_ids":[]}';
+    expect(readableResult(raw)).toEqual({
+      kind: "text",
+      text: "The workflow could not be started.",
+      raw
+    });
+  });
+
+  it("reads an object with no answer field as its own fields, label by value", () => {
+    const raw = '{"verdict":"green","findings":2}';
+    expect(readableResult(raw)).toEqual({
+      kind: "fields",
+      fields: [
+        { label: "verdict", value: "green" },
+        { label: "findings", value: "2" }
+      ],
+      raw
+    });
+  });
+
+  it("falls back to the raw text for a value no declared shape admits", () => {
+    expect(readableResult("[1,2,3]")).toEqual({ kind: "text", text: "[1,2,3]", raw: null });
+    expect(readableResult("{}")).toEqual({ kind: "text", text: "{}", raw: null });
+  });
+});

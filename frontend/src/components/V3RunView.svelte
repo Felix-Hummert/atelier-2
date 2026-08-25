@@ -28,6 +28,7 @@
   import { ageLabel } from "../lib/when";
   import NodeDetailPanel from "./NodeDetailPanel.svelte";
   import ProblemNotice from "./ProblemNotice.svelte";
+  import ReadableResult from "./ReadableResult.svelte";
   import RunCancelCard from "./RunCancelCard.svelte";
   import V3AnswerCard, { type WaitContextSource } from "./V3AnswerCard.svelte";
   import WorkflowGraphDrawing from "./WorkflowGraphDrawing.svelte";
@@ -37,13 +38,16 @@
    *
    * 1. what this is and where it stands — name, description, one plain state
    *    sentence with its duration, and nothing else;
-   * 2. what needs the operator now — the waiting question with the material it
+   * 2. what a run that ended wrote — its sink node's declared answer, in one
+   *    plain sentence or its fields, never a JSON line (#716). Never for a run
+   *    still going: the graph already says where an unfinished line stands.
+   * 3. what needs the operator now — the waiting question with the material it
    *    is about, as the one dominant card;
-   * 3. the run as a picture — the quiet pipe;
-   * 4. everything else only behind a click — node tabs, and every fingerprint
+   * 4. the run as a picture — the quiet pipe;
+   * 5. everything else only behind a click — node tabs, and every fingerprint
    *    inside the Evidence tab there.
    *
-   * An element that fits none of the four does not belong on this page.
+   * An element that fits none of the five does not belong on this page.
    */
   export let run: RunV3;
   export let cockpitApi: CockpitApi;
@@ -91,6 +95,44 @@
   $: pendingAnswer = pendingWait === null ? null : waitAnswerText(pendingWait);
   $: waiting = run.state === "WAITING_INPUT";
   $: standing = runStanding(run.state);
+
+  /**
+   * What the run's own sink node wrote, read the same way a click into that
+   * node would read it (#716) -- the one owner for a node's answer, never a
+   * second derivation from the event stream. A run still going or still
+   * waiting asks nothing here: `current_node_id` only names the node that
+   * closed the line once the run itself has ended.
+   */
+  let outcomeDetail: NodeDetail | null = null;
+  let outcomeKey = "";
+  $: runEnded = standing === "done" || standing === "failed" || standing === "cancelled";
+  $: if (runEnded) void loadOutcome(run.public_run_reference, run.current_node_id);
+
+  async function loadOutcome(publicRunReference: string, nodeId: string): Promise<void> {
+    const key = `${publicRunReference}:${nodeId}`;
+    if (key === outcomeKey) return;
+    outcomeKey = key;
+    let read: NodeDetail | null;
+    try {
+      read = (await cockpitApi.getNodeDetail(publicRunReference, nodeId)) ?? null;
+    } catch {
+      read = null;
+    }
+    if (outcomeKey !== key) return;
+    outcomeDetail = read;
+  }
+
+  /**
+   * The sink's answer, decoded once here (#716) -- a missing answer (a wait
+   * node ended the line, or the fetch above failed) and undecodable bytes both
+   * read as "nothing to show", which is honest: this banner only ever adds to
+   * what the graph and the node panel already prove, never a second, lesser
+   * source of the same fact.
+   */
+  $: outcomeText =
+    outcomeDetail === null || outcomeDetail.answer === null
+      ? null
+      : decodeUtf8Base64(outcomeDetail.answer.value_base64);
 
   /**
    * The state sentence's relative reading: "for" counts up while the run is
@@ -479,6 +521,12 @@
 
   {#if stopped !== null}
     <p class="stopped" role="alert"><strong>{stopped[0]}:</strong> {stopped[1]}</p>
+  {/if}
+
+  {#if outcomeText !== null}
+    <section class="run-outcome card" aria-label={wrapDisplayCopy(runPageCopy.tabResult)}>
+      <ReadableResult decodedAnswer={outcomeText} />
+    </section>
   {/if}
 
   {#if !streamSilent && projection !== null}

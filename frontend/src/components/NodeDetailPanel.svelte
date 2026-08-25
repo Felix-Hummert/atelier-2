@@ -36,6 +36,7 @@
   import { stateLabels } from "./StateMark.svelte";
   import InfoHint from "./InfoHint.svelte";
   import ProofAnchor from "./ProofAnchor.svelte";
+  import ReadableResult from "./ReadableResult.svelte";
 
   export let detail: NodeDetail;
   export let onClose: () => void;
@@ -212,7 +213,7 @@
           <p class="muted">{wrapDisplayCopy(emptyOutputCopy(detail.state))}</p>
         {/if}
       {:else}
-        <pre class="exact">{decoded(detail.answer.value_base64)}</pre>
+        <ReadableResult decodedAnswer={decoded(detail.answer.value_base64)} />
       {/if}
     {:else if tab === "input"}
       {#if readsFrom.length === 0}
