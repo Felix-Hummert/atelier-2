@@ -18,6 +18,7 @@ from atelier2.contracts.agent_transcripts import (
     TranscriptEvent,
     TranscriptEventKind,
     TranscriptTruncated,
+    UnrecognisedProviderOutput,
     Usage,
 )
 from atelier2.contracts.secret_redaction import REDACTION_MARKER
@@ -70,6 +71,30 @@ def test_a_credential_inside_a_step_too_wide_to_keep_is_still_replaced() -> None
 
     assert canary not in transcript.document.decode("utf-8")
     assert kept_events(transcript)[0]["redacted"]
+
+
+def test_a_credential_in_output_no_step_describes_is_replaced_too() -> None:
+    """What the vocabulary could not read is bounded and redacted like a step.
+
+    This is the material with the least structure and the most risk -- whatever
+    a failing call printed instead of a stream -- so a redactor that ran only
+    over recognised steps would leave exactly the wrong text untouched.
+    """
+
+    canary = planted_credential("sk-ant", "-plantedcanarysecret0123456789")
+
+    transcript = AttemptTranscript.of(
+        [UnrecognisedProviderOutput(f"fatal: token {canary} rejected")]
+    )
+
+    assert canary not in transcript.document.decode("utf-8")
+    assert kept_events(transcript) == [
+        {
+            "event": TranscriptEventKind.UNRECOGNISED_PROVIDER_OUTPUT.value,
+            "text": f"fatal: token {REDACTION_MARKER} rejected",
+            "redacted": True,
+        }
+    ]
 
 
 def test_a_step_wider_than_a_reader_can_use_is_cut_rather_than_dropped() -> None:
@@ -170,6 +195,15 @@ def test_a_transcript_that_fits_loses_nothing_and_keeps_its_order() -> None:
                 "cache_creation_input_tokens": 128,
             },
             id="usage",
+        ),
+        pytest.param(
+            UnrecognisedProviderOutput("Error: connection reset"),
+            {
+                "event": "unrecognised-provider-output",
+                "text": "Error: connection reset",
+                "redacted": False,
+            },
+            id="unrecognised provider output",
         ),
         pytest.param(
             TranscriptTruncated(7),

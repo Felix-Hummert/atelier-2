@@ -25,11 +25,19 @@ MAXIMUM_AGENT_OUTPUT_BYTES_V2 = 49_152
 # pull-request diff hit. What a given provider accepts is a narrower, separate
 # limit each invocation still declares at the process port.
 MAXIMUM_AGENT_PROCESS_INPUT_BYTES = MAXIMUM_ARTIFACT_BYTES
-# Current process-frame ceiling, earned by the measured JSON frame of every
-# Claude Code this repository admits (see the Claude subscription adapter's
-# conformance set); each invocation still declares its exact lower limit at the
-# process port.
-MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES = 8 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
+# The ceiling every invocation's declared stdout frame must fit inside, and
+# deliberately nobody's own frame: each provider states its exact number at the
+# process port, derived from the wire format that produces it. That separation
+# is the point. While this constant *was* one provider's measurement, raising it
+# for a new operation would silently have widened what every other provider's
+# process may write, and a frame nobody re-measured is a frame nobody knows.
+#
+# It stands above every frame the repository declares. The largest is the Claude
+# subscription adapter's transcript-bearing stream, which carries a whole
+# attempt's steps ahead of the same final envelope the envelope-only operation
+# produced. This leaves room above that rather than tracking it exactly, so a
+# provider measuring a slightly wider frame moves its own line and not the port's.
+MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES = 32 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
 MAXIMUM_SIGNED_INT64 = 2**63 - 1
 MAXIMUM_PROVIDER_ID_CHARACTERS = 64
 # The slug's own width, so the pattern, the store's CHECK and the wire cannot

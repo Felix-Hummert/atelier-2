@@ -13,6 +13,7 @@ from atelier2.contracts.agents import (
     AgentExecutorOperationalIdentity,
     AgentReceiptHash,
 )
+from atelier2.contracts.artifacts import ArtifactHash
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
@@ -630,6 +631,15 @@ class AgentAttempt:
     runner_evidence_acceptance_phase: RunnerEvidenceAcceptancePhase = (
         RunnerEvidenceAcceptancePhase.NONE
     )
+    transcript_artifact_hash: ArtifactHash | None = None
+    """Where this attempt's steps are kept, or nothing where none were decoded.
+
+    A pointer rather than the transcript, because the transcript is bytes read
+    whole and the artifact store is this repository's one owner of those. It is
+    absent for every attempt whose executor publishes no structured stream and
+    for every ending that reached no process at all, and an absent pointer says
+    exactly that -- never that the attempt took no steps.
+    """
 
     def __post_init__(self) -> None:
         if not isinstance(self.attempt_id, AgentAttemptId):
@@ -689,6 +699,10 @@ class AgentAttempt:
             self.runner_terminal_evidence_hash, RunnerTerminalEvidenceHash
         ):
             raise TypeError("runner terminal evidence hash must be typed")
+        if self.transcript_artifact_hash is not None and not isinstance(
+            self.transcript_artifact_hash, ArtifactHash
+        ):
+            raise TypeError("agent attempt transcript pointer must be typed")
         if (
             owner_bound or self.process_phase is not AgentAttemptProcessPhase.NONE
         ) and (runner_manifest_bound):

@@ -58,12 +58,12 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head re-scopes the run-event key that said one event of a
-# kind per node per run to the round it belongs to (#658), so a Wait a loop
-# turns twice may pause twice and neither pause may be written twice.
-# Predecessor is the published schema that admitted `WAIT_CANCELLED` (#668).
+# Movable hop: this head gives an attempt the address of the transcript its
+# executor decoded (#666), so what the agent did between the job and the answer
+# can be read back. Predecessor is the published schema that re-scoped the
+# once-per-node run-event key to the round (#658).
 # Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 35
+_HOP_PREDECESSOR_VERSION = 36
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -93,6 +93,7 @@ _VERSION_THIRTY_THREE = 33
 _VERSION_THIRTY_FOUR = 34
 _VERSION_THIRTY_FIVE = 35
 _VERSION_THIRTY_SIX = 36
+_VERSION_THIRTY_SEVEN = 37
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -186,6 +187,15 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # round and expects at most one row. The hop is two DDL statements and the
 # version CAS -- SQLite moves an index without reading a row, so no row is
 # rewritten, no table is parked and the table text does not move.
+# V37 gives an attempt the address of its transcript (#666).
+# `transcript_artifact_hash` is one nullable content address: what the executor
+# decoded of the provider's own stream, bounded and redacted before it was
+# stored, kept as an artifact in the same write that ends the attempt. It is a
+# pointer rather than the bytes because `artifacts` already owns material read
+# whole, and it is a column on the attempt rather than a keyed row because one
+# attempt has one transcript and no other coordinate identifies it. Every
+# predecessor row carries NULL, which is the exact statement that no transcript
+# was decoded for that attempt -- never that the attempt took no steps.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -219,6 +229,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     34: "28dab0f4a152d7be66fa699d1123fdd130a94fe80ad705c19330f075e4fdd85a",
     35: "29df9a195316ce94527be2c906e4dc4104e00b2cb16caa9bfada17fecb5a21d5",
     36: "c9f4b5d99a9ff8e33796e36151b66f00175eceaa797e30461bf6e01264266ce8",
+    37: "148e33c0d0a90a973235350221d7489d77583aa04cfe7603a9a49ca243592a8f",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -327,6 +338,10 @@ V34_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V35_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_THIRTY_FIVE,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_FIVE],
+)
+V36_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_THIRTY_SIX,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_SIX],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -953,6 +968,11 @@ agent_attempts = sa.Table(
     sa.Column("runner_invocation_id", sa.Text, nullable=True),
     sa.Column("runner_terminal_evidence_hash", sa.Text, nullable=True),
     sa.Column("runner_evidence_acceptance_phase", sa.Text, nullable=False),
+    # Deliberately no foreign key onto `artifacts`. An attempt's transcript is
+    # written in the same transaction that ends the attempt, so the row can
+    # never precede its bytes; declaring the reference as well would put a
+    # RESTRICT on a table whose whole point is that anything may address it.
+    sa.Column("transcript_artifact_hash", sa.Text, nullable=True),
     sa.UniqueConstraint("node_execution_id", "attempt_ordinal"),
     sa.ForeignKeyConstraint(
         ("run_id", "workflow_revision_hash"),
@@ -977,6 +997,11 @@ agent_attempts = sa.Table(
         f"length(node_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
     ),
     sa.CheckConstraint("attempt_ordinal IN (1, 2)"),
+    sa.CheckConstraint(
+        "transcript_artifact_hash IS NULL OR "
+        "(length(transcript_artifact_hash) = 64 "
+        "AND transcript_artifact_hash NOT GLOB '*[^0-9a-f]*')"
+    ),
     sa.CheckConstraint(
         "process_phase IN ('NONE', 'WATCHDOG_READY', 'LAUNCH_AUTHORIZED', "
         "'PROCESS_OBSERVED', 'CLEANUP_ATTESTED')"
@@ -2690,11 +2715,12 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    # V33 to V35 hold the same tables as the current version: the hops between
-    # them moved one table's key and columns, one table's kind vocabulary and
-    # one table's index, never the set of tables.
+    # V33 to V36 hold the same tables as the current version: the hops between
+    # them moved one table's key and columns, one table's kind vocabulary, one
+    # table's index and one table's column set, never the set of tables.
     if version in {
         SCHEMA_VERSION,
+        _VERSION_THIRTY_SIX,
         _VERSION_THIRTY_FIVE,
         _VERSION_THIRTY_FOUR,
         _VERSION_THIRTY_THREE,
@@ -3942,6 +3968,36 @@ def _apply_v35_to_v36(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_THIRTY_FIVE, _VERSION_THIRTY_SIX)
 
 
+_PREDECESSOR_ATTEMPTS_BEFORE_THE_TRANSCRIPT = "agent_attempts_before_the_transcript"
+
+
+def _apply_v36_to_v37(connection: sqlite3.Connection) -> None:
+    """Give an attempt the address of its transcript, and keep every stored row.
+
+    Nothing already written is reinterpreted: a predecessor attempt carries
+    NULL, which is what "no transcript was decoded for this attempt" means, and
+    never an invented address. The column is nullable, so no carried row needs a
+    value declared for it.
+
+    SQLite changes no CHECK in place and would append an added column after this
+    table's own constraints, which is not where the declaration puts it, so this
+    hop is the same rebuild every shape hop is rather than an `ALTER TABLE ADD
+    COLUMN`. The attempt table's state-transition and no-delete triggers are
+    reinstalled by the rebuild, because an attempt row that could take an
+    unguarded transition for the length of one hop would be no ledger at all.
+    """
+
+    _rebuild_product_table(
+        connection,
+        agent_attempts,
+        _PREDECESSOR_ATTEMPTS_BEFORE_THE_TRANSCRIPT,
+        _AGENT_ATTEMPTS_TRIGGERS,
+        _VERSION_THIRTY_SIX,
+        _VERSION_THIRTY_SEVEN,
+    )
+    _raise_declared_version(connection, _VERSION_THIRTY_SIX, _VERSION_THIRTY_SEVEN)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -4064,6 +4120,11 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _VERSION_THIRTY_FIVE,
         _VERSION_THIRTY_SIX,
         _apply_v35_to_v36,
+    ),
+    _SchemaMigrationStep(
+        _VERSION_THIRTY_SIX,
+        _VERSION_THIRTY_SEVEN,
+        _apply_v36_to_v37,
     ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {

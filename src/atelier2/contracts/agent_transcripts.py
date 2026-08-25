@@ -67,6 +67,7 @@ class TranscriptEventKind(StrEnum):
     TOOL_RETURNED = "tool-returned"
     ASSISTANT_TURN = "assistant-turn"
     USAGE = "usage"
+    UNRECOGNISED_PROVIDER_OUTPUT = "unrecognised-provider-output"
     TRANSCRIPT_TRUNCATED = "transcript-truncated"
 
 
@@ -119,6 +120,23 @@ class Usage:
 
 
 @dataclass(frozen=True, slots=True)
+class UnrecognisedProviderOutput:
+    """The provider wrote this, and no step above describes it.
+
+    Two things arrive here, and both are evidence rather than noise: a stream
+    entry whose shape this adapter's vocabulary does not know, and what a call
+    that ended badly printed instead of a stream at all -- the diagnosis of an
+    exit nobody could explain (`#733`). Keeping it is the point. A transcript
+    that dropped whatever it could not classify would answer "the agent did
+    nothing" for exactly the episodes somebody is reading it about, and the one
+    line naming the cause is usually the line no vocabulary predicted.
+    """
+
+    text: str
+    redacted: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class TranscriptTruncated:
     """The oldest steps did not fit, and this is how many of them there were."""
 
@@ -130,7 +148,12 @@ class TranscriptTruncated:
 
 
 type TranscriptEvent = (
-    ToolCalled | ToolReturned | AssistantTurn | Usage | TranscriptTruncated
+    ToolCalled
+    | ToolReturned
+    | AssistantTurn
+    | Usage
+    | UnrecognisedProviderOutput
+    | TranscriptTruncated
 )
 
 _DOCUMENT_KIND = "attempt-transcript/v1"
@@ -169,6 +192,12 @@ def _event_document(event: TranscriptEvent) -> dict[str, object]:
                 "output_tokens": output_tokens,
                 "cache_read_input_tokens": cache_read,
                 "cache_creation_input_tokens": cache_creation,
+            }
+        case UnrecognisedProviderOutput(text, redacted):
+            return {
+                _KIND_FIELD: TranscriptEventKind.UNRECOGNISED_PROVIDER_OUTPUT.value,
+                "text": text,
+                "redacted": redacted,
             }
         case TranscriptTruncated(dropped_events):
             return {
@@ -224,6 +253,9 @@ def _kept(event: TranscriptEvent) -> TranscriptEvent:
         case AssistantTurn(text, _):
             (kept_text,), redacted = _readable(text)
             return AssistantTurn(kept_text, redacted)
+        case UnrecognisedProviderOutput(text, _):
+            (kept_text,), redacted = _readable(text)
+            return UnrecognisedProviderOutput(kept_text, redacted)
         case Usage() | TranscriptTruncated():
             return event
         case _ as unreachable:

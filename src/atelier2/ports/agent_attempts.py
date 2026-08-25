@@ -20,6 +20,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceReadback,
     WatchdogGenerationId,
 )
+from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import AgentExecutionRequestV2, AgentExecutionResult
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.pages import PageLimit
@@ -354,7 +355,10 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         ...
 
     def complete_known_failure(
-        self, execution: AgentAttemptExecution, exit_signature: ProcessExitSignature
+        self,
+        execution: AgentAttemptExecution,
+        exit_signature: ProcessExitSignature,
+        transcript: AttemptTranscript | None = None,
     ) -> AgentAttemptFailed:
         """End this attempt on the process that produced no usable answer.
 
@@ -362,6 +366,12 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         the standard error it left -- and it is durably named in the node
         receipt this write keeps, because otherwise the only record of why a
         provider died is a log line nobody kept.
+
+        `transcript` is what the executor read of what the process itself wrote,
+        kept under its own address. It is absent where the executor decoded
+        nothing, and a real failed run showed why that absence must not be the
+        rule: an exit code beside an empty standard error explains nothing at
+        all (#733).
         """
         ...
 

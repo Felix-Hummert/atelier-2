@@ -109,9 +109,12 @@ def execute_agent_attempt(
             # only supervision saw the exit code and the standard error that
             # says why. Composing the durable naming here keeps that one reading
             # of one process, rather than asking every provider to repeat it.
+            # What the process itself wrote is the other half, and only the
+            # executor can read it, so it travels on the failure it returned.
             outcome = store.complete_known_failure(
                 execution,
                 ProcessExitSignature(completion.return_code, completion.standard_error),
+                result.transcript,
             )
         else:
             try:

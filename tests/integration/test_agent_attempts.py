@@ -20,6 +20,7 @@ from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
     agent_receipts_v2,
+    artifacts,
     run_events,
     runs,
 )
@@ -32,6 +33,12 @@ from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttempt, AgentAttemptFailureCode
+from atelier2.contracts.agent_transcripts import (
+    AssistantTurn,
+    AttemptTranscript,
+    ToolCalled,
+    UnrecognisedProviderOutput,
+)
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -507,6 +514,79 @@ def test_current_attempt_projection_maps_armed_and_rejects_broken_id(
             durable_queries(runtime.engine).get_run(request.run_id),
             QueryDurableStateCorrupt,
         )
+    finally:
+        runtime.close()
+
+
+_DECODED_STEPS = (
+    ToolCalled("Read", '{"file_path":"AGENTS.md"}'),
+    AssistantTurn("The file names the policy."),
+)
+_UNREADABLE_OUTPUT = (UnrecognisedProviderOutput("fatal: the model never answered"),)
+
+
+@pytest.mark.parametrize(
+    ("verdict", "steps"),
+    [
+        pytest.param(
+            AgentExecutionResult(b"done", AttemptTranscript.of(_DECODED_STEPS)),
+            _DECODED_STEPS,
+            id="a success keeps what reached the answer",
+        ),
+        pytest.param(
+            AgentExecutionFailure(
+                AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+                AttemptTranscript.of(_UNREADABLE_OUTPUT),
+            ),
+            _UNREADABLE_OUTPUT,
+            id="a failure keeps what was printed instead of an answer",
+        ),
+        pytest.param(
+            AgentExecutionResult(b"done"),
+            None,
+            id="an executor that decoded nothing keeps nothing",
+        ),
+    ],
+)
+def test_a_terminal_attempt_names_the_transcript_its_executor_decoded(
+    tmp_path: Path,
+    verdict: AgentExecutionResult | AgentExecutionFailure,
+    steps: tuple[object, ...] | None,
+) -> None:
+    """The steps reach the same write that ends the attempt, or nothing does.
+
+    Both endings are asked, because the failing one is the reason this exists:
+    an exit code beside an empty standard error was the whole account of a real
+    run (#733). The pointer is resolved rather than compared to a hash spelled
+    here -- what the attempt must name is the bytes the store really holds.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime, "attempt/transcript")
+        execute_agent_attempt(
+            agent_attempt_execution(request),
+            RecordingAgentExecutorV2(
+                command=launching(sys.executable, "-c", "pass"),
+                decoder=answering(verdict),
+            ),
+            DbosAgentAttemptStore(runtime.engine),
+            runtime.agent_process_supervisor,
+            runtime_workspace_owner(runtime),
+        )
+
+        with runtime.engine.connect() as connection:
+            kept = connection.scalar(
+                sa.select(agent_attempts.c.transcript_artifact_hash)
+            )
+            stored = connection.scalar(
+                sa.select(artifacts.c.content).where(artifacts.c.artifact_hash == kept)
+            )
+        if steps is None:
+            assert kept is None
+        else:
+            assert stored == AttemptTranscript.of(steps).document
     finally:
         runtime.close()
 

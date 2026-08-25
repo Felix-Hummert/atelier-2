@@ -14,9 +14,18 @@ from atelier2.adapters.bounded_processes import (
     bounded_process_streams,
 )
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
+from atelier2.contracts.agent_transcripts import (
+    MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES,
+    AssistantTurn,
+    AttemptTranscript,
+    ToolCalled,
+    ToolReturned,
+    TranscriptEvent,
+    UnrecognisedProviderOutput,
+    Usage,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
-    MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
     AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutionResult,
@@ -42,35 +51,54 @@ CLAUDE_SUBSCRIPTION_EXECUTOR_KEY = AgentExecutorKey(
     ProviderId("anthropic"), AgentExecutorRevision("claude-subscription/v1")
 )
 # The operation, not the release that performs it: one headless print call whose
-# argument vector, environment and JSON envelope contract are what this name
-# stands for. Admitting a version therefore leaves it alone while the matrix
-# finds that operation unchanged, and every durable attempt record keeps
-# comparing against the same identity. A release that changed one of them --
-# a control that stops meaning what it meant, an envelope this executor must
-# decode differently -- would be a different operation and would need a new
-# identity here rather than a widened conformance set.
+# argument vector, environment and stream contract are what this name stands
+# for. Admitting a version therefore leaves it alone while the matrix finds that
+# operation unchanged, and every durable attempt record keeps comparing against
+# the same identity. A release that changed one of them -- a control that stops
+# meaning what it meant, an envelope this executor must decode differently --
+# would be a different operation and would need a new identity here rather than
+# a widened conformance set.
+#
+# V2 is exactly that. The vector now asks for `--output-format stream-json`
+# (with the `--verbose` that format demands) instead of `json`, so the process
+# writes every turn and tool result on its way to the same final envelope
+# (#666). A different vector reaching a different wire shape is a different
+# operation, whatever it ends up answering, so the name moves with it and no
+# attempt recorded under V1 is ever read as having run this one.
 CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
-    "headless-print-json/v1"
+    "headless-print-stream-json/v2"
 )
 
-# The largest raw frame one `claude -p --output-format json` call may write on
-# standard output. The port owns the field; this number is this provider's,
-# because it is this provider's wire format that produces the frame. It is
-# deliberately larger than the durable output bound: the frame carries the
-# durable result *inside* a JSON envelope, so a raw bound equal to
-# MAXIMUM_AGENT_OUTPUT_BYTES_V2 would refuse answers the durable contract
-# accepts. Derivation, so no durably acceptable result is ever refused as a
-# frame:
+# The largest final `result` line one call may write. It is deliberately larger
+# than the durable output bound: the line carries the durable result *inside* a
+# JSON envelope, so a raw bound equal to MAXIMUM_AGENT_OUTPUT_BYTES_V2 would
+# refuse answers the durable contract accepts. Derivation, so no durably
+# acceptable result is ever refused as a frame:
 #   * JSON string escaping expands one source byte to at most six frame bytes
 #     (a C0 control byte becomes a six-character backslash-u escape), so a
 #     durable-legal result occupies at most 6 * 49,152 = 294,912 frame bytes.
 #   * The remaining 98,304 bytes are the envelope metadata allowance. The
-#     largest metadata a real `claude -p --output-format json` answer of a
-#     conformant version was measured carrying around its result is 1,631
-#     bytes, so the allowance is about sixty times the observed envelope --
-#     room for more models in `modelUsage`, permission denials and future
-#     fields without ever bounding an answer the durable contract would accept.
-CLAUDE_SUBSCRIPTION_FRAME_BYTES = MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES
+#     largest metadata a real `claude -p` answer of a conformant version was
+#     measured carrying around its result is 1,631 bytes, so the allowance is
+#     about sixty times the observed envelope -- room for more models in
+#     `modelUsage`, permission denials and future fields without ever bounding
+#     an answer the durable contract would accept.
+CLAUDE_SUBSCRIPTION_ENVELOPE_BYTES = 8 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
+
+# The largest raw frame one whole `--output-format stream-json` call may write
+# on standard output. The port owns the field; this number is this provider's,
+# because it is this provider's wire format that produces the frame.
+#
+# The stream is the envelope above plus everything the call wrote before it, and
+# what it wrote before it is exactly the steps a transcript may keep: one whole
+# transcript's worth is therefore the allowance, and a stream past it is one
+# whose steps this repository could not have kept whole anyway. The two halves
+# are added rather than shared because they bound different things -- the final
+# answer, and the story that led to it -- and a single number would silently
+# trade one against the other.
+CLAUDE_SUBSCRIPTION_FRAME_BYTES = (
+    CLAUDE_SUBSCRIPTION_ENVELOPE_BYTES + MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES
+)
 
 # Every Claude Code whose containment behaviour was measured end to end for
 # this executor. A version bound would only prove that the flags were
@@ -135,7 +163,14 @@ _SUBSCRIPTION_TYPE_FIELD = "subscriptionType"
 
 _PRINT_FLAG = "-p"
 _OUTPUT_FORMAT_FLAG = "--output-format"
-_JSON_OUTPUT_FORMAT = "json"
+# The format that publishes the steps as well as the answer, and the flag it
+# insists on. Measured on 2.1.221 (#694): asked for this format without
+# `--verbose` the CLI exits 1 saying so, and with it standard output is pure
+# NDJSON -- a session header, the assistant turns and tool results, and last a
+# `result` line whose key set is exactly what `--output-format json` produced.
+# The two therefore travel as one decision and are never spelled apart.
+_STREAM_JSON_OUTPUT_FORMAT = "stream-json"
+_VERBOSE_FLAG = "--verbose"
 _MODEL_FLAG = "--model"
 
 # The containment flags, each measured against every conformant version (see
@@ -192,12 +227,42 @@ _RESULT_ENVELOPE_TYPE = "result"
 _ERROR_FLAG_FIELD = "is_error"
 _RESULT_FIELD = "result"
 
-# The durable attempt contract knows exactly one failure code today, so every
-# unusable provider answer projects onto it until that enum, its SQL guards and
-# the frozen attempt wire field gain a wider vocabulary together.
-_UNUSABLE_PROVIDER_ANSWER = AgentExecutionFailure(
-    AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
-)
+# The stream line shapes this executor reads as steps. Everything else on the
+# stream is kept whole rather than mapped, so a line shape a release adds is
+# evidence this transcript still carries instead of a step it silently drops.
+_ASSISTANT_LINE_TYPE = "assistant"
+_USER_LINE_TYPE = "user"
+_MESSAGE_FIELD = "message"
+_CONTENT_FIELD = "content"
+_TEXT_BLOCK_TYPE = "text"
+_TOOL_USE_BLOCK_TYPE = "tool_use"
+_TOOL_RESULT_BLOCK_TYPE = "tool_result"
+_TEXT_FIELD = "text"
+_TOOL_NAME_FIELD = "name"
+_TOOL_INPUT_FIELD = "input"
+_TOOL_USE_ID_FIELD = "id"
+_ANSWERED_TOOL_USE_ID_FIELD = "tool_use_id"
+_USAGE_FIELD = "usage"
+_INPUT_TOKENS_FIELD = "input_tokens"
+_OUTPUT_TOKENS_FIELD = "output_tokens"
+_CACHE_READ_TOKENS_FIELD = "cache_read_input_tokens"
+_CACHE_CREATION_TOKENS_FIELD = "cache_creation_input_tokens"
+
+
+def _unusable_provider_answer(
+    transcript: AttemptTranscript | None,
+) -> AgentExecutionFailure:
+    """This call produced no answer this executor may use, with what it did write.
+
+    The durable attempt contract knows exactly one failure code today, so every
+    unusable provider answer projects onto it until that enum, its SQL guards
+    and the frozen attempt wire field gain a wider vocabulary together. What
+    tells two such endings apart is the transcript travelling with it.
+    """
+
+    return AgentExecutionFailure(
+        AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY, transcript
+    )
 
 
 class ClaudeSubscriptionAuthModeUnsupported(ValueError):
@@ -470,15 +535,181 @@ def _declared_schema_of(command: AgentProcessCommand) -> SchemaAccepted | None:
     return schema if isinstance(schema, SchemaAccepted) else None
 
 
+def _stream_lines(standard_output: bytes) -> tuple[str, ...]:
+    """Every line this call wrote that carries anything, as text.
+
+    Decoding replaces what is not UTF-8 rather than refusing the frame: bytes a
+    failing process wrote are the diagnosis somebody is looking for, and a
+    transcript that vanished because one of them was malformed would be the
+    silence this whole seam removes. What survives is still bounded and redacted
+    before it is kept, by the transcript contract and nothing here.
+    """
+
+    return tuple(
+        line
+        for line in standard_output.decode("utf-8", "replace").splitlines()
+        if line.strip()
+    )
+
+
+def _stream_entry(line: str) -> dict[str, object] | None:
+    """This line read as one stream entry, or nothing where it is not one."""
+
+    try:
+        entry: object = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return entry if isinstance(entry, dict) else None
+
+
+def _content_blocks(entry: dict[str, object]) -> tuple[object, ...]:
+    """The content blocks this message line carries, or none."""
+
+    message = entry.get(_MESSAGE_FIELD)
+    if not isinstance(message, dict):
+        return ()
+    content = message.get(_CONTENT_FIELD)
+    return tuple(content) if isinstance(content, list) else ()
+
+
+def _token_count(usage: dict[str, object], field_name: str) -> int | None:
+    """One nonnegative token count this usage record states, or nothing."""
+
+    counted = usage.get(field_name, 0)
+    if type(counted) is not int or counted < 0:
+        return None
+    return counted
+
+
+def _usage_step(entry: dict[str, object]) -> Usage | None:
+    """What this line says the attempt spent, where it says it completely.
+
+    The final `result` line is the one this is read from: it carries the
+    provider's own total, while a per-turn record would have to be added up here
+    and this module would then be the second place that decides what an attempt
+    cost.
+    """
+
+    usage = entry.get(_USAGE_FIELD)
+    if not isinstance(usage, dict):
+        return None
+    counts = tuple(
+        _token_count(usage, field_name)
+        for field_name in (
+            _INPUT_TOKENS_FIELD,
+            _OUTPUT_TOKENS_FIELD,
+            _CACHE_READ_TOKENS_FIELD,
+            _CACHE_CREATION_TOKENS_FIELD,
+        )
+    )
+    if any(count is None for count in counts):
+        return None
+    read, written, cached, created = counts
+    return Usage(read or 0, written or 0, cached or 0, created or 0)
+
+
+def _block_step(block: object, tool_names: dict[str, str]) -> TranscriptEvent | None:
+    """One content block as the step it is, or nothing where it is not one.
+
+    `tool_names` is how a result finds the door it answered: the provider names
+    the tool on the call and refers back to it by id afterwards, so the call
+    leaves its name here for the result to read. A result whose call this
+    executor never saw keeps the id instead of borrowing another tool's name.
+    """
+
+    if not isinstance(block, dict):
+        return None
+    match block.get(_ENVELOPE_TYPE_FIELD):
+        case value if value == _TEXT_BLOCK_TYPE:
+            spoken = block.get(_TEXT_FIELD)
+            return AssistantTurn(spoken) if isinstance(spoken, str) else None
+        case value if value == _TOOL_USE_BLOCK_TYPE:
+            name = block.get(_TOOL_NAME_FIELD)
+            if not isinstance(name, str):
+                return None
+            called_id = block.get(_TOOL_USE_ID_FIELD)
+            if isinstance(called_id, str):
+                tool_names[called_id] = name
+            return ToolCalled(name, _canonical_json(block.get(_TOOL_INPUT_FIELD)))
+        case value if value == _TOOL_RESULT_BLOCK_TYPE:
+            answered_id = block.get(_ANSWERED_TOOL_USE_ID_FIELD)
+            if not isinstance(answered_id, str):
+                return None
+            answer = block.get(_CONTENT_FIELD)
+            return ToolReturned(
+                tool_names.get(answered_id, answered_id),
+                answer if isinstance(answer, str) else _canonical_json(answer),
+            )
+        case _:
+            return None
+
+
+def _canonical_json(value: object) -> str:
+    """These decoded bytes back as one exact line of JSON."""
+
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _line_steps(line: str, tool_names: dict[str, str]) -> tuple[TranscriptEvent, ...]:
+    """The steps one stream line stands for, keeping whole what it does not.
+
+    A line this executor cannot read as steps is kept as the provider's own
+    output rather than dropped: the session header, a line shape a release
+    added, and whatever a call that never produced a stream printed instead all
+    arrive here, and each of them is evidence about an episode somebody is
+    reading precisely because nothing explained it.
+    """
+
+    entry = _stream_entry(line)
+    if entry is None:
+        return (UnrecognisedProviderOutput(line),)
+    match entry.get(_ENVELOPE_TYPE_FIELD):
+        case value if value in {_ASSISTANT_LINE_TYPE, _USER_LINE_TYPE}:
+            steps = tuple(
+                step
+                for step in (
+                    _block_step(block, tool_names) for block in _content_blocks(entry)
+                )
+                if step is not None
+            )
+        case value if value == _RESULT_ENVELOPE_TYPE:
+            spent = _usage_step(entry)
+            steps = () if spent is None else (spent,)
+        case _:
+            steps = ()
+    return steps if steps else (UnrecognisedProviderOutput(line),)
+
+
+def _stream_transcript(lines: Sequence[str]) -> AttemptTranscript | None:
+    """What this call did, as far as its own stream said so.
+
+    Nothing where the call wrote no line at all -- an honest absence, which is
+    what an executor whose process never started has to say.
+    """
+
+    tool_names: dict[str, str] = {}
+    steps = tuple(step for line in lines for step in _line_steps(line, tool_names))
+    return AttemptTranscript.of(steps) if steps else None
+
+
 def _decoded_claude_answer(
     invocation: AgentProcessInvocation,
     completion: AgentProcessCompletion,
 ) -> AgentExecutionResult | AgentExecutionFailure:
-    """Read one `claude -p --output-format json` frame back, or refuse it.
+    """Read one `claude -p --output-format stream-json` call back, or refuse it.
 
-    The envelope is the CLI's contract rather than one operation's, so every
+    The stream is the CLI's contract rather than one operation's, so every
     executor in this module reads it the same way and a release that changed it
-    would move all of them at once.
+    would move all of them at once. The answer is the last line: measured on
+    2.1.221 (#694), a `--verbose` stream ends in a `result` line whose key set
+    is exactly what `--output-format json` produced alone, so this reads the
+    same envelope it always read and the lines before it are the steps that
+    reached it.
+
+    Every way through here carries a transcript, the refusals included. What a
+    call wrote before it failed is the only account of an ending the exit code
+    and an empty standard error explain nothing about (#733), and it is
+    strictly more than the predecessor kept, which was nothing at all.
 
     Where the node declared an output schema, the answer is narrowed to the
     bytes that really are a value it admits (`declared_instance_in_answer`).
@@ -503,31 +734,34 @@ def _decoded_claude_answer(
     operator-gated billed call the rest of this module's unmeasured half does.
     """
 
-    if completion.return_code != 0:
-        return _UNUSABLE_PROVIDER_ANSWER
-    if len(completion.standard_output) > CLAUDE_SUBSCRIPTION_FRAME_BYTES:
-        return _UNUSABLE_PROVIDER_ANSWER
-    try:
-        envelope: object = json.loads(completion.standard_output)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return _UNUSABLE_PROVIDER_ANSWER
-    if not isinstance(envelope, dict):
-        return _UNUSABLE_PROVIDER_ANSWER
+    lines = _stream_lines(completion.standard_output)
+    transcript = _stream_transcript(lines)
+    if (
+        completion.return_code != 0
+        or len(completion.standard_output) > CLAUDE_SUBSCRIPTION_FRAME_BYTES
+        or not lines
+    ):
+        return _unusable_provider_answer(transcript)
+    envelope = _stream_entry(lines[-1])
+    if envelope is None:
+        return _unusable_provider_answer(transcript)
     result = envelope.get(_RESULT_FIELD)
     if (
         envelope.get(_ENVELOPE_TYPE_FIELD) != _RESULT_ENVELOPE_TYPE
         or envelope.get(_ERROR_FLAG_FIELD) is not False
         or not isinstance(result, str)
     ):
-        return _UNUSABLE_PROVIDER_ANSWER
+        return _unusable_provider_answer(transcript)
     output_bytes = result.encode("utf-8")
     if len(output_bytes) > MAXIMUM_AGENT_OUTPUT_BYTES_V2:
-        return _UNUSABLE_PROVIDER_ANSWER
+        return _unusable_provider_answer(transcript)
     schema = _declared_schema_of(invocation.command)
-    if schema is None:
-        return AgentExecutionResult(output_bytes)
-    declared = declared_instance_in_answer(output_bytes, schema)
-    return AgentExecutionResult(output_bytes if declared is None else declared)
+    declared = (
+        None if schema is None else declared_instance_in_answer(output_bytes, schema)
+    )
+    return AgentExecutionResult(
+        output_bytes if declared is None else declared, transcript
+    )
 
 
 @dataclass(frozen=True)
@@ -627,7 +861,8 @@ class ClaudeSubscriptionExecutor:
                 str(settings.executable),
                 _PRINT_FLAG,
                 _OUTPUT_FORMAT_FLAG,
-                _JSON_OUTPUT_FORMAT,
+                _STREAM_JSON_OUTPUT_FORMAT,
+                _VERBOSE_FLAG,
                 _MODEL_FLAG,
                 binding.configuration.model,
                 _NO_TOOLS,
@@ -707,8 +942,11 @@ CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY = AgentExecutorKey(
 # argument vector differs from the tool-free one in exactly one decision -- the
 # tools this call may use -- and that decision is what an operational identity
 # stands for, so every durable attempt record keeps saying which of the two ran.
+# V2 for the same reason its sibling is: the vector asks for the transcript-
+# bearing stream instead of a single envelope (#666), which is a different
+# operation of the same CLI rather than a later revision of this one.
 CLAUDE_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
-    "headless-workspace-tools-print-json/v1"
+    "headless-workspace-tools-print-stream-json/v2"
 )
 
 # The exact built-in tools this operation offers, named once and used twice:
@@ -741,6 +979,13 @@ _WORKSPACE_TOOLS_MAXIMUM_TURNS = "16"
 # the refusal on whatever executable a deployment actually serves.
 _ARGUMENT_REFUSAL_MARKER = "unknown option"
 _UNKNOWN_FLAG_CONTROL = "--atelier2-no-claude-code-knows-this"
+# What the CLI says when every flag of the vector exists and parses, and the
+# combination of them is still refused: measured on 2.1.221 (#694),
+# `--output-format stream-json` without `--verbose` exits 1 saying it requires
+# that flag. The unknown-option control cannot see this -- nothing here is an
+# unknown option -- so a vector that lost `--verbose` would pass the attestation
+# below and then fail on every real run. It is refused by its own name.
+_OUTPUT_FORMAT_COMBINATION_MARKER = "requires --verbose"
 # The probe never reaches a model, so this names none: it keeps the vector's
 # shape exact while saying plainly that no billed call stands behind it.
 _INVOCATION_PROBE_MODEL = "atelier2-invocation-probe"
@@ -761,7 +1006,8 @@ def _workspace_tool_arguments(
         str(executable),
         _PRINT_FLAG,
         _OUTPUT_FORMAT_FLAG,
-        _JSON_OUTPUT_FORMAT,
+        _STREAM_JSON_OUTPUT_FORMAT,
+        _VERBOSE_FLAG,
         _MODEL_FLAG,
         model,
         _TOOLS_FLAG,
@@ -868,6 +1114,14 @@ def _attest_invocation_parses(
             f"invocation: {started.strip()}. Serving {served_subject} "
             "needs every flag of that vector to exist and parse, because each "
             "one is a containment decision this executor states"
+        )
+    if _OUTPUT_FORMAT_COMBINATION_MARKER in started:
+        raise ClaudeExecutableUnsupported(
+            "the Claude executable refused this executor's output format for "
+            f"want of a flag the vector does not carry: {started.strip()}. "
+            f"Serving {served_subject} needs the whole vector to be accepted "
+            "together, not only flag by flag -- every real call would otherwise "
+            "die on a combination this probe had already called startable"
         )
     control = _jobless_invocation_answer(
         settings, (*arguments, _UNKNOWN_FLAG_CONTROL), timeout_seconds
@@ -1030,9 +1284,11 @@ CLAUDE_ATELIER_DOORS_EXECUTOR_KEY = AgentExecutorKey(
 # ones. Its distinguishing decision is the tool surface it opens -- the
 # product's own MCP doors instead of built-ins -- and that decision is what an
 # operational identity stands for, so every durable attempt record keeps saying
-# which of the three ran.
+# which of the three ran. V2 for the same reason its two siblings are: the
+# vector asks for the transcript-bearing stream instead of a single envelope
+# (#666), which is a different operation rather than a later revision.
 CLAUDE_ATELIER_DOORS_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
-    "headless-atelier-doors-print-json/v1"
+    "headless-atelier-doors-print-stream-json/v2"
 )
 
 # Claude Code's allowlistable name for one MCP tool: `mcp__<server>__<tool>`.
@@ -1137,7 +1393,8 @@ def _atelier_doors_arguments(
         str(settings.deployment.executable),
         _PRINT_FLAG,
         _OUTPUT_FORMAT_FLAG,
-        _JSON_OUTPUT_FORMAT,
+        _STREAM_JSON_OUTPUT_FORMAT,
+        _VERBOSE_FLAG,
         _MODEL_FLAG,
         model,
         _NO_TOOLS,
