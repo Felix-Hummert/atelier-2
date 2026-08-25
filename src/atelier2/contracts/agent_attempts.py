@@ -279,6 +279,25 @@ class RunnerCancellationObservation(StrEnum):
     REAPED_AFTER_KILL = "REAPED_AFTER_KILL"
 
 
+class RunnerEvidenceCannotCarryTranscript(ValueError):
+    """This boundary has no room for an attempt's steps, and says so out loud.
+
+    Runner terminal evidence travels as one canonical record bounded far below a
+    single transcript artifact, and Core's acceptance chain hashes that record.
+    Carrying a transcript across would mean re-deciding both -- the record bound
+    and what the evidence hash covers -- which is a decision this hop did not
+    make and must not make silently by truncating.
+
+    So a transcript reaching here is refused rather than dropped. Dropping it
+    would leave a Runner-carried attempt recorded as having decoded nothing,
+    which is the exact lie the transcript exists to end, and nobody would ever
+    learn the evidence had eaten it. Refusing is loud, is caught where the
+    executor ran, and cannot be mistaken for an honest absence. No executor this
+    repository composes on the Runner carrier decodes a transcript today, so
+    this is a tripwire for the day one does, not a live path.
+    """
+
+
 @dataclass(frozen=True)
 class RunnerProviderResult:
     """One provider answer already decoded into the durable result contract."""
@@ -294,6 +313,10 @@ class RunnerProviderResult:
             raise TypeError("runner provider result requires exact output bytes")
         if len(self.result.output_bytes) > MAXIMUM_AGENT_OUTPUT_BYTES_V2:
             raise ValueError("runner provider result exceeds the durable output bound")
+        if self.result.transcript is not None:
+            raise RunnerEvidenceCannotCarryTranscript(
+                "runner terminal evidence does not carry an attempt transcript yet"
+            )
 
 
 @dataclass(frozen=True)
