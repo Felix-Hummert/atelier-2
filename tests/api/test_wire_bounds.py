@@ -81,6 +81,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AgentCancelRequestedEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentCancelledEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentCancelledEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "WaitCancelledEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "CatalogAdmissionResource.display_name": (MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS),
     "FoundCatalogLineageRequestResource.actor": MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     "FoundCatalogLineageRequestResource.display_name": (

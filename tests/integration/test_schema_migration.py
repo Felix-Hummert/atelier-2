@@ -42,6 +42,7 @@ from atelier2.adapters.dbos.schema import (
     V31_SCHEMA_HANDOFF,
     V32_SCHEMA_HANDOFF,
     V33_SCHEMA_HANDOFF,
+    V34_SCHEMA_HANDOFF,
     MigrationRequired,
     UnsupportedSchemaVersion,
     _product_schema_fingerprint,
@@ -407,11 +408,17 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[33]
         == "f634d04c6cc525147ead8aa0dad8ef728189a6ef9554049c8a2aad56f3caeea8"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 34
+    assert V34_SCHEMA_HANDOFF.version == 34
     assert (
-        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        V34_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[34]
         == "28dab0f4a152d7be66fa699d1123fdd130a94fe80ad705c19330f075e4fdd85a"
+    )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 35
+    assert (
+        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[35]
+        == "29df9a195316ce94527be2c906e4dc4104e00b2cb16caa9bfada17fecb5a21d5"
     )
 
 
@@ -445,6 +452,7 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         31,
         32,
         33,
+        34,
     ],
 )
 def test_predecessor_store_is_refused_without_mutation(
@@ -1322,25 +1330,29 @@ _CANCELLED_STATE_PRODUCERS: dict[str, str] = {
         "the serve-start net's own answer for an operator-cancelled or "
         "-interrupted current-node attempt with no replacement in flight"
     ),
+    "adapters/dbos/run_transitions.py::commit_wait_cancelled": (
+        "a run resting at a pause, ended by the operator's own cancel command "
+        "under the WAIT_CANCELLED attestation it writes itself (#668)"
+    ),
 }
-"""#439 P3's exactly two producers of `RunState.CANCELLED`, named so a third
-one is a review question in the diff below, never a silent grep exception."""
+"""The named producers of `RunState.CANCELLED`, so a new one is a review
+question in the diff below, never a silent grep exception."""
 
 
 def test_run_state_cancelled_has_exactly_its_named_producers() -> None:
-    """#439 P1 gave CANCELLED its durable home; #439 P3 gave it exactly two.
+    """#439 P1 gave CANCELLED its durable home; every writer of it is named.
 
     `test_run_state_tokens_are_exact` above proves the migrated CHECK admits
-    the word at the storage layer. This is the other half, carried forward
-    rather than deleted now that #439 P3 landed: every construction of
-    `RunState.CANCELLED` outside `contracts/` (its own definitional home,
+    the word at the storage layer. This is the other half: every construction
+    of `RunState.CANCELLED` outside `contracts/` (its own definitional home,
     `RunState` itself and the `TERMINAL_RUN_STATES` set every terminal-state
-    check already reads through) is one of the two named producers above --
-    the run's own terminal lift, on either carrier, under the operator's own
-    cancel command identity, or the serve-start net's answer for the same
-    identity left leaderless. An `is`/`==` comparison anywhere else, the way
-    `api/projection/runs.py` already refuses to render a V1/V2 run whose
-    frozen wire predates the word, is still a reader, not a producer.
+    check already reads through) is one of the named producers above -- the
+    run's own terminal lift, on either carrier, under the operator's own cancel
+    command identity; the serve-start net's answer for the same identity left
+    leaderless; and the resting pause that ends under its own attestation
+    because it has no attempt to lift (#668). An `is`/`==` comparison anywhere
+    else, the way `api/projection/runs.py` already refuses to render a V1/V2
+    run whose frozen wire predates the word, is still a reader, not a producer.
     """
 
     source_root = Path(__file__).resolve().parents[2] / "src" / "atelier2"

@@ -60,6 +60,7 @@ from atelier2.contracts.run_bindings import AnyRun, RunV2, RunV3
 from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
+    TERMINAL_RUN_STATES,
     RevisionHashCollision,
     Run,
     RunId,
@@ -581,7 +582,10 @@ def _commit_event(
         target_node, ANY_ACTION_NODE_KINDS
     ):
         raise RunTransitionConflict("WAITING_RECONCILIATION target is not an Action")
-    if terminal != (target_state in {RunState.COMPLETED, RunState.FAILED}):
+    # Which words end a run has one owner, and CANCELLED is one of them (#668):
+    # a run resting at a pause ends here, under its own attestation, rather than
+    # standing WAITING_INPUT forever because no attempt existed to stop.
+    if terminal != (target_state in TERMINAL_RUN_STATES):
         raise RunTransitionConflict("terminal transition shape disagrees")
     if (
         terminal
@@ -685,6 +689,41 @@ def commit_waiting_input(
         RunState.STARTED,
         RunState.WAITING_INPUT,
         node_id,
+        round_ordinal=round_ordinal,
+        target_round_ordinal=round_ordinal,
+    )
+
+
+def commit_wait_cancelled(
+    session: Any,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    command_id: str,
+    round_ordinal: int = FIRST_ROUND_ORDINAL,
+) -> TransitionSnapshot:
+    """End a run resting at this pause, under the command that ordered it.
+
+    The event is the cancellation's whole attestation: no attempt exists to
+    stamp, so this is the last entry the run's terminal hash folds over, and
+    `lift_started_run` -- which never invents an event -- is not the seam a
+    resting pause can use anyway, because that lift only moves a STARTED run.
+
+    The run stops where it stood. A cancelled pause reaches no successor, so
+    source and target node and round are the one execution the operator's
+    confirmation fenced on.
+    """
+    return _commit_event(
+        session,
+        run_id,
+        revision_hash,
+        node_id,
+        RunEventKind.WAIT_CANCELLED,
+        command_id.encode("utf-8"),
+        RunState.WAITING_INPUT,
+        RunState.CANCELLED,
+        node_id,
+        terminal=True,
         round_ordinal=round_ordinal,
         target_round_ordinal=round_ordinal,
     )

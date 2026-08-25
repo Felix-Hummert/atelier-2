@@ -1119,6 +1119,7 @@ RunNotCancellableReasonName = Literal[
     "node-runs-no-agent",
     "already-cancelling",
     "already-ended",
+    "answer-in-flight",
 ]
 
 
