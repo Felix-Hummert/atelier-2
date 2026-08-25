@@ -26,6 +26,7 @@ from atelier2.contracts.revisions_v3 import (
 )
 from atelier2.ports.published_revisions import (
     CatalogNameFound,
+    CatalogReferenceLookup,
     CatalogRevisionPosition,
     PublishedRevisionFound,
     PublishedRevisionMissing,
@@ -43,7 +44,7 @@ class ScriptedCatalogResolver:
     def __init__(
         self,
         *,
-        reference_answer: ResolvePublishedRevisionResult | None = None,
+        reference_answer: CatalogReferenceLookup | None = None,
         name_answers: dict[
             tuple[CatalogNameQuery, CatalogRevisionPosition], ResolveCatalogNameResult
         ]
@@ -68,7 +69,7 @@ class ScriptedCatalogResolver:
         kind: RevisionKind,
         lineage_id: CatalogLineageId,
         revision_hash: PublishedRevisionHash,
-    ) -> ResolvePublishedRevisionResult:
+    ) -> CatalogReferenceLookup:
         self.reference_calls.append((kind, lineage_id, revision_hash))
         if self.reference_answer is None:
             raise AssertionError("no reference answer was scripted")
@@ -121,7 +122,7 @@ def test_reference_resolution_refuses_a_nonmember_or_mismatched_answer(
     requested = _published_workflow()
     lineage_id = _lineage_id(requested)
     if answer_kind == "missing":
-        answer: ResolvePublishedRevisionResult = PublishedRevisionMissing()
+        answer: CatalogReferenceLookup = PublishedRevisionMissing()
     elif answer_kind == "wrong_hash":
         answer = PublishedRevisionFound(_published_workflow(b"name: another\n"))
     else:
@@ -227,7 +228,7 @@ def test_name_resolution_refuses_when_its_named_member_does_not_resolve(
     revision = _published_workflow()
     lineage_id = _lineage_id(revision)
     display_name = CatalogLineageDisplayName("lasagne")
-    reference_answer: ResolvePublishedRevisionResult = (
+    reference_answer: CatalogReferenceLookup = (
         PublishedRevisionMissing()
         if stored_answer == "missing_member"
         else PublishedRevisionFound(_published_workflow(b"name: other\n"))

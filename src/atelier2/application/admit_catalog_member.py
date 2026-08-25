@@ -55,7 +55,12 @@ from atelier2.ports.published_revisions import (
     CatalogResolver,
     FoundCatalogLineageResult,
     PublishedRevisionFound,
+    PublishedRevisionMissing,
     PublishedRevisionResolver,
+    PublishedRevisionsUnavailable,
+)
+from atelier2.ports.published_revisions import (
+    DurableStateCorrupt as RegistryCorrupt,
 )
 from atelier2.ports.workflow_revisions import (
     ProjectionTooLarge as PortProjectionTooLarge,
@@ -198,6 +203,14 @@ def _named_revision(
     match revisions.resolve(kind, revision_hash):
         case PublishedRevisionFound(revision):
             return revision
+        case PublishedRevisionMissing():
+            pass
+        case PublishedRevisionsUnavailable(detail):
+            return WriteUnavailable(detail)
+        case RegistryCorrupt():
+            return DurableStateCorrupt()
+        case _ as unreachable:
+            assert_never(unreachable)
     if kind is not RevisionKind.WORKFLOW:
         return CatalogRevisionUnpublished(revision_hash)
     match workflows.get_workflow_revision(WorkflowRevisionHash(revision_hash.value)):

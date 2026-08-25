@@ -13,6 +13,7 @@ from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
 
 from atelier2.adapters.dbos.advancer import prepare_graph_action as _prepare
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.names import EFFECT_WORKFLOW_NAME, QUEUE_NAME
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
@@ -70,6 +71,7 @@ def publish_revision(engine: Engine, revision: WorkflowRevision) -> None:
         DbosWorkflowRevisionPublisher(engine),
         parse_workflow_document,
         permissive_projection_limit(),
+        DbosCatalogStore(engine),
     )
     assert isinstance(result, (PublicationCreated, PublicationExisting)), result
 
