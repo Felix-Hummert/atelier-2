@@ -31,6 +31,10 @@ id = "a-run-that-cannot-be-cancelled-shows-why"
 text = "A run the server says cannot be cancelled shows the closed reason in the operator's words instead of a cancel button or a grey disabled nothing."
 
 [[sentence]]
+id = "a-resting-wait-still-offers-its-own-cancel"
+text = "A run resting on an unanswered wait, which the server names cancellable, still offers the cancel control on the run page rather than a silent gap where a reason used to stand."
+
+[[sentence]]
 id = "a-reload-during-an-unconfirmed-cancel-does-not-lie"
 text = "When the page reloads while a cancel the server never confirmed still sits in the durable journal, the cockpit offers Retry and Discard rather than claiming the run is already stopping, and Retry resends the exact same command the first attempt carried."
 
