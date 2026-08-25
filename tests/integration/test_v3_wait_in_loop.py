@@ -15,12 +15,9 @@ round one), the ceiling ending the run rather than a verdict, and a restart acro
 the second round's pause -- only add up to the claimed shape together. Proving them
 apart would let four pass while the fifth silently regressed.
 
-**Why it is `xfail`.** Running this test is what found the next gap: the store
-still refuses a Wait node's second pause (see the marker's reason on the test
-below). The grammar door this file's admission line opens is real, but a
-document shaped like this one is not yet safe to run to a second round -- it
-would stick rather than fail loudly. Left `strict=True` so a fix that makes
-this pass is a change nobody can land by accident without noticing.
+Running it is what found the store gap the V36 hop closes: the once-per-node
+event key refused a Wait node's second pause, so a document shaped like this one
+could be admitted but not driven to a second round.
 """
 
 from __future__ import annotations
@@ -284,27 +281,6 @@ def durable_events(runtime: DbosRuntime) -> list[tuple[str, int, str]]:
         ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "the executable door now admits a repeated Wait, but the store does "
-        "not yet let one pause twice: `run_events_legacy_kind_unique` "
-        "(adapters/dbos/schema.py) is a partial unique index on "
-        "(run_id, revision_hash, node_id, event_kind) WHERE agent_attempt_id "
-        "IS NULL. A Wait's WAITING_INPUT/WAIT_ANSWERED events carry no "
-        "agent_attempt_id, so a second round's WAITING_INPUT collides with "
-        "the first round's row under the same (node_id, event_kind) pair -- "
-        "an IntegrityError DBOS then fails to even serialize (memoryview "
-        "payload is not picklable), so the node workflow sticks at STARTED "
-        "rather than failing loudly. The narrower "
-        "`run_events_legacy_execution_kind_unique` index, keyed by "
-        "node_execution_id (which already folds the round in), is already "
-        "correct and would admit this alone. Fix: a migration hop dropping "
-        "or narrowing the legacy_kind_unique index. That file is held by "
-        "#668 at the time this test was written; tracked as a named PA "
-        "follow-up rather than fixed here."
-    ),
-)
 def test_a_loop_of_wait_and_agent_carries_a_conversation_to_its_ceiling(
     tmp_path: Path, recording: RecordingAgentExecutorFactoryV2
 ) -> None:

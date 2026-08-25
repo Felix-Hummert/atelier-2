@@ -12,7 +12,10 @@ from sqlalchemy.dialects import sqlite as sqlite_dialect
 from sqlalchemy.engine import Engine
 from sqlalchemy.schema import CreateIndex, CreateTable
 
-from atelier2.adapters.dbos.published_schema_shapes import PUBLISHED_TABLE_SHAPES
+from atelier2.adapters.dbos.published_schema_shapes import (
+    PUBLISHED_TABLE_INDEXES,
+    PUBLISHED_TABLE_SHAPES,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
@@ -55,11 +58,11 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head admits `WAIT_CANCELLED` as a run event kind (#668), so
-# a run resting at a pause can end under an operator's cancel. Predecessor is
-# the published schema that keyed a wait answer by its node execution (#671).
+# Movable hop: this head drops the run-event key that said one event of a kind
+# per node per run (#658), so a Wait a loop turns twice may pause twice.
+# Predecessor is the published schema that admitted `WAIT_CANCELLED` (#668).
 # Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 34
+_HOP_PREDECESSOR_VERSION = 35
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -88,6 +91,7 @@ _VERSION_THIRTY_TWO = 32
 _VERSION_THIRTY_THREE = 33
 _VERSION_THIRTY_FOUR = 34
 _VERSION_THIRTY_FIVE = 35
+_VERSION_THIRTY_SIX = 36
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -169,6 +173,15 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # payload and is fenced by the node execution it names -- so the run's terminal
 # hash folds over a real event instead of a lift inventing one. Only the
 # vocabulary widens; every stored row keeps its bytes, its key and its meaning.
+# V36 drops `run_events_legacy_kind_unique` (#658). That partial unique index
+# said one event of a kind per node per run for every event no agent attempt
+# owns, which stopped being true the moment a declared loop could turn a Wait a
+# second time: round two's WAITING_INPUT names the same node and kind as round
+# one's. The narrower `run_events_legacy_execution_kind_unique` -- one event of
+# a kind per node execution, and an execution id already folds the round in --
+# is that same sentence read per round, and it stays. No row is rewritten and
+# no column moves; only the coarser key stops being enforced, so every row the
+# predecessor holds is legal here.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -201,6 +214,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     33: "f634d04c6cc525147ead8aa0dad8ef728189a6ef9554049c8a2aad56f3caeea8",
     34: "28dab0f4a152d7be66fa699d1123fdd130a94fe80ad705c19330f075e4fdd85a",
     35: "29df9a195316ce94527be2c906e4dc4104e00b2cb16caa9bfada17fecb5a21d5",
+    36: "db67d0423325f63b8c55a8724c811f3bed22ae0b6b42b6eb4f0e0db397e4c920",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -305,6 +319,10 @@ V33_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V34_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_THIRTY_FOUR,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_FOUR],
+)
+V35_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_THIRTY_FIVE,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_FIVE],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1151,15 +1169,6 @@ run_events = sa.Table(
         "AND agent_receipt_hash NOT GLOB '*[^0-9a-f]*'))) "
         "OR (event_kind <> 'AGENT_COMPLETED' AND agent_receipt_hash IS NULL)"
     ),
-)
-sa.Index(
-    "run_events_legacy_kind_unique",
-    run_events.c.run_id,
-    run_events.c.revision_hash,
-    run_events.c.node_id,
-    run_events.c.event_kind,
-    unique=True,
-    sqlite_where=run_events.c.agent_attempt_id.is_(None),
 )
 sa.Index(
     "run_events_legacy_execution_kind_unique",
@@ -2660,10 +2669,15 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    # V33 and V34 hold the same tables as the current version: the hops between
-    # them moved one table's key and columns and one table's kind vocabulary,
-    # never the set of tables.
-    if version in {SCHEMA_VERSION, _VERSION_THIRTY_FOUR, _VERSION_THIRTY_THREE}:
+    # V33 to V35 hold the same tables as the current version: the hops between
+    # them moved one table's key and columns, one table's kind vocabulary and
+    # one table's index, never the set of tables.
+    if version in {
+        SCHEMA_VERSION,
+        _VERSION_THIRTY_FIVE,
+        _VERSION_THIRTY_FOUR,
+        _VERSION_THIRTY_THREE,
+    }:
         return PRODUCT_TABLE_NAMES
     if version in {_VERSION_THIRTY_TWO, _VERSION_THIRTY_ONE}:
         return PRODUCT_TABLE_NAMES - connections
@@ -2933,6 +2947,25 @@ def _added_table_step(
     return apply
 
 
+def _declared_indexes(table: sa.Table) -> tuple[str, ...]:
+    return tuple(
+        str(CreateIndex(index).compile(dialect=sqlite_dialect.dialect()))
+        for index in sorted(table.indexes, key=lambda index: index.name or "")
+    )
+
+
+def _table_indexes_at(version: int, table: sa.Table) -> tuple[str, ...]:
+    """The `CREATE INDEX` texts this table carries at one published version.
+
+    An index set no hop has moved is exactly the declaration, which is why most
+    published versions record none; a version a later hop took an index away
+    from is a record, for the reason `published_schema_shapes` gives.
+    """
+    if version == SCHEMA_VERSION:
+        return _declared_indexes(table)
+    return PUBLISHED_TABLE_INDEXES.get((version, table.name), _declared_indexes(table))
+
+
 def _table_shape_at(version: int, table: sa.Table) -> str:
     """The `CREATE TABLE` text this table has at one published schema version.
 
@@ -2973,6 +3006,25 @@ def _columns_a_row_must_carry(
     )
 
 
+def _created_index_names(
+    connection: sqlite3.Connection, table_name: str
+) -> tuple[str, ...]:
+    """The named indexes on this table, without the ones a key implies.
+
+    An index SQLite creates for a UNIQUE or PRIMARY KEY declaration has no
+    `CREATE INDEX` text of its own and cannot be dropped; it goes and comes with
+    the table shape that declares it.
+    """
+    return tuple(
+        str(record[0])
+        for record in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=? "
+            "AND sql IS NOT NULL ORDER BY name",
+            (table_name,),
+        )
+    )
+
+
 def _rebuild_product_table(
     connection: sqlite3.Connection,
     table: sa.Table,
@@ -2998,7 +3050,9 @@ def _rebuild_product_table(
 
     `trigger_source` is the trigger text to install after the rebuild. Earlier
     hops that rebuild this table must reinstall the trigger of *their* target,
-    not today's, or an intermediate fingerprint breaks.
+    not today's, or an intermediate fingerprint breaks. The indexes are read the
+    same way, by target version, so a hop that takes an index away leaves every
+    earlier hop rebuilding the index set its own target published.
     """
 
     trigger_sql = _PRODUCT_TRIGGERS if trigger_source is None else trigger_source
@@ -3013,11 +3067,14 @@ def _rebuild_product_table(
             f"schema version {source_version} already has {parked_name}; "
             "this command will not alter it"
         )
-    indexes = sorted(table.indexes, key=lambda index: index.name or "")
     for trigger in triggers:
         connection.execute(f"DROP TRIGGER {trigger}")
-    for index in indexes:
-        connection.execute(f"DROP INDEX {index.name}")
+    # Read from the store rather than from the declaration: an index name is
+    # global in SQLite, so what has to go before the target shape is created is
+    # every index this store actually holds -- including one a later hop has
+    # already taken out of the declaration.
+    for index_name in _created_index_names(connection, table.name):
+        connection.execute(f"DROP INDEX {index_name}")
     # Children declare their foreign keys on this table by name, and a plain
     # rename would rewrite them to point at the predecessor this hop drops.
     connection.execute("PRAGMA legacy_alter_table=ON")
@@ -3046,10 +3103,8 @@ def _rebuild_product_table(
         f"INSERT INTO {table.name} ({written}) SELECT {read} FROM {parked_name}"
     )
     connection.execute(f"DROP TABLE {parked_name}")
-    for index in indexes:
-        connection.execute(
-            str(CreateIndex(index).compile(dialect=sqlite_dialect.dialect()))
-        )
+    for index_statement in _table_indexes_at(target_version, table):
+        connection.execute(index_statement)
     for trigger in triggers:
         connection.execute(trigger_sql[trigger])
 
@@ -3836,6 +3891,34 @@ def _apply_v34_to_v35(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_THIRTY_FOUR, _VERSION_THIRTY_FIVE)
 
 
+_PREDECESSOR_ONCE_PAUSING_RUN_EVENTS = "run_events_before_the_repeatable_pause"
+
+
+def _apply_v35_to_v36(connection: sqlite3.Connection) -> None:
+    """Drop the once-per-node event key, and keep every stored row.
+
+    The key this hop removes admitted strictly fewer logs than the one that
+    stays, so no stored row can fail the target shape: an event log legal under
+    "one event of a kind per node per run" is legal under "one event of a kind
+    per node execution", which the narrower index still holds. Nothing is
+    rewritten and no column moves -- SQLite drops an index without touching a
+    row -- but the rebuild is what republishes the table with the index set its
+    target version declares, and the same rebuild reinstalls the two append-only
+    triggers, because an event log that could be updated or deleted for the
+    length of one hop would be no evidence at all.
+    """
+
+    _rebuild_product_table(
+        connection,
+        run_events,
+        _PREDECESSOR_ONCE_PAUSING_RUN_EVENTS,
+        _RUN_EVENTS_TRIGGERS,
+        _VERSION_THIRTY_FIVE,
+        _VERSION_THIRTY_SIX,
+    )
+    _raise_declared_version(connection, _VERSION_THIRTY_FIVE, _VERSION_THIRTY_SIX)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -3953,6 +4036,11 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _VERSION_THIRTY_FOUR,
         _VERSION_THIRTY_FIVE,
         _apply_v34_to_v35,
+    ),
+    _SchemaMigrationStep(
+        _VERSION_THIRTY_FIVE,
+        _VERSION_THIRTY_SIX,
+        _apply_v35_to_v36,
     ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {

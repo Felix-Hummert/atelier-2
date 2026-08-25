@@ -15,10 +15,13 @@ about it: an entry here must *not* follow the owner it once agreed with. That is
 the whole reason it lives beside the schema rather than inside it. An entry is
 appended when a hop leaves a shape behind, and is never edited afterwards.
 
-Indexes and triggers are still taken from the declaration. They are exact while
-no hop has changed one, and the published fingerprint the migration runner takes
-after **every** step is what refuses the day that stops being true -- loudly,
-before the next step, rather than at the end.
+An index set a hop moved away from is recorded the same way, in
+`PUBLISHED_TABLE_INDEXES`, for the same reason. A version with no entry there is
+one whose index set is still exactly the declaration -- most of them are -- and
+the published fingerprint the migration runner takes after **every** step is
+what refuses the day that stops being true, loudly, before the next step rather
+than at the end. Triggers are taken from the declaration, or from the recorded
+trigger text a hop whose target moved one passes in.
 
 The predecessor shapes a *test* builds a store from are that test's own scenario
 data and stay there: they are inputs to a fixture, and no production caller
@@ -635,4 +638,69 @@ CREATE TABLE run_events (
 )
 
 """,
+    (35, "run_events"): """
+CREATE TABLE run_events (
+	run_id TEXT NOT NULL, 
+	revision_hash TEXT NOT NULL, 
+	event_sequence INTEGER NOT NULL, 
+	node_id TEXT NOT NULL, 
+	node_execution_id TEXT NOT NULL, 
+	round_ordinal INTEGER NOT NULL, 
+	event_kind TEXT NOT NULL, 
+	payload BLOB NOT NULL, 
+	payload_hash TEXT NOT NULL, 
+	receipt_logical_key TEXT, 
+	receipt_result_hash TEXT, 
+	event_hash TEXT NOT NULL, 
+	agent_attempt_id TEXT, 
+	attempt_ordinal INTEGER, 
+	cancellation_command_id TEXT, 
+	replacement TEXT, 
+	cancellation_disposition TEXT, 
+	replacement_attempt_id TEXT, 
+	agent_receipt_hash TEXT, 
+	PRIMARY KEY (run_id, event_sequence), 
+	FOREIGN KEY(run_id, revision_hash) REFERENCES runs (run_id, revision_hash), 
+	FOREIGN KEY(receipt_logical_key, run_id, revision_hash, receipt_result_hash) REFERENCES effect_receipts (logical_key, run_id, workflow_revision_hash, result_hash), 
+	CHECK (event_sequence > 0), 
+	CHECK (length(node_id) > 0), 
+	CHECK (length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (round_ordinal >= 1), 
+	CHECK (event_kind IN ('AGENT_COMPLETED', 'AGENT_FAILED', 'AGENT_CANCEL_REQUESTED', 'AGENT_CANCELLED', 'AGENT_INTERRUPTED', 'ACTION_RECONCILIATION_REQUIRED', 'ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED', 'WAITING_INPUT', 'WAIT_ANSWERED', 'WAIT_CANCELLED', 'SUBWORKFLOW_COMPLETED')), 
+	CHECK (length(payload_hash) = 64 AND payload_hash NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (length(event_hash) = 64 AND event_hash NOT GLOB '*[^0-9a-f]*'), 
+	CHECK ((event_kind IN ('ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED') AND receipt_logical_key IS NOT NULL AND length(receipt_logical_key) > 0 AND receipt_result_hash IS NOT NULL AND length(receipt_result_hash) = 64 AND receipt_result_hash NOT GLOB '*[^0-9a-f]*' AND receipt_result_hash = payload_hash) OR (event_kind NOT IN ('ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED') AND receipt_logical_key IS NULL AND receipt_result_hash IS NULL)), 
+	CHECK ((agent_attempt_id IS NULL AND attempt_ordinal IS NULL AND cancellation_command_id IS NULL AND replacement IS NULL AND cancellation_disposition IS NULL AND replacement_attempt_id IS NULL) OR (length(agent_attempt_id) = 64 AND agent_attempt_id NOT GLOB '*[^0-9a-f]*' AND attempt_ordinal IN (1, 2) AND ((event_kind IN ('AGENT_COMPLETED', 'AGENT_FAILED') AND cancellation_command_id IS NULL AND replacement IS NULL AND cancellation_disposition IS NULL AND replacement_attempt_id IS NULL) OR (event_kind = 'AGENT_CANCEL_REQUESTED' AND length(cancellation_command_id) BETWEEN 1 AND 1024 AND replacement IN ('NONE', 'ONE') AND cancellation_disposition IS NULL AND replacement_attempt_id IS NULL) OR (event_kind IN ('AGENT_CANCELLED', 'AGENT_INTERRUPTED') AND length(cancellation_command_id) BETWEEN 1 AND 1024 AND replacement IN ('NONE', 'ONE') AND cancellation_disposition IS NOT NULL)))), 
+	CHECK ((event_kind = 'AGENT_COMPLETED' AND (agent_receipt_hash IS NULL OR (length(agent_receipt_hash) = 64 AND agent_receipt_hash NOT GLOB '*[^0-9a-f]*'))) OR (event_kind <> 'AGENT_COMPLETED' AND agent_receipt_hash IS NULL))
+)
+
+""",
+}
+
+_RUN_EVENTS_INDEXES_BEFORE_THE_REPEATABLE_PAUSE = (
+    (
+        "CREATE UNIQUE INDEX run_events_attempt_kind_unique ON run_events "
+        "(agent_attempt_id, event_kind) WHERE agent_attempt_id IS NOT NULL"
+    ),
+    (
+        "CREATE UNIQUE INDEX run_events_legacy_execution_kind_unique ON run_events "
+        "(node_execution_id, event_kind) WHERE agent_attempt_id IS NULL"
+    ),
+    (
+        "CREATE UNIQUE INDEX run_events_legacy_kind_unique ON run_events "
+        "(run_id, revision_hash, node_id, event_kind) WHERE agent_attempt_id IS NULL"
+    ),
+)
+"""The three run-event keys every schema up to V35 published.
+
+V36 drops the last of them, so a rebuild that materialises one of those versions
+has to be given the set it published rather than the two the declaration is left
+with.
+"""
+
+PUBLISHED_TABLE_INDEXES: Mapping[tuple[int, str], tuple[str, ...]] = {
+    (16, "run_events"): _RUN_EVENTS_INDEXES_BEFORE_THE_REPEATABLE_PAUSE,
+    (20, "run_events"): _RUN_EVENTS_INDEXES_BEFORE_THE_REPEATABLE_PAUSE,
+    (34, "run_events"): _RUN_EVENTS_INDEXES_BEFORE_THE_REPEATABLE_PAUSE,
+    (35, "run_events"): _RUN_EVENTS_INDEXES_BEFORE_THE_REPEATABLE_PAUSE,
 }
