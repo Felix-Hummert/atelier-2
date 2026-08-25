@@ -95,6 +95,7 @@ from atelier2.ports.effects import (
     DurableReconciliationTargetMissing,
     TransactionalEffectReconcileCommander,
 )
+from atelier2.ports.published_revisions import PublishedRevisionResolver
 from atelier2.ports.workflow_revisions import (
     DurableRevisionCollision,
     DurableRevisionCreated,
@@ -110,6 +111,9 @@ class FakePort:
     result: object
 
     def publish(self, _revision: WorkflowRevision) -> object:
+        return self.result
+
+    def resolve(self, _kind: object, _revision_hash: object) -> object:
         return self.result
 
     def start_published(self, _request: StartPublishedRunRequest) -> object:
@@ -152,6 +156,7 @@ def test_publication_maps_every_durable_result(
         cast(WorkflowRevisionPublisher, FakePort(port_result)),
         parse_workflow_document,
         permissive_projection_limit(),
+        cast(PublishedRevisionResolver, FakePort(None)),
     )
 
     assert isinstance(result, application_type)
@@ -163,6 +168,7 @@ def test_publication_rejects_invalid_yaml_before_the_write_port() -> None:
         cast(WorkflowRevisionPublisher, FakePort(None)),
         parse_workflow_document,
         permissive_projection_limit(),
+        cast(PublishedRevisionResolver, FakePort(None)),
     )
 
     assert isinstance(result, PublicationInvalid)
@@ -178,11 +184,12 @@ def test_publication_projects_a_valid_v3_document_it_reached_the_write_port_with
         cast(WorkflowRevisionPublisher, FakePort(DurableRevisionCreated(revision))),
         parse_workflow_document,
         permissive_projection_limit(),
+        cast(PublishedRevisionResolver, FakePort(None)),
     )
 
     assert isinstance(result, PublicationCreated)
-    assert result.projection.revision == revision
-    assert isinstance(result.projection.graph, WorkflowGraphV3)
+    assert result.read.projection.revision == revision
+    assert isinstance(result.read.projection.graph, WorkflowGraphV3)
 
 
 def test_publication_refuses_an_invalid_v3_document_carrying_its_named_refusal() -> (
@@ -193,6 +200,7 @@ def test_publication_refuses_an_invalid_v3_document_carrying_its_named_refusal()
         cast(WorkflowRevisionPublisher, FakePort(None)),
         parse_workflow_document,
         permissive_projection_limit(),
+        cast(PublishedRevisionResolver, FakePort(None)),
     )
 
     assert isinstance(result, PublicationInvalid)
@@ -218,12 +226,13 @@ def test_publication_returns_the_graph_validated_before_the_write() -> None:
         ),
         parse_workflow_document,
         permissive_projection_limit(),
+        cast(PublishedRevisionResolver, FakePort(None)),
     )
 
     assert isinstance(result, PublicationCreated)
-    assert result.projection.revision == revision
-    assert isinstance(result.projection.graph, WorkflowGraph)
-    assert result.projection.graph.start == "final"
+    assert result.read.projection.revision == revision
+    assert isinstance(result.read.projection.graph, WorkflowGraph)
+    assert result.read.projection.graph.start == "final"
 
 
 @pytest.mark.proves("no-write-path-can-be-reached-with-a-dependency-left-out")
@@ -256,11 +265,21 @@ def test_the_bound_a_publication_is_handed_is_the_bound_it_applies() -> None:
         maximum_payload_bytes=49_152,
     )
 
+    resolver = cast(PublishedRevisionResolver, FakePort(None))
+
     published = publish_workflow_revision(
-        V1_DOCUMENT, publisher, parse_workflow_document, permissive_projection_limit()
+        V1_DOCUMENT,
+        publisher,
+        parse_workflow_document,
+        permissive_projection_limit(),
+        resolver,
     )
     refused = publish_workflow_revision(
-        V1_DOCUMENT, publisher, parse_workflow_document, tighter_than_the_document
+        V1_DOCUMENT,
+        publisher,
+        parse_workflow_document,
+        tighter_than_the_document,
+        resolver,
     )
 
     assert isinstance(published, PublicationCreated)

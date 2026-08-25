@@ -18,9 +18,15 @@ from atelier2.application.refusals import (
     ProjectionTooLarge,
     ReadUnavailable,
 )
+from atelier2.application.resolve_references import (
+    declared_through,
+    resolve_declared_reference,
+)
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.run_configuration_v3 import ReferenceRefusal
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import SchemaRefused, read_schema_document
+from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflow_projections import (
     DescribedWorkflowRevisionPage,
     EnrichedPageBudget,
@@ -32,6 +38,7 @@ from atelier2.contracts.workflows_v3 import (
     VersionedReference,
     WaitNodeV3,
     WorkflowGraphV3,
+    what_a_v3_document_still_waits_for,
 )
 from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
@@ -71,8 +78,23 @@ class WaitAnswerClassification:
 
 @dataclass(frozen=True)
 class WorkflowRevisionRead:
+    """One published revision, with what this build says about running it.
+
+    `not_executable_reason` is None exactly when the start path would admit
+    the document as published; otherwise it carries that path's own words.
+    """
+
     projection: WorkflowRevisionProjection
+    not_executable_reason: str | None
     wait_answer_classifications: tuple[WaitAnswerClassification, ...] = ()
+
+
+@dataclass(frozen=True)
+class DescribedWorkflowRevision:
+    """One listed revision, judged by the same rule the detail read applies."""
+
+    projection: WorkflowRevisionProjection
+    not_executable_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -84,7 +106,7 @@ class WorkflowRevisionNotFound:
 class WorkflowRevisionsDescribed:
     """One page of revisions, each with the document it was published as."""
 
-    items: tuple[WorkflowRevisionProjection, ...]
+    items: tuple[DescribedWorkflowRevision, ...]
     next_after: WorkflowRevisionHash | None
 
 
@@ -115,23 +137,18 @@ type ListDescribedWorkflowRevisionsResult = (
 def get_workflow_revision(
     revision_hash: WorkflowRevisionHash,
     queries: WorkflowRevisionQueries,
-    resolver: PublishedRevisionResolver | None = None,
+    resolver: PublishedRevisionResolver,
 ) -> GetWorkflowRevisionResult:
-    """Read one published revision, classifying every wait node's answer schema.
+    """Read one published revision, saying whether this build runs it as published.
 
-    `resolver` is optional because a caller that only wants the document --
-    the composition's own tests among them -- has nothing to resolve; where it
-    is absent, no node classifies, honestly, rather than guessing `free`
-    without having looked (`wait_answer_classifications` is simply empty).
+    The resolver is required because executability is not a property of the
+    bytes alone: a document pins references, and whether each one resolves is
+    half of the verdict the start path gives. Classifying every wait node's
+    answer schema reads through the same resolver.
     """
     match queries.get_workflow_revision(revision_hash):
         case WorkflowRevisionFound(projection):
-            classifications = (
-                ()
-                if resolver is None
-                else _wait_answer_classifications(projection.graph, resolver)
-            )
-            return WorkflowRevisionRead(projection, classifications)
+            return describe_workflow_revision(projection, resolver)
         case WorkflowRevisionMissing():
             return WorkflowRevisionNotFound()
         case PortReadUnavailable(detail):
@@ -144,10 +161,45 @@ def get_workflow_revision(
             assert_never(unreachable)
 
 
+def describe_workflow_revision(
+    projection: WorkflowRevisionProjection, resolver: PublishedRevisionResolver
+) -> WorkflowRevisionRead:
+    """What this build says about one stored revision: the read's and the publication's answer alike."""
+    return WorkflowRevisionRead(
+        projection,
+        what_a_document_still_waits_for(projection.graph, resolver),
+        _wait_answer_classifications(projection.graph, resolver),
+    )
+
+
+def what_a_document_still_waits_for(
+    graph: AnyWorkflowDocument, resolver: PublishedRevisionResolver
+) -> str | None:
+    """What keeps this build from starting the document as published, or None.
+
+    The start applies two rules in turn and a reader answers with both, never
+    the first alone: the executable parse names the authored form no runtime
+    binds, and binding the run configuration refuses the first pinned reference
+    no published revision answers. A view that stopped at the form called a
+    revision executable that the start then refused under the same name, and
+    the conductor read one answer and got the other (#701).
+    """
+    if not isinstance(graph, WorkflowGraphV3):
+        return None
+    waiting = what_a_v3_document_still_waits_for(graph)
+    if waiting is not None:
+        return waiting
+    for declared in declared_through(graph, SubworkflowBinding()):
+        resolution = resolve_declared_reference(declared, resolver)
+        if isinstance(resolution, ReferenceRefusal):
+            return f"a pinned reference nothing published answers: {resolution}"
+    return None
+
+
 def _wait_answer_classifications(
-    graph: AnyWorkflowDocument, resolver: PublishedRevisionResolver | None
+    graph: AnyWorkflowDocument, resolver: PublishedRevisionResolver
 ) -> tuple[WaitAnswerClassification, ...]:
-    if resolver is None or not isinstance(graph, WorkflowGraphV3):
+    if not isinstance(graph, WorkflowGraphV3):
         return ()
     return tuple(
         _classify_wait_answer(node, resolver)
@@ -249,16 +301,28 @@ def list_described_workflow_revisions(
     limit: int,
     budget: EnrichedPageBudget,
     queries: WorkflowRevisionQueries,
+    resolver: PublishedRevisionResolver,
 ) -> ListDescribedWorkflowRevisionsResult:
     """One page of revisions that carries what each document says about itself.
 
     The budget is the composition's decision rather than the caller's, so no
-    route can widen what one page is allowed to read from the store.
+    route can widen what one page is allowed to read from the store. Each item
+    is judged executable by the same rule the detail read and the start apply,
+    so a listing never promises a start the service then refuses.
     """
 
     match queries.list_described_workflow_revisions(after, limit, budget):
         case DescribedWorkflowRevisionPage(items, next_after):
-            return WorkflowRevisionsDescribed(items, next_after)
+            return WorkflowRevisionsDescribed(
+                tuple(
+                    DescribedWorkflowRevision(
+                        projection,
+                        what_a_document_still_waits_for(projection.graph, resolver),
+                    )
+                    for projection in items
+                ),
+                next_after,
+            )
         case PortReadUnavailable(detail):
             return ReadUnavailable(detail)
         case PortProjectionTooLarge():

@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import assert_never
 
+from atelier2.application.read_workflow_revisions import (
+    WorkflowRevisionRead,
+    describe_workflow_revision,
+)
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.contracts.runs import WorkflowRevision
 from atelier2.contracts.workflow_projections import (
@@ -20,6 +24,7 @@ from atelier2.ports.durable_runs import (
 from atelier2.ports.durable_runs import (
     DurableWriteUnavailable,
 )
+from atelier2.ports.published_revisions import PublishedRevisionResolver
 from atelier2.ports.workflow_revisions import (
     DurableRevisionCollision,
     DurableRevisionCreated,
@@ -99,12 +104,14 @@ def _projected_strings(graph: AnyWorkflowDocument) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class PublicationCreated:
-    projection: WorkflowRevisionProjection
+    """The stored revision, answered exactly as a read of it answers."""
+
+    read: WorkflowRevisionRead
 
 
 @dataclass(frozen=True)
 class PublicationExisting:
-    projection: WorkflowRevisionProjection
+    read: WorkflowRevisionRead
 
 
 @dataclass(frozen=True)
@@ -133,7 +140,15 @@ def publish_workflow_revision(
     publisher: WorkflowRevisionPublisher,
     parser: WorkflowDocumentParser,
     limits: WorkflowPublicationLimits,
+    resolver: PublishedRevisionResolver,
 ) -> PublishWorkflowRevisionResult:
+    """Store one document and answer what a read of the stored revision answers.
+
+    The resolver is here because whether this build runs the document is part
+    of that answer, and half of it -- does every pinned reference resolve -- is
+    not in the bytes. One describer serves the publication and the read, so the
+    two cannot disagree about the revision just written.
+    """
     try:
         revision = WorkflowRevision(document)
         graph = parser(document)
@@ -145,9 +160,17 @@ def publish_workflow_revision(
     result = publisher.publish(revision)
     match result:
         case DurableRevisionCreated(stored):
-            return PublicationCreated(WorkflowRevisionProjection(stored, graph))
+            return PublicationCreated(
+                describe_workflow_revision(
+                    WorkflowRevisionProjection(stored, graph), resolver
+                )
+            )
         case DurableRevisionExisting(stored):
-            return PublicationExisting(WorkflowRevisionProjection(stored, graph))
+            return PublicationExisting(
+                describe_workflow_revision(
+                    WorkflowRevisionProjection(stored, graph), resolver
+                )
+            )
         case DurableRevisionCollision():
             return PublicationCollision()
         case DurableWriteUnavailable():
