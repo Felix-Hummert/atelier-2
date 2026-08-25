@@ -5,11 +5,13 @@
 - Date: 2026-08-14, amended 2026-08-15 with "The document names itself" (the
   document-level `name` and `description`, decided while PR #41 was still draft
   because a field added to a closed hashed model after it lands is a format change),
-  amended 2026-08-16 with the reference-form clarification below, and clarified
+  amended 2026-08-16 with the reference-form clarification below, clarified
   2026-08-20 by the operator on
   [agent-definition versus node-instruction ownership](https://github.com/FlexOr2/atelier-2/issues/6#issuecomment-5356860566)
   and
-  [reusable workflow input](https://github.com/FlexOr2/atelier-2/issues/6#issuecomment-5356916897)
+  [reusable workflow input](https://github.com/FlexOr2/atelier-2/issues/6#issuecomment-5356916897),
+  and amended 2026-08-25 ([#658](https://github.com/FlexOr2/atelier-2/issues/658))
+  on a loop repeating a `wait` node
 - Depends on: [ADR 0002](0002-exact-yaml-graph.md), [ADR 0001](0001-durable-runtime.md)
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   whose "Deklaratives Kontext- und Artefaktrouting", "Parallele DAG-Ausführung"
@@ -433,6 +435,16 @@ favour of a published schema. Answer bytes that violate it are refused as a
 **command** error and the node stays waiting — a mistyped operator answer must not
 become a node failure. `required_context` on a Wait is what the operator must see
 to decide.
+
+**Amendment 2026-08-25 ([#658](https://github.com/FlexOr2/atelier-2/issues/658)):**
+"not a conversation" was a statement about a single Wait, and it still is — one
+execution carries no provider, no session and no history of its own, and its
+answer is still judged by the schema its single output pins. What changes is
+that a declared loop may now repeat a Wait: each round asks under the round's
+own identity (a `WaitNodeBinding` carries the round ordinal it was bound in,
+and an answer is keyed by execution and round), so what reads as a conversation
+across rounds is the loop's round identity carrying a sequence of otherwise
+stateless, individually-judged answers — not a session the node itself keeps.
 
 **Restart:** the run persists the waiting node; the answer is one attributed
 durable command keyed by run, node and answer bytes. Identical concurrent
