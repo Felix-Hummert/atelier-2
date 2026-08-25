@@ -15,6 +15,14 @@ runs (the workbench surfaces them), and a choose/start/observe role needs no
 write primitive. The grant is spelled here from the door vocabulary's own typed
 owner (`atelier2.host.mcp_tools`), never as re-spelled literals.
 
+The chat feed model (#7, decided 25.08.): each workbench message is ONE
+episodic conductor run. The message and the bounded prior transcript travel as
+the typed `brief` run input (`CONDUCTOR_BRIEF_SCHEMA`), and the episode's
+terminal `report` output (`CONDUCTOR_REPORT_SCHEMA`) carries the reply back
+into the workbench stream. Both canonical schema documents live here so the
+instruction, the schemas and their publisher can never drift apart -- the
+probe proved exactly that drift refuses every real run.
+
 RECURSION FENCE, slice 1. A conductor that can start catalog workflows must
 not start itself: a conductor starting conductors would be an unbounded billed
 tree behind a single brief. This slice fences that at the document: the
@@ -26,6 +34,8 @@ stays a named open edge, not this slice's claim.
 """
 
 from __future__ import annotations
+
+import json
 
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.contracts.workflows_v3 import AgentNodeV3, WorkflowGraphV3
@@ -46,8 +56,78 @@ CONDUCTOR_DOOR_TOOLS: tuple[McpToolName, ...] = (
 
 CONDUCTOR_DOOR_SERVER_NAME = MCP_SERVER_NAME
 
-_BRIEF_INPUT = "brief"
+CONDUCTOR_BRIEF_INPUT = "brief"
 _REPORT_OUTPUT = "report"
+
+# The speakers a chat transcript carries into the brief. The workbench maps its
+# own rendering labels onto these tokens; they are the brief contract's, not the
+# UI's.
+CONDUCTOR_OPERATOR_SPEAKER = "operator"
+CONDUCTOR_CONDUCTOR_SPEAKER = "conductor"
+
+_REPORT_ANSWER_FIELD = "answer"
+_REPORT_STARTED_RUN_IDS_FIELD = "started_run_ids"
+
+
+def _canonical_schema_bytes(schema: dict[str, object]) -> bytes:
+    return json.dumps(schema, sort_keys=True, separators=(",", ":")).encode()
+
+
+# The brief a workbench message becomes: the message itself, the bounded prior
+# transcript that gives it context, and the count of oldest messages the byte
+# ceiling forced out -- carried in the structure itself, so a conductor episode
+# never mistakes a truncated conversation for a whole one. As an inline run
+# order the whole brief is bounded by `MAXIMUM_INSTANCE_DOCUMENT_BYTES`
+# (`atelier2.contracts.schemas_v3`); the sender truncates oldest-first to fit.
+CONDUCTOR_BRIEF_SCHEMA = _canonical_schema_bytes(
+    {
+        "type": "object",
+        "required": ["message", "prior_transcript", "dropped_oldest_messages"],
+        "additionalProperties": False,
+        "properties": {
+            "message": {"type": "string", "minLength": 1},
+            "prior_transcript": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["speaker", "text"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "speaker": {
+                            "enum": [
+                                CONDUCTOR_OPERATOR_SPEAKER,
+                                CONDUCTOR_CONDUCTOR_SPEAKER,
+                            ]
+                        },
+                        "text": {"type": "string"},
+                    },
+                },
+            },
+            "dropped_oldest_messages": {"type": "integer", "minimum": 0},
+        },
+    }
+)
+
+# The report an episode must answer with: the reply the workbench renders, and
+# every run the episode started, so the stream can say honestly what one
+# message set in motion. JSON on purpose -- the probe (#7, 25.08.) proved that
+# a prose instruction under a JSON output schema refuses every real run
+# (`output-schema-refused: instance-not-json`), so schema and instruction are
+# built here from the same two field names.
+CONDUCTOR_REPORT_SCHEMA = _canonical_schema_bytes(
+    {
+        "type": "object",
+        "required": [_REPORT_ANSWER_FIELD, _REPORT_STARTED_RUN_IDS_FIELD],
+        "additionalProperties": False,
+        "properties": {
+            _REPORT_ANSWER_FIELD: {"type": "string", "minLength": 1},
+            _REPORT_STARTED_RUN_IDS_FIELD: {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
+        },
+    }
+)
 
 # The fence sentence travels inside the instruction so every published revision
 # carries its own rule; the builder below refuses a document that lost it.
@@ -71,14 +151,19 @@ def _conductor_instruction() -> str:
     """
 
     return (
-        "Read the brief. Using only the atelier door tools "
-        f"{McpToolName.LIST_WORKFLOWS.value}, {McpToolName.START_RUN.value} "
-        f"and {McpToolName.RUN_STATUS.value}: list the catalog, choose the "
-        "workflow the brief asks for, start it once with a fresh run_id, read "
-        "its status, and answer with a short report naming the started run "
-        "reference and its state. Start nothing the brief does not ask for. "
+        "Read the brief: its message is the operator's current request, its "
+        "prior_transcript the conversation so far. Using only the atelier "
+        f"door tools {McpToolName.LIST_WORKFLOWS.value}, "
+        f"{McpToolName.START_RUN.value} and {McpToolName.RUN_STATUS.value}: "
+        "when the message asks for catalog work, list the catalog, start the "
+        "workflow it asks for once with a fresh run_id, and read its status. "
+        "Start nothing the message does not ask for. "
         f"{_RECURSION_FENCE_SENTENCE} You never answer waits of started runs; "
-        "humans do."
+        "humans do. Answer with exactly one JSON object and no other text: "
+        f'{{"{_REPORT_ANSWER_FIELD}": a short reply to the operator, naming '
+        "any started run reference and its state, "
+        f'"{_REPORT_STARTED_RUN_IDS_FIELD}": the run_id of every run you '
+        "started, an empty array when none}."
     )
 
 
@@ -104,18 +189,18 @@ description: >-
   It never starts the conductor itself, and it cannot answer waits or publish
   artifacts.
 graph_inputs:
-  - name: {_BRIEF_INPUT}
+  - name: {CONDUCTOR_BRIEF_INPUT}
     schema: {{ref: conductor-brief, revision: "{brief_schema_revision}"}}
 nodes:
   - id: conduct
     type: agent
     role: {CONDUCTOR_ROLE}
-    mode: headless
+    mode: headless_with_tools
     instruction: >-
       {instruction}
     inputs:
-      - name: {_BRIEF_INPUT}
-        from: {{graph_input: {_BRIEF_INPUT}}}
+      - name: {CONDUCTOR_BRIEF_INPUT}
+        from: {{graph_input: {CONDUCTOR_BRIEF_INPUT}}}
     outputs:
       - name: {_REPORT_OUTPUT}
         schema: {{ref: conductor-report, revision: "{report_schema_revision}"}}
@@ -148,6 +233,24 @@ def require_conductor_document(document: bytes) -> None:
             "the conductor instruction must carry the recursion fence: "
             f"{_RECURSION_FENCE_SENTENCE!r}"
         )
+    if node.mode != "headless_with_tools":
+        # The doors grant is a tool-bearing call; a `headless` node could never
+        # bind a doors-capable executor (`_refuse_incompatible_mode`,
+        # `atelier2.contracts.capabilities_v3`) -- the defect the first landed
+        # document shipped with.
+        raise ConductorDocumentDefect(
+            "the conductor node must run headless_with_tools: its doors grant "
+            "is a tool-bearing call"
+        )
+    for report_field in (_REPORT_ANSWER_FIELD, _REPORT_STARTED_RUN_IDS_FIELD):
+        if f'"{report_field}"' not in node.instruction:
+            # The probe (#7, 25.08.) proved a prose instruction under the JSON
+            # report schema refuses every real run; the builder refuses to
+            # rebuild that drift.
+            raise ConductorDocumentDefect(
+                "the conductor instruction must demand the JSON report field "
+                f"{report_field!r} its output schema enforces"
+            )
     authored_values = [
         node_input.value for node_input in node.inputs if node_input.value is not None
     ]

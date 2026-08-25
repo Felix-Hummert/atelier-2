@@ -9,6 +9,7 @@ armed it.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -36,9 +37,18 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
+from atelier2.contracts.schemas_v3 import (
+    InstanceAccepted,
+    InstanceRefused,
+    SchemaAccepted,
+    read_instance_document,
+    read_schema_document,
+)
 from atelier2.contracts.workflows_v3 import AgentNodeV3, WorkflowGraphV3
 from atelier2.host.conductor_workflow import (
+    CONDUCTOR_BRIEF_SCHEMA,
     CONDUCTOR_DOOR_TOOLS,
+    CONDUCTOR_REPORT_SCHEMA,
     CONDUCTOR_ROLE,
     CONDUCTOR_WORKFLOW_NAME,
     ConductorDocumentDefect,
@@ -122,6 +132,83 @@ def test_the_conductor_document_carries_its_own_fence() -> None:
         node.instruction
     )
     assert require_conductor_document(document) is None
+
+
+def _accepted(schema_document: bytes) -> SchemaAccepted:
+    verdict = read_schema_document(schema_document)
+    assert isinstance(verdict, SchemaAccepted)
+    return verdict
+
+
+def test_the_canonical_brief_and_report_schemas_are_enforceable() -> None:
+    """Both published schema documents pass the production schema profile."""
+
+    _accepted(CONDUCTOR_BRIEF_SCHEMA)
+    _accepted(CONDUCTOR_REPORT_SCHEMA)
+
+
+def test_the_report_schema_admits_the_instructed_json_and_refuses_prose() -> None:
+    """Schema and instruction agree on one JSON report shape.
+
+    The billed probe (#7, 25.08.) proved the drift this pins: a prose report
+    under the JSON output schema refused every real conductor run.
+    """
+
+    report_schema = _accepted(CONDUCTOR_REPORT_SCHEMA)
+    report = json.dumps(
+        {
+            "answer": "Started run build-1; it is STARTED.",
+            "started_run_ids": ["build-1"],
+        }
+    ).encode()
+
+    assert isinstance(read_instance_document(report, report_schema), InstanceAccepted)
+    assert isinstance(
+        read_instance_document(b"I started run build-1.", report_schema),
+        InstanceRefused,
+    )
+
+
+def test_the_brief_schema_admits_a_bounded_transcript_and_names_truncation() -> None:
+    """A workbench brief carries message, prior transcript and the drop count."""
+
+    brief_schema = _accepted(CONDUCTOR_BRIEF_SCHEMA)
+    brief = json.dumps(
+        {
+            "message": "Start the canary workflow.",
+            "prior_transcript": [
+                {"speaker": "operator", "text": "hello"},
+                {"speaker": "conductor", "text": "hello back"},
+            ],
+            "dropped_oldest_messages": 2,
+        }
+    ).encode()
+    without_drop_count = json.dumps({"message": "hi", "prior_transcript": []}).encode()
+
+    assert isinstance(read_instance_document(brief, brief_schema), InstanceAccepted)
+    assert isinstance(
+        read_instance_document(without_drop_count, brief_schema), InstanceRefused
+    )
+
+
+def test_a_headless_conductor_document_is_refused() -> None:
+    """A doors grant is a tool-bearing call; plain headless could never bind it."""
+
+    headless = _conductor_document().replace(
+        b"mode: headless_with_tools", b"mode: headless"
+    )
+
+    with pytest.raises(ConductorDocumentDefect, match="headless_with_tools"):
+        require_conductor_document(headless)
+
+
+def test_an_instruction_that_lost_the_json_report_shape_is_refused() -> None:
+    """An instruction drifting back to prose cannot silently ship again."""
+
+    prose = _conductor_document().replace(b'"started_run_ids"', b"started runs")
+
+    with pytest.raises(ConductorDocumentDefect, match="started_run_ids"):
+        require_conductor_document(prose)
 
 
 def test_a_conductor_document_that_lost_its_fence_is_refused() -> None:

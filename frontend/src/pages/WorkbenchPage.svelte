@@ -4,7 +4,18 @@
   import { isRunV3, type AnyRun, type CockpitApi, type RunV3 } from "../api/client";
   import PinnedDecision from "../components/PinnedDecision.svelte";
   import { resolveWorkflowName } from "../lib/boardRows";
-  import { currentChatTranscript, sendChatTurn, type ChatMessage } from "../lib/chatTranscript";
+  import {
+    currentChatTranscript,
+    sendChatTurn,
+    subscribeChatTranscript,
+    type ChatMessage
+  } from "../lib/chatTranscript";
+  import { conductorChatCopy } from "../lib/conductorChatCopy";
+  import {
+    resolveConductorConnection,
+    sendConductorMessage,
+    type ConductorConnection
+  } from "../lib/conductorEpisode";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import type { MutationJournal } from "../lib/mutationJournal";
   import { readEveryRevision, readEveryRun } from "../lib/runPages";
@@ -23,10 +34,23 @@
 
   type Pin = { run: RunV3; workflowName: string };
 
+  /**
+   * Whether a conductor reads this composer. "reading" is the moment before
+   * the answer is known and "unreadable" the honest state when the reads
+   * themselves failed -- neither pretends "connected" or "absent", because
+   * either would be a guess dressed as a fact.
+   */
+  type ConductorLink =
+    | { kind: "reading" }
+    | { kind: "unreadable" }
+    | { kind: "absent" }
+    | { kind: "connected"; connection: ConductorConnection };
+
   let pins: readonly Pin[] = [];
   let transcript: readonly ChatMessage[] = currentChatTranscript();
   let typed = "";
   let composer: { focus(): void };
+  let conductorLink: ConductorLink = { kind: "reading" };
 
   const speakerLabels: Record<ChatMessage["speaker"], string> = {
     you: workbenchPageCopy.youLabel,
@@ -35,7 +59,27 @@
 
   onMount(() => {
     void loadPins();
+    void resolveConductor();
+    const unsubscribe = subscribeChatTranscript((next) => {
+      const settledALine =
+        transcript.some((line) => line.pending) && !next.some((line) => line.pending);
+      transcript = next;
+      // A settled episode may have started runs or opened waits; the pinned
+      // region re-reads so a new decision does not wait for the next visit.
+      if (settledALine) void loadPins();
+    });
+    return unsubscribe;
   });
+
+  async function resolveConductor(): Promise<void> {
+    try {
+      const connection = await resolveConductorConnection(cockpitApi);
+      conductorLink =
+        connection === null ? { kind: "absent" } : { kind: "connected", connection };
+    } catch {
+      conductorLink = { kind: "unreadable" };
+    }
+  }
 
   /**
    * Every run stopped for a person, read the same way the Board reads it, so
@@ -77,11 +121,21 @@
     pins = pins.filter((pin) => pin.run.public_run_reference !== read.public_run_reference);
   }
 
+  /**
+   * A connected conductor turns the message into one episodic run whose reply
+   * settles into this conversation; every other state keeps the standing
+   * honest refusal -- including "unreadable", where nothing was started is
+   * still the whole truth.
+   */
   async function send(event: Event): Promise<void> {
     event.preventDefault();
-    const sent = sendChatTurn(typed);
-    if (sent === transcript) return;
-    transcript = sent;
+    if (typed.trim().length === 0) return;
+    if (conductorLink.kind === "connected") {
+      sendConductorMessage(cockpitApi, conductorLink.connection, typed);
+    } else {
+      sendChatTurn(typed);
+    }
+    transcript = currentChatTranscript();
     typed = "";
     await tick();
     composer.focus();
@@ -128,15 +182,29 @@
   {#if transcript.length === 0}
     <div class="workbench-empty card empty-state">
       <h2>{wrapDisplayCopy(workbenchPageCopy.emptyTitle)}</h2>
-      <p>{wrapDisplayCopy(workbenchPageCopy.emptyDescription)}</p>
+      {#if conductorLink.kind === "connected"}
+        <p>{wrapDisplayCopy(conductorChatCopy.emptyDescription)}</p>
+      {:else}
+        <p>{wrapDisplayCopy(workbenchPageCopy.emptyDescription)}</p>
+      {/if}
     </div>
   {:else}
     <ol class="conversation" aria-label={wrapDisplayCopy(workbenchPageCopy.transcriptLabel)}>
       {#each transcript as message (message.id)}
         <li class="conversation-line conversation-line-{message.speaker}">
-          <p class="conversation-message">
+          <p class="conversation-message" class:conversation-message-pending={message.pending}>
             <span class="conversation-speaker">{wrapDisplayCopy(speakerLabels[message.speaker])}</span>
             {message.text}
+            {#if message.runReference !== undefined}
+              <a
+                class="conversation-run-link"
+                href={`/atelier/runs/${message.runReference}`}
+                onclick={(event) => {
+                  event.preventDefault();
+                  navigate(`/atelier/runs/${message.runReference}`);
+                }}
+              >{wrapDisplayCopy(conductorChatCopy.openEpisode)}</a>
+            {/if}
           </p>
         </li>
       {/each}
@@ -157,7 +225,13 @@
       ></textarea>
       <button class="primary" type="submit">{wrapDisplayCopy(workbenchPageCopy.send)}</button>
     </div>
-    <p class="composer-hint">{wrapDisplayCopy(workbenchPageCopy.composerHint)}</p>
+    {#if conductorLink.kind === "connected"}
+      <p class="composer-hint">{wrapDisplayCopy(conductorChatCopy.composerHint)}</p>
+    {:else if conductorLink.kind === "absent"}
+      <p class="composer-hint">{wrapDisplayCopy(workbenchPageCopy.composerHint)}</p>
+    {:else if conductorLink.kind === "unreadable"}
+      <p class="composer-hint">{wrapDisplayCopy(conductorChatCopy.connectionUnknown)}</p>
+    {/if}
   </form>
 </section>
 
@@ -236,6 +310,21 @@
     background: var(--panel2);
     font-size: var(--text-sm);
     overflow-wrap: anywhere;
+    /* A conductor reply may carry its own line breaks; they are part of what
+       it said. */
+    white-space: pre-line;
+  }
+
+  /* A line still waiting for its episode is visibly provisional, nothing more:
+     dimming is state, the settled text is the event. */
+  .conversation-message-pending {
+    color: var(--ink-dim);
+    font-style: italic;
+  }
+
+  .conversation-run-link {
+    justify-self: start;
+    font-size: var(--text-xs);
   }
 
   /* Your own line is the paper one shade deeper, mixed from the ground the
