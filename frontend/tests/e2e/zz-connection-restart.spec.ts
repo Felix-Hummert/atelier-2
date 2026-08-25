@@ -67,6 +67,32 @@ test("shows the calm restart line on the open workbench, and clears it on its ow
   await expect(notice).toBeVisible({ timeout: 10_000 });
   await expect(notice).toContainText(restartNoticeCopy);
 
+  // `position: sticky` never held here in the first place (broken by
+  // `html,body{overflow-x:hidden}`); `position: fixed` does not scroll away
+  // either, which sticky at least tries to promise -- proven against a real
+  // scroll, not just a static screenshot. `.workshop-stage`, not the page,
+  // is the room's own scroll container, so a tall spacer forces real
+  // overflow there before scrolling it.
+  await page.evaluate(() => {
+    const spacer = document.createElement("div");
+    spacer.style.height = "2000px";
+    spacer.dataset.e2eScrollSpacer = "true";
+    document.querySelector(".workshop-stage")?.appendChild(spacer);
+  });
+  await page.locator(".workshop-stage").evaluate((stage) => {
+    stage.scrollTop = 800;
+  });
+  await expect
+    .poll(() => page.locator(".workshop-stage").evaluate((stage) => stage.scrollTop))
+    .toBeGreaterThan(0);
+  const bannerRect = await notice.boundingBox();
+  expect(bannerRect?.y).toBe(0);
+  expect(bannerRect?.width).toBe(await page.evaluate(() => window.innerWidth));
+  await page.locator("[data-e2e-scroll-spacer]").evaluate((spacer) => spacer.remove());
+  await page.locator(".workshop-stage").evaluate((stage) => {
+    stage.scrollTop = 0;
+  });
+
   // The shell's own top banner, on a room that holds no ear of its own: the
   // one place the fixed evidence below covers.
   for (const viewport of widths) {
