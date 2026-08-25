@@ -32,6 +32,7 @@ function v3Run(overrides: Partial<RunV3> = {}): RunV3 {
     agent_binding_set_hash: "b".repeat(64),
     run_configuration_revision_hash: "c".repeat(64),
     agent_bindings: [],
+    orders: [],
     state_version: 1,
     state: "COMPLETED",
     current_node_id: "report",
