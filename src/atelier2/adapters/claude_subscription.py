@@ -619,29 +619,28 @@ def _block_step(block: object, tool_names: dict[str, str]) -> TranscriptEvent | 
 
     if not isinstance(block, dict):
         return None
-    match block.get(_ENVELOPE_TYPE_FIELD):
-        case value if value == _TEXT_BLOCK_TYPE:
-            spoken = block.get(_TEXT_FIELD)
-            return AssistantTurn(spoken) if isinstance(spoken, str) else None
-        case value if value == _TOOL_USE_BLOCK_TYPE:
-            name = block.get(_TOOL_NAME_FIELD)
-            if not isinstance(name, str):
-                return None
-            called_id = block.get(_TOOL_USE_ID_FIELD)
-            if isinstance(called_id, str):
-                tool_names[called_id] = name
-            return ToolCalled(name, _canonical_json(block.get(_TOOL_INPUT_FIELD)))
-        case value if value == _TOOL_RESULT_BLOCK_TYPE:
-            answered_id = block.get(_ANSWERED_TOOL_USE_ID_FIELD)
-            if not isinstance(answered_id, str):
-                return None
-            answer = block.get(_CONTENT_FIELD)
-            return ToolReturned(
-                tool_names.get(answered_id, answered_id),
-                answer if isinstance(answer, str) else _canonical_json(answer),
-            )
-        case _:
+    shape = block.get(_ENVELOPE_TYPE_FIELD)
+    if shape == _TEXT_BLOCK_TYPE:
+        spoken = block.get(_TEXT_FIELD)
+        return AssistantTurn(spoken) if isinstance(spoken, str) else None
+    if shape == _TOOL_USE_BLOCK_TYPE:
+        name = block.get(_TOOL_NAME_FIELD)
+        if not isinstance(name, str):
             return None
+        called_id = block.get(_TOOL_USE_ID_FIELD)
+        if isinstance(called_id, str):
+            tool_names[called_id] = name
+        return ToolCalled(name, _canonical_json(block.get(_TOOL_INPUT_FIELD)))
+    if shape == _TOOL_RESULT_BLOCK_TYPE:
+        answered_id = block.get(_ANSWERED_TOOL_USE_ID_FIELD)
+        if not isinstance(answered_id, str):
+            return None
+        answer = block.get(_CONTENT_FIELD)
+        return ToolReturned(
+            tool_names.get(answered_id, answered_id),
+            answer if isinstance(answer, str) else _canonical_json(answer),
+        )
+    return None
 
 
 def _canonical_json(value: object) -> str:
@@ -663,20 +662,19 @@ def _line_steps(line: str, tool_names: dict[str, str]) -> tuple[TranscriptEvent,
     entry = _stream_entry(line)
     if entry is None:
         return (UnrecognisedProviderOutput(line),)
-    match entry.get(_ENVELOPE_TYPE_FIELD):
-        case value if value in {_ASSISTANT_LINE_TYPE, _USER_LINE_TYPE}:
-            steps = tuple(
-                step
-                for step in (
-                    _block_step(block, tool_names) for block in _content_blocks(entry)
-                )
-                if step is not None
+    shape = entry.get(_ENVELOPE_TYPE_FIELD)
+    steps: tuple[TranscriptEvent, ...] = ()
+    if shape in {_ASSISTANT_LINE_TYPE, _USER_LINE_TYPE}:
+        steps = tuple(
+            step
+            for step in (
+                _block_step(block, tool_names) for block in _content_blocks(entry)
             )
-        case value if value == _RESULT_ENVELOPE_TYPE:
-            spent = _usage_step(entry)
-            steps = () if spent is None else (spent,)
-        case _:
-            steps = ()
+            if step is not None
+        )
+    elif shape == _RESULT_ENVELOPE_TYPE:
+        spent = _usage_step(entry)
+        steps = () if spent is None else (spent,)
     return steps if steps else (UnrecognisedProviderOutput(line),)
 
 

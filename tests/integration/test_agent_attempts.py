@@ -37,6 +37,7 @@ from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
     AttemptTranscript,
     ToolCalled,
+    TranscriptEvent,
     UnrecognisedProviderOutput,
 )
 from atelier2.contracts.agents import (
@@ -551,7 +552,7 @@ _UNREADABLE_OUTPUT = (UnrecognisedProviderOutput("fatal: the model never answere
 def test_a_terminal_attempt_names_the_transcript_its_executor_decoded(
     tmp_path: Path,
     verdict: AgentExecutionResult | AgentExecutionFailure,
-    steps: tuple[object, ...] | None,
+    steps: tuple[TranscriptEvent, ...] | None,
 ) -> None:
     """The steps reach the same write that ends the attempt, or nothing does.
 

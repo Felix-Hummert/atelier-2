@@ -201,10 +201,34 @@ Removal never follows a symbolic link out and never touches the root itself. Thi
 is a directory holding pinned material, not an operating-system sandbox: the
 process still runs as the serving user and can name other paths.
 
+P2a candidate store (`.atelier2-candidates.git`, ADR 0011 decision 2) is built
+and deliberately unwired until P2b.
+
+An attempt now leaves behind what it did, not only what it answered. The
+executor decodes its provider's own structured stream into one neutral shape --
+a tool call with its arguments, the result that came back, an assistant turn,
+and what the call spent -- and every step is scanned for credential shapes and
+cut to a readable width before anything durable sees it, so a token a tool
+happened to print is replaced and marked rather than dropped or kept whole. A
+line this vocabulary cannot read, including whatever a call that produced no
+stream printed instead, is kept as the provider's own output under its own
+name; a transcript with more steps than one artifact may hold loses its oldest
+and says how many. The whole is one content-addressed artifact, and the attempt
+names its address. A failed attempt keeps one too: an exit code beside an empty
+standard error was the entire account of a real failed run, which is no account
+at all. An attempt whose executor publishes no structured stream names nothing,
+which is the honest absence rather than an invented shape. No read surface
+serves the transcript yet — the API projection and the node panel's Log tab are
+the next slice.
+
 The first real provider now sits behind that durable contract. When the operator
 declares a Claude executable and a credential directory, the host composes one
 Claude subscription executor. It decides no working directory. It runs the bound
-model headless through the CLI's print-JSON envelope, hands the job to the
+model headless through the CLI's print stream, whose last line is the same
+answer envelope its predecessor read alone and whose earlier lines are the
+attempt's steps; that changed wire shape is a changed operation, so each of the
+three Claude vectors carries its own new operational identity rather than
+widening the one it had. It hands the job to the
 process over standard input rather than its command line, and grants it only
 the declared `CLAUDE_CONFIG_DIR` credential boundary and the serving host's
 executable search path; nothing else of the server's environment is inherited. A
@@ -217,7 +241,8 @@ CLI starts. It attests exactly one execution capability,
 demanding an interactive one is refused before that run exists at all. An
 unsuccessful exit, an unreadable envelope, an envelope declaring a provider
 error, and an answer larger than the durable output bound all fail the attempt
-instead of recording invented output. Undeclared, the host composes no V2
+instead of recording invented output — each of them keeping the transcript of
+what the call did write, so a refusal names more than its own code. Undeclared, the host composes no V2
 provider factory and behaves exactly as before. When the
 operator also declares a Grok executable, workspace, and credential directory,
 the host composes one Grok subscription executor beside Claude. It runs the
@@ -303,7 +328,11 @@ executor declares that bound on the invocation it prepares, since the frame is a
 property of its own wire format, and supervision holds the process to exactly
 that declaration: a frame past it is terminated and refused before the executor
 ever decodes it, so no answer is recorded. It is sized so no answer the durable
-contract accepts can be refused as a frame. The job those processes receive —
+contract accepts can be refused as a frame, and where the wire format carries
+the attempt's steps ahead of that answer it is sized for a whole transcript's
+worth of them too. Each provider states its own number; the port's ceiling is
+deliberately nobody's, so one operation's measurement never becomes another's
+allowance. The job those processes receive —
 stdin for Claude and Codex, a job file for Grok — is held to the process-input
 bound, a separate decision from the durable answer bound. After a chain the job
 can carry the instruction, the run's orders, and earlier results; a composition

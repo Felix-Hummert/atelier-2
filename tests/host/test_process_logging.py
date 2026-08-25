@@ -24,6 +24,7 @@ from atelier2.contracts.agent_attempts import (
     ProcessExitSignature,
     WatchdogGenerationId,
 )
+from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import (
     AgentExecutionRequestV2,
     AgentExecutionResult,
@@ -305,9 +306,12 @@ class _FailingAttemptStore:
         return AgentAttemptClaimedByThisCall(self._attempt)
 
     def complete_known_failure(
-        self, execution: AgentAttemptExecution, exit_signature: ProcessExitSignature
+        self,
+        execution: AgentAttemptExecution,
+        exit_signature: ProcessExitSignature,
+        transcript: AttemptTranscript | None = None,
     ) -> AgentAttemptFailed:
-        del exit_signature
+        del exit_signature, transcript
         failed = AgentAttempt(
             execution.attempt_id,
             execution.request.node_execution_id,
