@@ -10,18 +10,18 @@ operator-gated step this suite does not perform.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 
-from atelier2.adapters.github.live_effects import (
-    GitHubRepository,
-    GitHubTokenCredential,
-    LiveGitHubEffectAdapterFactory,
+from atelier2.adapters.github.composition import (
+    GitHubConnectionUncomposable,
+    live_github_effect_adapter_factory,
 )
+from atelier2.adapters.github.live_effects import LiveGitHubEffectAdapterFactory
 from atelier2.adapters.github.marker import body_carries_request_hash, marker_line
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
@@ -34,6 +34,14 @@ from atelier2.contracts.effects import (
     EffectReceipt,
     EffectUnknownOutcome,
     LogicalEffectKey,
+)
+from atelier2.contracts.host_configuration import (
+    ConnectionActor,
+    ProjectId,
+    ProjectSourceConnectionRevision,
+    SourceAddress,
+    SourceConnectionAuthMethod,
+    SourceKind,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision
 
@@ -143,20 +151,99 @@ def server() -> _FakeGitHubServer:
     return _FakeGitHubServer(OWNER, REPO, BASE_BRANCH, BASE_SHA)
 
 
+def connection_revision(
+    credential_directory: Path,
+    source_kind: str = "github",
+    source_address: str = f"{OWNER}/{REPO}@{BASE_BRANCH}",
+) -> ProjectSourceConnectionRevision:
+    return ProjectSourceConnectionRevision(
+        ProjectId("studio"),
+        1,
+        SourceKind(source_kind),
+        SourceAddress(source_address),
+        credential_directory,
+        SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
+        ConnectionActor("felix"),
+    )
+
+
 @pytest.fixture
 def factory(
     tmp_path: Path, server: _FakeGitHubServer
 ) -> LiveGitHubEffectAdapterFactory:
+    """The factory exactly as serve composes it: from the connection record.
+
+    The record's opaque address is decoded by the adapter's own composition
+    entry, so every behavior below runs against the record-composed path; the
+    transport seam is attached afterward because a record never carries one.
+    """
+
     credential_directory = tmp_path / "github-credential"
     credential_directory.mkdir()
     (credential_directory / "token").write_text(CANARY_TOKEN, encoding="utf-8")
-    return LiveGitHubEffectAdapterFactory(
+    composed = live_github_effect_adapter_factory(
+        connection_revision(credential_directory),
         ADAPTER_REVISION,
         DESTINATION,
-        GitHubRepository(OWNER, REPO, BASE_BRANCH),
-        GitHubTokenCredential(credential_directory),
-        transport=httpx.MockTransport(server.handle),
     )
+    return replace(composed, transport=httpx.MockTransport(server.handle))
+
+
+def test_the_record_composed_factory_names_the_connected_repository(
+    factory: LiveGitHubEffectAdapterFactory,
+) -> None:
+    assert factory.binding.operational_identity == AdapterOperationalIdentity(
+        f"{OWNER}/{REPO}"
+    )
+    assert factory.proves_absence is False
+
+
+def test_a_foreign_source_kind_does_not_compose_the_github_factory(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(GitHubConnectionUncomposable, match="source kind"):
+        live_github_effect_adapter_factory(
+            connection_revision(tmp_path, source_kind="gitlab"),
+            ADAPTER_REVISION,
+            DESTINATION,
+        )
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "acme/studio",
+        "acme@main",
+        "/studio@main",
+        "acme/@main",
+        "acme/studio@",
+        "acme/studio/extra@main",
+    ],
+)
+def test_an_address_outside_the_owner_name_base_branch_grammar_is_refused(
+    tmp_path: Path, address: str
+) -> None:
+    with pytest.raises(GitHubConnectionUncomposable, match="owner/name@base-branch"):
+        live_github_effect_adapter_factory(
+            connection_revision(tmp_path, source_address=address),
+            ADAPTER_REVISION,
+            DESTINATION,
+        )
+
+
+def test_a_base_branch_may_itself_carry_slashes_and_at_signs(
+    tmp_path: Path,
+) -> None:
+    # Git allows both in branch names, and owner/name allow neither, so the
+    # first `@` after the repository part starts the branch and the rest of
+    # the address belongs to it verbatim.
+    composed = live_github_effect_adapter_factory(
+        connection_revision(tmp_path, source_address="acme/studio@release/v1@rc"),
+        ADAPTER_REVISION,
+        DESTINATION,
+    )
+
+    assert composed.repository.base_branch == "release/v1@rc"
 
 
 def effect_intent(payload: bytes = AGENT_OUTPUT) -> EffectIntent:

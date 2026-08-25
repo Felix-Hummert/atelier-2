@@ -12,12 +12,21 @@ from __future__ import annotations
 
 import json
 
+import sqlalchemy as sa
+
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime
+from atelier2.adapters.dbos.schema import agent_attempts, runs
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
+)
+from atelier2.adapters.dbos.workflow_ids import driving_workflow_id
+from atelier2.contracts.agent_attempts import (
+    AgentAttempt,
+    AgentAttemptId,
+    AgentAttemptState,
 )
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -25,14 +34,22 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
+    AgentExecutionRequestHash,
+    AgentExecutorOperationalIdentity,
     AgentExecutorRevision,
     AgentRole,
     AuthMode,
     AuthProfileRevision,
     ProviderId,
 )
+from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
-from atelier2.contracts.runs import RunId, WorkflowRevision
+from atelier2.contracts.runs import (
+    RunId,
+    RunState,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
 from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
@@ -147,3 +164,98 @@ def create_open_pr_agent_run(
         effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(run, workflow.revision_hash, bindings))
     assert isinstance(started, DurableRunCreated), started
+
+
+def complete_run(runtime: DbosRuntime, run: RunId) -> None:
+    """Lift the run to its `COMPLETED` end without running the workflow behind it.
+
+    The live-GitHub startup scan reads the run's own durable state, so a test
+    about whether a finished run still blocks that start only needs the state
+    to say so.
+    """
+    with runtime.engine.begin() as connection:
+        connection.execute(
+            sa.update(runs)
+            .where(runs.c.run_id == run.value)
+            .values(state=RunState.COMPLETED.value, terminal_hash="a" * 64)
+        )
+
+
+def seed_current_node_attempt(runtime: DbosRuntime, run: RunId, ordinal: int) -> str:
+    """Seed the run's current node one attempt and return the workflow driving it.
+
+    The live-GitHub startup scan asks `driving_workflow_id` which workflow still
+    owes each attempt of the current node its next move, so a test that wants to
+    leave a redemption owed seeds the real attempt the scan reads and takes the
+    driving id from the same production owner. An ordinal-1 attempt is driven by
+    its node workflow, an ordinal-2 replacement by its replacement workflow.
+    """
+    with runtime.engine.connect() as connection:
+        row = (
+            connection.execute(
+                sa.select(
+                    runs.c.revision_hash,
+                    runs.c.current_node_id,
+                    runs.c.current_round_ordinal,
+                ).where(runs.c.run_id == run.value)
+            )
+            .mappings()
+            .one()
+        )
+    revision_hash = WorkflowRevisionHash(str(row["revision_hash"]))
+    node_id = str(row["current_node_id"])
+    execution_id = NodeExecutionId.for_node(
+        run, revision_hash, node_id, int(row["current_round_ordinal"])
+    )
+    request_hash = AgentExecutionRequestHash("b" * 64)
+    attempt = AgentAttempt(
+        AgentAttemptId.for_execution(execution_id, request_hash, ordinal),
+        execution_id,
+        request_hash,
+        AgentExecutorOperationalIdentity("seed-executor"),
+        run,
+        revision_hash,
+        node_id,
+        ordinal,
+        AgentAttemptState.PREPARED,
+        0,
+    )
+    with runtime.engine.begin() as connection:
+        connection.execute(
+            agent_attempts.insert().values(
+                attempt_id=attempt.attempt_id.value,
+                node_execution_id=attempt.node_execution_id.value,
+                request_hash=attempt.request_hash.value,
+                executor_operational_identity=(
+                    attempt.executor_operational_identity.value
+                ),
+                run_id=attempt.run_id.value,
+                workflow_revision_hash=attempt.workflow_revision_hash.value,
+                node_id=attempt.node_id,
+                attempt_ordinal=attempt.attempt_ordinal,
+                state=attempt.state.value,
+                state_version=attempt.state_version,
+                process_phase=attempt.process_phase.value,
+                runner_evidence_acceptance_phase=(
+                    attempt.runner_evidence_acceptance_phase.value
+                ),
+            )
+        )
+    return driving_workflow_id(attempt)
+
+
+def seed_workflow_status(runtime: DbosRuntime, workflow_id: str, status: str) -> None:
+    """Leave a workflow in the durable status a crash or a finish leaves.
+
+    The durable runtime owns this table; a test that wants to ask about a
+    workflow left mid-flight by a crash cannot reach that status by running one.
+    """
+    with runtime.engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO workflow_status "
+                "(workflow_uuid, status, created_at, updated_at, priority) "
+                "VALUES (:workflow_id, :status, 0, 0, 0)"
+            ),
+            {"workflow_id": workflow_id, "status": status},
+        )

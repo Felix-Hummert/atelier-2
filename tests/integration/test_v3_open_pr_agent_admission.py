@@ -30,9 +30,8 @@ import pytest
 import sqlalchemy as sa
 
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import agent_attempts, runs
+from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.dbos.starter import DbosDurableRunStarter
-from atelier2.adapters.dbos.workflow_ids import driving_workflow_id
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.github import (
     GitHubEffectAdapterFactory,
@@ -44,21 +43,13 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agent_attempts import (
     AGENT_ATTEMPT_ORDINAL,
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
-    AgentAttempt,
-    AgentAttemptId,
-    AgentAttemptState,
-)
-from atelier2.contracts.agents import (
-    AgentExecutionRequestHash,
-    AgentExecutorOperationalIdentity,
 )
 from atelier2.contracts.effects import (
     AdapterRevision,
     EffectAdapterBinding,
     EffectDestination,
 )
-from atelier2.contracts.executions import NodeExecutionId
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.runs import RunId
 from atelier2.host.serving import (
     LiveGitHubOpenPrRunPending,
     _refuse_pending_agent_open_pr_runs,
@@ -72,8 +63,11 @@ from atelier2.ports.effects import EffectAdapter
 from tests.scenarios.agents import agent_scratch_root
 from tests.scenarios.open_pr_agent import (
     PR_SPEC,
+    complete_run,
     open_pr_agent_executor_factory,
     publish_open_pr_agent_run,
+    seed_current_node_attempt,
+    seed_workflow_status,
 )
 
 RUN = RunId("v3/agent-open-pr-admission")
@@ -253,20 +247,6 @@ def test_a_composed_non_proving_adapter_refuses_at_the_queue_auto_start_starter(
     assert result == DurableAgentPlatformEffectUnreconcilable(AGENT_OPEN_PR_NODE)
 
 
-def _complete_run(runtime: DbosRuntime, run: RunId) -> None:
-    """Lift the run to its `COMPLETED` end without running the workflow behind it.
-
-    The startup scan reads the run's own durable state, so a test that a finished
-    run no longer blocks a live-GitHub start only needs that state to say so.
-    """
-    with runtime.engine.begin() as connection:
-        connection.execute(
-            sa.update(runs)
-            .where(runs.c.run_id == run.value)
-            .values(state=RunState.COMPLETED.value, terminal_hash="a" * 64)
-        )
-
-
 def test_live_github_startup_refuses_a_still_pending_agent_open_pr_run(
     runtime: DbosRuntime,
 ) -> None:
@@ -295,89 +275,9 @@ def test_live_github_startup_serves_when_the_agent_open_pr_run_has_finished(
     runtime: DbosRuntime,
 ) -> None:
     _start(runtime, RUN, granted=True, proves_absence=True)
-    _complete_run(runtime, RUN)
+    complete_run(runtime, RUN)
 
     _refuse_pending_agent_open_pr_runs(runtime)
-
-
-def _seed_current_node_attempt(runtime: DbosRuntime, run: RunId, ordinal: int) -> str:
-    """Seed the run's current node one attempt and return the workflow driving it.
-
-    The startup scan asks `driving_workflow_id` which workflow still owes each
-    attempt of the current node its next move, so a test that wants to leave a
-    redemption owed seeds the real attempt the scan reads and takes the driving id
-    from the same production owner. An ordinal-1 attempt is driven by its node
-    workflow, an ordinal-2 replacement by its replacement workflow.
-    """
-    with runtime.engine.connect() as connection:
-        row = (
-            connection.execute(
-                sa.select(
-                    runs.c.revision_hash,
-                    runs.c.current_node_id,
-                    runs.c.current_round_ordinal,
-                ).where(runs.c.run_id == run.value)
-            )
-            .mappings()
-            .one()
-        )
-    revision_hash = WorkflowRevisionHash(str(row["revision_hash"]))
-    node_id = str(row["current_node_id"])
-    execution_id = NodeExecutionId.for_node(
-        run, revision_hash, node_id, int(row["current_round_ordinal"])
-    )
-    request_hash = AgentExecutionRequestHash("b" * 64)
-    attempt = AgentAttempt(
-        AgentAttemptId.for_execution(execution_id, request_hash, ordinal),
-        execution_id,
-        request_hash,
-        AgentExecutorOperationalIdentity("seed-executor"),
-        run,
-        revision_hash,
-        node_id,
-        ordinal,
-        AgentAttemptState.PREPARED,
-        0,
-    )
-    with runtime.engine.begin() as connection:
-        connection.execute(
-            agent_attempts.insert().values(
-                attempt_id=attempt.attempt_id.value,
-                node_execution_id=attempt.node_execution_id.value,
-                request_hash=attempt.request_hash.value,
-                executor_operational_identity=(
-                    attempt.executor_operational_identity.value
-                ),
-                run_id=attempt.run_id.value,
-                workflow_revision_hash=attempt.workflow_revision_hash.value,
-                node_id=attempt.node_id,
-                attempt_ordinal=attempt.attempt_ordinal,
-                state=attempt.state.value,
-                state_version=attempt.state_version,
-                process_phase=attempt.process_phase.value,
-                runner_evidence_acceptance_phase=(
-                    attempt.runner_evidence_acceptance_phase.value
-                ),
-            )
-        )
-    return driving_workflow_id(attempt)
-
-
-def _seed_workflow_status(runtime: DbosRuntime, workflow_id: str, status: str) -> None:
-    """Leave a workflow in the durable status a crash or a finish leaves.
-
-    The durable runtime owns this table; a test that wants to ask about a
-    workflow left mid-flight by a crash cannot reach that status by running one.
-    """
-    with runtime.engine.begin() as connection:
-        connection.execute(
-            sa.text(
-                "INSERT INTO workflow_status "
-                "(workflow_uuid, status, created_at, updated_at, priority) "
-                "VALUES (:workflow_id, :status, 0, 0, 0)"
-            ),
-            {"workflow_id": workflow_id, "status": status},
-        )
 
 
 def _completed_run_owing_redemption(
@@ -394,9 +294,9 @@ def _completed_run_owing_redemption(
     between a redemption still owed (recoverable) and one already finished.
     """
     _start(runtime, run, granted=True, proves_absence=True)
-    driving_id = _seed_current_node_attempt(runtime, run, ordinal)
-    _complete_run(runtime, run)
-    _seed_workflow_status(runtime, driving_id, workflow_status)
+    driving_id = seed_current_node_attempt(runtime, run, ordinal)
+    complete_run(runtime, run)
+    seed_workflow_status(runtime, driving_id, workflow_status)
 
 
 def test_live_github_startup_refuses_a_completed_run_before_its_redemption_runs(

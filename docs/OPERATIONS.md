@@ -635,6 +635,18 @@ on such a record reports `DRIFTED`; `uninstall`'s label-based sweep still
 finds and removes it without needing to read it, so a following `install`
 starts clean.
 
+**Connecting a served project to live GitHub is `atelier2 connect`, once,
+offline — it replaces the removed `--github-*` serve flags.** The connect act
+records the source kind (`github`), the opaque source address
+(`owner/name@base-branch`), a credential-directory reference holding a `token`
+file, the auth method (`personal-access-token`) and the connecting actor;
+serve then composes the live `open-pr` adapter from that record whenever it
+serves the connected project, with no GitHub flag on the serve line. A serve
+started with the old flags is refused by argparse as unrecognized arguments.
+The live composition still requires a loopback bind, still refuses an
+agent-authored `open-pr` grant at admission, and still refuses to start while
+an earlier run owes an agent `open-pr` redemption.
+
 ## Pin an executor toolchain
 
 The atelier owns the executor copies it serves. The operator's daily CLI
