@@ -62,8 +62,6 @@ class PublishedRevisionMissing:
     pass
 
 
-type CatalogReferenceLookup = PublishedRevisionFound | PublishedRevisionMissing
-"""What `CatalogResolver.resolve_reference` answers; its store failures still raise."""
 type ResolvePublishedRevisionResult = (
     PublishedRevisionFound
     | PublishedRevisionMissing
@@ -260,7 +258,7 @@ class CatalogResolver(PublishedRevisionResolver, Protocol):
         kind: RevisionKind,
         lineage_id: CatalogLineageId,
         revision_hash: PublishedRevisionHash,
-    ) -> CatalogReferenceLookup: ...
+    ) -> ResolvePublishedRevisionResult: ...
 
     def resolve_name(
         self,

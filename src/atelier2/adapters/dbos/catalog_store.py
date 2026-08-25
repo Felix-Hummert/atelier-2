@@ -48,7 +48,6 @@ from atelier2.ports.published_revisions import (
     CatalogMemberAdmitted,
     CatalogNameFound,
     CatalogNameMissing,
-    CatalogReferenceLookup,
     CatalogRetirementExisting,
     CatalogRevisionPosition,
     FoundCatalogLineageResult,
@@ -440,50 +439,58 @@ class DbosCatalogStore:
         kind: RevisionKind,
         lineage_id: CatalogLineageId,
         revision_hash: PublishedRevisionHash,
-    ) -> CatalogReferenceLookup:
-        with self._engine.connect() as connection:
-            lineage_record = (
-                connection.execute(
-                    sa.select(catalog_lineages).where(
-                        catalog_lineages.c.lineage_id == lineage_id.value
+    ) -> ResolvePublishedRevisionResult:
+        try:
+            with self._engine.connect() as connection:
+                lineage_record = (
+                    connection.execute(
+                        sa.select(catalog_lineages).where(
+                            catalog_lineages.c.lineage_id == lineage_id.value
+                        )
                     )
+                    .mappings()
+                    .one_or_none()
                 )
-                .mappings()
-                .one_or_none()
-            )
-            if lineage_record is None:
-                return PublishedRevisionMissing()
-            lineage = catalog_lineage_from_record(lineage_record)
-            if lineage.kind is not kind:
-                return PublishedRevisionMissing()
-            member = (
-                connection.execute(
-                    sa.select(catalog_lineage_members).where(
-                        catalog_lineage_members.c.lineage_id
-                        == lineage.lineage_id.value,
-                        catalog_lineage_members.c.revision_hash == revision_hash.value,
+                if lineage_record is None:
+                    return PublishedRevisionMissing()
+                lineage = catalog_lineage_from_record(lineage_record)
+                if lineage.kind is not kind:
+                    return PublishedRevisionMissing()
+                member = (
+                    connection.execute(
+                        sa.select(catalog_lineage_members).where(
+                            catalog_lineage_members.c.lineage_id
+                            == lineage.lineage_id.value,
+                            catalog_lineage_members.c.revision_hash
+                            == revision_hash.value,
+                        )
                     )
+                    .mappings()
+                    .one_or_none()
                 )
-                .mappings()
-                .one_or_none()
-            )
-            if member is None:
-                return PublishedRevisionMissing()
-            revision_record = (
-                connection.execute(
-                    sa.select(published_revisions).where(
-                        published_revisions.c.kind == kind.value,
-                        published_revisions.c.revision_hash == revision_hash.value,
+                if member is None:
+                    return PublishedRevisionMissing()
+                revision_record = (
+                    connection.execute(
+                        sa.select(published_revisions).where(
+                            published_revisions.c.kind == kind.value,
+                            published_revisions.c.revision_hash == revision_hash.value,
+                        )
                     )
+                    .mappings()
+                    .one_or_none()
                 )
-                .mappings()
-                .one_or_none()
+            if revision_record is None:
+                raise ValueError(
+                    "catalog lineage member names a published revision that is missing"
+                )
+            return PublishedRevisionFound(
+                published_revision_from_record(revision_record)
             )
-        if revision_record is None:
-            raise ValueError(
-                "catalog lineage member names a published revision that is missing"
-            )
-        return PublishedRevisionFound(published_revision_from_record(revision_record))
+        except (OperationalError, PoolTimeoutError):
+            return PublishedRevisionsUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
 
     def found_lineage(
         self,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import assert_never
 
+from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
 from atelier2.contracts.catalog_v3 import (
     CatalogLineageDisplayName,
     CatalogLineageId,
@@ -14,6 +15,7 @@ from atelier2.contracts.revisions_v3 import (
     PublishedRevisionHash,
     RevisionKind,
 )
+from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.published_revisions import (
     CatalogLineageQuery,
     CatalogNameFound,
@@ -21,6 +23,7 @@ from atelier2.ports.published_revisions import (
     CatalogRevisionPosition,
     PublishedRevisionFound,
     PublishedRevisionMissing,
+    PublishedRevisionsUnavailable,
     is_catalog_revision_position,
 )
 from atelier2.ports.published_revisions import (
@@ -39,7 +42,12 @@ class CatalogReferenceNonMember:
     revision_hash: PublishedRevisionHash
 
 
-type CatalogReferenceResult = CatalogReferenceResolved | CatalogReferenceNonMember
+type CatalogReferenceResult = (
+    CatalogReferenceResolved
+    | CatalogReferenceNonMember
+    | ReadUnavailable
+    | DurableStateCorrupt
+)
 
 
 @dataclass(frozen=True)
@@ -73,6 +81,8 @@ type CatalogNameResult = (
     | CatalogNameMissing
     | CatalogNameInvalidPosition
     | CatalogReferenceNonMember
+    | ReadUnavailable
+    | DurableStateCorrupt
 )
 
 
@@ -90,6 +100,10 @@ def resolve_catalog_reference(
             return CatalogReferenceResolved(revision)
         case PublishedRevisionMissing():
             return CatalogReferenceNonMember(lineage_id, revision_hash)
+        case PublishedRevisionsUnavailable(detail):
+            return ReadUnavailable(detail)
+        case PortDurableStateCorrupt():
+            return DurableStateCorrupt()
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -124,6 +138,8 @@ def resolve_catalog_name(
                     )
                 case CatalogReferenceNonMember() as not_admitted:
                     return not_admitted
+                case ReadUnavailable() | DurableStateCorrupt() as refusal:
+                    return refusal
                 case _ as unreachable:
                     assert_never(unreachable)
         case PortCatalogNameMissing(query=query, position=missing_position):
