@@ -746,21 +746,28 @@ const runCancellabilitySchema = z
   });
 
 /**
- * One order a V3 run was started with: its name and the exact bytes supplied.
+ * One order a V3 run was started with, told safely -- never its own bytes.
  *
- * The workflow revision's own declared order already names the schema each
- * order pins; this mirrors only what that excerpt cannot -- the bytes the
- * start actually carried, base64, exactly as the server's `run_inputs_v3`
- * holds them.
+ * An order's material can be a secret a caller pasted by mistake, or an
+ * artifact up to the server's own artifact size bound, and this resource is
+ * served on every listed run -- so it never echoes the order's bytes at all.
+ * `bytes` is how large the order's material is; `schema_revision_hash` is
+ * the schema it satisfies. No text preview travels here yet: that needs a
+ * redaction owner the server does not carry until #666 lands.
  */
 const runOrderSchema = z
   .object({
     name: z.string().min(1),
-    value_base64: z.string()
+    bytes: nonnegativeSafeInteger,
+    schema_revision_hash: sha256
   })
   .strict();
 
 export type RunOrder = z.infer<typeof runOrderSchema>;
+
+/** No durable owner caps how many orders one run can be started with; the
+ * wire decides it, once -- the same bound `api/references.py` owns. */
+const MAXIMUM_RUN_ORDERS = 100;
 
 const runV3Schema = z
   .object({
@@ -771,7 +778,7 @@ const runV3Schema = z
     agent_binding_set_hash: sha256,
     run_configuration_revision_hash: sha256,
     agent_bindings: z.array(agentBindingV2Schema).max(100),
-    orders: z.array(runOrderSchema),
+    orders: z.array(runOrderSchema).max(MAXIMUM_RUN_ORDERS),
     state_version: nonnegativeSafeInteger,
     state: z.enum(RUN_STATES_V3),
     current_node_id: z.string().min(1),
