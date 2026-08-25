@@ -21,8 +21,10 @@ from atelier2.contracts.agent_definitions import AgentDefinition, AgentDefinitio
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.published_revisions import (
+    PublishedRevisionFound,
     PublishedRevisionListing,
     PublishedRevisionPage,
+    PublishedRevisionResolver,
     PublishedRevisionsUnavailable,
 )
 
@@ -79,3 +81,51 @@ def list_agent_definition_revisions(
             return DurableStateCorrupt()
         case _ as unreachable:
             assert_never(unreachable)
+
+
+@dataclass(frozen=True)
+class AgentDefinitionRevisionRead:
+    published: PublishedAgentDefinition
+
+
+@dataclass(frozen=True)
+class AgentDefinitionRevisionNotFound:
+    pass
+
+
+type GetAgentDefinitionRevisionResult = (
+    AgentDefinitionRevisionRead | AgentDefinitionRevisionNotFound | DurableStateCorrupt
+)
+
+
+def get_agent_definition_revision(
+    revision_hash: PublishedRevisionHash,
+    resolver: PublishedRevisionResolver,
+    parse_agent_definition: AgentDefinitionParser,
+) -> GetAgentDefinitionRevisionResult:
+    """Read one published agent definition by the hash a caller already holds.
+
+    `resolve` is lineage-free by design (ADR 0007): a hash a caller already
+    holds names the revision alone, so this asks nothing more than that
+    reference already carries. A hash published under another kind answers the
+    same as one nobody published -- `agent-definition-revisions` speaks for the
+    `AGENT_DEFINITION` kind alone, exactly as it publishes for it alone.
+
+    A stored revision that no longer parses is durable corruption, not a miss:
+    the publish door refuses anything this parser refuses, so bytes that got
+    past it and cannot be read back mean the store no longer holds what it
+    accepted (the same reasoning `list_agent_definition_revisions` applies).
+    """
+
+    resolved = resolver.resolve(RevisionKind.AGENT_DEFINITION, revision_hash)
+    if not isinstance(resolved, PublishedRevisionFound):
+        return AgentDefinitionRevisionNotFound()
+    if resolved.revision.kind is not RevisionKind.AGENT_DEFINITION:
+        return AgentDefinitionRevisionNotFound()
+    try:
+        definition = parse_agent_definition(resolved.revision.document)
+    except AgentDefinitionRefused:
+        return DurableStateCorrupt()
+    return AgentDefinitionRevisionRead(
+        PublishedAgentDefinition(resolved.revision.revision_hash, definition)
+    )

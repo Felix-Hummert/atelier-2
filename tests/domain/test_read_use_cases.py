@@ -25,7 +25,11 @@ from atelier2.application.read_agent_configurations import (
     list_auth_profile_revisions,
 )
 from atelier2.application.read_agent_definition_revisions import (
+    AgentDefinitionRevisionNotFound,
+    AgentDefinitionRevisionRead,
     AgentDefinitionRevisionsListed,
+    PublishedAgentDefinition,
+    get_agent_definition_revision,
     list_agent_definition_revisions,
 )
 from atelier2.application.read_runs import (
@@ -479,6 +483,64 @@ def test_a_stored_definition_that_no_longer_parses_is_named_as_corruption() -> N
         list_agent_definition_revisions(None, 50, listing, parse_agent_definition)
         == DurableStateCorrupt()
     )
+
+
+AGENT_DEFINITION_DOCUMENT = (
+    b"---\n"
+    b"name: stage-name-witness\n"
+    b"description: Watches the stage and names what it sees.\n"
+    b"model: sonnet\n"
+    b"tools: Read, Grep\n"
+    b"---\n"
+    b"\nYou watch the stage and name what you see.\n"
+)
+
+
+def test_get_agent_definition_revision_becomes_this_layers_own_outcome() -> None:
+    published = PublishedRevision(RevisionKind.AGENT_DEFINITION, AGENT_DEFINITION_DOCUMENT)
+    definition = parse_agent_definition(AGENT_DEFINITION_DOCUMENT)
+
+    for resolver_answer, expected in (
+        (
+            PublishedRevisionFound(published),
+            AgentDefinitionRevisionRead(
+                PublishedAgentDefinition(published.revision_hash, definition)
+            ),
+        ),
+        (PublishedRevisionMissing(), AgentDefinitionRevisionNotFound()),
+        (
+            # A hash that resolves under a different published kind names no
+            # AGENT_DEFINITION revision, exactly as one nobody published.
+            PublishedRevisionFound(
+                PublishedRevision(RevisionKind.SCHEMA, b'{"type": "boolean"}')
+            ),
+            AgentDefinitionRevisionNotFound(),
+        ),
+    ):
+        resolver = ScriptedResolver(resolver_answer)
+        assert (
+            get_agent_definition_revision(
+                published.revision_hash, resolver, parse_agent_definition
+            )
+            == expected
+        )
+        assert resolver.asked == [
+            (RevisionKind.AGENT_DEFINITION, published.revision_hash)
+        ]
+
+
+def test_a_resolved_definition_that_no_longer_parses_is_named_as_corruption() -> None:
+    published = PublishedRevision(
+        RevisionKind.AGENT_DEFINITION, b"no frontmatter here\n"
+    )
+
+    result = get_agent_definition_revision(
+        published.revision_hash,
+        ScriptedResolver(PublishedRevisionFound(published)),
+        parse_agent_definition,
+    )
+
+    assert result == DurableStateCorrupt()
 
 
 def test_list_auth_profile_revisions_becomes_this_layers_own_outcome() -> None:

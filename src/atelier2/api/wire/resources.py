@@ -149,6 +149,27 @@ class AgentDefinitionRevisionPageResource(ApiModel):
     next_after_revision_hash: str | None = Field(pattern=REVISION_HASH_PATTERN)
 
 
+class AgentDefinitionRevisionDetailResource(ApiModel):
+    """One published agent definition, parsed into every field its author wrote.
+
+    Where the list item stops at name and description
+    (`AgentDefinitionRevisionListItemResource`), a caller holding the hash asked
+    to read the revision itself, so this answers the whole authored file: the
+    provider mark the author proposed, the system prompt, and the declared
+    tools. `model` is absent exactly where the file proposed none -- the
+    deployment's own model decides then, not this door. `tools` is absent
+    exactly where the file declared none -- every tool the executor offers --
+    and the declared names otherwise.
+    """
+
+    agent_definition_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    model: str | None = Field(default=None, min_length=1)
+    system_prompt: str = Field(min_length=1)
+    tools: tuple[str, ...] | None = None
+
+
 class AuthProfileRevisionResource(ApiModel):
     profile_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)

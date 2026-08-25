@@ -105,6 +105,85 @@ def test_a_published_definition_read_back_by_its_hash_is_the_identical_definitio
     )
 
 
+@pytest.mark.proves("a-caller-holding-the-hash-reads-the-whole-definition")
+def test_the_definition_door_answers_every_field_its_author_wrote(
+    runtime: DbosRuntime,
+) -> None:
+    api = durable_api_client(runtime)
+    definition_hash = publish(api, THE_DEFINITION).json()[
+        "agent_definition_revision_hash"
+    ]
+
+    read = api.get(f"{DEFINITION_PATH}/{definition_hash}")
+
+    assert read.status_code == 200
+    assert read.json() == {
+        "agent_definition_revision_hash": definition_hash,
+        "name": "stage-name-witness",
+        "description": "Watches the stage and names what it sees.",
+        "model": "sonnet",
+        "system_prompt": "\nYou watch the stage and name what you see.\n",
+        "tools": ["Grep", "Read"],
+    }
+
+
+def test_the_definition_door_answers_an_unrestricted_definition_with_no_tools(
+    runtime: DbosRuntime,
+) -> None:
+    api = durable_api_client(runtime)
+    unrestricted = (
+        b"---\n"
+        b"name: open-handed-scribe\n"
+        b"description: Writes with whatever the executor offers.\n"
+        b"---\n"
+        b"\nYou write.\n"
+    )
+    definition_hash = publish(api, unrestricted).json()["agent_definition_revision_hash"]
+
+    read = api.get(f"{DEFINITION_PATH}/{definition_hash}")
+
+    assert read.status_code == 200
+    body = read.json()
+    assert body["model"] is None
+    assert body["tools"] is None
+
+
+def test_the_definition_door_refuses_a_hash_nothing_published(
+    runtime: DbosRuntime,
+) -> None:
+    unpublished_hash = PublishedRevisionHash.of(THE_DEFINITION).value
+
+    read = durable_api_client(runtime).get(f"{DEFINITION_PATH}/{unpublished_hash}")
+
+    assert read.status_code == 404
+    assert read.json()["type"].endswith(":agent-definition-revision-not-found")
+
+
+def test_the_definition_door_refuses_a_hash_published_under_another_kind(
+    runtime: DbosRuntime,
+) -> None:
+    """A schema and an agent definition may share nothing but a hash's shape."""
+
+    api = durable_api_client(runtime)
+    schema_hash = api.post(
+        f"{API_PREFIX}/schema-revisions",
+        content=b'{"type": "boolean"}',
+        headers={"content-type": "application/json"},
+    ).json()["schema_revision_hash"]
+
+    read = api.get(f"{DEFINITION_PATH}/{schema_hash}")
+
+    assert read.status_code == 404
+    assert read.json()["type"].endswith(":agent-definition-revision-not-found")
+
+
+def test_the_definition_door_refuses_a_malformed_hash(runtime: DbosRuntime) -> None:
+    read = durable_api_client(runtime).get(f"{DEFINITION_PATH}/not-a-hash")
+
+    assert read.status_code == 400
+    assert read.json()["type"].endswith(":invalid-revision-hash")
+
+
 def test_the_catalog_lists_every_published_definition_by_its_authored_name(
     runtime: DbosRuntime,
 ) -> None:
