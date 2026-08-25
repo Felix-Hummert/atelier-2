@@ -19,6 +19,7 @@ import pytest
 
 from atelier2.adapters.project_source import LocalGitProjectSource
 from atelier2.adapters.project_verification import (
+    MAXIMUM_VERIFICATION_OUTPUT_BYTES,
     PROJECT_MANIFEST_NAME,
     LocalProjectVerificationRunner,
 )
@@ -30,7 +31,10 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
 )
 from atelier2.contracts.agent_transcripts import AssistantTurn, AttemptTranscript
-from atelier2.contracts.agents import AgentExecutionResult
+from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
+    AgentExecutionResult,
+)
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.project_sources import ProjectSourcePin
@@ -221,6 +225,86 @@ def test_the_declared_command_runs_in_the_lease_and_answers_with_its_own_outcome
         ("/bin/sh", "-c", "pwd; printf ' works'; exit 7"),
         7,
         Sha256Hash.of(f"{lease_directory}\n works".encode()),
+    )
+
+
+def _printing_exactly(byte_count: int) -> list[str]:
+    """A verification whose whole output is a known number of bytes."""
+
+    return ["/bin/sh", "-c", f"printf 'x%.0s' $(seq {byte_count})"]
+
+
+def test_a_verification_printing_exactly_its_bound_still_answers(
+    tmp_path: Path,
+) -> None:
+    """The widest output this adapter accepts is accepted, and hashed exactly.
+
+    Pinned at the limit rather than near it, because a bound is only known to be
+    the bound at the byte on either side of it. The digest is what the receipt
+    keeps, so it is what this compares.
+    """
+
+    root = tmp_path / "project"
+    pin = git_project(
+        root,
+        declaring_verification(_printing_exactly(MAXIMUM_VERIFICATION_OUTPUT_BYTES)),
+    )
+    lease_directory = tmp_path / "lease"
+    lease_directory.mkdir()
+    lease = leased_directory_identity(AgentAttemptId("b1" * 32), lease_directory)
+
+    outcome = runner_for(root).run(pin, lease)
+
+    assert outcome.exit_code == 0
+    assert outcome.standard_output_hash == Sha256Hash.of(
+        b"x" * MAXIMUM_VERIFICATION_OUTPUT_BYTES
+    )
+
+
+def test_a_verification_printing_one_byte_past_its_bound_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Past the bound the run is refused by name, not silently cut short.
+
+    A truncated answer would hash to something no rerun of that command could
+    reproduce, so the receipt would name a digest standing for nothing.
+    """
+
+    root = tmp_path / "project"
+    pin = git_project(
+        root,
+        declaring_verification(
+            _printing_exactly(MAXIMUM_VERIFICATION_OUTPUT_BYTES + 1)
+        ),
+    )
+    lease_directory = tmp_path / "lease"
+    lease_directory.mkdir()
+    lease = leased_directory_identity(AgentAttemptId("b2" * 32), lease_directory)
+
+    with pytest.raises(
+        ProjectVerificationUnavailable, match="did not answer"
+    ) as raised:
+        runner_for(root).run(pin, lease)
+
+    # Named, so this cannot pass for the other reason the same refusal carries:
+    # a command that ran out of time rather than out of room.
+    assert str(MAXIMUM_VERIFICATION_OUTPUT_BYTES) in str(raised.value)
+
+
+def test_the_verification_output_bound_is_this_adapter_s_own_number(
+    tmp_path: Path,
+) -> None:
+    """What a verification may print does not follow a provider's wire format.
+
+    The process port's ceiling is the largest frame any provider declares, and
+    it rose when one provider's format grew to carry attempt transcripts (#666).
+    A verification borrowing it would have been quietly widened by a change that
+    had nothing to do with it.
+    """
+
+    del tmp_path
+    assert (
+        MAXIMUM_VERIFICATION_OUTPUT_BYTES < MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES
     )
 
 
