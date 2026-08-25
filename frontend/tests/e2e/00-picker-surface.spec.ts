@@ -291,3 +291,66 @@ test("Details shows published substance, an honest empty, and the edit door", as
   await expect(choice.locator(`option[value="${admitted}"]`)).toHaveText("Latest");
 });
 
+test("an order whose schema names one required string field is a plain text material, its schema visible", async ({
+  page
+}) => {
+  const schemaHash = await anyJsonSchema(page);
+  const messageHash = await publishSchema(
+    page,
+    JSON.stringify({
+      type: "object",
+      required: ["message"],
+      properties: { message: { type: "string", minLength: 1 } }
+    })
+  );
+  const workflowName = "order-editor-345";
+  const workflowHash = await publishYaml(
+    page,
+    [
+      "format_version: 3",
+      `name: ${workflowName}`,
+      "graph_inputs:",
+      "  - name: message",
+      "    schema:",
+      "      ref: message-schema",
+      `      revision: ${messageHash}`,
+      "nodes:",
+      "  - id: reply",
+      "    type: agent",
+      "    role: builder",
+      "    mode: headless",
+      "    instruction: Reply to the message.",
+      "    inputs:",
+      "      - name: message",
+      "        from:",
+      "          graph_input: message",
+      ...declaredOutput(schemaHash),
+      ""
+    ].join("\n")
+  );
+  expect(workflowHash).not.toBe("");
+
+  await page.goto("/atelier/new");
+  const article = page.getByRole("article", { name: workflowName });
+  await article.getByRole("radio").click();
+  const order = page.getByRole("article", { name: "Order message" });
+  await expect(order).toBeVisible();
+  const fields = order.getByRole("region", { name: "Fields of message" });
+  await expect(fields).toContainText("message");
+  await expect(fields).toContainText("string");
+  await expect(fields).toContainText("Required");
+  const material = order.getByLabel("Material message");
+  await expect(material).toHaveJSProperty("tagName", "INPUT");
+  await page.screenshot({ path: "test-results/order-editor-empty.png", fullPage: true });
+
+  await material.fill("Please summarize the open runs.");
+  await page.screenshot({ path: "test-results/order-editor-filled.png", fullPage: true });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(material).toBeVisible();
+  await page.screenshot({ path: "test-results/order-editor-filled-390x844.png", fullPage: true });
+
+  const scan = await new AxeBuilder({ page }).analyze();
+  expect(scan.violations, JSON.stringify(scan.violations, null, 2)).toEqual([]);
+});
+
