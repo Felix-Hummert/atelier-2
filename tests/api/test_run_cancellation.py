@@ -404,15 +404,20 @@ def _wait_graph() -> WorkflowGraphV3:
     )
 
 
-def _started_on_non_agent_node() -> RunProjection:
-    """A STARTED V3 run whose current node runs no agent this cancel could stop."""
+def _on_the_wait_node(state: RunState) -> RunProjection:
+    """A V3 run standing at its Wait node, in the state the caller names.
+
+    STARTED there runs no agent a cancel could stop; WAITING_INPUT there is the
+    resting pause #668 made cancellable. One builder for both, because the only
+    thing that differs is the word on the run.
+    """
     return RunProjection(
         RunV3(
             RUN_ID,
             REVISION_HASH,
             AgentBindingSet(()).binding_set_hash,
             (),
-            RunState.STARTED,
+            state,
             WAIT_NODE_ID,
             0,
             0,
@@ -440,6 +445,18 @@ def test_a_live_started_agent_run_is_shown_cancellable_with_its_fence() -> None:
     assert cancellation.target_node_execution_id == NODE_EXECUTION_ID.value
 
 
+def test_a_run_resting_at_a_wait_is_cancellable_and_fences_on_that_pause() -> None:
+    """#668: the pause itself is the fence, not whatever agent ran before it."""
+    cancellation = _cancellation(_on_the_wait_node(RunState.WAITING_INPUT))
+
+    assert cancellation.cancellable is True
+    assert cancellation.reason is None
+    assert (
+        cancellation.target_node_execution_id
+        == NodeExecutionId.for_node(RUN_ID, REVISION_HASH, WAIT_NODE_ID).value
+    )
+
+
 @pytest.mark.parametrize(
     ("projection", "reason"),
     [
@@ -452,11 +469,11 @@ def test_a_live_started_agent_run_is_shown_cancellable_with_its_fence() -> None:
             RunCancellationRefusal.ALREADY_CANCELLING,
         ),
         (
-            _projection(RunState.WAITING_INPUT, None),
+            _projection(RunState.WAITING_RECONCILIATION, None),
             RunCancellationRefusal.WAITING_FOR_YOU,
         ),
         (
-            _started_on_non_agent_node(),
+            _on_the_wait_node(RunState.STARTED),
             RunCancellationRefusal.NODE_RUNS_NO_AGENT,
         ),
         (

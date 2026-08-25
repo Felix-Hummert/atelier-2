@@ -35,7 +35,9 @@ from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
     _AGENT_ATTEMPTS_TRIGGERS,
     _PREDECESSOR_WAIT_ANSWERS,
+    _PREDECESSOR_WAIT_UNCANCELLABLE_RUN_EVENTS,
     _PRODUCT_TRIGGERS,
+    _RUN_EVENTS_TRIGGERS,
     _V17_AGENT_ATTEMPT_TRIGGERS,
     _V23_AGENT_ATTEMPT_TRIGGERS,
     _V24_AGENT_ATTEMPT_TRIGGERS,
@@ -57,6 +59,7 @@ from atelier2.adapters.dbos.schema import (
     V31_SCHEMA_HANDOFF,
     V32_SCHEMA_HANDOFF,
     V33_SCHEMA_HANDOFF,
+    V34_SCHEMA_HANDOFF,
     MigrationRequired,
     _rebuild_product_table,
     _require_product_shape,
@@ -1067,6 +1070,29 @@ def _revert_wait_answers_execution_key(connection: sqlite3.Connection) -> None:
     connection.execute(_PRODUCT_TRIGGERS["wait_answers_no_delete"])
 
 
+_PARKED_CURRENT_RUN_EVENTS = "run_events_after_the_cancelled_wait"
+
+
+def _revert_wait_cancelled_event_kind(connection: sqlite3.Connection) -> None:
+    """Restore the event-kind vocabulary the #668 hop widened.
+
+    `run_events` has carried one shape since the V20 round column, so every
+    "exact vNN store" fixture up to V34 shares this one predecessor -- the #668
+    hop is simply the first since then to touch the table again. Stored events
+    are carried back the way the hop carries them forward; no predecessor row
+    can hold the kind the hop adds, so nothing is left behind.
+    """
+
+    _rebuild_product_table(
+        connection,
+        run_events,
+        _PARKED_CURRENT_RUN_EVENTS,
+        _RUN_EVENTS_TRIGGERS,
+        SCHEMA_VERSION,
+        V34_SCHEMA_HANDOFF.version,
+    )
+
+
 def _revert_cancelled_run_state(connection: sqlite3.Connection) -> None:
     """Restore the pre-CANCELLED `runs` CHECK the #439 P1 hop widened.
 
@@ -1124,6 +1150,7 @@ def _create_exact_v21_store(database_path: Path) -> None:
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_refused_attempts(connection)
@@ -1161,6 +1188,7 @@ def _create_exact_v22_store(database_path: Path) -> None:
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_refused_attempts(connection)
@@ -1185,6 +1213,7 @@ def _create_exact_v23_store(database_path: Path) -> None:
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_project_verification_failed_attempts(connection)
@@ -1209,6 +1238,7 @@ def _create_exact_v24_store(database_path: Path) -> None:
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
@@ -1233,6 +1263,7 @@ def _create_exact_v25_store(database_path: Path) -> None:
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
@@ -1256,6 +1287,7 @@ def _create_exact_v26_store(database_path: Path) -> None:
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
@@ -1308,6 +1340,7 @@ def _create_exact_v27_store(database_path: Path, *, access: bool = False) -> Non
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_attempts_trigger_to_v27(connection)
@@ -1330,6 +1363,7 @@ def _create_exact_v28_store(database_path: Path) -> None:
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_attempts_trigger_to_v27(connection)
@@ -1354,6 +1388,7 @@ def _create_exact_v29_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_attempts_trigger_to_v27(connection)
@@ -1724,6 +1759,7 @@ def test_v26_attempt_bytes_cross_v27_and_v28_unchanged_with_none_evidence(
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
@@ -2155,6 +2191,7 @@ def _create_exact_v31_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _drop_project_source_connection_table(connection)
+        _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
         connection.execute("DROP TRIGGER agent_attempts_state_transition")
         connection.execute(_V27_AGENT_ATTEMPT_STATE_TRANSITION)
@@ -2227,6 +2264,7 @@ def test_a_populated_v31_runner_attempt_survives_the_v32_trigger_swap(
 
     with sqlite3.connect(database_path) as connection:
         _drop_project_source_connection_table(connection)
+        _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
         connection.execute("DROP TRIGGER agent_attempts_state_transition")
         connection.execute(_V27_AGENT_ATTEMPT_STATE_TRANSITION)
@@ -2266,6 +2304,7 @@ def _create_exact_v32_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _drop_project_source_connection_table(connection)
+        _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -2421,6 +2460,7 @@ def _create_exact_v33_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -2681,6 +2721,7 @@ def _recorded_invocation(
 
 def _downgrade_a_driven_store_to_v33(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
+        _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
