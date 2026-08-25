@@ -3,13 +3,19 @@
 Two `EffectAdapterFactory` implementations share the one `open-pr` contract:
 `GitHubEffectAdapterFactory` records against a fake platform, and
 `LiveGitHubEffectAdapterFactory` publishes and reads back through `githubkit`
-against real GitHub (ADR 0010). The live one is composed on serve only when the
-operator names its credential directory and repository (`atelier2.host.serving`,
-`#430`); the fake stays a test double. Because live GitHub cannot prove absence,
-admission refuses an agent-authored `open-pr` grant against the live adapter
-(`#430`/`#431`); only an Action node's `open-pr` reaches it.
+against real GitHub (ADR 0010). The live one is composed on serve from the
+served project's source-connection record, whose opaque address this package
+alone decodes (`atelier2.adapters.github.composition`); the fake stays a test
+double. Because live GitHub cannot prove absence, admission refuses an
+agent-authored `open-pr` grant against the live adapter (`#430`/`#431`); only
+an Action node's `open-pr` reaches it.
 """
 
+from atelier2.adapters.github.composition import (
+    GITHUB_SOURCE_KIND,
+    GitHubConnectionUncomposable,
+    live_github_effect_adapter_factory,
+)
 from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
 from atelier2.adapters.github.live_effects import (
     GitHubCredentialUnresolvable,
@@ -20,10 +26,13 @@ from atelier2.adapters.github.live_effects import (
 )
 
 __all__ = (
+    "GITHUB_SOURCE_KIND",
+    "GitHubConnectionUncomposable",
     "GitHubCredentialUnresolvable",
     "GitHubEffectAdapterFactory",
     "GitHubRepository",
     "GitHubTokenCredential",
     "GitHubUnexpectedResponse",
     "LiveGitHubEffectAdapterFactory",
+    "live_github_effect_adapter_factory",
 )

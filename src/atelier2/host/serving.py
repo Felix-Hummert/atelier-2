@@ -4,6 +4,7 @@ import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import assert_never
 
 import uvicorn
 from fastapi import FastAPI
@@ -36,7 +37,9 @@ from atelier2.adapters.dbos.runtime import (
     SQLITE_LOCK_TIMEOUT_SECONDS,
     DbosRuntime,
     DbosRuntimeSettings,
+    create_canonical_engine,
 )
+from atelier2.adapters.dbos.schema import initialize_schema
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -44,11 +47,7 @@ from atelier2.adapters.dbos.starter import (
 from atelier2.adapters.dbos.webhook_delivery import DbosWebhookDeliveryPublisher
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
-from atelier2.adapters.github import (
-    GitHubRepository,
-    GitHubTokenCredential,
-    LiveGitHubEffectAdapterFactory,
-)
+from atelier2.adapters.github import live_github_effect_adapter_factory
 from atelier2.adapters.grok_subscription import (
     GrokSubscriptionExecutorFactory,
     GrokSubscriptionSettings,
@@ -69,12 +68,21 @@ from atelier2.api.limits import (
     durable_projection_limit,
 )
 from atelier2.api.stream import EventPollBackoff
+from atelier2.application.project_connections import (
+    PlatformConnectionUnknown,
+    ProjectSourceConnectionRead,
+    get_project_source_connection,
+)
+from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.host_configuration import (
+    ProjectId,
+    ProjectSourceConnectionRevision,
+)
 from atelier2.contracts.pages import PageLimit
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, is_loopback_host
 from atelier2.host.conductor_workflow import (
@@ -194,37 +202,6 @@ def event_poll_backoff(
 
 
 @dataclass(frozen=True)
-class GitHubEffectDeployment:
-    """The live-GitHub `open-pr` destination this instance composes, by reference.
-
-    ADR 0010 binds a project's repository scope and its credential reference to a
-    durable project-connection record (#23/#24). That record is unbuilt, so this
-    is a deliberately temporary single-operator, single-repository slice (`#430`):
-    the operator names one credential directory and one repository at serve time,
-    and it is superseded by the connection record rather than being a second owner
-    of repository scope.
-
-    The credential reaches the adapter by reference only (ADR 0009 §6): this holds
-    the directory, and the token it names is read once when the adapter opens and
-    lives nowhere durable. Because live GitHub cannot prove absence, composing this
-    also refuses an agent-authored `open-pr` grant at admission (`#430`/`#431`).
-    """
-
-    credential_directory: Path
-    repository: GitHubRepository
-
-    def effect_adapter_factory(
-        self, adapter_revision: AdapterRevision, destination: EffectDestination
-    ) -> LiveGitHubEffectAdapterFactory:
-        return LiveGitHubEffectAdapterFactory(
-            adapter_revision,
-            destination,
-            self.repository,
-            GitHubTokenCredential(self.credential_directory),
-        )
-
-
-@dataclass(frozen=True)
 class HostSettings:
     database_path: Path
     effect_store_path: Path
@@ -301,12 +278,6 @@ class HostSettings:
     # `compose_application`. Not the project-scoped configuration channel
     # (`#425`), because the attention page is project-wide.
     webhook: WebhookDeliverySettings | None = None
-    # The live-GitHub `open-pr` destination (`#430`), declared all-or-nothing by
-    # `GitHubEffectDeployment` at the command line. `None` composes the loopback
-    # effect adapter exactly as before; a value composes the live adapter for the
-    # Action `open-pr` effect and, because it cannot prove absence, makes
-    # admission refuse an agent-authored `open-pr` grant.
-    github_effect: GitHubEffectDeployment | None = None
 
     @property
     def billed_providers(self) -> tuple[str, ...]:
@@ -425,13 +396,6 @@ class HostSettings:
                 f"loopback bind, not {self.host!r}: starting a billed provider is "
                 "unauthenticated on this API, so the billed boundary stays on this "
                 "machine until an authenticated boundary exists"
-            )
-        if self.github_effect is not None and not is_loopback_host(self.host):
-            raise ValueError(
-                f"serving the live GitHub open-pr effect requires a loopback "
-                f"bind, not {self.host!r}: starting a run is unauthenticated on "
-                "this API, so the operator's GitHub token stays on this machine "
-                "until an authenticated boundary exists"
             )
         _require_start_refusal(
             "Claude", self.claude_subscription, self.claude_start_refusal
@@ -665,17 +629,60 @@ def _refuse_pending_agent_open_pr_runs(runtime: DbosRuntime) -> None:
         raise LiveGitHubOpenPrRunPending(
             "refusing to serve live GitHub open-pr while these runs still carry an "
             f"agent-authored open-pr grant and have not finished: {named}. Let them "
-            "finish or cancel them before serving with --github-*."
+            "finish or cancel them before serving the project whose `atelier2 "
+            "connect` record composes live GitHub."
         )
+
+
+def _project_source_connection(
+    settings: HostSettings,
+) -> ProjectSourceConnectionRevision | None:
+    """The served project's connection record, read before the runtime exists.
+
+    The effect adapter is a constructor answer to the runtime, so the record
+    that composes it is read here through a short-lived engine on the same
+    store -- the `connect` command's own pattern. A serve that binds no project,
+    or a store that does not exist yet, has nothing connected; an unreadable or
+    corrupt channel fails the start loudly rather than quietly composing the
+    loopback adapter over a recorded connection.
+    """
+
+    if settings.project_id is None:
+        return None
+    database = settings.database_path
+    if not database.is_file() or database.stat().st_size == 0:
+        return None
+    engine = create_canonical_engine(database)
+    try:
+        initialize_schema(engine)
+        channel = DbosHostConfigurationChannel(engine)
+        match get_project_source_connection(settings.project_id.value, channel):
+            case ProjectSourceConnectionRead(revision):
+                return revision
+            case PlatformConnectionUnknown():
+                return None
+            case ReadUnavailable(detail):
+                raise ValueError(
+                    detail or "the project-source connection record could not be read"
+                )
+            case DurableStateCorrupt():
+                raise ValueError("the project-source connection record is corrupt")
+            case _ as unreachable:
+                assert_never(unreachable)
+    finally:
+        engine.dispose()
 
 
 def _effect_adapter_factory(settings: HostSettings) -> EffectAdapterFactory:
     """The one effect adapter this instance drives.
 
-    The live-GitHub destination composes only when the operator declared it; with
-    no declaration this is the loopback adapter exactly as before. The token, when
-    the live adapter opens it, is read from the credential directory by reference
-    and never returns here (ADR 0009 §6).
+    The live adapter composes from the served project's source-connection
+    record (`atelier2 connect`, ADR 0010 decision 2): the connected platform's
+    own adapter package decodes the record's opaque source address and yields
+    the factory, so no platform identifier surfaces here. An unconnected
+    project keeps the loopback adapter exactly as before. The token, when the
+    live adapter opens it, is read from the record's credential directory by
+    reference and never returns here (ADR 0009 §6).
 
     Whether the composed adapter proves absence is read back from the runtime that
     binds it (`runtime.effect_adapter_proves_absence`), so the runtime is the one
@@ -684,9 +691,17 @@ def _effect_adapter_factory(settings: HostSettings) -> EffectAdapterFactory:
 
     adapter_revision = AdapterRevision(settings.effect_adapter_revision)
     destination = EffectDestination(settings.effect_destination)
-    if settings.github_effect is not None:
-        return settings.github_effect.effect_adapter_factory(
-            adapter_revision, destination
+    connection = _project_source_connection(settings)
+    if connection is not None:
+        if not is_loopback_host(settings.host):
+            raise ValueError(
+                f"serving the live GitHub open-pr effect requires a loopback "
+                f"bind, not {settings.host!r}: starting a run is unauthenticated "
+                "on this API, so the operator's GitHub token stays on this "
+                "machine until an authenticated boundary exists"
+            )
+        return live_github_effect_adapter_factory(
+            connection, adapter_revision, destination
         )
     return LoopbackEffectAdapterFactory(
         settings.effect_store_path, adapter_revision, destination

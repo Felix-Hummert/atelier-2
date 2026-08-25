@@ -29,7 +29,10 @@ from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
-from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
+from atelier2.adapters.dbos.host_configuration import (
+    DbosHostConfigurationChannel,
+    append_project_root,
+)
 from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
@@ -39,12 +42,16 @@ from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
 )
-from atelier2.adapters.dbos.schema import agent_attempts, runs
+from atelier2.adapters.dbos.schema import agent_attempts, initialize_schema, runs
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.github import GitHubCredentialUnresolvable, GitHubRepository
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
+from atelier2.adapters.github import (
+    GitHubConnectionUncomposable,
+    GitHubCredentialUnresolvable,
+)
 from atelier2.adapters.grok_subscription import (
     GROK_SUBSCRIPTION_EXECUTOR_KEY,
     GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
@@ -62,6 +69,11 @@ from atelier2.api.context import ApiPorts
 from atelier2.api.limits import ApiLimitExceeded, base64_characters_for
 from atelier2.api.openapi import API_PREFIX, PROJECT_PATH, PROJECTS_PATH
 from atelier2.api.references import encode_public_project_reference
+from atelier2.application.project_connections import (
+    ProjectSourceConnectionPublished,
+    connect_project_source,
+)
+from atelier2.contracts.agent_attempts import AGENT_ATTEMPT_ORDINAL
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentBinding,
@@ -80,8 +92,8 @@ from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.host import _claude_subscription_settings, main
 from atelier2.host.address import DEFAULT_HOST
 from atelier2.host.serving import (
-    GitHubEffectDeployment,
     HostSettings,
+    LiveGitHubOpenPrRunPending,
     api_limits,
     compose_application,
     event_poll_backoff,
@@ -93,6 +105,7 @@ from atelier2.ports.agent_configurations import (
 )
 from atelier2.ports.durable_runs import (
     DurableAgentExecutorBindingUnavailable,
+    DurableRunCreated,
     StartPublishedRunRequestV2,
 )
 from tests.integration.test_codex_subscription import codex_subscription_deployment
@@ -108,6 +121,14 @@ from tests.scenarios.agents import (
 from tests.scenarios.api import api_limits as scenario_api_limits
 from tests.scenarios.api import durable_queries
 from tests.scenarios.api import event_poll_backoff as scenario_event_poll_backoff
+from tests.scenarios.open_pr_agent import (
+    PR_SPEC,
+    complete_run,
+    open_pr_agent_executor_factory,
+    publish_open_pr_agent_run,
+    seed_current_node_attempt,
+    seed_workflow_status,
+)
 from tests.scenarios.projects import (
     declaring_verification,
     git_project,
@@ -724,61 +745,103 @@ def _github_credential_directory(tmp_path: Path, token: str | None) -> Path:
     return directory
 
 
-def _github_served_settings(tmp_path: Path, token: str | None) -> HostSettings:
-    settings = served_settings(tmp_path)
-    return replace(
-        settings,
-        github_effect=GitHubEffectDeployment(
-            _github_credential_directory(tmp_path, token),
-            GitHubRepository("FlexOr2", "atelier-2", "main"),
-        ),
-    )
+def _github_connected_settings(
+    tmp_path: Path,
+    token: str | None,
+    source_address: str = "FlexOr2/atelier-2@main",
+) -> HostSettings:
+    """Settings whose store already connects project 'studio' to live GitHub.
+
+    The connection is the durable record `atelier2 connect` writes; no serve
+    flag carries a repository fact any more, so serve must compose the live
+    adapter from exactly this state.
+    """
+
+    credential_directory = _github_credential_directory(tmp_path, token)
+    root = tmp_path / "operator-project"
+    if not root.is_dir():
+        git_project(root, declaring_verification(["/bin/true"]))
+    engine = dbos_runtime.create_canonical_engine(tmp_path / "durable.sqlite")
+    try:
+        initialize_schema(engine)
+        append_project_root(engine, ProjectId("studio"), root)
+        channel = DbosHostConfigurationChannel(engine)
+        connected = connect_project_source(
+            "studio",
+            "github",
+            source_address,
+            credential_directory,
+            "personal-access-token",
+            "felix",
+            channel,
+            channel,
+        )
+        assert isinstance(connected, ProjectSourceConnectionPublished)
+    finally:
+        engine.dispose()
+    return served_settings(tmp_path, project_id=ProjectId("studio"))
 
 
-def test_the_github_flags_compose_the_live_open_pr_adapter(tmp_path: Path) -> None:
+def test_a_connected_project_composes_the_live_open_pr_adapter_from_the_record(
+    tmp_path: Path,
+) -> None:
     # A token file must exist because the adapter reads it by reference when it
     # opens; a valid one lets the live factory bind without any network call.
+    # The non-proving answer is what makes admission refuse an agent-authored
+    # `open-pr` grant on this composed path (`#430`/`#431`).
     _app, runtime = compose_application(
-        _github_served_settings(tmp_path, "gho_a_test_scenario_token")
+        _github_connected_settings(tmp_path, "gho_a_test_scenario_token")
     )
     try:
         assert (
             runtime.effect_adapter_binding.operational_identity.value
             == "FlexOr2/atelier-2"
         )
+        assert runtime.effect_adapter_proves_absence is False
     finally:
         runtime.close()
 
 
 @pytest.mark.parametrize("token", [None, "", "   \n"])
-def test_a_github_open_pr_deployment_without_a_readable_token_refuses_to_serve(
+def test_a_connected_project_without_a_readable_token_refuses_to_serve(
     tmp_path: Path, token: str | None
 ) -> None:
     # Missing, empty, and whitespace-only token files each fail the whole start
     # rather than serving open-pr silently disabled (`#430`).
     with pytest.raises(GitHubCredentialUnresolvable):
-        compose_application(_github_served_settings(tmp_path, token))
+        compose_application(_github_connected_settings(tmp_path, token))
+
+
+def test_a_connected_address_the_adapter_cannot_decode_refuses_to_serve(
+    tmp_path: Path,
+) -> None:
+    settings = _github_connected_settings(
+        tmp_path, "gho_a_test_scenario_token", source_address="acme/studio"
+    )
+
+    with pytest.raises(GitHubConnectionUncomposable, match="owner/name@base-branch"):
+        compose_application(settings)
 
 
 @pytest.mark.parametrize(
-    "extra",
+    "flag",
     [
-        ["--github-credential-directory"],
-        ["--github-repository-owner", "FlexOr2"],
-        ["--github-repository-name", "atelier-2"],
-        ["--github-repository-base-branch", "main"],
+        "--github-credential-directory",
+        "--github-repository-owner",
+        "--github-repository-name",
+        "--github-repository-base-branch",
     ],
 )
-def test_a_partly_declared_github_open_pr_deployment_refuses_to_serve(
-    tmp_path: Path, extra: list[str]
+def test_the_superseded_github_flags_are_refused_as_unrecognized_arguments(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], flag: str
 ) -> None:
-    argument = extra + (
-        [str(tmp_path / "github-credential")] if extra[-1].endswith("directory") else []
-    )
+    # The flags died with the connection record's arrival (`#567`); argparse's
+    # own refusal is the whole acceptance shape, with no tombstone behind it.
     with pytest.raises(SystemExit) as refusal:
-        main(serve_arguments(tmp_path, *argument))
+        main(serve_arguments(tmp_path, flag, "anything"))
 
     assert refusal.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -804,27 +867,67 @@ def test_a_claude_deployment_off_loopback_refuses_to_serve(
 
 
 @pytest.mark.parametrize(
-    ("bind", "serves"),
-    [
-        ("0.0.0.0", False),
-        ("::", False),
-        ("192.168.1.10", False),
-        ("localhost", False),
-        ("127.0.0.1", True),
-    ],
+    "bind",
+    ["0.0.0.0", "::", "192.168.1.10", "localhost"],
 )
-def test_a_github_open_pr_deployment_binds_loopback_only(
-    tmp_path: Path, bind: str, serves: bool
+def test_a_record_composed_live_github_serve_binds_loopback_only(
+    tmp_path: Path, bind: str
 ) -> None:
     # A non-loopback bind would let any network peer open PRs with the
     # operator's token, because starting a run is unauthenticated on this API.
-    settings = _github_served_settings(tmp_path, None)
+    # The loopback-bound composition of the same record is the live-adapter
+    # test above.
+    settings = _github_connected_settings(tmp_path, "gho_a_test_scenario_token")
 
-    if serves:
-        assert replace(settings, host=bind).host == bind
-    else:
-        with pytest.raises(ValueError, match="loopback"):
-            replace(settings, host=bind)
+    with pytest.raises(ValueError, match="loopback"):
+        compose_application(replace(settings, host=bind))
+
+
+def test_a_record_composed_start_refuses_a_run_still_owing_an_agent_open_pr(
+    tmp_path: Path,
+) -> None:
+    # The cross-restart edge (`#430`/`#431`) on the record path: a run admitted
+    # under the absence-proving loopback adapter committed COMPLETED but crashed
+    # before its sink node's workflow redeemed the agent `open-pr` grant. The
+    # operator then connects the project to live GitHub and serves the same
+    # store, so the record-composed start must refuse by name rather than
+    # recover that redemption against an adapter that cannot prove absence.
+    settings = _github_connected_settings(tmp_path, "gho_a_test_scenario_token")
+    run = RunId("v3/agent-open-pr-owing")
+    seeded = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "durable.sqlite",
+            "composition-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
+        LoopbackEffectAdapterFactory(
+            tmp_path / "effects.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("local"),
+        ),
+        ExactOutputAgentExecutorFactory(),
+        (open_pr_agent_executor_factory(PR_SPEC),),
+    )
+    seeded.initialize_storage()
+    try:
+        workflow, bindings = publish_open_pr_agent_run(seeded, granted=True)
+        started = DbosDurableRunStarter(
+            seeded.engine,
+            seeded.settings,
+            seeded.agent_executor_registry,
+            effect_adapter_proves_absence=True,
+        ).start_published(
+            StartPublishedRunRequestV2(run, workflow.revision_hash, bindings)
+        )
+        assert isinstance(started, DurableRunCreated)
+        driving_id = seed_current_node_attempt(seeded, run, AGENT_ATTEMPT_ORDINAL)
+        complete_run(seeded, run)
+        seed_workflow_status(seeded, driving_id, "PENDING")
+    finally:
+        seeded.close()
+
+    with pytest.raises(LiveGitHubOpenPrRunPending, match=run.value):
+        compose_application(settings)
 
 
 def test_an_unconformant_claude_executable_does_not_kill_serve(

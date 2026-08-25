@@ -40,7 +40,7 @@ from atelier2.adapters.dbos.schema import (
     UnsupportedSchemaVersion,
     initialize_schema,
 )
-from atelier2.adapters.github import GitHubCredentialUnresolvable, GitHubRepository
+from atelier2.adapters.github import GitHubCredentialUnresolvable
 from atelier2.adapters.grok_subscription import (
     GrokExecutableUnsupported,
     GrokSubscriptionSettings,
@@ -86,7 +86,6 @@ from atelier2.host.run_command import (
     resolve_published_name,
 )
 from atelier2.host.serving import (
-    GitHubEffectDeployment,
     HostSettings,
     LiveGitHubOpenPrRunPending,
     # `serving` owns how the doors vector is composed -- door tools, server
@@ -304,7 +303,6 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
             codex_subscription=codex.settings,
             codex_start_refusal=codex.start_refusal,
             webhook=_webhook_settings(parser, parsed),
-            github_effect=_github_effect_deployment(parser, parsed),
             runner_lease_root=parsed.runner_lease_root,
             runner_image=parsed.runner_image,
             runner_image_digest=parsed.runner_image_digest,
@@ -576,44 +574,6 @@ def _webhook_settings(
             "or not at all"
         )
     return WebhookDeliverySettings(url, signing_key_file)
-
-
-def _github_effect_deployment(
-    parser: argparse.ArgumentParser, parsed: argparse.Namespace
-) -> GitHubEffectDeployment | None:
-    """The live-GitHub `open-pr` destination, declared all-or-nothing (`#430`).
-
-    The credential directory and the three repository facts go together: any
-    subset is a half-configured destination, refused here before the server
-    exists rather than composed with open-pr silently on the fake or absent. The
-    directory is held by reference; the token it names is read once when the
-    adapter opens. This is the temporary single-operator slice ADR 0010's
-    project-connection record supersedes.
-    """
-
-    declared = (
-        parsed.github_credential_directory,
-        parsed.github_repository_owner,
-        parsed.github_repository_name,
-        parsed.github_repository_base_branch,
-    )
-    if all(value is None for value in declared):
-        return None
-    if any(value is None for value in declared):
-        parser.error(
-            "serving live-GitHub open-pr requires --github-credential-directory, "
-            "--github-repository-owner, --github-repository-name and "
-            "--github-repository-base-branch together"
-        )
-    try:
-        repository = GitHubRepository(
-            parsed.github_repository_owner,
-            parsed.github_repository_name,
-            parsed.github_repository_base_branch,
-        )
-    except ValueError as refusal:
-        parser.error(str(refusal))
-    return GitHubEffectDeployment(parsed.github_credential_directory, repository)
 
 
 def _declared_project_id(
@@ -906,15 +866,6 @@ def _argument_parser() -> argparse.ArgumentParser:
     # silently off.
     serve_parser.add_argument("--webhook-url")
     serve_parser.add_argument("--webhook-signing-key-file", type=Path)
-    # The live-GitHub `open-pr` destination (`#430`). All four or none: the
-    # credential directory is read by reference (the token file lives inside it,
-    # read once when the adapter opens), and the three repository facts scope the
-    # pull request. A temporary single-operator slice superseded by ADR 0010's
-    # project-connection record; the values are the operator's, never hardcoded.
-    serve_parser.add_argument("--github-credential-directory", type=Path)
-    serve_parser.add_argument("--github-repository-owner")
-    serve_parser.add_argument("--github-repository-name")
-    serve_parser.add_argument("--github-repository-base-branch")
     # The Runner-lease deployment (`#540` C-4). All six or none: a `RUNNER_LEASE`
     # carrier served with only part of its manifest would leave the runner
     # session guessing at the rest, so `DbosRuntimeSettings.__post_init__` --

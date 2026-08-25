@@ -501,8 +501,9 @@ reference that used to refuse as unpublished. The Action's request bytes are the
 predecessor Agent's output. Tests inject a fake GitHub `EffectAdapterFactory` that
 records a branch and pull-request number, writes the request hash into the pull
 request body, and answers a replay by readback rather than creating a twin. The
-served host still composes the loopback adapter; live GitHub, githubkit and a
-credential reference are not composed on serve. The token never enters the lease,
+served host composes the loopback adapter unless the served project's
+source-connection record names a GitHub source, in which case serve composes the
+live githubkit adapter from that record. The token never enters the lease,
 a receipt, an event or an API projection, and the lease listing has no `.git`.
 ADR 0010 stays PROPOSED. A Wait node holds the run in
 `WAITING_INPUT` as a durable state rather than as work in progress: nothing is queued
@@ -1048,9 +1049,16 @@ the same; a project without a record is refused in the
 source kind so a second source stays representable, while today's read returns
 the single latest connection. Schema V33 gives the family its append-only
 table under the same immutability trigger pair the channel's other two
-families carry. No serve path composes from the record yet -- the temporary
-`--github-*` serve flags still stand, and their supersession by this record is
-the next slice.
+families carry. Serve composes from the record: a served project whose latest
+connection revision names a GitHub source gets the live `open-pr` adapter, and
+the github adapter package alone decodes the opaque address
+(`owner/name@base-branch`) into its repository facts -- no GitHub identifier
+returns to host or serving (ADR 0010 decision 1). The temporary `--github-*`
+serve flags are gone; argparse refuses them as unrecognized arguments. All
+three live-GitHub guards stand on the record-composed path: a non-loopback
+bind refuses to start, admission refuses an agent-authored `open-pr` grant,
+and a start refuses while an earlier run still owes an agent `open-pr`
+redemption.
 
 The canonical store is schema V33. A fresh store is created as exact V33 and
 carries published revisions of the closed kind set, lineage membership bound
