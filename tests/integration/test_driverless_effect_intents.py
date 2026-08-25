@@ -29,6 +29,7 @@ from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents, run_events, runs
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
+from atelier2.adapters.dbos.uncontinuable_runs import LIVE_DRIVER_WORKFLOW_STATUSES
 from atelier2.adapters.dbos.workflow_ids import (
     effect_workflow_id_for,
     node_workflow_id_for,
@@ -135,6 +136,33 @@ def end_workflow(engine: Engine, workflow_id: str, status: str = "ERROR") -> Non
         assert ended.rowcount == 1
 
 
+def strand_under_a_retired_application_version(
+    engine: Engine, workflow_id: str, status: str
+) -> None:
+    """Leave the row DBOS leaves once a deploy retires the version driving it.
+
+    `end_workflow` models a workflow that raised; this models the #707
+    ending: still PENDING, ENQUEUED, or DELAYED -- DBOS would resume it -- but
+    under an `application_version` this instance no longer runs, so DBOS
+    itself never will.
+    """
+
+    with engine.begin() as connection:
+        updated = connection.execute(
+            sa.text(
+                "UPDATE workflow_status SET status=:status, "
+                "application_version=:application_version "
+                "WHERE workflow_uuid=:workflow_id"
+            ),
+            {
+                "status": status,
+                "application_version": "dead-application-version",
+                "workflow_id": workflow_id,
+            },
+        )
+        assert updated.rowcount == 1
+
+
 def leave_workflow(
     engine: Engine, workflow_id: str, status: str, application_version: str
 ) -> None:
@@ -220,24 +248,43 @@ def node_workflow_ended_before_the_enqueue(
     )
 
 
-def node_workflow_pending_under_a_retired_application_version(
-    runtime: DbosRuntime, intent: EffectIntent
-) -> None:
-    """#707: PENDING under a version this instance no longer runs is dead too.
+def effect_workflow_pending_under_a_retired_application_version(
+    status: str,
+) -> Callable[[DbosRuntime, EffectIntent], None]:
+    """#707, the direct driver: PREPARED reads `_workflow_is_dead` straight off
+    the effect workflow (`effect_store.py`) whenever that row already exists."""
 
-    Mirrors `test_converge_ends_a_silent_successor_whose_durable_workflow_is_
-    the_dead_version` (#645, `test_interrupted_uncontinuable_inventory.py`):
-    dropping the `application_version` match would read this node workflow
-    as a live driver and leave the run frozen forever.
+    def leave(runtime: DbosRuntime, intent: EffectIntent) -> None:
+        strand_under_a_retired_application_version(
+            runtime.engine, effect_workflow_id_for(intent.binding.logical_key), status
+        )
+
+    return leave
+
+
+def node_workflow_pending_under_a_retired_application_version(
+    status: str,
+) -> Callable[[DbosRuntime, EffectIntent], None]:
+    """#707, the #646 window's driver: no effect workflow was ever enqueued,
+    so `_enqueueing_node_workflow_is_dead` reads the Action node workflow
+    instead. Mirrors `test_converge_ends_a_silent_successor_whose_durable_
+    workflow_is_the_dead_version` (#645, `test_interrupted_uncontinuable_
+    inventory.py`): dropping the `application_version` match would read
+    either workflow as a live driver and leave the run frozen forever.
     """
 
-    _drop_workflow(runtime.engine, effect_workflow_id_for(intent.binding.logical_key))
-    leave_workflow(
-        runtime.engine,
-        action_node_workflow_id(intent),
-        "PENDING",
-        "dead-application-version",
-    )
+    def leave(runtime: DbosRuntime, intent: EffectIntent) -> None:
+        _drop_workflow(
+            runtime.engine, effect_workflow_id_for(intent.binding.logical_key)
+        )
+        leave_workflow(
+            runtime.engine,
+            action_node_workflow_id(intent),
+            status,
+            "dead-application-version",
+        )
+
+    return leave
 
 
 @pytest.mark.parametrize(
@@ -255,10 +302,20 @@ def node_workflow_pending_under_a_retired_application_version(
             node_workflow_ended_before_the_enqueue,
             id="node-workflow-ended-before-the-enqueue",
         ),
-        pytest.param(
-            node_workflow_pending_under_a_retired_application_version,
-            id="node-workflow-pending-under-a-retired-application-version",
-        ),
+        *[
+            pytest.param(
+                effect_workflow_pending_under_a_retired_application_version(status),
+                id=f"effect-workflow-{status.lower()}-under-a-retired-application-version",
+            )
+            for status in LIVE_DRIVER_WORKFLOW_STATUSES
+        ],
+        *[
+            pytest.param(
+                node_workflow_pending_under_a_retired_application_version(status),
+                id=f"node-workflow-{status.lower()}-under-a-retired-application-version",
+            )
+            for status in LIVE_DRIVER_WORKFLOW_STATUSES
+        ],
     ],
 )
 def test_prepared_intent_no_workflow_will_move_reaches_the_operator_door(
@@ -353,14 +410,49 @@ def _drop_workflow(engine: Engine, workflow_id: str) -> None:
         assert dropped.rowcount == 1
 
 
-def test_reconciling_intent_whose_reconcile_workflow_raised_reopens_the_door(
+def reconcile_workflow_ended(status: str) -> Callable[[Engine, str], None]:
+    def leave(engine: Engine, workflow_id: str) -> None:
+        end_workflow(engine, workflow_id, status)
+
+    return leave
+
+
+def reconcile_workflow_pending_under_a_retired_application_version(
+    status: str,
+) -> Callable[[Engine, str], None]:
+    """#707, the RECONCILING driver: `_intent_is_driverless` reads
+    `_workflow_is_dead` straight off the reconcile workflow."""
+
+    def leave(engine: Engine, workflow_id: str) -> None:
+        strand_under_a_retired_application_version(engine, workflow_id, status)
+
+    return leave
+
+
+@pytest.mark.parametrize(
+    "leave_dead_reconcile_workflow",
+    [
+        pytest.param(reconcile_workflow_ended("ERROR"), id="reconcile-workflow-raised"),
+        *[
+            pytest.param(
+                reconcile_workflow_pending_under_a_retired_application_version(status),
+                id=f"reconcile-workflow-{status.lower()}-under-a-retired-application-version",
+            )
+            for status in LIVE_DRIVER_WORKFLOW_STATUSES
+        ],
+    ],
+)
+def test_reconciling_intent_whose_reconcile_workflow_is_dead_reopens_the_door(
     prepared: tuple[DbosRuntime, EffectIntent],
+    leave_dead_reconcile_workflow: Callable[[Engine, str], None],
 ) -> None:
     runtime, intent = prepared
     route_to_waiting(runtime, intent)
     dead = command(intent)
     submit_reconcile_command(runtime.engine, runtime.settings, dead)
-    end_workflow(runtime.engine, reconcile_workflow_id_for(dead.command_id))
+    leave_dead_reconcile_workflow(
+        runtime.engine, reconcile_workflow_id_for(dead.command_id)
+    )
 
     assert converge(runtime.engine, runtime.settings.application_version) == (
         intent.binding.logical_key,
