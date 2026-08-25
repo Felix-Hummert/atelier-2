@@ -9,12 +9,12 @@ from threading import Barrier
 import pytest
 import sqlalchemy as sa
 from dbos import DBOSClient
-from sqlalchemy import exc
 from sqlalchemy.orm import Session
 
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_transitions import (
+    RunTransitionConflict,
     commit_reconciliation_required,
 )
 from atelier2.adapters.dbos.runtime import (
@@ -328,7 +328,7 @@ def test_reconcile_commits_exact_receipt_run_cursor_and_resolved_event_together(
         )
 
     with (
-        pytest.raises(exc.IntegrityError),
+        pytest.raises(RunTransitionConflict, match="injected resolved-event failure"),
         Session(runtime.engine) as session,
         session.begin(),
     ):

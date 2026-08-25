@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import sqlalchemy as sa
+from sqlalchemy.exc import IntegrityError
 
 from atelier2.adapters.dbos.agent_catalog import (
     agent_configuration_from_record,
@@ -470,63 +471,69 @@ def _insert_event(session: Any, event: RunEvent, at: RecordedAt | None = None) -
         if isinstance(attempt_binding, RunEventCancellationBinding)
         else None
     )
-    session.execute(
-        run_events.insert().values(
-            run_id=event.run_id.value,
-            revision_hash=event.revision_hash.value,
-            event_sequence=event.event_sequence,
-            node_id=event.node_id,
-            node_execution_id=event.node_execution_id.value,
-            event_kind=event.event_kind.value,
-            payload=event.payload,
-            payload_hash=event.payload_hash.value,
-            receipt_logical_key=(
-                None
-                if event.receipt_logical_key is None
-                else event.receipt_logical_key.value
-            ),
-            receipt_result_hash=(
-                None
-                if event.receipt_result_hash is None
-                else event.receipt_result_hash.value
-            ),
-            event_hash=event.event_hash.value,
-            agent_attempt_id=(
-                None if attempt_binding is None else attempt_binding.attempt_id.value
-            ),
-            attempt_ordinal=(
-                None if attempt_binding is None else attempt_binding.attempt_ordinal
-            ),
-            cancellation_command_id=(
-                None
-                if cancellation_binding is None
-                else cancellation_binding.command_id
-            ),
-            replacement=(
-                None
-                if cancellation_binding is None
-                else cancellation_binding.replacement.value
-            ),
-            cancellation_disposition=(
-                None
-                if cancellation_binding is None
-                or cancellation_binding.disposition is None
-                else cancellation_binding.disposition.value
-            ),
-            replacement_attempt_id=(
-                None
-                if cancellation_binding is None
-                or cancellation_binding.replacement_attempt_id is None
-                else cancellation_binding.replacement_attempt_id.value
-            ),
-            agent_receipt_hash=(
-                None
-                if event.agent_receipt_hash is None
-                else event.agent_receipt_hash.value
-            ),
-            round_ordinal=event.round_ordinal,
-        )
+    insertion = run_events.insert().values(
+        run_id=event.run_id.value,
+        revision_hash=event.revision_hash.value,
+        event_sequence=event.event_sequence,
+        node_id=event.node_id,
+        node_execution_id=event.node_execution_id.value,
+        event_kind=event.event_kind.value,
+        payload=event.payload,
+        payload_hash=event.payload_hash.value,
+        receipt_logical_key=(
+            None
+            if event.receipt_logical_key is None
+            else event.receipt_logical_key.value
+        ),
+        receipt_result_hash=(
+            None
+            if event.receipt_result_hash is None
+            else event.receipt_result_hash.value
+        ),
+        event_hash=event.event_hash.value,
+        agent_attempt_id=(
+            None if attempt_binding is None else attempt_binding.attempt_id.value
+        ),
+        attempt_ordinal=(
+            None if attempt_binding is None else attempt_binding.attempt_ordinal
+        ),
+        cancellation_command_id=(
+            None if cancellation_binding is None else cancellation_binding.command_id
+        ),
+        replacement=(
+            None
+            if cancellation_binding is None
+            else cancellation_binding.replacement.value
+        ),
+        cancellation_disposition=(
+            None
+            if cancellation_binding is None or cancellation_binding.disposition is None
+            else cancellation_binding.disposition.value
+        ),
+        replacement_attempt_id=(
+            None
+            if cancellation_binding is None
+            or cancellation_binding.replacement_attempt_id is None
+            else cancellation_binding.replacement_attempt_id.value
+        ),
+        agent_receipt_hash=(
+            None if event.agent_receipt_hash is None else event.agent_receipt_hash.value
+        ),
+        round_ordinal=event.round_ordinal,
     )
+    # The driver's own integrity error carries the bound parameters, and the
+    # payload among them is a `memoryview` the durable step boundary above
+    # cannot serialise. An error that cannot be recorded is one the run never
+    # hears about: the node workflow would stand STARTED with nothing left to
+    # move it. The refusal is therefore restated in words -- the event it names
+    # and the store's own reason for it -- which cross that boundary.
+    try:
+        session.execute(insertion)
+    except IntegrityError as error:
+        raise RunTransitionConflict(
+            f"the event log refused {event.event_kind.value} of node "
+            f"{event.node_id} round {event.round_ordinal}: {error.orig}"
+        ) from error
     record_event_instant(session, event.run_id.value, event.event_sequence, at=at)
 
 
