@@ -96,6 +96,7 @@ QUEUE_ADMISSIONS_PATH = API_PREFIX + "/queue-admissions"
 QUEUE_ITEMS_PATH = API_PREFIX + "/queue-items"
 OBSERVED_QUEUE_ITEMS_PATH = API_PREFIX + "/observed-queue-items"
 PROJECT_SOURCE_IMPORT_PATH = API_PREFIX + "/project-sources/import"
+LIBRARY_RECOGNITIONS_PATH = API_PREFIX + "/library/recognitions"
 
 EVENT_MODELS = (
     AgentCompletedEventResource,
@@ -227,6 +228,13 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "invalid-request",
         "temporarily-unavailable",
         "durable-state-corrupt",
+        "internal-error",
+    ),
+    (LIBRARY_RECOGNITIONS_PATH, "post"): (
+        "library-document-ambiguous",
+        "invalid-request",
+        "unsupported-media-type",
+        "temporarily-unavailable",
         "internal-error",
     ),
     (API_PREFIX + "/workflow-revisions", "post"): (
@@ -595,6 +603,14 @@ def _install_publication_request_body(schema: dict[str, Any]) -> None:
         "required": True,
         "content": {
             "text/markdown": {"schema": {"type": "string", "format": "binary"}}
+        },
+    }
+    schema["paths"][LIBRARY_RECOGNITIONS_PATH]["post"]["requestBody"] = {
+        "required": True,
+        "content": {
+            "application/octet-stream": {
+                "schema": {"type": "string", "format": "binary"}
+            }
         },
     }
 
