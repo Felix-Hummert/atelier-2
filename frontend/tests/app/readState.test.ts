@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import ReadState from "../../src/components/ReadState.svelte";
+import { reportConnectionLost, reportConnectionRestored } from "../../src/lib/connectionState";
 import {
   beginRead,
   confirmRead,
@@ -14,9 +15,35 @@ type ReadStateFailure =
   | { kind: "unavailable"; title: string }
   | { kind: "incomplete"; title: string };
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  reportConnectionRestored();
+});
 
 describe("recoverable read state", () => {
+  it("suppresses its own failure and Retry while the whole workshop reads unreachable, and shows them again once it does not (#700)", async () => {
+    const first = beginRead(retainedRead<string, ReadStateFailure>());
+    const failed = failRead(
+      first.read,
+      first.generation,
+      { kind: "unavailable", title: "Saved workflows unavailable" }
+    );
+    render(ReadState, { props: { read: failed, label: "saved workflows", onRetry: vi.fn() } });
+    expect(screen.getByRole("alert").isConnected).toBe(true);
+
+    reportConnectionLost();
+    await waitFor(() => {
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Retry saved workflows" })).toBeNull();
+    });
+
+    reportConnectionRestored();
+    await waitFor(() => {
+      expect(screen.getByText("Saved workflows unavailable").isConnected).toBe(true);
+      expect(screen.getByRole("button", { name: "Retry saved workflows" }).isConnected).toBe(true);
+    });
+  });
+
   it("offers a Retry control only while the read is failed, and Retry repeats that read", async () => {
     const retry = vi.fn();
     const first = beginRead(retainedRead<string, ReadStateFailure>());

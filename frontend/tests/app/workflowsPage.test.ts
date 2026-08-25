@@ -10,7 +10,13 @@ import {
   type WorkflowRevisionDetail,
   type WorkflowRevisionSummary
 } from "../../src/api/client";
+import {
+  reportConnectionLost,
+  reportConnectionRestored,
+  restartNoticeCopy
+} from "../../src/lib/connectionState";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { workflowsPageCopy } from "../../src/lib/workflowsPageCopy";
 import { cockpitApiStub } from "../support/cockpitApi";
 
 type V3Graph = Extract<WorkflowRevisionDetail["graph"], { workflow_format_version: 3 }>;
@@ -24,6 +30,7 @@ const WORKFLOW_NAME = "iterate-code";
 afterEach(() => {
   vi.restoreAllMocks();
   cleanup();
+  reportConnectionRestored();
 });
 
 function openAt(pathname: string, overrides: Partial<CockpitApi> = {}) {
@@ -196,6 +203,29 @@ describe("the workflows start room", () => {
     fireEvent.click(await screen.findByRole("link", { name: "Open the catalog" }));
 
     expect((await screen.findByRole("heading", { name: "Catalog" })).isConnected).toBe(true);
+  });
+
+  it("names no local failure or raw transport text while the whole workshop reads unreachable, and reads itself again once the connection returns (#700)", async () => {
+    const listWorkflowRevisions = vi.fn().mockRejectedValue(new Error("Failed to fetch"));
+    openAt("/atelier/workflows", { listWorkflowRevisions, getRevisionByName: admittedByName() });
+    await screen.findByRole("heading", { name: "Workflows" });
+
+    reportConnectionLost();
+    await screen.findByText(restartNoticeCopy);
+    // The shell's one line above already names the outage; this room adds no
+    // second, page-local echo of the same fact, and never the browser's own
+    // raw transport text either.
+    expect(screen.queryByText(workflowsPageCopy.listUnavailable)).toBeNull();
+    expect(screen.queryByText("Failed to fetch")).toBeNull();
+
+    listWorkflowRevisions.mockResolvedValue({
+      items: [namedSummary()],
+      next_after_revision_hash: null
+    });
+    reportConnectionRestored();
+
+    expect((await screen.findByRole("button", { name: /iterate-code/ })).isConnected).toBe(true);
+    expect(screen.queryByText(workflowsPageCopy.listUnavailable)).toBeNull();
   });
 });
 
