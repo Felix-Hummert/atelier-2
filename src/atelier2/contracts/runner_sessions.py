@@ -32,7 +32,7 @@ class RunnerSessionMessage(StrEnum):
 
 _PAYLOAD_FIELD_COUNTS = {
     RunnerSessionMessage.INVOCATION_OFFER: 0,
-    RunnerSessionMessage.PREPARE: 19,
+    RunnerSessionMessage.PREPARE: 21,
     RunnerSessionMessage.READY: 12,
     RunnerSessionMessage.LAUNCH: 0,
     RunnerSessionMessage.STARTED: 1,

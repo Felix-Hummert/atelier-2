@@ -15,8 +15,11 @@ from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSession
 
 MAXIMUM_RUNNER_SESSION_BODY_BYTES = 1_078_291
 MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES = 1_078_295
-# Position of the resolved auth reference in the PREPARE payload, the last
-# field encode_runner_prepare_payload lays out.
+# Position of the resolved auth reference in the PREPARE payload.
+# `encode_runner_prepare_payload` lays out two more fields after it -- the
+# declared output schema and the pinned turn limit (#672) -- so this is no
+# longer the payload's last field, only the last one every PREPARE carries
+# unconditionally.
 PREPARE_AUTH_REFERENCE_FIELD = 18
 _FRAME_PREFIX = b"ATELIER2\x00"
 

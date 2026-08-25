@@ -274,8 +274,10 @@ def _candidate_manifest():
     )
 
 
-def _session(core: _Core | None = None) -> CoreRunnerSession:
-    request = _free_request()
+def _session(
+    core: _Core | None = None, request: AgentExecutionRequestV2 | None = None
+) -> CoreRunnerSession:
+    request = request if request is not None else _free_request()
     reference = free_runner_auth_reference(request.resolved_binding.auth_profile).value
     return CoreRunnerSession(
         _binding(),
@@ -792,13 +794,74 @@ def test_a_request_subset_refuses_a_different_hash_bound_executor() -> None:
         )
 
 
-def test_prepare_payload_round_trips_the_bound_request() -> None:
-    request = _free_request()
+@pytest.mark.parametrize(
+    ("declared_output_schema_bytes", "maximum_assistant_turns"),
+    (
+        (None, None),
+        (b'{"type": "string"}', 8),
+    ),
+    ids=("schema-and-turn-budget-absent", "schema-and-turn-budget-present"),
+)
+def test_prepare_payload_round_trips_the_bound_request(
+    declared_output_schema_bytes: bytes | None,
+    maximum_assistant_turns: int | None,
+) -> None:
+    request = _free_request(
+        declared_output_schema_bytes=declared_output_schema_bytes,
+        maximum_assistant_turns=maximum_assistant_turns,
+    )
     reference = free_runner_auth_reference(request.resolved_binding.auth_profile).value
     payload = encode_runner_prepare_payload(request, reference)
 
     assert decode_runner_prepare_payload(payload, request.request_hash) == request
     assert payload[PREPARE_AUTH_REFERENCE_FIELD] == reference.encode("ascii")
+
+
+def test_core_session_prepares_a_runner_with_the_declared_schema_and_turn_budget() -> (
+    None
+):
+    """The wire a Runner peer reads over OFFER->PREPARE carries both #672 fields.
+
+    Decoding `CoreRunnerSession`'s own PREPARE frame the same way
+    `atelier2.runner.session` decodes it proves what a fake runner actually
+    receives -- not merely what `encode_runner_prepare_payload` built in
+    isolation.
+    """
+    request = _free_request(
+        declared_output_schema_bytes=b'{"type": "string"}',
+        maximum_assistant_turns=8,
+    )
+    session = _session(request=request)
+
+    prepare = session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+
+    assert prepare is not None
+    received = decode_runner_prepare_payload(prepare.payload, request.request_hash)
+    assert received.declared_output_schema_bytes == b'{"type": "string"}'
+    assert received.maximum_assistant_turns == 8
+
+
+def test_prepare_payload_refuses_a_malformed_turn_budget_field() -> None:
+    request = _free_request()
+    reference = free_runner_auth_reference(request.resolved_binding.auth_profile).value
+    payload = encode_runner_prepare_payload(request, reference)
+    corrupted = payload[:20] + (b"not-eight-bytes",)
+
+    with pytest.raises(RunnerSessionRefusal, match="runner-session-noncanonical"):
+        decode_runner_prepare_payload(corrupted, request.request_hash)
+
+
+def test_prepare_frame_refuses_the_predecessor_nineteen_field_payload() -> None:
+    """A frame built to the pre-#672 field count is refused loudly, not silently
+    read as if its trailing schema and turn-budget fields were merely absent."""
+    request = _free_request()
+    reference = free_runner_auth_reference(request.resolved_binding.auth_profile).value
+    payload = encode_runner_prepare_payload(request, reference)[:19]
+
+    with pytest.raises(ValueError, match="wrong payload field count"):
+        RunnerSessionFrame(
+            RunnerSessionMessage.PREPARE, 1, _binding(), _INVOCATION, payload
+        )
 
 
 def test_core_session_refuses_attestation_mismatch_without_arming() -> None:
