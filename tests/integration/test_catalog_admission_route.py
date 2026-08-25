@@ -8,6 +8,7 @@ production could fill. These tests drive the real routes against the real store.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -23,18 +24,37 @@ from atelier2.adapters.dbos.schema import (
     catalog_lineages,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.app import create_app
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
     CatalogLineage,
     CatalogLineageDisplayName,
+    CatalogLineageId,
     CatalogRetirementState,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
-from atelier2.ports.published_revisions import PublishedRevisionCreated
-from tests.scenarios.api import durable_api_client
+from atelier2.contracts.revisions_v3 import (
+    PublishedRevision,
+    PublishedRevisionHash,
+    RevisionKind,
+)
+from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
+from atelier2.ports.published_revisions import (
+    CatalogLineageQuery,
+    CatalogRevisionPosition,
+    PublishedRevisionCreated,
+    PublishedRevisionsUnavailable,
+    ResolveCatalogNameResult,
+    ResolvePublishedRevisionResult,
+)
+from tests.scenarios.api import (
+    api_limits,
+    durable_api_client,
+    durable_ports,
+    event_poll_backoff,
+)
 from tests.scenarios.runtime import exact_output_runtime
 
 NAME = "review-bounded-diff"
@@ -503,3 +523,89 @@ def test_admission_into_a_retired_lineage_is_refused_by_name(
         )
         is not None
     )
+
+
+@dataclass
+class _LineageLookupFails:
+    """A real store for everything except the lineage lookup an admission opens
+    with, which answers a scripted store failure instead.
+
+    A wildcard once folded that failure into `CatalogAdmissionLineageMissing`
+    (a 404) the same as a lineage that never existed; this double proves the
+    route now tells the two apart (#735 review delta).
+    """
+
+    store: DbosCatalogStore
+    failure: ResolveCatalogNameResult
+
+    def resolve(
+        self, kind: RevisionKind, revision_hash: PublishedRevisionHash
+    ) -> ResolvePublishedRevisionResult:
+        return self.store.resolve(kind, revision_hash)
+
+    def resolve_reference(
+        self,
+        kind: RevisionKind,
+        lineage_id: CatalogLineageId,
+        revision_hash: PublishedRevisionHash,
+    ) -> ResolvePublishedRevisionResult:
+        return self.store.resolve_reference(kind, lineage_id, revision_hash)
+
+    def resolve_name(
+        self,
+        kind: RevisionKind,
+        lineage_id_or_name: CatalogLineageQuery,
+        position: CatalogRevisionPosition,
+    ) -> ResolveCatalogNameResult:
+        del kind, lineage_id_or_name, position
+        return self.failure
+
+
+@pytest.mark.parametrize(
+    ("failure", "status", "problem_type"),
+    [
+        (PublishedRevisionsUnavailable(), 503, "temporarily-unavailable"),
+        (PortDurableStateCorrupt(), 500, "durable-state-corrupt"),
+    ],
+)
+def test_a_lineage_lookup_outage_answers_its_own_refusal_not_a_404(
+    runtime: DbosRuntime,
+    failure: ResolveCatalogNameResult,
+    status: int,
+    problem_type: str,
+) -> None:
+    """A store failure opening an admission is its own refusal (#735 review
+    delta), never the same 404 a genuinely missing lineage answers."""
+    first = published(runtime)
+    lineage_id = (
+        client(runtime).post(LINEAGES, json=founding(first)).json()["lineage_id"]
+    )
+    second = published(runtime, SECOND_DOCUMENT)
+    failing_client = TestClient(
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=durable_ports(
+                runtime.engine,
+                runtime.settings,
+                runtime.agent_executor_registry,
+                catalog_resolver=_LineageLookupFails(
+                    DbosCatalogStore(runtime.engine), failure
+                ),
+            ),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        )
+    )
+
+    response = failing_client.post(
+        f"{LINEAGES}/{lineage_id}/members",
+        json={
+            "workflow_revision_hash": second.revision_hash.value,
+            "actor": "operator",
+            "activated_at": "2026-08-17T00:01:00Z",
+        },
+    )
+
+    assert response.status_code == status
+    assert response.json()["type"].endswith(problem_type)
