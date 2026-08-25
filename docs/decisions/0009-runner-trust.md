@@ -612,7 +612,22 @@ answers it by name, `runner-session-incompatible-revision`, not by folding it
 into the generic `runner-session-noncanonical` malformed-bytes bucket. This
 keeps §10's own rule for every other boundary here: a stale peer fails loud
 and named, before anything is armed, rather than surfacing as a decode error
-indistinguishable from corruption.
+indistinguishable from corruption. The manifest a Runner is selected under
+attests the same domain (`contracts/runner_manifests.py` reuses the wire
+codec's own constant rather than a second copy of the literal), so a
+manifest naming a retired revision is refused the same way a live frame is.
+
+This compatibility is asymmetric, and deliberately not smoothed over. A
+current decoder recognizes the retired `v1` domain by name because that
+literal is fixed and known today; an already-deployed pre-#672 decoder was
+never taught the current `v2` domain or the `runner-session-incompatible-
+revision` vocabulary, so it cannot read a new peer's revision, or a new
+peer's REFUSE naming that code, by name at all — it only fails at the same
+generic domain-mismatch check every other unrecognized domain hits. Forward
+compatibility (an old peer reading new traffic) is therefore strictly weaker
+than the backward compatibility proven above (a new peer reading old
+traffic): both directions fail safely, before anything is armed, but only
+one direction fails by name.
 
 ## Refusals
 

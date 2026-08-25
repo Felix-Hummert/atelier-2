@@ -70,6 +70,7 @@ from atelier2.contracts.agents import (
     ResolvedAgentBinding,
 )
 from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.hashing import frame as hashing_frame
 from atelier2.contracts.runner_manifests import (
     ABSENT_PROVIDER_CLI,
     MeasuredProviderCli,
@@ -78,6 +79,9 @@ from atelier2.contracts.runner_manifests import (
 )
 from atelier2.contracts.runner_session_codec import (
     PREPARE_AUTH_REFERENCE_FIELD,
+    RUNNER_SESSION_FRAME_DOMAIN,
+    RunnerSessionCodecError,
+    decode_runner_session_frame,
     encode_runner_session_frame,
 )
 from atelier2.contracts.runner_sessions import (
@@ -259,6 +263,30 @@ def _frame(
     message: RunnerSessionMessage, sequence: int, payload: tuple[bytes, ...] = ()
 ) -> RunnerSessionFrame:
     return RunnerSessionFrame(message, sequence, _binding(), _INVOCATION, payload)
+
+
+# The exact domain check `contracts/runner_session_codec.py` carried before
+# #672's delta review widened the session wire to its own explicit revision
+# (`RUNNER_SESSION_FRAME_DOMAIN`) -- the unconditional first thing every
+# decode performs, old build or new, before any field is ever parsed.
+# Reproduced verbatim here rather than imported, because that decoder no
+# longer exists in this tree: this is a frozen historical wire contract used
+# to prove compatibility with it, not a reimplementation of the current one
+# to avoid calling it.
+_PRE_672_FRAME_DOMAIN = b"runner-session/v1"
+_PRE_672_FRAME_PREFIX = b"ATELIER2\x00"
+
+
+def _decode_as_a_pre_672_peer_would(wire: bytes) -> None:
+    body = wire[4:]
+    if not body.startswith(_PRE_672_FRAME_PREFIX):
+        raise RunnerSessionCodecError("runner-session-noncanonical")
+    cursor = len(_PRE_672_FRAME_PREFIX)
+    domain_length = struct.unpack(">I", body[cursor : cursor + 4])[0]
+    cursor += 4
+    domain_end = cursor + domain_length
+    if domain_end > len(body) or body[cursor:domain_end] != _PRE_672_FRAME_DOMAIN:
+        raise RunnerSessionCodecError("runner-session-noncanonical")
 
 
 def _candidate_manifest():
@@ -863,6 +891,90 @@ def test_prepare_frame_refuses_the_predecessor_nineteen_field_payload() -> None:
         RunnerSessionFrame(
             RunnerSessionMessage.PREPARE, 1, _binding(), _INVOCATION, payload
         )
+
+
+def test_raw_wire_frame_naming_the_current_domain_with_the_retired_prepare_shape_is_refused() -> (
+    None
+):
+    """The `RunnerSessionFrame` boundary above proves this in memory; this
+    proves it at the actual wire bytes a peer would read off the socket. A
+    frame naming the *current* domain (`runner-session/v2`) but still shaped
+    like a pre-#672 PREPARE (19 fields, missing the declared schema and turn
+    budget) is refused by `decode_runner_session_frame` before it ever
+    reaches `RunnerSessionFrame` -- the field-count guard is defense in
+    depth behind the domain check, not the version signal on its own.
+    """
+    request = _free_request()
+    reference = free_runner_auth_reference(request.resolved_binding.auth_profile).value
+    legacy_shaped_payload = encode_runner_prepare_payload(request, reference)[:19]
+    binding = _binding()
+    fields = (
+        RunnerSessionMessage.PREPARE.value.encode("ascii"),
+        b"1",
+        struct.pack(">Q", 1),
+        binding.attempt_id.value.encode("ascii"),
+        binding.request_hash.value.encode("ascii"),
+        binding.generation_id.value.encode("ascii"),
+        _INVOCATION.value.encode("ascii"),
+        binding.manifest_id.value.encode("ascii"),
+        *legacy_shaped_payload,
+    )
+    body = hashing_frame(RUNNER_SESSION_FRAME_DOMAIN.decode("ascii"), *fields)
+    wire = struct.pack(">I", len(body)) + body
+
+    with pytest.raises(RunnerSessionCodecError, match="runner-session-noncanonical"):
+        decode_runner_session_frame(wire)
+
+
+def test_a_new_core_prepare_frame_is_refused_by_a_decoder_still_keyed_to_the_retired_domain() -> (
+    None
+):
+    """Real wire bytes, real production boundary: "new core -> old runner
+    decoder". Core's actual PREPARE frame (`CoreRunnerSession`'s own OFFER
+    answer, encoded exactly as it would be sent) is well-formed #672 traffic
+    under `runner-session/v2` -- a decoder that has not been rebuilt past
+    #672 and is still keyed to the retired domain fails on it at the very
+    first check, before any field is parsed (mirroring
+    `test_session_decoder_names_a_retired_wire_revision_by_its_own_code`,
+    which proves the opposite direction at the codec layer). Having sent
+    PREPARE and received nothing intelligible back, Core issues no LAUNCH
+    and never arms.
+    """
+    core = _Core()
+    session = _session(core)
+    prepare = session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+    assert prepare is not None
+    wire = encode_runner_session_frame(prepare)
+
+    with pytest.raises(RunnerSessionCodecError, match="runner-session-noncanonical"):
+        _decode_as_a_pre_672_peer_would(wire)
+    assert core.armed == 0
+
+
+def test_an_old_core_cannot_decode_a_new_runners_v2_refuse_by_name() -> None:
+    """Real wire bytes: "old core <- new runner's v2 REFUSE" -- the asymmetric
+    mirror of the direction above (ADR 0009 S10's #672 amendment names this
+    asymmetry explicitly). A #672-built Runner names its pre-start refusal
+    under the current domain; a decoder still keyed to the retired one
+    cannot even reach the code field to read that name, only fail generically
+    at the domain check, before any `RunnerSessionFrame` -- and so before any
+    `arm()` call -- is ever reachable. Forward compatibility (an old core
+    reading a new runner) is strictly weaker than the backward compatibility
+    proven above (a new core reading an old runner by an explicit named
+    refusal): an old core cannot tell a v2 incompatible-revision refusal
+    apart from any other malformed frame.
+    """
+    refuse = RunnerSessionFrame(
+        RunnerSessionMessage.REFUSE,
+        2,
+        _binding(),
+        _INVOCATION,
+        (b"runner-session-incompatible-revision", b""),
+    )
+    wire = encode_runner_session_frame(refuse)
+
+    with pytest.raises(RunnerSessionCodecError, match="runner-session-noncanonical"):
+        _decode_as_a_pre_672_peer_would(wire)
 
 
 def test_core_session_refuses_attestation_mismatch_without_arming() -> None:
