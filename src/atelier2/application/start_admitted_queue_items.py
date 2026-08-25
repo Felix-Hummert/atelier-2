@@ -19,10 +19,11 @@ head advance is a different head, hence a different identity and a new run --
 whether an item should re-run under a moved head is a Phase D readiness
 question, named here, not decided here.
 
-**What this slice does not do.** It supplies no agent bindings (the binding /
-occupancy decision is Phase D, Leonardo ruling 4), so an item bound to a
-workflow that declares agent roles is named `QueueItemAwaitingBinding` and
-waits. Readiness, priority, and the human-vs-auto filter are also Phase D. The
+**What this slice does not do.** It names no agent binding of its own. The start
+path fills every role the document declares from the served project's occupancy
+(`#680`), so an item whose roles the project has cast starts here, and one with
+a role nobody occupied is named `QueueItemAwaitingBinding` and waits.
+Readiness, priority, and the human-vs-auto filter are Phase D. The
 one precondition this slice enforces is admission itself -- an item still only
 OBSERVED is never read here. A start the workflow itself refuses (its bytes are
 not a runnable revision, its head moved under a competing run) is surfaced as
@@ -102,10 +103,12 @@ class QueueRunAlreadyActive:
 
 @dataclass(frozen=True)
 class QueueItemAwaitingBinding:
-    """The bound workflow declares agent roles this slice binds none for.
+    """The bound workflow declares a role neither the sweep nor the project fills.
 
-    It waits for the binding / occupancy decision (Leonardo ruling 4, Phase D),
-    named rather than started and never treated as an error.
+    The start path already reads the served project's occupancy, so this is what
+    is left: a role the operator has not cast (or a deployment serving no
+    project at all). It waits, named rather than started and never treated as an
+    error.
     """
 
     item_id: QueueItemId
