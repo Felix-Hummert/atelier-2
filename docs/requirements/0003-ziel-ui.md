@@ -73,7 +73,7 @@ Quelle: DESK — 5302788411; Workbench statt Board per ADR 0019 (Operator-Segnun
 ### REQ-UI-17: Authentifizierung erhöht die Komplexität keines Bildschirms.
 Quelle: DESK — 5302788411 (Regel 17)
 
-### REQ-UI-25: Mockups sind Entwurfs-Vorlagen; der aktuelle Stand der Vorlage ist [Mockup v8](0003-ziel-ui-mockup-v8.html), Owner-Record ADR 0019, wie Code per PR geändert; jede gesegnete Fassung wird eingefroren, die neueste gesegnete ist der Owner.
+### REQ-UI-25: Gegen die gesegnete Vorlage wird gebaut, und ihre Tore werden gemessen statt behauptet; der aktuelle Stand ist [Mockup v8](0003-ziel-ui-mockup-v8.html), Owner-Record ADR 0019, wie Code per PR geändert; jede gesegnete Fassung wird eingefroren, die neueste gesegnete ist der Owner.
 Quelle: DESK — 5302769095, 5302066517 Schluss; Vorlage v8 gesegnet 25.08.2026 (ADR 0019, #711), löst REQ-UI-18 ab
 
 ### REQ-UI-19: Atelier 1 wird als Konzepte und Lehren wiederverwendet, nie als portierter Code.
@@ -88,8 +88,8 @@ Quelle: DESK — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b
 ### REQ-UIQ-03: Begriffe einer Fläche kommen aus einer Quelle.
 Quelle: DESK — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8, Kriterium 3
 
-### REQ-UIQ-04: Anzeige-Strings einer Fläche kommen aus ihrem Owner, und das Layout verträgt die längere Form; Kernflächen sind die vier Rail-Flächen und die Run-Sicht.
-Quelle: DESK — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8, Kriterium 4; Kernflächen-Liste per Operator-Ruling 22.08.2026 (Epic #516)
+### REQ-UIQ-12: Anzeige-Strings eines Raums kommen aus ihrem Owner, und das Layout verträgt die längere Form; Kernflächen sind die drei Räume, Settings und die Run-Sicht.
+Quelle: DESK — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8, Kriterium 4; Kernflächen-Liste per ADR 0019 (Operator-Segnung 25.08.2026, #711), löst REQ-UIQ-04 ab
 
 ### REQ-UIQ-05: Die Kernflächen erfüllen WCAG 2.2 AA, oder der Verstoß trägt ein Item.
 Quelle: DESK — #336 body @ 92d5e087748fb22ce6b01fd3a5918bd386e6dd8a80f1699105b67ce44198f9a8, Kriterium 5

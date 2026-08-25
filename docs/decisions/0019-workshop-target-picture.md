@@ -64,7 +64,7 @@ count stands where an action should.
 
 The picture is the answer: four rooms built from four blocks under one rule
 against restating, every element carrying the user question it answers, and
-every gate measured rather than asserted. It contradicts thirteen sentences
+every gate measured rather than asserted. It contradicts sixteen sentences
 of the owner documents (§5). **No owner document today contains the word
 "Workbench" or "Werkbank"**: the room this picture is built around exists
 nowhere in HEART or 0003 yet, and this record introduces it.
@@ -256,10 +256,10 @@ It is operator-level repair; where it lives is an open decision, see *Open*.
 
 ### 5. Owner sentences this picture contradicts, and their successors
 
-Thirteen sentences: four in HEART (amended in place — HEART is not
-id-bound), seven identified rules of 0003 (each gets a **new identifier**;
-the old one is marked superseded-by and never reused), and two unnumbered
-0003 passages (Intent, Non-goals). Old text is quoted verbatim in its own
+Sixteen sentences change: five in HEART (four amended in place — HEART is not
+id-bound — plus one quoted and kept verbatim), nine identified rules of 0003
+(each gets a **new identifier**; the old one is marked superseded-by and never
+reused), and three unnumbered 0003 passages (title, Intent, Non-goals). Old text is quoted verbatim in its own
 language; the successor stays in that language, so no requirement changes
 language. The 0003 successor revision is drafted from this table and approved
 through the requirement lifecycle.
@@ -272,6 +272,7 @@ through the requirement lifecycle.
 | "Workflows owns starting — nothing lives there but what is already admitted and ready to run; Catalog owns the library — everything this workshop has ever been given, with where it came from and whether it may yet be started. A piece is admitted in the Catalog and started in Workflows, never the other way." (lines 19–22, #684) | **retracted**, replaced by: "The Catalog owns the library and starting: everything this workshop has ever been given, with where it came from, whether it may yet be started — and the one door to start it by hand. The ear starts everything else." |
 | "You speak to the workshop, you do not visit a chat page." | **kept verbatim** — the conversation is the workbench's body, not a room. |
 | "The composer is always within reach, and until the conductor is connected it says so honestly — in one sentence, without a button that duplicates a door." | "The ear is always within reach, and until the conductor is connected its placeholder says so — in the field itself, without a sentence beneath and without a button that duplicates a door." |
+| "No naked numbers ("1 step"), no unlabeled sentences, no jargon ("took"), no word the operator has to guess ("ATELIER" floating over a title), no board numbers, no two ways to the same door." | "No naked numbers ("1 step"), no unlabeled sentences, no jargon ("took"), no word the operator has to guess ("ATELIER" floating over a title), no count that does not lead to an action, no two ways to the same door. A state is shown, never restated: where colour, shape or placeholder already says it, no sentence repeats it." |
 
 **Requirement 0003 — identified rules: successor identifiers**
 
@@ -282,7 +283,8 @@ through the requirement lifecycle.
 | **REQ-UI-03**: „Workflows entstehen agentisch, nie in einem Baukasten oder Editor; ein neuer Entwurf erscheint als Karte auf dem Board, und der Operator segnet ihn dort ab." | **REQ-UI-22**: „Workflows entstehen agentisch, nie in einem Baukasten oder Editor; ein neuer Entwurf erscheint als Karte im Catalog, und der Operator segnet ihn dort ab." REQ-UI-03 superseded-by REQ-UI-22. |
 | **REQ-UI-04**: „Woran die Flotte arbeitet, ist erstklassig: jede Fläche ist projekt-gescoped, und der Projekt-Umschalter in der Rail ist die eine Naht zum Projektwechsel." | **REQ-UI-23**: „Woran die Flotte arbeitet, ist erstklassig: jeder Raum ist projekt-gescoped, und der Projekt-Umschalter im Kopf von Settings ist die eine Naht: derselbe Klick wechselt das Projekt und landet in dessen Settings." REQ-UI-04 superseded-by REQ-UI-23. |
 | **REQ-UI-16**: „Die Werkstatt nimmt Arbeit weg: lehrende Leerzustände, das Receipt als Schmuckstück, Rückgängig statt Nachfragen; Puls-Kopfzeile und Posteingang gehen im Board auf." | **REQ-UI-24**: „Die Werkstatt nimmt Arbeit weg: lehrende Leerzustände, das Receipt als Schmuckstück, Rückgängig statt Nachfragen; Puls-Kopfzeile und Posteingang gehen in der Workbench auf — die Bühne ist der Posteingang, die Ocker-Zahl in der Rail der Puls, die Queue eine aufklappbare Zeile." REQ-UI-16 superseded-by REQ-UI-24. |
-| **REQ-UI-18**: „Mockups sind Entwurfs-Vorlagen; der aktuelle Stand der Vorlage ist [Mockup v5](0003-ziel-ui-mockup-v5.html), regeneriert vom lebenden Original des Operators, nie unabhängig editiert." | **REQ-UI-25**: „Mockups sind Entwurfs-Vorlagen; der aktuelle Stand der Vorlage ist [Mockup v8](0003-ziel-ui-mockup-v8.html), Owner-Record ADR 0019, wie Code per PR geändert; jede gesegnete Fassung wird eingefroren, die neueste gesegnete ist der Owner." REQ-UI-18 superseded-by REQ-UI-25. |
+| **REQ-UI-18**: „Mockups sind Entwurfs-Vorlagen; der aktuelle Stand der Vorlage ist [Mockup v5](0003-ziel-ui-mockup-v5.html), regeneriert vom lebenden Original des Operators, nie unabhängig editiert." | **REQ-UI-25**: „Gegen die gesegnete Vorlage wird gebaut, und ihre Tore werden gemessen statt behauptet; der aktuelle Stand ist [Mockup v8](0003-ziel-ui-mockup-v8.html), Owner-Record ADR 0019, wie Code per PR geändert; jede gesegnete Fassung wird eingefroren, die neueste gesegnete ist der Owner." REQ-UI-18 superseded-by REQ-UI-25. |
+| **REQ-UIQ-04**: „Anzeige-Strings einer Fläche kommen aus ihrem Owner, und das Layout verträgt die längere Form; Kernflächen sind die vier Rail-Flächen und die Run-Sicht." | **REQ-UIQ-12**: „Anzeige-Strings eines Raums kommen aus ihrem Owner, und das Layout verträgt die längere Form; Kernflächen sind die drei Räume, Settings und die Run-Sicht." REQ-UIQ-04 superseded-by REQ-UIQ-12. |
 | **REQ-UIQ-06**: „Leer, lädt, Fehler und wartet sind vier benannte Zustände." | **REQ-UIQ-10**: „Leer, lädt, Fehler und wartet sind vier gestaltete Zustände — benannt heißt gestaltet, nicht beschriftet: Leer ist die Form ohne Inhalt, Laden ein stilles Skelett, Fehler Brick mit einem Satz und einem Zug, Warten die Bühne." REQ-UIQ-06 superseded-by REQ-UIQ-10. |
 | **REQ-UIQ-09**: „Die Fläche darf geil aussehen und Spaß machen; der Screenshot-Maßstab ist Mockup v5, und das letzte Wort hat der Operator." | **REQ-UIQ-11**: „Die Fläche darf geil aussehen und Spaß machen; der Screenshot-Maßstab ist Mockup v8, und das letzte Wort hat der Operator." REQ-UIQ-09 superseded-by REQ-UIQ-11. |
 
@@ -294,6 +296,7 @@ head, the double role of the click).
 
 | Today (verbatim) | Successor text |
 | --- | --- |
+| Title: „# Requirement 0003: Ziel-UI — eine Werkstatt, vier Flächen, ein Graph" | „# Requirement 0003: Ziel-UI — eine Werkstatt, vier Räume, ein Graph" |
 | Intent: „Um diesen Kern sitzt die Ziel-UI nach Mockup v5: eine Werkstatt, geordnet durch eine Rail mit vier Flächen — Chat, Board, Workflows, History — unter dem Projekt als Kontext (Operator-Ruling 22.08.2026, Epic #516). Mockup v5 ist der Gestalt-Owner." | „Um diesen Kern sitzt die Ziel-UI nach Mockup v8: eine Werkstatt, geordnet durch eine Rail mit drei Räumen — Workbench, Catalog, History — und Settings am Fuß als Kontext darüber, mit dem Projekt-Umschalter im Kopf (ADR 0019). Mockup v8 ist der Gestalt-Owner." |
 | Non-goals: „Keine Dashboards und kein Benachrichtigungszentrum neben dem Board." | „Keine Dashboards, kein Board und kein Benachrichtigungszentrum: die Bühne auf der Workbench und die Ocker-Zahl in der Rail sind die Benachrichtigung." |
 

@@ -54,10 +54,11 @@ the piece over must feel like a small privilege, not like opening a debugger.
 ## Every word earns its place
 
 No naked numbers ("1 step"), no unlabeled sentences, no jargon ("took"), no
-word the operator has to guess ("ATELIER" floating over a title), no board
-numbers, no two ways to the same door. A label you need only once lives in one
-help place, not on every wall. If you cannot say what a line is for, the line
-goes.
+word the operator has to guess ("ATELIER" floating over a title), no count
+that does not lead to an action, no two ways to the same door. A state is
+shown, never restated: where colour, shape or placeholder already says it, no
+sentence repeats it. A label you need only once lives in one help place, not
+on every wall. If you cannot say what a line is for, the line goes.
 
 ## The ear
 
