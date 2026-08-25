@@ -13,6 +13,7 @@ import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
  */
 
 const WORKFLOW_NAME = "catalog-import-proof";
+const LINEAGE_WORKFLOW_NAME = "catalog-lineage-proof";
 const AGENT_NAME = "catalog-import-scribe";
 
 const AGENT_FILE = [
@@ -36,14 +37,18 @@ async function anyJsonSchema(page: Page): Promise<string> {
   return (await published.json()).schema_revision_hash as string;
 }
 
-function workflowFile(schemaHash: string): string {
+function workflowFile(
+  schemaHash: string,
+  promptText = "Is the import door open?",
+  name = WORKFLOW_NAME
+): string {
   return [
     "format_version: 3",
-    `name: ${WORKFLOW_NAME}`,
+    `name: ${name}`,
     "nodes:",
     "  - id: ask",
     "    type: wait",
-    "    prompt: Is the import door open?",
+    `    prompt: ${promptText}`,
     "    outputs:",
     "      - name: answer",
     "        schema:",
@@ -109,6 +114,36 @@ test("proves(the-operator-imports-a-workflow-and-an-agent-and-starts-what-was-im
   );
   expect(resolved.status()).toBe(200);
   expect((await resolved.json()).display_name).toBe(WORKFLOW_NAME);
+});
+
+test("an unadmitted sibling of an admitted name shows as a newer revision, not a second card", async ({
+  page
+}) => {
+  const schemaHash = await anyJsonSchema(page);
+
+  await page.goto("/atelier/catalog");
+  await importInto(
+    page,
+    catalogPageCopy.importWorkflowLabel,
+    workflowFile(schemaHash, undefined, LINEAGE_WORKFLOW_NAME)
+  );
+  await entry(page, LINEAGE_WORKFLOW_NAME).getByRole("button", { name: catalogPageCopy.admit }).click();
+  await expect(entry(page, LINEAGE_WORKFLOW_NAME).getByText(catalogPageCopy.startable)).toBeVisible();
+
+  // A second, unadmitted revision is published under the same name -- the
+  // live duplicate-card finding (#659): the room must not draw a second
+  // "catalog-lineage-proof" card for it.
+  await importInto(
+    page,
+    catalogPageCopy.importWorkflowLabel,
+    workflowFile(schemaHash, "Is the door still open?", LINEAGE_WORKFLOW_NAME)
+  );
+
+  await expect(page.getByRole("listitem").filter({ hasText: LINEAGE_WORKFLOW_NAME })).toHaveCount(1);
+  await expect(entry(page, LINEAGE_WORKFLOW_NAME).getByText(catalogPageCopy.startable)).toBeVisible();
+  await expect(
+    entry(page, LINEAGE_WORKFLOW_NAME).getByText(catalogPageCopy.newerRevisionAvailable)
+  ).toBeVisible();
 });
 
 test("the catalog names the refusal the API gave instead of guessing at one", async ({ page }) => {
