@@ -214,12 +214,22 @@ line this vocabulary cannot read, including whatever a call that produced no
 stream printed instead, is kept as the provider's own output under its own
 name; a transcript with more steps than one artifact may hold loses its oldest
 and says how many. The whole is one content-addressed artifact, and the attempt
-names its address. A failed attempt keeps one too: an exit code beside an empty
-standard error was the entire account of a real failed run, which is no account
-at all. An attempt whose executor publishes no structured stream names nothing,
-which is the honest absence rather than an invented shape. No read surface
-serves the transcript yet — the API projection and the node panel's Log tab are
-the next slice.
+names its address. Every ending keeps one — a success, a refusal, a nonzero
+exit, and a granted check that never answered — because an exit code beside an
+empty standard error was the entire account of a real failed run, which is no
+account at all, and because an absence meaning two different things could not be
+read at all. An attempt whose executor publishes no structured stream names
+nothing, which is the honest absence rather than an invented shape.
+
+Three guards make the address mean what it says: it must resolve to bytes this
+store holds, it may stand only on an ended attempt, and once written it can
+never be moved or cleared. Redaction is not a door a caller may walk past
+either — building a transcript at all is what makes its steps safe. What the
+boundary to a Runner cannot yet carry it refuses out loud instead of dropping:
+that record is bounded far below one transcript and its hash is part of Core's
+acceptance chain, so carrying one is its own decision rather than a silent
+truncation. No read surface serves the transcript yet — the API projection and
+the node panel's Log tab are the next slice.
 
 The first real provider now sits behind that durable contract. When the operator
 declares a Claude executable and a credential directory, the host composes one
