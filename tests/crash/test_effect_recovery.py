@@ -103,6 +103,16 @@ def event_rows(root: Path) -> tuple[tuple[object, ...], ...]:
         )
 
 
+def event_kinds(root: Path) -> tuple[object, ...]:
+    with sqlite3.connect(root / "atelier.sqlite", timeout=30) as connection:
+        return tuple(
+            record[0]
+            for record in connection.execute(
+                "SELECT event_kind FROM run_events ORDER BY event_sequence"
+            )
+        )
+
+
 def c1_expected_event_rows() -> tuple[tuple[object, ...], ...]:
     return (
         (
@@ -594,19 +604,102 @@ def test_unknown_commit_replays_waiting_even_after_provider_availability_changes
         "OPERATOR_AUTHORIZED_EXECUTION",
         f"{run_id}/reconcile-1",
     )
-    with sqlite3.connect(tmp_path / "atelier.sqlite", timeout=30) as connection:
-        assert tuple(
-            record[0]
-            for record in connection.execute(
-                "SELECT event_kind FROM run_events ORDER BY event_sequence"
-            )
-        ) == (
-            "AGENT_COMPLETED",
-            "ACTION_RECONCILIATION_REQUIRED",
-            "ACTION_RECONCILIATION_RESOLVED",
-            "ACTION_COMPLETED",
-            "WAITING_INPUT",
+    assert event_kinds(tmp_path) == (
+        "AGENT_COMPLETED",
+        "ACTION_RECONCILIATION_REQUIRED",
+        "ACTION_RECONCILIATION_RESOLVED",
+        "ACTION_COMPLETED",
+        "WAITING_INPUT",
+    )
+
+
+def test_node_workflow_that_dies_before_the_enqueue_reaches_the_operator_door(
+    tmp_path: Path,
+) -> None:
+    """#646: the intent is committed, the effect workflow was never enqueued.
+
+    The Action node workflow ends terminally between the two, so no
+    effect-workflow row exists for the #628 sweep to read and nothing is ever
+    going to drive the intent. The next serve start must still put it behind
+    the operator door instead of leaving the run STARTED forever.
+    """
+
+    run_id = "node-dead-before-enqueue"
+    seed(tmp_path, run_id)
+
+    child(tmp_path, "strand", "8")
+
+    logical_key = logical_key_for(run_id)
+    revision = WorkflowRevision(DOCUMENT)
+    action_node_workflow = node_workflow_id_for(
+        NodeExecutionId.for_node(RunId(run_id), revision.revision_hash, "action")
+    )
+    assert row(
+        tmp_path, "atelier.sqlite", "SELECT state,state_version FROM effect_intents"
+    ) == ("PREPARED", 0)
+    assert (
+        scalar(
+            tmp_path,
+            "atelier.sqlite",
+            "SELECT COUNT(*) FROM workflow_status WHERE workflow_uuid=?",
+            (effect_workflow_id_for(LogicalEffectKey(logical_key)),),
         )
+        == 0
+    )
+    assert (
+        scalar(
+            tmp_path,
+            "atelier.sqlite",
+            "SELECT status FROM workflow_status WHERE workflow_uuid=?",
+            (action_node_workflow,),
+        )
+        == "ERROR"
+    )
+    assert (
+        scalar(
+            tmp_path,
+            "atelier.sqlite",
+            "SELECT state FROM runs WHERE run_id=?",
+            (run_id,),
+        )
+        == "STARTED"
+    )
+
+    child(tmp_path, "converge")
+
+    assert row(
+        tmp_path, "atelier.sqlite", "SELECT state,state_version FROM effect_intents"
+    ) == ("WAITING_RECONCILIATION", 1)
+    assert (
+        scalar(
+            tmp_path,
+            "atelier.sqlite",
+            "SELECT state FROM runs WHERE run_id=?",
+            (run_id,),
+        )
+        == "WAITING_RECONCILIATION"
+    )
+    assert event_kinds(tmp_path) == (
+        "AGENT_COMPLETED",
+        "ACTION_RECONCILIATION_REQUIRED",
+    )
+    assert (
+        scalar(
+            tmp_path, "external.sqlite", "SELECT COUNT(*) FROM loopback_effect_calls"
+        )
+        == 0
+    )
+
+    child(tmp_path, "submit-absence", run_id)
+
+    assert row(
+        tmp_path,
+        "atelier.sqlite",
+        "SELECT state,reconciliation_owner_command_id FROM effect_intents",
+    ) == ("RECONCILING", f"{run_id}/reconcile-1")
+    assert row(
+        tmp_path, "atelier.sqlite", "SELECT command_id,state FROM reconcile_commands"
+    ) == (f"{run_id}/reconcile-1", "PENDING")
 
 
 def test_two_matching_recovery_processes_converge_after_c2(tmp_path: Path) -> None:
