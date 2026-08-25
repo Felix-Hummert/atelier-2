@@ -461,7 +461,8 @@ describe("a version 3 run that stops for a person", () => {
       run_id: "v3/a-person-approves",
       state: "WAITING_INPUT",
       current_node_id: "approve",
-      cancellation: notCancellableBlock("waiting-for-you"),
+      // A resting Wait is operator-cancellable (#668).
+      cancellation: cancellableBlock(),
       node_rail: [
         { node_id: "implement", state: "succeeded", attempt: null },
         { node_id: "approve", state: "needs_you", attempt: null }
@@ -558,6 +559,15 @@ describe("a version 3 run that stops for a person", () => {
     expect(screen.getByLabelText("Where this run stands").textContent).toContain(
       "Waiting for you"
     );
+  });
+
+  it("proves(a-resting-wait-still-offers-its-own-cancel): a run resting on an unanswered wait offers the cancel control, not a silent gap where one used to explain itself", async () => {
+    render(App, {
+      props: { cockpitApi: waitingApi(), mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    await screen.findByRole("heading", { name: question });
+    expect(await screen.findByRole("button", { name: runPageCopy.cancel.open })).toBeTruthy();
   });
 
   it("proves(a-v3-line-stops-for-a-person-and-their-answer-carries-it-on): carries the page on when the answer arrives, without an answer of its own to settle", async () => {
