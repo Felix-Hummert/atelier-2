@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -8,22 +9,39 @@ from fastapi.testclient import TestClient
 
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.schema import published_revisions
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.app import create_app
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
     CatalogLineageDisplayName,
+    CatalogLineageId,
     CatalogRetirementState,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
+from atelier2.contracts.revisions_v3 import (
+    PublishedRevision,
+    PublishedRevisionHash,
+    RevisionKind,
+)
 from atelier2.ports.published_revisions import (
     CatalogLineageFounded,
+    CatalogLineageQuery,
     CatalogNameFound,
+    CatalogRevisionPosition,
     PublishedRevisionCreated,
+    PublishedRevisionsUnavailable,
+    ResolveCatalogNameResult,
+    ResolvePublishedRevisionResult,
 )
-from tests.scenarios.api import durable_api_client
+from tests.scenarios.api import (
+    api_limits,
+    durable_api_client,
+    durable_ports,
+    event_poll_backoff,
+)
 from tests.scenarios.runtime import exact_output_runtime
 
 NAME = "review-bounded-diff"
@@ -196,3 +214,101 @@ def test_a_position_that_is_neither_a_number_nor_head_is_refused(
 
     assert response.status_code == 400
     assert response.json()["type"].endswith("invalid-catalog-position")
+
+
+@dataclass
+class _ReferenceLookupUnavailable:
+    """A real store for name lookup, but a scripted outage resolving the member.
+
+    `resolve_reference` runs only after `resolve_name` already found the head,
+    so the route's own DB cannot isolate one failure from the other; this
+    double proves the route maps `resolve_reference`'s own refusal (#735)
+    rather than exercising the adapter's SQL failure paths again.
+    """
+
+    store: DbosCatalogStore
+
+    def resolve(
+        self, kind: RevisionKind, revision_hash: PublishedRevisionHash
+    ) -> ResolvePublishedRevisionResult:
+        return self.store.resolve(kind, revision_hash)
+
+    def resolve_reference(
+        self,
+        kind: RevisionKind,
+        lineage_id: CatalogLineageId,
+        revision_hash: PublishedRevisionHash,
+    ) -> ResolvePublishedRevisionResult:
+        del kind, lineage_id, revision_hash
+        return PublishedRevisionsUnavailable()
+
+    def resolve_name(
+        self,
+        kind: RevisionKind,
+        lineage_id_or_name: CatalogLineageQuery,
+        position: CatalogRevisionPosition,
+    ) -> ResolveCatalogNameResult:
+        return self.store.resolve_name(kind, lineage_id_or_name, position)
+
+
+def test_a_reference_lookup_outage_answers_unavailable_instead_of_a_500(
+    runtime: DbosRuntime,
+) -> None:
+    """`CatalogResolver.resolve_reference` (#735) is a named refusal, not a 500."""
+    found(runtime)
+    failing_client = TestClient(
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=durable_ports(
+                runtime.engine,
+                runtime.settings,
+                runtime.agent_executor_registry,
+                catalog_resolver=_ReferenceLookupUnavailable(
+                    DbosCatalogStore(runtime.engine)
+                ),
+            ),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        )
+    )
+
+    response = failing_client.get(f"{API_PREFIX}/workflow-revisions/by-name/{NAME}")
+
+    assert response.status_code == 503
+    assert response.json()["type"].endswith("temporarily-unavailable")
+
+
+def test_a_database_corruption_answers_durable_state_corrupt_instead_of_a_500(
+    runtime: DbosRuntime,
+) -> None:
+    """A member the name resolves to, whose published bytes vanished, is
+    corruption (#735) -- real end to end, since `resolve_name` is guarded now too."""
+    found(runtime)
+    store = DbosCatalogStore(runtime.engine)
+    second = PublishedRevision(RevisionKind.WORKFLOW, SECOND_DOCUMENT)
+    store.publish_revision(second)
+    found_name = store.resolve_name(
+        RevisionKind.WORKFLOW, CatalogLineageDisplayName(NAME), "head"
+    )
+    assert isinstance(found_name, CatalogNameFound)
+    store.admit_member(
+        found_name.lineage_id,
+        second,
+        CatalogLineageDisplayName(NAME),
+        CatalogActor("operator"),
+        CatalogActivatedAt("2026-08-17T00:02:00Z"),
+    )
+    with runtime.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER published_revisions_no_delete")
+        connection.execute(
+            published_revisions.delete().where(
+                published_revisions.c.kind == second.kind.value,
+                published_revisions.c.revision_hash == second.revision_hash.value,
+            )
+        )
+
+    response = client(runtime).get(f"{API_PREFIX}/workflow-revisions/by-name/{NAME}")
+
+    assert response.status_code == 500
+    assert response.json()["type"].endswith("durable-state-corrupt")

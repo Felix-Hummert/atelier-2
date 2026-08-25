@@ -52,6 +52,7 @@ from atelier2.ports.published_revisions import (
     CatalogAdmissionRevisionOwned,
     CatalogAdmissions,
     CatalogNameFound,
+    CatalogNameMissing,
     CatalogResolver,
     FoundCatalogLineageResult,
     PublishedRevisionFound,
@@ -166,8 +167,14 @@ def admit_catalog_member(
     match catalog.resolve_name(kind, lineage_id, "head"):
         case CatalogNameFound(current_display_name=current_display_name):
             pass
-        case _:
+        case CatalogNameMissing():
             return CatalogAdmissionLineageMissing(lineage_id)
+        case PublishedRevisionsUnavailable(detail):
+            return WriteUnavailable(detail)
+        case RegistryCorrupt():
+            return DurableStateCorrupt()
+        case _ as unreachable:
+            assert_never(unreachable)
     revision = _named_revision(kind, revision_hash, catalog, workflows)
     if not isinstance(revision, PublishedRevision):
         return revision

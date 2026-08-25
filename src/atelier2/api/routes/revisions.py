@@ -857,6 +857,10 @@ async def get_revision_by_name(
             raise ApiProblem("invalid-catalog-position")
         case CatalogReferenceNonMember():
             raise ApiProblem("catalog-revision-not-a-member")
+        case ReadUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)
 

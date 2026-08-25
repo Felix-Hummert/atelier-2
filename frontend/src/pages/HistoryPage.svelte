@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
 
   import type { AnyRun, CockpitApi } from "../api/client";
+  import { connectionState, onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import {
     HISTORY_PERIOD_DAYS,
@@ -41,6 +42,9 @@
 
   onMount(() => {
     void load();
+    // A read that failed while the connection was lost is worth asking again
+    // on its own once it returns, with no reload (#700).
+    return onConnectionRecovered(() => { void load(); });
   });
 
   async function load(): Promise<void> {
@@ -95,7 +99,11 @@
 
   {#if history.confirmed === null && history.request.state === "loading"}
     <p class="status" role="status">{wrapDisplayCopy(historyPageCopy.looking)}</p>
-  {:else if history.request.state === "failed"}
+  {:else if history.request.state === "failed" && $connectionState !== "reconnecting"}
+    <!-- The central connection line above already names an unreachable
+         workshop once; this page's own "unavailable" stays quiet for that
+         one case rather than repeating it, and reads again on its own once
+         the connection returns (#700). -->
     <p class="failure" role="alert">{history.request.failure.title}</p>
     <button type="button" onclick={() => { void load(); }}>{wrapDisplayCopy(historyPageCopy.retry)}</button>
   {/if}

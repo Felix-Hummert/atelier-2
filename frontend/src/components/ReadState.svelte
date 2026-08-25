@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { connectionState } from "../lib/connectionState";
   import type { RetainedRead } from "../lib/readResource";
 
   type ReadStateFailure =
@@ -33,31 +34,39 @@
   every surface whether or not it had anything to report, which put a band of
   empty space between a page's title and its content forever after the read
   landed (operator ruling 23.08.: no element that carries no statement).
+
+  A failed read while the whole workshop reads unreachable says nothing of
+  its own either: the central connection line above every room already names
+  that fact once, and repeating it here as this read's own "unavailable" plus
+  a Retry that could only ever fail the same way would be the same fact said
+  twice in two different voices (#700). Once the connection returns, a page
+  that re-asks on its own clears this on its own; one that does not still
+  offers the Retry a returning operator can press.
 -->
-{#if read.request.state !== "idle"}
+{#if read.request.state === "loading"}
   <div class="read-state">
     <div class="read-truth">
-      {#if read.request.state === "loading"}
-        <span class="read-progress" role="status">
-          <span aria-hidden="true">↻</span>
-          {read.confirmed === null ? "Looking…" : "Refreshing…"}
-        </span>
-      {:else}
-        <span class="read-failure" role="alert">
-          <span class="read-mark" aria-hidden="true">◇</span>
-          <strong>{read.request.failure.title}</strong>
-        </span>
-      {/if}
+      <span class="read-progress" role="status">
+        <span aria-hidden="true">↻</span>
+        {read.confirmed === null ? "Looking…" : "Refreshing…"}
+      </span>
     </div>
-    {#if read.request.state === "failed"}
-      <button
-        class="quiet"
-        type="button"
-        aria-label={`Retry ${label}`}
-        onclick={activate}
-        use:focusIfRetried
-      >Retry</button>
-    {/if}
+  </div>
+{:else if read.request.state === "failed" && $connectionState !== "reconnecting"}
+  <div class="read-state">
+    <div class="read-truth">
+      <span class="read-failure" role="alert">
+        <span class="read-mark" aria-hidden="true">◇</span>
+        <strong>{read.request.failure.title}</strong>
+      </span>
+    </div>
+    <button
+      class="quiet"
+      type="button"
+      aria-label={`Retry ${label}`}
+      onclick={activate}
+      use:focusIfRetried
+    >Retry</button>
   </div>
 {/if}
 

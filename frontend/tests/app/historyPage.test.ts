@@ -1,8 +1,13 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
 import type { AnyRun, CockpitApi, RunV1, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
+import {
+  reportConnectionLost,
+  reportConnectionRestored,
+  restartNoticeCopy
+} from "../../src/lib/connectionState";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { standingWords } from "../../src/lib/runState";
@@ -93,6 +98,7 @@ function openHistory(
 afterEach(() => {
   vi.restoreAllMocks();
   cleanup();
+  reportConnectionRestored();
 });
 
 describe("History shows only what has finished", () => {
@@ -145,6 +151,27 @@ describe("History shows only what has finished", () => {
     expect((await screen.findByText("No finished runs yet")).isConnected).toBe(true);
     expect(screen.queryByText("History unavailable")).toBeNull();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
+  it("names no local failure while the whole workshop reads unreachable, and reads itself again once the connection returns (#700)", async () => {
+    const listRuns = vi.fn().mockRejectedValue(new Error("Failed to fetch"));
+    openHistory({}, { listRuns });
+    await screen.findByRole("heading", { name: "History" });
+
+    reportConnectionLost();
+    await waitFor(() => {
+      expect(document.querySelector(".notice-banner")?.textContent).toContain(restartNoticeCopy);
+    });
+    // The shell's one line above already names the outage; this page adds
+    // no second, page-local echo of the same fact.
+    expect(screen.queryByText("History unavailable")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+
+    listRuns.mockResolvedValue({ items: [], next_after: null });
+    reportConnectionRestored();
+
+    expect((await screen.findByText("No finished runs yet")).isConnected).toBe(true);
+    expect(screen.queryByText("History unavailable")).toBeNull();
   });
 
   it("names the resolved workflow, when it ran, and the real duration, without a per-row node read", async () => {
