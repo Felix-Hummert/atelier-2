@@ -406,6 +406,18 @@ def test_a_pause_cannot_be_bound_to_a_round_no_run_can_stand_in(
         WaitNodeBinding(round_ordinal)
 
 
+@pytest.mark.parametrize("round_ordinal", [0, -1], ids=["zero", "negative"])
+@pytest.mark.proves("a-node-binding-is-decided-where-no-store-can-be-reached")
+def test_an_agent_node_cannot_be_bound_to_a_round_no_run_can_stand_in(
+    round_ordinal: int,
+) -> None:
+    """The Agent form's sibling of the Wait refusal above, for the same reason."""
+    with pytest.raises(ValueError, match="a whole count from 1"):
+        AgentNodeBindingV2(
+            resolved_agent_binding(), "build it", round_ordinal=round_ordinal
+        )
+
+
 @pytest.mark.parametrize(
     ("encoded", "refusal"),
     (
@@ -448,6 +460,8 @@ def test_a_pause_cannot_be_bound_to_a_round_no_run_can_stand_in(
             "maximum_assistant_turns carries a value of the wrong type",
         ),
         (written(role=ABSENT), "a key its form declares"),
+        (written(round_ordinal=0), "a round no run can stand in"),
+        (written(round_ordinal=-1), "a round no run can stand in"),
     ),
     ids=[
         "unknown form",
@@ -471,6 +485,8 @@ def test_a_pause_cannot_be_bound_to_a_round_no_run_can_stand_in(
         "schema document of the wrong type",
         "turn bound of the wrong type",
         "missing role",
+        "agent round of zero",
+        "agent round below zero",
     ],
 )
 @pytest.mark.proves(

@@ -12,6 +12,7 @@ import sqlalchemy as sa
 from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents
+from atelier2.adapters.dbos.workflow_ids import EFFECT_WORKFLOW_ID_PREFIX
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.effects import (
@@ -166,6 +167,51 @@ def _crash_once(marker: Path, operation_name: str, timing: str) -> None:
     os._exit(CRASHED)
 
 
+class EffectEnqueueRefused(RuntimeError):
+    """What an Action node workflow raises when its enqueue never lands."""
+
+
+def install_enqueue_refusal() -> None:
+    """Refuse the enqueue of `durable_effect`, after its intent is committed.
+
+    An Action node workflow commits its intent in one transaction step and
+    enqueues the effect workflow in the next. Refusing that enqueue ends the
+    node workflow in a terminal error status with the intent already PREPARED
+    and no effect-workflow row anywhere -- the exact state a node workflow that
+    dies terminally between the two leaves behind (#646).
+    """
+
+    from dbos._sys_db import (
+        SystemDatabase,
+        WorkflowStatuses,
+        WorkflowStatusInternal,
+    )
+
+    original = SystemDatabase.init_workflow
+
+    def refusing(
+        self: SystemDatabase,
+        status: WorkflowStatusInternal,
+        *,
+        max_recovery_attempts: int | None,
+        owner_xid: str | None,
+        is_recovery_request: bool | None,
+        is_dequeued_request: bool | None,
+    ) -> tuple[WorkflowStatuses, int | None, bool]:
+        if status["workflow_uuid"].startswith(EFFECT_WORKFLOW_ID_PREFIX):
+            raise EffectEnqueueRefused("the effect workflow never reached the queue")
+        return original(
+            self,
+            status,
+            max_recovery_attempts=max_recovery_attempts,
+            owner_xid=owner_xid,
+            is_recovery_request=is_recovery_request,
+            is_dequeued_request=is_dequeued_request,
+        )
+
+    SystemDatabase.init_workflow = refusing
+
+
 def install_crash(marker: Path, operation_name: str, timing: str) -> None:
     from dbos._sys_db import OperationResultInternal, SystemDatabase
 
@@ -218,14 +264,7 @@ def execute(
         deadline = time.monotonic() + wait_seconds
         statuses: tuple[str, ...] = ()
         while time.monotonic() < deadline:
-            with sqlite3.connect(database, timeout=30) as connection:
-                statuses = tuple(
-                    row[0]
-                    for row in connection.execute(
-                        "SELECT status FROM workflow_status WHERE application_version=?",
-                        (version,),
-                    )
-                )
+            statuses = workflow_statuses(database, version)
             failed = set(statuses) & {"ERROR", "CANCELLED"}
             if failed:
                 raise RuntimeError(f"durable workflow failed with {sorted(failed)!r}")
@@ -236,6 +275,58 @@ def execute(
             raise TimeoutError(
                 f"durable workflows did not finish within {wait_seconds}s: {statuses!r}"
             )
+    finally:
+        lease.close()
+
+
+def workflow_statuses(database: Path, version: str) -> tuple[str, ...]:
+    with sqlite3.connect(database, timeout=30) as connection:
+        return tuple(
+            row[0]
+            for row in connection.execute(
+                "SELECT status FROM workflow_status WHERE application_version=?",
+                (version,),
+            )
+        )
+
+
+def strand(
+    database: Path,
+    external: Path,
+    version: str,
+    unknown_marker: Path,
+    wait_seconds: float,
+) -> None:
+    """Leave the #646 window behind: a PREPARED intent whose enqueue never was.
+
+    The Action node workflow ends in a terminal error status, so this waits for
+    that ending rather than for the run to finish.
+    """
+
+    lease = runtime(database, external, version, unknown_marker)
+    try:
+        install_enqueue_refusal()
+        lease.launch()
+        deadline = time.monotonic() + wait_seconds
+        while time.monotonic() < deadline:
+            if "ERROR" in workflow_statuses(database, version):
+                return
+            time.sleep(0.025)
+        raise TimeoutError(
+            f"the refused enqueue did not end its node workflow within {wait_seconds}s"
+        )
+    finally:
+        lease.close()
+
+
+def converge(
+    database: Path, external: Path, version: str, unknown_marker: Path
+) -> None:
+    """Start the runtime once; serve-start convergence runs inside the launch."""
+
+    lease = runtime(database, external, version, unknown_marker)
+    try:
+        lease.launch()
     finally:
         lease.close()
 
@@ -298,6 +389,11 @@ def main() -> None:
     elif command == "submit-absence":
         (run_id,) = arguments
         submit_absence(database, external, version, unknown_marker, run_id)
+    elif command == "strand":
+        (raw_wait,) = arguments
+        strand(database, external, version, unknown_marker, float(raw_wait))
+    elif command == "converge":
+        converge(database, external, version, unknown_marker)
     else:
         run_id, raw_marker, operation_name, timing, raw_wait = arguments
         execute(

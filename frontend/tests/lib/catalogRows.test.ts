@@ -83,7 +83,14 @@ describe("what the catalog says about a workflow", () => {
     const [row] = catalogWorkflowRows([summary({ name: null })], {});
 
     expect(row?.title).toBe(catalogPageCopy.unnamedWorkflow);
+    expect(row?.name).toBeNull();
     expect(row?.admittable).toBe(false);
+  });
+
+  it("carries the document's own declared name for the Details door to link with", () => {
+    const [row] = catalogWorkflowRows([summary()], {});
+
+    expect(row?.name).toBe(NAME);
   });
 
   it("claims nothing about a nameless revision the catalog can only answer by name", () => {
