@@ -67,6 +67,17 @@ test("shows the calm restart line on the open workbench, and clears it on its ow
   await expect(notice).toBeVisible({ timeout: 10_000 });
   await expect(notice).toContainText(restartNoticeCopy);
 
+  // The shell's own top banner, on a room that holds no ear of its own: the
+  // one place the fixed evidence below covers.
+  for (const viewport of widths) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await page.screenshot({
+      path: test.info().outputPath(`connection-restart-banner-${viewport.name}.png`),
+      fullPage: true
+    });
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+
   // Back on the workbench the issue names, with no network call of its own:
   // it already reads the one central store. The ear (HEART) speaks the line
   // itself as its own composer hint here, so the shell's top banner stays

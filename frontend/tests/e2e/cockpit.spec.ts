@@ -12,6 +12,19 @@ import { standingWords } from "../../src/lib/runState";
 const foundReference = "run1.Zm91bmQtcnVu";
 const absentReference = "run1.YWJzZW50LXJ1bg";
 
+/**
+ * A real HTTP answer the server gave, not a round trip that never happened
+ * -- every read-recovery test below wants a page-local "unavailable", never
+ * #700's own central, cross-page reachability signal (which `route.abort`
+ * would trip, since that models an outage, not one read's own failure).
+ */
+const TEMPORARILY_UNAVAILABLE_PROBLEM = {
+  type: "urn:atelier2:problem:v1:temporarily-unavailable",
+  title: "Temporarily unavailable",
+  status: 503,
+  detail: "the durable store is unreachable"
+} as const;
+
 // Every executable V3 agent node declares exactly one output and the schema it
 // must satisfy: that is `single-json-output/v1`, the one output shape a run
 // enforces. Where a test is about something else, it pins the schema that admits
@@ -346,8 +359,11 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
     }
   });
   await page.route("**/atelier/api/v1/runs?*", async (route) => {
-    if (readsFail) await route.abort("failed");
-    else await route.continue();
+    if (readsFail) {
+      await route.fulfill({ status: 503, json: TEMPORARILY_UNAVAILABLE_PROBLEM });
+    } else {
+      await route.continue();
+    }
   });
 
   const expectOnlyBoardRead = (): void => {
@@ -489,7 +505,10 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
     }
     round += 1;
     if (round <= 2) {
-      await route.abort("failed");
+      // A real HTTP answer the server gave, not a round trip that never
+      // happened -- the page-local "unavailable" this test wants, never the
+      // central, cross-page reachability signal #700 owns.
+      await route.fulfill({ status: 503, json: TEMPORARILY_UNAVAILABLE_PROBLEM });
       return;
     }
     await route.fulfill({
@@ -506,7 +525,7 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
       return;
     }
     if (round === 2 && hash === newHash) {
-      await route.abort("failed");
+      await route.fulfill({ status: 503, json: TEMPORARILY_UNAVAILABLE_PROBLEM });
       return;
     }
     await route.fulfill({
@@ -793,11 +812,11 @@ test("proves(new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-
     const after = new URL(route.request().url()).searchParams.get("after_revision_hash");
     if (after === null) agentRound += 1;
     if (agentRound === 1) {
-      await route.abort("failed");
+      await route.fulfill({ status: 503, json: TEMPORARILY_UNAVAILABLE_PROBLEM });
       return;
     }
     if (agentRound === 2 && after !== null) {
-      await route.abort("failed");
+      await route.fulfill({ status: 503, json: TEMPORARILY_UNAVAILABLE_PROBLEM });
       return;
     }
     await route.fulfill({
@@ -1053,7 +1072,7 @@ test("proves(new-run-confirms-workflow-detail-before-committing-selection-and-dr
         return;
       }
       if (confirmedCalls <= 2) {
-        await route.abort("failed");
+        await route.fulfill({ status: 503, json: TEMPORARILY_UNAVAILABLE_PROBLEM });
         return;
       }
       await route.fulfill({
