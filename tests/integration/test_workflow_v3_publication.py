@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -20,7 +22,8 @@ from atelier2.api.references import (
     encode_canonical_base64,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.revisions_v3 import PublishedRevision
+from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
+from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
 from tests.scenarios.api import (
     api_limits,
     discovered_openapi_document,
@@ -87,13 +90,23 @@ def _publish(client: TestClient, document: bytes) -> Response:
     )
 
 
-def _publish_schema(client: TestClient, schema: PublishedRevision) -> None:
+PUBLICATION_PATH_OF_KIND = {
+    RevisionKind.SCHEMA: API_PREFIX + "/schema-revisions",
+    RevisionKind.TOOL: API_PREFIX + "/tool-grant-revisions",
+}
+
+
+def _publish_revision(client: TestClient, revision: PublishedRevision) -> None:
     published = client.post(
-        API_PREFIX + "/schema-revisions",
-        content=schema.document,
+        PUBLICATION_PATH_OF_KIND[revision.kind],
+        content=revision.document,
         headers={"content-type": "application/json"},
     )
     assert published.status_code in (200, 201), published.text
+
+
+def _publish_schema(client: TestClient, schema: PublishedRevision) -> None:
+    _publish_revision(client, schema)
 
 
 def _row_count(runtime: DbosRuntime, table: sa.Table) -> int:
@@ -198,27 +211,73 @@ def test_a_v3_revision_this_build_runs_reads_back_as_executable(
     ]
 
 
+VERIFICATION_GRANT = PublishedRevision(
+    RevisionKind.TOOL,
+    json.dumps(
+        {"capability": ToolGrantCapability.RUN_PROJECT_VERIFICATION.value}
+    ).encode(),
+)
+GRANTED_V3_DOCUMENT = (
+    b"""format_version: 3
+name: One agent that must verify the project
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing this chain is for.
+    tools:
+      - {ref: project-verification, revision: %s}
+"""
+    % VERIFICATION_GRANT.revision_hash.value.encode()
+    + declared_output()
+)
+
+
+@dataclass(frozen=True)
+class PinnedReference:
+    """One kind a node pins, the document pinning it, and where the author wrote it."""
+
+    document: bytes
+    missing: PublishedRevision
+    published_first: tuple[PublishedRevision, ...]
+    site: str
+
+
+PINNED_REFERENCES = {
+    "schema": PinnedReference(
+        EXECUTABLE_V3_DOCUMENT, ANY_JSON_SCHEMA, (), "field 'outputs.schema'"
+    ),
+    "tool-grant": PinnedReference(
+        GRANTED_V3_DOCUMENT, VERIFICATION_GRANT, (ANY_JSON_SCHEMA,), "field 'tools'"
+    ),
+}
+
+
 @pytest.mark.proves("a-revision-says-which-form-it-waits-for-not-which-version-it-is")
+@pytest.mark.parametrize("pinned", PINNED_REFERENCES.values(), ids=PINNED_REFERENCES)
 def test_a_revision_pinning_an_unpublished_reference_is_not_executable_until_it_is(
-    runtime: DbosRuntime,
+    runtime: DbosRuntime, pinned: PinnedReference
 ) -> None:
     """The reader's verdict and the start's are one verdict (#701).
 
-    A well-formed line whose output schema nobody published read back as
+    A well-formed line whose pinned reference nobody published read back as
     executable while the start refused it as not executable, and the conductor
     trusted the reading. Now the publication answer, the detail read and the
     described listing all name the reference the start would refuse, and the
     moment that reference is published, all of them say executable.
     """
     client = _client(runtime)
-    created = _publish(client, EXECUTABLE_V3_DOCUMENT).json()
+    for revision in pinned.published_first:
+        _publish_revision(client, revision)
+    created = _publish(client, pinned.document).json()
     revision_hash = created["workflow_revision_hash"]
 
     assert created["graph"]["executable"] is False
     reason = created["graph"]["not_executable_reason"]
-    assert "outputs.schema" in reason
-    assert ANY_JSON_SCHEMA.revision_hash.value in reason
-    assert "no published schema revision carries this hash" in reason
+    assert pinned.site in reason
+    assert pinned.missing.revision_hash.value in reason
+    assert reason.endswith("[unpublished_revision]")
     listed = client.get(API_PREFIX + "/workflow-revisions?view=described").json()
     assert [item["not_executable_reason"] for item in listed["items"]] == [reason]
 
@@ -237,7 +296,7 @@ def test_a_revision_pinning_an_unpublished_reference_is_not_executable_until_it_
     assert refused.json()["type"].endswith(":workflow-format-not-executable")
     assert _row_count(runtime, runs) == 0
 
-    _publish_schema(client, ANY_JSON_SCHEMA)
+    _publish_revision(client, pinned.missing)
 
     read = client.get(API_PREFIX + f"/workflow-revisions/{revision_hash}").json()
     assert read["graph"] == {

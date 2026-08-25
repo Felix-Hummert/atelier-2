@@ -95,7 +95,10 @@ from atelier2.ports.effects import (
     DurableReconciliationTargetMissing,
     TransactionalEffectReconcileCommander,
 )
-from atelier2.ports.published_revisions import PublishedRevisionResolver
+from atelier2.ports.published_revisions import (
+    PublishedRevisionResolver,
+    PublishedRevisionsUnavailable,
+)
 from atelier2.ports.workflow_revisions import (
     DurableRevisionCollision,
     DurableRevisionCreated,
@@ -103,7 +106,11 @@ from atelier2.ports.workflow_revisions import (
     WorkflowRevisionPublisher,
 )
 from tests.scenarios.api import permissive_projection_limit
-from tests.scenarios.workflows import V3_CONTROL_EDGE_LINE, V3_DOCUMENT
+from tests.scenarios.workflows import (
+    V3_CONTROL_EDGE_LINE,
+    V3_DOCUMENT,
+    declared_output,
+)
 
 
 @dataclass
@@ -190,6 +197,33 @@ def test_publication_projects_a_valid_v3_document_it_reached_the_write_port_with
     assert isinstance(result, PublicationCreated)
     assert result.read.projection.revision == revision
     assert isinstance(result.read.projection.graph, WorkflowGraphV3)
+
+
+def test_a_registry_that_cannot_answer_after_the_write_is_a_write_refusal() -> None:
+    """The revision is stored; what could not be said about it is said as unavailable."""
+    document = b"""format_version: 3
+name: One agent
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Do the one thing this chain is for.
+""" + declared_output()
+    revision = WorkflowRevision(document)
+
+    result = publish_workflow_revision(
+        document,
+        cast(WorkflowRevisionPublisher, FakePort(DurableRevisionCreated(revision))),
+        parse_workflow_document,
+        permissive_projection_limit(),
+        cast(
+            PublishedRevisionResolver,
+            FakePort(PublishedRevisionsUnavailable("registry asleep")),
+        ),
+    )
+
+    assert result == WriteUnavailable("registry asleep")
 
 
 def test_publication_refuses_an_invalid_v3_document_carrying_its_named_refusal() -> (

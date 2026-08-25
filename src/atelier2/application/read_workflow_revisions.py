@@ -13,20 +13,19 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Literal, assert_never, cast
 
+from atelier2.application.evaluate_executability import (
+    DocumentNotExecutable,
+    ExecutableDocument,
+    evaluate_executability,
+)
 from atelier2.application.refusals import (
     DurableStateCorrupt,
     ProjectionTooLarge,
     ReadUnavailable,
 )
-from atelier2.application.resolve_references import (
-    declared_through,
-    resolve_declared_reference,
-)
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
-from atelier2.contracts.run_configuration_v3 import ReferenceRefusal
 from atelier2.contracts.runs import WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import SchemaRefused, read_schema_document
-from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflow_projections import (
     DescribedWorkflowRevisionPage,
     EnrichedPageBudget,
@@ -38,11 +37,15 @@ from atelier2.contracts.workflows_v3 import (
     VersionedReference,
     WaitNodeV3,
     WorkflowGraphV3,
-    what_a_v3_document_still_waits_for,
+)
+from atelier2.ports.published_revisions import (
+    DurableStateCorrupt as PortDurableStateCorrupt,
 )
 from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
+    PublishedRevisionMissing,
     PublishedRevisionResolver,
+    PublishedRevisionsUnavailable,
 )
 from atelier2.ports.workflow_revisions import (
     ProjectionTooLarge as PortProjectionTooLarge,
@@ -163,54 +166,42 @@ def get_workflow_revision(
 
 def describe_workflow_revision(
     projection: WorkflowRevisionProjection, resolver: PublishedRevisionResolver
-) -> WorkflowRevisionRead:
+) -> WorkflowRevisionRead | ReadUnavailable | DurableStateCorrupt:
     """What this build says about one stored revision: the read's and the publication's answer alike."""
-    return WorkflowRevisionRead(
-        projection,
-        what_a_document_still_waits_for(projection.graph, resolver),
-        _wait_answer_classifications(projection.graph, resolver),
-    )
-
-
-def what_a_document_still_waits_for(
-    graph: AnyWorkflowDocument, resolver: PublishedRevisionResolver
-) -> str | None:
-    """What keeps this build from starting the document as published, or None.
-
-    The start applies two rules in turn and a reader answers with both, never
-    the first alone: the executable parse names the authored form no runtime
-    binds, and binding the run configuration refuses the first pinned reference
-    no published revision answers. A view that stopped at the form called a
-    revision executable that the start then refused under the same name, and
-    the conductor read one answer and got the other (#701).
-    """
-    if not isinstance(graph, WorkflowGraphV3):
-        return None
-    waiting = what_a_v3_document_still_waits_for(graph)
-    if waiting is not None:
-        return waiting
-    for declared in declared_through(graph, SubworkflowBinding()):
-        resolution = resolve_declared_reference(declared, resolver)
-        if isinstance(resolution, ReferenceRefusal):
-            return f"a pinned reference nothing published answers: {resolution}"
-    return None
+    match evaluate_executability(projection.graph, resolver):
+        case ExecutableDocument():
+            not_executable_reason = None
+        case DocumentNotExecutable(reason):
+            not_executable_reason = reason
+        case ReadUnavailable() | DurableStateCorrupt() as failed:
+            return failed
+        case _ as unreachable:
+            assert_never(unreachable)
+    classifications = _wait_answer_classifications(projection.graph, resolver)
+    if isinstance(classifications, (ReadUnavailable, DurableStateCorrupt)):
+        return classifications
+    return WorkflowRevisionRead(projection, not_executable_reason, classifications)
 
 
 def _wait_answer_classifications(
     graph: AnyWorkflowDocument, resolver: PublishedRevisionResolver
-) -> tuple[WaitAnswerClassification, ...]:
+) -> tuple[WaitAnswerClassification, ...] | ReadUnavailable | DurableStateCorrupt:
     if not isinstance(graph, WorkflowGraphV3):
         return ()
-    return tuple(
-        _classify_wait_answer(node, resolver)
-        for node in graph.nodes
-        if isinstance(node, WaitNodeV3)
-    )
+    classifications: list[WaitAnswerClassification] = []
+    for node in graph.nodes:
+        if not isinstance(node, WaitNodeV3):
+            continue
+        classified = _classify_wait_answer(node, resolver)
+        if isinstance(classified, (ReadUnavailable, DurableStateCorrupt)):
+            return classified
+        classifications.append(classified)
+    return tuple(classifications)
 
 
 def _classify_wait_answer(
     node: WaitNodeV3, resolver: PublishedRevisionResolver
-) -> WaitAnswerClassification:
+) -> WaitAnswerClassification | ReadUnavailable | DurableStateCorrupt:
     """One waiting node's answer schema, classified as far as a real read may.
 
     The failure modes are named here rather than left to fall through to
@@ -225,6 +216,8 @@ def _classify_wait_answer(
     over a reference nothing has bound yet.
     """
     schema = _resolved_schema_document(node.outputs[0].schema_reference, resolver)
+    if isinstance(schema, (ReadUnavailable, DurableStateCorrupt)):
+        return schema
     if isinstance(schema, dict):
         if schema.get("type") == "boolean":
             return WaitAnswerClassification(node.id, "boolean")
@@ -240,7 +233,7 @@ def _classify_wait_answer(
 
 def _resolved_schema_document(
     reference: VersionedReference, resolver: PublishedRevisionResolver
-) -> object | None:
+) -> object | None | ReadUnavailable | DurableStateCorrupt:
     """This reference's own accepted schema, or None where nothing here can read one.
 
     A `bool` top-level schema (`true` or `false`) is a legal Draft 2020-12
@@ -252,9 +245,17 @@ def _resolved_schema_document(
         revision_hash = PublishedRevisionHash(reference.revision)
     except ValueError:
         return None  # not a well-formed pinned hash at all
-    resolved = resolver.resolve(RevisionKind.SCHEMA, revision_hash)
-    if not isinstance(resolved, PublishedRevisionFound):
-        return None  # no published schema revision carries this hash yet
+    match resolver.resolve(RevisionKind.SCHEMA, revision_hash):
+        case PublishedRevisionFound() as resolved:
+            pass
+        case PublishedRevisionMissing():
+            return None  # no published schema revision carries this hash yet
+        case PublishedRevisionsUnavailable(detail):
+            return ReadUnavailable(detail)
+        case PortDurableStateCorrupt():
+            return DurableStateCorrupt()
+        case _ as unreachable:
+            assert_never(unreachable)
     if resolved.revision.kind is not RevisionKind.SCHEMA:
         return None  # this hash names a revision of a different published kind
     verdict = read_schema_document(resolved.revision.document)
@@ -313,16 +314,15 @@ def list_described_workflow_revisions(
 
     match queries.list_described_workflow_revisions(after, limit, budget):
         case DescribedWorkflowRevisionPage(items, next_after):
-            return WorkflowRevisionsDescribed(
-                tuple(
-                    DescribedWorkflowRevision(
-                        projection,
-                        what_a_document_still_waits_for(projection.graph, resolver),
-                    )
-                    for projection in items
-                ),
-                next_after,
-            )
+            described: list[DescribedWorkflowRevision] = []
+            for projection in items:
+                read = describe_workflow_revision(projection, resolver)
+                if isinstance(read, (ReadUnavailable, DurableStateCorrupt)):
+                    return read
+                described.append(
+                    DescribedWorkflowRevision(projection, read.not_executable_reason)
+                )
+            return WorkflowRevisionsDescribed(tuple(described), next_after)
         case PortReadUnavailable(detail):
             return ReadUnavailable(detail)
         case PortProjectionTooLarge():

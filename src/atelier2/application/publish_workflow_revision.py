@@ -7,7 +7,11 @@ from atelier2.application.read_workflow_revisions import (
     WorkflowRevisionRead,
     describe_workflow_revision,
 )
-from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
+from atelier2.application.refusals import (
+    DurableStateCorrupt,
+    ReadUnavailable,
+    WriteUnavailable,
+)
 from atelier2.contracts.runs import WorkflowRevision
 from atelier2.contracts.workflow_projections import (
     WorkflowRevisionProjection,
@@ -160,16 +164,18 @@ def publish_workflow_revision(
     result = publisher.publish(revision)
     match result:
         case DurableRevisionCreated(stored):
-            return PublicationCreated(
+            return _answered(
+                PublicationCreated,
                 describe_workflow_revision(
                     WorkflowRevisionProjection(stored, graph), resolver
-                )
+                ),
             )
         case DurableRevisionExisting(stored):
-            return PublicationExisting(
+            return _answered(
+                PublicationExisting,
                 describe_workflow_revision(
                     WorkflowRevisionProjection(stored, graph), resolver
-                )
+                ),
             )
         case DurableRevisionCollision():
             return PublicationCollision()
@@ -177,5 +183,26 @@ def publish_workflow_revision(
             return WriteUnavailable()
         case PortDurableStateCorrupt():
             return DurableStateCorrupt()
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _answered(
+    outcome: type[PublicationCreated | PublicationExisting],
+    described: WorkflowRevisionRead | ReadUnavailable | DurableStateCorrupt,
+) -> PublishWorkflowRevisionResult:
+    """The stored revision described, or why it could not be after the write.
+
+    The revision is durable either way; a registry that would not answer for
+    the references it pins is a later attempt's problem, and a retry answers
+    `PublicationExisting` with the description it could not give now.
+    """
+    match described:
+        case WorkflowRevisionRead():
+            return outcome(described)
+        case ReadUnavailable(detail):
+            return WriteUnavailable(detail)
+        case DurableStateCorrupt():
+            return described
         case _ as unreachable:
             assert_never(unreachable)

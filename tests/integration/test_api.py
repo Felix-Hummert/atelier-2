@@ -1464,10 +1464,10 @@ def test_start_parses_workflow_before_begin_immediate(
     revision = WorkflowRevision(DOCUMENT)
     publisher = DbosWorkflowRevisionPublisher(runtime.engine)
     assert isinstance(publisher.publish(revision), DurableRevisionCreated)
-    original_parser = starter_module.parse_executable_workflow_document
+    original_parser = starter_module.parse_workflow_document
     monkeypatch.setattr(
         starter_module,
-        "parse_executable_workflow_document",
+        "parse_workflow_document",
         lambda document: _assert_parser_has_no_serialized_write_lock(
             runtime, original_parser, document
         ),
@@ -1523,7 +1523,7 @@ def test_start_rechecks_revision_bytes_after_outside_parse_without_mutation(
         DurableRevisionCreated,
     )
     changed_document = DOCUMENT.replace(b"output: payload", b"output: changed")
-    original_parser = starter_module.parse_executable_workflow_document
+    original_parser = starter_module.parse_workflow_document
 
     def drift_revision(document: bytes):
         graph = original_parser(document)
@@ -1538,9 +1538,7 @@ def test_start_rechecks_revision_bytes_after_outside_parse_without_mutation(
             )
         return graph
 
-    monkeypatch.setattr(
-        starter_module, "parse_executable_workflow_document", drift_revision
-    )
+    monkeypatch.setattr(starter_module, "parse_workflow_document", drift_revision)
     with runtime.engine.connect() as connection:
         before_runs = int(
             connection.scalar(sa.select(sa.func.count()).select_from(runs)) or 0

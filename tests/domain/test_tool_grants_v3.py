@@ -14,7 +14,10 @@ from dataclasses import dataclass, replace
 
 import pytest
 
-from atelier2.application.resolve_references import resolve_declared_reference
+from atelier2.application.resolve_references import (
+    ReferenceResolution,
+    resolve_declared_reference,
+)
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
@@ -75,7 +78,7 @@ class OneRevisionRegistry:
         return PublishedRevisionMissing()
 
 
-def resolution_of(document: bytes) -> ResolvedReference | ReferenceRefusal:
+def resolution_of(document: bytes) -> ReferenceResolution:
     """What the seam a run start uses answers for these exact published bytes."""
     revision = PublishedRevision(RevisionKind.TOOL, document)
     declared = DeclaredReference(

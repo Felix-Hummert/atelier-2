@@ -7,6 +7,11 @@ import pytest
 
 from atelier2.adapters.markdown_agent_definitions import parse_agent_definition
 from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.application.evaluate_executability import (
+    DocumentNotExecutable,
+    ExecutableDocument,
+    evaluate_executability,
+)
 from atelier2.application.prepare_run_events import (
     EventCursorAhead,
     RunEventStreamPrepared,
@@ -39,7 +44,6 @@ from atelier2.application.read_workflow_revisions import (
     WorkflowRevisionsListed,
     get_workflow_revision,
     list_workflow_revisions,
-    what_a_document_still_waits_for,
 )
 from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
@@ -321,24 +325,40 @@ def test_a_document_whose_pinned_reference_nothing_published_answers_is_not_exec
     nothing published answers, and the reason names which."""
     projection = _wait_revision_projection(WELL_FORMED_UNPUBLISHED_HASH)
 
-    waiting = what_a_document_still_waits_for(
+    evaluated = evaluate_executability(
         projection.graph, ScriptedResolver(PublishedRevisionMissing())
     )
 
-    assert waiting is not None
-    assert "no published schema revision carries this hash" in waiting
-    assert f"decision@{WELL_FORMED_UNPUBLISHED_HASH}" in waiting
+    assert isinstance(evaluated, DocumentNotExecutable), evaluated
+    assert "no published revision of this kind carries this hash" in evaluated.reason
+    assert f"decision@{WELL_FORMED_UNPUBLISHED_HASH}" in evaluated.reason
 
 
 def test_a_document_whose_every_reference_resolves_waits_for_nothing() -> None:
     schema = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "boolean"}')
     projection = _wait_revision_projection(schema.revision_hash.value)
 
-    waiting = what_a_document_still_waits_for(
+    evaluated = evaluate_executability(
         projection.graph, ScriptedResolver(PublishedRevisionFound(schema))
     )
 
-    assert waiting is None
+    assert isinstance(evaluated, ExecutableDocument), evaluated
+    assert [entry.revision_hash for entry in evaluated.resolutions] == [
+        schema.revision_hash
+    ]
+
+
+def test_a_registry_that_cannot_answer_for_a_pinned_reference_is_a_read_refusal() -> (
+    None
+):
+    """Not `free`, not `not executable`: the store did not answer, and the read says so."""
+    projection = _wait_revision_projection(WELL_FORMED_UNPUBLISHED_HASH)
+    queries = ScriptedQueries(WorkflowRevisionFound(projection))
+    resolver = ScriptedResolver(PublishedRevisionsUnavailable("registry asleep"))
+
+    result = get_workflow_revision(REVISION_HASH, queries, resolver)
+
+    assert result == ReadUnavailable("registry asleep")
 
 
 @pytest.mark.parametrize(
