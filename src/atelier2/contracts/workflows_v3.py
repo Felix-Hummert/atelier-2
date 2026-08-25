@@ -1472,21 +1472,25 @@ def what_a_v3_document_still_waits_for(graph: WorkflowGraphV3) -> str | None:
 def _unrepeatable_loop_forms(graph: WorkflowGraphV3) -> str | None:
     """What a declared loop asks for that no round of this build carries.
 
-    Two things are still nobody's. A round is a second execution of a node, and
-    only the Agent kind mints one today -- a repeated Wait would ask the same
-    person the same question under an identity the answer path does not carry.
-    And a value read *out of* a loop names no round: a run leaves the loop in
-    whichever round ended it and stands in the first round again outside, so the
-    reader would have to say which round wrote the value it reads, and no rule
-    here says. A declared verdict decides when a loop ends; it does not decide
-    that.
+    One thing is still nobody's: a value read *out of* a loop names no round. A
+    run leaves the loop in whichever round ended it and stands in the first
+    round again outside, so the reader would have to say which round wrote the
+    value it reads, and no rule here says. A declared verdict decides when a
+    loop ends; it does not decide that.
+
+    A round is a second execution of a node. The Agent and Wait kinds both mint
+    one: a `WaitNodeBinding` carries the round ordinal it was bound in, and an
+    answer is keyed by execution and round, so a repeated Wait now asks its
+    question, and reads its answer, under an identity the answer path carries.
+    Action still does not repeat -- a repeated effect has no round semantics an
+    idempotent write can lean on.
     """
     for loop in graph.loops:
         repeated = sorted(
             {
                 graph.node(member).type
                 for member in loop.body
-                if not isinstance(graph.node(member), AgentNodeV3)
+                if not isinstance(graph.node(member), (AgentNodeV3, WaitNodeV3))
             }
         )
         if repeated:

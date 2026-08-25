@@ -83,7 +83,14 @@ describe("what the catalog says about a workflow", () => {
     const [row] = catalogWorkflowRows([summary({ name: null })], {});
 
     expect(row?.title).toBe(catalogPageCopy.unnamedWorkflow);
+    expect(row?.name).toBeNull();
     expect(row?.admittable).toBe(false);
+  });
+
+  it("carries the document's own declared name for the Details door to link with", () => {
+    const [row] = catalogWorkflowRows([summary()], {});
+
+    expect(row?.name).toBe(NAME);
   });
 
   it("claims nothing about a nameless revision the catalog can only answer by name", () => {
@@ -105,6 +112,50 @@ describe("what the catalog says about a workflow", () => {
     const [row] = catalogWorkflowRows([summary({ name: "Iterate Code" })], {});
 
     expect(row?.admittable).toBe(false);
+  });
+});
+
+describe("grouping revisions of one lineage into one card", () => {
+  it("collapses an unadmitted sibling into the admitted card's own note, not a second card", () => {
+    const rows = catalogWorkflowRows(
+      [summary({ workflow_revision_hash: HASH }), summary({ workflow_revision_hash: OTHER_HASH })],
+      admitted(HASH)
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.revisionHash).toBe(HASH);
+    expect(rows[0]?.state).toEqual({ kind: "startable" });
+    expect(rows[0]?.newerRevisionAvailable).toBe(true);
+  });
+
+  it("carries no newer-revision note when the admitted name has no sibling", () => {
+    const [row] = catalogWorkflowRows([summary({ workflow_revision_hash: HASH })], admitted(HASH));
+
+    expect(row?.newerRevisionAvailable).toBe(false);
+  });
+
+  it("keeps every revision its own card before the name has an admitted head", () => {
+    const rows = catalogWorkflowRows(
+      [summary({ workflow_revision_hash: HASH }), summary({ workflow_revision_hash: OTHER_HASH })],
+      {}
+    );
+
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.state)).toEqual([
+      { kind: "not-admitted" },
+      { kind: "not-admitted" }
+    ]);
+    expect(rows.every((row) => row.newerRevisionAvailable === false)).toBe(true);
+  });
+
+  it("does not group two different names into one card", () => {
+    const rows = catalogWorkflowRows(
+      [summary({ name: "iterate-code" }), summary({ name: "iterate-docs", workflow_revision_hash: OTHER_HASH })],
+      {}
+    );
+
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.title)).toEqual(["iterate-code", "iterate-docs"]);
   });
 });
 

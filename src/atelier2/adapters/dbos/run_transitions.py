@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import sqlalchemy as sa
+from sqlalchemy.exc import IntegrityError
 
 from atelier2.adapters.dbos.agent_catalog import (
     agent_configuration_from_record,
@@ -60,6 +61,7 @@ from atelier2.contracts.run_bindings import AnyRun, RunV2, RunV3
 from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
+    TERMINAL_RUN_STATES,
     RevisionHashCollision,
     Run,
     RunId,
@@ -469,63 +471,69 @@ def _insert_event(session: Any, event: RunEvent, at: RecordedAt | None = None) -
         if isinstance(attempt_binding, RunEventCancellationBinding)
         else None
     )
-    session.execute(
-        run_events.insert().values(
-            run_id=event.run_id.value,
-            revision_hash=event.revision_hash.value,
-            event_sequence=event.event_sequence,
-            node_id=event.node_id,
-            node_execution_id=event.node_execution_id.value,
-            event_kind=event.event_kind.value,
-            payload=event.payload,
-            payload_hash=event.payload_hash.value,
-            receipt_logical_key=(
-                None
-                if event.receipt_logical_key is None
-                else event.receipt_logical_key.value
-            ),
-            receipt_result_hash=(
-                None
-                if event.receipt_result_hash is None
-                else event.receipt_result_hash.value
-            ),
-            event_hash=event.event_hash.value,
-            agent_attempt_id=(
-                None if attempt_binding is None else attempt_binding.attempt_id.value
-            ),
-            attempt_ordinal=(
-                None if attempt_binding is None else attempt_binding.attempt_ordinal
-            ),
-            cancellation_command_id=(
-                None
-                if cancellation_binding is None
-                else cancellation_binding.command_id
-            ),
-            replacement=(
-                None
-                if cancellation_binding is None
-                else cancellation_binding.replacement.value
-            ),
-            cancellation_disposition=(
-                None
-                if cancellation_binding is None
-                or cancellation_binding.disposition is None
-                else cancellation_binding.disposition.value
-            ),
-            replacement_attempt_id=(
-                None
-                if cancellation_binding is None
-                or cancellation_binding.replacement_attempt_id is None
-                else cancellation_binding.replacement_attempt_id.value
-            ),
-            agent_receipt_hash=(
-                None
-                if event.agent_receipt_hash is None
-                else event.agent_receipt_hash.value
-            ),
-            round_ordinal=event.round_ordinal,
-        )
+    insertion = run_events.insert().values(
+        run_id=event.run_id.value,
+        revision_hash=event.revision_hash.value,
+        event_sequence=event.event_sequence,
+        node_id=event.node_id,
+        node_execution_id=event.node_execution_id.value,
+        event_kind=event.event_kind.value,
+        payload=event.payload,
+        payload_hash=event.payload_hash.value,
+        receipt_logical_key=(
+            None
+            if event.receipt_logical_key is None
+            else event.receipt_logical_key.value
+        ),
+        receipt_result_hash=(
+            None
+            if event.receipt_result_hash is None
+            else event.receipt_result_hash.value
+        ),
+        event_hash=event.event_hash.value,
+        agent_attempt_id=(
+            None if attempt_binding is None else attempt_binding.attempt_id.value
+        ),
+        attempt_ordinal=(
+            None if attempt_binding is None else attempt_binding.attempt_ordinal
+        ),
+        cancellation_command_id=(
+            None if cancellation_binding is None else cancellation_binding.command_id
+        ),
+        replacement=(
+            None
+            if cancellation_binding is None
+            else cancellation_binding.replacement.value
+        ),
+        cancellation_disposition=(
+            None
+            if cancellation_binding is None or cancellation_binding.disposition is None
+            else cancellation_binding.disposition.value
+        ),
+        replacement_attempt_id=(
+            None
+            if cancellation_binding is None
+            or cancellation_binding.replacement_attempt_id is None
+            else cancellation_binding.replacement_attempt_id.value
+        ),
+        agent_receipt_hash=(
+            None if event.agent_receipt_hash is None else event.agent_receipt_hash.value
+        ),
+        round_ordinal=event.round_ordinal,
     )
+    # The driver's own integrity error carries the bound parameters, and the
+    # payload among them is a `memoryview` the durable step boundary above
+    # cannot serialise. An error that cannot be recorded is one the run never
+    # hears about: the node workflow would stand STARTED with nothing left to
+    # move it. The refusal is therefore restated in words -- the event it names
+    # and the store's own reason for it -- which cross that boundary.
+    try:
+        session.execute(insertion)
+    except IntegrityError as error:
+        raise RunTransitionConflict(
+            f"the event log refused {event.event_kind.value} of node "
+            f"{event.node_id} round {event.round_ordinal}: {error.orig}"
+        ) from error
     record_event_instant(session, event.run_id.value, event.event_sequence, at=at)
 
 
@@ -581,7 +589,10 @@ def _commit_event(
         target_node, ANY_ACTION_NODE_KINDS
     ):
         raise RunTransitionConflict("WAITING_RECONCILIATION target is not an Action")
-    if terminal != (target_state in {RunState.COMPLETED, RunState.FAILED}):
+    # Which words end a run has one owner, and CANCELLED is one of them (#668):
+    # a run resting at a pause ends here, under its own attestation, rather than
+    # standing WAITING_INPUT forever because no attempt existed to stop.
+    if terminal != (target_state in TERMINAL_RUN_STATES):
         raise RunTransitionConflict("terminal transition shape disagrees")
     if (
         terminal
@@ -667,7 +678,14 @@ def commit_waiting_input(
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
+    round_ordinal: int = FIRST_ROUND_ORDINAL,
 ) -> TransitionSnapshot:
+    """Rest this run at this node's pause, in the round it is already turning.
+
+    The pause moves nowhere, so source and target round are the same one: what
+    the round decides here is only which execution of the node the run is
+    resting at, and that is what the answer will have to name.
+    """
     return _commit_event(
         session,
         run_id,
@@ -678,6 +696,43 @@ def commit_waiting_input(
         RunState.STARTED,
         RunState.WAITING_INPUT,
         node_id,
+        round_ordinal=round_ordinal,
+        target_round_ordinal=round_ordinal,
+    )
+
+
+def commit_wait_cancelled(
+    session: Any,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    command_id: str,
+    round_ordinal: int = FIRST_ROUND_ORDINAL,
+) -> TransitionSnapshot:
+    """End a run resting at this pause, under the command that ordered it.
+
+    The event is the cancellation's whole attestation: no attempt exists to
+    stamp, so this is the last entry the run's terminal hash folds over, and
+    `lift_started_run` -- which never invents an event -- is not the seam a
+    resting pause can use anyway, because that lift only moves a STARTED run.
+
+    The run stops where it stood. A cancelled pause reaches no successor, so
+    source and target node and round are the one execution the operator's
+    confirmation fenced on.
+    """
+    return _commit_event(
+        session,
+        run_id,
+        revision_hash,
+        node_id,
+        RunEventKind.WAIT_CANCELLED,
+        command_id.encode("utf-8"),
+        RunState.WAITING_INPUT,
+        RunState.CANCELLED,
+        node_id,
+        terminal=True,
+        round_ordinal=round_ordinal,
+        target_round_ordinal=round_ordinal,
     )
 
 

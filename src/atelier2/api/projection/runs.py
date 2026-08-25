@@ -44,6 +44,7 @@ from atelier2.api.wire.resources import (
 )
 from atelier2.application.project_node_rail import NodeRailEntry, project_node_rail
 from atelier2.contracts.agents import AgentReceiptV2
+from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_projections import (
     NodeDetail,
@@ -148,14 +149,22 @@ def _run_not_cancellable_reason(
 ) -> RunCancellationRefusal | None:
     """Why this run cannot be operator-cancelled now, or nothing when it can.
 
-    The closed predicate #439 D3 makes the server own: a run is cancellable only
+    The closed predicate #439 D3 makes the server own: a run is cancellable
     while it is STARTED on an agent node whose live attempt this cancel could
-    stop. Every other standing is a named reason, never a silent no.
+    stop, and while it rests at a pause nobody has answered (#668) -- a resting
+    Wait ends under its own attestation rather than standing owed an answer
+    forever. Every other standing is a named reason, never a silent no.
+
+    A pause is still the operator's move, so `WAITING_FOR_YOU` keeps naming the
+    reconciliation a person has to resolve: that one has an Action's live intent
+    behind it, and ending the run there would abandon it.
     """
     if run.state in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}:
         return RunCancellationRefusal.ALREADY_ENDED
-    if run.state in {RunState.WAITING_INPUT, RunState.WAITING_RECONCILIATION}:
+    if run.state is RunState.WAITING_RECONCILIATION:
         return RunCancellationRefusal.WAITING_FOR_YOU
+    if run.state is RunState.WAITING_INPUT:
+        return None
     if not isinstance(projection.graph.node(run.current_node_id), AgentNodeV3):
         return RunCancellationRefusal.NODE_RUNS_NO_AGENT
     attempt = projection.current_agent_attempt
@@ -178,13 +187,21 @@ def _run_cancellability(
             reason=cast(RunNotCancellableReasonName, reason.value),
             target_node_execution_id=None,
         )
-    attempt = projection.current_agent_attempt
-    if attempt is None:
-        raise ValueError("a cancellable run has a live attempt to fence on")
+    # The fence is the run's own live execution, derived the way the store
+    # recomputes it before it accepts a command (#439 D2). An agent node's live
+    # attempt was looked up by this very identity, so naming it here instead of
+    # the attempt's copy keeps one derivation -- and it is the only honest
+    # answer for a resting Wait, whose last agent attempt belongs to some
+    # earlier node entirely.
     return RunCancellabilityResource(
         cancellable=True,
         reason=None,
-        target_node_execution_id=attempt.node_execution_id.value,
+        target_node_execution_id=NodeExecutionId.for_node(
+            run.run_id,
+            run.revision_hash,
+            run.current_node_id,
+            run.current_round_ordinal,
+        ).value,
     )
 
 

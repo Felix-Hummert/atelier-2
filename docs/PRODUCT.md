@@ -405,10 +405,13 @@ the next edge rather than a failure. What no verdict can say yet is the agent's
 own named refusal — "the order is unclear because X" — because a run ends failed
 only under an attempt failure code whose value list is a store contract, and a
 refusal written under either existing code would name a schema or a dead process
-that was never involved. A loop body may hold only agent nodes. A `from` edge
-whose source sits in the same loop and is not ordered by `depends_on` reads that
-source's immediately previous round — one payload, the producing output's schema
-— and is honestly empty in round one. A value read *out of* a loop is still
+that was never involved. A loop body may hold agent and wait nodes: a round is a
+second execution of a node, and both kinds mint one, so a person may be asked
+again every round and each pause is its own event. An action node is still
+refused in a loop, because a repeated effect has no round an idempotent write
+could lean on. A `from` edge whose source sits in the same loop and is not
+ordered by `depends_on` reads that source's immediately previous round — one
+payload, the producing output's schema — and is honestly empty in round one. A value read *out of* a loop is still
 refused by name because no rule here says which round wrote it. Unsafe YAML is
 refused by name too, before any vocabulary is read: an
 anchor, an alias, an explicit tag, a merge key, a duplicate key, a second document,
@@ -476,8 +479,10 @@ no runtime executes a child.
 
 A valid V3 document is publishable long before all of it is executable: it
 becomes an immutable revision under the same exact-bytes hash identity as V1 and V2,
-and the revision projection names its format and says what still has no owner, while an
-invalid one is refused at publication carrying that named node and field. One shape of
+and the revision projection names its format and says what still has no owner -- an
+authored form nothing binds, or a pinned reference no published revision answers -- by
+the same two rules the start applies, so no reading promises a start the service then
+refuses; an invalid one is refused at publication carrying that named node and field. One shape of
 it runs: a single line of Agent, Wait and linear Action nodes, each entered by at most
 one dependency and followed by at most one dependent, declaring no optional form the
 runtime does not bind. `required_context` and `available_context` are parsed target
@@ -522,12 +527,14 @@ the Wait node is the line's sink, to the run's own terminal hash.
 
 The same V3 run page lets the operator stop an honestly-cancellable run. Whether a
 run can be cancelled is the server's word, published on the run resource as a closed
-predicate rather than guessed from the rail: a run is cancellable only while it is
-`STARTED` on an agent node whose live attempt this cancel could stop, and every other
-standing carries its own operator sentence — between two nodes, waiting for a person, a
-node that runs no agent, already cancelling, already ended — instead of a grey disabled
-button. Cancelling is a staged decision: a real question naming the consequence,
-confirmed before the irreversible boundary, whose command travels the same audited
+predicate rather than guessed from the rail: a run is cancellable while it is `STARTED`
+on an agent node whose live attempt this cancel could stop, and while it rests at a
+pause nobody has answered, and every other standing carries its own operator sentence —
+between two nodes, waiting for a person to resolve an Action, a node that runs no agent,
+already cancelling, already ended, an answer still being applied — instead of a grey
+disabled button. Cancelling is a staged decision: a real question naming the consequence
+this run would actually pay — a working agent stopped, or an answer nobody will now
+give — confirmed before the irreversible boundary, whose command travels the same audited
 pending/durably-accepted/uncertain/retry path an answer does, keyed by one idempotency
 key so a lost reply is resent as the same command and never a second cancellation. One
 durable winner is projected honestly. When a concurrent success finished before the
@@ -538,6 +545,18 @@ the stopped node, and a server restart mid-cancel still lifts the run `CANCELLED
 the same command identity. A reload during an unconfirmed cancel stays honest, offering
 Retry and Discard rather than claiming the run is stopping, while a reload during an
 accepted cancel keeps reading "Stopping this run".
+
+A run resting in `WAITING_INPUT` ends differently, because it holds no attempt to stop.
+The cancel writes its own attestation — a `WAIT_CANCELLED` event carrying the minted
+command id, fenced by the node execution the confirmation named — and the run reaches
+`CANCELLED` inside that one transaction, with that event folded into its terminal hash.
+Nothing converges afterwards, so the door answers with the ended run rather than with a
+cancellation still to come, and a retry of the same idempotency key reads that event
+back instead of minting a second command. One refusal outranks the cancel: an answer
+already accepted and not yet applied leaves the run waiting under the name
+`answer-in-flight`, because a message the product has told a person it took is never
+dropped to make room for a later command. A pause held open for an Action's
+reconciliation stays non-cancellable — a live intent stands behind it.
 
 What makes a V3 agent node executable now includes the shape of its answer. The
 one enforced shape is `single-json-output/v1`: exactly one declared output, whose
@@ -753,7 +772,20 @@ choice is not a muted twin of a refusal. After a choice the list collapses
 onto that card with a Change path, and the start form sits directly under it.
 Unnamed documents stay one row each, as they did. A V3 publish from the CLI or the
 cockpit then names the revision through `POST /workflow-lineages`; publication
-and admission stay two HTTP acts. Details repeats what the published graph already answers —
+and admission stay two HTTP acts. Before either act, `POST /library/recognitions`
+says what a loose document is without writing anything: opaque bytes plus an
+optional `file_name`, answered as a recognized workflow (format, authored name
+and description), a recognized agent definition (name, description, provider
+mark), a kind the library recognises but does not hold yet (a `SKILL.md` with
+a closed frontmatter block, or JSON with `mcpServers`, each with its reason), or
+unrecognized with what every kind expected and why these bytes are not it. A
+document two markers claim is refused naming both; the file name is a marker,
+not a tie-breaker, so a `SKILL.md` whose frontmatter is a valid agent
+definition is ambiguous and only a `SKILL.md` that is not a valid agent is a
+skill. The document publishes the byte bound of the body and the character
+bound of `file_name`. Recognition reuses the workflow and
+agent-definition parsers publication already runs; no skill or MCP store
+exists. Details repeats what the published graph already answers —
 format, roles and node count where the V3 resource carries them, executability,
 declared orders with the schema each pinned, the lineage's revision history,
 and the graph miniature. A hash sits behind a proof affordance — hidden until
@@ -769,7 +801,14 @@ document bytes. A V3 run page draws that excerpt as topological layers and
 paints each node's state from the rail the server already walked — shape and
 colour together, no zoom, no drag. The page leads with the published workflow
 name and keeps the run id as identity. A click into a node speaks Prompt and
-Output, never Asked or Answered. The Who panel labels the receipt's model as
+Output, never Asked or Answered. A run that has ended shows its own sink
+node's declared answer as prose above the graph without a click — a declared
+object's own `answer` field as one sentence with its other non-empty fields
+named after it, a declared array as its own items, an object with no
+`answer` field as all of its fields, a bare string as itself — and the
+node's own Result tab renders the identical form, the declared bytes kept
+behind a collapsed disclosure; opening the sink node itself names that
+banner once ("Shown above") rather than repeating it. The Who panel labels the receipt's model as
 the declared configuration model and says a provider-resolved model is not
 recorded — the same honest absence as usage. A hash leads with its human
 name and is copied by a click on that named control — the hex is the proof
@@ -797,7 +836,13 @@ unknown project hash stays visibly unavailable rather than becoming the browser
 choice. Late reads do not replace manual draft values, and a failed read keeps
 same-lineage confirmed truth with one retry. Unlisted, retired, unnamable, and
 roleless workflows do not read occupancy. The agent list is empty until a
-configuration is published, and says so. It opens in the Studio rather than in
+configuration is published, and says so. That occupancy is no longer this
+picker's alone: a start that names no binding for a declared role takes it from
+the served project's occupancy at the start path itself, so the conductor's
+`start_run` and the queue's launch sweep run an occupied workflow with no hand
+on this page. An explicit binding still wins over the recommendation, only
+roles the parsed document declares are filled, and a role the project has not
+cast is still refused by name. It opens in the Studio rather than in
 that list: one screen across the
 whole workshop naming every run that waits for a human — the durable states
 `WAITING_INPUT` and `WAITING_RECONCILIATION`, each asked of the list by

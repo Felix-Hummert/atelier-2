@@ -391,6 +391,11 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Agent definition revision collision",
         "Stop and inspect durable agent definition revision integrity.",
     ),
+    "library-document-ambiguous": ProblemDefinition(
+        422,
+        "Document matches more than one library kind",
+        "Rename or edit the document so exactly one kind's marker claims it.",
+    ),
     "unsupported-media-type": ProblemDefinition(
         415,
         "Unsupported media type",

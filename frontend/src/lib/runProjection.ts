@@ -45,6 +45,96 @@ export function whenFacts(
   };
 }
 
+/** One field of a declared object result, in the order the answer wrote it. */
+export interface ReadableResultField {
+  readonly label: string;
+  readonly value: string;
+}
+
+/**
+ * What a node wrote, turned into prose rather than left as a wire shape
+ * (#716). The declared profile a run's own schema admits at the top level is
+ * always an object or an array (`schemas_v3.declared_instance_in_answer`'s
+ * own comment on `_JSON_DOCUMENT_OPENERS`), so those are the two shapes this
+ * reads, plus the plain, non-JSON text a free-form schema's answer already is:
+ *
+ * - an object carrying its own `answer` field reads as that one sentence --
+ *   the shape every agent node's report already writes when it means to
+ *   speak to a person, the conductor's included -- with every other
+ *   *non-empty* field of the same object shown after it, named and valued,
+ *   so nothing material hides only in the disclosure;
+ * - an object with no such field reads as all of its own fields instead;
+ * - an array reads as its items, each read the same way a field's value is;
+ * - anything else (prose, or a value no declared shape admits) reads as
+ *   itself.
+ *
+ * `raw` is the exact bytes behind an "Exact text" disclosure, kept only
+ * where the readable form is a narrower view of them -- plain text has
+ * nothing behind it worth a second copy.
+ */
+export type ReadableResult =
+  | { readonly kind: "text"; readonly text: string; readonly raw: string | null }
+  | {
+      readonly kind: "object";
+      readonly sentence: string | null;
+      readonly fields: readonly ReadableResultField[];
+      readonly raw: string;
+    }
+  | { readonly kind: "items"; readonly items: readonly string[]; readonly raw: string };
+
+const DECLARED_ANSWER_SENTENCE_FIELD = "answer";
+
+export function readableResult(decodedAnswer: string): ReadableResult {
+  const declared = parseDeclaredValue(decodedAnswer);
+  if (declared === null) {
+    return { kind: "text", text: decodedAnswer, raw: null };
+  }
+  if (Array.isArray(declared)) {
+    const items = declared.map(readableFieldValue);
+    return items.length === 0
+      ? { kind: "text", text: decodedAnswer, raw: null }
+      : { kind: "items", items, raw: decodedAnswer };
+  }
+  const sentenceValue = declared[DECLARED_ANSWER_SENTENCE_FIELD];
+  const sentence =
+    typeof sentenceValue === "string" && sentenceValue.length > 0 ? sentenceValue : null;
+  const entries =
+    sentence === null
+      ? Object.entries(declared)
+      : Object.entries(declared).filter(
+          ([label, value]) => label !== DECLARED_ANSWER_SENTENCE_FIELD && !isEmptyValue(value)
+        );
+  const fields = entries.map(([label, value]) => ({ label, value: readableFieldValue(value) }));
+  if (sentence === null && fields.length === 0) {
+    return { kind: "text", text: decodedAnswer, raw: null };
+  }
+  return { kind: "object", sentence, fields, raw: decodedAnswer };
+}
+
+function parseDeclaredValue(text: string): Record<string, unknown> | unknown[] | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (Array.isArray(value)) return value;
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function isEmptyValue(value: unknown): boolean {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "string") return value.length === 0;
+  if (Array.isArray(value)) return value.length === 0;
+  return false;
+}
+
+function readableFieldValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(readableFieldValue).join(", ");
+  return JSON.stringify(value);
+}
+
 export type ConnectionState =
   | "connecting"
   | "live"

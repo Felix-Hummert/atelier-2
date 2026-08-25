@@ -64,7 +64,7 @@ from atelier2.contracts.executions import (
     WaitAnswerSnapshot,
     WaitAnswerState,
     is_canonical_integer_bytes,
-    logical_effect_key_for,
+    logical_effect_key_for_node,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
@@ -653,10 +653,14 @@ def commit_action_completed(
     if len(actions) != 1:
         raise RunTransitionConflict("confirmed intent graph has no single Action")
     action = actions[0]
-    execution_id = NodeExecutionId.for_node(run_id, revision_hash, action.id)
+    round_ordinal = session.execute(
+        sa.select(runs.c.current_round_ordinal).where(runs.c.run_id == run_id.value)
+    ).scalar_one_or_none()
     if (
-        not isinstance(action, ANY_ACTION_NODE_KINDS)
-        or logical_key != logical_effect_key_for(execution_id)
+        round_ordinal is None
+        or not isinstance(action, ANY_ACTION_NODE_KINDS)
+        or logical_key
+        != logical_effect_key_for_node(run_id, revision_hash, action.id, round_ordinal)
         or intent.binding.workflow_revision_hash != revision_hash
         or receipt.intent != intent
     ):
@@ -685,20 +689,18 @@ def commit_action_completed(
         logical_key,
         receipt.result.payload_hash,
         terminal=terminal,
+        # The source round is the one this check just proved the key belongs
+        # to. The Action's successor's own round is left at the default: no
+        # published document can place an Action inside a declared loop
+        # (`_unrepeatable_loop_forms`), so `round_of` would answer round one
+        # for any successor today regardless -- computing it for real is a
+        # named gap that waits on Action nodes becoming loop-repeatable (#751).
+        round_ordinal=round_ordinal,
     )
 
 
 def commit_wait_answered(session: Any, answer: WaitAnswer) -> TransitionSnapshot:
-    record = (
-        session.execute(
-            sa.select(wait_answers).where(
-                wait_answers.c.run_id == answer.run_id.value,
-                wait_answers.c.node_id == answer.node_id,
-            )
-        )
-        .mappings()
-        .one_or_none()
-    )
+    record = _wait_answer_record(session, answer.node_execution_id)
     if record is None:
         raise RunTransitionConflict("answer workflow has no durable answer")
     durable = wait_answer_snapshot_from_record(record)
@@ -708,15 +710,18 @@ def commit_wait_answered(session: Any, answer: WaitAnswer) -> TransitionSnapshot
     # The answer is asked the same question every other completed node is asked --
     # is this the run's sink, and if not which heir did its author declare -- so a
     # Wait node standing last carries its own run to COMPLETED instead of handing
-    # on to a successor no document names.
-    match completion_after_node(graph, answer.node_id):
-        case RunContinues(successor):
+    # on to a successor no document names. It is asked in the answer's own round,
+    # because a loop's last node hands back to the round's first one.
+    match completion_after_node(graph, answer.node_id, answer.round_ordinal):
+        case RunContinues(successor, target_round):
             target_state = RunState.STARTED
             target_node_id = successor
+            target_round_ordinal = target_round
             terminal = False
         case RunCompletes():
             target_state = RunState.COMPLETED
             target_node_id = answer.node_id
+            target_round_ordinal = answer.round_ordinal
             terminal = True
         case _ as unreachable:
             assert_never(unreachable)
@@ -731,13 +736,14 @@ def commit_wait_answered(session: Any, answer: WaitAnswer) -> TransitionSnapshot
         target_state,
         target_node_id,
         terminal=terminal,
+        round_ordinal=answer.round_ordinal,
+        target_round_ordinal=target_round_ordinal,
     )
     if durable.state is WaitAnswerState.PENDING:
         updated = session.execute(
             wait_answers.update()
             .where(
-                wait_answers.c.run_id == answer.run_id.value,
-                wait_answers.c.node_id == answer.node_id,
+                wait_answers.c.node_execution_id == answer.node_execution_id.value,
                 wait_answers.c.state == WaitAnswerState.PENDING.value,
                 wait_answers.c.state_version == 0,
             )
@@ -810,6 +816,7 @@ def wait_answer_snapshot_from_record(record: Mapping[Any, Any]) -> WaitAnswerSna
         str(record["node_id"]),
         NodeExecutionId(str(record["node_execution_id"])),
         bytes(record["answer_bytes"]),
+        int(record["round_ordinal"]),
     )
     if (
         answer.answer_hash.value != record["answer_hash"]
@@ -822,22 +829,36 @@ def wait_answer_snapshot_from_record(record: Mapping[Any, Any]) -> WaitAnswerSna
     )
 
 
+def _wait_answer_record(
+    session: Any, node_execution_id: NodeExecutionId
+) -> Mapping[Any, Any] | None:
+    """The one stored answer of this exact execution, or nothing where none is.
+
+    Every reader asks by execution identity because that is the row's own key:
+    a node a loop turns holds one answer per round, and asking by node alone
+    would answer with whichever round happens to come first.
+    """
+    return (
+        session.execute(
+            sa.select(wait_answers).where(
+                wait_answers.c.node_execution_id == node_execution_id.value
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+
+
 def load_wait_answer(
     session: Any,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
+    round_ordinal: int = FIRST_ROUND_ORDINAL,
 ) -> WaitAnswerSnapshot:
-    record = (
-        session.execute(
-            sa.select(wait_answers).where(
-                wait_answers.c.run_id == run_id.value,
-                wait_answers.c.revision_hash == revision_hash.value,
-                wait_answers.c.node_id == node_id,
-            )
-        )
-        .mappings()
-        .one_or_none()
+    record = _wait_answer_record(
+        session,
+        NodeExecutionId.for_node(run_id, revision_hash, node_id, round_ordinal),
     )
     if record is None:
         raise RunTransitionConflict("wait answer does not exist")
@@ -909,8 +930,15 @@ class DbosWaitAnswerer:
                     if stored_revision.revision_hash != request.revision_hash:
                         connection.rollback()
                         return DurableStateCorrupt()
+                    # The round is the run's own head, not the submitter's: the
+                    # command names a node, and which execution of it is resting
+                    # is a fact this transaction has just read under its lock.
+                    round_ordinal = run.current_round_ordinal
                     execution_id = NodeExecutionId.for_node(
-                        request.run_id, request.revision_hash, request.node_id
+                        request.run_id,
+                        request.revision_hash,
+                        request.node_id,
+                        round_ordinal,
                     )
                     answer = WaitAnswer(
                         request.run_id,
@@ -918,6 +946,7 @@ class DbosWaitAnswerer:
                         request.node_id,
                         execution_id,
                         request.answer_bytes,
+                        round_ordinal,
                     )
                     answer_workflow_id = answer_workflow_id_for(execution_id)
                     inserted = connection.execute(
@@ -928,6 +957,7 @@ class DbosWaitAnswerer:
                             revision_hash=answer.revision_hash.value,
                             node_id=answer.node_id,
                             node_execution_id=answer.node_execution_id.value,
+                            round_ordinal=answer.round_ordinal,
                             answer_bytes=answer.answer_bytes,
                             answer_hash=answer.answer_hash.value,
                             answer_workflow_id=answer_workflow_id,
@@ -935,16 +965,7 @@ class DbosWaitAnswerer:
                             state_version=0,
                         )
                     )
-                    stored_record = (
-                        connection.execute(
-                            sa.select(wait_answers).where(
-                                wait_answers.c.run_id == request.run_id.value,
-                                wait_answers.c.node_id == request.node_id,
-                            )
-                        )
-                        .mappings()
-                        .one_or_none()
-                    )
+                    stored_record = _wait_answer_record(connection, execution_id)
                     if stored_record is None:
                         connection.rollback()
                         return DurableStateCorrupt()
@@ -991,6 +1012,7 @@ class DbosWaitAnswerer:
                         answer.run_id.value,
                         answer.revision_hash.value,
                         answer.node_id,
+                        answer.round_ordinal,
                     )
                     connection.commit()
                     return DurableAnswerCreated(snapshot)

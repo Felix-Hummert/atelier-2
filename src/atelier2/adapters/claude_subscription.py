@@ -1212,6 +1212,24 @@ class ClaudeAtelierDoorsExecutor:
     travels beside that as defense in depth: it was measured on the tool-free
     sibling, not on an MCP stdio child.
 
+    WHAT THE SCRUB ITSELF LEAVES BEHIND, measured unbilled and named here
+    rather than left silent (#656, #661). Before it can launch the door child
+    under bubblewrap, this CLI's own `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`
+    preparation creates roughly nineteen empty bind-mount targets in the
+    invocation's own working directory wherever it does not already find one
+    there -- dotfiles such as `.env`, package-manager markers such as
+    `package.json`, `yarn.lock` and `.npmrc`, and the directories
+    `.claude/commands`, `.claude/agents` and `node_modules/.bin`. None of them
+    are read by anything this module decodes, and none are a write the model
+    or a pinned project made. They are not tracked or swept by name: the
+    working directory this executor is started in is one leased unit
+    (`AgentAttemptWorkspaceLease`), and `LocalAgentAttemptWorkspaceOwner.release`
+    retires that whole directory at the attempt's terminal cleanup regardless
+    of what the CLI, the model or a pinned project left inside it -- so this
+    residue falls with everything else in the lease rather than needing a name
+    list this module would have to keep in step with a CLI release that stays
+    free to widen it.
+
     WHAT IS NOT MEASURED, said here rather than discovered later. No billed
     call has been made under this vector on any release. What is measured is
     that the vector parses whole (the attestation above), and -- unbilled, by

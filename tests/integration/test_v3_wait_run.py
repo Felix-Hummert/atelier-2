@@ -23,11 +23,20 @@ import pytest
 import sqlalchemy as sa
 from dbos import DBOS
 
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.names import ANSWER_WORKFLOW_NAME
-from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
-from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.run_store import (
+    DbosWaitAnswerer,
+    commit_wait_answered,
+    load_wait_answer,
+)
+from atelier2.adapters.dbos.runtime import (
+    DbosRuntime,
+    DbosRuntimeSettings,
+    create_canonical_engine,
+)
 from atelier2.adapters.dbos.schema import run_events, runs, wait_answers
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
@@ -42,6 +51,12 @@ from atelier2.application.answer_wait import (
     AnswerStateConflict,
     UnanswerableWait,
     answer_wait_result,
+)
+from atelier2.application.cancel_run import (
+    CancelEndedRun,
+    CancelNotCancellable,
+    CancelRunResult,
+    cancel_run_result,
 )
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -64,8 +79,14 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
-from atelier2.contracts.run_projections import NodeState
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.run_cancellations import RunCancelCommandId
+from atelier2.contracts.run_projections import NodeState, RunCancellationRefusal
+from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
+    RunId,
+    RunState,
+    WorkflowRevision,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -143,28 +164,39 @@ ANSWER = b'"approved"'
 WAIT_NODE = "approve"
 
 
-@pytest.fixture
-def runtime(
-    tmp_path: Path,
-) -> Iterator[tuple[DbosRuntime, RecordingAgentExecutorFactoryV2]]:
-    """A runtime whose agent executor succeeds, so the line reaches the pause."""
-    recording = RecordingAgentExecutorFactoryV2(
+def recording_provider() -> RecordingAgentExecutorFactoryV2:
+    """The agent executor that succeeds, so the line reaches the pause."""
+    return RecordingAgentExecutorFactoryV2(
         "exact", "exact/v1", "exact-operation", PROVIDER_OUTPUT
     )
-    started = DbosRuntime(
+
+
+def wait_runtime_over(
+    root: Path, recording: RecordingAgentExecutorFactoryV2
+) -> DbosRuntime:
+    """A runtime over the durable state in this directory, as a restart builds one."""
+    return DbosRuntime(
         DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
+            root / "atelier.sqlite",
             "v3-wait-test",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+            agent_scratch_root=agent_scratch_root(root),
         ),
         LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
+            root / "external.sqlite",
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
         ExactOutputAgentExecutorFactory(),
         (recording,),
     )
+
+
+@pytest.fixture
+def runtime(
+    tmp_path: Path,
+) -> Iterator[tuple[DbosRuntime, RecordingAgentExecutorFactoryV2]]:
+    recording = recording_provider()
+    started = wait_runtime_over(tmp_path, recording)
     started.initialize_storage()
     try:
         yield started, recording
@@ -260,6 +292,27 @@ def answer(runtime: DbosRuntime, workflow: WorkflowRevision, value: bytes) -> ob
         WAIT_NODE,
         value,
         DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
+    )
+
+
+def cancel(
+    engine: sa.Engine,
+    application_version: str,
+    workflow: WorkflowRevision,
+    idempotency_key: str,
+    *,
+    node_id: str = WAIT_NODE,
+) -> CancelRunResult:
+    """Cancel the run exactly as the route does, one layer under it.
+
+    `node_id` is what the operator's confirmation fenced on, so a test can hand
+    over the execution of some other node and watch the fence refuse it.
+    """
+    return cancel_run_result(
+        RUN,
+        idempotency_key,
+        NodeExecutionId.for_node(RUN, workflow.revision_hash, node_id),
+        DbosAgentAttemptStore(engine, application_version),
     )
 
 
@@ -530,6 +583,84 @@ def test_the_answer_that_carries_a_run_on_reports_it_started_the_next_node(
     )
 
 
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_a_stored_answer_names_the_exact_execution_of_the_node_it_answers(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """The row is keyed by execution and round, not by the node the person saw.
+
+    A node a declared loop turns pauses once per round, so an answer that named
+    only run and node would let a message typed for one round be applied to a
+    later one. What is asserted is the key the store really holds.
+    """
+    started, _ = runtime
+    workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
+    wait_for_state(started, RunState.WAITING_INPUT)
+
+    assert isinstance(answer(started, workflow, ANSWER), AnswerAcceptedPending)
+
+    wait_for_state(started, RunState.COMPLETED)
+    with started.engine.connect() as connection:
+        stored = (
+            connection.execute(
+                sa.select(wait_answers).where(wait_answers.c.run_id == RUN.value)
+            )
+            .mappings()
+            .one()
+        )
+        paused_event = (
+            connection.execute(
+                sa.select(run_events).where(
+                    run_events.c.run_id == RUN.value,
+                    run_events.c.event_kind == RunEventKind.WAIT_ANSWERED.value,
+                )
+            )
+            .mappings()
+            .one()
+        )
+    execution = NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE)
+    assert str(stored["node_execution_id"]) == execution.value
+    assert int(stored["round_ordinal"]) == FIRST_ROUND_ORDINAL
+    assert str(paused_event["node_execution_id"]) == execution.value
+    assert int(paused_event["round_ordinal"]) == FIRST_ROUND_ORDINAL
+
+
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_an_already_applied_answer_replays_without_a_second_event(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """Committing an answer that is already applied answers the same and writes nothing.
+
+    This is the branch a replay takes, and only this: a process that dies
+    between the commit and the record of it comes back to an answer already
+    APPLIED, and the second call has to be the first one's answer rather than a
+    second transition on a run that has already moved. What proves it is the
+    event log rather than the return value alone -- the run's events are read
+    before and after, and they are the same list.
+
+    It says nothing about how many arguments the recovered workflow carried;
+    that is the migration suite's driven proof.
+    """
+    started, _ = runtime
+    workflow = start_and_launch(started, WAIT_AS_THE_SINK)
+    wait_for_state(started, RunState.WAITING_INPUT)
+    assert isinstance(answer(started, workflow, ANSWER), AnswerAcceptedPending)
+    wait_for_state(started, RunState.COMPLETED)
+    settled = durable_events(started)
+
+    # The replay commits, because a transaction that rolls back on the way out
+    # would hide the very write this test is looking for.
+    with started.engine.begin() as connection:
+        applied = load_wait_answer(connection, RUN, workflow.revision_hash, WAIT_NODE)
+        replayed = commit_wait_answered(connection, applied.answer)
+
+    assert applied.state is WaitAnswerState.APPLIED
+    assert replayed.event.event_kind is RunEventKind.WAIT_ANSWERED
+    assert replayed.state is RunState.COMPLETED
+    assert replayed.current_round_ordinal == FIRST_ROUND_ORDINAL
+    assert durable_events(started) == settled
+
+
 @pytest.mark.parametrize(
     "rejected",
     [b"41", b'{"verdict": "approved"}', b"approved", b""],
@@ -589,3 +720,252 @@ def test_an_answer_to_a_v3_run_that_is_not_waiting_is_refused_by_its_state(
     )
 
     assert isinstance(late, AnswerStateConflict), late
+
+
+CANCEL_KEY = "operator-stops-the-wait-1"
+
+
+def test_a_run_resting_at_a_wait_ends_cancelled_on_its_own_attestation(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """#668: a pause nobody will answer ends, and the record says who ended it.
+
+    The event the cancel writes is the whole attestation -- there is no attempt
+    to stamp -- so it has to be the last thing the run's terminal hash folds
+    over, and it has to name the minted command. A lift that closed the run
+    without writing one would leave a hash over a log that ends at the pause,
+    saying nothing about why the run stopped.
+    """
+    started, recording = runtime
+    workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
+    wait_for_state(started, RunState.WAITING_INPUT)
+
+    ended = cancel(
+        started.engine, started.settings.application_version, workflow, CANCEL_KEY
+    )
+
+    assert isinstance(ended, CancelEndedRun), ended
+    assert ended.run.state is RunState.CANCELLED
+    command_id = RunCancelCommandId.for_key(CANCEL_KEY).value
+    assert durable_events(started) == [
+        (1, "implement", RunEventKind.AGENT_COMPLETED.value, PROVIDER_OUTPUT),
+        (2, WAIT_NODE, RunEventKind.WAITING_INPUT.value, b""),
+        (3, WAIT_NODE, RunEventKind.WAIT_CANCELLED.value, command_id.encode("utf-8")),
+    ]
+    with started.engine.connect() as connection:
+        run = (
+            connection.execute(sa.select(runs).where(runs.c.run_id == RUN.value))
+            .mappings()
+            .one()
+        )
+        event_hashes = tuple(
+            Sha256Hash(str(value))
+            for value in connection.execute(
+                sa.select(run_events.c.event_hash)
+                .where(run_events.c.run_id == RUN.value)
+                .order_by(run_events.c.event_sequence)
+            ).scalars()
+        )
+    assert str(run["state"]) == RunState.CANCELLED.value
+    assert str(run["current_node_id"]) == WAIT_NODE
+    assert (
+        str(run["terminal_hash"])
+        == terminal_hash_for(workflow.revision_hash, event_hashes).value
+    )
+    assert recording.opened is not None
+    assert [request.node_id for request in recording.opened.requests] == ["implement"]
+
+
+def test_the_same_cancel_command_answers_the_ended_run_again(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """A retry after a lost response reads the command's own attestation back.
+
+    The pause holds no attempt row this command could have stamped, so the
+    event's payload is the only durable trace of it -- and a second submission
+    must find that trace rather than be told the run has simply already ended.
+    """
+    started, _ = runtime
+    workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
+    wait_for_state(started, RunState.WAITING_INPUT)
+    version = started.settings.application_version
+
+    first = cancel(started.engine, version, workflow, CANCEL_KEY)
+    second = cancel(started.engine, version, workflow, CANCEL_KEY)
+
+    assert isinstance(first, CancelEndedRun), first
+    assert isinstance(second, CancelEndedRun), second
+    assert second.run == first.run
+    assert [kind for _, _, kind, _ in durable_events(started)].count(
+        RunEventKind.WAIT_CANCELLED.value
+    ) == 1
+
+
+def test_a_cancel_fenced_on_another_node_leaves_the_pause_standing(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """#439 D2's fence covers the pause too: a stale confirmation stops nothing.
+
+    The execution named here is the agent node the line already finished, which
+    is exactly what an operator's browser would still be holding if it read the
+    run before the pause was reached.
+    """
+    started, _ = runtime
+    workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
+    wait_for_state(started, RunState.WAITING_INPUT)
+
+    refused = cancel(
+        started.engine,
+        started.settings.application_version,
+        workflow,
+        CANCEL_KEY,
+        node_id="implement",
+    )
+
+    assert refused == CancelNotCancellable(RunCancellationRefusal.BETWEEN_NODES)
+    assert [kind for _, _, kind, _ in durable_events(started)] == [
+        RunEventKind.AGENT_COMPLETED.value,
+        RunEventKind.WAITING_INPUT.value,
+    ]
+
+
+def test_a_cancel_arriving_on_an_accepted_answer_refuses_rather_than_drop_it(
+    tmp_path: Path,
+) -> None:
+    """An accepted message is never silently thrown away by a cancel.
+
+    The answer is taken while nothing is left to apply it -- the runtime that
+    would have driven it is closed first -- so the PENDING row this refusal is
+    about is a real one an operator was already told had been accepted, not a
+    window arranged by timing.
+    """
+    recording = recording_provider()
+    started = wait_runtime_over(tmp_path, recording)
+    started.initialize_storage()
+    try:
+        workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
+        wait_for_state(started, RunState.WAITING_INPUT)
+        version = started.settings.application_version
+    finally:
+        started.close()
+
+    engine = create_canonical_engine(tmp_path / "atelier.sqlite")
+    try:
+        accepted = answer_wait_result(
+            RUN,
+            workflow.revision_hash,
+            WAIT_NODE,
+            ANSWER,
+            DbosWaitAnswerer(engine, version),
+        )
+        refused = cancel(engine, version, workflow, CANCEL_KEY)
+        with engine.connect() as connection:
+            state = connection.scalar(
+                sa.select(runs.c.state).where(runs.c.run_id == RUN.value)
+            )
+            answer_state = connection.scalar(
+                sa.select(wait_answers.c.state).where(
+                    wait_answers.c.node_execution_id
+                    == NodeExecutionId.for_node(
+                        RUN, workflow.revision_hash, WAIT_NODE
+                    ).value
+                )
+            )
+    finally:
+        engine.dispose()
+
+    assert isinstance(accepted, AnswerAcceptedPending), accepted
+    assert refused == CancelNotCancellable(RunCancellationRefusal.ANSWER_IN_FLIGHT)
+    assert str(state) == RunState.WAITING_INPUT.value
+    assert str(answer_state) == WaitAnswerState.PENDING.value
+
+
+UNSETTLED_WORKFLOW_STATUSES = ("PENDING", "ENQUEUED")
+"""DBOS's own words for a workflow that still owes this store an outcome."""
+
+_UNSETTLED_WORKFLOWS = sa.text(
+    "SELECT COUNT(*) FROM workflow_status WHERE status IN :unsettled"
+).bindparams(sa.bindparam("unsettled", expanding=True))
+
+
+def wait_for_recovery_to_drain(runtime: DbosRuntime) -> None:
+    """Block until nothing this runtime recovered is still owed an outcome.
+
+    `DbosRuntime.launch` is already the barrier for recovery having *happened*:
+    it arms DBOS recovery and runs every convergence sweep synchronously under
+    its lock before it returns. What it does not wait for is a workflow that
+    recovery armed and handed to the queue, which runs afterwards -- so that is
+    what is waited on here, by DBOS's own status rather than by a duration.
+
+    A run resting at a pause leaves nothing unsettled, so this returns at once
+    today. That is the condition being true, not the check being absent: the
+    day recovery does re-arm a Wait node, this holds until that workflow has
+    run and the assertions below see what it wrote.
+    """
+    deadline = time.monotonic() + 8
+    unsettled = -1
+    while time.monotonic() < deadline:
+        with runtime.engine.connect() as connection:
+            unsettled = int(
+                connection.scalar(
+                    _UNSETTLED_WORKFLOWS,
+                    {"unsettled": list(UNSETTLED_WORKFLOW_STATUSES)},
+                )
+                or 0
+            )
+        if unsettled == 0:
+            return
+        time.sleep(0.025)
+    raise AssertionError(f"{unsettled} workflows never settled after recovery")
+
+
+def test_a_cancelled_pause_stays_ended_when_a_new_runtime_comes_up_over_it(
+    tmp_path: Path,
+) -> None:
+    """Recovery finds a run that ended at its pause and leaves it alone.
+
+    This is the sentence the cancel has to earn beyond its own transaction. A
+    pause is durable with nothing polling it, so the process that wrote the
+    cancellation is not what keeps the run ended -- the record is. A restarting
+    runtime replays whatever DBOS still holds, and a Wait node re-driven here
+    would try to write WAITING_INPUT onto a CANCELLED run.
+
+    Nothing here waits out a duration. `launch()` returns only once recovery is
+    armed and every convergence sweep has run, and `wait_for_recovery_to_drain`
+    then holds until the queue owes nothing -- so the event log compared below
+    is the one recovery actually left, not the one a sleep happened to catch.
+    """
+    recording = recording_provider()
+    started = wait_runtime_over(tmp_path, recording)
+    started.initialize_storage()
+    try:
+        workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
+        wait_for_state(started, RunState.WAITING_INPUT)
+        ended = cancel(
+            started.engine, started.settings.application_version, workflow, CANCEL_KEY
+        )
+        assert isinstance(ended, CancelEndedRun), ended
+        events_at_the_cancel = durable_events(started)
+        with started.engine.connect() as connection:
+            hash_at_the_cancel = connection.scalar(
+                sa.select(runs.c.terminal_hash).where(runs.c.run_id == RUN.value)
+            )
+    finally:
+        started.close()
+
+    recovered = wait_runtime_over(tmp_path, recording)
+    try:
+        recovered.launch()
+        wait_for_recovery_to_drain(recovered)
+        with recovered.engine.connect() as connection:
+            run = (
+                connection.execute(sa.select(runs).where(runs.c.run_id == RUN.value))
+                .mappings()
+                .one()
+            )
+        assert durable_events(recovered) == events_at_the_cancel
+    finally:
+        recovered.close()
+
+    assert str(run["state"]) == RunState.CANCELLED.value
+    assert str(run["terminal_hash"]) == str(hash_at_the_cancel)

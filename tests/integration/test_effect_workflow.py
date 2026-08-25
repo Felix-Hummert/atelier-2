@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy import exc
 from sqlalchemy.orm import Session
 
 from atelier2.adapters.dbos.effect_store import commit_resolution
+from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
@@ -231,7 +231,7 @@ def test_unknown_commits_waiting_state_and_required_event_together(
         )
 
     with (
-        pytest.raises(exc.IntegrityError),
+        pytest.raises(RunTransitionConflict, match="injected required-event failure"),
         Session(runtime.engine) as session,
         session.begin(),
     ):

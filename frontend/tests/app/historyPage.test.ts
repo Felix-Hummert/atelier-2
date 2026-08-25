@@ -147,24 +147,35 @@ describe("History shows only what has finished", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
-  it("names the resolved workflow, its result in the house's one word for it, and the real duration", async () => {
-    openHistory({ completed: [v3Run()] }, {
-      getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line"))
+  it("names the resolved workflow, when it ran, and the real duration, without a per-row node read", async () => {
+    const run = v3Run();
+    const getNodeDetail = vi.fn();
+    openHistory({ completed: [run] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line")),
+      getNodeDetail
     });
 
     const row = await screen.findByRole("link", { name: /Two agents in a line/ });
-    // The same word the Board and the run page use for a landed run: one
-    // vocabulary, no synonym drift (operator ruling 23.08.).
+    // "when" it ran, relative -- with the exact local stamp anchored for hover.
+    expect(within(row).getByText("just now").getAttribute("title")).toEqual(
+      expect.stringContaining(new Date(run.ended_at ?? "").getFullYear().toString())
+    );
+    // "result": the honest standing word, never a guessed sentence.
     expect(row.textContent).toContain(standingWords.done);
     expect(row.textContent).toContain("38 min");
+    // Never one node read per row -- the list is built from the run resources alone.
+    expect(getNodeDetail).not.toHaveBeenCalled();
   });
 
-  it("names a failed run's node and shows no duration when no V3 stamp exists", async () => {
-    openHistory({ failed: [v1Failed({ run_id: "broke" })] });
+  it("names a failed run's node, without reading it, and shows no duration when no V3 stamp exists", async () => {
+    const getNodeDetail = vi.fn();
+    openHistory({ failed: [v1Failed({ run_id: "broke" })] }, { getNodeDetail });
 
     const row = await screen.findByRole("link", { name: /broke/ });
     expect(row.textContent).toContain(`${standingWords.failed} · final`);
-    expect(row.textContent).toContain("Not recorded");
+    const durationLabel = within(row).getByText("Duration:", { exact: false });
+    expect(durationLabel.closest(".row-duration")?.textContent).toContain("Not recorded");
+    expect(getNodeDetail).not.toHaveBeenCalled();
   });
 
   it("leads down into the same run page a live run would open, already frozen", async () => {

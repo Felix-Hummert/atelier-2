@@ -21,9 +21,11 @@ export const historyPageCopy = {
   emptyDescription: "Runs land here once they finish — start one from a workflow.",
   emptyNext: "Open Workflows",
   columnName: "Name",
+  columnWhen: "When",
   columnResult: "Result",
   columnDuration: "Duration",
-  durationNotRecorded: "Not recorded",
+  /** Only a V1/V2 row, or a V3 row with neither stamp, ever reaches this -- the same gap in both When and Duration. */
+  notRecorded: "Not recorded",
   /**
    * Only shown when a listed row carries no V3 timestamp (a V1 or V2 run):
    * names why such a row still shows under a period chip that cannot measure

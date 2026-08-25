@@ -4,9 +4,10 @@ import type {
 } from "../api/client";
 import { catalogPageCopy } from "./catalogPageCopy";
 import type { CatalogNameState } from "./catalogName";
-import { isCatalogDisplayName } from "./catalogName";
+import { catalogHeadsOf, isCatalogDisplayName } from "./catalogName";
 import { shortFingerprint } from "./fingerprint";
 import { humanStartRefusal } from "./humanRefusal";
+import { groupSavedWorkflows } from "./savedWorkflows";
 
 /**
  * What the catalog says about one entry in one glance.
@@ -24,6 +25,12 @@ export type CatalogEntryState =
 export interface CatalogWorkflowRow {
   revisionHash: string;
   title: string;
+  /**
+   * The document's own declared name, `null` for the same revisions `title`
+   * falls back to a placeholder for. The Details door (#695) needs the real
+   * name, never the placeholder, to build the workflow detail page's path.
+   */
+  name: string | null;
   description: string | null;
   /**
    * `null` where this room cannot honestly answer: the catalog is asked by
@@ -34,6 +41,14 @@ export interface CatalogWorkflowRow {
   state: CatalogEntryState | null;
   /** Whether the admission door can take this revision at all. */
   admittable: boolean;
+  /**
+   * A published sibling of this same name exists that the catalog has not
+   * admitted -- the live duplicate-card finding (#659, sharpened by #684):
+   * one card carries the admitted head, and this is the only trace its
+   * unadmitted sibling leaves, instead of a second card wearing the same
+   * name.
+   */
+  newerRevisionAvailable: boolean;
 }
 
 export interface CatalogAgentRow {
@@ -57,24 +72,43 @@ export interface CatalogAgentRow {
  * Provenance is the first of them and today always the same sentence: nothing
  * in this build records where bytes came from, and every published revision got
  * here by hand. When the Git link (#660) starts recording a source, ref, commit
- * and path, it replaces that one sentence and may append the drift line
- * ("newer version available") — the row's shape does not change for either.
+ * and path, it replaces that one sentence -- the row's shape does not change.
  */
 export function catalogRowFacts(revisionHash: string): readonly string[] {
   return [catalogPageCopy.provenanceManual, shortFingerprint(revisionHash)];
 }
 
+/**
+ * One row per published revision -- except a name the catalog has already
+ * admitted, which collapses every revision under that name into its one
+ * admitted card, the sibling revisions marked rather than repeated.
+ *
+ * Grouping by name is grouping by lineage: the catalog contract lets exactly
+ * one lineage hold a display name, so a second published revision under an
+ * already-admitted name is that lineage's own unadmitted sibling, not an
+ * unrelated document that happens to share a title -- the live duplicate-card
+ * finding (#659, sharpened by #684). Before any revision of a name is
+ * admitted there is no head to collapse onto yet, so every revision still
+ * keeps its own row and its own "not in the catalog yet" verdict.
+ */
 export function catalogWorkflowRows(
   revisions: readonly WorkflowRevisionSummary[],
   catalogByName: Readonly<Record<string, CatalogNameState>>
 ): CatalogWorkflowRow[] {
-  return revisions.map((revision) => ({
-    revisionHash: revision.workflow_revision_hash,
-    title: revision.name ?? catalogPageCopy.unnamedWorkflow,
-    description: revision.description,
-    state: workflowEntryState(revision, catalogByName),
-    admittable: isAdmittable(revision)
-  }));
+  const admittedHeads = catalogHeadsOf(revisions, catalogByName) ?? {};
+  return groupSavedWorkflows(revisions, admittedHeads).flatMap((row) => {
+    const isAdmittedName = row.name !== null && admittedHeads[row.name] !== undefined;
+    const kept = isAdmittedName ? row.revisions.slice(0, 1) : row.revisions;
+    return kept.map((revision, index) => ({
+      revisionHash: revision.workflow_revision_hash,
+      title: revision.name ?? catalogPageCopy.unnamedWorkflow,
+      name: revision.name,
+      description: revision.description,
+      state: workflowEntryState(revision, catalogByName),
+      admittable: isAdmittable(revision),
+      newerRevisionAvailable: index === 0 && isAdmittedName && row.revisions.length > 1
+    }));
+  });
 }
 
 export function catalogAgentRows(

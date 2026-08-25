@@ -8,13 +8,16 @@ migrates nothing and returning a class from it would pickle class paths into
 durable rows. The step therefore keeps returning a plain dictionary, and the
 typed `NodeBinding` is made on this side of the step boundary.
 
-**One legacy form, named.** A binding written before the configuration contract
-existed carries neither `revision_format_version` nor `requested_capability`, and
-means exactly `V1` and `HEADLESS`. That is the only shape missing them that this
-codec accepts; a form carrying one of the two, an unknown key, a missing key, an
-unknown value or a hash its own fields do not produce is refused by name rather
-than read as the legacy one. The legacy arm may be deleted once no
-`operation_outputs` row without both keys can exist.
+**Two legacy forms, named.** An Agent binding written before the configuration
+contract existed carries neither `revision_format_version` nor
+`requested_capability`, and means exactly `V1` and `HEADLESS`. A Wait binding
+written before a pause could stand in a round carries no `round_ordinal`, and
+means the first round -- the only round a document that could not repeat a Wait
+was ever able to pause in. Those are the only shapes missing them that this
+codec accepts; a form carrying an unknown key, a missing key, an unknown value
+or a hash its own fields do not produce is refused by name rather than read as
+a legacy one. Each legacy arm may be deleted once no `operation_outputs` row of
+its shape can exist.
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ from atelier2.contracts.node_bindings import (
 from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_bindings import RunBindingConflict
+from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant, ToolGrantCapability
 
 
@@ -84,6 +88,7 @@ class EncodedActionBinding(TypedDict):
 
 class EncodedWaitBinding(TypedDict):
     type: Literal["wait"]
+    round_ordinal: NotRequired[int]
 
 
 class EncodedSubworkflowBinding(TypedDict):
@@ -101,6 +106,7 @@ type EncodedNodeBinding = (
 )
 
 _FORM_ONLY_KEYS = frozenset({"type"})
+_WAIT_OPTIONAL_KEYS = frozenset({"round_ordinal"})
 _AGENT_KEYS = frozenset({"type", "job", "output"})
 _SUBWORKFLOW_KEYS = frozenset({"type", "left", "right"})
 _AGENT_V2_KEYS = frozenset(
@@ -142,8 +148,8 @@ def encode_node_binding(binding: NodeBinding) -> EncodedNodeBinding:
             return _encode_agent_v2(binding)
         case ActionNodeBinding():
             return {"type": "action"}
-        case WaitNodeBinding():
-            return {"type": "wait"}
+        case WaitNodeBinding(round_ordinal=round_ordinal):
+            return {"type": "wait", "round_ordinal": round_ordinal}
         case SubworkflowNodeBinding(operands=(left, right)):
             return {"type": "subworkflow", "left": left, "right": right}
         case _ as unreachable:
@@ -162,8 +168,8 @@ def decode_node_binding(encoded: Mapping[str, object]) -> NodeBinding:
             _refuse_foreign_keys(encoded, _FORM_ONLY_KEYS)
             return ActionNodeBinding()
         case "wait":
-            _refuse_foreign_keys(encoded, _FORM_ONLY_KEYS)
-            return WaitNodeBinding()
+            _refuse_foreign_keys(encoded, _FORM_ONLY_KEYS, _WAIT_OPTIONAL_KEYS)
+            return _decode_wait(encoded)
         case "subworkflow":
             _refuse_foreign_keys(encoded, _SUBWORKFLOW_KEYS)
             return SubworkflowNodeBinding(
@@ -219,15 +225,20 @@ def _decode_agent_v2(encoded: Mapping[str, object]) -> AgentNodeBindingV2:
         raise RunBindingConflict(
             "a durable agent binding carries an invalid combination"
         ) from error
-    return AgentNodeBindingV2(
-        resolved,
-        _text(encoded, "job"),
-        _declared_tool_grant(encoded),
-        _declared_source_pin(encoded),
-        _declared_output_schema_document(encoded),
-        _whole_number(encoded, "round_ordinal"),
-        _declared_maximum_assistant_turns(encoded),
-    )
+    try:
+        return AgentNodeBindingV2(
+            resolved,
+            _text(encoded, "job"),
+            _declared_tool_grant(encoded),
+            _declared_source_pin(encoded),
+            _declared_output_schema_document(encoded),
+            _whole_number(encoded, "round_ordinal"),
+            _declared_maximum_assistant_turns(encoded),
+        )
+    except ValueError as error:
+        raise RunBindingConflict(
+            "a durable agent binding carries a round no run can stand in"
+        ) from error
 
 
 def _auth_profile(encoded: Mapping[str, object]) -> AuthProfileRevision:
@@ -318,6 +329,26 @@ def _declared_tool_grant(encoded: Mapping[str, object]) -> DeclaredToolGrant | N
     except (TypeError, ValueError) as error:
         raise RunBindingConflict(
             "a durable tool grant carries an unknown value"
+        ) from error
+
+
+def _decode_wait(encoded: Mapping[str, object]) -> WaitNodeBinding:
+    """The pause this row binds, in the round it names or the one a legacy row meant.
+
+    A round the contract refuses -- zero, negative -- is a durable row this
+    adapter never wrote, so it is refused in this codec's own words rather than
+    raised as the contract's `ValueError` at whatever recovered the run.
+    """
+    round_ordinal = (
+        FIRST_ROUND_ORDINAL
+        if "round_ordinal" not in encoded
+        else _whole_number(encoded, "round_ordinal")
+    )
+    try:
+        return WaitNodeBinding(round_ordinal)
+    except ValueError as error:
+        raise RunBindingConflict(
+            "a durable wait binding carries a round no run can stand in"
         ) from error
 
 

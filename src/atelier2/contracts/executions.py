@@ -108,6 +108,7 @@ class RunEventKind(StrEnum):
     ACTION_COMPLETED = "ACTION_COMPLETED"
     WAITING_INPUT = "WAITING_INPUT"
     WAIT_ANSWERED = "WAIT_ANSWERED"
+    WAIT_CANCELLED = "WAIT_CANCELLED"
     SUBWORKFLOW_COMPLETED = "SUBWORKFLOW_COMPLETED"
 
 
@@ -123,6 +124,7 @@ KINDS_NO_V1_RUN_CARRIES: frozenset[RunEventKind] = frozenset(
         RunEventKind.AGENT_CANCEL_REQUESTED,
         RunEventKind.AGENT_CANCELLED,
         RunEventKind.AGENT_INTERRUPTED,
+        RunEventKind.WAIT_CANCELLED,
     }
 )
 """The kinds a V1 run cannot produce, owned once for the wire and the projection.
@@ -247,6 +249,19 @@ class RunEvent:
             self.receipt_logical_key is not None or self.receipt_result_hash is not None
         ):
             raise ValueError("nonreceipt event may not carry receipt fields")
+        if self.event_kind is RunEventKind.WAIT_CANCELLED:
+            # A resting pause has no attempt to stamp, so this event *is* the
+            # cancellation's whole attestation and its payload is the operator
+            # command id that ordered it -- the only durable trace a retry of
+            # that same command can be answered from. Bounded exactly like the
+            # `command_id` an attempt cancellation carries in its own column.
+            from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
+
+            if not 1 <= len(self.payload) <= MAXIMUM_AGENT_FIELD_CHARACTERS:
+                raise ValueError(
+                    "a wait cancellation payload must be a command id of "
+                    f"1..{MAXIMUM_AGENT_FIELD_CHARACTERS} bytes"
+                )
         if (
             self.agent_receipt_hash is not None
             and self.event_kind is not RunEventKind.AGENT_COMPLETED
@@ -387,18 +402,27 @@ class TransitionSnapshot:
 
 @dataclass(frozen=True)
 class WaitAnswer:
+    """The bytes one person gave to one exact execution of one waiting node.
+
+    The round is what makes it exact. A node a declared loop turns pauses once
+    per round, and an answer that named only the node would let a message typed
+    for round two be applied to round three -- so the round is part of the
+    identity the execution id is checked against, never a label beside it.
+    """
+
     run_id: RunId
     revision_hash: WorkflowRevisionHash
     node_id: str
     node_execution_id: NodeExecutionId
     answer_bytes: bytes
+    round_ordinal: int = FIRST_ROUND_ORDINAL
     answer_hash: Sha256Hash = field(init=False)
 
     def __post_init__(self) -> None:
         if self.node_id == "":
             raise ValueError("answer node id must be nonempty")
         if self.node_execution_id != NodeExecutionId.for_node(
-            self.run_id, self.revision_hash, self.node_id
+            self.run_id, self.revision_hash, self.node_id, self.round_ordinal
         ):
             raise ValueError("answer execution identity differs from its node binding")
         object.__setattr__(self, "answer_hash", Sha256Hash.of(self.answer_bytes))
@@ -428,6 +452,29 @@ def logical_effect_key_for(execution_id: NodeExecutionId) -> LogicalEffectKey:
         frame("logical-effect-key/v1", execution_id.value.encode("ascii"))
     )
     return LogicalEffectKey(f"atelier2-node-effect-{digest.value}")
+
+
+def logical_effect_key_for_node(
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    round_ordinal: int = FIRST_ROUND_ORDINAL,
+) -> LogicalEffectKey:
+    """The logical effect key of one node's exact, round-bound execution.
+
+    Every reader that must agree a key belongs to *this* execution -- the
+    preparer that mints it, the completer that checks it still owns the run's
+    current node, and the convergence sweep that routes a stranded one home --
+    derives it from the same four coordinates: run, revision, node and round.
+    A caller that reconstructs `NodeExecutionId.for_node` by hand and forgets
+    the round silently reuses round one's key for every later round, and a
+    round-aware reader then finds a key that owns nothing it can match. This is
+    the one owner of that composition, so the mistake cannot be made a second
+    time in a fourth call site (#706).
+    """
+    return logical_effect_key_for(
+        NodeExecutionId.for_node(run_id, revision_hash, node_id, round_ordinal)
+    )
 
 
 def terminal_hash_for(

@@ -35,7 +35,9 @@ from atelier2.api.wire.resources import (
     WorkflowRevisionSummaryResourceV2,
 )
 from atelier2.application.read_workflow_revisions import (
+    DescribedWorkflowRevision,
     WaitAnswerClassification,
+    WorkflowRevisionRead,
     WorkflowRevisionsDescribed,
 )
 from atelier2.contracts.effects import (
@@ -43,9 +45,6 @@ from atelier2.contracts.effects import (
     OperatorAuthoritativeAbsence,
     OperatorFoundEffect,
     ReconcileCommand,
-)
-from atelier2.contracts.workflow_projections import (
-    WorkflowRevisionProjection,
 )
 from atelier2.contracts.workflows import (
     ActionNode,
@@ -64,7 +63,6 @@ from atelier2.contracts.workflows_v3 import (
     WaitNodeV3,
     WorkflowGraphV3,
     WorkflowNodeV3,
-    what_a_v3_document_still_waits_for,
 )
 
 
@@ -105,23 +103,6 @@ def node_resource(node: WorkflowNode | WorkflowNodeV2) -> NodeResource | NodeRes
             next_node_id=None,
         )
     raise AssertionError("closed workflow node union was extended without API mapping")
-
-
-def _executability_of(graph: AnyWorkflowDocument) -> tuple[bool, str | None]:
-    """Whether this build interprets every form the document declares, and why not.
-
-    One owner answers it: the same rule the executable parse applies before a run
-    is admitted. The API derives, and never decides for itself which formats run --
-    a second list here would drift from the starter's the first time either moved,
-    and the reader would have no way to tell which one was lying.
-
-    A V1 or V2 document has no waiting list at all: the rule exists because V3
-    declares forms nothing binds yet, and those two formats are executed whole.
-    """
-    if not isinstance(graph, WorkflowGraphV3):
-        return True, None
-    waiting = what_a_v3_document_still_waits_for(graph)
-    return waiting is None, waiting
 
 
 def _node_preview(node: WorkflowNodeV3) -> WorkflowNodePreviewResourceV3:
@@ -203,17 +184,23 @@ def _loop_resource(loop: LoopDeclaration) -> WorkflowLoopResourceV3:
 
 def graph_resource(
     graph: AnyWorkflowDocument,
+    not_executable_reason: str | None,
     wait_answer_classifications: tuple[WaitAnswerClassification, ...] = (),
 ) -> WorkflowGraphResource | WorkflowGraphResourceV2 | WorkflowGraphResourceV3:
+    """The graph on the wire; executability is the application's verdict, carried.
+
+    The API derives and never decides which documents run: the reason arrives
+    from the one rule the start path applies, so this projection cannot drift
+    from the starter the first time either moves.
+    """
     if isinstance(graph, WorkflowGraphV3):
-        executable, not_executable_reason = _executability_of(graph)
         classified_by_node_id = {
             classification.node_id: classification
             for classification in wait_answer_classifications
         }
         return WorkflowGraphResourceV3(
             workflow_format_version=3,
-            executable=executable,
+            executable=not_executable_reason is None,
             not_executable_reason=not_executable_reason,
             node_count=len(graph.nodes),
             agent_roles=tuple(
@@ -260,7 +247,7 @@ def graph_resource(
 
 
 def workflow_revision_summary_resource(
-    projection: WorkflowRevisionProjection,
+    described: DescribedWorkflowRevision,
 ) -> WorkflowRevisionSummaryResourceV2:
     """What a listing may say about one revision, and no more than that.
 
@@ -269,16 +256,15 @@ def workflow_revision_summary_resource(
     gap this projection fills in (ADR 0007 decision 4).
     """
 
-    graph = projection.graph
-    described = isinstance(graph, WorkflowGraphV3)
-    executable, not_executable_reason = _executability_of(graph)
+    graph = described.projection.graph
+    authored = isinstance(graph, WorkflowGraphV3)
     return WorkflowRevisionSummaryResourceV2(
-        workflow_revision_hash=projection.revision.revision_hash.value,
+        workflow_revision_hash=described.projection.revision.revision_hash.value,
         workflow_format_version=graph.format_version,
-        executable=executable,
-        not_executable_reason=not_executable_reason,
-        name=graph.name if described else None,
-        description=graph.description if described else None,
+        executable=described.not_executable_reason is None,
+        not_executable_reason=described.not_executable_reason,
+        name=graph.name if authored else None,
+        description=graph.description if authored else None,
     )
 
 
@@ -294,13 +280,17 @@ def workflow_revision_page_resource(
 
 
 def workflow_revision_detail_resource(
-    projection: WorkflowRevisionProjection,
-    wait_answer_classifications: tuple[WaitAnswerClassification, ...] = (),
+    read: WorkflowRevisionRead,
 ) -> WorkflowRevisionDetailResource:
+    projection = read.projection
     return WorkflowRevisionDetailResource(
         workflow_revision_hash=projection.revision.revision_hash.value,
         document_base64=encode_canonical_base64(projection.revision.document),
-        graph=graph_resource(projection.graph, wait_answer_classifications),
+        graph=graph_resource(
+            projection.graph,
+            read.not_executable_reason,
+            read.wait_answer_classifications,
+        ),
     )
 
 

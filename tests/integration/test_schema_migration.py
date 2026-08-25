@@ -41,6 +41,9 @@ from atelier2.adapters.dbos.schema import (
     V30_SCHEMA_HANDOFF,
     V31_SCHEMA_HANDOFF,
     V32_SCHEMA_HANDOFF,
+    V33_SCHEMA_HANDOFF,
+    V34_SCHEMA_HANDOFF,
+    V35_SCHEMA_HANDOFF,
     MigrationRequired,
     UnsupportedSchemaVersion,
     _product_schema_fingerprint,
@@ -400,11 +403,29 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[32]
         == "0cdbeaf303f2839661930234a508e141cd995b8552def9b426a52aaad1eab84e"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 33
+    assert V33_SCHEMA_HANDOFF.version == 33
     assert (
-        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        V33_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[33]
         == "f634d04c6cc525147ead8aa0dad8ef728189a6ef9554049c8a2aad56f3caeea8"
+    )
+    assert V34_SCHEMA_HANDOFF.version == 34
+    assert (
+        V34_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[34]
+        == "28dab0f4a152d7be66fa699d1123fdd130a94fe80ad705c19330f075e4fdd85a"
+    )
+    assert V35_SCHEMA_HANDOFF.version == 35
+    assert (
+        V35_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[35]
+        == "29df9a195316ce94527be2c906e4dc4104e00b2cb16caa9bfada17fecb5a21d5"
+    )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 36
+    assert (
+        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[36]
+        == "c9f4b5d99a9ff8e33796e36151b66f00175eceaa797e30461bf6e01264266ce8"
     )
 
 
@@ -437,6 +458,9 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         30,
         31,
         32,
+        33,
+        34,
+        35,
     ],
 )
 def test_predecessor_store_is_refused_without_mutation(
@@ -772,9 +796,20 @@ def test_v6_requires_nonmutating_recreate(tmp_path: Path) -> None:
     assert hashlib.sha256(database_path.read_bytes()).hexdigest() == before_hash
 
 
-def test_v8_preserves_both_legacy_event_guards_and_scopes_attempt_events(
+def test_the_store_scopes_one_event_of_a_kind_to_one_execution_or_one_attempt(
     ledger_engine: Engine,
 ) -> None:
+    """What the event log refuses to hold twice, and what it now admits again.
+
+    An attempt-free event is keyed twice over: by the node execution it belongs
+    to, and by the round of the node it stands in. One round of a node therefore
+    holds one event of a kind however its execution id was derived, while the
+    next round of that same node holds its own -- the sentence the V36 hop gave
+    back when it re-scoped the once-per-node key to the round (#658). An
+    attempt-bound event is keyed by its attempt instead, so the replacement
+    attempt of one execution writes its own outcome beside the first.
+    """
+
     with ledger_engine.begin() as connection:
         revision = str(
             connection.scalar(
@@ -805,6 +840,7 @@ def test_v8_preserves_both_legacy_event_guards_and_scopes_attempt_events(
         node_id: str,
         execution_id: str,
         kind: str,
+        round_ordinal: int = FIRST_ROUND_ORDINAL,
         attempt_id: str | None = None,
         ordinal: int | None = None,
     ) -> None:
@@ -821,7 +857,7 @@ def test_v8_preserves_both_legacy_event_guards_and_scopes_attempt_events(
                 sequence,
                 node_id,
                 execution_id,
-                FIRST_ROUND_ORDINAL,
+                round_ordinal,
                 kind,
                 b"event",
                 hashlib.sha256(b"event").hexdigest(),
@@ -852,8 +888,27 @@ def test_v8_preserves_both_legacy_event_guards_and_scopes_attempt_events(
             run_id="run-1",
             sequence=2,
             node_id="agent",
+            execution_id="1" * 64,
+            kind="AGENT_COMPLETED",
+        )
+    with pytest.raises(IntegrityError), ledger_engine.begin() as connection:
+        insert_event(
+            connection,
+            run_id="run-1",
+            sequence=2,
+            node_id="agent",
             execution_id="2" * 64,
             kind="AGENT_COMPLETED",
+        )
+    with ledger_engine.begin() as connection:
+        insert_event(
+            connection,
+            run_id="run-1",
+            sequence=2,
+            node_id="agent",
+            execution_id="2" * 64,
+            kind="AGENT_COMPLETED",
+            round_ordinal=FIRST_ROUND_ORDINAL + 1,
         )
     with pytest.raises(IntegrityError), ledger_engine.begin() as connection:
         insert_event(
@@ -869,7 +924,7 @@ def test_v8_preserves_both_legacy_event_guards_and_scopes_attempt_events(
         insert_event(
             connection,
             run_id="run-1",
-            sequence=2,
+            sequence=3,
             node_id="agent",
             execution_id="1" * 64,
             kind="AGENT_FAILED",
@@ -879,7 +934,7 @@ def test_v8_preserves_both_legacy_event_guards_and_scopes_attempt_events(
         insert_event(
             connection,
             run_id="run-1",
-            sequence=3,
+            sequence=4,
             node_id="agent",
             execution_id="1" * 64,
             kind="AGENT_FAILED",
@@ -890,7 +945,7 @@ def test_v8_preserves_both_legacy_event_guards_and_scopes_attempt_events(
         insert_event(
             connection,
             run_id="run-1",
-            sequence=4,
+            sequence=5,
             node_id="agent",
             execution_id="1" * 64,
             kind="AGENT_FAILED",
@@ -1314,25 +1369,29 @@ _CANCELLED_STATE_PRODUCERS: dict[str, str] = {
         "the serve-start net's own answer for an operator-cancelled or "
         "-interrupted current-node attempt with no replacement in flight"
     ),
+    "adapters/dbos/run_transitions.py::commit_wait_cancelled": (
+        "a run resting at a pause, ended by the operator's own cancel command "
+        "under the WAIT_CANCELLED attestation it writes itself (#668)"
+    ),
 }
-"""#439 P3's exactly two producers of `RunState.CANCELLED`, named so a third
-one is a review question in the diff below, never a silent grep exception."""
+"""The named producers of `RunState.CANCELLED`, so a new one is a review
+question in the diff below, never a silent grep exception."""
 
 
 def test_run_state_cancelled_has_exactly_its_named_producers() -> None:
-    """#439 P1 gave CANCELLED its durable home; #439 P3 gave it exactly two.
+    """#439 P1 gave CANCELLED its durable home; every writer of it is named.
 
     `test_run_state_tokens_are_exact` above proves the migrated CHECK admits
-    the word at the storage layer. This is the other half, carried forward
-    rather than deleted now that #439 P3 landed: every construction of
-    `RunState.CANCELLED` outside `contracts/` (its own definitional home,
+    the word at the storage layer. This is the other half: every construction
+    of `RunState.CANCELLED` outside `contracts/` (its own definitional home,
     `RunState` itself and the `TERMINAL_RUN_STATES` set every terminal-state
-    check already reads through) is one of the two named producers above --
-    the run's own terminal lift, on either carrier, under the operator's own
-    cancel command identity, or the serve-start net's answer for the same
-    identity left leaderless. An `is`/`==` comparison anywhere else, the way
-    `api/projection/runs.py` already refuses to render a V1/V2 run whose
-    frozen wire predates the word, is still a reader, not a producer.
+    check already reads through) is one of the named producers above -- the
+    run's own terminal lift, on either carrier, under the operator's own cancel
+    command identity; the serve-start net's answer for the same identity left
+    leaderless; and the resting pause that ends under its own attestation
+    because it has no attempt to lift (#668). An `is`/`==` comparison anywhere
+    else, the way `api/projection/runs.py` already refuses to render a V1/V2
+    run whose frozen wire predates the word, is still a reader, not a producer.
     """
 
     source_root = Path(__file__).resolve().parents[2] / "src" / "atelier2"
