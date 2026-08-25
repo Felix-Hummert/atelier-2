@@ -1,12 +1,20 @@
-"""Store half of serve-start run convergence: STARTED rows nothing can continue."""
+"""Store half of serve-start run convergence: STARTED rows nothing can continue.
+
+This module also owns `live_driver_workflow_ids`, the one answer to "is this
+DBOS workflow a live driver" that both this store's own gap sweep (#645) and
+`effect_store.py`'s driverless-effect-intent sweep (#646, #707) read: a
+workflow PENDING, ENQUEUED, or DELAYED under a retired `application_version`
+is not live either way, because DBOS scopes recovery to the version that
+enqueued it.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import sqlalchemy as sa
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 
 from atelier2.adapters.dbos.node_records import keep_node_receipt
 from atelier2.adapters.dbos.run_transitions import lift_started_run
@@ -53,16 +61,45 @@ identifiably the operator's own (#439 Bauplan P3) -- `_attempt_family_target_sta
 decides that, this tuple only ever names the plain word.
 """
 
-# DBOS owns this table and these tokens; the store only reads them, and only
-# to answer whether a node workflow it would recover is still going to run.
+# DBOS owns this table and these tokens; `live_driver_workflow_ids` only reads
+# them, to answer whether a workflow is still one DBOS itself owes a next
+# step. `atelier2.adapters.dbos`'s other readers of `workflow_status` each
+# keep their own narrower copy for a question this one does not answer --
+# whether a workflow *raised*, not whether it is still live.
 _dbos_workflow_status = sa.table(
     "workflow_status",
     sa.column("workflow_uuid"),
     sa.column("status"),
     sa.column("application_version"),
 )
-_DRIVING_WORKFLOW_STATUSES = ("PENDING", "ENQUEUED", "DELAYED")
+LIVE_DRIVER_WORKFLOW_STATUSES = ("PENDING", "ENQUEUED", "DELAYED")
 """The DBOS statuses under which a workflow is still owed its next step."""
+
+
+def live_driver_workflow_ids(
+    connection: Connection,
+    workflow_ids: Iterable[str],
+    application_version: str,
+) -> frozenset[str]:
+    """The ids among `workflow_ids` that DBOS itself still owes a next step.
+
+    A row absent from `workflow_status` is not answered here at all: that
+    workflow was never durably started, and whether that still counts as
+    "owed" is a fact about the caller's own domain, not about DBOS recovery.
+    """
+
+    ids = tuple(workflow_ids)
+    if not ids:
+        return frozenset()
+    return frozenset(
+        connection.scalars(
+            sa.select(_dbos_workflow_status.c.workflow_uuid).where(
+                _dbos_workflow_status.c.workflow_uuid.in_(ids),
+                _dbos_workflow_status.c.status.in_(LIVE_DRIVER_WORKFLOW_STATUSES),
+                _dbos_workflow_status.c.application_version == application_version,
+            )
+        )
+    )
 
 
 class DbosUncontinuableRunStore:
@@ -299,16 +336,7 @@ def _gap_has_recoverable_driver(
     connection: Any, record: Mapping[Any, Any], application_version: str
 ) -> bool:
     workflow_ids = _gap_workflow_ids(connection, record)
-    found = connection.scalar(
-        sa.select(_dbos_workflow_status.c.workflow_uuid)
-        .where(
-            _dbos_workflow_status.c.workflow_uuid.in_(workflow_ids),
-            _dbos_workflow_status.c.status.in_(_DRIVING_WORKFLOW_STATUSES),
-            _dbos_workflow_status.c.application_version == application_version,
-        )
-        .limit(1)
-    )
-    return found is not None
+    return bool(live_driver_workflow_ids(connection, workflow_ids, application_version))
 
 
 def _gap_workflow_ids(connection: Any, record: Mapping[Any, Any]) -> tuple[str, ...]:
