@@ -689,6 +689,13 @@ def commit_action_completed(
         logical_key,
         receipt.result.payload_hash,
         terminal=terminal,
+        # The source round is the one this check just proved the key belongs
+        # to. The Action's successor's own round is left at the default: no
+        # published document can place an Action inside a declared loop
+        # (`_unrepeatable_loop_forms`), so `round_of` would answer round one
+        # for any successor today regardless -- computing it for real is a
+        # named gap that waits on Action nodes becoming loop-repeatable (#706).
+        round_ordinal=round_ordinal,
     )
 
 

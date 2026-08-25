@@ -20,13 +20,16 @@ run a declared loop had carried past round one would compare a round-aware
 recomputation against a key that still named round one and leave the intent
 alone rather than route it (#706). `logical_effect_key_for_node` is now the
 one owner both the preparer and this sweep call, so the two can never drift
-apart again. No fixture here drives a genuinely round-two Action end to end --
-`_unrepeatable_loop_forms` refuses an Action inside a loop's body by name at
-every load of the document, so no published revision can ever place one
-there -- and the tests below pin the derivation contract that closes the gap
-instead: round one stays the exact bytes every stored intent already carries,
-a later round mints its own, and a key naming a round the run has left is
-never mistaken for the one it stands in now.
+apart again. No published document can place an Action inside a declared
+loop's body -- `_unrepeatable_loop_forms` refuses that by name at every load
+of the document -- so no fixture here drives a genuinely round-two Action end
+to end; a run standing on a round-two Action is not a state this runtime can
+honestly reach at all. The tests below pin what is provable instead: round
+one stays the exact bytes every stored intent already carries, a later round
+mints its own key from the same node, and -- read as a conservative-sweep
+safety property against a malformed row rather than round-two Action evidence
+-- a key that disagrees with the round its run's own head records is never
+mistaken for the one it stands in now.
 """
 
 from __future__ import annotations
@@ -548,30 +551,33 @@ def test_action_effect_key_mints_its_own_value_a_round_later() -> None:
     assert round_two != round_one
 
 
-def test_prepared_intent_whose_key_names_a_round_the_run_has_left_is_left_alone(
+def test_prepared_intent_whose_key_disagrees_with_a_malformed_run_round_is_left_alone(
     prepared: tuple[DbosRuntime, EffectIntent],
 ) -> None:
-    """A round-2 stranded intent is routed like round 1 -- never confused with it.
+    """Conservative-sweep safety, not round-two Action evidence.
 
-    Mirrors `test_prepared_intent_no_workflow_will_move_reaches_the_operator_
-    door`'s #646 window (a dead Action node workflow, no effect-workflow row at
-    all) with one difference: the run's own head has moved to round two while
-    the intent's key still names round one's execution. No document may
-    declare an Action inside a loop's body, so this window cannot arise from a
-    genuinely round-two Action; it stands in for the moment right after #706's
-    fix where the preparer and the sweep briefly disagreed, and pins that the
-    sweep never lets a key naming a round the run has left double as the one it
-    stands in now -- the same conservative "leave it alone" #646 already gives
-    a driver that is still owed, not a silent confirmation under the wrong
-    round.
+    No document may declare an Action inside a loop's body
+    (`_unrepeatable_loop_forms` refuses it at every load of the document), and
+    `_require_a_round_the_graph_declares` refuses a stored run whose round
+    disagrees with what its own document permits -- so a run genuinely
+    standing on a round-two Action cannot exist here, or anywhere in this
+    runtime, today. The raw `UPDATE` below deliberately produces exactly that
+    malformed row, outside every domain constructor that would refuse it, to
+    answer a narrower question: if a round ever disagreed with what a stored
+    intent's key names -- through this defect, a future one, or plain
+    corruption -- does the sweep stay conservative rather than paper over the
+    disagreement? Mirrors `test_prepared_intent_no_workflow_will_move_
+    reaches_the_operator_door`'s #646 window (a dead Action node workflow, no
+    effect-workflow row at all); the one difference is the malformed round.
+    The sweep must still leave the intent exactly where #646 already leaves
+    one whose driver is still owed -- never a silent confirmation under a
+    round the key does not name.
     """
     runtime, intent = prepared
     node_workflow_ended_before_the_enqueue(runtime, intent)
     with runtime.engine.begin() as connection:
         moved = connection.execute(
-            sa.text(
-                "UPDATE runs SET current_round_ordinal=2 WHERE run_id=:run_id"
-            ),
+            sa.text("UPDATE runs SET current_round_ordinal=2 WHERE run_id=:run_id"),
             {"run_id": intent.binding.run_id.value},
         )
         assert moved.rowcount == 1
