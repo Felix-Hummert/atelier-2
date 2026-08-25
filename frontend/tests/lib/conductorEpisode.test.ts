@@ -125,6 +125,9 @@ function completedEvent(output: object): object {
   };
 }
 
+/** The code the stream carries and the chat line must no longer repeat (#664). */
+const REFUSED_FAILURE_CODE = "OUTPUT_SCHEMA_REFUSED";
+
 function failedEvent(): object {
   return {
     workflow_format_version: 3,
@@ -137,7 +140,7 @@ function failedEvent(): object {
     event_hash: "2".repeat(64),
     node_rail: [{ node_id: "conduct", state: "failed", attempt: null }],
     event: "AGENT_FAILED",
-    failure_code: "OUTPUT_SCHEMA_REFUSED",
+    failure_code: REFUSED_FAILURE_CODE,
     reason: "instance-not-json",
     attempt_id: "4".repeat(64),
     attempt_ordinal: 1
@@ -297,7 +300,7 @@ describe("one message, one conductor episode", () => {
     });
   });
 
-  it("settles the reply line with the failure a refused episode names", async () => {
+  it("settles a refused episode in one human sentence beside its own run", async () => {
     const { episode, conversation } = await bootModules();
     const feed = new FakeRunEventFeed();
     const api = connectedApiStub({ start: vi.fn(async () => startedRun()), openRunEvents: feed.open });
@@ -309,7 +312,9 @@ describe("one message, one conductor episode", () => {
     feed.handlers?.event(JSON.stringify(failedEvent()));
 
     const reply = conversation.currentChatTranscript().at(-1);
-    expect(reply?.text).toBe(`${conductorChatCopy.episodeFailed} OUTPUT_SCHEMA_REFUSED`);
+    expect(reply?.text).toBe(conductorChatCopy.episodeFailed);
+    expect(reply?.text).not.toContain(REFUSED_FAILURE_CODE);
+    expect(reply?.runReference).toBe(PUBLIC_RUN);
     expect(reply?.pending).toBe(false);
   });
 

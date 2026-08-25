@@ -7,6 +7,7 @@ import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
 
+from atelier2.adapters.dbos.artifact_store import keep_artifact
 from atelier2.adapters.dbos.instants import record_attempt_ended, record_attempt_started
 from atelier2.adapters.dbos.names import (
     CANCELLATION_WORKFLOW_NAME,
@@ -92,6 +93,7 @@ from atelier2.contracts.agents import (
     AgentReceiptHash,
     AgentReceiptV2,
 )
+from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.executions import (
     AgentAttemptExecution,
     AgentExecutionRefusal,
@@ -479,7 +481,7 @@ def _fail_current_attempt(
     failure: AgentAttemptFailureCode,
     receipt_reason: str,
     schema_revision: PublishedRevisionHash | None = None,
-    value_hash: Sha256Hash | None = None,
+    judged_value: bytes | None = None,
     runner_evidence_hash: RunnerTerminalEvidenceHash | None = None,
 ) -> AgentAttemptFailed:
     """One durable failure seam for every way an armed attempt ends badly.
@@ -494,9 +496,22 @@ def _fail_current_attempt(
     one, because a failure whose reason is nowhere is the silent death this
     seam exists to end. A schema judgment also keeps the identity it judged; a
     process that died judged nothing, so those fields stay honestly empty.
+
+    `judged_value` is the exact bytes that judgment read, and it arrives as
+    bytes rather than as a hash because the seam that records the verdict is the
+    only place that can also keep the evidence: the receipt's value hash is
+    derived here, and the same bytes are held as an artifact under exactly that
+    address in the same transaction. Without them a refused episode says only
+    that something was refused and never what was written -- the receipt names a
+    hash nothing resolves, and the one thing an operator needs to read is gone
+    for good. Empty bytes are the exception: there is nothing to keep, and the
+    hash of nothing already says so.
     """
     request = execution.request
     attempt_id = execution.attempt_id
+    value_hash = None if judged_value is None else Sha256Hash.of(judged_value)
+    if judged_value:
+        keep_artifact(connection, Artifact(judged_value))
     keep_node_receipt(
         connection,
         request.node_execution_id,
@@ -1532,7 +1547,7 @@ class DbosAgentAttemptStore:
                         AgentAttemptFailureCode.AGENT_REFUSED,
                         node_receipt_reason(NodeReceiptReason.AGENT_REFUSED, named),
                         AGENT_REFUSAL_SCHEMA.revision_hash,
-                        Sha256Hash.of(result.output_bytes),
+                        result.output_bytes,
                         runner_evidence_hash,
                     )
                     return failed
@@ -1549,7 +1564,7 @@ class DbosAgentAttemptStore:
                         NodeReceiptReason.OUTPUT_SCHEMA_REFUSED, refusal
                     ),
                     PublishedRevisionHash(declared.schema_reference.revision),
-                    Sha256Hash.of(result.output_bytes),
+                    result.output_bytes,
                     runner_evidence_hash,
                 )
                 return failed
