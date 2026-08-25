@@ -79,6 +79,9 @@ from atelier2.application.read_agent_configurations import (
     list_agent_configuration_revisions,
     list_auth_profile_revisions,
 )
+from atelier2.application.read_agent_definition_revisions import (
+    list_agent_definition_revisions,
+)
 from atelier2.application.read_attention_events import read_attention_events
 from atelier2.application.read_projects import get_project, list_projects
 from atelier2.application.read_run_events import read_run_events
@@ -212,6 +215,14 @@ def bound_use_cases(
                 ports.agent_definition_parser,
                 ports.agent_definition_renderer,
                 ports.published_revision_registry,
+            )
+        ),
+        list_agent_definition_revisions=(
+            lambda after, limit: list_agent_definition_revisions(
+                after,
+                limit,
+                ports.published_revision_listing,
+                ports.agent_definition_parser,
             )
         ),
         publish_auth_profile_revision=(
@@ -425,6 +436,7 @@ COCKPIT_INDEX_PATHS: tuple[str, ...] = (
     "/atelier/runs/{public_ref}",
     "/atelier/workflows",
     "/atelier/workflows/{workflow_name}",
+    "/atelier/catalog",
     "/atelier/history",
 )
 

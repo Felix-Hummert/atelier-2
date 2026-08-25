@@ -167,6 +167,11 @@ EXPECTED_ROUTE_SEQUENCE = (
         API_PREFIX + "/agent-definition-revisions",
         "publish_agent_definition_revision_route",
     ),
+    (
+        "GET",
+        API_PREFIX + "/agent-definition-revisions",
+        "list_agent_definition_revisions_route",
+    ),
     ("POST", API_PREFIX + "/workflow-revisions", "publish_revision"),
     ("GET", API_PREFIX + "/workflow-revisions", "list_revisions"),
     (
@@ -309,8 +314,9 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head adds the issue-import door `POST /project-sources/import` and
-    the observed-items list `GET /observed-queue-items` (#652).
+    it. This head adds the published-agent list `GET /agent-definition-revisions`,
+    the read the catalog view needs to show a name where publication answers only
+    a hash (#659).
     Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 

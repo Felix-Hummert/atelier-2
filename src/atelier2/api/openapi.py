@@ -217,6 +217,13 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
+    (API_PREFIX + "/agent-definition-revisions", "get"): (
+        "invalid-revision-hash",
+        "invalid-request",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
     (API_PREFIX + "/workflow-revisions", "post"): (
         "invalid-workflow-document",
         "revision-collision",

@@ -229,6 +229,7 @@ def _client(runtime: DbosRuntime, page_size: int = 2) -> TestClient:
             DbosCatalogStore(runtime.engine),
             DbosCatalogStore(runtime.engine),
             DbosCatalogStore(runtime.engine),
+            DbosCatalogStore(runtime.engine),
             DbosArtifactStore(runtime.engine),
             DbosHostConfigurationChannel(runtime.engine),
             DbosQueueProjectionStore(runtime.engine),

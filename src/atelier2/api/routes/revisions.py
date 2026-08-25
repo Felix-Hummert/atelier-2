@@ -36,6 +36,8 @@ from atelier2.api.wire.requests import (
 )
 from atelier2.api.wire.resources import (
     AdapterOperationRevisionResource,
+    AgentDefinitionRevisionListItemResource,
+    AgentDefinitionRevisionPageResource,
     AgentDefinitionRevisionResource,
     AnyWorkflowRevisionPageResource,
     BudgetRevisionResource,
@@ -89,6 +91,10 @@ from atelier2.application.publish_workflow_revision import (
     PublicationCreated,
     PublicationExisting,
     PublicationInvalid,
+)
+from atelier2.application.read_agent_definition_revisions import (
+    AgentDefinitionRevisionsListed,
+    PublishedAgentDefinition,
 )
 from atelier2.application.read_workflow_revisions import (
     WorkflowRevisionNotFound,
@@ -324,6 +330,54 @@ async def publish_agent_definition_revision_route(
             agent_definition_revision_hash=revision.revision_hash.value
         ),
         status,
+    )
+
+
+@router.get(
+    API_PREFIX + "/agent-definition-revisions",
+    response_model=AgentDefinitionRevisionPageResource,
+)
+async def list_agent_definition_revisions_route(
+    after_revision_hash: str | None = None,
+    limit: str = "50",
+    context: ApiContext = api_context_dependency,
+) -> AgentDefinitionRevisionPageResource:
+    """List published agent definitions by the names their authors gave them."""
+
+    after = None
+    if after_revision_hash is not None:
+        try:
+            after = PublishedRevisionHash(after_revision_hash)
+        except ValueError as error:
+            raise ApiProblem("invalid-revision-hash") from error
+    parsed_limit = parse_limit(limit)
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.list_agent_definition_revisions(after, parsed_limit),
+    )
+    match result:
+        case AgentDefinitionRevisionsListed(items, next_after):
+            return AgentDefinitionRevisionPageResource(
+                items=tuple(_agent_definition_list_item(item) for item in items),
+                next_after_revision_hash=(
+                    None if next_after is None else next_after.value
+                ),
+            )
+        case ReadUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _agent_definition_list_item(
+    published: PublishedAgentDefinition,
+) -> AgentDefinitionRevisionListItemResource:
+    return AgentDefinitionRevisionListItemResource(
+        agent_definition_revision_hash=published.revision_hash.value,
+        name=published.definition.name,
+        description=published.definition.description,
     )
 
 

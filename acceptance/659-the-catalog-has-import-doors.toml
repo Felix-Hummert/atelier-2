@@ -1,0 +1,14 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/659"
+
+# The operator's report this room answers (25.08.): "so I have no workflow now
+# and cannot build one". The publication and admission doors already existed;
+# what was missing was a surface that opens them and a read that can list a
+# published agent by the name its author gave it.
+#
+# Skills are named as absent rather than half-built: no door publishes a skill
+# revision in this build, and #660's Git link is the slice that brings them.
+
+[[sentence]]
+id = "the-operator-imports-a-workflow-and-an-agent-and-starts-what-was-imported"
+text = "From the browser alone, the operator imports a workflow document and an authored agent file through the Catalog's own doors, sees each appear in the room's list with where it came from, admits the workflow in one visible second step, and reads back that it is startable — the same verdict a cold reload and the catalog's own name lookup give."

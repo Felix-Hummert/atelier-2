@@ -232,6 +232,10 @@ test("captures every surface at both widths", async ({ page }) => {
   await expect(page.getByRole("heading", { level: 1, name: "iterate-code" })).toBeVisible();
   await shoot(page, "workflow-detail");
 
+  await page.goto("/atelier/catalog");
+  await expect(page.getByRole("heading", { level: 1, name: "Catalog" })).toBeVisible();
+  await shoot(page, "catalog");
+
   await page.goto("/atelier/new");
   await expect(page.getByRole("heading", { name: "Choose a workflow" })).toBeVisible();
   await shoot(page, "new-run");
