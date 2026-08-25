@@ -19,9 +19,11 @@ its own directory into that path.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import tarfile
 import tempfile
+from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 
 from atelier2.adapters.leased_directory import entered_leased_directory
@@ -36,6 +38,78 @@ _HEAD_REVISION = "HEAD"
 """What git calls the commit a checkout currently stands on."""
 
 _STAGED_ARCHIVE_NAME = "project-source.tar"
+
+_CONFIGURATION_FREE_GIT = {
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_TERMINAL_PROMPT": "0",
+}
+"""What keeps the host out of every answer this boundary gives.
+
+The machine's own git configuration is not part of any project: it can declare a
+`clean` filter, a git-lfs smudge, an author identity or a credential helper, and
+each of those would change what this boundary reads or writes for reasons no run
+ever declared. With no system and no global configuration left to read, only the
+repository being spoken to has a say, and a call that would have prompted a human
+for a credential fails instead of hanging on a terminal nobody is watching.
+"""
+
+
+class GitRefused(Exception):
+    """A git call did not answer, so its caller says what that means for it.
+
+    Deliberately not a port failure: the same call is a source being unavailable
+    to one owner and a candidate not being captured to another, and only the
+    caller knows which sentence its own users were promised.
+    """
+
+
+def isolated_git_environment(**declared: str) -> dict[str, str]:
+    """The environment a git call gets: this process's, minus the host's opinions."""
+
+    return {**os.environ, **_CONFIGURATION_FREE_GIT, **declared}
+
+
+def answered_git(
+    arguments: Sequence[str],
+    *,
+    working_directory: str,
+    environment: Mapping[str, str],
+    passed_descriptors: tuple[int, ...] = (),
+) -> bytes:
+    """Run one git command where it was told to, and answer with what it wrote.
+
+    The working directory is entered by the child rather than named to git with
+    `-C`, so a caller holding an open descriptor can pass `/proc/self/fd/<n>`
+    together with that descriptor and have the child land in the very directory
+    its owner checked.
+    """
+
+    try:
+        completed = subprocess.run(
+            (_GIT_EXECUTABLE_NAME, *arguments),
+            cwd=working_directory,
+            env=dict(environment),
+            pass_fds=passed_descriptors,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as error:
+        raise GitRefused(
+            f"git {' '.join(arguments)} could not be started in "
+            f"{working_directory}: {error}"
+        ) from error
+    if completed.returncode != 0:
+        # The whole argument list is named, not just the subcommand: what a
+        # refusal is about is the revision or path that was asked for.
+        raise GitRefused(
+            f"git {' '.join(arguments)} answered {completed.returncode} in "
+            f"{working_directory}: "
+            f"{completed.stderr.decode('utf-8', 'replace').strip()}"
+        )
+    return completed.stdout
 
 
 def _tree_of(revision: str) -> str:
@@ -123,23 +197,12 @@ class LocalGitProjectSource:
 
     def _answered(self, arguments: tuple[str, ...]) -> bytes:
         try:
-            completed = subprocess.run(
-                (_GIT_EXECUTABLE_NAME, "-C", str(self._project_root), *arguments),
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                check=False,
+            return answered_git(
+                arguments,
+                working_directory=str(self._project_root),
+                environment=isolated_git_environment(),
             )
-        except OSError as error:
+        except GitRefused as error:
             raise ProjectSourceUnavailable(
-                f"git could not be started to read the project source at "
-                f"{self._project_root}: {error}"
+                f"the project source at {self._project_root} could not be read: {error}"
             ) from error
-        if completed.returncode != 0:
-            # The whole argument list is named, not just the subcommand: what a
-            # refusal is about is the revision or path that was asked for.
-            raise ProjectSourceUnavailable(
-                f"git {' '.join(arguments)} answered {completed.returncode} for "
-                f"the project source at {self._project_root}: "
-                f"{completed.stderr.decode('utf-8', 'replace').strip()}"
-            )
-        return completed.stdout
