@@ -15,7 +15,18 @@ export const conductorChatCopy = {
   /** The pinned placeholder a sent message holds until its episode ends. */
   reading: "The conductor is reading your message…",
   startRefused: "The conductor could not start a run for this message:",
-  episodeFailed: "The conductor's run ended without an answer:",
+  /**
+   * A failed episode in words, not in its failure code (#664).
+   *
+   * The code that stood here — `OUTPUT_SCHEMA_REFUSED` for the live episode
+   * that raised this — names the seam that refused. That is a fact for whoever
+   * reads the run, never an answer to the person who just asked a question.
+   * One sentence says what happened, and the run link beside every conductor
+   * line is where the reason and the refused output stand, so this
+   * conversation keeps no second failure vocabulary of its own.
+   */
+  episodeFailed:
+    "The conductor's run ended without an answer — the run shows where it stopped.",
   replyUnreadable: "The conductor's run finished, but its reply could not be read.",
   streamLost:
     "The reply could not be followed here. Open the run to read how it ended.",

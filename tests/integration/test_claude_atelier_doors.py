@@ -41,9 +41,19 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.schemas_v3 import (
+    InstanceAccepted,
+    InstanceRefusal,
+    InstanceRefused,
+    InstanceVerdict,
+    SchemaAccepted,
+    read_instance_document,
+    read_schema_document,
+)
 from atelier2.host.conductor_workflow import (
     CONDUCTOR_DOOR_SERVER_NAME,
     CONDUCTOR_DOOR_TOOLS,
+    CONDUCTOR_REPORT_SCHEMA,
 )
 from atelier2.host.mcp_tools import MCP_SERVER_NAME, McpToolName
 from tests.integration.test_claude_subscription import (
@@ -91,6 +101,7 @@ def doors_request(
     auth_mode: AuthMode = AuthMode.SUBSCRIPTION,
     job: bytes = b"choose a workflow, start it, and report the run",
     maximum_assistant_turns: int | None = None,
+    declared_output_schema_bytes: bytes | None = None,
 ) -> AgentExecutionRequestV2:
     auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), auth_mode)
     configuration = AgentConfigurationRevision(
@@ -111,6 +122,7 @@ def doors_request(
         CLAUDE_ATELIER_DOORS_OPERATIONAL_IDENTITY,
         job,
         maximum_assistant_turns=maximum_assistant_turns,
+        declared_output_schema_bytes=declared_output_schema_bytes,
     )
 
 
@@ -305,3 +317,170 @@ def test_an_executable_that_never_names_an_unknown_flag_cannot_be_attested(
 
     with pytest.raises(ClaudeExecutableUnsupported, match="no release can know"):
         attest_atelier_doors_invocation(settings)
+
+
+# The report every fake episode below answers with. Its two field names are
+# this scenario's, not a second owner's: what makes them right is that
+# `CONDUCTOR_REPORT_SCHEMA` -- the published contract the run really pins --
+# admits the value, which every assertion here goes through.
+_EPISODE_REPORT = {
+    "answer": "Started the tidy workflow; run-tidy-1 is running.",
+    "started_run_ids": ["run-tidy-1"],
+}
+
+# The four shapes one identical brief really came back in (#663, live 25.08.):
+# bare, with a trailing newline, introduced by a sentence, and inside a
+# Markdown fence. Only the first two decoded, so an episode's success was a
+# coin flip.
+_OBSERVED_ANSWER_SHAPES = (
+    "{report}",
+    "{report}\n",
+    "Here is the report:\n\n{report}",
+    "```json\n{report}\n```",
+)
+
+
+def cycling_claude(shapes: tuple[str, ...]) -> str:
+    """A fake CLI that answers one report through these wrappers in turn.
+
+    A fake that answered identically every time would prove nothing about a
+    provider whose defect is that it does not: the counter beside the program
+    is what makes ten identical episodes really meet the varying answer one
+    identical brief produced live.
+    """
+
+    return (
+        "import json, os, sys\n"
+        f"report = json.dumps({_EPISODE_REPORT!r})\n"
+        f"shapes = {shapes!r}\n"
+        "counter = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'answered')\n"
+        "answered = int(open(counter).read()) if os.path.exists(counter) else 0\n"
+        "open(counter, 'w').write(str(answered + 1))\n"
+        "sys.stdin.buffer.read()\n"
+        "json.dump(\n"
+        "    {\n"
+        "        'type': 'result',\n"
+        "        'is_error': False,\n"
+        "        'result': shapes[answered % len(shapes)].replace('{report}', report),\n"
+        "    },\n"
+        "    sys.stdout,\n"
+        ")\n"
+    )
+
+
+def answering_claude(answer: str) -> str:
+    """A fake CLI that answers exactly this text to every episode."""
+
+    return (
+        "import json, sys\n"
+        "sys.stdin.buffer.read()\n"
+        f"json.dump({{'type': 'result', 'is_error': False, 'result': {answer!r}}}, "
+        "sys.stdout)\n"
+    )
+
+
+def episode_output(settings: ClaudeAtelierDoorsSettings, workspace: Path) -> bytes:
+    """One whole episode: the real vector launched, and its real decode."""
+
+    executor = ClaudeAtelierDoorsExecutorFactory(settings).open()
+    request = doors_request(declared_output_schema_bytes=CONDUCTOR_REPORT_SCHEMA)
+    command = executor.prepare_process(request)
+    outcome = executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+    assert isinstance(outcome, AgentExecutionResult), outcome
+    return outcome.output_bytes
+
+
+def report_verdict(output: bytes) -> InstanceVerdict:
+    """What the output seam makes of these bytes, through its own owner."""
+
+    schema = read_schema_document(CONDUCTOR_REPORT_SCHEMA)
+    assert isinstance(schema, SchemaAccepted), schema
+    return read_instance_document(output, schema)
+
+
+@pytest.mark.proves("an-episode-answers-the-value-its-schema-declared")
+def test_ten_identical_episodes_all_answer_a_value_the_report_schema_admits(
+    tmp_path: Path,
+) -> None:
+    """The defect this closes: one brief, one schema, and a coin flip between them.
+
+    Two live episodes of the same brief on the same job hash ended one
+    COMPLETED and one `output-schema-refused: instance-not-json` (#663). Ten
+    episodes here meet every wrapper that was observed, and each one answers
+    the value the declared schema admits -- the same value, whatever prose the
+    provider put around it.
+    """
+
+    settings = doors_deployment(
+        tmp_path, "cycling", cycling_claude(_OBSERVED_ANSWER_SHAPES)
+    )
+    workspace = provider_workspace(tmp_path)
+
+    verdicts = [episode_output(settings, workspace) for _ in range(10)]
+
+    assert [report_verdict(output) for output in verdicts] == [
+        InstanceAccepted(_EPISODE_REPORT)
+    ] * 10
+
+
+@pytest.mark.proves("an-episode-answering-no-such-value-is-still-refused")
+@pytest.mark.parametrize(
+    ("answer", "refusal"),
+    [
+        pytest.param(
+            "I could not reach the catalog, sorry.",
+            InstanceRefusal.INSTANCE_NOT_JSON,
+            id="prose only",
+        ),
+        pytest.param(
+            '{"answer": "done"}',
+            InstanceRefusal.SCHEMA_VIOLATED,
+            id="a bare JSON object missing a required field",
+        ),
+        pytest.param(
+            'Here you go:\n```json\n{"answer": "done"}\n```',
+            InstanceRefusal.INSTANCE_NOT_JSON,
+            id="a wrapped JSON object missing a required field",
+        ),
+    ],
+)
+def test_an_episode_carrying_no_declared_value_is_refused_rather_than_narrowed(
+    tmp_path: Path, answer: str, refusal: InstanceRefusal
+) -> None:
+    """Fail loud: narrowing may find a declared value, never invent or repair one.
+
+    The last case is where that costs something, said here rather than found
+    later: an answer whose wrapped value is real but of the wrong shape travels
+    on whole, so the seam names the wrapper (`instance-not-json`) instead of the
+    field the value is missing. That is exactly what the same answer was named
+    before this narrowing existed, and making a refusal say more about a value
+    it is refusing is its own subject.
+    """
+
+    settings = doors_deployment(tmp_path, "refusing", answering_claude(answer))
+    workspace = provider_workspace(tmp_path)
+
+    verdict = report_verdict(episode_output(settings, workspace))
+
+    assert isinstance(verdict, InstanceRefused)
+    assert verdict.refusal is refusal
+
+
+def test_an_episode_whose_node_declared_no_schema_keeps_the_answer_it_was_given(
+    tmp_path: Path,
+) -> None:
+    """Narrowing is the declared schema's, so a node without one is untouched."""
+
+    settings = doors_deployment(tmp_path, "unbound", answering_claude("plain words"))
+    executor = ClaudeAtelierDoorsExecutorFactory(settings).open()
+    request = doors_request()
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+
+    outcome = executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+
+    assert outcome == AgentExecutionResult(b"plain words")

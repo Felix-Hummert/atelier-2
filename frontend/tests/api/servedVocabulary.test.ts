@@ -8,6 +8,8 @@ import {
   RUN_STATES_V3,
   problemDefinitions,
   agentConfigurationRevisionPageSchema,
+  agentDefinitionRevisionListItemSchema,
+  agentDefinitionRevisionPageSchema,
   authProfileRevisionPageSchema,
   waitAnswerSchemaV3Schema,
   workflowDeclaredOrderSchema,
@@ -307,6 +309,34 @@ describe("the served vocabulary", () => {
         items: [{ ...sample, startable: true }],
         next_after_revision_hash: null
       })
+    ).toThrow();
+  });
+
+  it("decodes exactly the fields the agent-definition listing serves", () => {
+    expect(Object.keys(agentDefinitionRevisionPageSchema.shape).sort()).toEqual(
+      Object.keys(
+        servedDocument.components.schemas.AgentDefinitionRevisionPageResource
+          ?.properties ?? {}
+      ).sort()
+    );
+    expect(Object.keys(agentDefinitionRevisionListItemSchema.shape).sort()).toEqual(
+      Object.keys(
+        servedDocument.components.schemas.AgentDefinitionRevisionListItemResource
+          ?.properties ?? {}
+      ).sort()
+    );
+  });
+
+  it("refuses a listed agent carrying a field the row has no reader for", () => {
+    const listed = {
+      agent_definition_revision_hash: "a".repeat(64),
+      name: "scribe",
+      description: "Writes what the stage needs."
+    };
+
+    expect(agentDefinitionRevisionListItemSchema.parse(listed)).toEqual(listed);
+    expect(() =>
+      agentDefinitionRevisionListItemSchema.parse({ ...listed, model: "sonnet" })
     ).toThrow();
   });
 

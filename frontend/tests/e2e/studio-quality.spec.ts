@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
-import { encodePublicRunReference, runPageSchema, type RunV1, type RunV3 } from "../../src/api/client";
-import { humanMove, standingWords } from "../../src/lib/runState";
+import { encodePublicRunReference, runPageSchema, type RunV1 } from "../../src/api/client";
+import { humanMove } from "../../src/lib/runState";
 import { connectionLabels } from "../../src/lib/streamStatus";
 import { studioPageCopy } from "../../src/lib/studioPageCopy";
 import {
@@ -12,7 +12,6 @@ import {
   studioStageSelector,
   type StudioControlFacts
 } from "../../src/lib/studioQuestions";
-import { notCancellableBlock } from "../support/runV3";
 import {
   completedRun,
   revisionHash,
@@ -47,28 +46,6 @@ function listedRun(runId: string, factory: (changes?: Partial<RunV1>) => RunV1, 
   });
 }
 
-function listedV3Run(changes: Partial<RunV3> = {}): RunV3 {
-  return {
-    workflow_format_version: 3,
-    run_id: "v3/two-agents",
-    public_run_reference: encodePublicRunReference("v3/two-agents"),
-    workflow_revision_hash: revisionHash,
-    agent_binding_set_hash: "b".repeat(64),
-    run_configuration_revision_hash: "c".repeat(64),
-    agent_bindings: [],
-    state_version: 1,
-    state: "STARTED",
-    current_node_id: "review",
-    node_rail: [{ node_id: "review", state: "working", attempt: null }],
-    cancellation: notCancellableBlock("between-nodes"),
-    terminal_hash: null,
-    latest_event_cursor: null,
-    started_at: "2026-08-18T15:00:00Z",
-    ended_at: null,
-    ...changes
-  };
-}
-
 function populatedRuns(): RunV1[] {
   const reconciliation = waitingReconciliationRun();
   if (reconciliation.waiting.type !== "WAITING_RECONCILIATION") {
@@ -81,43 +58,15 @@ function populatedRuns(): RunV1[] {
     listedRun("wait-b", waitingReconciliationRun, {
       waiting: { ...reconciliation.waiting, node_id: reconciliation.current_node.node_id }
     }),
+    // Terminal fixtures in the same set the Board reads (#667): it never
+    // asks for FAILED or COMPLETED at all, so these prove nothing of theirs
+    // leaks onto the Board -- they belong to History instead.
     listedRun("fail-a", startedRun, { state: "FAILED", terminal_hash: revisionHash }),
     listedRun("done-a", completedRun)
   ];
 }
 
-/**
- * A frozen noon, not the real wall clock: the Board's "Done today" group
- * compares a row's real V3 end stamp against the page's own `new Date()`,
- * so a `minutesAgo` fixture anchored to the real clock could cross local
- * midnight between this Node-side computation and the browser's read of
- * "today" -- or simply drift a fixture meant to stay "today" onto
- * yesterday -- whenever the suite happens to run within a couple of hours
- * of midnight (CI runs in UTC with no TZ pin). `page.clock.setFixedTime`
- * pins the browser's `Date` to the same instant this fixture is computed
- * against, removing the hour of the day as a variable entirely.
- */
-const FROZEN_NOON = new Date(2026, 0, 15, 12, 0, 0);
-
-function minutesAgo(minutes: number): string {
-  return new Date(FROZEN_NOON.getTime() - minutes * 60_000).toISOString();
-}
-
-function questionMapRuns(): Array<RunV1 | RunV3> {
-  return [
-    ...populatedRuns(),
-    listedV3Run({
-      run_id: "done-v3",
-      public_run_reference: encodePublicRunReference("done-v3"),
-      state: "COMPLETED",
-      terminal_hash: revisionHash,
-      node_rail: [{ node_id: "review", state: "succeeded", attempt: null }],
-      ended_at: minutesAgo(15)
-    })
-  ];
-}
-
-type StudioReadReply = "populated" | "unavailable" | "empty" | "questions";
+type StudioReadReply = "populated" | "unavailable" | "empty";
 
 async function routeStudioReads(page: Page, read: () => StudioReadReply): Promise<void> {
   await page.route("**/atelier/api/v1/runs*", async (route: Route) => {
@@ -127,7 +76,7 @@ async function routeStudioReads(page: Page, read: () => StudioReadReply): Promis
     }
     const url = new URL(route.request().url());
     const state = url.searchParams.get("state");
-    const source = read() === "empty" ? [] : read() === "questions" ? questionMapRuns() : populatedRuns();
+    const source = read() === "empty" ? [] : populatedRuns();
     const items = source.filter((run) => state === null || run.state === state);
     await route.fulfill({ json: { items, next_after: null } });
   });
@@ -148,15 +97,11 @@ async function expectPopulatedCopy(page: Page): Promise<void> {
 
   const running = page.getByRole("region", { name: `${wrapped(studioPageCopy.running)} · 2` });
   await expect(running).toBeVisible();
-  await expect(running.getByText(`${wrapped(studioPageCopy.why)} →`)).toHaveCount(0);
 
-  // A failed run is over, not still running -- it groups with what landed
-  // (#581), and still reads its own true word there.
-  const done = page.getByRole("region", { name: `${wrapped(studioPageCopy.done)} · 2` });
-  await expect(done).toBeVisible();
-  // The one word every surface uses for a landed run, from its single owner.
-  await expect(done.getByText(wrapped(standingWords.done))).toBeVisible();
-  await expect(done.getByText(`${wrapped(studioPageCopy.why)} →`)).toBeVisible();
+  // The fail-a and done-a fixtures in this same set are terminal: the Board
+  // never lists their state at all, so only the two live groups render here
+  // -- they belong to History instead (#667).
+  await expect(page.locator(".board-group")).toHaveCount(2);
 
   // A healthy stream says nothing at all (operator ruling 23.08.).
   await expect(
@@ -226,22 +171,20 @@ test("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Studio 
 });
 
 test("proves(studio-elements-answer-named-questions): every interactive Studio control answers one named user question on populated and empty Studio", async ({ page }) => {
-  expect(runPageSchema.safeParse({ items: questionMapRuns(), next_after: null }).success).toBe(true);
-  // Pins the browser's own `Date` to the same frozen instant `minutesAgo`
-  // computed the "Done today" fixture against (see FROZEN_NOON above).
-  await page.clock.setFixedTime(FROZEN_NOON);
+  expect(runPageSchema.safeParse({ items: populatedRuns(), next_after: null }).success).toBe(true);
   await mockAttentionOpen(page);
-  let reply: StudioReadReply = "questions";
+  let reply: StudioReadReply = "populated";
   await routeStudioReads(page, () => reply);
 
   for (const viewport of studioViewports) {
     await page.setViewportSize(viewport);
-    reply = "questions";
+    reply = "populated";
     await page.goto("/atelier");
     await expect(page.getByRole("heading", { name: studioPageCopy.title })).toBeVisible();
-    await expect(page.getByRole("region", { name: "Done today · 3" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Needs you · 2" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Running · 2" })).toBeVisible();
     // No Start of any kind sits beside the Board head (#532): starting a
-    // workflow is a Workflows-owned action now, and once the five-list read
+    // workflow is a Workflows-owned action now, and once the three-list read
     // confirms, ReadState.svelte mounts no control at all.
     await expect(page.getByRole("link", { name: "Start", exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: /board runs/ })).toHaveCount(0);

@@ -31,7 +31,13 @@ afterEach(() => {
   window.history.replaceState(null, "", "/atelier");
 });
 
-const OWNED_RAIL = ["[[[ Workbench ]]]", "[[[ Board ]]]", "[[[ Workflows ]]]", "[[[ History ]]]"];
+const OWNED_RAIL = [
+  "[[[ Workbench ]]]",
+  "[[[ Board ]]]",
+  "[[[ Workflows ]]]",
+  "[[[ Catalog ]]]",
+  "[[[ History ]]]"
+];
 
 function open(pathname: string) {
   window.history.replaceState(null, "", pathname);
@@ -176,7 +182,7 @@ describe("core surfaces read owned display strings", () => {
 
     await screen.findByRole("heading", { name: "[[[ Board ]]]" });
     feed.handlers?.opened();
-    await screen.findByRole("heading", { name: "[[[ Nothing is running ]]]" });
+    await screen.findByRole("heading", { name: `[[[ ${studioPageCopy.emptyTitle} ]]]` });
 
     expect(screen.getByText(wrapDisplayCopy(studioPageCopy.emptyDescription)).isConnected).toBe(true);
     expect(
@@ -184,7 +190,7 @@ describe("core surfaces read owned display strings", () => {
     ).toBe(true);
   });
 
-  it("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Board renders group titles, row sentences, and connection through the display transform", async () => {
+  it("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Board renders group titles and row sentences through the display transform, and never lists a terminal run (#667)", async () => {
     openStudioPseudoLocale(listRunsByState(populatedStudioRuns()));
 
     const needsYou = await screen.findByRole("region", { name: `${wrapDisplayCopy(studioPageCopy.needsYou)} · 2` });
@@ -195,16 +201,12 @@ describe("core surfaces read owned display strings", () => {
     expect(within(needsYou).getByText(`${wrapDisplayCopy(answer ?? "")} →`).isConnected).toBe(true);
     expect(within(needsYou).getByText(`${wrapDisplayCopy(reconcile ?? "")} →`).isConnected).toBe(true);
 
-    const running = screen.getByRole("region", { name: `${wrapDisplayCopy(studioPageCopy.running)} · 2` });
-    expect(within(running).queryByText(`${wrapDisplayCopy(studioPageCopy.why)} →`)).toBeNull();
-
-    // A failed run is over, not still running -- it groups with what has
-    // landed (#581), and still reads its own true word there.
-    const done = screen.getByRole("region", { name: `${wrapDisplayCopy(studioPageCopy.done)} · 2` });
-    // The state word comes from the one owner every surface reads, wrapped the
-    // same way -- no second copy of "Completed" living on the Board.
-    expect(within(done).getByText(wrapDisplayCopy(standingWords.done)).isConnected).toBe(true);
-    expect(within(done).getByText(`${wrapDisplayCopy(studioPageCopy.why)} →`).isConnected).toBe(true);
+    await screen.findByRole("region", { name: `${wrapDisplayCopy(studioPageCopy.running)} · 2` });
+    // The fail-a and done-a fixtures in this same set are terminal: the
+    // Board never lists their state at all, so they leave nothing behind
+    // here for History to duplicate (#667).
+    expect(screen.queryByText(wrapDisplayCopy(standingWords.failed))).toBeNull();
+    expect(screen.queryByText(wrapDisplayCopy(standingWords.done))).toBeNull();
   });
 
   it("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Studio renders both failed-read titles through the display transform", async () => {

@@ -362,6 +362,11 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Schema revision collision",
         "Stop and inspect durable schema revision integrity.",
     ),
+    "schema-revision-not-found": ProblemDefinition(
+        404,
+        "Schema revision not found",
+        "Publish the exact schema revision before reading its bytes.",
+    ),
     **_budget_document_problems(),
     "budget-revision-collision": ProblemDefinition(
         409,
@@ -636,6 +641,21 @@ def _clipped(text: str, bound: int) -> str:
     return text if len(text) <= bound else text[:bound]
 
 
+def bounded_invalid_field(path: str, reason: str) -> InvalidFieldResource:
+    """One `invalid_fields` entry, clipped to the wire's own length bounds.
+
+    A path or reason drawn from content this API does not author -- a
+    published document, a value it carries -- can run longer than a request's
+    own loc ever does, and `InvalidFieldResource` refuses past its bound
+    rather than silently widening it. Every caller that builds one from such
+    content clips through here instead of learning the bound itself.
+    """
+    return InvalidFieldResource(
+        path=_clipped(path, MAXIMUM_INVALID_FIELD_PATH_CHARACTERS),
+        reason=_clipped(reason, MAXIMUM_INVALID_FIELD_REASON_CHARACTERS),
+    )
+
+
 def invalid_fields_from_validation(
     error: RequestValidationError,
 ) -> tuple[InvalidFieldResource, ...]:
@@ -645,12 +665,7 @@ def invalid_fields_from_validation(
         loc = item.get("loc", ())
         path = "/".join(str(part) for part in loc) or "request"
         reason = str(item.get("msg") or item.get("type") or "invalid")
-        fields.append(
-            InvalidFieldResource(
-                path=_clipped(path, MAXIMUM_INVALID_FIELD_PATH_CHARACTERS),
-                reason=_clipped(reason, MAXIMUM_INVALID_FIELD_REASON_CHARACTERS),
-            )
-        )
+        fields.append(bounded_invalid_field(path, reason))
     return tuple(fields)
 
 

@@ -1020,6 +1020,75 @@ describe("the published agent-configuration listing", () => {
   });
 });
 
+describe("the published agent definitions the catalog reads", () => {
+  const digest = "a".repeat(64);
+
+  it("asks the listing door for one page", async () => {
+    const item = {
+      agent_definition_revision_hash: digest,
+      name: "scribe",
+      description: "Writes what the stage needs."
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ items: [item], next_after_revision_hash: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const page = await createCockpitApi(fetcher).listAgentDefinitionRevisions();
+
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      "/atelier/api/v1/agent-definition-revisions?limit=50"
+    );
+    expect(page.items).toEqual([item]);
+  });
+
+  it("sends the authored file as the exact Markdown bytes the door takes", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ agent_definition_revision_hash: digest }), {
+        status: 201,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    const authored = "---\nname: scribe\ndescription: Writes.\n---\n\nYou write.\n";
+
+    const result = await createCockpitApi(fetcher).publishAgentDefinition(authored);
+
+    const request = fetcher.mock.calls[0]?.[1];
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      "/atelier/api/v1/agent-definition-revisions"
+    );
+    expect(request?.method).toBe("POST");
+    expect((request?.headers as Record<string, string>)["content-type"]).toBe(
+      "text/markdown"
+    );
+    expect(new TextDecoder().decode(request?.body as Uint8Array)).toBe(authored);
+    expect(result).toEqual({
+      status: 201,
+      value: { agent_definition_revision_hash: digest }
+    });
+  });
+
+  it("carries the refusal the door named instead of a sentence of its own", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          type: "urn:atelier2:problem:v1:agent-definition-field-unknown",
+          title: "Invalid agent definition document",
+          status: 422,
+          detail: "agent-definition-field-unknown: color"
+        }),
+        { status: 422, headers: { "content-type": "application/problem+json" } }
+      )
+    );
+
+    await expect(
+      createCockpitApi(fetcher).publishAgentDefinition("---\ncolor: cyan\n---\nBody.\n")
+    ).rejects.toThrow("agent-definition-field-unknown: color");
+  });
+});
+
 describe("the graph a run is allowed to hold", () => {
   it("refuses a published V3 graph by name instead of reading it as an empty workflow", () => {
     const published = {

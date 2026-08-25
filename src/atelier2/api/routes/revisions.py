@@ -3,7 +3,7 @@ from __future__ import annotations
 from http import HTTPStatus
 from typing import assert_never
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
 from atelier2.api._support import (
@@ -36,6 +36,8 @@ from atelier2.api.wire.requests import (
 )
 from atelier2.api.wire.resources import (
     AdapterOperationRevisionResource,
+    AgentDefinitionRevisionListItemResource,
+    AgentDefinitionRevisionPageResource,
     AgentDefinitionRevisionResource,
     AnyWorkflowRevisionPageResource,
     BudgetRevisionResource,
@@ -77,6 +79,8 @@ from atelier2.application.publish_schema_revision import (
     SchemaPublicationCreated,
     SchemaPublicationExisting,
     SchemaPublicationInvalid,
+    SchemaRevisionNotFound,
+    SchemaRevisionRead,
 )
 from atelier2.application.publish_tool_grant_revision import (
     ToolGrantPublicationCollision,
@@ -89,6 +93,10 @@ from atelier2.application.publish_workflow_revision import (
     PublicationCreated,
     PublicationExisting,
     PublicationInvalid,
+)
+from atelier2.application.read_agent_definition_revisions import (
+    AgentDefinitionRevisionsListed,
+    PublishedAgentDefinition,
 )
 from atelier2.application.read_workflow_revisions import (
     WorkflowRevisionNotFound,
@@ -169,6 +177,42 @@ async def publish_schema_revision_route(
         SchemaRevisionResource(schema_revision_hash=revision.revision_hash.value),
         status,
     )
+
+
+@router.get(
+    API_PREFIX + "/schema-revisions/{schema_revision_hash}",
+    responses={
+        HTTPStatus.OK: {
+            "content": {
+                "application/json": {"schema": {"type": "string", "format": "binary"}}
+            }
+        }
+    },
+)
+async def get_schema_revision_route(
+    schema_revision_hash: str, context: ApiContext = api_context_dependency
+) -> Response:
+    """The exact bytes a `schema` reference pins, for a caller holding only the hash.
+
+    A published `schema` revision is named by hash alone (ADR 0007), so this
+    mirrors the byte-in door it answers: `application/json`, the same media
+    type `POST /schema-revisions` accepted the document as, verbatim.
+    """
+    try:
+        parsed = PublishedRevisionHash(schema_revision_hash)
+    except (TypeError, ValueError) as error:
+        raise ApiProblem("invalid-revision-hash") from error
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.get_schema_revision(parsed),
+    )
+    match result:
+        case SchemaRevisionRead(revision):
+            return Response(revision.document, media_type="application/json")
+        case SchemaRevisionNotFound():
+            raise ApiProblem("schema-revision-not-found")
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 @router.post(
@@ -324,6 +368,54 @@ async def publish_agent_definition_revision_route(
             agent_definition_revision_hash=revision.revision_hash.value
         ),
         status,
+    )
+
+
+@router.get(
+    API_PREFIX + "/agent-definition-revisions",
+    response_model=AgentDefinitionRevisionPageResource,
+)
+async def list_agent_definition_revisions_route(
+    after_revision_hash: str | None = None,
+    limit: str = "50",
+    context: ApiContext = api_context_dependency,
+) -> AgentDefinitionRevisionPageResource:
+    """List published agent definitions by the names their authors gave them."""
+
+    after = None
+    if after_revision_hash is not None:
+        try:
+            after = PublishedRevisionHash(after_revision_hash)
+        except ValueError as error:
+            raise ApiProblem("invalid-revision-hash") from error
+    parsed_limit = parse_limit(limit)
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.list_agent_definition_revisions(after, parsed_limit),
+    )
+    match result:
+        case AgentDefinitionRevisionsListed(items, next_after):
+            return AgentDefinitionRevisionPageResource(
+                items=tuple(_agent_definition_list_item(item) for item in items),
+                next_after_revision_hash=(
+                    None if next_after is None else next_after.value
+                ),
+            )
+        case ReadUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _agent_definition_list_item(
+    published: PublishedAgentDefinition,
+) -> AgentDefinitionRevisionListItemResource:
+    return AgentDefinitionRevisionListItemResource(
+        agent_definition_revision_hash=published.revision_hash.value,
+        name=published.definition.name,
+        description=published.definition.description,
     )
 
 

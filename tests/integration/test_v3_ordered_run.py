@@ -30,14 +30,9 @@ import sqlalchemy as sa
 import uvicorn
 from fastapi import FastAPI
 
-from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
-from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
-from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
-from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
-from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     context_packages_v3,
@@ -52,13 +47,7 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.adapters.markdown_agent_definitions import (
-    parse_agent_definition,
-    render_agent_definition,
-)
-from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
-from atelier2.api.context import ApiPorts
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -126,7 +115,7 @@ from tests.scenarios.agents import (
 from tests.scenarios.api import (
     api_limits,
     durable_api_client,
-    durable_queries,
+    durable_ports,
     event_poll_backoff,
 )
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
@@ -508,6 +497,47 @@ def test_the_public_start_route_names_an_undeclared_order(
     assert problem["type"] == "urn:atelier2:problem:v1:run-input-refused"
     assert "supper" in problem["detail"]
     assert V3InputRefusal.UNDECLARED.value in problem["detail"]
+    with runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+
+
+@pytest.mark.proves("an-order-the-start-cannot-honour-is-refused-by-its-own-name")
+def test_the_public_start_route_names_the_violated_field(runtime: DbosRuntime) -> None:
+    """The field pointer `_first_violation` locates reaches the wire, not just prose.
+
+    The starter already computes exactly where a value diverges from its
+    schema (#678). A route that dropped that place on the floor would still
+    422 with a readable sentence, but `invalid_fields` -- the mechanism every
+    other field-level refusal already answers through -- would stay empty,
+    and a caller would have to parse `detail`'s prose to find the field.
+    """
+    workflow, bindings = publish_ordered_workflow(runtime)
+    binding = bindings.bindings[0]
+
+    refused = durable_api_client(runtime).post(
+        API_PREFIX + "/runs",
+        json={
+            "workflow_format_version": 3,
+            "run_id": "v3/violated-field",
+            "workflow_revision_hash": workflow.revision_hash.value,
+            "agent_bindings": [
+                {
+                    "role": binding.role.value,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash.value
+                    ),
+                }
+            ],
+            "orders": [{"name": ORDER_NAME, "value": '{"portions": 0}'}],
+        },
+    )
+
+    assert refused.status_code == 422
+    problem = refused.json()
+    assert problem["type"] == "urn:atelier2:problem:v1:run-input-refused"
+    assert problem["invalid_fields"] == [
+        {"path": "/portions", "reason": "0 is less than the minimum of 1"}
+    ]
     with runtime.engine.connect() as connection:
         assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
 
@@ -1224,43 +1254,11 @@ COOK_BINDING_DOCUMENT = json.dumps(
 
 
 def application(runtime: DbosRuntime) -> FastAPI:
-    queries = durable_queries(runtime.engine)
-    catalog = DbosCatalogStore(runtime.engine)
     return create_app(
         source_commit="commit",
         source_tree="tree",
-        ports=ApiPorts(
-            workflow_revision_publisher=DbosWorkflowRevisionPublisher(runtime.engine),
-            published_run_starter=DbosDurableRunStarter(
-                runtime.engine,
-                runtime.settings,
-                runtime.agent_executor_registry,
-                effect_adapter_proves_absence=True,
-            ),
-            wait_answerer=DbosWaitAnswerer(
-                runtime.engine, runtime.settings.application_version
-            ),
-            reconcile_commander=DbosEffectReconcileCommander(
-                runtime.engine, runtime.settings
-            ),
-            workflow_revision_queries=queries,
-            run_queries=queries,
-            run_event_queries=queries,
-            workflow_document_parser=parse_workflow_document,
-            agent_definition_parser=parse_agent_definition,
-            agent_definition_renderer=render_agent_definition,
-            agent_configuration_catalog=DbosAgentConfigurationCatalog(
-                runtime.engine, runtime.agent_executor_registry
-            ),
-            agent_attempt_canceller=DbosAgentAttemptStore(
-                runtime.engine, runtime.settings.application_version
-            ),
-            catalog_resolver=catalog,
-            catalog_admissions=catalog,
-            published_revision_registry=catalog,
-            artifact_publisher=DbosArtifactStore(runtime.engine),
-            host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
-            queue_projection=DbosQueueProjectionStore(runtime.engine),
+        ports=durable_ports(
+            runtime.engine, runtime.settings, runtime.agent_executor_registry
         ),
         limits=api_limits(),
         event_poll_backoff=event_poll_backoff(),

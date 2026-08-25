@@ -43,7 +43,10 @@ from atelier2.application.publish_agent_definition_revision import (
 )
 from atelier2.application.publish_artifact import PublishArtifactUseCaseResult
 from atelier2.application.publish_budget_revision import PublishBudgetRevisionResult
-from atelier2.application.publish_schema_revision import PublishSchemaRevisionResult
+from atelier2.application.publish_schema_revision import (
+    GetSchemaRevisionResult,
+    PublishSchemaRevisionResult,
+)
 from atelier2.application.publish_tool_grant_revision import (
     PublishToolGrantRevisionResult,
 )
@@ -54,6 +57,9 @@ from atelier2.application.publish_workflow_revision import (
 from atelier2.application.read_agent_configurations import (
     ListAgentConfigurationRevisionsResult,
     ListAuthProfileRevisionsResult,
+)
+from atelier2.application.read_agent_definition_revisions import (
+    ListAgentDefinitionRevisionsResult,
 )
 from atelier2.application.read_attention_events import ReadAttentionEventsResult
 from atelier2.application.read_projects import (
@@ -114,6 +120,7 @@ from atelier2.ports.issue_observation import TrackerItemSource
 from atelier2.ports.published_revisions import (
     CatalogAdmissions,
     CatalogResolver,
+    PublishedRevisionListing,
     PublishedRevisionRegistry,
 )
 from atelier2.ports.queue_projection import QueueProjection
@@ -147,6 +154,7 @@ class ApiPorts:
     catalog_resolver: CatalogResolver
     catalog_admissions: CatalogAdmissions
     published_revision_registry: PublishedRevisionRegistry
+    published_revision_listing: PublishedRevisionListing
     artifact_publisher: ArtifactPublisher
     host_configuration_channel: HostConfigurationChannel
     queue_projection: QueueProjection
@@ -190,6 +198,7 @@ class ApiUseCases:
     publish_workflow_revision: Callable[[bytes], PublishWorkflowRevisionResult]
     publish_artifact: Callable[[bytes], PublishArtifactUseCaseResult]
     publish_schema_revision: Callable[[bytes], PublishSchemaRevisionResult]
+    get_schema_revision: Callable[[PublishedRevisionHash], GetSchemaRevisionResult]
     publish_budget_revision: Callable[[bytes], PublishBudgetRevisionResult]
     publish_tool_grant_revision: Callable[[bytes], PublishToolGrantRevisionResult]
     publish_adapter_operation_revision: Callable[
@@ -197,6 +206,9 @@ class ApiUseCases:
     ]
     publish_agent_definition_revision: Callable[
         [bytes], PublishAgentDefinitionRevisionResult
+    ]
+    list_agent_definition_revisions: Callable[
+        [PublishedRevisionHash | None, int], ListAgentDefinitionRevisionsResult
     ]
     publish_auth_profile_revision: Callable[
         [str, int, str, str], PublishAuthProfileRevisionResult

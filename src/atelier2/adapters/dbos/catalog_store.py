@@ -25,6 +25,7 @@ from atelier2.contracts.catalog_v3 import (
     CatalogLineageId,
     CatalogRetirementState,
 )
+from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
@@ -50,11 +51,14 @@ from atelier2.ports.published_revisions import (
     CatalogRetirementExisting,
     CatalogRevisionPosition,
     FoundCatalogLineageResult,
+    ListPublishedRevisionsResult,
     PublishedRevisionCollision,
     PublishedRevisionCreated,
     PublishedRevisionExisting,
     PublishedRevisionFound,
     PublishedRevisionMissing,
+    PublishedRevisionPage,
+    PublishedRevisionsUnavailable,
     PublishRevisionResult,
     ResolveCatalogNameResult,
     ResolvePublishedRevisionResult,
@@ -381,6 +385,42 @@ class DbosCatalogStore:
         if record is None:
             return PublishedRevisionMissing()
         return PublishedRevisionFound(published_revision_from_record(record))
+
+    def list_revisions(
+        self, kind: RevisionKind, after: PublishedRevisionHash | None, limit: int
+    ) -> ListPublishedRevisionsResult:
+        if type(limit) is not int or not 1 <= limit <= MAXIMUM_PAGE_ITEMS:
+            raise ValueError(
+                f"revision page limit must be an integer from 1 to {MAXIMUM_PAGE_ITEMS}"
+            )
+        try:
+            with self._engine.connect() as connection:
+                statement = sa.select(published_revisions).where(
+                    published_revisions.c.kind == kind.value
+                )
+                if after is not None:
+                    statement = statement.where(
+                        published_revisions.c.revision_hash > after.value
+                    )
+                records = tuple(
+                    connection.execute(
+                        statement.order_by(published_revisions.c.revision_hash).limit(
+                            limit + 1
+                        )
+                    ).mappings()
+                )
+            page = records[:limit]
+            revisions = tuple(published_revision_from_record(record) for record in page)
+            next_after = (
+                revisions[-1].revision_hash
+                if len(records) > limit and revisions
+                else None
+            )
+            return PublishedRevisionPage(revisions, next_after)
+        except (OperationalError, PoolTimeoutError):
+            return PublishedRevisionsUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
 
     def resolve_reference(
         self,

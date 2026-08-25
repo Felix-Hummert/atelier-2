@@ -16,10 +16,24 @@ story = "https://github.com/FlexOr2/atelier-2/issues/7"
 #     any --mcp-config server from spawning, so it and a door cannot coexist.
 #   - NO real-run sentence. A billed call under this vector has not been made;
 #     routine use waits on the operator-gated probe.
+#   - NO native structured-output sentence. Measured unbilled on 2.1.221:
+#     --json-schema exists and parses, but the release fulfils it with a
+#     synthetic StructuredOutput TOOL and answers in a structured_output field
+#     beside result. Whether that tool survives --tools= and this vector's
+#     allowlist is a billed observation, so the executor does not carry the
+#     flag and no sentence here may claim it (#663).
 
 [[sentence]]
 id = "the-doors-vector-admits-exactly-the-granted-doors"
 text = "The Claude atelier-doors executor prepares an argument vector with no --safe-mode, --tools= removing every built-in, --allowedTools naming exactly the composed door tools under the mcp__<server>__<tool> grammar, and a strict single-server --mcp-config whose one server is the serving host's own atelier2 mcp door command."
+
+[[sentence]]
+id = "an-episode-answers-the-value-its-schema-declared"
+text = "Ten identical episodes whose node declared the conductor report schema each hand on a value that schema admits, whatever prose the provider wrapped it in: bare, with a trailing newline, introduced by a sentence, or inside a Markdown fence."
+
+[[sentence]]
+id = "an-episode-answering-no-such-value-is-still-refused"
+text = "An episode whose answer carries no value the declared schema admits hands that answer on unchanged, so the output seam refuses it by name rather than any narrowing accepting or repairing it."
 
 [[sentence]]
 id = "the-conductor-document-carries-its-own-fence"
