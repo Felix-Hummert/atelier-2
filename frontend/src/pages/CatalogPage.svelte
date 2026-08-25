@@ -28,6 +28,7 @@
     retainedRead,
     type RetainedRead
   } from "../lib/readResource";
+  import { workflowPath } from "../lib/route";
   import { readEveryRevision } from "../lib/runPages";
 
   export let cockpitApi: CockpitApi;
@@ -190,24 +191,35 @@
             <p class="entry-line failure">{row.state.reason}</p>
           {/if}
           <p class="entry-facts">{catalogRowFacts(row.revisionHash).join(" · ")}</p>
-          {#if row.state?.kind === "not-admitted" && row.admittable}
-            <button
-              type="button"
-              disabled={admittingHash !== null}
-              onclick={() => { void admit(row.revisionHash); }}
-              >{wrapDisplayCopy(
-                admittingHash === row.revisionHash
-                  ? catalogPageCopy.admitting
-                  : catalogPageCopy.admit
-              )}</button
-            >
-          {:else if row.state?.kind === "startable"}
-            <a
-              class="button"
-              href="/atelier/workflows"
-              onclick={(event) => { event.preventDefault(); navigate("/atelier/workflows"); }}
-              >{wrapDisplayCopy(catalogPageCopy.start)}</a
-            >
+          {#if row.name !== null}
+            {@const detailPath = workflowPath(row.name)}
+            <div class="entry-actions">
+              {#if row.state?.kind === "not-admitted" && row.admittable}
+                <button
+                  type="button"
+                  disabled={admittingHash !== null}
+                  onclick={() => { void admit(row.revisionHash); }}
+                  >{wrapDisplayCopy(
+                    admittingHash === row.revisionHash
+                      ? catalogPageCopy.admitting
+                      : catalogPageCopy.admit
+                  )}</button
+                >
+              {:else if row.state?.kind === "startable"}
+                <a
+                  class="button"
+                  href="/atelier/workflows"
+                  onclick={(event) => { event.preventDefault(); navigate("/atelier/workflows"); }}
+                  >{wrapDisplayCopy(catalogPageCopy.start)}</a
+                >
+              {/if}
+              <a
+                class="button"
+                href={detailPath}
+                onclick={(event) => { event.preventDefault(); navigate(detailPath); }}
+                >{wrapDisplayCopy(catalogPageCopy.details)}</a
+              >
+            </div>
           {/if}
         </li>
       {/each}
@@ -325,8 +337,10 @@
     font-size: var(--text-2xs);
   }
 
-  .entry button,
-  .entry a.button {
+  .entry-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
     margin-top: var(--space-2);
   }
 
