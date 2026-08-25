@@ -296,17 +296,19 @@ choosing an architecture the deployment cannot run.
 ### 5. Publication: only through an Action node, and always readback-then-create
 
 - **Every create or update on the platform is an Action node** bound to a versioned
-  GitHub adapter-operation revision (ADR 0006). An agent shell reaching `gh` is not
-  a publication path. This is the line the fleet crosses today, and it is enforced
-  by the boundary rather than by instructions, per #1's rule that prompts are not
-  controls.
+  adapter-operation revision (ADR 0006) — the GitHub adapter's for a GitHub-facing
+  operation, and, since decision 1's 2026-08-25 amendment, the forge-neutral
+  git-transport adapter's for `push-atelier-commit`. An agent shell reaching `gh`
+  is not a publication path. This is the line the fleet crosses today, and it is
+  enforced by the boundary rather than by instructions, per #1's rule that prompts
+  are not controls.
 - **The core derives the idempotency key** (ADR 0006: run, node, operation revision
-  and intent hash); an author never writes one. GitHub's API offers no idempotency
-  key of its own, so where an operation creates a content-bearing object the adapter
-  **carries the effect's request hash in that object's own content**, and `execute`
-  is always readback-then-create. The marker is what lets a re-attempt after a crash
-  find the first effect instead of creating its twin, and it is the same marker that
-  carries decision 2's attribution.
+  and intent hash); an author never writes one. Neither GitHub's API nor a bare git
+  push offers an idempotency key of its own, so where an operation creates a
+  content-bearing object the adapter **carries the effect's request hash in that
+  object's own content**, and `execute` is always readback-then-create. The marker
+  is what lets a re-attempt after a crash find the first effect instead of creating
+  its twin, and it is the same marker that carries decision 2's attribution.
 
 **Where the marker lives, per operation — enumerated, never assumed.** Attribution
 and deduplication are properties of an operation, not of the adapter, so each
@@ -334,7 +336,10 @@ else in this repository owns them.** Repository policy binds no trailer key and 
 per-invocation commit identity, so a commit operation would otherwise inherit
 whatever ambient git configuration the host happens to carry — which is how an
 agent's commit ends up wearing a human's name. Therefore: **one marker contract
-inside the adapter owns the marker's exact syntax and its trailer key**, shared by
+owns the marker's exact syntax and its trailer key.** Since decision 1's
+2026-08-25 amendment its owner is a shared, provider-neutral contract module,
+not the GitHub adapter alone — the GitHub adapter's `marker.py` is that
+contract's GitHub implementation, not a second copy of it — shared by
 every operation revision so two operations cannot drift into two dialects, and
 **each commit operation revision declares the author and committer identity its
 commits carry**, per invocation and never read from ambient git configuration.
@@ -363,12 +368,18 @@ force-pushes a ref that already names a commit — a second commit on an
 existing Atelier branch is a second Action node's own push, never a rewrite of
 this one's. A non-fast-forward or lease rejection from the remote is not a
 refusal in its own right: it is exactly the trigger that sends the intent to
-readback, which resolves it to a receipt when the ref now names this push's
-own commit (the earlier attempt's own race), or to
-`platform-push-ref-diverged` → `UNKNOWN` otherwise. **A divergence carries no
-typed sub-reason beyond `UNKNOWN`**, because this operation owns no evidence at
-its boundary that would let it tell one divergent cause from another; an owner
-that later proves a distinguishing reason may add one, but this amendment does
+readback rather than a blind retry, and readback then reads one of three ways.
+The ref may still be **absent** — the rejection did not actually create
+anything, whatever the remote's reason for refusing it — and that is not
+distinguished from a fresh intent: the create is simply retried, exactly as
+any first send would be. The ref may be **present and name this push's own
+commit** — the earlier attempt's own race — which resolves to a receipt, not a
+second send. Or the ref may be **present and name a different commit**, which
+resolves through `platform-push-ref-diverged` to `UNKNOWN`. **A divergence
+carries no typed sub-reason beyond `UNKNOWN`**, because this operation owns no
+evidence at its boundary that would let it tell one divergent cause from
+another; an owner that later proves a distinguishing reason may add one, but
+this amendment does
 not invent one on the chance it might be useful.
 
 **Its authoritative negative is `none`, unconditionally** — not
@@ -394,6 +405,13 @@ process's own environment never holds the secret, only the path to it. This
 amendment adds no second credential rule: it states decision 3's existing
 by-reference discipline precisely for the one transport in this record that
 shells out to a subprocess instead of calling an HTTP client library directly.
+**This amendment specifies `push-atelier-commit` for the PAT credential file
+only.** The App method's installation-token handoff into a git subprocess is a
+named gap, not decided here: minting, scoping and refreshing an installation
+token for a `git push` invocation is a different shape from handing `githubkit`
+a bearer value, and this record does not design it. Until a future amendment
+does, `push-atelier-commit` is PAT-only and the App method stays `open-pr`-only
+for this operation.
 
 **Its request presupposes a candidate-tree invariant this record does not
 own, named rather than left vague.** The operation's tree object is the
@@ -573,11 +591,14 @@ the one library, so the second method (not composed by this slice) is a
 configuration choice later rather than a second client to write.
 
 **What this operation still owns, and one caching feature it explicitly
-refuses.** The marker syntax, its placement in a pull request's own body, and
-the readback-then-create idempotency decision (decision 5, `marker.py`) are
-this adapter's, not the client's: `githubkit` has no notion of "the same
-logical effect" — that is exactly the gap ADR 0010 exists to close. So are
-branch naming, deriving a title from the predecessor agent's output, and the
+refuses.** This operation's marker placement in a pull request's own body, and
+its readback-then-create idempotency decision (decision 5), are this adapter's
+own choice, not the client's: `githubkit` has no notion of "the same logical
+effect" — that is exactly the gap ADR 0010 exists to close. The marker's
+syntax itself is the shared, provider-neutral contract decision 1's amendment
+names, with this adapter's `marker.py` as that contract's GitHub
+implementation, never a second copy of the decision. So are branch naming,
+deriving a title from the predecessor agent's output, and the
 credential-by-reference boundary (decision 3) — the adapter hands `githubkit`
 a token resolved from a credential directory at `open()`, never a value from
 anywhere else. `githubkit` bundles `hishel` for HTTP-level response caching by
@@ -612,7 +633,7 @@ DBOS and SQLAlchemy.
 | `platform-actor-unattributable` | an observed action maps to no known actor and carries no Atelier marker | observation |
 | `platform-observation-rate-limited` | the platform's limit stops a poll; visible, cursor preserved | observation |
 | `candidate-tree-unrepresentable` | `push-atelier-commit`'s source lease contains a symlink, a submodule, a nested `.git`, or a size the candidate store refuses (2026-08-25 amendment, #642-Journal) | candidate capture; the attempt ends FAILED, never SUCCEEDED with the capture skipped |
-| `candidate-capture-unavailable` | the project's Git object boundary does not answer during candidate capture (2026-08-25 amendment, #642-Journal) | candidate capture; the attempt fails loud, its workspace is not released |
+| `candidate-capture-unavailable` | the project's Git object boundary does not answer during candidate capture (2026-08-25 amendment, #642-Journal) | candidate capture; the attempt ends FAILED with this code in its receipt, its workspace **is** released (the `AgentAttemptPossiblyRan` rule of `application/execute_agent_attempt.py` wins over retaining it — a retained workspace is a leak, not a store), the receipt names the loss, and a retry re-runs the attempt |
 | `candidate-tree-missing` | a `push-atelier-commit` intent finds no candidate-tree ref for its node execution, or one present but naming a tree other than the one its pin recorded (2026-08-25 amendment, #642-Journal) | operation binding |
 | `candidate-base-not-on-remote` | `push-atelier-commit`'s pinned base commit is not reachable at the target remote, or the candidate's recorded base no longer matches the base commit the intent names (2026-08-25 amendment, #642-Journal) | execute |
 | `platform-push-ref-diverged` | the target branch ref exists but names a commit other than the one this push's readback expects (2026-08-25 amendment, #642-Journal) | readback; resolves to `UNKNOWN`, never `AUTHORITATIVE_NOT_FOUND`, and carries no typed sub-reason for the divergence |
@@ -728,15 +749,19 @@ this record borrows that owner rather than opening a second vocabulary.
   crash between anchoring and success recovers idempotently, finding the same
   ref rather than writing a second one; the ref survives `git gc --prune=now`;
   and a capture failure ends the attempt FAILED under its own named failure
-  code, its workspace released, with no `AgentAttemptPossiblyRan` report on
-  replay.
+  code with the loss named in its receipt, its workspace released rather than
+  retained, with no `AgentAttemptPossiblyRan` report on replay, and a retry
+  re-runs the attempt from scratch.
 - **(2026-08-25 amendment, #642-Journal)** A durable projection, event, receipt,
   and log all show no credential or secret material for a `push-atelier-commit`
-  run, and neither does the argument vector or the environment of the git
+  run under whichever credential handoff it is specified for — the PAT file
+  today — and neither does the argument vector or the environment of the git
   subprocess or of any credential helper or `GIT_ASKPASS` process it invokes —
   the same canary standard the auth-method proof above already uses, extended
   past the raw command line to the process environment and to every helper
-  process the git subprocess itself starts.
+  process the git subprocess itself starts. A future amendment specifying the
+  App method's installation-token handoff proves the same canary against that
+  handoff before it is accepted.
 
 ## Out of scope and stop conditions
 

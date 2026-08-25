@@ -366,10 +366,11 @@ will never contain:
 - the **effect store** — operational state of one bound runtime, meaningless beside
   any other store;
 - the **candidate store** (`.atelier2-candidates.git`, decision 2) — an attempt's
-  captured candidate trees, deliberately lost because they are self-contained: a
-  tree object references only subtrees and blobs, never a commit, so nothing an
-  export could usefully carry follows it across installations (2026-08-25
-  amendment, #642-Journal);
+  captured candidate trees, deliberately lost because no exported relation gives
+  them meaning: which attempt captured a given tree and which push intent later
+  consumed it lives only in the attempt and effect-store facts the two bullets
+  above already exclude, so an exported tree would be content with no addressee
+  (2026-08-25 amendment, #642-Journal);
 - the **project bundle** — repository, tracker connection, credential reference,
   filters, workflow rules, running state: deployment facts of this installation, and
   a credential never travels at all;
