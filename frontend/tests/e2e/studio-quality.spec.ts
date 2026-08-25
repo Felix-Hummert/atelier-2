@@ -184,7 +184,7 @@ test("proves(studio-elements-answer-named-questions): every interactive Studio c
     await expect(page.getByRole("region", { name: "Needs you · 2" })).toBeVisible();
     await expect(page.getByRole("region", { name: "Running · 2" })).toBeVisible();
     // No Start of any kind sits beside the Board head (#532): starting a
-    // workflow is a Workflows-owned action now, and once the five-list read
+    // workflow is a Workflows-owned action now, and once the three-list read
     // confirms, ReadState.svelte mounts no control at all.
     await expect(page.getByRole("link", { name: "Start", exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: /board runs/ })).toHaveCount(0);

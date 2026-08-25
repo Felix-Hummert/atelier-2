@@ -470,7 +470,7 @@ describe("an empty board teaches the one next action", () => {
     expect(screen.queryByRole("button", { name: /board runs/ })).toBeNull();
   });
 
-  it("does not confirm a partial initial five-list reading", async () => {
+  it("does not confirm a partial initial three-list reading", async () => {
     const listRuns = vi.fn(async (after?: string, state?: string) => {
       if (state === "STARTED" && after === undefined) {
         return { items: [startedRun()], next_after: "run1.bmV4dA" };
