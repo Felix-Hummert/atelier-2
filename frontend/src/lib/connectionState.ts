@@ -100,6 +100,13 @@ export function watchConnectionRecovery(
   }
 
   async function runProbe(): Promise<void> {
+    // Never more than one probe in flight: the interval loop always waits
+    // for the previous attempt to settle before scheduling the next, but the
+    // sparse fallback can otherwise fire while the just-exhausted budget's
+    // last attempt is still pending. Two overlapping probes race on which
+    // settles last -- a late rejection from the older one would re-report
+    // the connection lost even after a newer attempt already restored it.
+    if (controller !== null) return;
     timer = null;
     attempts += 1;
     lastAttemptAt = Date.now();
@@ -123,6 +130,7 @@ export function watchConnectionRecovery(
       disposed ||
       current !== "reconnecting" ||
       attempts < MAXIMUM_PROBE_ATTEMPTS ||
+      controller !== null ||
       Date.now() - lastAttemptAt < SPARSE_RETRY_MINIMUM_GAP_MS
     ) {
       return;

@@ -177,6 +177,55 @@ describe("the bounded recovery probe for a page with no open stream (#700)", () 
     stop();
   });
 
+  it("never runs a second probe while one is still pending, even once time alone would satisfy the sparse-retry gap", async () => {
+    const attemptsToExhaustBudget = 100;
+    let calls = 0;
+    const pending: { resolve: (() => void) | null } = { resolve: null };
+    const probe = vi.fn(async () => {
+      calls += 1;
+      if (calls <= attemptsToExhaustBudget) throw new Error("still down");
+      // The exhausted-budget's sparse-retried attempt hangs here, standing in
+      // for a slow round trip still in flight when another signal fires --
+      // exactly the overlap a late, stale rejection could otherwise race
+      // against a newer attempt that already restored the connection.
+      await new Promise<void>((resolve) => {
+        pending.resolve = resolve;
+      });
+    });
+    const stop = watchConnectionRecovery(probe);
+
+    reportConnectionLost();
+    for (let attempt = 0; attempt < attemptsToExhaustBudget; attempt += 1) {
+      await vi.advanceTimersByTimeAsync(3_000);
+    }
+    expect(probe).toHaveBeenCalledTimes(attemptsToExhaustBudget);
+
+    // Past the sparse-retry gap, so this first signal earns its try.
+    await vi.advanceTimersByTimeAsync(20_000);
+    window.dispatchEvent(new Event("online"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(probe).toHaveBeenCalledTimes(attemptsToExhaustBudget + 1);
+    expect(pending.resolve).not.toBeNull();
+
+    // Time alone would satisfy the sparse-retry rate limit again, but the
+    // attempt above is still pending -- no second probe starts while it is.
+    await vi.advanceTimersByTimeAsync(20_000);
+    window.dispatchEvent(new Event("online"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(probe).toHaveBeenCalledTimes(attemptsToExhaustBudget + 1);
+
+    // Once the pending attempt finally settles, the next signal earns its
+    // own try -- exactly one in-flight probe at a time, never zero once
+    // earned.
+    pending.resolve?.();
+    await vi.advanceTimersByTimeAsync(0);
+    window.dispatchEvent(new Event("online"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(probe).toHaveBeenCalledTimes(attemptsToExhaustBudget + 2);
+
+    stop();
+  });
+
   it("aborts its still-pending probe's signal the instant it tears down", async () => {
     const captured: { signal: AbortSignal | null } = { signal: null };
     const probe = vi.fn(

@@ -428,7 +428,9 @@ describe("an empty board teaches the one next action", () => {
     await screen.findByRole("heading", { name: "Board" });
 
     reportConnectionLost();
-    await screen.findByText(restartNoticeCopy);
+    await waitFor(() => {
+      expect(document.querySelector(".notice-banner")?.textContent).toContain(restartNoticeCopy);
+    });
     // The shell's one line above already names the outage; this room adds no
     // second, page-local echo of the same fact.
     expect(screen.queryByText(studioPageCopy.runsUnavailable)).toBeNull();

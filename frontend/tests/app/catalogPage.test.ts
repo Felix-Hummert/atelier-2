@@ -463,7 +463,9 @@ describe("the catalog room", () => {
     await screen.findByRole("heading", { name: "Catalog" });
 
     reportConnectionLost();
-    await screen.findByText(restartNoticeCopy);
+    await waitFor(() => {
+      expect(document.querySelector(".notice-banner")?.textContent).toContain(restartNoticeCopy);
+    });
     // The shell's one line above already names the outage; this room adds no
     // second, page-local echo of the same fact for either list.
     expect(screen.queryByText(catalogPageCopy.workflowsUnavailable)).toBeNull();

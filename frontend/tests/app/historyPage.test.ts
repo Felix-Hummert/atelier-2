@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
@@ -159,7 +159,9 @@ describe("History shows only what has finished", () => {
     await screen.findByRole("heading", { name: "History" });
 
     reportConnectionLost();
-    await screen.findByText(restartNoticeCopy);
+    await waitFor(() => {
+      expect(document.querySelector(".notice-banner")?.textContent).toContain(restartNoticeCopy);
+    });
     // The shell's one line above already names the outage; this page adds
     // no second, page-local echo of the same fact.
     expect(screen.queryByText("History unavailable")).toBeNull();

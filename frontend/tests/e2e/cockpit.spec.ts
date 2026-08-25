@@ -656,7 +656,7 @@ test("proves(new-run-preserves-workflow-truth-and-retries-only-the-workflow-read
     const after = url.searchParams.get("after");
     if (after === null) round += 1;
     if (round === 1) {
-      await route.abort("failed");
+      await route.fulfill({ status: 503, json: TEMPORARILY_UNAVAILABLE_PROBLEM });
       return;
     }
     if (after === null) {
@@ -2051,7 +2051,8 @@ test("proves(project-occupancy-editor-confirms-complete-project-truth): edits on
   await expect(page.getByRole("article", { name: "Binding builder" }).getByLabel("Agent for builder")).toHaveValue(reviewerHash);
   await expect(page.getByRole("article", { name: "Binding reviewer" }).getByLabel("Agent for reviewer")).toHaveValue(auditorHash);
 
-  const unavailable = async (route: Route) => route.abort();
+  const unavailable = async (route: Route) =>
+    route.fulfill({ status: 503, json: TEMPORARILY_UNAVAILABLE_PROBLEM });
   await page.route("**/atelier/api/v1/projects", unavailable);
   await page.goto("/atelier/project");
   await expect(page.getByText("Project occupancy unavailable")).toBeVisible();
