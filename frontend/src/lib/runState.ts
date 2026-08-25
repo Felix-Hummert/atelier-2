@@ -71,6 +71,12 @@ export function waitsForAHuman(state: AnyRun["state"]): boolean {
   return standings[state] === "waiting";
 }
 
+/** Whether a run's line is over -- done, failed or cancelled, never running or waiting. */
+export function runHasEnded(state: AnyRun["state"]): boolean {
+  const standing = standings[state];
+  return standing !== "running" && standing !== "waiting";
+}
+
 export function runsStanding(runs: readonly AnyRun[], standing: RunStanding): AnyRun[] {
   return runs.filter((run) => standings[run.state] === standing);
 }

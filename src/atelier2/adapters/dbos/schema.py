@@ -12,7 +12,10 @@ from sqlalchemy.dialects import sqlite as sqlite_dialect
 from sqlalchemy.engine import Engine
 from sqlalchemy.schema import CreateIndex, CreateTable
 
-from atelier2.adapters.dbos.published_schema_shapes import PUBLISHED_TABLE_SHAPES
+from atelier2.adapters.dbos.published_schema_shapes import (
+    PUBLISHED_TABLE_INDEXES,
+    PUBLISHED_TABLE_SHAPES,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
@@ -55,11 +58,12 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head admits `WAIT_CANCELLED` as a run event kind (#668), so
-# a run resting at a pause can end under an operator's cancel. Predecessor is
-# the published schema that keyed a wait answer by its node execution (#671).
+# Movable hop: this head re-scopes the run-event key that said one event of a
+# kind per node per run to the round it belongs to (#658), so a Wait a loop
+# turns twice may pause twice and neither pause may be written twice.
+# Predecessor is the published schema that admitted `WAIT_CANCELLED` (#668).
 # Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 34
+_HOP_PREDECESSOR_VERSION = 35
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -88,6 +92,7 @@ _VERSION_THIRTY_TWO = 32
 _VERSION_THIRTY_THREE = 33
 _VERSION_THIRTY_FOUR = 34
 _VERSION_THIRTY_FIVE = 35
+_VERSION_THIRTY_SIX = 36
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -169,6 +174,18 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # payload and is fenced by the node execution it names -- so the run's terminal
 # hash folds over a real event instead of a lift inventing one. Only the
 # vocabulary widens; every stored row keeps its bytes, its key and its meaning.
+# V36 re-scopes one run-event key to the round (#658).
+# `run_events_legacy_kind_unique` said one event of a kind per node per run for
+# every event no agent attempt owns, which stopped being true the moment a
+# declared loop could turn a Wait a second time: round two's WAITING_INPUT names
+# the same node and kind as round one's. `run_events_round_kind_unique` says the
+# same thing about one round, so every log the predecessor holds satisfies it.
+# The round-scoped key is not redundant beside the execution-keyed one: an
+# execution id is derived, and only a writer that derived it right lands under
+# it, while `_existing_event` reads a round back by run, revision, node and
+# round and expects at most one row. The hop is two DDL statements and the
+# version CAS -- SQLite moves an index without reading a row, so no row is
+# rewritten, no table is parked and the table text does not move.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -201,6 +218,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     33: "f634d04c6cc525147ead8aa0dad8ef728189a6ef9554049c8a2aad56f3caeea8",
     34: "28dab0f4a152d7be66fa699d1123fdd130a94fe80ad705c19330f075e4fdd85a",
     35: "29df9a195316ce94527be2c906e4dc4104e00b2cb16caa9bfada17fecb5a21d5",
+    36: "c9f4b5d99a9ff8e33796e36151b66f00175eceaa797e30461bf6e01264266ce8",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -305,6 +323,10 @@ V33_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V34_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_THIRTY_FOUR,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_FOUR],
+)
+V35_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_THIRTY_FIVE,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_FIVE],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1153,17 +1175,25 @@ run_events = sa.Table(
     ),
 )
 sa.Index(
-    "run_events_legacy_kind_unique",
-    run_events.c.run_id,
-    run_events.c.revision_hash,
-    run_events.c.node_id,
+    "run_events_legacy_execution_kind_unique",
+    run_events.c.node_execution_id,
     run_events.c.event_kind,
     unique=True,
     sqlite_where=run_events.c.agent_attempt_id.is_(None),
 )
+# The same sentence in the coordinates a reader asks in. An execution id is
+# derived from run, revision, node and round, so the index above already says
+# one event of a kind per round -- but only to a writer that derived the id
+# correctly, and the store cannot recompute a hash to check. `_existing_event`
+# reads a round back by those four coordinates and expects at most one row, so
+# two rows disagreeing about the execution of one round would turn a retry into
+# an unnamed failure instead of the exact event it replays.
 sa.Index(
-    "run_events_legacy_execution_kind_unique",
-    run_events.c.node_execution_id,
+    "run_events_round_kind_unique",
+    run_events.c.run_id,
+    run_events.c.revision_hash,
+    run_events.c.node_id,
+    run_events.c.round_ordinal,
     run_events.c.event_kind,
     unique=True,
     sqlite_where=run_events.c.agent_attempt_id.is_(None),
@@ -2660,10 +2690,15 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    # V33 and V34 hold the same tables as the current version: the hops between
-    # them moved one table's key and columns and one table's kind vocabulary,
-    # never the set of tables.
-    if version in {SCHEMA_VERSION, _VERSION_THIRTY_FOUR, _VERSION_THIRTY_THREE}:
+    # V33 to V35 hold the same tables as the current version: the hops between
+    # them moved one table's key and columns, one table's kind vocabulary and
+    # one table's index, never the set of tables.
+    if version in {
+        SCHEMA_VERSION,
+        _VERSION_THIRTY_FIVE,
+        _VERSION_THIRTY_FOUR,
+        _VERSION_THIRTY_THREE,
+    }:
         return PRODUCT_TABLE_NAMES
     if version in {_VERSION_THIRTY_TWO, _VERSION_THIRTY_ONE}:
         return PRODUCT_TABLE_NAMES - connections
@@ -2933,6 +2968,30 @@ def _added_table_step(
     return apply
 
 
+def _declared_indexes(table: sa.Table) -> Mapping[str, str]:
+    """The `CREATE INDEX` text the declaration gives each of this table's indexes."""
+
+    return {
+        str(index.name): str(
+            CreateIndex(index).compile(dialect=sqlite_dialect.dialect())
+        )
+        for index in sorted(table.indexes, key=lambda index: index.name or "")
+    }
+
+
+def _table_indexes_at(version: int, table: sa.Table) -> tuple[str, ...]:
+    """The `CREATE INDEX` texts this table carries at one published version.
+
+    An index set no hop has moved is exactly the declaration, which is why most
+    published versions record none; a version a later hop moved an index of is a
+    record, for the reason `published_schema_shapes` gives.
+    """
+    if version == SCHEMA_VERSION:
+        return tuple(_declared_indexes(table).values())
+    recorded = PUBLISHED_TABLE_INDEXES.get((version, table.name))
+    return tuple(_declared_indexes(table).values()) if recorded is None else recorded
+
+
 def _table_shape_at(version: int, table: sa.Table) -> str:
     """The `CREATE TABLE` text this table has at one published schema version.
 
@@ -2973,6 +3032,25 @@ def _columns_a_row_must_carry(
     )
 
 
+def _created_index_names(
+    connection: sqlite3.Connection, table_name: str
+) -> tuple[str, ...]:
+    """The named indexes on this table, without the ones a key implies.
+
+    An index SQLite creates for a UNIQUE or PRIMARY KEY declaration has no
+    `CREATE INDEX` text of its own and cannot be dropped; it goes and comes with
+    the table shape that declares it.
+    """
+    return tuple(
+        str(record[0])
+        for record in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=? "
+            "AND sql IS NOT NULL ORDER BY name",
+            (table_name,),
+        )
+    )
+
+
 def _rebuild_product_table(
     connection: sqlite3.Connection,
     table: sa.Table,
@@ -2998,7 +3076,9 @@ def _rebuild_product_table(
 
     `trigger_source` is the trigger text to install after the rebuild. Earlier
     hops that rebuild this table must reinstall the trigger of *their* target,
-    not today's, or an intermediate fingerprint breaks.
+    not today's, or an intermediate fingerprint breaks. The indexes are read the
+    same way, by target version, so a hop that takes an index away leaves every
+    earlier hop rebuilding the index set its own target published.
     """
 
     trigger_sql = _PRODUCT_TRIGGERS if trigger_source is None else trigger_source
@@ -3013,11 +3093,14 @@ def _rebuild_product_table(
             f"schema version {source_version} already has {parked_name}; "
             "this command will not alter it"
         )
-    indexes = sorted(table.indexes, key=lambda index: index.name or "")
     for trigger in triggers:
         connection.execute(f"DROP TRIGGER {trigger}")
-    for index in indexes:
-        connection.execute(f"DROP INDEX {index.name}")
+    # Read from the store rather than from the declaration: an index name is
+    # global in SQLite, so what has to go before the target shape is created is
+    # every index this store actually holds -- including one a later hop has
+    # already taken out of the declaration.
+    for index_name in _created_index_names(connection, table.name):
+        connection.execute(f"DROP INDEX {index_name}")
     # Children declare their foreign keys on this table by name, and a plain
     # rename would rewrite them to point at the predecessor this hop drops.
     connection.execute("PRAGMA legacy_alter_table=ON")
@@ -3046,10 +3129,8 @@ def _rebuild_product_table(
         f"INSERT INTO {table.name} ({written}) SELECT {read} FROM {parked_name}"
     )
     connection.execute(f"DROP TABLE {parked_name}")
-    for index in indexes:
-        connection.execute(
-            str(CreateIndex(index).compile(dialect=sqlite_dialect.dialect()))
-        )
+    for index_statement in _table_indexes_at(target_version, table):
+        connection.execute(index_statement)
     for trigger in triggers:
         connection.execute(trigger_sql[trigger])
 
@@ -3836,6 +3917,31 @@ def _apply_v34_to_v35(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_THIRTY_FOUR, _VERSION_THIRTY_FIVE)
 
 
+_ONCE_PER_NODE_EVENT_INDEX = "run_events_legacy_kind_unique"
+_ROUND_SCOPED_EVENT_INDEX = "run_events_round_kind_unique"
+
+
+def _apply_v35_to_v36(connection: sqlite3.Connection) -> None:
+    """Re-scope the once-per-node event key to the round, touching no row.
+
+    The predecessor's key spanned every round of a node at once, which a loop
+    turning a Wait a second time breaks by writing a second `WAITING_INPUT`.
+    Its successor says the same thing about one round, so every log the
+    predecessor holds satisfies it: a store that admitted at most one such event
+    per node admitted at most one per round of that node.
+
+    Both statements are indexes, and SQLite adds and removes an index without
+    reading or writing a row, so this hop is two DDL statements and the version
+    CAS inside the migration's own transaction -- no table is parked, no row is
+    copied, and the table text does not move. Should the second statement fail,
+    the transaction takes the first one back with it.
+    """
+
+    connection.execute(f"DROP INDEX {_ONCE_PER_NODE_EVENT_INDEX}")
+    connection.execute(_declared_indexes(run_events)[_ROUND_SCOPED_EVENT_INDEX])
+    _raise_declared_version(connection, _VERSION_THIRTY_FIVE, _VERSION_THIRTY_SIX)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -3953,6 +4059,11 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _VERSION_THIRTY_FOUR,
         _VERSION_THIRTY_FIVE,
         _apply_v34_to_v35,
+    ),
+    _SchemaMigrationStep(
+        _VERSION_THIRTY_FIVE,
+        _VERSION_THIRTY_SIX,
+        _apply_v35_to_v36,
     ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {

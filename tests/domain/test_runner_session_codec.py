@@ -12,6 +12,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerManifestId,
 )
 from atelier2.contracts.agents import AgentExecutionRequestHash
+from atelier2.contracts.hashing import frame as hashing_frame
 from atelier2.contracts.runner_session_codec import (
     MAXIMUM_RUNNER_SESSION_BODY_BYTES,
     MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES,
@@ -112,6 +113,20 @@ def test_cancel_frame_round_trips_with_none_replacement() -> None:
 
 def test_refusal_vocabulary_is_closed() -> None:
     assert "runner-session-message-unknown" in RUNNER_SESSION_REFUSAL_CODES
+
+
+def test_session_decoder_names_a_retired_wire_revision_by_its_own_code() -> None:
+    """A frame built under the pre-#672 `runner-session/v1` domain is a real,
+    well-formed frame this decoder no longer serves -- decode must answer it
+    by its own name, not fold it into the generic malformed-bytes refusal a
+    truly corrupt frame gets (`test_session_decoder_refuses_an_unknown_message_tag`)."""
+    retired_body = hashing_frame("runner-session/v1", *_frame().fields())
+    retired_wire = struct.pack(">I", len(retired_body)) + retired_body
+
+    with pytest.raises(
+        RunnerSessionCodecError, match="runner-session-incompatible-revision"
+    ):
+        decode_runner_session_frame(retired_wire)
 
 
 @pytest.mark.proves("runner-session-bounded")

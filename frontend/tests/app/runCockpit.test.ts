@@ -73,7 +73,7 @@ describe("read-only run cockpit", () => {
     expect(screen.getByText("No durable events yet.").isConnected).toBe(true);
   });
 
-  it("retains confirmed nodes and events through a disconnect the live stream heals on its own", async () => {
+  it("retains confirmed nodes and events through a disconnect the live stream heals on its own, naming no local reconnecting notice of its own (#700)", async () => {
     const feed = new FakeRunEventFeed();
     render(App, {
       props: {
@@ -86,11 +86,13 @@ describe("read-only run cockpit", () => {
     feed.handlers?.event(JSON.stringify(agentCompleted(1)));
     feed.handlers?.disconnected();
 
-    expect(await screen.findByText("Reconnecting")).toBeTruthy();
     await waitFor(() => expect(screen.getAllByText("AGENT COMPLETED")).toHaveLength(2));
-    // A dropped connection is the browser's own EventSource retrying: a second,
-    // manual freshness control here would just compete with that one honest
-    // model (#506), so none is offered while it is merely reconnecting.
+    // A dropped-but-recovering stream is exactly the generic reachability
+    // loss the central connection store already names once, above every room
+    // (#700) -- this page speaks no local "Reconnecting" wording of its own
+    // and offers no manual freshness control either: a second, competing
+    // model of the same one honest fact (#506).
+    expect(screen.queryByText("Reconnecting")).toBeNull();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
 
     feed.handlers?.opened();

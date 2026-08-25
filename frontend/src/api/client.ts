@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { reportConnectionLost, reportConnectionRestored } from "../lib/connectionState";
 import type {
   CancelMutation,
   PublishMutation,
@@ -332,6 +333,17 @@ export const projectResourceSchema = z
 export const projectListSchema = z
   .object({ items: z.array(projectResourceSchema).max(1) })
   .strict();
+
+/** The wire shape `GET /health` answers -- reused as #700's own recovery
+ * probe, an existing cheap read rather than a purpose-built endpoint. */
+export const healthResourceSchema = z
+  .object({
+    status: z.literal("serving"),
+    source_commit: z.string(),
+    source_tree: z.string()
+  })
+  .strict();
+export type HealthResource = z.infer<typeof healthResourceSchema>;
 
 const occupancyBindingSchema = z
   .object({
@@ -1402,6 +1414,8 @@ export interface HttpResult<T> {
 }
 
 export interface CockpitApi {
+  /** The cheap read #700's bounded recovery probe reuses -- no purpose-built endpoint. */
+  health(signal?: AbortSignal): Promise<HealthResource>;
   listRuns(after?: string, state?: AnyRun["state"]): Promise<RunPage>;
   listProjects(): Promise<ProjectList>;
   getProjectOccupancy(
@@ -1460,7 +1474,13 @@ export class CockpitRequestError extends Error {
   constructor(
     message: string,
     readonly problem: Problem | null = null,
-    readonly definitive_failure = false
+    readonly definitive_failure = false,
+    /** The round trip itself never happened -- not a 4xx/5xx the server
+     * answered with, and not a contract violation in what it did answer
+     * (#700). The one throw site that catches a failed `fetch` sets this;
+     * every other one names a specific violation whose own message stays
+     * worth reading. */
+    readonly transport_failure = false
   ) {
     super(message);
   }
@@ -1478,6 +1498,8 @@ export function createCockpitApi(
   eventSourceFactory: EventSourceFactory = (target) => new EventSource(target)
 ): CockpitApi {
   return {
+    health: (signal?: AbortSignal) =>
+      requestJson(fetcher, "/atelier/api/v1/health", { signal }, [200], healthResourceSchema),
     listRuns: (after?: string, state?: AnyRun["state"]) =>
       requestJson(
         fetcher,
@@ -1802,13 +1824,21 @@ function subscribeEventSource(
   source: EventSourcePort,
   handlers: RunEventHandlers
 ): RunEventSubscription {
-  source.addEventListener("open", () => handlers.opened());
+  source.addEventListener("open", () => {
+    reportConnectionRestored();
+    handlers.opened();
+  });
   source.addEventListener("message", (event) => {
     if (event instanceof MessageEvent && typeof event.data === "string") {
       handlers.event(event.data);
     }
   });
-  source.addEventListener("error", () => handlers.disconnected());
+  source.addEventListener("error", () => {
+    // The browser's own EventSource already retries; this only names the
+    // fact centrally (#700) so every surface reads it, not just this stream.
+    reportConnectionLost();
+    handlers.disconnected();
+  });
   return source;
 }
 
@@ -1857,8 +1887,13 @@ async function requestJsonResult<T>(
   try {
     response = await fetcher(target, { ...init, headers: { accept: "application/json", ...init.headers } });
   } catch (error) {
-    throw new CockpitRequestError(errorMessage(error));
+    // The round trip itself never happened -- a redeploy's outage (#700), not
+    // a 4xx/5xx the server actually answered with, so this is the one signal
+    // that means the workshop cannot be reached at all.
+    reportConnectionLost();
+    throw new CockpitRequestError(errorMessage(error), null, false, true);
   }
+  reportConnectionRestored();
   let value: unknown;
   try {
     value = await response.json();

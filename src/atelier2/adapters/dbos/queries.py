@@ -79,7 +79,7 @@ from atelier2.contracts.executions import (
     AgentExecutionRefusal,
     NodeExecutionId,
     RunEventKind,
-    logical_effect_key_for,
+    logical_effect_key_for_node,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
@@ -1318,8 +1318,15 @@ class DbosQueries:
             run for run in loaded_runs if run.state is RunState.WAITING_RECONCILIATION
         )
         logical_keys_by_run = {
-            run.run_id: logical_effect_key_for(
-                _node_execution_id(run, graphs[run.revision_hash], run.current_node_id)
+            run.run_id: logical_effect_key_for_node(
+                run.run_id,
+                run.revision_hash,
+                run.current_node_id,
+                round_of(
+                    graphs[run.revision_hash],
+                    run.current_node_id,
+                    run.current_round_ordinal,
+                ),
             )
             for run in waiting_runs
         }
