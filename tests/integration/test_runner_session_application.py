@@ -900,9 +900,10 @@ def test_raw_wire_frame_naming_the_current_domain_with_the_retired_prepare_shape
     proves it at the actual wire bytes a peer would read off the socket. A
     frame naming the *current* domain (`runner-session/v2`) but still shaped
     like a pre-#672 PREPARE (19 fields, missing the declared schema and turn
-    budget) is refused by `decode_runner_session_frame` before it ever
-    reaches `RunnerSessionFrame` -- the field-count guard is defense in
-    depth behind the domain check, not the version signal on its own.
+    budget) passes `decode_runner_session_frame`'s domain check and is
+    refused only at `RunnerSessionFrame` construction, by its own
+    field-count guard -- defense in depth behind the domain check, not the
+    version signal on its own.
     """
     request = _free_request()
     reference = free_runner_auth_reference(request.resolved_binding.auth_profile).value
