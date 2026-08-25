@@ -31,6 +31,7 @@ from atelier2.api.wire.resources import (
     PublicAttemptStateName,
     RunCancellabilityResource,
     RunNotCancellableReasonName,
+    RunOrderResource,
     RunReceiptResource,
     RunResource,
     RunResourceV2,
@@ -45,6 +46,7 @@ from atelier2.api.wire.resources import (
 from atelier2.application.project_node_rail import NodeRailEntry, project_node_rail
 from atelier2.contracts.agents import AgentReceiptV2
 from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_projections import (
     NodeDetail,
@@ -84,6 +86,15 @@ def node_rail_resources(
             ),
         )
         for entry in entries
+    )
+
+
+def run_order_resource(order: RunInput) -> RunOrderResource:
+    """One stored order, told safely: never its own bytes, only their shape."""
+    return RunOrderResource(
+        name=order.name,
+        bytes=len(order.value),
+        schema_revision_hash=order.schema_revision.value,
     )
 
 
@@ -230,6 +241,7 @@ def _run_resource_v3(projection: RunProjection, run: RunV3) -> RunResourceV3:
             )
             for binding in run.agent_bindings
         ),
+        orders=tuple(run_order_resource(order) for order in projection.orders),
         state_version=run.state_version,
         state=cast(
             Literal[
