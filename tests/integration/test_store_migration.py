@@ -2664,14 +2664,19 @@ def _enqueue_a_three_argument_answer_workflow(
         engine.dispose()
 
 
-def _recorded_positional_arguments(serialized: str) -> tuple[object, ...]:
-    """The arguments DBOS really recorded for a workflow, read the way DBOS reads them.
+def _recorded_invocation(
+    serialized: str,
+) -> tuple[tuple[object, ...], dict[str, object]]:
+    """Every argument DBOS really recorded, read the way DBOS reads them.
 
-    The queue row is the artifact under test here, so it is decoded rather than
-    trusted: the point of the fixture is that three arguments and not four are
-    what a recovering executor will hand to `durable_answer`.
+    Both halves of the call, because the positional ones alone do not say what
+    the recovered workflow is handed: three positional arguments and
+    `round_ordinal` as a keyword would satisfy an assertion about the tuple and
+    would need no compatibility default at all. The queue row is the artifact
+    under test, so it is decoded whole rather than trusted.
     """
-    return tuple(DefaultSerializer().deserialize(serialized)["args"])
+    recorded = DefaultSerializer().deserialize(serialized)
+    return tuple(recorded["args"]), dict(recorded["kwargs"])
 
 
 def _downgrade_a_driven_store_to_v33(database_path: Path) -> None:
@@ -2744,10 +2749,9 @@ def test_a_v33_answer_enqueued_without_a_round_still_applies_after_the_v34_hop(
             (answer_workflow_id_for(execution_id),),
         ).fetchone()
     assert recorded_inputs is not None
-    assert _recorded_positional_arguments(str(recorded_inputs[0])) == (
-        RUN.value,
-        workflow.revision_hash.value,
-        WAIT_NODE,
+    assert _recorded_invocation(str(recorded_inputs[0])) == (
+        (RUN.value, workflow.revision_hash.value, WAIT_NODE),
+        {},
     )
 
     assert main(["migrate", "--database", str(database_path)]) == 0

@@ -28,6 +28,8 @@ from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.names import ANSWER_WORKFLOW_NAME
 from atelier2.adapters.dbos.run_store import (
     DbosWaitAnswerer,
+    commit_wait_answered,
+    load_wait_answer,
 )
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import run_events, runs, wait_answers
@@ -588,6 +590,40 @@ def test_a_stored_answer_names_the_exact_execution_of_the_node_it_answers(
     assert int(stored["round_ordinal"]) == FIRST_ROUND_ORDINAL
     assert str(paused_event["node_execution_id"]) == execution.value
     assert int(paused_event["round_ordinal"]) == FIRST_ROUND_ORDINAL
+
+
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_an_already_applied_answer_replays_without_a_second_event(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """Committing an answer that is already applied answers the same and writes nothing.
+
+    This is the branch a replay takes, and only this: a process that dies
+    between the commit and the record of it comes back to an answer already
+    APPLIED, and the second call has to be the first one's answer rather than a
+    second transition on a run that has already moved. What proves it is the
+    event log rather than the return value alone -- the run's events are read
+    before and after, and they are the same list.
+
+    It says nothing about how many arguments the recovered workflow carried;
+    that is the migration suite's driven proof.
+    """
+    started, _ = runtime
+    workflow = start_and_launch(started, WAIT_AS_THE_SINK)
+    wait_for_state(started, RunState.WAITING_INPUT)
+    assert isinstance(answer(started, workflow, ANSWER), AnswerAcceptedPending)
+    wait_for_state(started, RunState.COMPLETED)
+    settled = durable_events(started)
+
+    with started.engine.connect() as connection:
+        applied = load_wait_answer(connection, RUN, workflow.revision_hash, WAIT_NODE)
+        replayed = commit_wait_answered(connection, applied.answer)
+
+    assert applied.state is WaitAnswerState.APPLIED
+    assert replayed.event.event_kind is RunEventKind.WAIT_ANSWERED
+    assert replayed.state is RunState.COMPLETED
+    assert replayed.current_round_ordinal == FIRST_ROUND_ORDINAL
+    assert durable_events(started) == settled
 
 
 @pytest.mark.parametrize(
