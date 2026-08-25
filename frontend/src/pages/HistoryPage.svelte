@@ -21,7 +21,7 @@
   import { standingWords } from "../lib/runState";
   import { workflowNamesOf } from "../lib/runList";
   import { readEveryRun } from "../lib/runPages";
-  import { ageLabel } from "../lib/when";
+  import { ageLabel, exactLocal } from "../lib/when";
 
   export let cockpitApi: CockpitApi;
   export let navigate: (path: string) => void;
@@ -114,6 +114,7 @@
     {:else}
       <div class="history-head-row" aria-hidden="true">
         <span class="col-name">{wrapDisplayCopy(historyPageCopy.columnName)}</span>
+        <span class="col-when">{wrapDisplayCopy(historyPageCopy.columnWhen)}</span>
         <span class="col-result">{wrapDisplayCopy(historyPageCopy.columnResult)}</span>
         <span class="col-duration">{wrapDisplayCopy(historyPageCopy.columnDuration)}</span>
       </div>
@@ -129,6 +130,16 @@
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnName)}: </span>
                 {row.name}
               </span>
+              <span class="row-when">
+                <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnWhen)}: </span>
+                {#if row.activityAt !== null}
+                  <time datetime={row.activityAt} title={exactLocal(row.activityAt)}>
+                    {ageLabel(row.activityAt, now, "ago")}
+                  </time>
+                {:else}
+                  {wrapDisplayCopy(historyPageCopy.notRecorded)}
+                {/if}
+              </span>
               <span class="row-result">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnResult)}: </span>
                 {#if row.result.kind === "failed"}
@@ -142,7 +153,7 @@
                 {#if row.span !== null}
                   {ageLabel(row.span.startedAt, now, "duration", row.span.endedAt)}
                 {:else}
-                  {wrapDisplayCopy(historyPageCopy.durationNotRecorded)}
+                  {wrapDisplayCopy(historyPageCopy.notRecorded)}
                 {/if}
               </span>
             </a>
@@ -189,6 +200,7 @@
 
   .history-head-row {
     display: flex;
+    flex-wrap: wrap;
     min-width: 0;
     gap: var(--space-2) var(--space-3);
     padding: 0 var(--space-4);
@@ -201,6 +213,11 @@
   .col-name {
     flex: none;
     width: var(--name-column);
+  }
+
+  .col-when {
+    flex: none;
+    width: var(--when-column);
   }
 
   .col-result {
@@ -251,14 +268,30 @@
     white-space: nowrap;
   }
 
+  /* Relative reading, exact local time on hover/title -- the same age/exact
+     split every other timestamp on this surface already draws (`when.ts`). */
+  .row-when {
+    flex: none;
+    width: var(--when-column);
+    color: var(--ink-dim);
+    font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Never an ellipsis (REQ-UI-13): a failed row's node id can run long, so the
+     cell wraps and is clamped to two lines instead of being cut mid-word; the
+     run page shows the id in full. */
   .row-result {
+    display: -webkit-box;
     flex: 1;
     min-width: 0;
+    overflow: hidden;
     color: var(--ink-dim);
     font-size: var(--text-sm);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    line-clamp: 2;
   }
 
   .history-row-failed .row-result {
@@ -280,11 +313,11 @@
   }
 
   /**
-   * Names each row's three fragments (Name/Result/Duration) for a screen
-   * reader without repeating the header aloud for every row -- sighted eyes
-   * already read the column from `.history-head-row`'s alignment, and
-   * duplicating that header once per row would be visual noise rather than a
-   * label.
+   * Names each row's fragments (Name/When/Result/Duration) for a
+   * screen reader without repeating the header aloud for every row --
+   * sighted eyes already read the column from `.history-head-row`'s
+   * alignment, and duplicating that header once per row would be visual
+   * noise rather than a label.
    */
   .visually-hidden {
     position: absolute;
@@ -300,11 +333,23 @@
 
   /* The header keeps naming its columns at every width (operator ruling
      23.08.): a promise a narrow screen hides while the data still sits in
-     columns is a geometry the header no longer honestly describes. */
+     columns is a geometry the header no longer honestly describes. Duration
+     is the one column dropped at this width, so Result -- the fact that must
+     never truncate -- gets the room instead (issue #717). */
   @media (max-width: 32rem) {
-    .row-name,
+    .row-name {
+      flex: 1 1 auto;
+      width: auto;
+      min-width: 0;
+    }
+
     .col-name {
       width: var(--name-column-narrow);
+    }
+
+    .row-duration,
+    .col-duration {
+      display: none;
     }
   }
 </style>
