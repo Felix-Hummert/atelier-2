@@ -1,0 +1,79 @@
+import { expect, test } from "@playwright/test";
+
+import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
+
+const widths = [
+  { name: "desktop", width: 1280, height: 900 },
+  { name: "390", width: 390, height: 844 }
+] as const;
+
+/**
+ * The honest restart notice against a real host redeploy (#700 stage 1).
+ *
+ * `/__e2e/recompose` is the harness's own stand-in for the host process kill
+ * a redeploy performs (`tests/e2e/serve_cockpit.py`): it stops the live
+ * server and brings a fresh one up behind the same port, the same shape as a
+ * production restart. Runs last (the `zz-` prefix, `fullyParallel: false`,
+ * one worker) so no earlier test shares the server it restarts.
+ *
+ * The proof stays off any page holding an open durable-event stream (the
+ * Board, a run cockpit): the harness's graceful shutdown only disables
+ * keep-alive on an in-flight connection, it never closes one still
+ * streaming, so an open `EventSource` at the moment of the restart would
+ * hang `/__e2e/recompose` forever. The Workbench holds no stream (#700
+ * scope), so it is both the surface the issue names and a safe one.
+ */
+test("shows the calm restart line on the open workbench, and clears it on its own with no reload", async ({ page }) => {
+  test.setTimeout(120_000);
+
+  await page.goto("/atelier/chat");
+  await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
+  await expect(page.getByText(workbenchPageCopy.composerHint)).toBeVisible();
+
+  const restarted = await page.request.post("/__e2e/recompose");
+  expect(restarted.status()).toBe(202);
+  const expectedGeneration = await restarted.text();
+
+  // Confirm the old listener is actually down before asking the SPA to do
+  // anything -- otherwise the very next click could race a socket that has
+  // not closed yet and land on the old server, proving nothing.
+  await expect(async () => {
+    await expect(page.request.get("/__e2e/generation")).rejects.toThrow();
+  }).toPass({ timeout: 15_000 });
+
+  // An in-app navigation (no reload) whose own mount read now fails for
+  // real: the one round trip that discovers the outage.
+  await page.getByRole("link", { name: "Workflows" }).click();
+
+  const notice = page.getByRole("status", { name: /restarting/i });
+  await expect(notice).toBeVisible({ timeout: 5_000 });
+  await expect(notice).toHaveText("The atelier is restarting — back in a moment");
+
+  // Back on the workbench the issue names, with no network call of its own:
+  // it already reads the one central store.
+  await page.getByRole("link", { name: "Workbench" }).click();
+  await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
+  await expect(page.getByText(workbenchPageCopy.composerHint)).toHaveCount(0);
+  await expect(page.getByLabel(workbenchPageCopy.composerLabel).locator("..").getByRole("button", { name: workbenchPageCopy.send })).toBeDisabled();
+
+  for (const viewport of widths) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await page.screenshot({
+      path: test.info().outputPath(`connection-restart-notice-${viewport.name}.png`),
+      fullPage: true
+    });
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  // The harness is fully back once its generation counter matches what the
+  // restart promised -- the same proof `cockpit.spec.ts` already trusts for
+  // this endpoint.
+  await expect(async () => {
+    expect(await (await page.request.get("/__e2e/generation")).text()).toBe(expectedGeneration);
+  }).toPass({ timeout: 20_000 });
+
+  // No page.reload() anywhere above: the notice clearing and Send
+  // re-enabling on their own is the automatic recovery itself.
+  await expect(notice).toBeHidden({ timeout: 20_000 });
+  await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeEnabled();
+});

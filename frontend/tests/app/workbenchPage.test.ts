@@ -15,16 +15,25 @@ import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
  */
 let testingLibrary: typeof SvelteTestingLibrary;
 let openChat: () => void;
+let reportConnectionLost: () => void;
+let reportConnectionRestored: () => void;
+let restartNoticeCopy: string;
 
 async function bootApp(): Promise<{
   testingLibrary: typeof SvelteTestingLibrary;
   openChat: () => void;
+  reportConnectionLost: () => void;
+  reportConnectionRestored: () => void;
+  restartNoticeCopy: string;
 }> {
   vi.resetModules();
   const library = await import("@testing-library/svelte");
   const { default: App } = await import("../../src/App.svelte");
   const { MutationJournal } = await import("../../src/lib/mutationJournal");
   const { cockpitApiStub } = await import("../support/cockpitApi");
+  // Loaded from the same reset module graph App.svelte binds to, so reporting
+  // here reaches the exact store the composer reads (#700).
+  const connection = await import("../../src/lib/connectionState");
 
   return {
     testingLibrary: library,
@@ -34,7 +43,10 @@ async function bootApp(): Promise<{
           cockpitApi: cockpitApiStub(),
           mutationJournal: new MutationJournal(sessionStorage)
         }
-      })
+      }),
+    reportConnectionLost: connection.reportConnectionLost,
+    reportConnectionRestored: connection.reportConnectionRestored,
+    restartNoticeCopy: connection.restartNoticeCopy
   };
 }
 
@@ -42,7 +54,8 @@ beforeEach(async () => {
   sessionStorage.clear();
   window.history.replaceState(null, "", "/atelier/chat");
 
-  ({ testingLibrary, openChat } = await bootApp());
+  ({ testingLibrary, openChat, reportConnectionLost, reportConnectionRestored, restartNoticeCopy } =
+    await bootApp());
 });
 
 afterEach(() => testingLibrary.cleanup());
@@ -155,5 +168,62 @@ describe("the workbench door", () => {
 
     expect(screen.queryByRole("list", { name: workbenchPageCopy.transcriptLabel })).toBeNull();
     expect(screen.getByText(workbenchPageCopy.emptyTitle).isConnected).toBe(true);
+  });
+
+  it("disables Send and shows the restart line while the connection is lost, not the no-conductor refusal (#700)", async () => {
+    openChat();
+    const { screen } = testingLibrary;
+    await screen.findByRole("heading", { name: "Workbench" });
+    await testingLibrary.fireEvent.input(screen.getByLabelText(workbenchPageCopy.composerLabel), {
+      target: { value: "Finish the preview door" }
+    });
+
+    reportConnectionLost();
+    await testingLibrary.waitFor(() => {
+      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
+        "disabled",
+        true
+      );
+    });
+
+    // The global top-of-shell notice and the composer's own hint both name
+    // it -- two honest readings of one store, never a page-local error.
+    expect(screen.getAllByText(restartNoticeCopy).length).toBeGreaterThanOrEqual(2);
+    expect(document.querySelector(".composer-hint")?.textContent).toBe(restartNoticeCopy);
+    expect(screen.queryByText(workbenchPageCopy.composerHint)).toBeNull();
+    // Nothing was sent: the word stays exactly where it was typed.
+    expect(screen.getByLabelText(workbenchPageCopy.composerLabel)).toHaveProperty(
+      "value",
+      "Finish the preview door"
+    );
+    expect(screen.queryByRole("list", { name: workbenchPageCopy.transcriptLabel })).toBeNull();
+  });
+
+  it("re-enables Send and restores the ordinary hint once the connection returns, with no reload", async () => {
+    openChat();
+    const { screen } = testingLibrary;
+    await screen.findByRole("heading", { name: "Workbench" });
+    reportConnectionLost();
+    await testingLibrary.waitFor(() => {
+      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
+        "disabled",
+        true
+      );
+    });
+
+    reportConnectionRestored();
+
+    await testingLibrary.waitFor(() => {
+      expect(screen.getByRole("button", { name: workbenchPageCopy.send })).toHaveProperty(
+        "disabled",
+        false
+      );
+    });
+    expect(screen.queryByText(restartNoticeCopy)).toBeNull();
+    // Whichever ordinary hint the composer settles on (which conductor state
+    // that is is not this test's question), it is back to something other
+    // than the restart line.
+    const hint = document.querySelector(".composer-hint");
+    expect(hint?.textContent).not.toBe(restartNoticeCopy);
   });
 });
