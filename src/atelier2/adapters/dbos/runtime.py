@@ -1314,7 +1314,9 @@ class _DbosProcessOwner:
         being misread as a dead gap.
         """
 
-        converge_driverless_effect_intents(bound.engine)
+        converge_driverless_effect_intents(
+            bound.engine, bound.settings.application_version
+        )
 
     @staticmethod
     def _converge_uncontinuable_runs(bound: _BoundRuntime) -> None:
