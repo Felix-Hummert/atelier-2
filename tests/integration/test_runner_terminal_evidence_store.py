@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.exc import DatabaseError
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.run_store import commit_subworkflow_completed
@@ -1221,7 +1220,7 @@ def test_product_and_evidence_rollback_together_before_event_commit(
                 "CREATE TRIGGER refuse_runner_event BEFORE INSERT ON run_events "
                 "BEGIN SELECT RAISE(ABORT, 'cut before event'); END"
             )
-        with pytest.raises(DatabaseError, match="cut before event"):
+        with pytest.raises(RunTransitionConflict, match="cut before event"):
             store.commit_runner_terminal_evidence(
                 execution,
                 RunnerTerminalEvidenceEnvelope(

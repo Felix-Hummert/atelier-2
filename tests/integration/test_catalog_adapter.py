@@ -60,6 +60,7 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionExisting,
     PublishedRevisionFound,
     PublishedRevisionMissing,
+    PublishedRevisionsUnavailable,
 )
 
 
@@ -587,3 +588,110 @@ def test_a_failed_alias_write_leaves_the_whole_catalog_untouched(
 
     assert isinstance(result, DurableWriteUnavailable | DurableStateCorrupt)
     assert _catalog_snapshot(harness) == before
+
+
+def test_a_resolve_the_store_cannot_serve_answers_unavailable(
+    harness: CatalogHarness,
+) -> None:
+    """A registry outage on the start or read path is a refusal, never a 500 (#701)."""
+    with harness.engine.begin() as connection:
+        connection.execute(sa.text("DROP TABLE published_revisions"))
+
+    resolved = harness.catalog.resolve(
+        RevisionKind.SCHEMA, PublishedRevisionHash("a" * 64)
+    )
+
+    assert resolved == PublishedRevisionsUnavailable()
+
+
+def test_a_reference_lookup_the_store_cannot_serve_answers_unavailable(
+    harness: CatalogHarness, scene: CatalogScene
+) -> None:
+    """`resolve_reference` (#735) answers the same refusal as `resolve`, not a 500."""
+    published = _workflow(b"name: lasagne\n")
+    harness.catalog.publish_revision(published)
+    lineage = harness.found(published, CatalogLineageDisplayName("lasagne"), scene)
+    with harness.engine.begin() as connection:
+        # A plain `DROP TABLE` here violates the founding revision's own
+        # foreign key; renaming it away is unavailable to the same read
+        # without disturbing what that key still points at.
+        connection.execute(sa.text("ALTER TABLE published_revisions RENAME TO moved"))
+
+    resolved = harness.catalog.resolve_reference(
+        published.kind, lineage.lineage_id, published.revision_hash
+    )
+
+    assert resolved == PublishedRevisionsUnavailable()
+
+
+def test_a_reference_lookup_missing_its_published_bytes_is_state_corruption(
+    harness: CatalogHarness, scene: CatalogScene
+) -> None:
+    """An admitted member whose published bytes vanished is corruption, not a 500.
+
+    Immutability triggers, and the founding revision's own foreign key, refuse
+    this in the running product; a later, non-founding member's bytes are the
+    only ones an immutability trigger drop can remove, which is enough to
+    reach the state the store's own consistency check defends against.
+    """
+    founding = _workflow(b"name: pasta\n")
+    later = _workflow(b"name: lasagne\n")
+    harness.catalog.publish_revision(founding)
+    harness.catalog.publish_revision(later)
+    lineage = harness.found(founding, CatalogLineageDisplayName("pasta"), scene)
+    harness.admit(lineage, later, CatalogLineageDisplayName("lasagne"), scene)
+    with harness.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER published_revisions_no_delete")
+        connection.execute(
+            published_revisions.delete().where(
+                published_revisions.c.kind == later.kind.value,
+                published_revisions.c.revision_hash == later.revision_hash.value,
+            )
+        )
+
+    resolved = harness.catalog.resolve_reference(
+        later.kind, lineage.lineage_id, later.revision_hash
+    )
+
+    assert resolved == DurableStateCorrupt()
+
+
+def test_a_name_lookup_the_store_cannot_serve_answers_unavailable(
+    harness: CatalogHarness, scene: CatalogScene
+) -> None:
+    """`resolve_name` (#735) answers the same refusal as `resolve`, not a 500."""
+    published = _workflow(b"name: lasagne\n")
+    display_name = CatalogLineageDisplayName("lasagne")
+    harness.catalog.publish_revision(published)
+    harness.found(published, display_name, scene)
+    with harness.engine.begin() as connection:
+        connection.execute(sa.text("ALTER TABLE published_revisions RENAME TO moved"))
+
+    resolved = harness.catalog.resolve_name(published.kind, display_name, "head")
+
+    assert resolved == PublishedRevisionsUnavailable()
+
+
+def test_a_name_lookup_missing_its_published_bytes_is_state_corruption(
+    harness: CatalogHarness, scene: CatalogScene
+) -> None:
+    """A name resolving to a member whose bytes vanished is corruption, not a 500."""
+    founding = _workflow(b"name: pasta\n")
+    later = _workflow(b"name: lasagne\n")
+    display_name = CatalogLineageDisplayName("lasagne")
+    harness.catalog.publish_revision(founding)
+    harness.catalog.publish_revision(later)
+    lineage = harness.found(founding, CatalogLineageDisplayName("pasta"), scene)
+    harness.admit(lineage, later, display_name, scene)
+    with harness.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER published_revisions_no_delete")
+        connection.execute(
+            published_revisions.delete().where(
+                published_revisions.c.kind == later.kind.value,
+                published_revisions.c.revision_hash == later.revision_hash.value,
+            )
+        )
+
+    resolved = harness.catalog.resolve_name(later.kind, display_name, "head")
+
+    assert resolved == DurableStateCorrupt()

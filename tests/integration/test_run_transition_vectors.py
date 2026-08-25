@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from dbos._serialization import DefaultSerializer
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -31,6 +32,7 @@ from atelier2.adapters.dbos.schema import (
     workflow_revisions,
 )
 from atelier2.contracts.effects import LogicalEffectKey
+from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
@@ -260,3 +262,55 @@ def test_writing_the_same_transition_twice_leaves_one_event(engine: Engine) -> N
     assert replayed == first
     assert durable_head(engine) == (RunState.WAITING_INPUT, "waiting")
     assert written_events(engine) == 1
+
+
+def test_a_broken_event_key_refuses_in_a_failure_the_durable_boundary_can_carry(
+    engine: Engine,
+) -> None:
+    """A key the write breaks is refused in words, never in the driver's object.
+
+    The durable step boundary records a failure by serialising it, and the
+    driver's own integrity error carries the bound payload as a `memoryview`,
+    which no serialiser accepts. A refusal that cannot be recorded is one the
+    run never hears about: it would stand at its source state with nothing left
+    to move it. The event log this run already holds disagrees with the sequence
+    the run row says is next -- the shape a lost race leaves behind.
+    """
+
+    revision = standing(engine, "waiting", RunState.STARTED)
+    occupant = RunEvent(
+        RUN_ID,
+        revision,
+        1,
+        "final",
+        NodeExecutionId.for_node(RUN_ID, revision, "final"),
+        RunEventKind.SUBWORKFLOW_COMPLETED,
+        RESULT,
+    )
+    with Session(engine) as session:
+        session.execute(
+            run_events.insert().values(
+                run_id=occupant.run_id.value,
+                revision_hash=occupant.revision_hash.value,
+                event_sequence=occupant.event_sequence,
+                node_id=occupant.node_id,
+                node_execution_id=occupant.node_execution_id.value,
+                round_ordinal=occupant.round_ordinal,
+                event_kind=occupant.event_kind.value,
+                payload=occupant.payload,
+                payload_hash=occupant.payload_hash.value,
+                event_hash=occupant.event_hash.value,
+            )
+        )
+        session.commit()
+
+    refusal = "the event log refused WAITING_INPUT of node waiting round 1"
+    with Session(engine) as session:
+        with pytest.raises(RunTransitionConflict, match=refusal) as refused:
+            begin_waiting(session, revision, "waiting")
+        session.rollback()
+
+    serializer = DefaultSerializer()
+    carried = serializer.deserialize(serializer.serialize(refused.value))
+    assert carried.args == refused.value.args
+    assert durable_head(engine) == (RunState.STARTED, "waiting")

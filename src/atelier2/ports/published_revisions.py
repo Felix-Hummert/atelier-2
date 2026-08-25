@@ -62,7 +62,12 @@ class PublishedRevisionMissing:
     pass
 
 
-type ResolvePublishedRevisionResult = PublishedRevisionFound | PublishedRevisionMissing
+type ResolvePublishedRevisionResult = (
+    PublishedRevisionFound
+    | PublishedRevisionMissing
+    | PublishedRevisionsUnavailable
+    | DurableStateCorrupt
+)
 
 
 @dataclass(frozen=True)
@@ -127,7 +132,12 @@ class CatalogNameMissing:
             raise ValueError("a catalog position must be head or a positive integer")
 
 
-type ResolveCatalogNameResult = CatalogNameFound | CatalogNameMissing
+type ResolveCatalogNameResult = (
+    CatalogNameFound
+    | CatalogNameMissing
+    | PublishedRevisionsUnavailable
+    | DurableStateCorrupt
+)
 
 
 type FoundCatalogLineageResult = (

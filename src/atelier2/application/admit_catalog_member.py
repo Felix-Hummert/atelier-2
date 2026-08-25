@@ -52,10 +52,16 @@ from atelier2.ports.published_revisions import (
     CatalogAdmissionRevisionOwned,
     CatalogAdmissions,
     CatalogNameFound,
+    CatalogNameMissing,
     CatalogResolver,
     FoundCatalogLineageResult,
     PublishedRevisionFound,
+    PublishedRevisionMissing,
     PublishedRevisionResolver,
+    PublishedRevisionsUnavailable,
+)
+from atelier2.ports.published_revisions import (
+    DurableStateCorrupt as RegistryCorrupt,
 )
 from atelier2.ports.workflow_revisions import (
     ProjectionTooLarge as PortProjectionTooLarge,
@@ -161,8 +167,14 @@ def admit_catalog_member(
     match catalog.resolve_name(kind, lineage_id, "head"):
         case CatalogNameFound(current_display_name=current_display_name):
             pass
-        case _:
+        case CatalogNameMissing():
             return CatalogAdmissionLineageMissing(lineage_id)
+        case PublishedRevisionsUnavailable(detail):
+            return WriteUnavailable(detail)
+        case RegistryCorrupt():
+            return DurableStateCorrupt()
+        case _ as unreachable:
+            assert_never(unreachable)
     revision = _named_revision(kind, revision_hash, catalog, workflows)
     if not isinstance(revision, PublishedRevision):
         return revision
@@ -198,6 +210,14 @@ def _named_revision(
     match revisions.resolve(kind, revision_hash):
         case PublishedRevisionFound(revision):
             return revision
+        case PublishedRevisionMissing():
+            pass
+        case PublishedRevisionsUnavailable(detail):
+            return WriteUnavailable(detail)
+        case RegistryCorrupt():
+            return DurableStateCorrupt()
+        case _ as unreachable:
+            assert_never(unreachable)
     if kind is not RevisionKind.WORKFLOW:
         return CatalogRevisionUnpublished(revision_hash)
     match workflows.get_workflow_revision(WorkflowRevisionHash(revision_hash.value)):

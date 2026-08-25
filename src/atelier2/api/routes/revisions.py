@@ -528,9 +528,9 @@ async def publish_revision(
         lambda: context.use_cases.publish_workflow_revision(document),
     )
     match result:
-        case PublicationCreated(projection):
+        case PublicationCreated(read):
             status = HTTPStatus.CREATED
-        case PublicationExisting(projection):
+        case PublicationExisting(read):
             status = HTTPStatus.OK
         case PublicationInvalid(detail, WorkflowRefusal()):
             raise ApiProblem("invalid-workflow-document", detail)
@@ -544,8 +544,7 @@ async def publish_revision(
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)
-    resource = workflow_revision_detail_resource(projection)
-    return resource_response(resource, status)
+    return resource_response(workflow_revision_detail_resource(read), status)
 
 
 @router.get(
@@ -801,6 +800,10 @@ async def get_revision_by_name(
             raise ApiProblem("invalid-catalog-position")
         case CatalogReferenceNonMember():
             raise ApiProblem("catalog-revision-not-a-member")
+        case ReadUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -821,10 +824,8 @@ async def get_revision(
         lambda: context.use_cases.get_workflow_revision(parsed),
     )
     match result:
-        case WorkflowRevisionRead(projection, wait_answer_classifications):
-            return workflow_revision_detail_resource(
-                projection, wait_answer_classifications
-            )
+        case WorkflowRevisionRead():
+            return workflow_revision_detail_resource(result)
         case WorkflowRevisionNotFound():
             raise ApiProblem("workflow-revision-not-found")
         case ReadUnavailable(detail):

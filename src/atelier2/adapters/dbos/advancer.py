@@ -33,7 +33,7 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEventKind,
-    logical_effect_key_for,
+    logical_effect_key_for_node,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
@@ -128,9 +128,10 @@ def graph_action_intent(
         or payload != expected_output
     ):
         raise RunEffectConflict("Action predecessor output binding changed")
-    execution_id = NodeExecutionId.for_node(run_id, revision_hash, action.id)
     binding = EffectBinding(
-        logical_effect_key_for(execution_id),
+        logical_effect_key_for_node(
+            run_id, revision_hash, action.id, run.current_round_ordinal
+        ),
         run_id,
         revision_hash,
         effect_adapter_binding.adapter_revision,
@@ -447,7 +448,7 @@ def graph_agent_open_pr_intent(
         run_id, revision_hash, node_id, round_ordinal
     )
     binding = EffectBinding(
-        logical_effect_key_for(execution_id),
+        logical_effect_key_for_node(run_id, revision_hash, node_id, round_ordinal),
         run_id,
         revision_hash,
         effect_adapter_binding.adapter_revision,
