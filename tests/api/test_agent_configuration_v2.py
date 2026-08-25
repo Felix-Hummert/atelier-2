@@ -910,7 +910,7 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_v3_one_of() -> None:
     assert set(unavailable_v2["required"]) == common | {"reason"}
     assert unavailable_v2["additionalProperties"] is False
     v3 = schema["components"]["schemas"]["RunEventResourceV3"]
-    assert len(v3["oneOf"]) == 9
+    assert len(v3["oneOf"]) == 12
     assert "discriminator" not in v3
     assert v3["description"] == v2["description"]
     v3_components = {reference["$ref"].rsplit("/", 1)[-1] for reference in v3["oneOf"]}
@@ -924,6 +924,15 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_v3_one_of() -> None:
         "ActionReconciliationRequiredEventResourceV3",
         "ActionReconciliationResolvedEventResourceV3",
         "ActionCompletedEventResourceV3",
+        "WaitingInputEventResourceV3",
+        "WaitAnsweredEventResourceV3",
+        "WaitCancelledEventResourceV3",
+    }
+    payloads_v3 = {
+        **payloads,
+        "WAITING_INPUT": set(),
+        "WAIT_ANSWERED": {"answer_base64", "answer_hash"},
+        "WAIT_CANCELLED": {"command_id"},
     }
     for event, component_name in {
         "AGENT_COMPLETED": "AgentCompletedEventResourceV3",
@@ -934,10 +943,13 @@ def test_openapi_sse_data_is_an_untagged_v1_v2_v3_one_of() -> None:
         "ACTION_RECONCILIATION_REQUIRED": "ActionReconciliationRequiredEventResourceV3",
         "ACTION_RECONCILIATION_RESOLVED": "ActionReconciliationResolvedEventResourceV3",
         "ACTION_COMPLETED": "ActionCompletedEventResourceV3",
+        "WAITING_INPUT": "WaitingInputEventResourceV3",
+        "WAIT_ANSWERED": "WaitAnsweredEventResourceV3",
+        "WAIT_CANCELLED": "WaitCancelledEventResourceV3",
     }.items():
         component = schema["components"]["schemas"][component_name]
         extra = {"reason"} if event == "AGENT_FAILED" else set()
-        expected_fields = common | payloads[event] | extra
+        expected_fields = common | payloads_v3[event] | extra
         assert set(component["properties"]) == expected_fields
         assert set(component["required"]) == expected_fields
         assert component["additionalProperties"] is False
