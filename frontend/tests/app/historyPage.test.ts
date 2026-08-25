@@ -2,14 +2,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/sve
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import type {
-  AnyRun,
-  CockpitApi,
-  NodeDetail,
-  RunV1,
-  RunV3,
-  WorkflowRevisionDetail
-} from "../../src/api/client";
+import type { AnyRun, CockpitApi, RunV1, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { standingWords } from "../../src/lib/runState";
@@ -19,33 +12,6 @@ import { completedRun, publicReference, revisionHash } from "../support/workflow
 
 function v1Failed(changes: Partial<RunV1> = {}): RunV1 {
   return { ...completedRun(changes), state: "FAILED" };
-}
-
-/** A node detail this suite hands back for one node id, real fields only where the test asks. */
-function nodeDetail(nodeId: string, changes: Partial<NodeDetail> = {}): NodeDetail {
-  return {
-    run_id: "irrelevant",
-    public_run_reference: publicReference,
-    node_id: nodeId,
-    state: "succeeded",
-    job_base64: null,
-    job_hash: null,
-    answer: null,
-    provenance: null,
-    refusal: null,
-    started_at: null,
-    ended_at: null,
-    ...changes
-  };
-}
-
-function base64(text: string): string {
-  return btoa(text);
-}
-
-/** A node's job text after `compose_node_job.node_job` folds one order into it. */
-function jobWithOrder(orderName: string, value: string): string {
-  return `Do the one thing.\n\n--- order: ${orderName} ---\n${value}`;
 }
 
 /**
@@ -181,14 +147,9 @@ describe("History shows only what has finished", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
-  it("names the resolved workflow, when it ran, its order, its real answer and the real duration", async () => {
+  it("names the resolved workflow, when it ran, and the real duration, without a per-row node read", async () => {
     const run = v3Run();
-    const getNodeDetail = vi.fn(async (_reference: string, nodeId: string) =>
-      nodeDetail(nodeId, {
-        job_base64: base64(jobWithOrder("message", "Fix the flaky CI")),
-        answer: { value_base64: base64(JSON.stringify("PR #512 merged")), value_hash: "d".repeat(64) }
-      })
-    );
+    const getNodeDetail = vi.fn();
     openHistory({ completed: [run] }, {
       getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line")),
       getNodeDetail
@@ -199,44 +160,21 @@ describe("History shows only what has finished", () => {
     expect(within(row).getByText("just now").getAttribute("title")).toEqual(
       expect.stringContaining(new Date(run.ended_at ?? "").getFullYear().toString())
     );
-    // "purpose": the run's own order, in one line.
-    expect(row.textContent).toContain("Fix the flaky CI");
-    // "result": the sink's real answer, never only the standing word.
-    expect(row.textContent).toContain("PR #512 merged");
-    expect(row.textContent).not.toContain(standingWords.done);
+    // "result": the honest standing word, never a guessed sentence.
+    expect(row.textContent).toContain(standingWords.done);
     expect(row.textContent).toContain("38 min");
+    // Never one node read per row -- the list is built from the run resources alone.
+    expect(getNodeDetail).not.toHaveBeenCalled();
   });
 
-  it("falls back honestly when a completed run's own node material cannot be read", async () => {
-    openHistory({ completed: [v3Run()] }, {
-      getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line"))
-      // getNodeDetail left unmocked -- the stub answers undefined, so the read fails.
-    });
-
-    const row = await screen.findByRole("link", { name: /Two agents in a line/ });
-    expect(row.textContent).toContain(historyPageCopy.resultUnavailable);
-    expect(row.textContent).toContain(historyPageCopy.purposeNone);
-  });
-
-  it("shows a failed run's own refusal sentence, not just the node it stopped at", async () => {
-    const getNodeDetail = vi.fn(async (_reference: string, nodeId: string) =>
-      nodeDetail(nodeId, { state: "failed", refusal: "output-schema-refused: instance-not-json" })
-    );
+  it("shows a failed run's own standing word, without reading its node", async () => {
+    const getNodeDetail = vi.fn();
     openHistory({ failed: [v1Failed({ run_id: "broke" })] }, { getNodeDetail });
 
     const row = await screen.findByRole("link", { name: /broke/ });
-    expect(row.textContent).toContain(
-      `${standingWords.failed} · output-schema-refused: instance-not-json`
-    );
+    expect(row.textContent).toContain(standingWords.failed);
     expect(row.textContent).toContain("Not recorded");
-  });
-
-  it("names a failed run's node when its own refusal cannot be read, and shows no duration when no V3 stamp exists", async () => {
-    openHistory({ failed: [v1Failed({ run_id: "broke" })] });
-
-    const row = await screen.findByRole("link", { name: /broke/ });
-    expect(row.textContent).toContain(`${standingWords.failed} · final`);
-    expect(row.textContent).toContain("Not recorded");
+    expect(getNodeDetail).not.toHaveBeenCalled();
   });
 
   it("leads down into the same run page a live run would open, already frozen", async () => {
