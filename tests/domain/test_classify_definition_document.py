@@ -35,6 +35,14 @@ V1_DOCUMENT = (
     b"nodes:\n"
     b"  - {id: final, type: subworkflow, operation: add, operands: [1, 2], next: null}\n"
 )
+SKILL_DOCUMENT = (
+    b"---\n"
+    b"name: stage-name-witness\n"
+    b"description: Watches the stage and names what it sees.\n"
+    b"allowed-tools: Read\n"
+    b"---\n"
+    b"Watch the stage.\n"
+)
 MCP_DECLARATION = b'{"mcpServers": {"github": {"command": "gh-mcp"}}}'
 
 
@@ -97,10 +105,10 @@ def test_a_held_kind_is_recognised_by_its_own_parser(
     ("document", "file_name", "kind"),
     [
         pytest.param(
-            AGENT_DOCUMENT,
+            SKILL_DOCUMENT,
             "skills/witness/SKILL.md",
             LibraryDocumentKind.SKILL,
-            id="skill-frontmatter-is-claimed-by-its-file-name",
+            id="skill-file-whose-frontmatter-is-no-agent",
         ),
         pytest.param(
             MCP_DECLARATION,
@@ -152,9 +160,33 @@ def test_a_workflow_missing_its_format_version_is_refused_by_that_field() -> Non
     assert "format_version" in workflow.refused_because
 
 
-def test_a_skill_file_holding_workflow_bytes_is_refused_naming_both() -> None:
-    recognised = recognise(b"---\n" + V3_DOCUMENT, "SKILL.md")
+def test_a_skill_file_whose_frontmatter_is_a_valid_agent_is_refused_naming_both() -> (
+    None
+):
+    """The name is a marker, not a tie-breaker: both claim, so neither is guessed."""
 
-    assert recognised == DocumentAmbiguous(
-        (LibraryDocumentKind.WORKFLOW, LibraryDocumentKind.SKILL)
+    assert recognise(AGENT_DOCUMENT, "SKILL.md") == DocumentAmbiguous(
+        (LibraryDocumentKind.AGENT_DEFINITION, LibraryDocumentKind.SKILL)
     )
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        pytest.param(b"Just prose, no frontmatter.\n", id="no-frontmatter"),
+        pytest.param(b"---\nname: witness\nnever closed\n", id="unterminated"),
+        pytest.param(b"", id="empty"),
+    ],
+)
+def test_a_skill_file_without_a_closed_frontmatter_block_is_not_a_skill(
+    document: bytes,
+) -> None:
+    recognised = recognise(document, "SKILL.md")
+
+    assert isinstance(recognised, DocumentUnrecognized)
+    skill = next(
+        refusal
+        for refusal in recognised.refusals
+        if refusal.kind is LibraryDocumentKind.SKILL
+    )
+    assert "closed frontmatter" in skill.refused_because

@@ -48,7 +48,7 @@ EXPECTED_DOCUMENT_FORMS: Mapping[LibraryDocumentKind, str] = {
         "a Markdown agent definition with `name` and `description` frontmatter"
     ),
     LibraryDocumentKind.SKILL: (
-        f"a file named `{SKILL_DOCUMENT_FILE_NAME}` opening with frontmatter"
+        f"a file named `{SKILL_DOCUMENT_FILE_NAME}` with a closed frontmatter block"
     ),
     LibraryDocumentKind.MCP_SERVER: (
         f"a `{MCP_DECLARATION_FILE_NAME}` JSON object holding `{MCP_SERVERS_KEY}`"

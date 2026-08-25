@@ -535,6 +535,37 @@ def test_openapi_declares_every_success_and_exact_request_media_type() -> None:
         },
     }
 
+    recognition = schema["paths"][LIBRARY_RECOGNITIONS_PATH]["post"]
+    assert recognition["requestBody"] == {
+        "required": True,
+        "content": {
+            "application/octet-stream": {
+                "schema": {
+                    "type": "string",
+                    "format": "binary",
+                    "maxLength": api_limits().maximum_request_body_bytes,
+                }
+            }
+        },
+    }
+    assert recognition["parameters"] == [
+        {
+            "name": "file_name",
+            "in": "query",
+            "required": False,
+            "schema": {
+                "anyOf": [
+                    {
+                        "type": "string",
+                        "maxLength": api_limits().maximum_field_characters,
+                    },
+                    {"type": "null"},
+                ],
+                "title": "File Name",
+            },
+        }
+    ]
+
     for path in (
         API_PREFIX + "/auth-profile-revisions",
         API_PREFIX + "/agent-configuration-revisions",

@@ -433,7 +433,7 @@ def create_app(
     app.include_router(events.router)
     app.include_router(queue.router)
 
-    install_custom_openapi(app)
+    install_custom_openapi(app, limits)
     return app
 
 

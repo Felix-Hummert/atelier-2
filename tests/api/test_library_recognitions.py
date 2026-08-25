@@ -21,6 +21,7 @@ AGENT_DOCUMENT = (
     b"---\n"
     b"You watch the stage and name what you see.\n"
 )
+SKILL_DOCUMENT = AGENT_DOCUMENT.replace(b"---\nYou", b"allowed-tools: Read\n---\nYou")
 MCP_DECLARATION = b'{"mcpServers": {"github": {"command": "gh-mcp"}}}'
 
 
@@ -77,7 +78,7 @@ def test_a_held_kind_answers_its_authored_name_without_a_hash(
 @pytest.mark.parametrize(
     ("document", "file_name", "kind"),
     [
-        pytest.param(AGENT_DOCUMENT, "SKILL.md", "skill", id="skill"),
+        pytest.param(SKILL_DOCUMENT, "SKILL.md", "skill", id="skill"),
         pytest.param(MCP_DECLARATION, ".mcp.json", "mcp_server", id="mcp-server"),
     ],
 )
@@ -110,12 +111,30 @@ def test_an_unrecognised_document_names_what_each_kind_expected() -> None:
     )
 
 
-def test_a_document_two_markers_claim_is_refused_naming_both() -> None:
-    refused = recognise(described_api_client(), b"---\n" + V3_DOCUMENT, "SKILL.md")
+def test_empty_bytes_are_unrecognized_with_one_refusal_per_kind() -> None:
+    answered = recognise(described_api_client(), b"")
+
+    assert answered.status_code == 200
+    body = answered.json()
+    assert body["outcome"] == "unrecognized"
+    assert [refusal["kind"] for refusal in body["refusals"]] == [
+        "workflow",
+        "agent_definition",
+        "skill",
+        "mcp_server",
+    ]
+
+
+def test_a_skill_file_whose_frontmatter_is_a_valid_agent_is_refused_naming_both() -> (
+    None
+):
+    refused = recognise(described_api_client(), AGENT_DOCUMENT, "SKILL.md")
 
     assert refused.status_code == 422
     assert refused.json()["type"].endswith(":library-document-ambiguous")
-    assert refused.json()["detail"] == "The document matches workflow and skill."
+    assert refused.json()["detail"] == (
+        "The document matches agent_definition and skill."
+    )
 
 
 def test_the_door_refuses_any_media_type_but_opaque_bytes() -> None:

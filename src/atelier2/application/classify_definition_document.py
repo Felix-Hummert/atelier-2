@@ -4,6 +4,13 @@ Each library kind has one marker. A marker either recognises the bytes or says,
 in its own words, why it does not; the recognition is what exactly one marker
 claimed. Two claims are refused naming both, because picking one would publish a
 guess under Phase C's one-step add.
+
+A file name is a marker, never a tie-breaker: `SKILL.md` claims a document with
+a closed frontmatter block, and the agent marker claims any frontmatter that
+parses as an agent definition regardless of the name. A `SKILL.md` whose
+frontmatter is a valid agent definition is therefore ambiguous, and only a
+`SKILL.md` that is not a valid agent is a skill (head decision on #698, until a
+configured kind from #660 P1 can say which one was meant).
 """
 
 from __future__ import annotations
@@ -12,7 +19,11 @@ import json
 from pathlib import PurePosixPath
 
 from atelier2.application.reconstruct_agent_definition import AgentDefinitionParser
-from atelier2.contracts.agent_definitions import AgentDefinitionRefused
+from atelier2.contracts.agent_definitions import (
+    AgentDefinition,
+    AgentDefinitionRefusal,
+    AgentDefinitionRefused,
+)
 from atelier2.contracts.library_recognition import (
     AGENT_DEFINITION_PROVIDER,
     EXPECTED_DOCUMENT_FORMS,
@@ -32,7 +43,19 @@ from atelier2.contracts.workflow_refusals import WorkflowDocumentInvalid
 from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.ports.workflow_revisions import WorkflowDocumentParser
 
-FRONTMATTER_OPENING = b"---\n"
+_NO_CLOSED_FRONTMATTER = frozenset(
+    {
+        AgentDefinitionRefusal.DOCUMENT_NOT_UTF8,
+        AgentDefinitionRefusal.FRONTMATTER_MISSING,
+        AgentDefinitionRefusal.FRONTMATTER_UNTERMINATED,
+    }
+)
+"""The refusals the agent parser raises before it has found a closed block.
+
+Every other refusal, and a successful parse, means both delimiters were found:
+the skill marker reads that from the one parser that already knows, instead of
+splitting frontmatter a second time.
+"""
 
 type MarkerClaim = RecognizedWorkflow | RecognizedAgentDefinition | DocumentNotHeld
 type ClassifyDefinitionDocumentResult = (
@@ -47,10 +70,11 @@ def classify_definition_document(
     parse_agent_definition: AgentDefinitionParser,
 ) -> ClassifyDefinitionDocumentResult:
     base_name = None if file_name is None else PurePosixPath(file_name).name
+    agent_reading = _read_agent_definition(document, parse_agent_definition)
     answers = (
         _workflow_marker(document, parse_workflow),
-        _agent_definition_marker(document, base_name, parse_agent_definition),
-        _skill_marker(document, base_name),
+        _agent_definition_marker(agent_reading),
+        _skill_marker(agent_reading, base_name),
         _mcp_server_marker(document),
     )
     claims = tuple(answer for answer in answers if not isinstance(answer, KindRefusal))
@@ -91,39 +115,40 @@ def _workflow_marker(
     return RecognizedWorkflow(WorkflowFormatVersion(graph.format_version), None, None)
 
 
-def _agent_definition_marker(
-    document: bytes,
-    base_name: str | None,
-    parse_agent_definition: AgentDefinitionParser,
-) -> RecognizedAgentDefinition | KindRefusal:
-    # A skill file carries the same frontmatter an agent does; only its name
-    # tells the two apart (ADR 0018 selection grammar), so the name decides.
-    if base_name == SKILL_DOCUMENT_FILE_NAME:
-        return _refused(
-            LibraryDocumentKind.AGENT_DEFINITION,
-            f"a file named {SKILL_DOCUMENT_FILE_NAME} is a skill, not an agent",
-        )
+def _read_agent_definition(
+    document: bytes, parse_agent_definition: AgentDefinitionParser
+) -> AgentDefinition | AgentDefinitionRefused:
     try:
-        definition = parse_agent_definition(document)
+        return parse_agent_definition(document)
     except AgentDefinitionRefused as refused:
-        return _refused(LibraryDocumentKind.AGENT_DEFINITION, str(refused))
+        return refused
+
+
+def _agent_definition_marker(
+    reading: AgentDefinition | AgentDefinitionRefused,
+) -> RecognizedAgentDefinition | KindRefusal:
+    if isinstance(reading, AgentDefinitionRefused):
+        return _refused(LibraryDocumentKind.AGENT_DEFINITION, str(reading))
     return RecognizedAgentDefinition(
-        definition.name, definition.description, AGENT_DEFINITION_PROVIDER
+        reading.name, reading.description, AGENT_DEFINITION_PROVIDER
     )
 
 
 def _skill_marker(
-    document: bytes, base_name: str | None
+    reading: AgentDefinition | AgentDefinitionRefused, base_name: str | None
 ) -> DocumentNotHeld | KindRefusal:
     if base_name != SKILL_DOCUMENT_FILE_NAME:
         return _refused(
             LibraryDocumentKind.SKILL,
             f"the file is not named {SKILL_DOCUMENT_FILE_NAME}",
         )
-    if not document.startswith(FRONTMATTER_OPENING):
+    if (
+        isinstance(reading, AgentDefinitionRefused)
+        and reading.refusal in _NO_CLOSED_FRONTMATTER
+    ):
         return _refused(
             LibraryDocumentKind.SKILL,
-            f"{SKILL_DOCUMENT_FILE_NAME} does not open with frontmatter",
+            f"{SKILL_DOCUMENT_FILE_NAME} does not carry a closed frontmatter block",
         )
     return DocumentNotHeld(
         LibraryDocumentKind.SKILL, NOT_HELD_REASONS[LibraryDocumentKind.SKILL]
