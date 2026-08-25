@@ -6,11 +6,13 @@ replays only pending work, never a raised ending. Before this sweep the intent
 stood PREPARED or RECONCILING forever, the operator door refused it, and the
 run said STARTED until the store died (#628). An Action node workflow that ends
 terminally between committing its intent and enqueuing the effect leaves the
-same frozen intent under no effect-workflow row at all (#646). This file
-prepares those exact rows, models each ending as the `workflow_status` row DBOS
-leaves behind, and asks the sweep to route only what no live workflow owes:
-to WAITING_RECONCILIATION, onto the attention feed, and through the operator
-door -- never to an invented absence (ADR 0010).
+same frozen intent under no effect-workflow row at all (#646). A workflow left
+PENDING under a retired `application_version` is frozen the same way -- DBOS
+will never resume it, so reading it as a live driver anyway leaves the run
+frozen forever (#707). This file prepares those exact rows, models each ending
+as the `workflow_status` row DBOS leaves behind, and asks the sweep to route
+only what no live workflow owes: to WAITING_RECONCILIATION, onto the attention
+feed, and through the operator door -- never to an invented absence (ADR 0010).
 """
 
 from __future__ import annotations
@@ -133,22 +135,31 @@ def end_workflow(engine: Engine, workflow_id: str, status: str = "ERROR") -> Non
         assert ended.rowcount == 1
 
 
-def leave_workflow(engine: Engine, workflow_id: str, status: str) -> None:
+def leave_workflow(
+    engine: Engine, workflow_id: str, status: str, application_version: str
+) -> None:
     """Leave the row DBOS leaves for a workflow standing in that status.
 
     The Action node workflow the fixture's intent was prepared by never ran
     here -- the fixture calls that preparation step directly -- so its row is
-    written rather than updated.
+    written rather than updated. A caller names `application_version`
+    explicitly rather than relying on a default so a test that plants a
+    workflow under a retired deploy (#707) reads as deliberate, not assumed.
     """
 
     with engine.begin() as connection:
         connection.execute(
             sa.text(
                 "INSERT INTO workflow_status "
-                "(workflow_uuid,status,created_at,updated_at,priority) "
-                "VALUES (:workflow_id,:status,0,0,0)"
+                "(workflow_uuid,status,created_at,updated_at,priority,"
+                "application_version) "
+                "VALUES (:workflow_id,:status,0,0,0,:application_version)"
             ),
-            {"workflow_id": workflow_id, "status": status},
+            {
+                "workflow_id": workflow_id,
+                "status": status,
+                "application_version": application_version,
+            },
         )
 
 
@@ -162,8 +173,8 @@ def action_node_workflow_id(intent: EffectIntent) -> str:
     )
 
 
-def converge(engine: Engine) -> tuple[LogicalEffectKey, ...]:
-    return converge_driverless_effect_intents(engine)
+def converge(engine: Engine, application_version: str) -> tuple[LogicalEffectKey, ...]:
+    return converge_driverless_effect_intents(engine, application_version)
 
 
 def intent_row(engine: Engine) -> tuple[object, ...]:
@@ -181,7 +192,9 @@ def intent_row(engine: Engine) -> tuple[object, ...]:
 
 def route_to_waiting(runtime: DbosRuntime, intent: EffectIntent) -> None:
     end_workflow(runtime.engine, effect_workflow_id_for(intent.binding.logical_key))
-    assert converge(runtime.engine) == (intent.binding.logical_key,)
+    assert converge(runtime.engine, runtime.settings.application_version) == (
+        intent.binding.logical_key,
+    )
 
 
 def effect_workflow_ended(status: str) -> Callable[[DbosRuntime, EffectIntent], None]:
@@ -199,7 +212,32 @@ def node_workflow_ended_before_the_enqueue(
     """The #646 window: the intent is committed, its enqueue never happened."""
 
     _drop_workflow(runtime.engine, effect_workflow_id_for(intent.binding.logical_key))
-    leave_workflow(runtime.engine, action_node_workflow_id(intent), "ERROR")
+    leave_workflow(
+        runtime.engine,
+        action_node_workflow_id(intent),
+        "ERROR",
+        runtime.settings.application_version,
+    )
+
+
+def node_workflow_pending_under_a_retired_application_version(
+    runtime: DbosRuntime, intent: EffectIntent
+) -> None:
+    """#707: PENDING under a version this instance no longer runs is dead too.
+
+    Mirrors `test_converge_ends_a_silent_successor_whose_durable_workflow_is_
+    the_dead_version` (#645, `test_interrupted_uncontinuable_inventory.py`):
+    dropping the `application_version` match would read this node workflow
+    as a live driver and leave the run frozen forever.
+    """
+
+    _drop_workflow(runtime.engine, effect_workflow_id_for(intent.binding.logical_key))
+    leave_workflow(
+        runtime.engine,
+        action_node_workflow_id(intent),
+        "PENDING",
+        "dead-application-version",
+    )
 
 
 @pytest.mark.parametrize(
@@ -217,6 +255,10 @@ def node_workflow_ended_before_the_enqueue(
             node_workflow_ended_before_the_enqueue,
             id="node-workflow-ended-before-the-enqueue",
         ),
+        pytest.param(
+            node_workflow_pending_under_a_retired_application_version,
+            id="node-workflow-pending-under-a-retired-application-version",
+        ),
     ],
 )
 def test_prepared_intent_no_workflow_will_move_reaches_the_operator_door(
@@ -226,7 +268,9 @@ def test_prepared_intent_no_workflow_will_move_reaches_the_operator_door(
     runtime, intent = prepared
     leave_dead_driver(runtime, intent)
 
-    assert converge(runtime.engine) == (intent.binding.logical_key,)
+    assert converge(runtime.engine, runtime.settings.application_version) == (
+        intent.binding.logical_key,
+    )
 
     assert intent_row(runtime.engine) == (
         EffectIntentState.WAITING_RECONCILIATION.value,
@@ -265,7 +309,12 @@ def node_workflow_still_owes_the_enqueue(
     runtime: DbosRuntime, intent: EffectIntent
 ) -> None:
     drop_effect_workflow(runtime, intent)
-    leave_workflow(runtime.engine, action_node_workflow_id(intent), "PENDING")
+    leave_workflow(
+        runtime.engine,
+        action_node_workflow_id(intent),
+        "PENDING",
+        runtime.settings.application_version,
+    )
 
 
 @pytest.mark.parametrize(
@@ -288,7 +337,7 @@ def test_prepared_intent_still_owed_a_driver_is_left_alone(
     runtime, intent = prepared
     leave_live_driver(runtime, intent)
 
-    assert converge(runtime.engine) == ()
+    assert converge(runtime.engine, runtime.settings.application_version) == ()
 
     assert intent_row(runtime.engine) == (EffectIntentState.PREPARED.value, 0, None)
     with runtime.engine.connect() as connection:
@@ -313,7 +362,9 @@ def test_reconciling_intent_whose_reconcile_workflow_raised_reopens_the_door(
     submit_reconcile_command(runtime.engine, runtime.settings, dead)
     end_workflow(runtime.engine, reconcile_workflow_id_for(dead.command_id))
 
-    assert converge(runtime.engine) == (intent.binding.logical_key,)
+    assert converge(runtime.engine, runtime.settings.application_version) == (
+        intent.binding.logical_key,
+    )
 
     assert intent_row(runtime.engine) == (
         EffectIntentState.WAITING_RECONCILIATION.value,
@@ -336,7 +387,7 @@ def test_reconciling_intent_whose_reconcile_workflow_is_enqueued_is_left_alone(
     pending = command(intent)
     submit_reconcile_command(runtime.engine, runtime.settings, pending)
 
-    assert converge(runtime.engine) == ()
+    assert converge(runtime.engine, runtime.settings.application_version) == ()
 
     assert intent_row(runtime.engine) == (
         EffectIntentState.RECONCILING.value,

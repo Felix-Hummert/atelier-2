@@ -18,6 +18,10 @@ from atelier2.adapters.dbos.schema import (
     runs,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
+from atelier2.adapters.dbos.uncontinuable_runs import (
+    LIVE_DRIVER_WORKFLOW_STATUSES,
+    live_driver_workflow_ids,
+)
 from atelier2.adapters.dbos.workflow_ids import (
     effect_workflow_id_for,
     node_workflow_id_for,
@@ -470,7 +474,9 @@ def commit_resolution(
 
 
 # DBOS owns this table and these tokens; the sweep below only reads them, and
-# only to answer whether the workflow owing an intent its resolution is dead.
+# only to answer whether the workflow owing an intent its resolution raised.
+# `uncontinuable_runs.py` owns whether one is a live driver under the running
+# application version; this table exists only for that plain status read.
 _dbos_workflow_status = sa.table(
     "workflow_status",
     sa.column("workflow_uuid"),
@@ -493,7 +499,9 @@ _DRIVEN_INTENT_STATES = (
 """The intent states a durable workflow is currently responsible for moving."""
 
 
-def converge_driverless_effect_intents(engine: Engine) -> tuple[LogicalEffectKey, ...]:
+def converge_driverless_effect_intents(
+    engine: Engine, application_version: str
+) -> tuple[LogicalEffectKey, ...]:
     """Route every intent no workflow is going to move to the operator door.
 
     A prepared effect moves because `durable_effect` drives it, and a
@@ -504,21 +512,26 @@ def converge_driverless_effect_intents(engine: Engine) -> tuple[LogicalEffectKey
     mid-word (#628). A prepared intent whose effect workflow was never even
     enqueued, because the Action node workflow that owed that enqueue ended
     terminally first, stands just as frozen and names no workflow at all
-    (#646). This is the restart's answer, the same one
-    `converge_driverless_attempts` gives armed attempts: each such intent goes
-    to WAITING_RECONCILIATION, the state the door accepts, and never to an
-    invented absence -- routing to the operator is exactly what an in-band
-    UNKNOWN readback does (ADR 0010). Answers with the intents routed here.
+    (#646). A workflow left PENDING, ENQUEUED, or DELAYED under a retired
+    `application_version` is frozen the same way: DBOS will never resume it
+    under a version this instance no longer runs (#707). This is the
+    restart's answer, the same one `converge_driverless_attempts` gives armed
+    attempts: each such intent goes to WAITING_RECONCILIATION, the state the
+    door accepts, and never to an invented absence -- routing to the operator
+    is exactly what an in-band UNKNOWN readback does (ADR 0010). Answers with
+    the intents routed here.
     """
 
     return tuple(
         logical_key
-        for logical_key in _driverless_effect_intents(engine)
-        if _route_to_reconciliation(engine, logical_key)
+        for logical_key in _driverless_effect_intents(engine, application_version)
+        if _route_to_reconciliation(engine, logical_key, application_version)
     )
 
 
-def _driverless_effect_intents(engine: Engine) -> tuple[LogicalEffectKey, ...]:
+def _driverless_effect_intents(
+    engine: Engine, application_version: str
+) -> tuple[LogicalEffectKey, ...]:
     """List candidates only; `_route_to_reconciliation` decides in its own
     write transaction, so a workflow that resolved between the two reads costs
     one extra read, never a wrong routing."""
@@ -536,11 +549,13 @@ def _driverless_effect_intents(engine: Engine) -> tuple[LogicalEffectKey, ...]:
         return tuple(
             LogicalEffectKey(str(record["logical_key"]))
             for record in candidates
-            if _intent_is_driverless(connection, record)
+            if _intent_is_driverless(connection, record, application_version)
         )
 
 
-def _route_to_reconciliation(engine: Engine, logical_key: LogicalEffectKey) -> bool:
+def _route_to_reconciliation(
+    engine: Engine, logical_key: LogicalEffectKey, application_version: str
+) -> bool:
     with canonical_write_transaction(engine) as connection:
         record = (
             connection.execute(
@@ -551,7 +566,9 @@ def _route_to_reconciliation(engine: Engine, logical_key: LogicalEffectKey) -> b
             .mappings()
             .one_or_none()
         )
-        if record is None or not _intent_is_driverless(connection, record):
+        if record is None or not _intent_is_driverless(
+            connection, record, application_version
+        ):
             return False
         state = EffectIntentState(str(record["state"]))
         if state is EffectIntentState.PREPARED:
@@ -574,7 +591,9 @@ def _route_to_reconciliation(engine: Engine, logical_key: LogicalEffectKey) -> b
         return True
 
 
-def _intent_is_driverless(connection: Connection, record: Mapping[Any, Any]) -> bool:
+def _intent_is_driverless(
+    connection: Connection, record: Mapping[Any, Any], application_version: str
+) -> bool:
     """Whether no durable workflow is going to move this intent another step.
 
     True only for a PREPARED or a RECONCILING intent, the two states a workflow
@@ -584,40 +603,47 @@ def _intent_is_driverless(connection: Connection, record: Mapping[Any, Any]) -> 
 
     state = EffectIntentState(str(record["state"]))
     if state is EffectIntentState.PREPARED:
-        return _prepared_intent_is_driverless(connection, record)
+        return _prepared_intent_is_driverless(connection, record, application_version)
     if state is EffectIntentState.RECONCILING:
         return _workflow_is_dead(
             connection,
             reconcile_workflow_id_for(
                 ReconcileCommandId(str(record["reconciliation_owner_command_id"]))
             ),
+            application_version,
         )
     return False
 
 
 def _prepared_intent_is_driverless(
-    connection: Connection, record: Mapping[Any, Any]
+    connection: Connection, record: Mapping[Any, Any], application_version: str
 ) -> bool:
     """A prepared intent has two possible drivers, one of them not written yet.
 
-    `durable_effect` resolves it, so its terminal error status is the usual
-    answer (#628). Before that workflow exists there is still a driver: the
-    Action node workflow commits the intent and enqueues the effect in the same
-    step, so an absent effect row normally means recovery is about to write it.
-    Only when that node workflow itself ended terminally does nobody owe this
-    intent anything -- the window where it would stand PREPARED forever under
-    no row the effect-workflow read could even name (#646).
+    `durable_effect` resolves it, so its raised or version-stranded ending is
+    the usual answer (#628, #707). Before that workflow exists there is still
+    a driver: the Action node workflow commits the intent and enqueues the
+    effect in the same step, so an absent effect row normally means recovery
+    is about to write it. Only when that node workflow itself is dead does
+    nobody owe this intent anything -- the window where it would stand
+    PREPARED forever under no row the effect-workflow read could even name
+    (#646).
     """
 
     logical_key = LogicalEffectKey(str(record["logical_key"]))
-    effect_status = _workflow_status(connection, effect_workflow_id_for(logical_key))
-    if effect_status is not None:
-        return effect_status in _TERMINAL_NON_SUCCESS_WORKFLOW_STATUSES
-    return _enqueueing_node_workflow_is_dead(connection, record, logical_key)
+    effect_workflow_id = effect_workflow_id_for(logical_key)
+    if _workflow_status(connection, effect_workflow_id) is not None:
+        return _workflow_is_dead(connection, effect_workflow_id, application_version)
+    return _enqueueing_node_workflow_is_dead(
+        connection, record, logical_key, application_version
+    )
 
 
 def _enqueueing_node_workflow_is_dead(
-    connection: Connection, record: Mapping[Any, Any], logical_key: LogicalEffectKey
+    connection: Connection,
+    record: Mapping[Any, Any],
+    logical_key: LogicalEffectKey,
+    application_version: str,
 ) -> bool:
     """Whether the Action node workflow that owes this intent its enqueue is gone.
 
@@ -650,13 +676,31 @@ def _enqueueing_node_workflow_is_dead(
     )
     if logical_effect_key_for(execution_id) != logical_key:
         return False
-    return _workflow_is_dead(connection, node_workflow_id_for(execution_id))
+    return _workflow_is_dead(
+        connection, node_workflow_id_for(execution_id), application_version
+    )
 
 
-def _workflow_is_dead(connection: Connection, workflow_id: str) -> bool:
-    return (
-        _workflow_status(connection, workflow_id)
-        in _TERMINAL_NON_SUCCESS_WORKFLOW_STATUSES
+def _workflow_is_dead(
+    connection: Connection, workflow_id: str, application_version: str
+) -> bool:
+    """Whether DBOS itself will never take this workflow another step.
+
+    A terminal error status is the ordinary answer (#628). A workflow still
+    PENDING, ENQUEUED, or DELAYED under a retired `application_version` is
+    just as dead: DBOS scopes recovery to the version that enqueued it, so a
+    deploy that retires that version strands the workflow exactly as if it
+    had raised (#707). An absent row is neither -- it was never written, and
+    who owes it decides what that means, not this predicate.
+    """
+
+    status = _workflow_status(connection, workflow_id)
+    if status in _TERMINAL_NON_SUCCESS_WORKFLOW_STATUSES:
+        return True
+    if status not in LIVE_DRIVER_WORKFLOW_STATUSES:
+        return False
+    return workflow_id not in live_driver_workflow_ids(
+        connection, (workflow_id,), application_version
     )
 
 
