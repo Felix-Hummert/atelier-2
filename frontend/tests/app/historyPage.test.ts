@@ -167,13 +167,14 @@ describe("History shows only what has finished", () => {
     expect(getNodeDetail).not.toHaveBeenCalled();
   });
 
-  it("shows a failed run's own standing word, without reading its node", async () => {
+  it("names a failed run's node, without reading it, and shows no duration when no V3 stamp exists", async () => {
     const getNodeDetail = vi.fn();
     openHistory({ failed: [v1Failed({ run_id: "broke" })] }, { getNodeDetail });
 
     const row = await screen.findByRole("link", { name: /broke/ });
-    expect(row.textContent).toContain(standingWords.failed);
-    expect(row.textContent).toContain("Not recorded");
+    expect(row.textContent).toContain(`${standingWords.failed} · final`);
+    const durationLabel = within(row).getByText("Duration:", { exact: false });
+    expect(durationLabel.closest(".row-duration")?.textContent).toContain("Not recorded");
     expect(getNodeDetail).not.toHaveBeenCalled();
   });
 

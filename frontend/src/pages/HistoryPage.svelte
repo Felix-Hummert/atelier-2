@@ -19,7 +19,7 @@
   } from "../lib/readResource";
   import { runPath } from "../lib/route";
   import { standingWords } from "../lib/runState";
-  import { v3WorkflowGraph, workflowRevisionsOf } from "../lib/runList";
+  import { workflowNamesOf } from "../lib/runList";
   import { readEveryRun } from "../lib/runPages";
   import { ageLabel, exactLocal } from "../lib/when";
 
@@ -59,11 +59,8 @@
         return;
       }
       const runs = [...completed.runs, ...failed.runs];
-      const revisions = await workflowRevisionsOf(runs, (hash) =>
+      const workflowNames = await workflowNamesOf(runs, (hash) =>
         cockpitApi.getWorkflowRevision(hash)
-      );
-      const workflowNames = new Map(
-        [...revisions].map(([hash, revision]) => [hash, v3WorkflowGraph(revision).name])
       );
       history = confirmRead(history, begun.generation, { runs, workflowNames });
     } catch {
@@ -140,21 +137,23 @@
                     {ageLabel(row.activityAt, now, "ago")}
                   </time>
                 {:else}
-                  {wrapDisplayCopy(historyPageCopy.whenNotRecorded)}
+                  {wrapDisplayCopy(historyPageCopy.notRecorded)}
                 {/if}
               </span>
               <span class="row-result">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnResult)}: </span>
-                {wrapDisplayCopy(
-                  row.result.kind === "failed" ? standingWords.failed : standingWords.done
-                )}
+                {#if row.result.kind === "failed"}
+                  {wrapDisplayCopy(standingWords.failed)} · {row.result.nodeId}
+                {:else}
+                  {wrapDisplayCopy(standingWords.done)}
+                {/if}
               </span>
               <span class="row-duration">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnDuration)}: </span>
                 {#if row.span !== null}
                   {ageLabel(row.span.startedAt, now, "duration", row.span.endedAt)}
                 {:else}
-                  {wrapDisplayCopy(historyPageCopy.durationNotRecorded)}
+                  {wrapDisplayCopy(historyPageCopy.notRecorded)}
                 {/if}
               </span>
             </a>
@@ -279,8 +278,9 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* Never an ellipsis (REQ-UI-13): a longer result wraps and is clamped to two
-     lines instead of being cut mid-word; the run page shows it in full. */
+  /* Never an ellipsis (REQ-UI-13): a failed row's node id can run long, so the
+     cell wraps and is clamped to two lines instead of being cut mid-word; the
+     run page shows the id in full. */
   .row-result {
     display: -webkit-box;
     flex: 1;
@@ -337,7 +337,12 @@
      is the one column dropped at this width, so Result -- the fact that must
      never truncate -- gets the room instead (issue #717). */
   @media (max-width: 32rem) {
-    .row-name,
+    .row-name {
+      flex: 1 1 auto;
+      width: auto;
+      min-width: 0;
+    }
+
     .col-name {
       width: var(--name-column-narrow);
     }
