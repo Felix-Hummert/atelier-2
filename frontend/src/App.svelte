@@ -2,6 +2,7 @@
   import { onMount, tick } from "svelte";
 
   import { createCockpitApi, type CockpitApi } from "./api/client";
+  import { watchConnectionRecovery } from "./lib/connectionState";
   import {
     MutationJournal,
     createReconcileCommandId as makeReconcileCommandId,
@@ -9,6 +10,7 @@
   } from "./lib/mutationJournal";
   import { PRODUCT_NAME } from "./lib/productName";
   import { cockpitRoute } from "./lib/route";
+  import ConnectionNotice from "./components/ConnectionNotice.svelte";
   import WorkshopShell from "./components/WorkshopShell.svelte";
   import WorkbenchPage from "./pages/WorkbenchPage.svelte";
   import NewRunPage from "./pages/NewRunPage.svelte";
@@ -33,7 +35,13 @@
       route = cockpitRoute(window.location.pathname + window.location.search);
     };
     window.addEventListener("popstate", readRoute);
-    return () => window.removeEventListener("popstate", readRoute);
+    // The bounded recovery probe for whichever page holds no open stream of
+    // its own (#700) -- one loop for the whole app, torn down with it.
+    const stopWatchingRecovery = watchConnectionRecovery((signal) => cockpitApi.health(signal));
+    return () => {
+      window.removeEventListener("popstate", readRoute);
+      stopWatchingRecovery();
+    };
   });
 
   async function navigate(path: string): Promise<void> {
@@ -46,6 +54,13 @@
 
 <svelte:head><meta name="theme-color" content="#f2efe7" /><title>{PRODUCT_NAME}</title></svelte:head>
 
+<!-- The Workbench already speaks its own connection state through its
+     composer -- "the ear" (HEART) always names its state in one sentence of
+     its own. A second banner above it would be the same fact said twice, so
+     only every other room, which holds no such ear, shows this line (#700). -->
+{#if route.page !== "chat"}
+  <ConnectionNotice />
+{/if}
 <WorkshopShell bind:this={workshopShell} {route} {navigate}>
   {#if route.page === "chat"}
     <WorkbenchPage {cockpitApi} {mutationJournal} {navigate} />

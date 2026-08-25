@@ -85,8 +85,13 @@ export function humanProblemDetail(problem: Pick<Problem, "type" | "detail">): s
 }
 
 export function humanErrorMessage(error: unknown, fallback: string): string {
-  if (error instanceof CockpitRequestError && error.problem !== null) {
-    return humanProblemDetail(error.problem);
+  if (error instanceof CockpitRequestError) {
+    // A round trip that never happened (#700) carries the browser's own raw
+    // transport text ("Failed to fetch" and the like), never a sentence this
+    // workshop owns -- the caller's fallback speaks instead. A contract
+    // violation the API did answer with keeps its own specific message.
+    if (error.transport_failure) return fallback;
+    if (error.problem !== null) return humanProblemDetail(error.problem);
   }
   return error instanceof Error ? error.message : fallback;
 }

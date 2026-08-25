@@ -10,6 +10,11 @@ import {
   type WorkflowRevisionSummary
 } from "../../src/api/client";
 import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
+import {
+  reportConnectionLost,
+  reportConnectionRestored,
+  restartNoticeCopy
+} from "../../src/lib/connectionState";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub } from "../support/cockpitApi";
 
@@ -24,6 +29,7 @@ const EXACT_AGENT = "---\nname: scribe\ndescription: Writes.\n---\n\nYou write.\
 afterEach(() => {
   vi.restoreAllMocks();
   cleanup();
+  reportConnectionRestored();
 });
 
 function openCatalog(overrides: Partial<CockpitApi> = {}) {
@@ -448,5 +454,30 @@ describe("the catalog room", () => {
       expect(screen.getByText(catalogPageCopy.agentsUnavailable).isConnected).toBe(true);
     });
     expect(screen.queryByText(catalogPageCopy.agentsEmpty)).toBeNull();
+  });
+
+  it("names no local failure while the whole workshop reads unreachable, and reads itself again once the connection returns (#700)", async () => {
+    const listWorkflowRevisions = vi.fn().mockRejectedValue(new Error("Failed to fetch"));
+    const listAgentDefinitionRevisions = vi.fn().mockRejectedValue(new Error("Failed to fetch"));
+    openCatalog({ listWorkflowRevisions, listAgentDefinitionRevisions });
+    await screen.findByRole("heading", { name: "Catalog" });
+
+    reportConnectionLost();
+    await waitFor(() => {
+      expect(document.querySelector(".notice-banner")?.textContent).toContain(restartNoticeCopy);
+    });
+    // The shell's one line above already names the outage; this room adds no
+    // second, page-local echo of the same fact for either list.
+    expect(screen.queryByText(catalogPageCopy.workflowsUnavailable)).toBeNull();
+    expect(screen.queryByText(catalogPageCopy.agentsUnavailable)).toBeNull();
+
+    listWorkflowRevisions.mockResolvedValue({ items: [], next_after_revision_hash: null });
+    listAgentDefinitionRevisions.mockResolvedValue({ items: [], next_after_revision_hash: null });
+    reportConnectionRestored();
+
+    expect((await screen.findByText(catalogPageCopy.workflowsEmpty)).isConnected).toBe(true);
+    expect(screen.getByText(catalogPageCopy.agentsEmpty).isConnected).toBe(true);
+    expect(screen.queryByText(catalogPageCopy.workflowsUnavailable)).toBeNull();
+    expect(screen.queryByText(catalogPageCopy.agentsUnavailable)).toBeNull();
   });
 });

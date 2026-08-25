@@ -12,6 +12,7 @@ import type { CockpitApi, RunEventHandlers, RunPage, RunV1 } from "../../src/api
  */
 export function cockpitApiStub(overrides: Partial<CockpitApi> = {}): CockpitApi {
   return {
+    health: vi.fn(),
     listRuns: vi.fn(async () => ({ items: [], next_after: null })),
     listProjects: vi.fn(async () => ({ items: [] })),
     getProjectOccupancy: vi.fn(),
