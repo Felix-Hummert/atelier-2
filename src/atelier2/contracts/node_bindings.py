@@ -67,6 +67,7 @@ class AgentNodeBindingV2:
     """
 
     def __post_init__(self) -> None:
+        require_exact_round_ordinal(self.round_ordinal)
         if self.tool_grant is not None and self.project_source is None:
             raise RunBindingConflict(
                 "a node redeeming a tool grant requires the project source its "
