@@ -694,7 +694,7 @@ def commit_action_completed(
         # published document can place an Action inside a declared loop
         # (`_unrepeatable_loop_forms`), so `round_of` would answer round one
         # for any successor today regardless -- computing it for real is a
-        # named gap that waits on Action nodes becoming loop-repeatable (#706).
+        # named gap that waits on Action nodes becoming loop-repeatable (#751).
         round_ordinal=round_ordinal,
     )
 
