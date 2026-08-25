@@ -615,7 +615,9 @@ def test_an_already_applied_answer_replays_without_a_second_event(
     wait_for_state(started, RunState.COMPLETED)
     settled = durable_events(started)
 
-    with started.engine.connect() as connection:
+    # The replay commits, because a transaction that rolls back on the way out
+    # would hide the very write this test is looking for.
+    with started.engine.begin() as connection:
         applied = load_wait_answer(connection, RUN, workflow.revision_hash, WAIT_NODE)
         replayed = commit_wait_answered(connection, applied.answer)
 
