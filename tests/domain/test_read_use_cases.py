@@ -497,7 +497,9 @@ AGENT_DEFINITION_DOCUMENT = (
 
 
 def test_get_agent_definition_revision_becomes_this_layers_own_outcome() -> None:
-    published = PublishedRevision(RevisionKind.AGENT_DEFINITION, AGENT_DEFINITION_DOCUMENT)
+    published = PublishedRevision(
+        RevisionKind.AGENT_DEFINITION, AGENT_DEFINITION_DOCUMENT
+    )
     definition = parse_agent_definition(AGENT_DEFINITION_DOCUMENT)
 
     for resolver_answer, expected in (
@@ -516,6 +518,13 @@ def test_get_agent_definition_revision_becomes_this_layers_own_outcome() -> None
             ),
             AgentDefinitionRevisionNotFound(),
         ),
+        (
+            # The store did not say "no such revision" -- it could not answer at
+            # all, which is not the same claim and must not be told as one.
+            PublishedRevisionsUnavailable("registry asleep"),
+            ReadUnavailable("registry asleep"),
+        ),
+        (PortDurableStateCorrupt(), DurableStateCorrupt()),
     ):
         resolver = ScriptedResolver(resolver_answer)
         assert (

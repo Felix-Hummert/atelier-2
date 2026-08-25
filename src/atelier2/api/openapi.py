@@ -237,6 +237,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     ): (
         "invalid-revision-hash",
         "agent-definition-revision-not-found",
+        "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
     ),

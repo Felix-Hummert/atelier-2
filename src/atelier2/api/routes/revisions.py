@@ -470,6 +470,8 @@ async def get_agent_definition_revision_route(
             return _agent_definition_detail_resource(published)
         case AgentDefinitionRevisionNotFound():
             raise ApiProblem("agent-definition-revision-not-found")
+        case ReadUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:

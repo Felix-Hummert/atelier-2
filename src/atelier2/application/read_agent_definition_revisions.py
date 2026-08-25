@@ -23,6 +23,7 @@ from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateC
 from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
     PublishedRevisionListing,
+    PublishedRevisionMissing,
     PublishedRevisionPage,
     PublishedRevisionResolver,
     PublishedRevisionsUnavailable,
@@ -94,7 +95,10 @@ class AgentDefinitionRevisionNotFound:
 
 
 type GetAgentDefinitionRevisionResult = (
-    AgentDefinitionRevisionRead | AgentDefinitionRevisionNotFound | DurableStateCorrupt
+    AgentDefinitionRevisionRead
+    | AgentDefinitionRevisionNotFound
+    | ReadUnavailable
+    | DurableStateCorrupt
 )
 
 
@@ -111,15 +115,29 @@ def get_agent_definition_revision(
     same as one nobody published -- `agent-definition-revisions` speaks for the
     `AGENT_DEFINITION` kind alone, exactly as it publishes for it alone.
 
+    A resolver answer of `PublishedRevisionsUnavailable` or `DurableStateCorrupt`
+    is neither -- the store did not say "no such revision", it said it could not
+    answer, or that what it holds no longer makes sense, and folding either into
+    a 404 would tell a caller to stop retrying a hash that may yet resolve
+    (mirrors `_resolved_schema_document` in `read_workflow_revisions.py`).
+
     A stored revision that no longer parses is durable corruption, not a miss:
     the publish door refuses anything this parser refuses, so bytes that got
     past it and cannot be read back mean the store no longer holds what it
     accepted (the same reasoning `list_agent_definition_revisions` applies).
     """
 
-    resolved = resolver.resolve(RevisionKind.AGENT_DEFINITION, revision_hash)
-    if not isinstance(resolved, PublishedRevisionFound):
-        return AgentDefinitionRevisionNotFound()
+    match resolver.resolve(RevisionKind.AGENT_DEFINITION, revision_hash):
+        case PublishedRevisionFound() as resolved:
+            pass
+        case PublishedRevisionMissing():
+            return AgentDefinitionRevisionNotFound()
+        case PublishedRevisionsUnavailable(detail):
+            return ReadUnavailable(detail)
+        case PortDurableStateCorrupt():
+            return DurableStateCorrupt()
+        case _ as unreachable:
+            assert_never(unreachable)
     if resolved.revision.kind is not RevisionKind.AGENT_DEFINITION:
         return AgentDefinitionRevisionNotFound()
     try:
