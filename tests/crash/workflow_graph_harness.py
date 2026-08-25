@@ -23,6 +23,7 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -49,6 +50,7 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
 )
 from atelier2.contracts.executions import SubmitWaitAnswerRequest
+from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import (
     RunId,
     WorkflowRevision,
@@ -77,6 +79,12 @@ from tests.scenarios.runs import (
 from tests.scenarios.workflows import ANY_JSON_SCHEMA
 
 CRASHED = 86
+OPEN_PR_OPERATION = PublishedRevision(
+    RevisionKind.ADAPTER_OPERATION,
+    json.dumps({"operation": AdapterOperationName.OPEN_PR.value}).encode("utf-8"),
+)
+"""The one operation a V3 Action node may name; the loopback adapter performs
+whatever request the node's Agent predecessor handed it."""
 V3_PROVIDER_OUTPUT = b'"the exact provider bytes"'
 _COUNTING_PROVIDER = (
     "from pathlib import Path; import os,sys; "
@@ -209,10 +217,12 @@ def seed_v3(
             catalog.publish_agent_configuration_revision(configuration),
             AgentConfigurationRevisionCreated,
         )
-        published = DbosCatalogStore(lease.engine).publish_revision(ANY_JSON_SCHEMA)
-        assert isinstance(
-            published, (PublishedRevisionCreated, PublishedRevisionExisting)
-        )
+        catalog_store = DbosCatalogStore(lease.engine)
+        for revision in (ANY_JSON_SCHEMA, OPEN_PR_OPERATION):
+            published = catalog_store.publish_revision(revision)
+            assert isinstance(
+                published, (PublishedRevisionCreated, PublishedRevisionExisting)
+            )
         workflow = WorkflowRevision(document)
         DbosWorkflowRevisionPublisher(lease.engine).publish(workflow)
         started = DbosDurableRunStarter(
