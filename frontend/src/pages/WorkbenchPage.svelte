@@ -236,7 +236,7 @@
       <!-- The one honest line replaces every other composer hint while the
            connection is lost (#700): a per-page refusal here would say "no
            conductor" for what is really "the atelier itself is unreachable". -->
-      <p class="composer-hint">{restartNoticeCopy}</p>
+      <p class="composer-hint">{wrapDisplayCopy(restartNoticeCopy)}</p>
     {:else if conductorLink.kind === "connected"}
       <p class="composer-hint">{wrapDisplayCopy(conductorChatCopy.composerHint)}</p>
     {:else if conductorLink.kind === "absent"}

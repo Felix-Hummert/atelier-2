@@ -1,5 +1,6 @@
 <script lang="ts">
   import { connectionState, restartNoticeCopy } from "../lib/connectionState";
+  import { wrapDisplayCopy } from "../lib/displayCopy";
 </script>
 
 <!-- A healthy connection says nothing: only a lost one speaks, and in one
@@ -8,7 +9,7 @@
 {#if $connectionState === "reconnecting"}
   <p class="connection connection-reconnecting notice-banner" role="status">
     <span aria-hidden="true">↻</span>
-    {restartNoticeCopy}
+    {wrapDisplayCopy(restartNoticeCopy)}
   </p>
 {/if}
 
