@@ -193,6 +193,12 @@ for an oversight.
   agent receipt, the node execution request keyed by its execution, and the agent
   receipt's once-per-run key dropped. Every carried row is read as round one,
   which is what those rows are — not a default filled in to make a column fit.
+- Schema version 36 ([#658](https://github.com/FlexOr2/atelier-2/issues/658))
+  finishes that move for the pause: the event log's once-per-node key said one
+  event of a kind per node per run, which a Wait a loop turns twice breaks by
+  writing a second `WAITING_INPUT`. The execution-keyed index is that same
+  sentence read per round, and it is what remains. No row is rewritten; only the
+  coarser key stops being enforced.
 - The hop exposed a latent defect in the migration chain and fixes it: a rebuild
   step materialised its table from the *live* declaration, which is only ever the
   current shape, so the first hop to touch a table an earlier hop had already

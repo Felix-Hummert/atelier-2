@@ -2963,7 +2963,8 @@ def _table_indexes_at(version: int, table: sa.Table) -> tuple[str, ...]:
     """
     if version == SCHEMA_VERSION:
         return _declared_indexes(table)
-    return PUBLISHED_TABLE_INDEXES.get((version, table.name), _declared_indexes(table))
+    recorded = PUBLISHED_TABLE_INDEXES.get((version, table.name))
+    return _declared_indexes(table) if recorded is None else recorded
 
 
 def _table_shape_at(version: int, table: sa.Table) -> str:

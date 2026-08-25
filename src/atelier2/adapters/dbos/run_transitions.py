@@ -525,14 +525,14 @@ def _insert_event(session: Any, event: RunEvent, at: RecordedAt | None = None) -
     # payload among them is a `memoryview` the durable step boundary above
     # cannot serialise. An error that cannot be recorded is one the run never
     # hears about: the node workflow would stand STARTED with nothing left to
-    # move it. The broken key is therefore stated in words that cross that
-    # boundary.
+    # move it. The refusal is therefore restated in words -- the event it names
+    # and the store's own reason for it -- which cross that boundary.
     try:
         session.execute(insertion)
     except IntegrityError as error:
         raise RunTransitionConflict(
-            f"event {event.event_kind.value} of node {event.node_id} round "
-            f"{event.round_ordinal} breaks a durable event key"
+            f"the event log refused {event.event_kind.value} of node "
+            f"{event.node_id} round {event.round_ordinal}: {error.orig}"
         ) from error
     record_event_instant(session, event.run_id.value, event.event_sequence, at=at)
 
