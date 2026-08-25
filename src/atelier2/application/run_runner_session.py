@@ -83,6 +83,15 @@ def cancellation_refusal_code(result: AgentAttemptCancellationResult) -> str:
     return CROSSING_CANCEL_REFUSAL_CODE
 
 
+# The PREPARE payload's whole field count, once its two trailing carrier
+# fields (the declared output schema and the pinned turn limit, #672) are
+# appended after the auth reference. Neither is part of `request_hash`
+# (agents.py excludes both from the V2 hash frame deliberately), so widening
+# this payload cannot itself change what hash a runner is bound to -- it only
+# fixes what this wire can carry of a hash-identical request.
+PREPARE_PAYLOAD_FIELD_COUNT = 21
+
+
 def encode_runner_prepare_payload(
     request: AgentExecutionRequestV2, auth_reference: str
 ) -> tuple[bytes, ...]:
@@ -112,13 +121,15 @@ def encode_runner_prepare_payload(
         request.job_bytes,
         struct.pack(">Q", request.round_ordinal),
         reference,
+        _encode_optional_schema(request.declared_output_schema_bytes),
+        _encode_optional_turns(request.maximum_assistant_turns),
     )
 
 
 def decode_runner_prepare_payload(
     payload: tuple[bytes, ...], expected_request_hash: AgentExecutionRequestHash
 ) -> AgentExecutionRequestV2:
-    if len(payload) != 19:
+    if len(payload) != PREPARE_PAYLOAD_FIELD_COUNT:
         raise RunnerSessionRefusal("runner-session-noncanonical")
     try:
         auth = AuthProfileRevision(
@@ -150,7 +161,9 @@ def decode_runner_prepare_payload(
             ),
             AgentExecutorOperationalIdentity(payload[15].decode("utf-8")),
             payload[16],
+            _decode_optional_schema(payload[19]),
             round_ordinal=_uint64(payload[17]),
+            maximum_assistant_turns=_decode_optional_turns(payload[20]),
         )
     except RunnerSessionRefusal:
         raise
@@ -159,6 +172,38 @@ def decode_runner_prepare_payload(
     if request.request_hash != expected_request_hash:
         raise RunnerSessionRefusal("runner-request-hash-mismatch")
     return request
+
+
+# An absent schema or turn limit is `AgentExecutionRequestV2`'s own `None`;
+# the wire has no null, so an empty field is the one bit pattern that can
+# never be a real value -- a declared schema must be nonempty content, and a
+# real turn limit packs to exactly 8 bytes -- so it is safe to reuse as the
+# absence marker for both trailing fields.
+_ABSENT_OPTIONAL_FIELD = b""
+
+
+def _encode_optional_schema(declared_output_schema_bytes: bytes | None) -> bytes:
+    return (
+        _ABSENT_OPTIONAL_FIELD
+        if declared_output_schema_bytes is None
+        else declared_output_schema_bytes
+    )
+
+
+def _decode_optional_schema(field: bytes) -> bytes | None:
+    return None if field == _ABSENT_OPTIONAL_FIELD else field
+
+
+def _encode_optional_turns(maximum_assistant_turns: int | None) -> bytes:
+    return (
+        _ABSENT_OPTIONAL_FIELD
+        if maximum_assistant_turns is None
+        else struct.pack(">Q", maximum_assistant_turns)
+    )
+
+
+def _decode_optional_turns(field: bytes) -> int | None:
+    return None if field == _ABSENT_OPTIONAL_FIELD else _uint64(field)
 
 
 READY_PAYLOAD_FIELD_COUNT = 12
