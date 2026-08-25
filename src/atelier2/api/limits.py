@@ -205,6 +205,7 @@ class RequestBodyLimitMiddleware:
         self._workflow_publication_path = api_prefix + "/workflow-revisions"
         self._start_run_path = api_prefix + "/runs"
         self._artifact_publication_path = api_prefix + "/artifacts"
+        self._library_recognition_path = api_prefix + "/library/recognitions"
         self._run_command_path = re.compile(
             re.escape(api_prefix) + r"/runs/[^/]+/(?:answers|reconciliations)"
         )
@@ -266,7 +267,10 @@ class RequestBodyLimitMiddleware:
         path = scope["path"]
         if path == self._workflow_publication_path:
             return _BodyLimit("invalid-workflow-document", self._maximum_body_bytes)
-        if path == self._start_run_path or self._run_command_path.fullmatch(path):
+        if path in (
+            self._start_run_path,
+            self._library_recognition_path,
+        ) or self._run_command_path.fullmatch(path):
             return _BodyLimit("invalid-request", self._maximum_body_bytes)
         if path == self._artifact_publication_path:
             # Material is bounded by what an artifact may be, not by the

@@ -17,7 +17,7 @@ from atelier2.adapters.markdown_agent_definitions import (
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits, RequestBodyLimitMiddleware
-from atelier2.api.openapi import API_PREFIX
+from atelier2.api.openapi import API_PREFIX, LIBRARY_RECOGNITIONS_PATH
 from atelier2.api.references import (
     encode_canonical_base64,
     encode_event_cursor,
@@ -161,6 +161,7 @@ def test_encoded_projection_limit_branches_are_explicit(
     [
         (API_PREFIX + "/workflow-revisions", "invalid-workflow-document"),
         (API_PREFIX + "/runs", "invalid-request"),
+        (LIBRARY_RECOGNITIONS_PATH, "invalid-request"),
     ],
 )
 @pytest.mark.parametrize(
@@ -287,6 +288,28 @@ def test_yaml_body_limit_accepts_exact_bytes_and_rejects_one_more_before_write()
     assert exact.status_code == 201
     assert_problem(oversized, 422, "invalid-workflow-document")
     assert mutations.publications == [WorkflowRevision(document)]
+
+
+def test_recognition_body_limit_rejects_one_byte_more_than_the_envelope() -> None:
+    document = workflow_document()
+    client = client_for(
+        RecordingMutationPorts(),
+        api_limits(maximum_request_body_bytes=len(document)),
+    )
+
+    exact = client.post(
+        LIBRARY_RECOGNITIONS_PATH,
+        content=document,
+        headers={"content-type": "application/octet-stream"},
+    )
+    oversized = client.post(
+        LIBRARY_RECOGNITIONS_PATH,
+        content=document + b" ",
+        headers={"content-type": "application/octet-stream"},
+    )
+
+    assert exact.status_code == 200
+    assert_problem(oversized, 422, "invalid-request")
 
 
 def test_missing_content_length_is_bounded_while_receiving_chunks() -> None:
