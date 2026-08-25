@@ -22,6 +22,13 @@ import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
  * also the run's sink, so this journey is the duplicate-answer case; the
  * node panel's ordinary rendering of a non-sink node's own answer is proven
  * at the component level in `tests/app/readableResultDisplay.test.ts`.
+ *
+ * Named `zz-` on purpose: `/__e2e/seed-conductor` mutates the one shared
+ * harness server's state for the rest of the run, and `workbench-conductor.spec.ts`
+ * asserts the *pre*-seed "no conductor" state as its own first act. Playwright
+ * runs this suite's files in one worker, in listing order, so this file's
+ * name has to sort after `workbench-conductor.spec.ts` or that test's own
+ * precondition would already be gone by the time it runs.
  */
 const CONDUCTOR_FAKE_ANSWER =
   "Nothing started: the workbench probe only asked for an answer.";

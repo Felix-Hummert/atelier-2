@@ -60,9 +60,27 @@ function nodeDetail(overrides: Partial<NodeDetail> = {}): NodeDetail {
   };
 }
 
+/** An agent's own receipt (#716's outcome banner only ever names an agent's report). */
+function agentProvenance(): NonNullable<NodeDetail["provenance"]> {
+  return {
+    role: "builder",
+    provider_id: "e2e-v3",
+    model: "shot-model",
+    executor_revision: "immediate/v1",
+    executor_operational_identity: "e2e-immediate-process",
+    auth_mode: "subscription",
+    profile_id: "shots",
+    agent_configuration_revision_hash: "a".repeat(64),
+    request_hash: "b".repeat(64),
+    receipt_hash: "c".repeat(64)
+  };
+}
+
+/** An agent node's declared answer, receipted the way a real one always is. */
 function withAnswer(raw: string, overrides: Partial<NodeDetail> = {}): NodeDetail {
   return nodeDetail({
     answer: { value_base64: btoa(raw), value_hash: "f".repeat(64) },
+    provenance: agentProvenance(),
     ...overrides
   });
 }
@@ -183,6 +201,26 @@ describe("a finished run's page shows its own result, unclicked (#716)", () => {
           node_rail: [{ node_id: "report", state: "failed", attempt: null }],
           cancellation: notCancellableBlock("already-ended")
         }),
+        cockpitApi,
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    await screen.findByLabelText("Where this run stands");
+    await vi.waitFor(() => expect(cockpitApi.getNodeDetail).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("region", { name: runPageCopy.tabResult })).toBeNull();
+  });
+
+  it("shows no banner for a run that ended on an answered Wait node -- that answer is the operator's, not the run's own report", async () => {
+    const cockpitApi = cockpitApiStub({
+      // #562: an answered Wait now carries a real `answer`, but never an
+      // agent `provenance` -- nothing ran it.
+      getNodeDetail: vi.fn(async () => withAnswer('"approved"', { provenance: null }))
+    });
+
+    render(V3RunView, {
+      props: {
+        run: v3Run(),
         cockpitApi,
         mutationJournal: new MutationJournal(sessionStorage)
       }

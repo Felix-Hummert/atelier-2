@@ -139,14 +139,22 @@
   }
 
   /**
-   * The sink's answer, decoded once here (#716) -- a missing answer (a wait
-   * node ended the line, a node that failed before writing one, or bytes
-   * that do not decode as UTF-8) reads as "nothing to show", which is
-   * honest: this banner only ever adds to what the graph and the node panel
-   * already prove, never a second, lesser source of the same fact.
+   * The sink's answer, decoded once here (#716) -- a missing answer (a node
+   * that failed before writing one), bytes that do not decode as UTF-8, or
+   * an answer with no agent provenance all read as "nothing to show", which
+   * is honest: this banner only ever adds to what the graph and the node
+   * panel already prove, never a second, lesser source of the same fact.
+   *
+   * `provenance` is the line between the two things a V3 line can end on
+   * (#562 lets both carry an `answer` now): an agent's own structured
+   * report, whose receipt this is, and a Wait node's answer, which is what
+   * the *operator* wrote and never carries a receipt at all -- that is the
+   * node panel's business, never this run's own "what came out of it".
    */
   $: outcomeText =
-    outcomeDetail === null || outcomeDetail.answer === null
+    outcomeDetail === null ||
+    outcomeDetail.answer === null ||
+    outcomeDetail.provenance === null
       ? null
       : decodeUtf8Base64(outcomeDetail.answer.value_base64);
 
