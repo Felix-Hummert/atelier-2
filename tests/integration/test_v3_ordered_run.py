@@ -1299,6 +1299,7 @@ def application(runtime: DbosRuntime) -> FastAPI:
             catalog_resolver=catalog,
             catalog_admissions=catalog,
             published_revision_registry=catalog,
+            published_revision_listing=catalog,
             artifact_publisher=DbosArtifactStore(runtime.engine),
             host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
             queue_projection=DbosQueueProjectionStore(runtime.engine),

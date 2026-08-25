@@ -10,13 +10,11 @@
  */
 export const studioPageCopy = {
   title: "Board",
-  emptyTitle: "Nothing is running",
+  emptyTitle: "Nothing is waiting for you",
   emptyDescription: "Runs appear here the moment one starts — start one from a workflow.",
   emptyStart: "Open Workflows",
   needsYou: "Needs you",
   running: "Running",
-  done: "Done today",
-  why: "Why?",
   runsIncomplete: "Board runs incomplete",
   runsUnavailable: "Board runs unavailable",
   workflowNamesUnavailable: "Workflow names unavailable — showing run ids.",

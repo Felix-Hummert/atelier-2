@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { WORKSHOP_DESTINATIONS, activeWorkshopDestination } from "../../src/lib/workshop";
 
-describe("the workshop rail names four destinations", () => {
+describe("the workshop rail names its destinations", () => {
   it("opens a page for every destination it names, so no rail item is a dead click", () => {
     expect(
       WORKSHOP_DESTINATIONS.map((destination) => [destination.label, destination.path])
@@ -10,6 +10,7 @@ describe("the workshop rail names four destinations", () => {
       ["Workbench", "/atelier/chat"],
       ["Board", "/atelier"],
       ["Workflows", "/atelier/workflows"],
+      ["Catalog", "/atelier/catalog"],
       ["History", "/atelier/history"]
     ]);
   });
@@ -24,6 +25,7 @@ describe("the workshop rail names four destinations", () => {
     // Starting a run is a Workflows-owned action (reachable from Board and
     // from a workflow's own detail page), not a History concern.
     expect(activeWorkshopDestination({ page: "new" })).toBe("workflows");
+    expect(activeWorkshopDestination({ page: "catalog" })).toBe("catalog");
     expect(activeWorkshopDestination({ page: "history" })).toBe("history");
     // A run being watched sits under the room it was opened from (#654): the
     // Board for a Board row, the Workbench for a chat episode -- never under
@@ -34,7 +36,7 @@ describe("the workshop rail names four destinations", () => {
     expect(
       activeWorkshopDestination({ page: "run", publicReference: "run1.cnVu", origin: "chat" })
     ).toBe("chat");
-    // The project is the context above the four destinations, not a fifth one.
+    // The project is the context above the destinations, not one of them.
     expect(activeWorkshopDestination({ page: "project" })).toBeNull();
     expect(activeWorkshopDestination({ page: "not-found" })).toBeNull();
   });

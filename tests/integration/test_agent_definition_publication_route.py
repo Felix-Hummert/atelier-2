@@ -105,6 +105,98 @@ def test_a_published_definition_read_back_by_its_hash_is_the_identical_definitio
     )
 
 
+def test_the_catalog_lists_every_published_definition_by_its_authored_name(
+    runtime: DbosRuntime,
+) -> None:
+    """What the catalog view needs: a name, because a hash recognises nobody.
+
+    Publication answers only a hash, so a reader who never held one -- the
+    operator opening the catalog -- could not see that anything was published
+    at all until this read existed.
+    """
+
+    api = durable_api_client(runtime)
+    unrestricted = (
+        b"---\n"
+        b"name: open-handed-scribe\n"
+        b"description: Writes with whatever the executor offers.\n"
+        b"---\n"
+        b"\nYou write.\n"
+    )
+    publish(api, THE_DEFINITION)
+    publish(api, unrestricted)
+
+    listed = api.get(DEFINITION_PATH)
+
+    assert listed.status_code == 200
+    page = listed.json()
+    assert page["next_after_revision_hash"] is None
+    by_name = {item["name"]: item for item in page["items"]}
+    assert set(by_name) == {"stage-name-witness", "open-handed-scribe"}
+    # The listing stops at the name and the sentence beside it. What model the
+    # file asks for and which tools it declares are one provider's runtime
+    # contract, read from the revision itself -- a catalog row that re-served
+    # them would be claiming they mean something outside that provider.
+    assert by_name["stage-name-witness"] == {
+        "agent_definition_revision_hash": PublishedRevisionHash.of(
+            THE_DEFINITION
+        ).value,
+        "name": "stage-name-witness",
+        "description": "Watches the stage and names what it sees.",
+    }
+    assert by_name["open-handed-scribe"] == {
+        "agent_definition_revision_hash": PublishedRevisionHash.of(unrestricted).value,
+        "name": "open-handed-scribe",
+        "description": "Writes with whatever the executor offers.",
+    }
+
+
+def test_an_empty_catalog_lists_nothing_rather_than_refusing(
+    runtime: DbosRuntime,
+) -> None:
+    listed = durable_api_client(runtime).get(DEFINITION_PATH)
+
+    assert listed.status_code == 200
+    assert listed.json() == {"items": [], "next_after_revision_hash": None}
+
+
+def test_the_definition_list_pages_through_every_published_definition(
+    runtime: DbosRuntime,
+) -> None:
+    api = durable_api_client(runtime)
+    documents = tuple(
+        THE_DEFINITION.replace(b"stage-name-witness", f"witness-{index}".encode())
+        for index in range(3)
+    )
+    for document in documents:
+        publish(api, document)
+
+    first = api.get(DEFINITION_PATH, params={"limit": "2"}).json()
+    second = api.get(
+        DEFINITION_PATH,
+        params={"limit": "2", "after_revision_hash": first["next_after_revision_hash"]},
+    ).json()
+
+    assert len(first["items"]) == 2
+    assert second["next_after_revision_hash"] is None
+    walked = tuple(
+        item["agent_definition_revision_hash"]
+        for item in (*first["items"], *second["items"])
+    )
+    assert set(walked) == {PublishedRevisionHash.of(one).value for one in documents}
+
+
+def test_the_definition_list_refuses_a_cursor_that_is_not_a_revision_hash(
+    runtime: DbosRuntime,
+) -> None:
+    refused = durable_api_client(runtime).get(
+        DEFINITION_PATH, params={"after_revision_hash": "not-a-hash"}
+    )
+
+    assert refused.status_code == 400
+    assert refused.json()["type"].endswith(":invalid-revision-hash")
+
+
 @pytest.mark.proves("the-same-file-is-the-same-revision-identity")
 def test_two_definitions_differing_only_in_prompt_are_two_distinct_revisions(
     runtime: DbosRuntime,

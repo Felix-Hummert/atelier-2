@@ -65,6 +65,24 @@ class PublishedRevisionMissing:
 type ResolvePublishedRevisionResult = PublishedRevisionFound | PublishedRevisionMissing
 
 
+@dataclass(frozen=True)
+class PublishedRevisionPage:
+    """One hash-ordered page of the revisions published under one kind."""
+
+    revisions: tuple[PublishedRevision, ...]
+    next_after: PublishedRevisionHash | None
+
+
+@dataclass(frozen=True)
+class PublishedRevisionsUnavailable:
+    detail: str | None = None
+
+
+type ListPublishedRevisionsResult = (
+    PublishedRevisionPage | PublishedRevisionsUnavailable | DurableStateCorrupt
+)
+
+
 type CatalogRevisionPosition = int | Literal["head"]
 
 
@@ -179,6 +197,20 @@ class PublishedRevisionRegistry(PublishedRevisionResolver, Protocol):
     def publish_revision(
         self, revision: PublishedRevision
     ) -> PublishRevisionResult: ...
+
+
+class PublishedRevisionListing(Protocol):
+    """Browsing what one kind holds, which neither publishing nor pinning asks.
+
+    It stays apart from `PublishedRevisionRegistry` because the two answer
+    opposite questions: a resolver is given the hash it wants, while this one
+    exists for a reader who has no hash yet -- the operator opening the catalog
+    to see what is there at all.
+    """
+
+    def list_revisions(
+        self, kind: RevisionKind, after: PublishedRevisionHash | None, limit: int
+    ) -> ListPublishedRevisionsResult: ...
 
 
 class CatalogAdmissions(Protocol):
