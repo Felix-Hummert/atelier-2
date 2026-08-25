@@ -80,10 +80,10 @@ code.** A file may *propose* a model; the casting sets it. Today
 opposite — `deployment.default_model if definition.model is None else
 definition.model` lets the file **override** the deployment default — so this is a
 **required change to the #66 Phase A→C seam**, not a later nicety. A file's
-`tools:` is likewise **ignored in favour of the node's grant**: the workflow
-decides what an occurrence may do, and no imported file widens it. The catalog
-states both per entry, so an operator sees that the file's model and tools are
-not what will run.
+`tools:` is likewise **bounded by the node's grant: it may narrow within it,
+never widen it**, because the workflow decides what an occurrence may do. The
+catalog states both per entry, so an operator sees that the file's model and
+tools are not what will run.
 
 **Switching provider means casting the role with a different agent**, not porting
 a file, and #8's scorecard measures which casting performs better: competition at
@@ -174,8 +174,8 @@ arbitrary shell code inside the agent process with everything the agent can see,
 invisible and receiptless, and `--plugin-dir` is exactly the flag that would load
 one; whether the process runs no hook is a probe result *Required proofs* demands
 and this record does not assert. A hook's intent has honest graph owners — a
-verification node or the `run-project-verification` grant, a verdict (ADR 0015)
-steering a bounded loop (ADR 0014), an edge, a receipt. Intake does not refuse a
+verification node or the `run-project-verification` grant, a verdict steering the
+loop's back edge (ADR 0015), an edge, a receipt. Intake does not refuse a
 plugin for carrying hooks: the agent is taken in and the catalog shows the notice
 that they will not run, never silently.
 
