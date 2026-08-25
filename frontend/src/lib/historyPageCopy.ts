@@ -21,9 +21,17 @@ export const historyPageCopy = {
   emptyDescription: "Runs land here once they finish — start one from a workflow.",
   emptyNext: "Open Workflows",
   columnName: "Name",
+  columnWhen: "When",
+  columnPurpose: "Purpose",
   columnResult: "Result",
   columnDuration: "Duration",
+  /** Only a V1/V2 row, or a V3 row with neither stamp, ever reaches this -- the same gap `durationNotRecorded` names. */
+  whenNotRecorded: "Not recorded",
+  /** The run's workflow declares no order at all -- an honest absence, not an unread one. */
+  purposeNone: "No order recorded",
   durationNotRecorded: "Not recorded",
+  /** The sink's own answer could not be read -- never rendered as the bare standing word (REQ-UI-13). */
+  resultUnavailable: "Result unavailable",
   /**
    * Only shown when a listed row carries no V3 timestamp (a V1 or V2 run):
    * names why such a row still shows under a period chip that cannot measure

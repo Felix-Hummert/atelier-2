@@ -1,5 +1,21 @@
-import { isRunV3, type AnyRun, type WorkflowRevisionDetail } from "../api/client";
+import { isRunV3, type AnyRun, type WorkflowGraph, type WorkflowRevisionDetail } from "../api/client";
 import { parseUtc } from "./when";
+
+/** A published revision's graph, narrowed to the one format that carries `node_previews`. */
+export type WorkflowGraphV3 = Extract<WorkflowGraph, { workflow_format_version: 3 }>;
+
+/**
+ * A V3 revision's own graph, or the loud refusal a V3 run's revision must
+ * never actually trigger: the store only lets a V3 run point at a V3
+ * revision, so a caller reaching this on a real run has found a corrupt
+ * reference, not an expected shape to handle quietly.
+ */
+export function v3WorkflowGraph(revision: WorkflowRevisionDetail): WorkflowGraphV3 {
+  if (revision.graph.workflow_format_version !== 3) {
+    throw new Error("a V3 run referenced a workflow revision of another format");
+  }
+  return revision.graph;
+}
 
 /**
  * Last known movement on a run: the end if the wire has one, otherwise the start.
@@ -32,29 +48,39 @@ function activityMs(run: AnyRun): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
+/**
+ * The distinct V3 revisions a batch of runs refers to, read once per hash
+ * regardless of how many runs share it -- the one fetch every reader that
+ * needs a run's published revision (its name, its graph shape) builds on.
+ */
+export async function workflowRevisionsOf(
+  runs: readonly AnyRun[],
+  readRevision: (hash: string) => Promise<WorkflowRevisionDetail>
+): Promise<ReadonlyMap<string, WorkflowRevisionDetail>> {
+  const hashes = [
+    ...new Set(runs.filter(isRunV3).map((run) => run.workflow_revision_hash))
+  ];
+  const revisions = await Promise.all(
+    hashes.map(async (hash) => {
+      const revision = await readRevision(hash);
+      if (revision.workflow_revision_hash !== hash) {
+        throw new Error("a V3 run received a different workflow revision");
+      }
+      return [hash, revision] as const;
+    })
+  );
+  return new Map(revisions);
+}
+
 /** Published V3 titles keyed by the revision hash the run already carries. */
 export async function workflowNamesOf(
   runs: readonly AnyRun[],
   readRevision: (hash: string) => Promise<WorkflowRevisionDetail>
 ): Promise<ReadonlyMap<string, string>> {
-  const hashes = [
-    ...new Set(runs.filter(isRunV3).map((run) => run.workflow_revision_hash))
-  ];
+  const revisions = await workflowRevisionsOf(runs, readRevision);
   const names = new Map<string, string>();
-  const revisions = await Promise.all(
-    hashes.map(async (hash) => {
-      const revision = await readRevision(hash);
-      return { hash, revision };
-    })
-  );
-  for (const { hash, revision } of revisions) {
-    if (revision.workflow_revision_hash !== hash) {
-      throw new Error("a V3 run received a different workflow revision");
-    }
-    if (revision.graph.workflow_format_version !== 3) {
-      throw new Error("a V3 run referenced a workflow revision of another format");
-    }
-    names.set(hash, revision.graph.name);
+  for (const [hash, revision] of revisions) {
+    names.set(hash, v3WorkflowGraph(revision).name);
   }
   return names;
 }
