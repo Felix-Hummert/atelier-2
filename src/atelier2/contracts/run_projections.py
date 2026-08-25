@@ -99,6 +99,15 @@ class RunCancellationRefusal(StrEnum):
     NODE_RUNS_NO_AGENT = "node-runs-no-agent"
     ALREADY_CANCELLING = "already-cancelling"
     ALREADY_ENDED = "already-ended"
+    ANSWER_IN_FLIGHT = "answer-in-flight"
+    """An accepted answer to this pause is still being applied (#668).
+
+    Only the store can see it, and only for the moment between accepting an
+    operator's message and folding it into the run -- so this token reaches a
+    reader as a refused command, never as the cancellability predicate, which
+    describes a standing rather than a moment. Ending the run here would drop a
+    message the product already told a person it had taken.
+    """
 
 
 @dataclass(frozen=True)

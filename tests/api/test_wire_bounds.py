@@ -33,7 +33,7 @@ from atelier2.api.references import (
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
 )
-from atelier2.api.wire import events, requests, resources
+from atelier2.api.wire import events, library, requests, resources
 from atelier2.contracts.agent_attempts import REPLACEMENT_AGENT_ATTEMPT_ORDINAL
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
@@ -55,7 +55,7 @@ from atelier2.contracts.queue_projection import (
 )
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
-WIRE_MODULES: tuple[ModuleType, ...] = (requests, resources, events)
+WIRE_MODULES: tuple[ModuleType, ...] = (requests, resources, events, library)
 
 # Which owner each bounded wire field answers to. Three of them are contracts the
 # durable side already obeys; the fourth is the wire's own, because no durable
@@ -81,6 +81,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AgentCancelRequestedEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentCancelledEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentCancelledEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "WaitCancelledEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "CatalogAdmissionResource.display_name": (MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS),
     "FoundCatalogLineageRequestResource.actor": MAXIMUM_CATALOG_ACTOR_CHARACTERS,
     "FoundCatalogLineageRequestResource.display_name": (
@@ -110,6 +111,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AgentInterruptedEventResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentInterruptedEventResourceV3.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AuthProfileRevisionResource.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "RecognizedAgentDefinitionResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
     "AuthProfileRevisionResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
     "CancelAgentAttemptRequestResource.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "CancelRunRequestResource.idempotency_key": MAXIMUM_AGENT_FIELD_CHARACTERS,

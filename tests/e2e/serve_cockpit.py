@@ -454,8 +454,8 @@ class BrowserProofHarness:
         )
         document = conductor_workflow_document(brief_hash, report_hash)
         match use_cases.publish_workflow_revision(document):
-            case PublicationCreated(projection) | PublicationExisting(projection):
-                revision = projection.revision
+            case PublicationCreated(read) | PublicationExisting(read):
+                revision = read.projection.revision
             case refused_publication:
                 raise RuntimeError(
                     f"conductor publication failed: {refused_publication!r}"

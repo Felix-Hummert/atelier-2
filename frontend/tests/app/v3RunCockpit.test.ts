@@ -2,7 +2,12 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import { CockpitRequestError, type CockpitApi, type RunV3 } from "../../src/api/client";
+import {
+  CockpitRequestError,
+  RUN_NOT_CANCELLABLE_REASONS,
+  type CockpitApi,
+  type RunV3
+} from "../../src/api/client";
 import RunCancelCard from "../../src/components/RunCancelCard.svelte";
 import { prepareCancel } from "../../src/lib/cancelRunDelivery";
 import { shortFingerprint } from "../../src/lib/fingerprint";
@@ -456,7 +461,8 @@ describe("a version 3 run that stops for a person", () => {
       run_id: "v3/a-person-approves",
       state: "WAITING_INPUT",
       current_node_id: "approve",
-      cancellation: notCancellableBlock("waiting-for-you"),
+      // A resting Wait is operator-cancellable (#668).
+      cancellation: cancellableBlock(),
       node_rail: [
         { node_id: "implement", state: "succeeded", attempt: null },
         { node_id: "approve", state: "needs_you", attempt: null }
@@ -553,6 +559,15 @@ describe("a version 3 run that stops for a person", () => {
     expect(screen.getByLabelText("Where this run stands").textContent).toContain(
       "Waiting for you"
     );
+  });
+
+  it("proves(a-resting-wait-still-offers-its-own-cancel): a run resting on an unanswered wait offers the cancel control, not a silent gap where one used to explain itself", async () => {
+    render(App, {
+      props: { cockpitApi: waitingApi(), mutationJournal: new MutationJournal(sessionStorage) }
+    });
+
+    await screen.findByRole("heading", { name: question });
+    expect(await screen.findByRole("button", { name: runPageCopy.cancel.open })).toBeTruthy();
   });
 
   it("proves(a-v3-line-stops-for-a-person-and-their-answer-carries-it-on): carries the page on when the answer arrives, without an answer of its own to settle", async () => {
@@ -1022,6 +1037,37 @@ describe("cancelling a version 3 run from the cockpit", () => {
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: cancel.open })).toBeNull();
   });
+
+  it.each([
+    ["WAITING_INPUT", cancel.consequenceWaiting, cancel.consequenceWorking],
+    ["STARTED", cancel.consequenceWorking, cancel.consequenceWaiting]
+  ] as const)(
+    "tells a %s run what cancelling really costs it, and not the other run's cost",
+    async (state, said, unsaid) => {
+      render(RunCancelCard, {
+        props: {
+          run: v3Run({ state, cancellation: cancellableBlock(targetNodeExecutionId) }),
+          cockpitApi: api(v3Run()),
+          mutationJournal: new MutationJournal(sessionStorage)
+        }
+      });
+
+      await openStagedDecision();
+
+      expect(screen.getByText(said)).toBeTruthy();
+      expect(screen.queryByText(unsaid)).toBeNull();
+    }
+  );
+
+  it.each([...RUN_NOT_CANCELLABLE_REASONS])(
+    "reads %s to the operator as a sentence rather than the server's token",
+    (reason) => {
+      const sentence = cancelReasonSentence(reason, "implement");
+
+      expect(sentence).not.toContain(reason);
+      expect(sentence.endsWith(".")).toBe(true);
+    }
+  );
 });
 
 async function failedEvent(nodeId: string, reason: string, sequence: number) {

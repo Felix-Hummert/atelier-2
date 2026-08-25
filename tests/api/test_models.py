@@ -327,7 +327,7 @@ def test_v3_graph_refuses_a_depends_on_that_names_no_preview() -> None:
 def test_v3_graph_projection_carries_a_declared_loop_and_its_verdict() -> None:
     graph = parse_workflow_document(VERDICT_LOOP_DOCUMENT)
 
-    resource = graph_resource(graph)
+    resource = graph_resource(graph, None)
 
     assert isinstance(resource, WorkflowGraphResourceV3)
     assert len(resource.loops) == 1
@@ -343,7 +343,7 @@ def test_v3_graph_projection_carries_a_declared_loop_and_its_verdict() -> None:
 def test_v3_graph_projection_carries_no_loops_when_the_document_declares_none() -> None:
     graph = parse_workflow_document(V3_DOCUMENT)
 
-    resource = graph_resource(graph)
+    resource = graph_resource(graph, None)
 
     assert isinstance(resource, WorkflowGraphResourceV3)
     assert resource.loops == ()
@@ -369,7 +369,7 @@ nodes:
 """
     graph = parse_workflow_document(document)
 
-    resource = graph_resource(graph)
+    resource = graph_resource(graph, None)
 
     assert isinstance(resource, WorkflowGraphResourceV3)
     assert resource.wait_answer_schemas == (
@@ -408,6 +408,7 @@ nodes:
 
     resource = graph_resource(
         graph,
+        None,
         (WaitAnswerClassification(node_id="ship", kind="boolean"),),
     )
 
@@ -435,6 +436,7 @@ nodes:
 
     resource = graph_resource(
         graph,
+        None,
         (
             WaitAnswerClassification(
                 node_id="verdict", kind="enum", values=('"approve"', '"revise"')

@@ -4,7 +4,7 @@ import json
 from collections.abc import Callable, Iterator
 from inspect import isasyncgenfunction, iscoroutinefunction
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 from fastapi import FastAPI
@@ -22,6 +22,7 @@ from atelier2.api.openapi import (
     CANCELLATION_PATH,
     EVENT_NAMES,
     EVENT_PATH,
+    LIBRARY_RECOGNITIONS_PATH,
     OCCUPANCY_PATH,
     PROJECT_PATH,
     PROJECT_ROOT_PATH,
@@ -33,6 +34,7 @@ from atelier2.api.references import (
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
 )
+from atelier2.api.wire import events as wire_events
 from atelier2.contracts.run_projections import PublicAgentAttemptState
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
@@ -91,6 +93,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/tool-grant-revisions",
     API_PREFIX + "/adapter-operation-revisions",
     API_PREFIX + "/agent-definition-revisions",
+    LIBRARY_RECOGNITIONS_PATH,
     API_PREFIX + "/workflow-revisions",
     API_PREFIX + "/workflow-revisions/by-name/{name}",
     API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
@@ -178,6 +181,7 @@ EXPECTED_ROUTE_SEQUENCE = (
         API_PREFIX + "/agent-definition-revisions",
         "list_agent_definition_revisions_route",
     ),
+    ("POST", LIBRARY_RECOGNITIONS_PATH, "recognize_library_document_route"),
     ("POST", API_PREFIX + "/workflow-revisions", "publish_revision"),
     ("GET", API_PREFIX + "/workflow-revisions", "list_revisions"),
     (
@@ -247,6 +251,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/tool-grant-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/adapter-operation-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/agent-definition-revisions", "post"): {"200", "201"},
+    (LIBRARY_RECOGNITIONS_PATH, "post"): {"200"},
     (API_PREFIX + "/workflow-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "get"): {"200"},
     (API_PREFIX + "/workflow-revisions/{workflow_revision_hash}", "get"): {"200"},
@@ -321,9 +326,9 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head adds the published-agent list `GET /agent-definition-revisions`,
-    the read the catalog view needs to show a name where publication answers only
-    a hash (#659).
+    it. This head adds `answer-in-flight` to the closed set of reasons a V3 run
+    cannot be cancelled: a pause still holding an accepted answer refuses the
+    command rather than dropping that message (#668).
     Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 
@@ -401,6 +406,28 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
     assert attention_parameters[("Last-Event-ID", "header")]["schema"] == {
         "$ref": "#/components/schemas/EventCursor"
     }
+
+
+def test_openapi_v3_event_union_names_every_wire_v3_event_resource() -> None:
+    """`RunEventResourceV3` may not silently drop a resource the wire emits.
+
+    `atelier2.api.wire.events.RunEventResourceV3` is the wire's own event
+    union -- the type every format-3 durable event is actually written and
+    read as. This derives the expected published resources from that union,
+    never from a hand list, so a kind added there without a matching entry in
+    the published `RunEventResourceV3` schema fails here instead of shipping
+    unseen.
+    """
+
+    wire_resource_names = {
+        model.__name__ for model in get_args(wire_events.RunEventResourceV3)
+    }
+    schema = served_app().openapi()
+    published_resource_names = {
+        ref["$ref"].rsplit("/", 1)[-1]
+        for ref in schema["components"]["schemas"]["RunEventResourceV3"]["oneOf"]
+    }
+    assert published_resource_names == wire_resource_names
 
 
 def test_occupancy_path_parameters_use_owned_project_and_lineage_components() -> None:
@@ -530,6 +557,37 @@ def test_openapi_declares_every_success_and_exact_request_media_type() -> None:
             "text/markdown": {"schema": {"type": "string", "format": "binary"}}
         },
     }
+
+    recognition = schema["paths"][LIBRARY_RECOGNITIONS_PATH]["post"]
+    assert recognition["requestBody"] == {
+        "required": True,
+        "content": {
+            "application/octet-stream": {
+                "schema": {
+                    "type": "string",
+                    "format": "binary",
+                    "maxLength": api_limits().maximum_request_body_bytes,
+                }
+            }
+        },
+    }
+    assert recognition["parameters"] == [
+        {
+            "name": "file_name",
+            "in": "query",
+            "required": False,
+            "schema": {
+                "anyOf": [
+                    {
+                        "type": "string",
+                        "maxLength": api_limits().maximum_field_characters,
+                    },
+                    {"type": "null"},
+                ],
+                "title": "File Name",
+            },
+        }
+    ]
 
     for path in (
         API_PREFIX + "/auth-profile-revisions",

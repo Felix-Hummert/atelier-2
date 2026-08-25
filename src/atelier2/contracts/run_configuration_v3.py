@@ -91,14 +91,6 @@ class ReferenceRefusal:
         )
 
 
-class ReferenceResolutionRefused(Exception):
-    """One versioned reference of a V3 document resolves to no published revision."""
-
-    def __init__(self, refusal: ReferenceRefusal) -> None:
-        super().__init__(str(refusal))
-        self.refusal = refusal
-
-
 @dataclass(frozen=True, slots=True)
 class ResolvedReference:
     """One declared reference, bound to the exact published revision it resolved to."""

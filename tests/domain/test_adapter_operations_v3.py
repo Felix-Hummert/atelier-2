@@ -12,7 +12,10 @@ from dataclasses import dataclass
 
 import pytest
 
-from atelier2.application.resolve_references import resolve_declared_reference
+from atelier2.application.resolve_references import (
+    ReferenceResolution,
+    resolve_declared_reference,
+)
 from atelier2.contracts.adapter_operations_v3 import (
     MAXIMUM_ADAPTER_OPERATION_DOCUMENT_BYTES,
     AdapterOperationAccepted,
@@ -65,7 +68,7 @@ class OneRevisionRegistry:
         return PublishedRevisionMissing()
 
 
-def resolution_of(document: bytes) -> ResolvedReference | ReferenceRefusal:
+def resolution_of(document: bytes) -> ReferenceResolution:
     """What the seam a run start uses answers for these exact published bytes."""
     revision = PublishedRevision(RevisionKind.ADAPTER_OPERATION, document)
     declared = DeclaredReference(

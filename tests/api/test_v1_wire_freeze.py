@@ -29,6 +29,7 @@ from atelier2.api.wire.resources import (
     WorkflowRevisionPageResource,
     WorkflowRevisionSummaryResource,
 )
+from atelier2.application.read_workflow_revisions import WorkflowRevisionRead
 from atelier2.contracts.run_projections import (
     RunProjection,
 )
@@ -75,7 +76,7 @@ def test_v1_workflow_and_run_resources_keep_their_exact_raw_bytes() -> None:
     revision = WorkflowRevision(_DOCUMENT)
     graph = parse_executable_workflow_document(_DOCUMENT)
     detail = workflow_revision_detail_resource(
-        WorkflowRevisionProjection(revision, graph)
+        WorkflowRevisionRead(WorkflowRevisionProjection(revision, graph), None)
     )
     page = WorkflowRevisionPageResource(
         items=(WorkflowRevisionSummaryResource(workflow_revision_hash=_REVISION_HASH),),

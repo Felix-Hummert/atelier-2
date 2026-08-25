@@ -18,6 +18,9 @@ from atelier2.application.admit_queue_item import (
 from atelier2.application.answer_wait import AnswerWaitResult
 from atelier2.application.cancel_agent_attempt import CancelAgentAttemptResult
 from atelier2.application.cancel_run import CancelRunResult
+from atelier2.application.classify_definition_document import (
+    ClassifyDefinitionDocumentResult,
+)
 from atelier2.application.import_project_source_issues import (
     ImportProjectSourceIssuesOutcome,
     ListObservedQueueItemsOutcome,
@@ -206,6 +209,9 @@ class ApiUseCases:
     ]
     publish_agent_definition_revision: Callable[
         [bytes], PublishAgentDefinitionRevisionResult
+    ]
+    classify_definition_document: Callable[
+        [bytes, str | None], ClassifyDefinitionDocumentResult
     ]
     list_agent_definition_revisions: Callable[
         [PublishedRevisionHash | None, int], ListAgentDefinitionRevisionsResult

@@ -705,13 +705,16 @@ export const RUN_STATES_V3 = [
   "CANCELLED"
 ] as const;
 
+export type RunStateV3 = (typeof RUN_STATES_V3)[number];
+
 /** Why the server says a V3 run cannot be operator-cancelled; #439 D3's closed set. */
 export const RUN_NOT_CANCELLABLE_REASONS = [
   "between-nodes",
   "waiting-for-you",
   "node-runs-no-agent",
   "already-cancelling",
-  "already-ended"
+  "already-ended",
+  "answer-in-flight"
 ] as const;
 
 export type RunNotCancellableReason = (typeof RUN_NOT_CANCELLABLE_REASONS)[number];
@@ -975,9 +978,12 @@ const runEventV2Schema = z
  * events through the same attempt store as a version-2 one and its pauses
  * through the same wait path, so the attempt and the rail travel the same way.
  * Its answer is base64 rather than the V2 shape's decimal text, because a V3
- * wait admits whatever its declared schema admits. A linear Action persists
- * the same durable-effect kinds V2 already names, so those receipts travel
- * here with the rail. Subworkflow events stay absent: no format-3 run
+ * wait admits whatever its declared schema admits. A cancelled pause is its own
+ * kind here and nowhere else: an operator can end a run resting at a wait, and
+ * that event -- naming only the command that ordered it -- is the whole
+ * attestation, because a pause has no attempt to stamp. A linear Action
+ * persists the same durable-effect kinds V2 already names, so those receipts
+ * travel here with the rail. Subworkflow events stay absent: no format-3 run
  * persists that kind today.
  */
 const v3EventBase = {
@@ -998,7 +1004,8 @@ const runEventV3Schema = z
     z.object({ ...v3EventBase, event: z.literal("ACTION_RECONCILIATION_RESOLVED"), receipt: receiptSchema }).strict(),
     z.object({ ...v3EventBase, event: z.literal("ACTION_COMPLETED"), receipt: receiptSchema }).strict(),
     z.object({ ...v3EventBase, event: z.literal("WAITING_INPUT") }).strict(),
-    z.object({ ...v3EventBase, event: z.literal("WAIT_ANSWERED"), answer_base64: standardBase64, answer_hash: sha256 }).strict()
+    z.object({ ...v3EventBase, event: z.literal("WAIT_ANSWERED"), answer_base64: standardBase64, answer_hash: sha256 }).strict(),
+    z.object({ ...v3EventBase, event: z.literal("WAIT_CANCELLED"), command_id: z.string().min(1).max(1_024) }).strict()
   ])
   .superRefine(validateEventCursor);
 
@@ -1102,6 +1109,7 @@ export const problemDefinitions = {
   "agent-definition-tool-duplicated": { status: 422, title: "Invalid agent definition document" },
   "agent-definition-system-prompt-missing": { status: 422, title: "Invalid agent definition document" },
   "agent-definition-revision-collision": { status: 409, title: "Agent definition revision collision" },
+  "library-document-ambiguous": { status: 422, title: "Document matches more than one library kind" },
   "unsupported-media-type": { status: 415, title: "Unsupported media type" },
   "not-acceptable": { status: 406, title: "Not acceptable" },
   "catalog-revision-unpublished": { status: 409, title: "Catalog revision is unpublished" },
@@ -1227,6 +1235,7 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant("agent-definition-tool-duplicated", problemDefinitions["agent-definition-tool-duplicated"]),
   problemVariant("agent-definition-system-prompt-missing", problemDefinitions["agent-definition-system-prompt-missing"]),
   problemVariant("agent-definition-revision-collision", problemDefinitions["agent-definition-revision-collision"]),
+  problemVariant("library-document-ambiguous", problemDefinitions["library-document-ambiguous"]),
   problemVariant("unsupported-media-type", problemDefinitions["unsupported-media-type"]),
   problemVariant("not-acceptable", problemDefinitions["not-acceptable"]),
   problemVariant("catalog-revision-unpublished", problemDefinitions["catalog-revision-unpublished"]),
