@@ -430,7 +430,7 @@ def preview(
     configuration: ConfigurationBinding = ConfigurationBinding.PROPOSED,
     skills: PublishedSkills = SKILL_CONTENTS,
 ) -> ComposedPreview:
-    return compose_preview(
+    composed = compose_preview(
         WorkflowRevision(document).revision_hash,
         parsed(document),
         SubworkflowBinding(),
@@ -440,6 +440,8 @@ def preview(
         PublishedRegistry(answers),
         configuration,
     )
+    assert isinstance(composed, ComposedPreview), composed
+    return composed
 
 
 def node_of(graph: ComposedPreviewGraph, node_id: str) -> PreviewNode:
@@ -777,6 +779,7 @@ def test_a_reference_that_pins_no_revision_hash_is_named_as_malformed() -> None:
         ConfigurationBinding.PROPOSED,
     )
 
+    assert isinstance(composed, ComposedPreview), composed
     assert [
         (entry.reason, entry.site.field)
         for entry in composed.graph.unresolved_references

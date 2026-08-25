@@ -8,7 +8,11 @@ from types import MappingProxyType
 import pytest
 
 from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.application.bind_run_configuration import bind_run_configuration
+from atelier2.application.evaluate_executability import (
+    DocumentNotExecutable,
+    ExecutableDocument,
+    resolve_document_references,
+)
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -22,8 +26,8 @@ from atelier2.contracts.revisions_v3 import (
     RevisionKind,
 )
 from atelier2.contracts.run_configuration_v3 import (
+    ReferenceRefusal,
     ReferenceRefusalReason,
-    ReferenceResolutionRefused,
     ReferenceSite,
     ResolvedReference,
     RunConfigurationRevision,
@@ -31,7 +35,6 @@ from atelier2.contracts.run_configuration_v3 import (
 )
 from atelier2.contracts.runs import WorkflowRevision
 from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
-from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflows_v3 import VersionedReference, WorkflowGraphV3
 from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
@@ -285,15 +288,30 @@ def bind(
     answers: RegistryAnswers = FULL_REGISTRY,
     role_matrix: AgentBindingSet = ROLE_MATRIX,
     registry: PublishedRegistry | None = None,
-    binding: SubworkflowBinding | None = None,
 ) -> RunConfigurationRevision:
-    return bind_run_configuration(
-        WorkflowRevision(document).revision_hash,
+    """The snapshot a start freezes: the evaluation's resolutions under the role matrix."""
+    evaluated = resolve_document_references(
         parsed(document),
-        binding if binding is not None else SubworkflowBinding(),
-        role_matrix.binding_set_hash,
         registry if registry is not None else PublishedRegistry(answers),
     )
+    assert isinstance(evaluated, ExecutableDocument), evaluated
+    return RunConfigurationRevision(
+        WorkflowRevision(document).revision_hash,
+        role_matrix.binding_set_hash,
+        evaluated.resolutions,
+    )
+
+
+def refused(
+    document: bytes = PARENT, answers: RegistryAnswers = FULL_REGISTRY
+) -> ReferenceRefusal:
+    """The reference the evaluation refuses first, for a document it does refuse."""
+    evaluated = resolve_document_references(
+        parsed(document), PublishedRegistry(answers)
+    )
+    assert isinstance(evaluated, DocumentNotExecutable), evaluated
+    assert evaluated.refusal is not None
+    return evaluated.refusal
 
 
 def without_publication(*absent: PublishedRevision) -> RegistryAnswers:
@@ -399,10 +417,7 @@ def test_a_registry_answering_with_another_revision_refuses_the_whole_snapshot()
         (RevisionKind.SCHEMA, SCHEMA_VERDICT.revision_hash.value): other_bytes
     }
 
-    with pytest.raises(ReferenceResolutionRefused) as raised:
-        bind(answers=contradicting)
-
-    refusal = raised.value.refusal
+    refusal = refused(answers=contradicting)
     assert refusal.reason is ReferenceRefusalReason.RESOLVED_REVISION_MISMATCH
     assert other_bytes.revision_hash.value in str(refusal)
 
@@ -542,10 +557,7 @@ def test_a_reference_that_does_not_resolve_refuses_naming_node_field_reference(
 ) -> None:
     expected = REFUSALS[case]
 
-    with pytest.raises(ReferenceResolutionRefused) as raised:
-        bind(document=expected.document, answers=expected.answers)
-
-    refusal = raised.value.refusal
+    refusal = refused(document=expected.document, answers=expected.answers)
     assert refusal.reason is expected.reason
     assert (refusal.site.node, refusal.site.field) == (expected.node, expected.field)
     assert refusal.reference.ref == expected.reference
@@ -554,9 +566,6 @@ def test_a_reference_that_does_not_resolve_refuses_naming_node_field_reference(
 
 
 def test_a_refused_reference_names_the_declared_entry_that_carries_it() -> None:
-    with pytest.raises(ReferenceResolutionRefused) as raised:
-        bind(answers=without_publication(SCHEMA_RECEIPT))
-
-    refusal = raised.value.refusal
+    refusal = refused(answers=without_publication(SCHEMA_RECEIPT))
     assert refusal.site == ReferenceSite("outputs.schema", "hand_off", "receipt")
     assert "'receipt'" in str(refusal)

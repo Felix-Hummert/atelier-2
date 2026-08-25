@@ -16,6 +16,7 @@ from sqlalchemy import exc
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
     DbosRuntimeSettings,
@@ -222,6 +223,7 @@ def test_invalid_graph_writes_no_revision_run_event_answer_or_dbos_workflow(
         DbosWorkflowRevisionPublisher(runtime.engine),
         parse_workflow_document,
         permissive_projection_limit(),
+        DbosCatalogStore(runtime.engine),
     )
 
     assert isinstance(result, PublicationInvalid)
