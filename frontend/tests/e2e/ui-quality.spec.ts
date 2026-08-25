@@ -204,7 +204,20 @@ async function routeProjectReads(page: Page, read: () => ProjectRunReply, loadin
       return;
     }
     if (reply === "retained-error" && loading.retainedReads++ > 0) {
-      await route.abort();
+      // A real HTTP answer the server gave, not a round trip that never
+      // happened -- the page-local "unavailable" this test wants, never
+      // #700's own central, cross-page reachability signal (which
+      // `route.abort` would trip, since that models an outage, not one
+      // read's own failure).
+      await route.fulfill({
+        status: 503,
+        json: {
+          type: "urn:atelier2:problem:v1:temporarily-unavailable",
+          title: "Temporarily unavailable",
+          status: 503,
+          detail: "the durable run store is unreachable"
+        }
+      });
       return;
     }
     await route.fulfill({ json: { items: reply === "empty" ? [] : runsOfEveryStanding(), next_after: null } });

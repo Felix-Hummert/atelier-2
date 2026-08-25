@@ -1,6 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { get } from "svelte/store";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createCockpitApi, type RunEventHandlers } from "../../src/api/client";
+import {
+  connectionState,
+  reportConnectionLost,
+  reportConnectionRestored
+} from "../../src/lib/connectionState";
 import {
   decodeAndApplyDurableEvent,
   streamProjection
@@ -280,3 +286,57 @@ function jsonResponse(body: unknown): Response {
     headers: { "content-type": "application/json" }
   });
 }
+
+describe("the central connection state client.ts feeds every surface (#700)", () => {
+  beforeEach(() => {
+    reportConnectionRestored();
+  });
+
+  afterEach(() => {
+    reportConnectionRestored();
+  });
+
+  it("marks the connection lost only when the round trip itself never happens", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockRejectedValue(new TypeError("Failed to fetch"));
+
+    await expect(createCockpitApi(fetcher).listProjects()).rejects.toThrow();
+
+    expect(get(connectionState)).toBe("reconnecting");
+  });
+
+  it("marks the connection restored the instant any round trip completes", async () => {
+    reportConnectionLost();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ items: [], next_after: null }));
+
+    await createCockpitApi(fetcher).listRuns();
+
+    expect(get(connectionState)).toBe("connected");
+  });
+
+  it("still marks the connection restored when the completed round trip is a real application refusal", async () => {
+    reportConnectionLost();
+    // The server answered -- with a body that fails the wire contract -- so
+    // this is a real bug to surface, never the "outage" the notice speaks of.
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ not: "a run page" }));
+
+    await expect(createCockpitApi(fetcher).listRuns()).rejects.toThrow(
+      "did not match the durable wire contract"
+    );
+
+    expect(get(connectionState)).toBe("connected");
+  });
+
+  it("reports a durable stream's own open and error into the same store", () => {
+    const source = new FakeEventSource();
+    const handlers: RunEventHandlers = { opened: vi.fn(), event: vi.fn(), disconnected: vi.fn() };
+    const api = createCockpitApi(fetch, () => source);
+
+    reportConnectionLost();
+    api.openAttentionEvents(handlers);
+    source.dispatch("open", new Event("open"));
+    expect(get(connectionState)).toBe("connected");
+
+    source.dispatch("error", new Event("error"));
+    expect(get(connectionState)).toBe("reconnecting");
+  });
+});
