@@ -16,6 +16,7 @@
     sendConductorMessage,
     type ConductorConnection
   } from "../lib/conductorEpisode";
+  import { connectionState, restartNoticeCopy } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import type { MutationJournal } from "../lib/mutationJournal";
   import { runPath } from "../lib/route";
@@ -127,10 +128,14 @@
    * settles into this conversation; every other state keeps the standing
    * honest refusal -- including "unreadable", where nothing was started is
    * still the whole truth.
+   *
+   * A lost connection (#700) keeps the message in the box instead: the send
+   * button is disabled the same moment, so this guard only catches the
+   * keyboard's Enter shortcut racing that disable.
    */
   async function send(event: Event): Promise<void> {
     event.preventDefault();
-    if (typed.trim().length === 0) return;
+    if (typed.trim().length === 0 || $connectionState === "reconnecting") return;
     if (conductorLink.kind === "connected") {
       sendConductorMessage(cockpitApi, conductorLink.connection, typed);
     } else {
@@ -225,9 +230,14 @@
         bind:this={composer}
         onkeydown={keydown}
       ></textarea>
-      <button class="primary" type="submit">{wrapDisplayCopy(workbenchPageCopy.send)}</button>
+      <button class="primary" type="submit" disabled={$connectionState === "reconnecting"}>{wrapDisplayCopy(workbenchPageCopy.send)}</button>
     </div>
-    {#if conductorLink.kind === "connected"}
+    {#if $connectionState === "reconnecting"}
+      <!-- The one honest line replaces every other composer hint while the
+           connection is lost (#700): a per-page refusal here would say "no
+           conductor" for what is really "the atelier itself is unreachable". -->
+      <p class="composer-hint">{restartNoticeCopy}</p>
+    {:else if conductorLink.kind === "connected"}
       <p class="composer-hint">{wrapDisplayCopy(conductorChatCopy.composerHint)}</p>
     {:else if conductorLink.kind === "absent"}
       <p class="composer-hint">{wrapDisplayCopy(workbenchPageCopy.composerHint)}</p>
