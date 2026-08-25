@@ -113,6 +113,7 @@ from atelier2.contracts.executions import (
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId, ProjectRootRevision
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
+from atelier2.contracts.run_cancellations import RunCancelCommandId
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
     RunId,
@@ -2826,3 +2827,258 @@ def test_a_v33_answer_enqueued_without_a_round_still_applies_after_the_v34_hop(
     assert bytes(stored["answer_bytes"]) == ANSWER
     assert answered == [(WAIT_NODE, FIRST_ROUND_ORDINAL)]
     assert list(heirs) == ["implement", "review"]
+
+
+def _create_exact_v34_store(database_path: Path) -> None:
+    """A current store with the pre-#668 event vocabulary: the published V34 shape.
+
+    V34 differs from the current schema only in `run_events`, whose kind CHECK
+    does not yet name `WAIT_CANCELLED`. The fixture is a fresh store with that
+    table rebuilt into its V34 text, and the pinned V34 fingerprint refuses it
+    the moment a character drifts.
+    """
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _revert_wait_cancelled_event_kind(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V34_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V34_SCHEMA_HANDOFF.version)
+
+
+_PAUSED_RUN = RunId("live/haelt-am-tor")
+_PAUSED_NODE = "vorbereiten"
+
+
+def _v34_event_log(revision_hash: WorkflowRevisionHash) -> tuple[RunEvent, ...]:
+    """The event log one paused V34 run really holds, derived by the contract.
+
+    Two kinds, because the hop rewrites the whole table and a single row would
+    not show that ordering and sequence survive it. The hashes are the ones
+    production would frame; nothing here recomputes them a second way.
+    """
+    return (
+        RunEvent(
+            _PAUSED_RUN,
+            revision_hash,
+            1,
+            _PAUSED_NODE,
+            NodeExecutionId.for_node(_PAUSED_RUN, revision_hash, _PAUSED_NODE),
+            RunEventKind.AGENT_COMPLETED,
+            b'"fertig"',
+        ),
+        RunEvent(
+            _PAUSED_RUN,
+            revision_hash,
+            2,
+            _ANSWER_NODE_ID,
+            NodeExecutionId.for_node(_PAUSED_RUN, revision_hash, _ANSWER_NODE_ID),
+            RunEventKind.WAITING_INPUT,
+            b"",
+        ),
+    )
+
+
+_EVENT_COLUMNS = (
+    "run_id, revision_hash, event_sequence, node_id, node_execution_id, "
+    "round_ordinal, event_kind, payload, payload_hash, event_hash"
+)
+
+
+def _event_row(event: RunEvent) -> tuple[object, ...]:
+    return (
+        event.run_id.value,
+        event.revision_hash.value,
+        event.event_sequence,
+        event.node_id,
+        event.node_execution_id.value,
+        event.round_ordinal,
+        event.event_kind.value,
+        event.payload,
+        event.payload_hash.value,
+        event.event_hash.value,
+    )
+
+
+def _populate_v34_run_events(database_path: Path) -> WorkflowRevisionHash:
+    """One run resting at its pause, with the events that carried it there."""
+
+    revision = WorkflowRevision(b"name: torwaechter\n")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            "INSERT INTO workflow_revisions (revision_hash, document) VALUES (?, ?)",
+            (revision.revision_hash.value, revision.document),
+        )
+        connection.execute(
+            "INSERT INTO runs (run_id, bootstrap_workflow_id, revision_hash, "
+            "workflow_format_version, current_node_id, current_round_ordinal, "
+            "state, state_version, last_event_sequence, terminal_hash) "
+            "VALUES (?, ?, ?, 1, ?, ?, ?, 2, 2, NULL)",
+            (
+                _PAUSED_RUN.value,
+                f"bootstrap-{_PAUSED_RUN.value}",
+                revision.revision_hash.value,
+                _ANSWER_NODE_ID,
+                FIRST_ROUND_ORDINAL,
+                RunState.WAITING_INPUT.value,
+            ),
+        )
+        connection.executemany(
+            f"INSERT INTO run_events ({_EVENT_COLUMNS}) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [_event_row(event) for event in _v34_event_log(revision.revision_hash)],
+        )
+        connection.commit()
+    return revision.revision_hash
+
+
+def _stored_event_rows(database_path: Path) -> list[tuple[object, ...]]:
+    with sqlite3.connect(database_path) as connection:
+        return connection.execute(
+            f"SELECT {_EVENT_COLUMNS} FROM run_events ORDER BY run_id, event_sequence"
+        ).fetchall()
+
+
+def test_an_exact_v34_store_migrates_to_v35_by_widening_the_event_vocabulary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v34_store(database_path)
+
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 34"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    shown = capsys.readouterr()
+    assert "34" in shown.out and "35" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
+        )
+    engine.dispose()
+
+
+def test_every_v34_event_crosses_the_v35_rebuild_unchanged(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The hop widens what may be written; it rewrites nothing already written."""
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v34_store(database_path)
+    _populate_v34_run_events(database_path)
+    predecessor_rows = _stored_event_rows(database_path)
+    assert len(predecessor_rows) == 2
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    assert _stored_event_rows(database_path) == predecessor_rows
+
+
+def test_a_v35_store_admits_the_wait_cancellation_its_predecessor_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The one sentence the hop exists for, asked of both sides of it.
+
+    Written straight at the table rather than through the store, because what is
+    under test here is the CHECK the hop moved -- the store path that mints this
+    event is proved where the run is actually driven.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v34_store(database_path)
+    revision_hash = _populate_v34_run_events(database_path)
+    cancellation = RunEvent(
+        _PAUSED_RUN,
+        revision_hash,
+        3,
+        _ANSWER_NODE_ID,
+        NodeExecutionId.for_node(_PAUSED_RUN, revision_hash, _ANSWER_NODE_ID),
+        RunEventKind.WAIT_CANCELLED,
+        RunCancelCommandId.for_key("operator-key").value.encode("utf-8"),
+    )
+    statement = f"INSERT INTO run_events ({_EVENT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+
+    with (
+        sqlite3.connect(database_path) as connection,
+        pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"),
+    ):
+        connection.execute(statement, _event_row(cancellation))
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(statement, _event_row(cancellation))
+        connection.commit()
+    assert _stored_event_rows(database_path)[-1] == _event_row(cancellation)
+
+
+def test_the_event_log_is_append_only_again_after_the_v35_rebuild(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A rebuild drops every trigger and index, so each is proved by what it refuses.
+
+    An event log that could be updated, deleted, or made to hold two entries of
+    one kind for one execution would be no evidence at all, and a terminal hash
+    folded over it would be a hash over something that can still change.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v34_store(database_path)
+    revision_hash = _populate_v34_run_events(database_path)
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+    second_pause = _v34_event_log(revision_hash)[1]
+
+    with sqlite3.connect(database_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="events are immutable"):
+            connection.execute("UPDATE run_events SET node_id = 'anders'")
+        with pytest.raises(sqlite3.IntegrityError, match="events are immutable"):
+            connection.execute("DELETE FROM run_events")
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+            connection.execute(
+                f"INSERT INTO run_events ({_EVENT_COLUMNS}) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                _event_row(second_pause)[:2] + (9,) + _event_row(second_pause)[3:],
+            )
+
+
+def test_a_refused_event_vocabulary_hop_leaves_the_v34_store_untouched(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A name already holding the parking object refuses before the first statement."""
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v34_store(database_path)
+    _populate_v34_run_events(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            f"CREATE TABLE {_PREDECESSOR_WAIT_UNCANCELLABLE_RUN_EVENTS} (wrong TEXT)"
+        )
+        connection.commit()
+    before = _logical_dump(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 1
+
+    shown = capsys.readouterr()
+    assert _PREDECESSOR_WAIT_UNCANCELLABLE_RUN_EVENTS in shown.err
+    assert "will not alter" in shown.err
+    assert _logical_dump(database_path) == before
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (34,)
