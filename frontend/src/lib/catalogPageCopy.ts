@@ -64,6 +64,12 @@ export const catalogPageCopy = {
   // A workflow entry links into the start room, never the reverse (operator
   // ruling #684): this room shows what is published, Workflows starts it.
   start: "Start",
+  // The one door into the workflow detail page (#695): a named revision's
+  // node-graph preview and per-node facts, which this entry itself does not
+  // carry. Shown for any named revision -- admitted, not yet admitted, or not
+  // executable -- since seeing the graph and why a node refuses to run is
+  // exactly what this door is for.
+  details: "Details",
 
   importWorkflowTitle: "Import a workflow",
   importWorkflowHint: "Choose a .yaml file, or paste the exact document.",
