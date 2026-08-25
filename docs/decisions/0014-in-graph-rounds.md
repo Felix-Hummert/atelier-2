@@ -196,9 +196,10 @@ for an oversight.
 - Schema version 36 ([#658](https://github.com/FlexOr2/atelier-2/issues/658))
   finishes that move for the pause: the event log's once-per-node key said one
   event of a kind per node per run, which a Wait a loop turns twice breaks by
-  writing a second `WAITING_INPUT`. The execution-keyed index is that same
-  sentence read per round, and it is what remains. No row is rewritten; only the
-  coarser key stops being enforced.
+  writing a second `WAITING_INPUT`. Its successor says the same thing about one
+  round, so a round still holds one pause and the next round holds its own. The
+  hop is two DDL statements and the version CAS in one transaction — an index
+  moves without reading a row, so nothing stored is rewritten.
 - The hop exposed a latent defect in the migration chain and fixes it: a rebuild
   step materialised its table from the *live* declaration, which is only ever the
   current shape, so the first hop to touch a table an earlier hop had already

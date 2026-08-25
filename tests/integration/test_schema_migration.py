@@ -425,7 +425,7 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
     assert (
         PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[36]
-        == "db67d0423325f63b8c55a8724c811f3bed22ae0b6b42b6eb4f0e0db397e4c920"
+        == "c9f4b5d99a9ff8e33796e36151b66f00175eceaa797e30461bf6e01264266ce8"
     )
 
 
@@ -801,12 +801,13 @@ def test_the_store_scopes_one_event_of_a_kind_to_one_execution_or_one_attempt(
 ) -> None:
     """What the event log refuses to hold twice, and what it now admits again.
 
-    An attempt-free event is keyed by the node execution it belongs to, and an
-    execution id already folds the round in, so a node a loop turns twice writes
-    the same kind twice under two executions -- the sentence the V36 hop gave
-    back when it dropped the coarser once-per-node key (#658). An attempt-bound
-    event is keyed by its attempt instead, so the replacement attempt of one
-    execution writes its own outcome beside the first.
+    An attempt-free event is keyed twice over: by the node execution it belongs
+    to, and by the round of the node it stands in. One round of a node therefore
+    holds one event of a kind however its execution id was derived, while the
+    next round of that same node holds its own -- the sentence the V36 hop gave
+    back when it re-scoped the once-per-node key to the round (#658). An
+    attempt-bound event is keyed by its attempt instead, so the replacement
+    attempt of one execution writes its own outcome beside the first.
     """
 
     with ledger_engine.begin() as connection:
@@ -839,6 +840,7 @@ def test_the_store_scopes_one_event_of_a_kind_to_one_execution_or_one_attempt(
         node_id: str,
         execution_id: str,
         kind: str,
+        round_ordinal: int = FIRST_ROUND_ORDINAL,
         attempt_id: str | None = None,
         ordinal: int | None = None,
     ) -> None:
@@ -855,7 +857,7 @@ def test_the_store_scopes_one_event_of_a_kind_to_one_execution_or_one_attempt(
                 sequence,
                 node_id,
                 execution_id,
-                FIRST_ROUND_ORDINAL,
+                round_ordinal,
                 kind,
                 b"event",
                 hashlib.sha256(b"event").hexdigest(),
@@ -889,6 +891,15 @@ def test_the_store_scopes_one_event_of_a_kind_to_one_execution_or_one_attempt(
             execution_id="1" * 64,
             kind="AGENT_COMPLETED",
         )
+    with pytest.raises(IntegrityError), ledger_engine.begin() as connection:
+        insert_event(
+            connection,
+            run_id="run-1",
+            sequence=2,
+            node_id="agent",
+            execution_id="2" * 64,
+            kind="AGENT_COMPLETED",
+        )
     with ledger_engine.begin() as connection:
         insert_event(
             connection,
@@ -897,6 +908,7 @@ def test_the_store_scopes_one_event_of_a_kind_to_one_execution_or_one_attempt(
             node_id="agent",
             execution_id="2" * 64,
             kind="AGENT_COMPLETED",
+            round_ordinal=FIRST_ROUND_ORDINAL + 1,
         )
     with pytest.raises(IntegrityError), ledger_engine.begin() as connection:
         insert_event(

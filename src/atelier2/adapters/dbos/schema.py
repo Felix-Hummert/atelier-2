@@ -58,8 +58,9 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head drops the run-event key that said one event of a kind
-# per node per run (#658), so a Wait a loop turns twice may pause twice.
+# Movable hop: this head re-scopes the run-event key that said one event of a
+# kind per node per run to the round it belongs to (#658), so a Wait a loop
+# turns twice may pause twice and neither pause may be written twice.
 # Predecessor is the published schema that admitted `WAIT_CANCELLED` (#668).
 # Change only this constant to restack.
 _HOP_PREDECESSOR_VERSION = 35
@@ -173,15 +174,18 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # payload and is fenced by the node execution it names -- so the run's terminal
 # hash folds over a real event instead of a lift inventing one. Only the
 # vocabulary widens; every stored row keeps its bytes, its key and its meaning.
-# V36 drops `run_events_legacy_kind_unique` (#658). That partial unique index
-# said one event of a kind per node per run for every event no agent attempt
-# owns, which stopped being true the moment a declared loop could turn a Wait a
-# second time: round two's WAITING_INPUT names the same node and kind as round
-# one's. The narrower `run_events_legacy_execution_kind_unique` -- one event of
-# a kind per node execution, and an execution id already folds the round in --
-# is that same sentence read per round, and it stays. No row is rewritten and
-# no column moves; only the coarser key stops being enforced, so every row the
-# predecessor holds is legal here.
+# V36 re-scopes one run-event key to the round (#658).
+# `run_events_legacy_kind_unique` said one event of a kind per node per run for
+# every event no agent attempt owns, which stopped being true the moment a
+# declared loop could turn a Wait a second time: round two's WAITING_INPUT names
+# the same node and kind as round one's. `run_events_round_kind_unique` says the
+# same thing about one round, so every log the predecessor holds satisfies it.
+# The round-scoped key is not redundant beside the execution-keyed one: an
+# execution id is derived, and only a writer that derived it right lands under
+# it, while `_existing_event` reads a round back by run, revision, node and
+# round and expects at most one row. The hop is two DDL statements and the
+# version CAS -- SQLite moves an index without reading a row, so no row is
+# rewritten, no table is parked and the table text does not move.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -214,7 +218,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     33: "f634d04c6cc525147ead8aa0dad8ef728189a6ef9554049c8a2aad56f3caeea8",
     34: "28dab0f4a152d7be66fa699d1123fdd130a94fe80ad705c19330f075e4fdd85a",
     35: "29df9a195316ce94527be2c906e4dc4104e00b2cb16caa9bfada17fecb5a21d5",
-    36: "db67d0423325f63b8c55a8724c811f3bed22ae0b6b42b6eb4f0e0db397e4c920",
+    36: "c9f4b5d99a9ff8e33796e36151b66f00175eceaa797e30461bf6e01264266ce8",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -1173,6 +1177,23 @@ run_events = sa.Table(
 sa.Index(
     "run_events_legacy_execution_kind_unique",
     run_events.c.node_execution_id,
+    run_events.c.event_kind,
+    unique=True,
+    sqlite_where=run_events.c.agent_attempt_id.is_(None),
+)
+# The same sentence in the coordinates a reader asks in. An execution id is
+# derived from run, revision, node and round, so the index above already says
+# one event of a kind per round -- but only to a writer that derived the id
+# correctly, and the store cannot recompute a hash to check. `_existing_event`
+# reads a round back by those four coordinates and expects at most one row, so
+# two rows disagreeing about the execution of one round would turn a retry into
+# an unnamed failure instead of the exact event it replays.
+sa.Index(
+    "run_events_round_kind_unique",
+    run_events.c.run_id,
+    run_events.c.revision_hash,
+    run_events.c.node_id,
+    run_events.c.round_ordinal,
     run_events.c.event_kind,
     unique=True,
     sqlite_where=run_events.c.agent_attempt_id.is_(None),
@@ -2947,24 +2968,28 @@ def _added_table_step(
     return apply
 
 
-def _declared_indexes(table: sa.Table) -> tuple[str, ...]:
-    return tuple(
-        str(CreateIndex(index).compile(dialect=sqlite_dialect.dialect()))
+def _declared_indexes(table: sa.Table) -> Mapping[str, str]:
+    """The `CREATE INDEX` text the declaration gives each of this table's indexes."""
+
+    return {
+        str(index.name): str(
+            CreateIndex(index).compile(dialect=sqlite_dialect.dialect())
+        )
         for index in sorted(table.indexes, key=lambda index: index.name or "")
-    )
+    }
 
 
 def _table_indexes_at(version: int, table: sa.Table) -> tuple[str, ...]:
     """The `CREATE INDEX` texts this table carries at one published version.
 
     An index set no hop has moved is exactly the declaration, which is why most
-    published versions record none; a version a later hop took an index away
-    from is a record, for the reason `published_schema_shapes` gives.
+    published versions record none; a version a later hop moved an index of is a
+    record, for the reason `published_schema_shapes` gives.
     """
     if version == SCHEMA_VERSION:
-        return _declared_indexes(table)
+        return tuple(_declared_indexes(table).values())
     recorded = PUBLISHED_TABLE_INDEXES.get((version, table.name))
-    return _declared_indexes(table) if recorded is None else recorded
+    return tuple(_declared_indexes(table).values()) if recorded is None else recorded
 
 
 def _table_shape_at(version: int, table: sa.Table) -> str:
@@ -3892,31 +3917,28 @@ def _apply_v34_to_v35(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_THIRTY_FOUR, _VERSION_THIRTY_FIVE)
 
 
-_PREDECESSOR_ONCE_PAUSING_RUN_EVENTS = "run_events_before_the_repeatable_pause"
+_ONCE_PER_NODE_EVENT_INDEX = "run_events_legacy_kind_unique"
+_ROUND_SCOPED_EVENT_INDEX = "run_events_round_kind_unique"
 
 
 def _apply_v35_to_v36(connection: sqlite3.Connection) -> None:
-    """Drop the once-per-node event key, and keep every stored row.
+    """Re-scope the once-per-node event key to the round, touching no row.
 
-    The key this hop removes admitted strictly fewer logs than the one that
-    stays, so no stored row can fail the target shape: an event log legal under
-    "one event of a kind per node per run" is legal under "one event of a kind
-    per node execution", which the narrower index still holds. Nothing is
-    rewritten and no column moves -- SQLite drops an index without touching a
-    row -- but the rebuild is what republishes the table with the index set its
-    target version declares, and the same rebuild reinstalls the two append-only
-    triggers, because an event log that could be updated or deleted for the
-    length of one hop would be no evidence at all.
+    The predecessor's key spanned every round of a node at once, which a loop
+    turning a Wait a second time breaks by writing a second `WAITING_INPUT`.
+    Its successor says the same thing about one round, so every log the
+    predecessor holds satisfies it: a store that admitted at most one such event
+    per node admitted at most one per round of that node.
+
+    Both statements are indexes, and SQLite adds and removes an index without
+    reading or writing a row, so this hop is two DDL statements and the version
+    CAS inside the migration's own transaction -- no table is parked, no row is
+    copied, and the table text does not move. Should the second statement fail,
+    the transaction takes the first one back with it.
     """
 
-    _rebuild_product_table(
-        connection,
-        run_events,
-        _PREDECESSOR_ONCE_PAUSING_RUN_EVENTS,
-        _RUN_EVENTS_TRIGGERS,
-        _VERSION_THIRTY_FIVE,
-        _VERSION_THIRTY_SIX,
-    )
+    connection.execute(f"DROP INDEX {_ONCE_PER_NODE_EVENT_INDEX}")
+    connection.execute(_declared_indexes(run_events)[_ROUND_SCOPED_EVENT_INDEX])
     _raise_declared_version(connection, _VERSION_THIRTY_FIVE, _VERSION_THIRTY_SIX)
 
 

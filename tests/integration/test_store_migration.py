@@ -17,6 +17,7 @@ drifts.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -33,10 +34,10 @@ from atelier2.adapters.dbos.run_transitions import event_from_record
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
     _AGENT_ATTEMPTS_TRIGGERS,
-    _PREDECESSOR_ONCE_PAUSING_RUN_EVENTS,
     _PREDECESSOR_WAIT_ANSWERS,
     _PREDECESSOR_WAIT_UNCANCELLABLE_RUN_EVENTS,
     _PRODUCT_TRIGGERS,
+    _ROUND_SCOPED_EVENT_INDEX,
     _RUN_EVENTS_TRIGGERS,
     _V17_AGENT_ATTEMPT_TRIGGERS,
     _V23_AGENT_ATTEMPT_TRIGGERS,
@@ -100,14 +101,29 @@ from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
     answer_wait_result,
 )
+from atelier2.contracts.agent_attempts import (
+    AGENT_ATTEMPT_ORDINAL,
+    REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
+    AgentAttemptCancellationDisposition,
+    AgentAttemptId,
+    AgentAttemptReplacement,
+)
 from atelier2.contracts.agents import (
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
+    AgentReceiptHash,
 )
 from atelier2.contracts.catalog_v3 import CatalogLineage
+from atelier2.contracts.effects import (
+    ConfirmationSource,
+    EffectIntentState,
+    LogicalEffectKey,
+)
 from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEvent,
+    RunEventAgentAttemptBinding,
+    RunEventCancellationBinding,
     RunEventKind,
     WaitAnswerState,
 )
@@ -356,9 +372,9 @@ _PREDECESSOR_RUN_EVENTS_INDEX_DDL = (
 )
 """The three event keys the store behind this fixture's table text published.
 
-The once-per-node key left the declaration with the V36 hop, so a fixture that
-builds a store from before that hop states it, exactly as it states the
-predecessor table text next to it.
+The V36 hop re-scoped the once-per-node key to the round, so a fixture that
+builds a store from before that hop states the key as it stood, exactly as it
+states the predecessor table text next to it.
 """
 
 
@@ -2877,27 +2893,87 @@ _PAUSED_RUN = RunId("live/haelt-am-tor")
 _PAUSED_NODE = "vorbereiten"
 
 
+_ACTION_NODE = "wirken"
+_FIRST_ATTEMPT = AgentAttemptId("aa" * 32)
+_REPLACEMENT_ATTEMPT = AgentAttemptId("bb" * 32)
+_CANCEL_COMMAND = "cancel/erste-fassung"
+_EFFECT_KEY = LogicalEffectKey("wirken/einmal")
+_EFFECT_RESULT = b'{"outcome":"CONFIRMED"}'
+
+
 def _paused_run_event_log(revision_hash: WorkflowRevisionHash) -> tuple[RunEvent, ...]:
     """The event log one paused run really holds, derived by the contract.
 
-    Two kinds, because a hop that rewrites the whole table and a single row
-    would not show that ordering and sequence survive it. The hashes are the
-    ones production would frame; nothing here recomputes them a second way.
+    One event of every family the table has optional columns for -- an attempt
+    cancelled and replaced, a completion carrying its agent receipt, an action
+    bound to its effect receipt, and the pause the run rests at -- because a hop
+    is only proved to carry a column by a row that had something in it. The
+    hashes are the ones production would frame; nothing here recomputes them a
+    second way.
     """
+
+    node_execution = NodeExecutionId.for_node(_PAUSED_RUN, revision_hash, _PAUSED_NODE)
     return (
         RunEvent(
             _PAUSED_RUN,
             revision_hash,
             1,
             _PAUSED_NODE,
-            NodeExecutionId.for_node(_PAUSED_RUN, revision_hash, _PAUSED_NODE),
-            RunEventKind.AGENT_COMPLETED,
-            b'"fertig"',
+            node_execution,
+            RunEventKind.AGENT_CANCEL_REQUESTED,
+            b'"abgebrochen"',
+            attempt_binding=RunEventCancellationBinding(
+                _FIRST_ATTEMPT,
+                AGENT_ATTEMPT_ORDINAL,
+                AgentAttemptReplacement.ONE,
+                _CANCEL_COMMAND,
+            ),
         ),
         RunEvent(
             _PAUSED_RUN,
             revision_hash,
             2,
+            _PAUSED_NODE,
+            node_execution,
+            RunEventKind.AGENT_CANCELLED,
+            b'"aufgeraeumt"',
+            attempt_binding=RunEventCancellationBinding(
+                _FIRST_ATTEMPT,
+                AGENT_ATTEMPT_ORDINAL,
+                AgentAttemptReplacement.ONE,
+                _CANCEL_COMMAND,
+                AgentAttemptCancellationDisposition.REAPED_AFTER_TERM,
+                _REPLACEMENT_ATTEMPT,
+            ),
+        ),
+        RunEvent(
+            _PAUSED_RUN,
+            revision_hash,
+            3,
+            _PAUSED_NODE,
+            node_execution,
+            RunEventKind.AGENT_COMPLETED,
+            b'"fertig"',
+            attempt_binding=RunEventAgentAttemptBinding(
+                _REPLACEMENT_ATTEMPT, REPLACEMENT_AGENT_ATTEMPT_ORDINAL
+            ),
+            agent_receipt_hash=AgentReceiptHash.of(b'"fertig"'),
+        ),
+        RunEvent(
+            _PAUSED_RUN,
+            revision_hash,
+            4,
+            _ACTION_NODE,
+            NodeExecutionId.for_node(_PAUSED_RUN, revision_hash, _ACTION_NODE),
+            RunEventKind.ACTION_COMPLETED,
+            _EFFECT_RESULT,
+            receipt_logical_key=_EFFECT_KEY,
+            receipt_result_hash=Sha256Hash.of(_EFFECT_RESULT),
+        ),
+        RunEvent(
+            _PAUSED_RUN,
+            revision_hash,
+            5,
             _ANSWER_NODE_ID,
             NodeExecutionId.for_node(_PAUSED_RUN, revision_hash, _ANSWER_NODE_ID),
             RunEventKind.WAITING_INPUT,
@@ -2906,31 +2982,73 @@ def _paused_run_event_log(revision_hash: WorkflowRevisionHash) -> tuple[RunEvent
     )
 
 
-_EVENT_COLUMNS = (
-    "run_id, revision_hash, event_sequence, node_id, node_execution_id, "
-    "round_ordinal, event_kind, payload, payload_hash, event_hash"
+_EVENT_COLUMNS = tuple(column.name for column in run_events.columns)
+"""Every column the event table has, in its own order.
+
+Read from the table rather than listed here, so a column a later hop adds is
+carried by this fixture and compared by it without anybody remembering to.
+"""
+
+_INSERT_EVENT_STATEMENT = (
+    f"INSERT INTO run_events ({', '.join(_EVENT_COLUMNS)}) "
+    f"VALUES ({', '.join('?' for _ in _EVENT_COLUMNS)})"
 )
 
 
 def _event_row(event: RunEvent) -> tuple[object, ...]:
-    return (
-        event.run_id.value,
-        event.revision_hash.value,
-        event.event_sequence,
-        event.node_id,
-        event.node_execution_id.value,
-        event.round_ordinal,
-        event.event_kind.value,
-        event.payload,
-        event.payload_hash.value,
-        event.event_hash.value,
-    )
+    binding = event.attempt_binding
+    cancellation = binding if isinstance(binding, RunEventCancellationBinding) else None
+    written: Mapping[str, object] = {
+        "run_id": event.run_id.value,
+        "revision_hash": event.revision_hash.value,
+        "event_sequence": event.event_sequence,
+        "node_id": event.node_id,
+        "node_execution_id": event.node_execution_id.value,
+        "round_ordinal": event.round_ordinal,
+        "event_kind": event.event_kind.value,
+        "payload": event.payload,
+        "payload_hash": event.payload_hash.value,
+        "receipt_logical_key": (
+            None
+            if event.receipt_logical_key is None
+            else event.receipt_logical_key.value
+        ),
+        "receipt_result_hash": (
+            None
+            if event.receipt_result_hash is None
+            else event.receipt_result_hash.value
+        ),
+        "event_hash": event.event_hash.value,
+        "agent_attempt_id": None if binding is None else binding.attempt_id.value,
+        "attempt_ordinal": None if binding is None else binding.attempt_ordinal,
+        "cancellation_command_id": (
+            None if cancellation is None else cancellation.command_id
+        ),
+        "replacement": (
+            None if cancellation is None else cancellation.replacement.value
+        ),
+        "cancellation_disposition": (
+            None
+            if cancellation is None or cancellation.disposition is None
+            else cancellation.disposition.value
+        ),
+        "replacement_attempt_id": (
+            None
+            if cancellation is None or cancellation.replacement_attempt_id is None
+            else cancellation.replacement_attempt_id.value
+        ),
+        "agent_receipt_hash": (
+            None if event.agent_receipt_hash is None else event.agent_receipt_hash.value
+        ),
+    }
+    return tuple(written[name] for name in _EVENT_COLUMNS)
 
 
 def _populate_paused_run_events(database_path: Path) -> WorkflowRevisionHash:
     """One run resting at its pause, with the events that carried it there."""
 
     revision = WorkflowRevision(b"name: torwaechter\n")
+    events = _paused_run_event_log(revision.revision_hash)
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(
@@ -2941,7 +3059,7 @@ def _populate_paused_run_events(database_path: Path) -> WorkflowRevisionHash:
             "INSERT INTO runs (run_id, bootstrap_workflow_id, revision_hash, "
             "workflow_format_version, current_node_id, current_round_ordinal, "
             "state, state_version, last_event_sequence, terminal_hash) "
-            "VALUES (?, ?, ?, 1, ?, ?, ?, 2, 2, NULL)",
+            "VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, NULL)",
             (
                 _PAUSED_RUN.value,
                 f"bootstrap-{_PAUSED_RUN.value}",
@@ -2949,24 +3067,65 @@ def _populate_paused_run_events(database_path: Path) -> WorkflowRevisionHash:
                 _ANSWER_NODE_ID,
                 FIRST_ROUND_ORDINAL,
                 RunState.WAITING_INPUT.value,
+                len(events),
+                len(events),
             ),
         )
+        _seed_effect_receipt(connection, revision.revision_hash)
         connection.executemany(
-            f"INSERT INTO run_events ({_EVENT_COLUMNS}) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [
-                _event_row(event)
-                for event in _paused_run_event_log(revision.revision_hash)
-            ],
+            _INSERT_EVENT_STATEMENT, [_event_row(event) for event in events]
         )
         connection.commit()
     return revision.revision_hash
 
 
+def _seed_effect_receipt(
+    connection: sqlite3.Connection, revision_hash: WorkflowRevisionHash
+) -> None:
+    """The receipt an ACTION_COMPLETED event points at, so its binding resolves.
+
+    A migration checks foreign keys before it commits, so an event carrying a
+    receipt key nothing answers would refuse the whole hop rather than prove it.
+    """
+
+    request_hash = Sha256Hash.of(b"wirken/anfrage").value
+    shared = (
+        _EFFECT_KEY.value,
+        _PAUSED_RUN.value,
+        b"wirken/anfrage",
+        request_hash,
+        revision_hash.value,
+        "loopback-v1",
+        "loopback-test",
+        "operational/loopback",
+    )
+    connection.execute(
+        "INSERT INTO effect_intents (logical_key, run_id, canonical_request, "
+        "request_hash, workflow_revision_hash, adapter_revision, "
+        "destination_identity, adapter_operational_identity, state, state_version) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+        (*shared, EffectIntentState.CONFIRMED.value),
+    )
+    connection.execute(
+        "INSERT INTO effect_receipts (logical_key, run_id, canonical_request, "
+        "request_hash, workflow_revision_hash, adapter_revision, "
+        "destination_identity, adapter_operational_identity, effect_id, result, "
+        "result_hash, confirmation_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            *shared,
+            "effect/einmal",
+            _EFFECT_RESULT,
+            Sha256Hash.of(_EFFECT_RESULT).value,
+            ConfirmationSource.ADAPTER_EXECUTION.value,
+        ),
+    )
+
+
 def _stored_event_rows(database_path: Path) -> list[tuple[object, ...]]:
     with sqlite3.connect(database_path) as connection:
         return connection.execute(
-            f"SELECT {_EVENT_COLUMNS} FROM run_events ORDER BY run_id, event_sequence"
+            f"SELECT {', '.join(_EVENT_COLUMNS)} FROM run_events "
+            "ORDER BY run_id, event_sequence"
         ).fetchall()
 
 
@@ -3003,9 +3162,11 @@ def test_every_v34_event_crosses_the_v35_rebuild_unchanged(
 
     database_path = tmp_path / "atelier.sqlite"
     _create_exact_v34_store(database_path)
-    _populate_paused_run_events(database_path)
+    revision_hash = _populate_paused_run_events(database_path)
     predecessor_rows = _stored_event_rows(database_path)
-    assert len(predecessor_rows) == 2
+    assert predecessor_rows == [
+        _event_row(event) for event in _paused_run_event_log(revision_hash)
+    ]
 
     assert main(["migrate", "--database", str(database_path)]) == 0
     capsys.readouterr()
@@ -3029,25 +3190,24 @@ def test_a_v35_store_admits_the_wait_cancellation_its_predecessor_refused(
     cancellation = RunEvent(
         _PAUSED_RUN,
         revision_hash,
-        3,
+        len(_paused_run_event_log(revision_hash)) + 1,
         _ANSWER_NODE_ID,
         NodeExecutionId.for_node(_PAUSED_RUN, revision_hash, _ANSWER_NODE_ID),
         RunEventKind.WAIT_CANCELLED,
         RunCancelCommandId.for_key("operator-key").value.encode("utf-8"),
     )
-    statement = f"INSERT INTO run_events ({_EVENT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 
     with (
         sqlite3.connect(database_path) as connection,
         pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"),
     ):
-        connection.execute(statement, _event_row(cancellation))
+        connection.execute(_INSERT_EVENT_STATEMENT, _event_row(cancellation))
 
     assert main(["migrate", "--database", str(database_path)]) == 0
     capsys.readouterr()
 
     with sqlite3.connect(database_path) as connection:
-        connection.execute(statement, _event_row(cancellation))
+        connection.execute(_INSERT_EVENT_STATEMENT, _event_row(cancellation))
         connection.commit()
     assert _stored_event_rows(database_path)[-1] == _event_row(cancellation)
 
@@ -3067,7 +3227,7 @@ def test_the_event_log_is_append_only_again_after_the_v35_rebuild(
     revision_hash = _populate_paused_run_events(database_path)
     assert main(["migrate", "--database", str(database_path)]) == 0
     capsys.readouterr()
-    second_pause = _paused_run_event_log(revision_hash)[1]
+    pause_again = _pause_at_sequence(revision_hash, _UNTAKEN_SEQUENCE)
 
     with sqlite3.connect(database_path) as connection:
         with pytest.raises(sqlite3.IntegrityError, match="events are immutable"):
@@ -3075,11 +3235,7 @@ def test_the_event_log_is_append_only_again_after_the_v35_rebuild(
         with pytest.raises(sqlite3.IntegrityError, match="events are immutable"):
             connection.execute("DELETE FROM run_events")
         with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
-            connection.execute(
-                f"INSERT INTO run_events ({_EVENT_COLUMNS}) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                _event_row(second_pause)[:2] + (9,) + _event_row(second_pause)[3:],
-            )
+            connection.execute(_INSERT_EVENT_STATEMENT, _event_row(pause_again))
 
 
 def test_a_refused_event_vocabulary_hop_leaves_the_v34_store_untouched(
@@ -3109,15 +3265,16 @@ def test_a_refused_event_vocabulary_hop_leaves_the_v34_store_untouched(
         ).fetchone() == (34,)
 
 
-_PARKED_CURRENT_RUN_EVENTS_V36 = "run_events_after_the_repeatable_pause"
+_PARKED_CURRENT_RUN_EVENTS_V36 = "run_events_after_the_round_scoped_key"
 
 
-def _revert_once_per_node_event_key(connection: sqlite3.Connection) -> None:
-    """Restore the once-per-node event key the #658 hop dropped.
+def _revert_the_round_scoped_event_key(connection: sqlite3.Connection) -> None:
+    """Restore the once-per-node event key the #658 hop re-scoped to the round.
 
-    `run_events` carried three keys from V13 to V35, and V36 is the first
-    schema to publish two, so a store that claims a version up to V35 has to
-    hold the coarse key back again.
+    Every schema up to V35 keyed an attempt-free event by its node and run at
+    once, so a store that claims one of those versions has to hold that key
+    again -- rebuilt from the shape and the index set V35 published, which is
+    also what proves those two records are what a V35 store really was.
     """
 
     _rebuild_product_table(
@@ -3133,16 +3290,16 @@ def _revert_once_per_node_event_key(connection: sqlite3.Connection) -> None:
 def _create_exact_v35_store(database_path: Path) -> None:
     """A current store keyed the pre-#658 way: the published V35 shape.
 
-    V35 differs from the current schema in one index -- no column, no CHECK, no
-    trigger -- and the pinned V35 fingerprint refuses the fixture the moment
-    anything else about it drifts.
+    V35 differs from the current schema in the scope of one index -- no column,
+    no CHECK, no trigger -- and the pinned V35 fingerprint refuses the fixture
+    the moment anything else about it drifts.
     """
 
     engine = create_canonical_engine(database_path)
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
-        _revert_once_per_node_event_key(connection)
+        _revert_the_round_scoped_event_key(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V35_SCHEMA_HANDOFF.version,),
@@ -3151,28 +3308,36 @@ def _create_exact_v35_store(database_path: Path) -> None:
         _require_product_shape(connection, V35_SCHEMA_HANDOFF.version)
 
 
-def _second_round_pause(revision_hash: WorkflowRevisionHash) -> RunEvent:
-    """The event a loop's second turn of the same Wait writes.
+_UNTAKEN_SEQUENCE = 9
+"""An event sequence past every one the seeded log took.
 
-    Same run, same node, same kind as the pause already stored -- and a second
-    execution, because the round is what the execution id folds in.
-    """
+A duplicate has to be written at a free primary key, or the key it collides on
+would be the run's own (run, sequence) rather than the one under test.
+"""
+
+
+def _pause_at_sequence(
+    revision_hash: WorkflowRevisionHash,
+    event_sequence: int,
+    round_ordinal: int = FIRST_ROUND_ORDINAL,
+) -> RunEvent:
+    """The pause the wait node writes in one round, at one place in the log."""
 
     return RunEvent(
         _PAUSED_RUN,
         revision_hash,
-        3,
+        event_sequence,
         _ANSWER_NODE_ID,
         NodeExecutionId.for_node(
-            _PAUSED_RUN, revision_hash, _ANSWER_NODE_ID, FIRST_ROUND_ORDINAL + 1
+            _PAUSED_RUN, revision_hash, _ANSWER_NODE_ID, round_ordinal
         ),
         RunEventKind.WAITING_INPUT,
         b"",
-        round_ordinal=FIRST_ROUND_ORDINAL + 1,
+        round_ordinal=round_ordinal,
     )
 
 
-def test_an_exact_v35_store_migrates_to_v36_by_dropping_the_once_per_node_key(
+def test_an_exact_v35_store_migrates_to_v36_by_rescoping_the_event_key(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -3198,20 +3363,38 @@ def test_an_exact_v35_store_migrates_to_v36_by_dropping_the_once_per_node_key(
     engine.dispose()
 
 
-def test_every_v35_event_crosses_the_v36_rebuild_unchanged(
+def test_every_v35_event_column_crosses_the_v36_hop_unchanged(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The hop stops enforcing a key; it rewrites nothing already written.
+    """The hop moves a key; it reads and writes no row at all.
 
-    Every row legal under the dropped key is legal under the one that stays, so
-    the log that crosses this hop is the log that entered it, byte for byte.
+    Every column of every row is compared, over a log carrying one event of each
+    family the table keeps optional columns for -- a hop that lost a receipt
+    binding, a cancellation disposition or a replacement attempt would otherwise
+    pass on rows that never had one.
     """
 
     database_path = tmp_path / "atelier.sqlite"
     _create_exact_v35_store(database_path)
-    _populate_paused_run_events(database_path)
+    revision_hash = _populate_paused_run_events(database_path)
     predecessor_rows = _stored_event_rows(database_path)
-    assert len(predecessor_rows) == 2
+    assert predecessor_rows == [
+        _event_row(event) for event in _paused_run_event_log(revision_hash)
+    ]
+    assert all(
+        any(row[_EVENT_COLUMNS.index(column)] is not None for row in predecessor_rows)
+        for column in (
+            "receipt_logical_key",
+            "receipt_result_hash",
+            "agent_attempt_id",
+            "attempt_ordinal",
+            "cancellation_command_id",
+            "replacement",
+            "cancellation_disposition",
+            "replacement_attempt_id",
+            "agent_receipt_hash",
+        )
+    )
 
     assert main(["migrate", "--database", str(database_path)]) == 0
     capsys.readouterr()
@@ -3225,41 +3408,41 @@ def test_a_v36_store_admits_the_second_pause_its_predecessor_refused(
     """The one sentence the hop exists for, asked of both sides of it.
 
     Written straight at the table rather than through the store, because what is
-    under test here is the key the hop dropped -- the run that actually turns a
+    under test here is the key the hop re-scoped -- the run that actually turns a
     loop through two pauses is driven in `tests/integration/test_v3_wait_in_loop`.
     """
 
     database_path = tmp_path / "atelier.sqlite"
     _create_exact_v35_store(database_path)
     revision_hash = _populate_paused_run_events(database_path)
-    second_pause = _second_round_pause(revision_hash)
-    statement = f"INSERT INTO run_events ({_EVENT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    second_pause = _pause_at_sequence(
+        revision_hash, _UNTAKEN_SEQUENCE, FIRST_ROUND_ORDINAL + 1
+    )
 
     with (
         sqlite3.connect(database_path) as connection,
         pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"),
     ):
-        connection.execute(statement, _event_row(second_pause))
+        connection.execute(_INSERT_EVENT_STATEMENT, _event_row(second_pause))
 
     assert main(["migrate", "--database", str(database_path)]) == 0
     capsys.readouterr()
 
     with sqlite3.connect(database_path) as connection:
-        connection.execute(statement, _event_row(second_pause))
+        connection.execute(_INSERT_EVENT_STATEMENT, _event_row(second_pause))
         connection.commit()
     assert _stored_event_rows(database_path)[-1] == _event_row(second_pause)
 
 
-def test_the_event_log_is_append_only_and_execution_keyed_after_the_v36_rebuild(
+def test_one_round_still_holds_one_pause_after_the_v36_hop(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A rebuild drops every trigger and index, so each is proved by what it refuses.
+    """What the hop widens is which round may repeat a kind, never whether one may.
 
-    An event log that could be updated, deleted, or made to hold two entries of
-    one kind for one execution would be no evidence at all, and a terminal hash
-    folded over it would be a hash over something that can still change. What
-    the hop widens is which executions may repeat a kind, never whether one
-    execution may.
+    The successor key is asked in the coordinates a reader asks in -- run,
+    revision, node, round -- so a second pause of the round already stored is
+    refused even when it names another execution, which is the state
+    `_existing_event` would otherwise read back as two rows for one round.
     """
 
     database_path = tmp_path / "atelier.sqlite"
@@ -3267,7 +3450,13 @@ def test_the_event_log_is_append_only_and_execution_keyed_after_the_v36_rebuild(
     revision_hash = _populate_paused_run_events(database_path)
     assert main(["migrate", "--database", str(database_path)]) == 0
     capsys.readouterr()
-    first_pause = _paused_run_event_log(revision_hash)[1]
+    pause_again = _pause_at_sequence(revision_hash, _UNTAKEN_SEQUENCE)
+    foreign_execution = _event_row(pause_again)
+    foreign_execution = (
+        foreign_execution[: _EVENT_COLUMNS.index("node_execution_id")]
+        + ("f" * 64,)
+        + foreign_execution[_EVENT_COLUMNS.index("node_execution_id") + 1 :]
+    )
 
     with sqlite3.connect(database_path) as connection:
         with pytest.raises(sqlite3.IntegrityError, match="events are immutable"):
@@ -3275,32 +3464,33 @@ def test_the_event_log_is_append_only_and_execution_keyed_after_the_v36_rebuild(
         with pytest.raises(sqlite3.IntegrityError, match="events are immutable"):
             connection.execute("DELETE FROM run_events")
         with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
-            connection.execute(
-                f"INSERT INTO run_events ({_EVENT_COLUMNS}) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                _event_row(first_pause)[:2] + (9,) + _event_row(first_pause)[3:],
-            )
+            connection.execute(_INSERT_EVENT_STATEMENT, _event_row(pause_again))
+        with pytest.raises(sqlite3.IntegrityError, match="run_events.round_ordinal"):
+            connection.execute(_INSERT_EVENT_STATEMENT, foreign_execution)
 
 
-def test_a_refused_once_per_node_key_hop_leaves_the_v35_store_untouched(
+def test_a_refused_key_rescope_takes_its_own_first_statement_back(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A name already holding the parking object refuses before the first statement."""
+    """A foreign object under the successor's name refuses the hop, and nothing is half done.
+
+    The hop drops one index before it creates the other, so this is the case
+    that proves the two statements and the version stand or fall together: the
+    predecessor's key is back afterwards and the store still reads V35.
+    """
 
     database_path = tmp_path / "atelier.sqlite"
     _create_exact_v35_store(database_path)
     _populate_paused_run_events(database_path)
     with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            f"CREATE TABLE {_PREDECESSOR_ONCE_PAUSING_RUN_EVENTS} (wrong TEXT)"
-        )
+        connection.execute(f"CREATE TABLE {_ROUND_SCOPED_EVENT_INDEX} (wrong TEXT)")
         connection.commit()
     before = _logical_dump(database_path)
 
     assert main(["migrate", "--database", str(database_path)]) == 1
 
     shown = capsys.readouterr()
-    assert _PREDECESSOR_ONCE_PAUSING_RUN_EVENTS in shown.err
+    assert _ROUND_SCOPED_EVENT_INDEX in shown.err
     assert "will not alter" in shown.err
     assert _logical_dump(database_path) == before
     with sqlite3.connect(database_path) as connection:

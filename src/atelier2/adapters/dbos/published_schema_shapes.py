@@ -693,9 +693,9 @@ _RUN_EVENTS_INDEXES_BEFORE_THE_REPEATABLE_PAUSE = (
 )
 """The three run-event keys every schema up to V35 published.
 
-V36 drops the last of them, so a rebuild that materialises one of those versions
-has to be given the set it published rather than the two the declaration is left
-with.
+V36 re-scopes the last of them to the round, so a rebuild that materialises one
+of those versions has to be given the set it published rather than the set the
+declaration carries now.
 """
 
 PUBLISHED_TABLE_INDEXES: Mapping[tuple[int, str], tuple[str, ...]] = {
