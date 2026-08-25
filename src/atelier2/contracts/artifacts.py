@@ -16,8 +16,11 @@ and nothing about it is versioned.
 
 **Why it is not a `node-artifact/v3`.** That one is a value a node produced,
 bound to the node execution that produced it and to the schema it satisfied.
-This is material somebody published before any node ran, bound to nothing but its
-own bytes.
+An artifact is bound to nothing but its own bytes, so anything holding its
+address holds the material -- an order supplying a run before any node ran, and
+a terminal node receipt that already records the hash of the bytes it judged and
+refused. Refused bytes satisfy no schema and belong to no accepted output, so
+they are kept here, where being the bytes is the whole binding.
 """
 
 from __future__ import annotations
