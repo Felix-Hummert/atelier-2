@@ -634,6 +634,14 @@ def test_terminal_attempt_commit_is_atomic_and_matches_success_or_known_failure(
 def test_each_terminal_write_failpoint_rolls_back_the_whole_attempt(
     tmp_path: Path, terminal: str, failpoint: str, trigger: str
 ) -> None:
+    """Whichever write aborts, nothing of the terminal is left behind.
+
+    The event log answers in the run transition's own words -- the driver's
+    error cannot cross the durable step boundary -- so the failpoint on it is
+    refused under that name; every other boundary still answers with the
+    driver's.
+    """
+
     runtime = attempt_runtime(tmp_path / terminal / failpoint)
     runtime.initialize_storage()
     try:
@@ -644,7 +652,8 @@ def test_each_terminal_write_failpoint_rolls_back_the_whole_attempt(
         with runtime.engine.begin() as connection:
             connection.exec_driver_sql(trigger)
 
-        with pytest.raises(DatabaseError, match="failpoint"):
+        refusal = RunTransitionConflict if failpoint == "event" else DatabaseError
+        with pytest.raises(refusal, match="failpoint"):
             if terminal == "success":
                 store.complete_success(
                     agent_attempt_execution(request), AgentExecutionResult(b"done")

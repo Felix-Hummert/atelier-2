@@ -6,7 +6,11 @@
   `tests/integration/test_v3_bounded_loop_run.py` and
   [docs/PRODUCT.md](../PRODUCT.md). [#449](https://github.com/FlexOr2/atelier-2/issues/449)
   withdrew only the Subworkflow `iterate` binder ADR 0013 authored — not this
-  record's in-graph loop; see "What happens to ADR 0013" below.
+  record's in-graph loop; see "What happens to ADR 0013" below. Amended
+  2026-08-25 ([#658](https://github.com/FlexOr2/atelier-2/issues/658)): a
+  repeated Wait is executable, replacing "What this build repeats, and what it
+  refuses" below — the round identity this record decided already carries the
+  answer path, so what the section called a missing identity is a landed one.
 - Supersedes: the structural finding of
   [ADR 0013](0013-bounded-iteration.md) — "A loop inside one graph is therefore
   identity-impossible" — and, with it, ADR 0013's decision that a round is a child
@@ -138,11 +142,20 @@ about something that is now once per round.
 
 ### What this build repeats, and what it refuses
 
-Only Agent nodes are repeated. A repeated Wait would ask the same person the same
-question under an identity the answer path does not carry, and a value read *out
-of* a loop names no round — the reader would have to say which round wrote it, and
-choosing is the verdict-driven continuation this record does not decide. Both are
-refused by name at the executable door rather than started and abandoned.
+Agent and Wait nodes are both repeated. A repeated Wait once asked the same
+person the same question under an identity the answer path did not carry; this
+record's own round dimension closes that gap — a `WaitNodeBinding` carries the
+round ordinal it was bound in, and an answer is keyed by execution and round,
+so a repeated Wait's question and its answer both stand under the round that
+asked it. [#658](https://github.com/FlexOr2/atelier-2/issues/658) is where the
+executable door was amended to admit it, with the integration proof that a
+loop starting on a Wait runs two rounds through the public start and answer
+doors.
+
+A value read *out of* a loop still names no round — the reader would have to
+say which round wrote it, and choosing is the verdict-driven continuation this
+record does not decide. That form stays refused by name at the executable
+door rather than started and abandoned.
 
 ### A data edge inside a loop that the edges cannot order reads the previous round
 
@@ -180,6 +193,13 @@ for an oversight.
   agent receipt, the node execution request keyed by its execution, and the agent
   receipt's once-per-run key dropped. Every carried row is read as round one,
   which is what those rows are — not a default filled in to make a column fit.
+- Schema version 36 ([#658](https://github.com/FlexOr2/atelier-2/issues/658))
+  finishes that move for the pause: the event log's once-per-node key said one
+  event of a kind per node per run, which a Wait a loop turns twice breaks by
+  writing a second `WAITING_INPUT`. Its successor says the same thing about one
+  round, so a round still holds one pause and the next round holds its own. The
+  hop is two DDL statements and the version CAS in one transaction — an index
+  moves without reading a row, so nothing stored is rewritten.
 - The hop exposed a latent defect in the migration chain and fixes it: a rebuild
   step materialised its table from the *live* declaration, which is only ever the
   current shape, so the first hop to touch a table an earlier hop had already

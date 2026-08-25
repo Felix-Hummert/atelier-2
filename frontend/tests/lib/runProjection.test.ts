@@ -6,6 +6,7 @@ import {
   markConnecting,
   markLive,
   projectNodeRail,
+  readableResult,
   restartStreamProjection,
   streamProjection,
   type AgentAttemptProjection,
@@ -492,3 +493,69 @@ function v2ReplacementScenario(
     }
   };
 }
+
+describe("a node's declared answer read as prose (#716)", () => {
+  it("reads a bare string as itself, with nothing behind an Exact-text disclosure", () => {
+    expect(readableResult("Three German sentences about code review.")).toEqual({
+      kind: "text",
+      text: "Three German sentences about code review.",
+      raw: null
+    });
+  });
+
+  it("reads a declared object's own answer field as the one sentence, an empty started_run_ids left out", () => {
+    const raw = '{"answer":"The workflow could not be started.","started_run_ids":[]}';
+    expect(readableResult(raw)).toEqual({
+      kind: "object",
+      sentence: "The workflow could not be started.",
+      fields: [],
+      raw
+    });
+  });
+
+  it("shows a remaining non-empty field after the answer sentence -- nothing material only in the disclosure", () => {
+    const raw = '{"answer":"Started the fix.","started_run_ids":["run1.a","run1.b"]}';
+    expect(readableResult(raw)).toEqual({
+      kind: "object",
+      sentence: "Started the fix.",
+      fields: [{ label: "started_run_ids", value: "run1.a, run1.b" }],
+      raw
+    });
+  });
+
+  it("reads an object with no answer field as all of its own fields, label by value", () => {
+    const raw = '{"verdict":"green","findings":2}';
+    expect(readableResult(raw)).toEqual({
+      kind: "object",
+      sentence: null,
+      fields: [
+        { label: "verdict", value: "green" },
+        { label: "findings", value: "2" }
+      ],
+      raw
+    });
+  });
+
+  it("reads a declared array as its own items, never as a JSON line", () => {
+    const raw = '["one finding","another finding"]';
+    expect(readableResult(raw)).toEqual({
+      kind: "items",
+      items: ["one finding", "another finding"],
+      raw
+    });
+  });
+
+  it("reads an array of declared objects by rendering each item's own value form", () => {
+    const raw = '[{"id":"a"},{"id":"b"}]';
+    expect(readableResult(raw)).toEqual({
+      kind: "items",
+      items: ['{"id":"a"}', '{"id":"b"}'],
+      raw
+    });
+  });
+
+  it("falls back to the raw text for a value no declared shape admits", () => {
+    expect(readableResult("[]")).toEqual({ kind: "text", text: "[]", raw: null });
+    expect(readableResult("{}")).toEqual({ kind: "text", text: "{}", raw: null });
+  });
+});

@@ -405,10 +405,13 @@ the next edge rather than a failure. What no verdict can say yet is the agent's
 own named refusal — "the order is unclear because X" — because a run ends failed
 only under an attempt failure code whose value list is a store contract, and a
 refusal written under either existing code would name a schema or a dead process
-that was never involved. A loop body may hold only agent nodes. A `from` edge
-whose source sits in the same loop and is not ordered by `depends_on` reads that
-source's immediately previous round — one payload, the producing output's schema
-— and is honestly empty in round one. A value read *out of* a loop is still
+that was never involved. A loop body may hold agent and wait nodes: a round is a
+second execution of a node, and both kinds mint one, so a person may be asked
+again every round and each pause is its own event. An action node is still
+refused in a loop, because a repeated effect has no round an idempotent write
+could lean on. A `from` edge whose source sits in the same loop and is not
+ordered by `depends_on` reads that source's immediately previous round — one
+payload, the producing output's schema — and is honestly empty in round one. A value read *out of* a loop is still
 refused by name because no rule here says which round wrote it. Unsafe YAML is
 refused by name too, before any vocabulary is read: an
 anchor, an alias, an explicit tag, a merge key, a duplicate key, a second document,
@@ -798,7 +801,14 @@ document bytes. A V3 run page draws that excerpt as topological layers and
 paints each node's state from the rail the server already walked — shape and
 colour together, no zoom, no drag. The page leads with the published workflow
 name and keeps the run id as identity. A click into a node speaks Prompt and
-Output, never Asked or Answered. The Who panel labels the receipt's model as
+Output, never Asked or Answered. A run that has ended shows its own sink
+node's declared answer as prose above the graph without a click — a declared
+object's own `answer` field as one sentence with its other non-empty fields
+named after it, a declared array as its own items, an object with no
+`answer` field as all of its fields, a bare string as itself — and the
+node's own Result tab renders the identical form, the declared bytes kept
+behind a collapsed disclosure; opening the sink node itself names that
+banner once ("Shown above") rather than repeating it. The Who panel labels the receipt's model as
 the declared configuration model and says a provider-resolved model is not
 recorded — the same honest absence as usage. A hash leads with its human
 name and is copied by a click on that named control — the hex is the proof
