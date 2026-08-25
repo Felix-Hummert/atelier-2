@@ -251,11 +251,27 @@ class InstanceAccepted:
 
 
 @dataclass(frozen=True, slots=True)
+class InstanceSchemaViolation:
+    """Where one `SCHEMA_VIOLATED` refusal is about, and why -- for a caller that
+    points an author at a field rather than reading `subject`'s prose.
+
+    `pointer` is the RFC 6901 pointer `_first_violation` already located the
+    violation at, or `None` when the earliest violation is not about one
+    addressable field -- a `required` property missing at the value's own root
+    has no pointer, because RFC 6901 has none for a key that does not exist.
+    """
+
+    pointer: str | None
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class InstanceRefused:
     """One named refusal, with the exact thing it is about when there is one."""
 
     refusal: InstanceRefusal
     subject: str | None = None
+    violation: InstanceSchemaViolation | None = None
 
     def __str__(self) -> str:
         named = "" if self.subject is None else f": {self.subject}"
@@ -506,7 +522,11 @@ def _first_violation(value: JsonValue, schema: Schema) -> InstanceRefused | None
     first = errors[0]
     located = _pointer(first.absolute_path)
     place = "the value itself" if located == "" else located
-    return InstanceRefused(InstanceRefusal.SCHEMA_VIOLATED, f"{place}: {first.message}")
+    return InstanceRefused(
+        InstanceRefusal.SCHEMA_VIOLATED,
+        f"{place}: {first.message}",
+        InstanceSchemaViolation(None if located == "" else located, first.message),
+    )
 
 
 def _ordered_path(path: Iterable[object]) -> tuple[tuple[int, int, str], ...]:

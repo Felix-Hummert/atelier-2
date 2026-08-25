@@ -3,7 +3,7 @@ from __future__ import annotations
 from http import HTTPStatus
 from typing import assert_never
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
 from atelier2.api._support import (
@@ -79,6 +79,8 @@ from atelier2.application.publish_schema_revision import (
     SchemaPublicationCreated,
     SchemaPublicationExisting,
     SchemaPublicationInvalid,
+    SchemaRevisionNotFound,
+    SchemaRevisionRead,
 )
 from atelier2.application.publish_tool_grant_revision import (
     ToolGrantPublicationCollision,
@@ -175,6 +177,42 @@ async def publish_schema_revision_route(
         SchemaRevisionResource(schema_revision_hash=revision.revision_hash.value),
         status,
     )
+
+
+@router.get(
+    API_PREFIX + "/schema-revisions/{schema_revision_hash}",
+    responses={
+        HTTPStatus.OK: {
+            "content": {
+                "application/json": {"schema": {"type": "string", "format": "binary"}}
+            }
+        }
+    },
+)
+async def get_schema_revision_route(
+    schema_revision_hash: str, context: ApiContext = api_context_dependency
+) -> Response:
+    """The exact bytes a `schema` reference pins, for a caller holding only the hash.
+
+    A published `schema` revision is named by hash alone (ADR 0007), so this
+    mirrors the byte-in door it answers: `application/json`, the same media
+    type `POST /schema-revisions` accepted the document as, verbatim.
+    """
+    try:
+        parsed = PublishedRevisionHash(schema_revision_hash)
+    except (TypeError, ValueError) as error:
+        raise ApiProblem("invalid-revision-hash") from error
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.get_schema_revision(parsed),
+    )
+    match result:
+        case SchemaRevisionRead(revision):
+            return Response(revision.document, media_type="application/json")
+        case SchemaRevisionNotFound():
+            raise ApiProblem("schema-revision-not-found")
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 @router.post(
