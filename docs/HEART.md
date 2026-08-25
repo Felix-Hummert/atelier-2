@@ -11,15 +11,15 @@ The atelier is a workshop, not a dashboard. You enter a room, not an admin
 panel. The first thing you see is never navigation — it is the one piece being
 held out to you, or the quiet knowledge that nothing needs you.
 
-The Board owns what wants you now — what is still moving or waiting on you;
-History owns what already happened. A run lives in exactly one of the two at
-any moment, and it crosses from Board to History once, at the instant it turns
-terminal, never lingering in both.
+The Workbench owns what wants you now and what is still moving; History owns
+what already happened. A run lives in exactly one of the two at any moment and
+crosses from Workbench to History once, at the instant it turns terminal. The
+conversation may still quote a finished run — as the conductor's words, never
+as a second shelf.
 
-Workflows owns starting — nothing lives there but what is already admitted and
-ready to run; Catalog owns the library — everything this workshop has ever
-been given, with where it came from and whether it may yet be started. A piece
-is admitted in the Catalog and started in Workflows, never the other way.
+The Catalog owns the library and starting: everything this workshop has ever
+been given, with where it came from, whether it may yet be started — and the
+one door to start it by hand. The ear starts everything else.
 
 ## One thing alive
 
@@ -61,9 +61,10 @@ goes.
 
 ## The ear
 
-You speak to the workshop, you do not visit a chat page. The composer is
-always within reach, and until the conductor is connected it says so honestly
-— in one sentence, without a button that duplicates a door.
+You speak to the workshop, you do not visit a chat page. The ear is always
+within reach, and until the conductor is connected its placeholder says so —
+in the field itself, without a sentence beneath and without a button that
+duplicates a door.
 
 ## Love is in the leftovers
 
