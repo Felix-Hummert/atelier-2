@@ -44,6 +44,7 @@ from atelier2.adapters.dbos.schema import (
     _V23_AGENT_ATTEMPT_TRIGGERS,
     _V24_AGENT_ATTEMPT_TRIGGERS,
     _V27_AGENT_ATTEMPT_STATE_TRANSITION,
+    _V32_AGENT_ATTEMPT_TRIGGERS,
     _VERSION_TWENTY,
     _WAIT_ANSWERS_TRIGGERS,
     PRODUCT_SCHEMA_HANDOFF,
@@ -107,8 +108,10 @@ from atelier2.contracts.agent_attempts import (
     AGENT_ATTEMPT_ORDINAL,
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     AgentAttemptCancellationDisposition,
+    AgentAttemptFailureCode,
     AgentAttemptId,
     AgentAttemptReplacement,
+    AgentAttemptState,
 )
 from atelier2.contracts.agent_transcripts import AssistantTurn, AttemptTranscript
 from atelier2.contracts.agents import (
@@ -3546,6 +3549,7 @@ def _revert_the_attempt_transcript_pointer(connection: sqlite3.Connection) -> No
         _AGENT_ATTEMPTS_TRIGGERS,
         SCHEMA_VERSION,
         V36_SCHEMA_HANDOFF.version,
+        trigger_source=_V32_AGENT_ATTEMPT_TRIGGERS,
     )
 
 
@@ -3661,14 +3665,17 @@ _KEPT_TRANSCRIPT = AttemptTranscript.of([AssistantTurn("I read the file and stop
 
 
 def _replacement_attempt_row(
-    database_path: Path, transcript_artifact_hash: str | None
+    database_path: Path,
+    transcript_artifact_hash: str | None,
+    *,
+    ended: bool = True,
 ) -> tuple[str, tuple[object, ...]]:
-    """A second attempt of the stored execution, optionally naming a transcript.
+    """A second, ended attempt of the stored execution, naming a transcript.
 
-    It is the stored row with a new ordinal and the identity that ordinal
-    derives, so every constraint the table states about an attempt is satisfied
-    by the same values the store itself wrote -- what is under test is the one
-    column this hop added, not a hand-built row.
+    It is the stored row with a new ordinal, the identity that ordinal derives,
+    and the ending a transcript belongs to -- so every other constraint the
+    table states is satisfied by the values the store itself wrote, and what is
+    under test is the one column this hop added rather than a hand-built row.
     """
 
     with sqlite3.connect(database_path) as connection:
@@ -3691,6 +3698,15 @@ def _replacement_attempt_row(
         AgentExecutionRequestHash(str(stored["request_hash"])),
         REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     ).value
+    # A transcript is what an attempt DID, so the row that may carry one is an
+    # ended one. The store writes both in the same statement; this fixture
+    # states the same ending by hand because it writes no attempt through it.
+    if ended:
+        stored["state"] = AgentAttemptState.FAILED.value
+        stored["state_version"] = 2
+        stored["failure_code"] = (
+            AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY.value
+        )
     if _TRANSCRIPT_POINTER_COLUMN in stored:
         stored[_TRANSCRIPT_POINTER_COLUMN] = transcript_artifact_hash
     statement = (
@@ -3883,3 +3899,97 @@ def test_a_refused_transcript_hop_leaves_the_v36_store_untouched(
         assert connection.execute(
             "SELECT version FROM atelier_schema_versions"
         ).fetchone() == (36,)
+
+
+def test_a_v37_attempt_refuses_a_transcript_no_artifact_answers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A well-formed address is not evidence; bytes under it are.
+
+    Sixty-four hex characters look exactly like a kept transcript whether or not
+    anything was ever kept, so the shape alone would let a dangling pointer pass
+    for the one thing an operator opens this column to read.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v36_store(database_path)
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+    unpublished = Artifact(b'{"kind":"attempt-transcript/v1","events":[]}')
+    statement, row = _replacement_attempt_row(
+        database_path, unpublished.artifact_hash.value
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+            connection.execute(statement, row)
+
+
+def test_a_transcript_a_v37_attempt_named_can_never_be_moved_or_cleared(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The address goes from absent to present once and then stands.
+
+    Every other column of a terminal attempt is already fenced by the transition
+    trigger. Without this the pointer would be the single field of a finished
+    attempt that a later update could still swing at other bytes -- or blank,
+    which reads back as "this attempt decoded nothing".
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v36_store(database_path)
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+    kept = Artifact(_KEPT_TRANSCRIPT.document)
+    other = Artifact(
+        AttemptTranscript.of([AssistantTurn("Another attempt entirely.")]).document
+    )
+    statement, row = _replacement_attempt_row(database_path, kept.artifact_hash.value)
+
+    with sqlite3.connect(database_path) as connection:
+        for artifact in (kept, other):
+            connection.execute(
+                "INSERT INTO artifacts (artifact_hash, content) VALUES (?, ?)",
+                (artifact.artifact_hash.value, artifact.content),
+            )
+        connection.execute(statement, row)
+        connection.commit()
+
+        for swung in (other.artifact_hash.value, None):
+            with pytest.raises(sqlite3.IntegrityError, match="invalid agent attempt"):
+                connection.execute(
+                    f"UPDATE agent_attempts SET {_TRANSCRIPT_POINTER_COLUMN} = ?, "
+                    "state_version = state_version + 1 "
+                    "WHERE attempt_ordinal = ?",
+                    (swung, REPLACEMENT_AGENT_ATTEMPT_ORDINAL),
+                )
+
+
+def test_a_v37_attempt_still_running_may_not_name_a_transcript_yet(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A transcript is what an attempt did, so a live one has none to name.
+
+    Written as an insert because that is the door the CHECK is the only guard
+    on: an armed row is fenced by the transition trigger against every update,
+    this column included, but nothing before this said a freshly written row
+    could not claim a finished account of work still going on.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v36_store(database_path)
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+    kept = Artifact(_KEPT_TRANSCRIPT.document)
+    statement, row = _replacement_attempt_row(
+        database_path, kept.artifact_hash.value, ended=False
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO artifacts (artifact_hash, content) VALUES (?, ?)",
+            (kept.artifact_hash.value, kept.content),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+            connection.execute(statement, row)

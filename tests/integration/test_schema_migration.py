@@ -432,7 +432,7 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
     assert (
         PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[37]
-        == "148e33c0d0a90a973235350221d7489d77583aa04cfe7603a9a49ca243592a8f"
+        == "e41cf318212e0a79d6605413b5818ef68d6245baaf05a53b888b8aac40131a13"
     )
 
 
