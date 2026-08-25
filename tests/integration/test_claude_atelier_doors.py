@@ -56,6 +56,7 @@ from atelier2.host.conductor_workflow import (
     CONDUCTOR_REPORT_SCHEMA,
 )
 from atelier2.host.mcp_tools import MCP_SERVER_NAME, McpToolName
+from atelier2.ports.agent_executions import AgentProcessInvocation
 from tests.integration.test_claude_subscription import (
     INTROSPECTING_CLAUDE,
     argument_after,
@@ -64,7 +65,11 @@ from tests.integration.test_claude_subscription import (
     parsing_claude,
     provider_workspace,
 )
-from tests.scenarios.agents import claude_subscription_deployment
+from tests.scenarios.agents import (
+    agent_attempt_execution,
+    agent_workspace_owner,
+    claude_subscription_deployment,
+)
 
 _LOOPBACK_SERVICE_URL = "http://127.0.0.1:8422"
 
@@ -317,6 +322,87 @@ def test_an_executable_that_never_names_an_unknown_flag_cannot_be_attested(
 
     with pytest.raises(ClaudeExecutableUnsupported, match="no release can know"):
         attest_atelier_doors_invocation(settings)
+
+
+# The shape #656/#661 measured `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` leaving in the
+# invocation's own working directory before it can launch the door child under
+# bubblewrap: empty bind-mount targets neither this executor nor the model asked
+# for. Not the CLI's own exact set -- that stays the unbilled probe's own -- but
+# the same shape (dotfiles, package-manager markers, `.claude/{commands,agents}`,
+# `node_modules/.bin`), so the regression below exercises the lease teardown
+# against what was actually observed rather than one artefact of this test's
+# own choosing.
+DOORS_SCRUB_RESIDUE_FILES = (
+    Path(".env"),
+    Path(".env.local"),
+    Path("package.json"),
+    Path("yarn.lock"),
+    Path(".npmrc"),
+)
+DOORS_SCRUB_RESIDUE_DIRECTORIES = (
+    Path(".claude/commands"),
+    Path(".claude/agents"),
+    Path("node_modules/.bin"),
+)
+
+RESIDUE_LEAVING_CLAUDE = (
+    "import json, os, sys\n"
+    "sys.stdin.buffer.read()\n"
+    f"for relative in {tuple(str(path) for path in DOORS_SCRUB_RESIDUE_FILES)!r}:\n"
+    "    open(os.path.join(os.getcwd(), relative), 'a').close()\n"
+    "for relative in "
+    f"{tuple(str(path) for path in DOORS_SCRUB_RESIDUE_DIRECTORIES)!r}:\n"
+    "    os.makedirs(os.path.join(os.getcwd(), relative))\n"
+    "json.dump(\n"
+    "    {'type': 'result', 'is_error': False, 'result': json.dumps({'ran': True})},\n"
+    "    sys.stdout,\n"
+    ")\n"
+)
+"""A fake CLI standing where a real Claude Code under the subprocess-env scrub
+would stand: it leaves the measured residue shape in its own cwd before it
+answers, the same way the real CLI leaves it before it manages to spawn the
+door child."""
+
+
+def test_a_doors_attempts_scrub_residue_falls_with_the_rest_of_its_lease(
+    tmp_path: Path,
+) -> None:
+    """The lease owns this residue by owning the whole directory, not by name.
+
+    `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` is genuine containment for the door
+    child this executor expects (see its class docstring), and the CLI's own
+    bind-mount preparation is not this module's to change. What this module
+    does own is the working directory the CLI was started in, and the claim
+    under test is exactly the one #661 asked for evidence of: a real
+    `LocalAgentAttemptWorkspaceOwner` lease -- acquired and released the way
+    `execute_agent_attempt` always does -- removes this residue along with
+    everything else, because it retires the whole directory as one unit
+    rather than sweeping named entries.
+    """
+
+    settings = doors_deployment(tmp_path, "deployment", RESIDUE_LEAVING_CLAUDE)
+    executor = ClaudeAtelierDoorsExecutorFactory(settings).open()
+    request = doors_request()
+    command = executor.prepare_process(request)
+
+    workspaces = agent_workspace_owner(tmp_path)
+    try:
+        attempt_id = agent_attempt_execution(request).attempt_id
+        lease = workspaces.acquire(attempt_id)
+        completion = launched(command, lease.working_directory)
+        result = executor.decode_process_completion(
+            AgentProcessInvocation(command, lease), completion
+        )
+
+        assert isinstance(result, AgentExecutionResult)
+        for relative in DOORS_SCRUB_RESIDUE_FILES + DOORS_SCRUB_RESIDUE_DIRECTORIES:
+            assert (lease.working_directory / relative).exists()
+
+        workspaces.release(attempt_id)
+    finally:
+        workspaces.close()
+
+    assert not lease.working_directory.exists()
 
 
 # The report every fake episode below answers with. Its two field names are
