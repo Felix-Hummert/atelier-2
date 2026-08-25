@@ -538,6 +538,13 @@ def _declared_schema_of(command: AgentProcessCommand) -> SchemaAccepted | None:
 def _stream_lines(standard_output: bytes) -> tuple[str, ...]:
     """Every line this call wrote that carries anything, as text.
 
+    Split on the line feed alone, because that is the record separator NDJSON
+    names and nothing else here is one. `splitlines` also cuts at U+2028, U+2029,
+    form feed and carriage return -- every one of which a JSON string may
+    legally contain -- so one model quoting a line separator would have had its
+    own answer torn into two halves that parse as neither, the last of them read
+    as the envelope.
+
     Decoding replaces what is not UTF-8 rather than refusing the frame: bytes a
     failing process wrote are the diagnosis somebody is looking for, and a
     transcript that vanished because one of them was malformed would be the
@@ -547,17 +554,25 @@ def _stream_lines(standard_output: bytes) -> tuple[str, ...]:
 
     return tuple(
         line
-        for line in standard_output.decode("utf-8", "replace").splitlines()
+        for line in standard_output.decode("utf-8", "replace").split("\n")
         if line.strip()
     )
 
 
 def _stream_entry(line: str) -> dict[str, object] | None:
-    """This line read as one stream entry, or nothing where it is not one."""
+    """This line read as one stream entry, or nothing where it is not one.
+
+    Every way the parser can refuse a line is contained, not bad syntax alone: a
+    JSON integer of more than a few thousand digits raises a plain `ValueError`
+    from the interpreter's own conversion limit, and a deeply nested document
+    raises `RecursionError`. Either one escaping here would end the attempt on
+    an exception nobody stored -- over a line this executor was in any case only
+    ever going to keep as text.
+    """
 
     try:
         entry: object = json.loads(line)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
         return None
     return entry if isinstance(entry, dict) else None
 
@@ -608,8 +623,14 @@ def _usage_step(entry: dict[str, object]) -> Usage | None:
     return Usage(read or 0, written or 0, cached or 0, created or 0)
 
 
-def _block_step(block: object, tool_names: dict[str, str]) -> TranscriptEvent | None:
-    """One content block as the step it is, or nothing where it is not one.
+def _block_step(block: object, tool_names: dict[str, str]) -> TranscriptEvent:
+    """One content block as the step it is, or as the output it stays.
+
+    Every block yields something. A block shape this executor does not know --
+    a thinking block, a redacted one, a kind a release adds tomorrow -- is kept
+    as the provider's own output rather than dropped, because a line that IS
+    recognised is exactly where a dropped block hides best: the reader sees a
+    turn and a tool call and never learns that a third thing stood between them.
 
     `tool_names` is how a result finds the door it answered: the provider names
     the tool on the call and refers back to it by id afterwards, so the call
@@ -617,30 +638,28 @@ def _block_step(block: object, tool_names: dict[str, str]) -> TranscriptEvent | 
     executor never saw keeps the id instead of borrowing another tool's name.
     """
 
-    if not isinstance(block, dict):
-        return None
-    shape = block.get(_ENVELOPE_TYPE_FIELD)
-    if shape == _TEXT_BLOCK_TYPE:
-        spoken = block.get(_TEXT_FIELD)
-        return AssistantTurn(spoken) if isinstance(spoken, str) else None
-    if shape == _TOOL_USE_BLOCK_TYPE:
-        name = block.get(_TOOL_NAME_FIELD)
-        if not isinstance(name, str):
-            return None
-        called_id = block.get(_TOOL_USE_ID_FIELD)
-        if isinstance(called_id, str):
-            tool_names[called_id] = name
-        return ToolCalled(name, _canonical_json(block.get(_TOOL_INPUT_FIELD)))
-    if shape == _TOOL_RESULT_BLOCK_TYPE:
-        answered_id = block.get(_ANSWERED_TOOL_USE_ID_FIELD)
-        if not isinstance(answered_id, str):
-            return None
-        answer = block.get(_CONTENT_FIELD)
-        return ToolReturned(
-            tool_names.get(answered_id, answered_id),
-            answer if isinstance(answer, str) else _canonical_json(answer),
-        )
-    return None
+    if isinstance(block, dict):
+        shape = block.get(_ENVELOPE_TYPE_FIELD)
+        if shape == _TEXT_BLOCK_TYPE:
+            spoken = block.get(_TEXT_FIELD)
+            if isinstance(spoken, str):
+                return AssistantTurn(spoken)
+        elif shape == _TOOL_USE_BLOCK_TYPE:
+            name = block.get(_TOOL_NAME_FIELD)
+            if isinstance(name, str):
+                called_id = block.get(_TOOL_USE_ID_FIELD)
+                if isinstance(called_id, str):
+                    tool_names[called_id] = name
+                return ToolCalled(name, _canonical_json(block.get(_TOOL_INPUT_FIELD)))
+        elif shape == _TOOL_RESULT_BLOCK_TYPE:
+            answered_id = block.get(_ANSWERED_TOOL_USE_ID_FIELD)
+            if isinstance(answered_id, str):
+                answer = block.get(_CONTENT_FIELD)
+                return ToolReturned(
+                    tool_names.get(answered_id, answered_id),
+                    answer if isinstance(answer, str) else _canonical_json(answer),
+                )
+    return UnrecognisedProviderOutput(_canonical_json(block))
 
 
 def _canonical_json(value: object) -> str:
@@ -666,11 +685,7 @@ def _line_steps(line: str, tool_names: dict[str, str]) -> tuple[TranscriptEvent,
     steps: tuple[TranscriptEvent, ...] = ()
     if shape in {_ASSISTANT_LINE_TYPE, _USER_LINE_TYPE}:
         steps = tuple(
-            step
-            for step in (
-                _block_step(block, tool_names) for block in _content_blocks(entry)
-            )
-            if step is not None
+            _block_step(block, tool_names) for block in _content_blocks(entry)
         )
     elif shape == _RESULT_ENVELOPE_TYPE:
         spent = _usage_step(entry)

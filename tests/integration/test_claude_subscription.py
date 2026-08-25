@@ -131,6 +131,13 @@ json.dump(
 )
 """
 
+LINE_SEPARATOR = "\u2028"
+"""A character a JSON string may carry and NDJSON does not end a record on.
+
+Named rather than written into the fixture, because a bare one is invisible to a
+reader of the test and to a reviewer of the diff alike.
+"""
+
 ENVELOPE_USAGE = Usage(1_024, 32, 256, 64)
 """What the last line of a stream reports the whole call spent."""
 
@@ -238,13 +245,13 @@ def success_envelope(result: str) -> str:
     )
 
 
-def assistant_line(*blocks: dict[str, object]) -> str:
+def assistant_line(*blocks: Mapping[str, object]) -> str:
     """One stream line of what the model said or asked for, in its own shape."""
 
     return json.dumps({"type": "assistant", "message": {"content": list(blocks)}})
 
 
-def tool_result_line(*blocks: dict[str, object]) -> str:
+def tool_result_line(*blocks: Mapping[str, object]) -> str:
     """One stream line of what the doors answered, in the provider's own shape."""
 
     return json.dumps({"type": "user", "message": {"content": list(blocks)}})
@@ -2207,3 +2214,104 @@ def test_an_executable_that_needs_a_flag_this_vector_lacks_is_refused_by_name(
 
     with pytest.raises(ClaudeExecutableUnsupported, match="output format"):
         attest_workspace_tool_invocation(settings)
+
+
+def test_a_line_separator_inside_an_answer_does_not_cut_the_stream(
+    tmp_path: Path,
+) -> None:
+    """U+2028 is legal inside a JSON string, and is not a record boundary.
+
+    Splitting the way text is usually split would tear this one line in two,
+    leave neither half parseable, and read the second as the envelope -- so a
+    model that quoted a line separator would have failed its own attempt.
+    """
+
+    answered = "pong" + LINE_SEPARATOR + "still pong"
+    envelope = json.dumps(
+        {"type": "result", "is_error": False, "result": answered},
+        ensure_ascii=False,
+    )
+    settings = claude_subscription_deployment(tmp_path, emitting_claude(envelope))
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+
+    result = executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+
+    assert isinstance(result, AgentExecutionResult)
+    assert result.output_bytes == answered.encode("utf-8")
+
+
+def test_a_line_no_parser_can_read_is_kept_rather_than_raised(
+    tmp_path: Path,
+) -> None:
+    """A number past the interpreter's own digit limit is text, not a crash.
+
+    `json.loads` refuses it with a plain `ValueError` rather than a decode
+    error, which an executor catching only the latter would let escape into the
+    attempt driver. It is kept as what it always was: output nobody could read.
+    """
+
+    unreadable = '{"type":"assistant","cost":' + "1" * 5_000 + "}"
+    stream = "\n".join((unreadable, success_envelope("pong")))
+    settings = claude_subscription_deployment(tmp_path, emitting_claude(stream))
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+
+    result = executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+
+    assert result == AgentExecutionResult(
+        b"pong",
+        AttemptTranscript.of([UnrecognisedProviderOutput(unreadable), ENVELOPE_USAGE]),
+    )
+
+
+def test_a_block_shape_this_executor_does_not_know_is_kept_beside_the_ones_it_does(
+    tmp_path: Path,
+) -> None:
+    """A dropped block hides best on a line that IS recognised.
+
+    The reader would see the turn and the tool call and never learn that a third
+    thing stood between them, which is the silence the whole transcript exists
+    to remove -- so an unknown block is kept as the provider's own output.
+    """
+
+    thinking = {"type": "thinking", "thinking": "weighing the two files"}
+    stream = "\n".join(
+        (
+            assistant_line(
+                thinking,
+                {"type": "text", "text": "I will read the policy."},
+            ),
+            success_envelope("pong"),
+        )
+    )
+    settings = claude_subscription_deployment(tmp_path, emitting_claude(stream))
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+
+    result = executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+
+    assert result == AgentExecutionResult(
+        b"pong",
+        AttemptTranscript.of(
+            [
+                UnrecognisedProviderOutput(
+                    json.dumps(thinking, ensure_ascii=False, separators=(",", ":"))
+                ),
+                AssistantTurn("I will read the policy."),
+                ENVELOPE_USAGE,
+            ]
+        ),
+    )
