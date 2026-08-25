@@ -11,6 +11,11 @@ The atelier is a workshop, not a dashboard. You enter a room, not an admin
 panel. The first thing you see is never navigation — it is the one piece being
 held out to you, or the quiet knowledge that nothing needs you.
 
+The Board owns what wants you now — what is still moving or waiting on you;
+History owns what already happened. A run lives in exactly one of the two at
+any moment, and it crosses from Board to History once, at the instant it turns
+terminal, never lingering in both.
+
 ## One thing alive
 
 On any screen, exactly one element may move: the piece that is being worked on

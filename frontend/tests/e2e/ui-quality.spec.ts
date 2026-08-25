@@ -310,7 +310,7 @@ test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio keep
     await page.evaluate(() => window.scrollTo(0, 0));
 
     await expect(page.getByRole("heading", { name: "[[[ Board ]]]" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "[[[ Nothing is running ]]]" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: `[[[ ${studioPageCopy.emptyTitle} ]]]` })).toBeVisible();
     await expect(
       page.getByText(wrapped(studioPageCopy.emptyDescription), { exact: true })
     ).toBeVisible();
