@@ -41,6 +41,7 @@ from atelier2.api.wire.events import (
     WaitAnsweredEventResource,
     WaitAnsweredEventResourceV2,
     WaitAnsweredEventResourceV3,
+    WaitCancelledEventResourceV3,
     WaitingInputEventResource,
     WaitingInputEventResourceV2,
     WaitingInputEventResourceV3,
@@ -433,6 +434,12 @@ def _run_event_resource_v3(
             event=event.event_kind.value,
             answer_base64=encode_canonical_base64(event.payload),
             answer_hash=event.payload_hash.value,
+            **common,
+        )
+    if event.event_kind is RunEventKind.WAIT_CANCELLED:
+        return WaitCancelledEventResourceV3(
+            event=event.event_kind.value,
+            command_id=event.payload.decode("utf-8"),
             **common,
         )
     raise ValueError(f"a V3 run cannot carry {event.event_kind.value}")

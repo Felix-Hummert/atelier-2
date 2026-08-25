@@ -333,6 +333,18 @@ class WaitAnsweredEventResourceV3(RunEventBaseResourceV3):
     answer_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
+class WaitCancelledEventResourceV3(RunEventBaseResourceV3):
+    """An operator ended this run while it was resting at this pause.
+
+    The event is the cancellation's whole attestation -- a pause has no attempt
+    to stamp -- so it names the command that ordered it and nothing else. The
+    run is `CANCELLED` from here; no answer to this pause is owed any more.
+    """
+
+    event: Literal["WAIT_CANCELLED"]
+    command_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
+
+
 RunEventResourceV3 = (
     AgentCompletedEventResourceV3
     | AgentFailedEventResourceV3
@@ -345,6 +357,7 @@ RunEventResourceV3 = (
     | ActionCompletedEventResourceV3
     | WaitingInputEventResourceV3
     | WaitAnsweredEventResourceV3
+    | WaitCancelledEventResourceV3
 )
 
 AnyRunEventResource = RunEventResource | RunEventResourceV2 | RunEventResourceV3

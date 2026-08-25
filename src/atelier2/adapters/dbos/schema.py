@@ -55,11 +55,11 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head keys a wait answer by the execution it answers (#671)
-# instead of by run and node, and gives it the round that execution stands in.
-# Predecessor is the published schema that gave the project-source connection
-# record its durable home (#567). Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 33
+# Movable hop: this head admits `WAIT_CANCELLED` as a run event kind (#668), so
+# a run resting at a pause can end under an operator's cancel. Predecessor is
+# the published schema that keyed a wait answer by its node execution (#671).
+# Change only this constant to restack.
+_HOP_PREDECESSOR_VERSION = 34
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -87,6 +87,7 @@ _VERSION_THIRTY_ONE = 31
 _VERSION_THIRTY_TWO = 32
 _VERSION_THIRTY_THREE = 33
 _VERSION_THIRTY_FOUR = 34
+_VERSION_THIRTY_FIVE = 35
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -160,6 +161,14 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # round one. It rewrites no bytes of an answer and reinterprets nothing; the
 # cutover is offline like every other, so "preserved" means preserved by the
 # migrate command and never by a running store.
+# V35 admits WAIT_CANCELLED as a run event kind (#668). A run resting in
+# WAITING_INPUT had no way to end: no attempt existed for an operator's cancel
+# to stop, so the run stood owed an answer forever against ADR 0006's sentence
+# that a run cancel drives it to one cancelled receipt. The kind is the
+# cancellation's own attestation -- it carries the minted command id as its
+# payload and is fenced by the node execution it names -- so the run's terminal
+# hash folds over a real event instead of a lift inventing one. Only the
+# vocabulary widens; every stored row keeps its bytes, its key and its meaning.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -191,6 +200,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     32: "0cdbeaf303f2839661930234a508e141cd995b8552def9b426a52aaad1eab84e",
     33: "f634d04c6cc525147ead8aa0dad8ef728189a6ef9554049c8a2aad56f3caeea8",
     34: "28dab0f4a152d7be66fa699d1123fdd130a94fe80ad705c19330f075e4fdd85a",
+    35: "29df9a195316ce94527be2c906e4dc4104e00b2cb16caa9bfada17fecb5a21d5",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -291,6 +301,10 @@ V32_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V33_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_THIRTY_THREE,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_THREE],
+)
+V34_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_THIRTY_FOUR,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_FOUR],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1091,7 +1105,7 @@ run_events = sa.Table(
         "'AGENT_CANCEL_REQUESTED', 'AGENT_CANCELLED', 'AGENT_INTERRUPTED', "
         "'ACTION_RECONCILIATION_REQUIRED', "
         "'ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED', 'WAITING_INPUT', "
-        "'WAIT_ANSWERED', 'SUBWORKFLOW_COMPLETED')"
+        "'WAIT_ANSWERED', 'WAIT_CANCELLED', 'SUBWORKFLOW_COMPLETED')"
     ),
     sa.CheckConstraint(
         "length(payload_hash) = 64 AND payload_hash NOT GLOB '*[^0-9a-f]*'"
@@ -2646,9 +2660,10 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    # V33 holds the same tables as the current version: the hop between them
-    # moved one table's key and columns, not the set of tables.
-    if version in {SCHEMA_VERSION, _VERSION_THIRTY_THREE}:
+    # V33 and V34 hold the same tables as the current version: the hops between
+    # them moved one table's key and columns and one table's kind vocabulary,
+    # never the set of tables.
+    if version in {SCHEMA_VERSION, _VERSION_THIRTY_FOUR, _VERSION_THIRTY_THREE}:
         return PRODUCT_TABLE_NAMES
     if version in {_VERSION_THIRTY_TWO, _VERSION_THIRTY_ONE}:
         return PRODUCT_TABLE_NAMES - connections
@@ -3795,6 +3810,32 @@ def _apply_v33_to_v34(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_THIRTY_THREE, _VERSION_THIRTY_FOUR)
 
 
+_PREDECESSOR_WAIT_UNCANCELLABLE_RUN_EVENTS = "run_events_before_the_cancelled_wait"
+
+
+def _apply_v34_to_v35(connection: sqlite3.Connection) -> None:
+    """Admit WAIT_CANCELLED as an event kind, and keep every stored row.
+
+    SQLite changes no CHECK in place, so widening the kind vocabulary is the
+    same rebuild every shape hop is. Nothing already written is reinterpreted:
+    no stored event carries the new kind, none of the carried columns move, and
+    every row's own hash still frames the exact bytes it framed before. The two
+    append-only triggers and the three partial unique indexes are reinstalled
+    by the rebuild, because a run event log that could be updated or deleted
+    for the length of one hop would be no evidence at all.
+    """
+
+    _rebuild_product_table(
+        connection,
+        run_events,
+        _PREDECESSOR_WAIT_UNCANCELLABLE_RUN_EVENTS,
+        _RUN_EVENTS_TRIGGERS,
+        _VERSION_THIRTY_FOUR,
+        _VERSION_THIRTY_FIVE,
+    )
+    _raise_declared_version(connection, _VERSION_THIRTY_FOUR, _VERSION_THIRTY_FIVE)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -3907,6 +3948,11 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _VERSION_THIRTY_THREE,
         _VERSION_THIRTY_FOUR,
         _apply_v33_to_v34,
+    ),
+    _SchemaMigrationStep(
+        _VERSION_THIRTY_FOUR,
+        _VERSION_THIRTY_FIVE,
+        _apply_v34_to_v35,
     ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {

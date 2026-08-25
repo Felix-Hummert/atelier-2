@@ -31,6 +31,7 @@ from atelier2.adapters.dbos.run_transitions import (
     RunTransitionConflict,
     _commit_event,
     _insert_event,
+    commit_wait_cancelled,
     lift_started_run,
     load_graph,
     load_run,
@@ -41,6 +42,7 @@ from atelier2.adapters.dbos.schema import (
     run_events,
     runs,
     tool_redemptions,
+    wait_answers,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow_ids import (
@@ -102,6 +104,7 @@ from atelier2.contracts.executions import (
     RunEventAgentAttemptBinding,
     RunEventCancellationBinding,
     RunEventKind,
+    WaitAnswerState,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
@@ -161,6 +164,7 @@ from atelier2.ports.agent_attempts import (
     AgentExecutorBindingRefusalWritten,
     RunCancellationAccepted,
     RunCancellationCommandConflict,
+    RunCancellationEndedRun,
     RunCancellationNotCancellable,
     RunCancellationOvertakenBySuccess,
     RunCancellationResult,
@@ -794,6 +798,28 @@ def _run_cancellation_from_event_log(
     ):
         return RunCancellationTerminalRetry(run)
     return DurableStateCorrupt()
+
+
+def _wait_cancellation_from_event_log(
+    connection: Any, run_id: RunId, command_id: str
+) -> RunCancellationResult | None:
+    """This command's answer when it already ended a run resting at a pause.
+
+    A resting Wait holds no attempt row, so the command id lives in the one
+    place a wait cancellation writes it: the payload of its own attestation.
+    That event is never rewritten, so a retry after a lost response reads the
+    same answer forever. `None` means no wait cancellation carries this command.
+    """
+    ended = connection.scalar(
+        sa.select(run_events.c.event_sequence).where(
+            run_events.c.run_id == run_id.value,
+            run_events.c.event_kind == RunEventKind.WAIT_CANCELLED.value,
+            run_events.c.payload == command_id.encode("utf-8"),
+        )
+    )
+    if ended is None:
+        return None
+    return RunCancellationEndedRun(load_run(connection, run_id))
 
 
 def _unavailable_executor_cleanup_command_id(attempt_id: AgentAttemptId) -> str:
@@ -2142,6 +2168,8 @@ class DbosAgentAttemptStore:
 
             from_event_log = _run_cancellation_from_event_log(
                 connection, request.run_id, command_id
+            ) or _wait_cancellation_from_event_log(
+                connection, request.run_id, command_id
             )
             if from_event_log is not None:
                 return from_event_log
@@ -2156,7 +2184,20 @@ class DbosAgentAttemptStore:
                 return RunCancellationNotCancellable(
                     RunCancellationRefusal.ALREADY_ENDED
                 )
-            if run.state in {RunState.WAITING_INPUT, RunState.WAITING_RECONCILIATION}:
+            # A reconciliation pause keeps `waiting-for-you`: an Action's live
+            # intent stands behind it, and ending the run there would abandon
+            # it. So does any pause a format-3 line did not write, because
+            # `WAIT_CANCELLED` is a kind only the V3 wire publishes (#668).
+            resting_wait_run = (
+                run
+                if run.state is RunState.WAITING_INPUT and isinstance(run, RunV3)
+                else None
+            )
+            waiting_for_a_person = run.state in {
+                RunState.WAITING_INPUT,
+                RunState.WAITING_RECONCILIATION,
+            }
+            if waiting_for_a_person and resting_wait_run is None:
                 return RunCancellationNotCancellable(
                     RunCancellationRefusal.WAITING_FOR_YOU
                 )
@@ -2170,6 +2211,11 @@ class DbosAgentAttemptStore:
             if live_node_execution_id != request.expected_node_execution_id:
                 return RunCancellationNotCancellable(
                     RunCancellationRefusal.BETWEEN_NODES
+                )
+
+            if resting_wait_run is not None:
+                return self._cancel_resting_wait(
+                    connection, resting_wait_run, live_node_execution_id, command_id
                 )
 
             graph = load_graph(connection, run.revision_hash)
@@ -2224,6 +2270,45 @@ class DbosAgentAttemptStore:
             if committed is None:
                 return RunCancellationCommandConflict()
             return RunCancellationAccepted(committed)
+
+    def _cancel_resting_wait(
+        self,
+        connection: Any,
+        run: RunV3,
+        node_execution_id: NodeExecutionId,
+        command_id: str,
+    ) -> RunCancellationResult:
+        """End a run resting at a pause, in the transaction that resolved it.
+
+        Nothing is enqueued and nothing converges later: a pause has no attempt
+        to stop, so the command writes its own attestation and the run is over
+        when this returns. That is why the answer is `EndedRun` rather than
+        `Accepted` -- there is no cleanup an operator could still be waiting on.
+
+        A pending answer is the one thing that refuses. The product has already
+        told a person their message was taken, and applying it is a separate
+        transaction away, so ending the run here would drop it silently; the
+        operator is told to retry once that message has landed.
+        """
+        pending_answer = connection.scalar(
+            sa.select(wait_answers.c.node_execution_id).where(
+                wait_answers.c.node_execution_id == node_execution_id.value,
+                wait_answers.c.state == WaitAnswerState.PENDING.value,
+            )
+        )
+        if pending_answer is not None:
+            return RunCancellationNotCancellable(
+                RunCancellationRefusal.ANSWER_IN_FLIGHT
+            )
+        commit_wait_cancelled(
+            connection,
+            run.run_id,
+            run.revision_hash,
+            run.current_node_id,
+            command_id,
+            run.current_round_ordinal,
+        )
+        return RunCancellationEndedRun(load_run(connection, run.run_id))
 
     def _commit_new_cancellation(
         self,
