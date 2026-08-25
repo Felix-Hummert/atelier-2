@@ -22,6 +22,7 @@ from atelier2.adapters.dbos.names import (
 from atelier2.adapters.dbos.workflow_ids import (
     action_continuation_workflow_id_for,
     answer_workflow_id_for,
+    effect_workflow_id_for,
     node_workflow_id_for,
     subworkflow_workflow_id_for,
 )
@@ -33,6 +34,7 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevision
+from tests.crash.workflow_graph_harness import OPEN_PR_OPERATION
 from tests.scenarios.workflows import declared_output
 
 CRASHED = 86
@@ -92,7 +94,27 @@ nodes:
 """
     + declared_output()
 )
+V3_ACTION_DOCUMENT = (
+    b"""format_version: 3
+name: An agent hands its candidate to a platform action
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Write the candidate this chain hands on.
+"""
+    + declared_output()
+    + f"""  - id: publish
+    type: action
+    operation:
+      ref: open-pr
+      revision: {OPEN_PR_OPERATION.revision_hash.value}
+    depends_on: [implement]
+""".encode()
+)
 V3_RUN_ID = "v3/two-agents/recovery"
+V3_ACTION_RUN_ID = "v3/agent-then-action/recovery"
 V3_WAIT_RUN_ID = "v3/a-person-approves/recovery"
 V3_ANSWER = '"approved"'
 V3_PROVIDER_OUTPUT = b'"the exact provider bytes"'
@@ -425,6 +447,45 @@ def v3_node_workflow_id(node_id: str) -> str:
     return node_workflow_id_for(
         NodeExecutionId.for_node(RunId(V3_RUN_ID), revision.revision_hash, node_id)
     )
+
+
+def initialize_and_seed_v3_action(root: Path) -> None:
+    child(root, "initialize")
+    child(
+        root,
+        "seed-v3",
+        V3_ACTION_RUN_ID,
+        V3_ACTION_DOCUMENT.hex(),
+        str(int(AgentConfigurationRevisionFormatVersion.V2)),
+    )
+
+
+def v3_action_node_execution(node_id: str) -> NodeExecutionId:
+    return NodeExecutionId.for_node(
+        RunId(V3_ACTION_RUN_ID),
+        WorkflowRevision(V3_ACTION_DOCUMENT).revision_hash,
+        node_id,
+    )
+
+
+def v3_action_run_row(root: Path) -> tuple[object, ...]:
+    return database_row(
+        root,
+        "atelier.sqlite",
+        "SELECT state,current_node_id FROM runs WHERE run_id=?",
+        (V3_ACTION_RUN_ID,),
+    )
+
+
+def workflow_statuses(root: Path, workflow_id: str) -> tuple[str, ...]:
+    with sqlite3.connect(root / "atelier.sqlite", timeout=30) as connection:
+        return tuple(
+            str(row[0])
+            for row in connection.execute(
+                "SELECT status FROM workflow_status WHERE workflow_uuid=?",
+                (workflow_id,),
+            )
+        )
 
 
 def v3_wait_node_execution(node_id: str) -> NodeExecutionId:
@@ -994,3 +1055,53 @@ def test_a_v3_wait_survives_the_death_of_the_process_that_reached_it(
     assert workflow_identity_rows(tmp_path, answer_identity) == (
         (answer_identity, "atelier2_wait_answer"),
     )
+
+
+def test_a_v3_action_in_flight_survives_the_death_of_its_process(
+    tmp_path: Path,
+) -> None:
+    """A live effect workflow is a driver, so the restart must not end this run.
+
+    The process is killed inside the effect's commit, while `durable_effect`
+    still owes the run the continuation that carries it off the Action node.
+    What the restart finds is a run STARTED on a node that has no attempt, will
+    never have one, and whose own node workflow returned to SUCCESS the moment
+    it started the effect -- the exact shape the serve-start gap inventory
+    reads as dead. Reading only node workflows failed this healthy run before
+    it could finish (#645). What the restart must produce is the run the crash
+    interrupted: one ACTION_COMPLETED over one external effect, and a
+    COMPLETED terminal.
+    """
+
+    initialize_and_seed_v3_action(tmp_path)
+    marker = tmp_path / "v3-action-crash"
+
+    child(
+        tmp_path,
+        "execute-v3-until-complete",
+        V3_ACTION_RUN_ID,
+        str(marker),
+        COMMIT_STEP_NAME,
+        expected=CRASHED,
+    )
+
+    assert marker.read_text() == f"{COMMIT_STEP_NAME}:before-record"
+    action = v3_action_node_execution("publish")
+    continuation = action_continuation_workflow_id_for(logical_effect_key_for(action))
+    assert v3_action_run_row(tmp_path) == ("STARTED", "publish")
+    assert event_kinds(tmp_path) == ("AGENT_COMPLETED",)
+    assert workflow_statuses(tmp_path, node_workflow_id_for(action)) == ("SUCCESS",)
+    assert workflow_statuses(tmp_path, continuation) == ()
+    assert workflow_statuses(
+        tmp_path, effect_workflow_id_for(logical_effect_key_for(action))
+    ) == ("PENDING",)
+
+    child(tmp_path, "execute-v3-until-complete", V3_ACTION_RUN_ID, "NONE", "NONE")
+
+    assert v3_action_run_row(tmp_path) == ("COMPLETED", "publish")
+    assert event_kinds(tmp_path) == ("AGENT_COMPLETED", "ACTION_COMPLETED")
+    assert scalar(tmp_path, "SELECT state FROM effect_intents") == "CONFIRMED"
+    assert scalar(tmp_path, "SELECT COUNT(*) FROM effect_receipts") == 1
+    assert database_row(
+        tmp_path, "external.sqlite", "SELECT COUNT(*) FROM loopback_effect_calls"
+    ) == (1,)
