@@ -225,15 +225,20 @@ def _decode_agent_v2(encoded: Mapping[str, object]) -> AgentNodeBindingV2:
         raise RunBindingConflict(
             "a durable agent binding carries an invalid combination"
         ) from error
-    return AgentNodeBindingV2(
-        resolved,
-        _text(encoded, "job"),
-        _declared_tool_grant(encoded),
-        _declared_source_pin(encoded),
-        _declared_output_schema_document(encoded),
-        _whole_number(encoded, "round_ordinal"),
-        _declared_maximum_assistant_turns(encoded),
-    )
+    try:
+        return AgentNodeBindingV2(
+            resolved,
+            _text(encoded, "job"),
+            _declared_tool_grant(encoded),
+            _declared_source_pin(encoded),
+            _declared_output_schema_document(encoded),
+            _whole_number(encoded, "round_ordinal"),
+            _declared_maximum_assistant_turns(encoded),
+        )
+    except ValueError as error:
+        raise RunBindingConflict(
+            "a durable agent binding carries a round no run can stand in"
+        ) from error
 
 
 def _auth_profile(encoded: Mapping[str, object]) -> AuthProfileRevision:
