@@ -4,7 +4,7 @@ import json
 from collections.abc import Callable, Iterator
 from inspect import isasyncgenfunction, iscoroutinefunction
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 from fastapi import FastAPI
@@ -34,6 +34,7 @@ from atelier2.api.references import (
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
 )
+from atelier2.api.wire import events as wire_events
 from atelier2.contracts.run_projections import PublicAgentAttemptState
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
@@ -415,6 +416,28 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
     assert attention_parameters[("Last-Event-ID", "header")]["schema"] == {
         "$ref": "#/components/schemas/EventCursor"
     }
+
+
+def test_openapi_v3_event_union_names_every_wire_v3_event_resource() -> None:
+    """`RunEventResourceV3` may not silently drop a resource the wire emits.
+
+    `atelier2.api.wire.events.RunEventResourceV3` is the wire's own event
+    union -- the type every format-3 durable event is actually written and
+    read as. This derives the expected published resources from that union,
+    never from a hand list, so a kind added there without a matching entry in
+    the published `RunEventResourceV3` schema fails here instead of shipping
+    unseen.
+    """
+
+    wire_resource_names = {
+        model.__name__ for model in get_args(wire_events.RunEventResourceV3)
+    }
+    schema = served_app().openapi()
+    published_resource_names = {
+        ref["$ref"].rsplit("/", 1)[-1]
+        for ref in schema["components"]["schemas"]["RunEventResourceV3"]["oneOf"]
+    }
+    assert published_resource_names == wire_resource_names
 
 
 def test_occupancy_path_parameters_use_owned_project_and_lineage_components() -> None:

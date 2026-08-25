@@ -184,6 +184,20 @@ _LOOPED_WAIT = (
     maximum_rounds: 2
 """
 )
+"""#658: a Wait's round now carries an identity the answer path keeps, so this
+shape is executable -- see `test_a_loop_may_repeat_its_wait_node`.
+"""
+
+_LOOPED_ACTION = (
+    _ACTION_LINE
+    + b"""loops:
+  - id: until_published
+    body: [implement, publish]
+    maximum_rounds: 2
+"""
+)
+"""What `_LOOPED_WAIT` used to be: a kind that still has no round semantics an
+idempotent write can lean on, so a loop repeating it stays refused."""
 
 _LOOP_HEAD_READS_PREVIOUS_REVIEW = (
     b"""format_version: 3
@@ -408,10 +422,10 @@ def test_a_loop_head_may_read_the_loop_tails_previous_round() -> None:
 @pytest.mark.parametrize(
     ("document", "named"),
     (
-        (_LOOPED_WAIT, "no round repeats"),
+        (_LOOPED_ACTION, "no round repeats"),
         (_READ_OUT_OF_A_LOOP, "which round it reads"),
     ),
-    ids=("a wait node inside a loop body", "a value read out of a loop"),
+    ids=("an action node inside a loop body", "a value read out of a loop"),
 )
 def test_a_loop_shape_no_round_of_this_build_carries_is_refused_by_name(
     document: bytes, named: str
@@ -421,3 +435,17 @@ def test_a_loop_shape_no_round_of_this_build_carries_is_refused_by_name(
         parse_executable_workflow_document(document)
 
     assert named in str(refused.value)
+
+
+def test_a_loop_may_repeat_its_wait_node() -> None:
+    """#658: a Wait's round now carries an identity the answer path keeps.
+
+    The document that used to be refused for exactly this shape now parses as
+    executable, and the round bound it declares is answerable for the Wait
+    exactly as it already was for the Agent beside it.
+    """
+    graph = parse_executable_workflow_document(_LOOPED_WAIT)
+
+    assert isinstance(graph, WorkflowGraphV3)
+    assert graph.declared_rounds_of("implement") == range(1, 3)
+    assert graph.declared_rounds_of("approve") == range(1, 3)

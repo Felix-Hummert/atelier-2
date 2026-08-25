@@ -60,7 +60,7 @@ from atelier2.contracts.effects import (
     ReconcileCommandSnapshot,
     ReconcileCommandState,
 )
-from atelier2.contracts.executions import NodeExecutionId, logical_effect_key_for
+from atelier2.contracts.executions import NodeExecutionId, logical_effect_key_for_node
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
 from atelier2.ports.effects import EffectAdapter
@@ -668,14 +668,18 @@ def _enqueueing_node_workflow_is_dead(
     )
     if str(run["state"]) != RunState.STARTED.value:
         return False
-    execution_id = NodeExecutionId.for_node(
-        RunId(str(record["run_id"])),
-        WorkflowRevisionHash(str(record["workflow_revision_hash"])),
-        str(run["current_node_id"]),
-        int(run["current_round_ordinal"]),
-    )
-    if logical_effect_key_for(execution_id) != logical_key:
+    run_id = RunId(str(record["run_id"]))
+    revision_hash = WorkflowRevisionHash(str(record["workflow_revision_hash"]))
+    node_id = str(run["current_node_id"])
+    round_ordinal = int(run["current_round_ordinal"])
+    if (
+        logical_effect_key_for_node(run_id, revision_hash, node_id, round_ordinal)
+        != logical_key
+    ):
         return False
+    execution_id = NodeExecutionId.for_node(
+        run_id, revision_hash, node_id, round_ordinal
+    )
     return _workflow_is_dead(
         connection, node_workflow_id_for(execution_id), application_version
     )
