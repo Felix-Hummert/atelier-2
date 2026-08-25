@@ -15,15 +15,11 @@ from httpx import Response
 import atelier2.adapters.dbos.runtime as dbos_runtime
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
-from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
-from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
 from atelier2.adapters.dbos.node_binding_codec import (
     decode_node_binding,
     encode_node_binding,
 )
-from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
-from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
@@ -43,13 +39,7 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.adapters.markdown_agent_definitions import (
-    parse_agent_definition,
-    render_agent_definition,
-)
-from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
-from atelier2.api.context import ApiPorts
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import encode_public_run_reference
 from atelier2.application.bind_node import agent_execution_request_v2
@@ -137,7 +127,12 @@ from tests.scenarios.agents import (
     agent_attempt_execution,
     agent_scratch_root,
 )
-from tests.scenarios.api import api_limits, durable_queries, event_poll_backoff
+from tests.scenarios.api import (
+    api_limits,
+    durable_ports,
+    durable_queries,
+    event_poll_backoff,
+)
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 _DOCUMENT = b"""format_version: 2
@@ -174,46 +169,12 @@ def _runtime(
 
 
 def _api_client(runtime: DbosRuntime) -> TestClient:
-    queries = durable_queries(runtime.engine)
     return TestClient(
         create_app(
             source_commit="commit",
             source_tree="tree",
-            ports=ApiPorts(
-                workflow_revision_publisher=DbosWorkflowRevisionPublisher(
-                    runtime.engine
-                ),
-                published_run_starter=DbosDurableRunStarter(
-                    runtime.engine,
-                    runtime.settings,
-                    runtime.agent_executor_registry,
-                    effect_adapter_proves_absence=True,
-                ),
-                wait_answerer=DbosWaitAnswerer(
-                    runtime.engine, runtime.settings.application_version
-                ),
-                reconcile_commander=DbosEffectReconcileCommander(
-                    runtime.engine, runtime.settings
-                ),
-                workflow_revision_queries=queries,
-                run_queries=queries,
-                run_event_queries=queries,
-                workflow_document_parser=parse_workflow_document,
-                agent_definition_parser=parse_agent_definition,
-                agent_definition_renderer=render_agent_definition,
-                agent_configuration_catalog=DbosAgentConfigurationCatalog(
-                    runtime.engine, runtime.agent_executor_registry
-                ),
-                agent_attempt_canceller=DbosAgentAttemptStore(
-                    runtime.engine, runtime.settings.application_version
-                ),
-                catalog_resolver=DbosCatalogStore(runtime.engine),
-                catalog_admissions=DbosCatalogStore(runtime.engine),
-                published_revision_registry=DbosCatalogStore(runtime.engine),
-                published_revision_listing=DbosCatalogStore(runtime.engine),
-                artifact_publisher=DbosArtifactStore(runtime.engine),
-                host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
-                queue_projection=DbosQueueProjectionStore(runtime.engine),
+            ports=durable_ports(
+                runtime.engine, runtime.settings, runtime.agent_executor_registry
             ),
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),
