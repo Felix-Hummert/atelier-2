@@ -34,7 +34,11 @@ from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
 from atelier2.adapters.github.marker import body_carries_request_hash
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEventKind,
+    logical_effect_key_for,
+)
 from atelier2.contracts.runs import RunId, RunState
 from tests.scenarios.agents import agent_scratch_root
 from tests.scenarios.open_pr_agent import (
@@ -158,6 +162,16 @@ def test_a_granted_agent_node_opens_one_pull_request_and_leaves_one_receipt(
     # prepared request -- the same shape an Action's confirmation leaves.
     assert agent_output == PR_SPEC
     assert intent.request.payload == PR_SPEC
+    # #706: `graph_agent_open_pr_intent` now mints this key through the one
+    # owner it shares with the Action preparer and the #646 sweep
+    # (`logical_effect_key_for_node`) instead of composing `NodeExecutionId.
+    # for_node` and `logical_effect_key_for` by hand -- a pure refactor, so
+    # round one's key stays the exact bytes the un-rounded call already gave.
+    assert intent.binding.logical_key == logical_effect_key_for(
+        NodeExecutionId.for_node(
+            RUN, intent.binding.workflow_revision_hash, "implement"
+        )
+    )
     assert body_carries_request_hash(
         pull_request.body, intent.request.request_hash.value
     )
