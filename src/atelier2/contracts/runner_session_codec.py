@@ -25,13 +25,17 @@ _FRAME_PREFIX = b"ATELIER2\x00"
 
 # The whole session protocol's own identity, not just PREPARE's field count:
 # #672 widened PREPARE from 19 to 21 fields, so a wire frame's domain now
-# names the revision that shape belongs to. `_RETIRED_FRAME_DOMAIN_V1` is the
-# domain every pre-#672 peer still encodes -- a real, well-formed frame this
-# decoder no longer serves, not corrupt bytes. Naming it here, rather than
-# folding it into "unrecognized domain", is what lets decode answer a stale
-# peer with an explicit revision refusal instead of the generic malformed one
-# (ADR 0009 amendment, #672).
-_FRAME_DOMAIN = "runner-session/v2"
+# names the revision that shape belongs to. Public (not `_`-prefixed) because
+# `contracts/runner_manifests.py`'s attested session-protocol field reuses
+# this exact constant rather than carrying its own copy -- a second literal
+# is exactly what let the manifest's copy go stale when #672 first bumped
+# this one, caught only on review. `_RETIRED_FRAME_DOMAIN_V1` is the domain
+# every pre-#672 peer still encodes -- a real, well-formed frame this decoder
+# no longer serves, not corrupt bytes. Naming it here, rather than folding it
+# into "unrecognized domain", is what lets decode answer a stale peer with an
+# explicit revision refusal instead of the generic malformed one (ADR 0009
+# amendment, #672).
+RUNNER_SESSION_FRAME_DOMAIN = b"runner-session/v2"
 _RETIRED_FRAME_DOMAIN_V1 = b"runner-session/v1"
 
 
@@ -50,7 +54,7 @@ def runner_session_body_length(prefix: bytes) -> int:
 
 
 def encode_runner_session_frame(session: RunnerSessionFrame) -> bytes:
-    body = frame(_FRAME_DOMAIN, *session.fields())
+    body = frame(RUNNER_SESSION_FRAME_DOMAIN.decode("ascii"), *session.fields())
     if len(body) > MAXIMUM_RUNNER_SESSION_BODY_BYTES:
         raise RunnerSessionCodecError("runner-session-oversized")
     return struct.pack(">I", len(body)) + body
@@ -107,7 +111,7 @@ def _decode_frame_body(body: bytes) -> tuple[bytes, ...]:
     domain = body[cursor:domain_end]
     if domain == _RETIRED_FRAME_DOMAIN_V1:
         raise RunnerSessionCodecError("runner-session-incompatible-revision")
-    if domain != _FRAME_DOMAIN.encode("utf-8"):
+    if domain != RUNNER_SESSION_FRAME_DOMAIN:
         raise RunnerSessionCodecError("runner-session-noncanonical")
     cursor = domain_end
     fields: list[bytes] = []
