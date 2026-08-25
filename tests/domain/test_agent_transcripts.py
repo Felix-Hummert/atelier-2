@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import pytest
@@ -43,6 +44,79 @@ def planted_credential(issuer: str, body: str) -> str:
     """
 
     return f"{issuer}{body}"
+
+
+@pytest.mark.parametrize(
+    ("canary", "printed"),
+    [
+        pytest.param(
+            planted_credential("sk-ant", "-plantedcanarysecret0123456789"),
+            "ANTHROPIC_API_KEY={canary}",
+            id="an issuer-prefixed token",
+        ),
+        pytest.param(
+            planted_credential("wJalrXUtnFEMI", "K7MDENGbPxRfiCYEXAMPLEKEY"),
+            "AWS_SECRET_ACCESS_KEY={canary}",
+            id="a provider credential named by its whole identifier",
+        ),
+        pytest.param(
+            planted_credential("AKIA", "7QF3NOTAREALKEY0"),
+            "aws --profile {canary} s3 ls",
+            id="a provider key id no field names",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(AttemptTranscript.of, id="through the adapter's own door"),
+        pytest.param(
+            lambda events: AttemptTranscript(tuple(events)),
+            id="through the constructor beside it",
+        ),
+    ],
+)
+def test_no_way_of_building_a_transcript_lets_a_credential_through(
+    canary: str,
+    printed: str,
+    build: Callable[[Sequence[TranscriptEvent]], AttemptTranscript],
+) -> None:
+    """Both doors are asked, because a redactor with a way past it is none.
+
+    An earlier revision made redaction the classmethod's job and left the
+    constructor open beside it, so a caller that built one directly published
+    the provider's raw bytes. The canaries are three shapes a real agent
+    prints: one an issuer declares, one a whole identifier names, and one
+    neither does.
+    """
+
+    leaked = printed.format(canary=canary)
+    transcript = build(
+        (
+            ToolReturned("Bash", f"{leaked}\n"),
+            AssistantTurn(f"I ran `{leaked}` and stopped."),
+            UnrecognisedProviderOutput(f"fatal: {leaked} was rejected"),
+            ToolCalled("Bash", f'{{"command":"{leaked}"}}'),
+        )
+    )
+
+    assert canary not in transcript.document.decode("utf-8")
+    assert all(step["redacted"] for step in kept_events(transcript))
+
+
+def test_normalising_an_already_normalised_step_still_says_it_was_redacted() -> None:
+    """The flag survives a second pass, or a rebuild would un-say the redaction.
+
+    Nothing matches a credential shape once the marker stands where one stood,
+    so a flag recomputed from the kept text alone would come back False and the
+    reader would be told that nothing had been taken out.
+    """
+
+    canary = planted_credential("sk-ant", "-plantedcanarysecret0123456789")
+    once = AttemptTranscript.of([ToolReturned("Bash", f"API_KEY={canary}")])
+
+    assert AttemptTranscript(once.events) == once
+    assert kept_events(once)[0]["redacted"]
 
 
 def test_a_credential_a_tool_printed_is_replaced_and_the_step_says_so() -> None:

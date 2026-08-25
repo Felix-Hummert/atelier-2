@@ -243,19 +243,27 @@ def _readable(*texts: str) -> tuple[tuple[str, ...], bool]:
 
 
 def _kept(event: TranscriptEvent) -> TranscriptEvent:
+    """This step as the document may hold it, whatever it arrived as.
+
+    Running twice answers what running once answered. A step that was already
+    made readable matches no credential shape the second time, so the flag is
+    carried forward rather than recomputed -- otherwise normalising an already
+    normalised step would quietly un-say that something had been replaced.
+    """
+
     match event:
-        case ToolCalled(name, arguments, _):
+        case ToolCalled(name, arguments, marked):
             (kept_name, kept_arguments), redacted = _readable(name, arguments)
-            return ToolCalled(kept_name, kept_arguments, redacted)
-        case ToolReturned(name, result, _):
+            return ToolCalled(kept_name, kept_arguments, redacted or marked)
+        case ToolReturned(name, result, marked):
             (kept_name, kept_result), redacted = _readable(name, result)
-            return ToolReturned(kept_name, kept_result, redacted)
-        case AssistantTurn(text, _):
+            return ToolReturned(kept_name, kept_result, redacted or marked)
+        case AssistantTurn(text, marked):
             (kept_text,), redacted = _readable(text)
-            return AssistantTurn(kept_text, redacted)
-        case UnrecognisedProviderOutput(text, _):
+            return AssistantTurn(kept_text, redacted or marked)
+        case UnrecognisedProviderOutput(text, marked):
             (kept_text,), redacted = _readable(text)
-            return UnrecognisedProviderOutput(kept_text, redacted)
+            return UnrecognisedProviderOutput(kept_text, redacted or marked)
         case Usage() | TranscriptTruncated():
             return event
         case _ as unreachable:
@@ -290,7 +298,20 @@ def _within_the_document_bound(
 
 @dataclass(frozen=True)
 class AttemptTranscript:
-    """One attempt's readable, bounded steps, and the exact bytes they are kept as."""
+    """One attempt's readable, bounded steps, and the exact bytes they are kept as.
+
+    **There is no way in that skips the redactor.** Constructing one *is* making
+    the steps safe: whatever arrives is scanned for credential shapes, cut to a
+    readable width and brought under the document bound before anything is
+    measured, so `AttemptTranscript(events)` and `AttemptTranscript.of(events)`
+    are the same transcript. An earlier revision made that the classmethod's job
+    and left the constructor beside it, which meant every caller had to remember
+    which door was the safe one -- and a caller that forgot published a
+    provider's raw bytes. A redactor a caller can walk past is not a redactor.
+
+    What this means for a reader: `events` is what the document holds, not what
+    was handed in, and comparing two transcripts compares what would be stored.
+    """
 
     events: tuple[TranscriptEvent, ...]
     document: bytes = field(init=False)
@@ -300,21 +321,22 @@ class AttemptTranscript:
             raise TypeError("a transcript's steps are an exact ordered tuple")
         if not self.events:
             raise ValueError("a transcript with no steps is no transcript")
-        document = _document_of(tuple(map(_event_fragment, self.events)))
+        kept = _within_the_document_bound(tuple(map(_kept, self.events)))
+        document = _document_of(tuple(map(_event_fragment, kept)))
         if len(document) > MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES:
             raise ValueError(
                 f"transcript document exceeds {MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES} bytes"
             )
+        object.__setattr__(self, "events", kept)
         object.__setattr__(self, "document", document)
 
     @classmethod
     def of(cls, events: Iterable[TranscriptEvent]) -> AttemptTranscript:
         """The transcript these raw provider events are allowed to become.
 
-        Every step is made readable before anything measures it, and the whole
-        is then brought under the document bound. This is the only way in: an
-        adapter hands over what it decoded, and what comes back is already what
-        the store may keep.
+        The name an adapter reads at its call site. It adds nothing the
+        constructor does not already do -- that is the point -- and it accepts
+        any iterable, because what an adapter has decoded is rarely a tuple yet.
         """
 
-        return cls(_within_the_document_bound(tuple(map(_kept, tuple(events)))))
+        return cls(tuple(events))

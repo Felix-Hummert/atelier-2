@@ -45,6 +45,16 @@ def armoured_key() -> str:
             "session={secret} (expired)",
             id="json web token",
         ),
+        pytest.param(
+            assembled("wJalrXUtnFEMI", "K7MDENGbPxRfiCYEXAMPLEKEY"),
+            "AWS_SECRET_ACCESS_KEY={secret}\n",
+            id="a provider name whose credential word is not its first segment",
+        ),
+        pytest.param(
+            assembled("notarealservice", "accountkey0123456789"),
+            "GOOGLE_APPLICATION_CREDENTIALS_JSON: {secret}",
+            id="a provider name whose credential word is not its last segment",
+        ),
     ],
 )
 def test_a_recognised_credential_is_replaced_where_it_stood(

@@ -90,9 +90,23 @@ CREDENTIAL_SHAPES = (
     CredentialShape(
         # The credential at rest, named by the field it was assigned to. The
         # width floor keeps ordinary prose -- `password: yes` -- out of it.
+        #
+        # The name is read as the whole identifier rather than as the credential
+        # word alone, because that is how a provider spells it. The measured
+        # miss this was widened for is `AWS_SECRET_ACCESS_KEY=`, whose word sits
+        # between two other segments and which the narrower shape walked past
+        # while still calling itself a redactor. Only the value is replaced, so
+        # a generously matched name costs nothing, and the deliberate trade is
+        # that a name saying credential is believed even where its value turns
+        # out to be a path: a visible replacement rather than a silent leak.
         "assigned-secret",
         re.compile(
-            r"(?i:api[_-]?key|secret|password|passwd|token|credential)s?"
+            r"(?:[A-Za-z0-9]{1,32}[_-]){0,8}"
+            # The plural is inside the case-insensitive group, not after it: an
+            # `s` left outside matched only a lowercase one, so a field spelled
+            # `CREDENTIALS` was read as prose.
+            r"(?i:(?:api[_-]?key|secret|password|passwd|token|credential)s?)"
+            r"(?:[_-][A-Za-z0-9]{1,32}){0,8}"
             r"\s*[:=]\s*[\"']?"
             rf"(?P<{_MATCHED_VALUE_GROUP}>[A-Za-z0-9._~+/=-]{{12,}})"
         ),
