@@ -15,10 +15,28 @@ from atelier2.contracts.runner_sessions import RunnerSessionFrame, RunnerSession
 
 MAXIMUM_RUNNER_SESSION_BODY_BYTES = 1_078_291
 MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES = 1_078_295
-# Position of the resolved auth reference in the PREPARE payload, the last
-# field encode_runner_prepare_payload lays out.
+# Position of the resolved auth reference in the PREPARE payload.
+# `encode_runner_prepare_payload` lays out two more fields after it -- the
+# declared output schema and the pinned turn limit (#672) -- so this is no
+# longer the payload's last field, only the last one every PREPARE carries
+# unconditionally.
 PREPARE_AUTH_REFERENCE_FIELD = 18
 _FRAME_PREFIX = b"ATELIER2\x00"
+
+# The whole session protocol's own identity, not just PREPARE's field count:
+# #672 widened PREPARE from 19 to 21 fields, so a wire frame's domain now
+# names the revision that shape belongs to. Public (not `_`-prefixed) because
+# `contracts/runner_manifests.py`'s attested session-protocol field reuses
+# this exact constant rather than carrying its own copy -- a second literal
+# is exactly what let the manifest's copy go stale when #672 first bumped
+# this one, caught only on review. `_RETIRED_FRAME_DOMAIN_V1` is the domain
+# every pre-#672 peer still encodes -- a real, well-formed frame this decoder
+# no longer serves, not corrupt bytes. Naming it here, rather than folding it
+# into "unrecognized domain", is what lets decode answer a stale peer with an
+# explicit revision refusal instead of the generic malformed one (ADR 0009
+# amendment, #672).
+RUNNER_SESSION_FRAME_DOMAIN = b"runner-session/v2"
+_RETIRED_FRAME_DOMAIN_V1 = b"runner-session/v1"
 
 
 class RunnerSessionCodecError(ValueError):
@@ -36,7 +54,7 @@ def runner_session_body_length(prefix: bytes) -> int:
 
 
 def encode_runner_session_frame(session: RunnerSessionFrame) -> bytes:
-    body = frame("runner-session/v1", *session.fields())
+    body = frame(RUNNER_SESSION_FRAME_DOMAIN.decode("ascii"), *session.fields())
     if len(body) > MAXIMUM_RUNNER_SESSION_BODY_BYTES:
         raise RunnerSessionCodecError("runner-session-oversized")
     return struct.pack(">I", len(body)) + body
@@ -88,7 +106,12 @@ def _decode_frame_body(body: bytes) -> tuple[bytes, ...]:
     domain_length = struct.unpack(">I", body[cursor : cursor + 4])[0]
     cursor += 4
     domain_end = cursor + domain_length
-    if domain_end > len(body) or body[cursor:domain_end] != b"runner-session/v1":
+    if domain_end > len(body):
+        raise RunnerSessionCodecError("runner-session-noncanonical")
+    domain = body[cursor:domain_end]
+    if domain == _RETIRED_FRAME_DOMAIN_V1:
+        raise RunnerSessionCodecError("runner-session-incompatible-revision")
+    if domain != RUNNER_SESSION_FRAME_DOMAIN:
         raise RunnerSessionCodecError("runner-session-noncanonical")
     cursor = domain_end
     fields: list[bytes] = []
