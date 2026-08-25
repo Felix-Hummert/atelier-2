@@ -254,24 +254,29 @@ def provider() -> RecordingAgentExecutorFactoryV2:
     )
 
 
-@pytest.fixture
-def runtime(
-    tmp_path: Path, provider: RecordingAgentExecutorFactoryV2
-) -> Iterator[DbosRuntime]:
-    started = DbosRuntime(
+def runtime_over(root: Path, provider: RecordingAgentExecutorFactoryV2) -> DbosRuntime:
+    """A runtime over the durable state in this directory, as a restart builds one."""
+    return DbosRuntime(
         DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
+            root / "atelier.sqlite",
             "v3-chain-test",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+            agent_scratch_root=agent_scratch_root(root),
         ),
         LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
+            root / "external.sqlite",
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
         ExactOutputAgentExecutorFactory(),
         (provider,),
     )
+
+
+@pytest.fixture
+def runtime(
+    tmp_path: Path, provider: RecordingAgentExecutorFactoryV2
+) -> Iterator[DbosRuntime]:
+    started = runtime_over(tmp_path, provider)
     started.initialize_storage()
     try:
         yield started
@@ -609,3 +614,42 @@ def test_an_answer_the_waits_own_schema_refuses_hands_nothing_on(
     _, applied = jobs_handed_to(provider)
     assert ANSWER_THE_SCHEMA_REFUSES not in applied
     assert ANSWER in applied
+
+
+@pytest.mark.proves("a-node-reads-the-work-of-the-node-before-it")
+def test_the_answer_survives_a_restart_between_the_person_and_the_node_reading_it(
+    tmp_path: Path, provider: RecordingAgentExecutorFactoryV2
+) -> None:
+    """The runtime that hands the answer on is not the one that took the pause.
+
+    A pause is exactly where a run is most likely to outlive the process holding
+    it, so the answer must be readable from durable truth alone. The window is
+    made rather than raced: the first runtime is closed while the run waits, the
+    answer is submitted with nothing running to consume it, and only then does a
+    second runtime come up. It recovers the enqueued answer and drives the node
+    that reads it, having never seen a byte of this run in memory.
+    """
+    answering = runtime_over(tmp_path, provider)
+    answering.initialize_storage()
+    try:
+        workflow, bindings = publish_chain(
+            answering, answered_document(TEXT_SCHEMA.revision_hash)
+        )
+        start_run(answering, workflow, bindings)
+        answering.launch()
+        wait_for_state(answering, RunState.WAITING_INPUT)
+    finally:
+        answering.close()
+
+    recovered = runtime_over(tmp_path, provider)
+    try:
+        assert isinstance(answer(recovered, workflow, ANSWER), AnswerAcceptedPending)
+        recovered.launch()
+        wait_for_state(recovered, RunState.COMPLETED)
+        handed = jobs_handed_to(provider)
+    finally:
+        recovered.close()
+
+    assert len(handed) == 1, "the restarted runtime ran more than the reading node"
+    assert b"--- result of approve: approval ---" in handed[0]
+    assert ANSWER in handed[0]
