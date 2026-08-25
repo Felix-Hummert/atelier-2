@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import pytest
 
@@ -22,7 +22,6 @@ from atelier2.contracts.revisions_v3 import (
 )
 from atelier2.contracts.run_configuration_v3 import ReferenceRefusalReason
 from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
-from atelier2.contracts.workflows_v3 import what_a_v3_document_still_waits_for
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
@@ -73,12 +72,10 @@ class Registry:
 
     published: tuple[PublishedRevision, ...] = ()
     instead: ResolvePublishedRevisionResult | None = None
-    asked: list[tuple[RevisionKind, str]] = field(default_factory=list)
 
     def resolve(
         self, kind: RevisionKind, revision_hash: PublishedRevisionHash
     ) -> ResolvePublishedRevisionResult:
-        self.asked.append((kind, revision_hash.value))
         if self.instead is not None:
             return self.instead
         for revision in self.published:
@@ -87,24 +84,32 @@ class Registry:
         return PublishedRevisionMissing()
 
 
-def test_a_v1_document_is_executable_without_asking_the_registry() -> None:
-    registry = Registry()
+class RegistryNobodyMayAsk:
+    """A registry the evaluation must not reach: the verdict is settled before it."""
 
-    evaluated = evaluate_executability(parse_workflow_document(V1_DOCUMENT), registry)
+    def resolve(
+        self, kind: RevisionKind, revision_hash: PublishedRevisionHash
+    ) -> ResolvePublishedRevisionResult:
+        raise AssertionError(f"the evaluation asked the registry for {kind.value}")
+
+
+def test_a_v1_document_is_executable_without_asking_the_registry() -> None:
+    evaluated = evaluate_executability(
+        parse_workflow_document(V1_DOCUMENT), RegistryNobodyMayAsk()
+    )
 
     assert evaluated == ExecutableDocument()
-    assert registry.asked == []
 
 
 def test_a_form_nothing_binds_is_refused_before_any_reference_is_asked() -> None:
-    graph = parse_workflow_document(V3_DOCUMENT)
-    registry = Registry()
+    """V3_DOCUMENT declares a graph output nothing carries out of a run."""
+    evaluated = evaluate_executability(
+        parse_workflow_document(V3_DOCUMENT), RegistryNobodyMayAsk()
+    )
 
-    evaluated = evaluate_executability(graph, registry)
-
-    assert isinstance(graph.__class__, type)
-    assert evaluated == DocumentNotExecutable(what_a_v3_document_still_waits_for(graph))  # type: ignore[arg-type]
-    assert registry.asked == []
+    assert isinstance(evaluated, DocumentNotExecutable), evaluated
+    assert evaluated.refusal is None
+    assert evaluated.reason == "graph outputs nothing carries out of a run: verdict"
 
 
 def test_every_reference_resolved_is_the_snapshot_a_start_freezes() -> None:
