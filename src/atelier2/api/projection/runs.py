@@ -31,6 +31,7 @@ from atelier2.api.wire.resources import (
     PublicAttemptStateName,
     RunCancellabilityResource,
     RunNotCancellableReasonName,
+    RunOrderResource,
     RunReceiptResource,
     RunResource,
     RunResourceV2,
@@ -229,6 +230,13 @@ def _run_resource_v3(projection: RunProjection, run: RunV3) -> RunResourceV3:
                 executor_revision=binding.configuration.executor_revision.value,
             )
             for binding in run.agent_bindings
+        ),
+        orders=tuple(
+            RunOrderResource(
+                name=order.name,
+                value_base64=encode_canonical_base64(order.value),
+            )
+            for order in projection.orders
         ),
         state_version=run.state_version,
         state=cast(

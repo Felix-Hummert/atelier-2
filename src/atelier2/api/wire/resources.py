@@ -1146,6 +1146,20 @@ class RunCancellabilityResource(ApiModel):
         return self
 
 
+class RunOrderResource(ApiModel):
+    """One order a V3 run was started with: its name and the exact bytes supplied.
+
+    The workflow revision's own `WorkflowDeclaredOrderResourceV3` already names
+    the schema each order pins; this resource repeats only what that excerpt
+    cannot -- the bytes the start actually carried, base64, exactly as
+    `run_inputs_v3` holds them. A run started with no orders answers an empty
+    list, its own honest answer, not a gap this projection fills in.
+    """
+
+    name: str = Field(min_length=1)
+    value_base64: str
+
+
 class RunResourceV3(ApiModel):
     """One V3 run as it reads back: its own format, never a V2 one renumbered.
 
@@ -1182,6 +1196,14 @@ class RunResourceV3(ApiModel):
     agent_bindings: tuple[AgentBindingResourceV2, ...] = Field(
         max_length=MAXIMUM_RUN_AGENT_BINDINGS
     )
+    orders: tuple[RunOrderResource, ...]
+    """Every order this run was started with, in the order the store returns them.
+
+    A run's purpose is what these bytes actually were, not a guess parsed back
+    out of one agent node's composed job text (PR #736 review, RESLICE): these
+    come from `run_inputs_v3` untouched by any node's job, so a reader learns
+    why a run started without reading a node and without parsing anything.
+    """
     state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
     state: Literal[
         "STARTED",

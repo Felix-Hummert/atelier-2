@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, assert_never
 
 import sqlalchemy as sa
@@ -166,6 +166,35 @@ def load_run_inputs(
             f"the run carries no order named {missing[0]!r}, which this node reads"
         )
     return tuple(stored[name] for name in sorted(read))
+
+
+def load_run_orders(
+    session: Any, run_ids: Sequence[str]
+) -> dict[str, tuple[RunInput, ...]]:
+    """Every order each of these runs was started with, one query for the page.
+
+    Unlike `load_run_inputs`, this answers a run's own purpose -- every order the
+    start stored -- rather than the subset one node declared it reads. A run
+    absent from the returned mapping carries none: `run_inputs_v3` has no row for
+    a run started with no orders, which is a run's own honest answer and not a
+    gap this reads around.
+    """
+    if not run_ids:
+        return {}
+    by_run: dict[str, list[RunInput]] = {run_id: [] for run_id in run_ids}
+    for record in session.execute(
+        sa.select(run_inputs_v3)
+        .where(run_inputs_v3.c.run_id.in_(run_ids))
+        .order_by(run_inputs_v3.c.run_id, run_inputs_v3.c.name)
+    ).all():
+        by_run[str(record.run_id)].append(
+            RunInput(
+                str(record.name),
+                PublishedRevisionHash(str(record.schema_revision_hash)),
+                bytes(record.value),
+            )
+        )
+    return {run_id: tuple(orders) for run_id, orders in by_run.items()}
 
 
 class NodeOutputNotWritten(RunTransitionConflict):
