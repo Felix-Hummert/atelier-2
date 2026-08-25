@@ -116,9 +116,13 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
   // own -- only a V3 document can (`boardRows.ts`'s honest run-id fallback
   // says the same) -- so a second, minimal named V3 workflow exists purely as
   // the keyboard vehicle into New Run; the run this journey proves out is
-  // still chosen by its own hash below, unrelated to this vehicle.
+  // still chosen by its own hash below, unrelated to this vehicle. Workflows
+  // is the start room now (#684): only an admitted, startable workflow gets a
+  // card there, so this vehicle is admitted the moment it is published.
   const doorSchemaHash = await anyJsonSchema(page);
-  const doorName = "Keyboard journey door";
+  // A catalog-grammar name (#684: Workflows shows only what the catalog
+  // admits, and admission takes its name from this field).
+  const doorName = "keyboard-journey-door";
   const door = await page.request.post("/atelier/api/v1/workflow-revisions", {
     headers: { "content-type": "application/yaml" },
     data: [
@@ -133,6 +137,11 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
     ].join("\n")
   });
   expect(door.status()).toBe(201);
+  const doorHash = (await door.json()).workflow_revision_hash as string;
+  const doorFounded = await page.request.post("/atelier/api/v1/workflow-lineages", {
+    data: { workflow_revision_hash: doorHash, actor: "e2e", activated_at: "2026-08-24T00:00:00Z" }
+  });
+  expect(doorFounded.status()).toBe(201);
 
   await page.goto("/atelier");
   await page.evaluate(() => {
@@ -159,20 +168,14 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
   await page.keyboard.press("Enter");
   await expect(stage).toBeFocused();
 
+  // Every card in the start room leads straight to New Run (#684): one
+  // keyboard act, not a hop through a detail page first.
   const doorCard = page.getByRole("button", { name: new RegExp(doorName) });
   await expect(doorCard).toBeVisible();
   for (let tab = 0; tab < 8 && !(await doorCard.evaluate((element) => element === document.activeElement)); tab += 1) {
     await page.keyboard.press("Tab");
   }
   await expect(doorCard).toBeFocused();
-  await page.keyboard.press("Enter");
-  await expect(stage).toBeFocused();
-
-  const startDoor = page.getByRole("button", { name: "Start", exact: true });
-  for (let tab = 0; tab < 8 && !(await startDoor.evaluate((element) => element === document.activeElement)); tab += 1) {
-    await page.keyboard.press("Tab");
-  }
-  await expect(startDoor).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(stage).toBeFocused();
   const savedRevision = page
@@ -297,11 +300,11 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
   await expect(stage).toBeFocused();
   await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { observedMainMarkers: string[] }).observedMainMarkers)).toEqual([
-    // The whole keyboard journey, surface by surface: the catalog, the door
-    // workflow's own detail, the start door, the run it started, and back to
-    // the Board.
+    // The whole keyboard journey, surface by surface: the start room, the
+    // door workflow's own start door, the run it started, and back to the
+    // Board -- one hop, not two, since a start-room card leads straight to
+    // New Run (#684).
     "workflows-title",
-    "workflow-detail-title",
     "new-title",
     "run-title",
     "board-title"

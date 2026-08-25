@@ -14,6 +14,7 @@ import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub } from "../support/cockpitApi";
 
 const WORKFLOW_HASH = "b".repeat(64);
+const SIBLING_HASH = "f".repeat(64);
 const AGENT_HASH = "d".repeat(64);
 const LINEAGE_ID = "e".repeat(64);
 const WORKFLOW_NAME = "iterate-code";
@@ -122,6 +123,38 @@ describe("the catalog room", () => {
 
     expect((await screen.findByText(catalogPageCopy.startable)).isConnected).toBe(true);
     expect(screen.queryByRole("button", { name: catalogPageCopy.admit })).toBeNull();
+  });
+
+  it("marks an admitted name's unadmitted sibling as a newer revision instead of a second card", async () => {
+    openCatalog({
+      ...listing([
+        workflowSummary({ workflow_revision_hash: WORKFLOW_HASH }),
+        workflowSummary({ workflow_revision_hash: SIBLING_HASH })
+      ]),
+      ...admittedName()
+    });
+
+    expect(await screen.findAllByText(WORKFLOW_NAME)).toHaveLength(1);
+    expect((await screen.findByText(catalogPageCopy.startable)).isConnected).toBe(true);
+    expect(
+      (await screen.findByText(catalogPageCopy.newerRevisionAvailable)).isConnected
+    ).toBe(true);
+  });
+
+  it("carries no newer-revision note for a name with no sibling revision", async () => {
+    openCatalog({ ...listing([workflowSummary()]), ...admittedName() });
+
+    await screen.findByText(catalogPageCopy.startable);
+    expect(screen.queryByText(catalogPageCopy.newerRevisionAvailable)).toBeNull();
+  });
+
+  it("links a startable entry's Start into the start room, never the reverse", async () => {
+    openCatalog({ ...listing([workflowSummary()]), ...admittedName() });
+    await screen.findByText(catalogPageCopy.startable);
+
+    fireEvent.click(screen.getByRole("link", { name: catalogPageCopy.start }));
+
+    expect((await screen.findByRole("heading", { name: "Workflows" })).isConnected).toBe(true);
   });
 
   it("offers admission for a published workflow the catalog does not hold yet", async () => {
