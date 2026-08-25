@@ -104,6 +104,7 @@ from atelier2.contracts.workflows_v3 import (
     NodeOutputSource,
     WaitNodeV3,
     WorkflowGraphV3,
+    WorkflowNodeV3,
 )
 from atelier2.ports.durable_runs import (
     DurableAnswerBytesConflict,
@@ -186,6 +187,35 @@ class NodeOutputSchemaRefused(RunTransitionConflict):
     """
 
 
+def event_carrying_the_output_of(node: WorkflowNodeV3) -> RunEventKind:
+    """Which event's payload is this node's declared output.
+
+    Where a value lives is a fact about the node that produced it, not about the
+    node reading it: an Agent node's output is the payload its attempt completed
+    with, and a Wait node's output is the answer a person gave. Both are the one
+    value their author declared a schema for, both are hash-bound by the event
+    that wrote them, and the reader asks the same question of either.
+
+    Reading only the Agent's own event is what let a document declaring
+    `from: {node: <a wait>, ...}` pass the executable admission and then die at
+    the hand-off, because the answer was durable in an event nothing looked in.
+
+    The remaining kinds declare no output an executable document may read -- an
+    Action node's outputs are refused as an authored form, and no runtime reaches
+    the other two -- so a source naming one cannot be reached from an admitted
+    document. It is refused by name rather than answered with an empty read.
+    """
+    match node:
+        case AgentNodeV3():
+            return RunEventKind.AGENT_COMPLETED
+        case WaitNodeV3():
+            return RunEventKind.WAIT_ANSWERED
+        case _:
+            raise RunTransitionConflict(
+                f"node {node.id!r} is of a kind that writes no output to read"
+            )
+
+
 def load_node_outputs(
     session: Any,
     run_id: RunId,
@@ -196,8 +226,9 @@ def load_node_outputs(
 ) -> tuple[DeliveredOutput, ...]:
     """The work of earlier nodes this node declared it reads, as they wrote it.
 
-    The value is the producing node's own completion payload -- the bytes its
-    `AGENT_COMPLETED` event carries -- and it is verified against the hash that
+    The value is the producing node's own completion payload -- carried by
+    whichever event finished that node, which `event_carrying_the_output_of`
+    answers from the producer's kind -- and it is verified against the hash that
     event stored, exactly as the Action path has always verified an Agent output
     it consumes. A payload that no longer matches its hash is a store that
     disagrees with itself, and it refuses here rather than travelling into a job.
@@ -234,6 +265,7 @@ def load_node_outputs(
         written_in = producing_round(graph, node.id, source.node, round_ordinal)
         if written_in is None:
             continue
+        producer = graph.node(source.node)
         record = session.execute(
             sa.select(run_events.c.payload, run_events.c.payload_hash).where(
                 run_events.c.run_id == run_id.value,
@@ -242,7 +274,7 @@ def load_node_outputs(
                 == NodeExecutionId.for_node(
                     run_id, revision_hash, source.node, written_in
                 ).value,
-                run_events.c.event_kind == RunEventKind.AGENT_COMPLETED.value,
+                run_events.c.event_kind == event_carrying_the_output_of(producer).value,
             )
         ).one_or_none()
         if record is None:
@@ -255,9 +287,7 @@ def load_node_outputs(
                 f"the stored output of node {source.node!r} no longer matches its hash"
             )
         declared = next(
-            output
-            for output in graph.node(source.node).outputs
-            if output.name == source.output
+            output for output in producer.outputs if output.name == source.output
         )
         refuse_an_output_its_schema_does_not_admit(
             session, source.node, declared, payload
