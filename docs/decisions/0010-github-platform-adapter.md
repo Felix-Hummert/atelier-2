@@ -2,7 +2,9 @@
 
 - Status: PROPOSED 2026-08-15 — decision only, most of this record unimplemented;
   §7's client choice ACCEPTED 2026-08-23 (operator ruling on issue #430) —
-  `githubkit`, measured against the `open-pr` operation and recorded in §7
+  `githubkit`, measured against the `open-pr` operation and recorded in §7;
+  decision 5 amended 2026-08-25 (`push-atelier-commit`, operator ruling on
+  issue #642) — decision only, unimplemented
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   story 4, whose "GitHub landet einen nativen Flow" and provider/secret rules this
@@ -319,6 +321,35 @@ carries exactly the declared identity and trailer, and a run with a differently
 configured host produces the same two. Should repository-wide authorship policy
 later acquire an owner, this record defers to it rather than keeping a second copy.
 
+**2026-08-25 amendment (Operator-Ruling, #642-Journal): `push-atelier-commit`
+names the git-transport push operation.** The independent architecture ruling
+on issue #642
+([comment 5400317551](https://github.com/FlexOr2/atelier-2/issues/642#issuecomment-5400317551))
+decides `push-atelier-commit` as its own versioned adapter operation, transported
+over forge-neutral Git rather than the GitHub Contents API, and this amendment is
+the decision-5 row that ruling requires so a builder starts from this record
+rather than the issue journal. It fills the marker table's existing "Push a
+commit Atelier authors" row with a name: the marker slot is the commit trailer
+plus the author and committer identity the operation revision declares, exactly
+as the general commit rule above already requires, never read from ambient git
+configuration. **Its authoritative negative is `none`, unconditionally** — not
+only by default but by declaration, because the object it addresses is a ref
+under Atelier's own future control: a ref this operation expects and does not
+find is exactly as consistent with "never pushed" as with "pushed, then deleted
+or force-updated", so readback never returns `AUTHORITATIVE_NOT_FOUND` for it and
+`proves_absence` stays `False` for the operation, matching the general
+"Create a content-bearing object" row of the table below rather than opening a
+second one. **The credential rule is this record's decision 3, by reference
+only** — `push-atelier-commit` resolves its credential exactly as every other
+operation revision does, and this amendment adds no second rule, no second
+channel and no exception to the never-in-argv discipline decision 3 already
+states. **Its request presupposes a candidate-tree invariant this record does not
+own**: the operation's tree object is the immutable, content-addressed candidate
+an earlier, successful attempt captured and bound to the pinned base commit
+before the workspace that produced it was released — an invariant a different
+owner enforces (the attempt lifecycle, not this adapter), which this amendment
+only names because the operation's request bytes do not exist without it.
+
 - **What counts as an authoritative negative is declared per operation, and for a
   create there is none.** The three outcomes of `contracts.effects` are only as
   honest as the read behind them, so:
@@ -525,6 +556,11 @@ DBOS and SQLAlchemy.
 | `platform-absence-unprovable` | an operation declares an authoritative negative its read cannot support — a create, a reversible change with no declared non-performance evidence, or an absence derived from an eventually consistent search | operation binding, and again at readback |
 | `platform-actor-unattributable` | an observed action maps to no known actor and carries no Atelier marker | observation |
 | `platform-observation-rate-limited` | the platform's limit stops a poll; visible, cursor preserved | observation |
+| `candidate-tree-unrepresentable` | `push-atelier-commit`'s source lease contains a symlink, a submodule, a nested `.git`, or a size the candidate store refuses (2026-08-25 amendment, #642-Journal) | candidate capture; the attempt ends FAILED, never SUCCEEDED with the capture skipped |
+| `candidate-capture-unavailable` | the project's Git object boundary does not answer during candidate capture (2026-08-25 amendment, #642-Journal) | candidate capture; the attempt fails loud, its workspace is not released |
+| `candidate-tree-missing` | a `push-atelier-commit` intent finds no candidate-tree ref for its node execution (2026-08-25 amendment, #642-Journal) | operation binding |
+| `candidate-base-not-on-remote` | `push-atelier-commit`'s pinned base commit is not reachable at the target remote (2026-08-25 amendment, #642-Journal) | execute |
+| `platform-push-ref-diverged` | the target branch ref exists but names a commit other than the one this push's readback expects (2026-08-25 amendment, #642-Journal) | readback; resolves to `UNKNOWN`, never `AUTHORITATIVE_NOT_FOUND` |
 
 Durable failure tokens, where any of these must become one, are minted by #16;
 this record borrows that owner rather than opening a second vocabulary.
@@ -608,6 +644,24 @@ this record borrows that owner rather than opening a second vocabulary.
 - A rate-limit exhaustion is visible in the projection and loses no cursor.
 - A published requirement revision's digest matches the platform's served bytes
   recomputed independently, with no added newline and no normalization.
+- **(2026-08-25 amendment, #642-Journal, `push-atelier-commit`)** A crash after
+  the commit is pushed but before its receipt is written leaves readback finding
+  the pushed commit; a re-attempt after that crash creates no second commit.
+- **(2026-08-25 amendment, #642-Journal)** A racing identical push and a racing
+  divergent push both resolve without a duplicate commit; the divergent race
+  resolves through `platform-push-ref-diverged` to `UNKNOWN`, never a silent
+  overwrite of the other push.
+- **(2026-08-25 amendment, #642-Journal)** A force-reset of the target branch
+  between push and readback resolves to `UNKNOWN`, never an authoritative
+  absence.
+- **(2026-08-25 amendment, #642-Journal)** On a host whose ambient
+  `user.name`/`user.email` contradict the operation revision's declared
+  identity, the pushed commit still carries exactly that declared identity.
+- **(2026-08-25 amendment, #642-Journal)** A durable projection, event, receipt,
+  log, and the process's own `/proc` command line all show no credential or
+  secret material for a `push-atelier-commit` run — the same canary standard
+  the auth-method proof above already uses, extended to this operation's
+  credential path.
 
 ## Out of scope and stop conditions
 
