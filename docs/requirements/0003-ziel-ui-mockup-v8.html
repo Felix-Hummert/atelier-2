@@ -422,14 +422,14 @@ table.list tr.grp td .mark{margin-right:.2rem}
 <header class="doc-head">
   <div class="eyebrow">v8.13 · 25.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
   <h1>The workshop holds a piece out to you</h1>
-  <p class="thesis">Everything the workshop says to you is a question it holds out — a wait node of some run. Everything you say is an answer to one. The decision with two buttons, the ear with its input line and the "yes" to the conductor are <b>one</b> mechanism in three sizes; so there is exactly one stage, one row, one sheet and one graph, and every room is built from these four blocks. Four rooms — Workbench, Catalog, History, Settings — and the run as a view in three tenses. Colour only for what wants something from you.</p>
+  <p class="thesis">Everything the workshop says to you is a question it holds out — a wait node of some run. Everything you say is an answer to one. The decision with two buttons, the ear with its input line and the "yes" to the conductor are <b>one</b> mechanism in three sizes; so there is exactly Stage, Row, Card, Sheet, plus Graph, and every room is built from these four blocks. Four rooms — Workbench, Catalog, History, Settings — and the run as a view in three tenses. Colour only for what wants something from you.</p>
   <div class="tw"><table class="doc">
     <tr><th>Room</th><th>The one question it answers</th><th>What it never does</th></tr>
     <tr><td><b>Workbench</b></td><td>What needs me now, what is moving, what did we say today — and what do I want to say next?</td><td>No chronicle, no library; it never explains itself (no shelf titles); it shows nothing twice; it carries no number that does not lead to an action.</td></tr>
     <tr><td><b>Run</b> <small>(a view, not a room)</small></td><td>What is this run doing right now, or what came of it — everything I must know, and one door for the rest.</td><td>No second run, no brochure of the workflow, no line twice; it starts nothing.</td></tr>
     <tr><td><b>Catalog</b></td><td>What can this house do — what do I have, from where, how do I get more, and how do I start one by hand?</td><td>It edits nothing (no editor), shows no hash on a card, does not know the conductor (infrastructure, not inventory).</td></tr>
     <tr><td><b>History</b></td><td>Which run was that — when, for what, with what result?</td><td>Nothing that still runs or waits; it neither counts nor grades.</td></tr>
-    <tr><td><b>Settings</b> <small>(the context, one per project)</small></td><td>Which project am I in, what is it connected to, which models does each provider have — and which one answers each difficulty?</td><td>No second way into a room, no queue, no provider lines, no secret in clear text.</td></tr>
+    <tr><td><b>Settings</b> <small>(the context, one per project)</small></td><td>Which project am I in, what is it connected to, which models does each provider have — and which one answers each difficulty?</td><td>No second way into a room, no queue, no hard-coded provider lines, no secret in clear text.</td></tr>
   </table></div>
 </header>
 
@@ -498,7 +498,7 @@ table.list tr.grp td .mark{margin-right:.2rem}
 </ul>
 
 <h3 class="frame-title">The four states are one pattern</h3>
-<p class="q">Named means designed, not captioned (REQ-UIQ-06): empty is the shape without content — no sentence where the absence is obvious; loading is a still skeleton without a wheel; error is brick with exactly one next move — the sentence is mandatory; waiting is never a sentence but the stage.</p>
+<p class="q">Named means designed, not captioned (REQ-UIQ-10): empty is the shape without content — no sentence where the absence is obvious; loading is a still skeleton without a wheel; error is brick with exactly one next move — the sentence is mandatory; waiting is never a sentence but the stage.</p>
 <div class="strip">
   <div class="cell"><div class="ear" style="margin:0;padding-top:0;border:none;position:static"><div class="bar"><input placeholder="Tell the atelier what you want…" disabled></div></div><small class="eyebrow">empty — only the ear, no sentence</small></div>
   <div class="cell"><div class="skeleton" aria-label="Reading…"><i></i><i></i><i></i></div><small class="eyebrow">loading — a skeleton in the shape of the row</small></div>
@@ -566,7 +566,7 @@ table.list tr.grp td .mark{margin-right:.2rem}
   <div><dt>Rail: ⚙ Settings at the foot, the project name small beneath</dt><dd>"Which project am I in, and where is its context — connections, models, defaults?" — the fourth entry, set apart by a line: the room above the three; the name is the context of every room, the switcher stands in Settings' head.</dd></div>
   <div><dt>Stage: the first open question, large</dt><dd>"What is asked of me?" — sender line (node, run, work item, one half-sentence of context), the question in serif, two honest buttons; the first is filled because it is the expected one, not the better one.</dd></div>
   <div><dt>"open the run"</dt><dd>"I want the whole story first" — the one door to the rest, without an aside.</dd></div>
-  <div><dt>The other open questions, compact</dt><dd>"What else waits on me?" — one OPEN question, the others visible (REQ-UI-02): each stands as a one-line stage with its own question; a click makes it the large one. From the fifth on the stack scrolls; the rail number says how many there are.</dd></div>
+  <div><dt>The other open questions, compact</dt><dd>"What else waits on me?" — one OPEN question, the others visible (REQ-UI-21): each stands as a one-line stage with its own question; a click makes it the large one. From the fifth on the stack scrolls; the rail number says how many there are.</dd></div>
   <div><dt>Queue line</dt><dd>"What is lined up, and what comes next?" — one line: the count and the next item. The ▾ unfolds it in place into the list with priority and Admit (frame "Queue, open" below); the list lives nowhere else.</dd></div>
   <div><dt>Run row: purpose + work item</dt><dd>"Which run, for what?" — a run is named everywhere by its purpose (the order sentence); the workflow name stands small beneath: "by which recipe?"</dd></div>
   <div><dt>Run row: the one sentence</dt><dd>"What is happening right now?" — present tense, from the running node; on a waiting run the sentence is silent, because the ochre node and the stage already carry it.</dd></div>
@@ -605,7 +605,7 @@ table.list tr.grp td .mark{margin-right:.2rem}
 <dl class="uq">
   <div><dt>Warm sentence with a stamp</dt><dd>"Did my answer arrive, and what happens now?" — one sentence, then the stage gets out of the way; after a breath the next open question moves up and becomes the large one.</dd></div>
   <div><dt>Card in the flow, collapsed</dt><dd>"What did I answer back then?" — the question card becomes the dashed answer card with stamp and time; the stage moves on, the conversation keeps the trace.</dd></div>
-  <div><dt>No undo button here</dt><dd>"Can I take it back?" — the answer is an event with an actor; what is reversible, the run shows (REQ-UI-16 "undo instead of asking" is for building blocks, not for given answers).</dd></div>
+  <div><dt>No undo button here</dt><dd>"Can I take it back?" — the answer is an event with an actor; what is reversible, the run shows (REQ-UI-24 "undo instead of asking" is for building blocks, not for given answers).</dd></div>
 </dl>
 
 <h3 class="frame-title">The stage in its other sizes <small>— a written answer · more than two answers · an answer that may not have arrived</small></h3>
@@ -764,7 +764,7 @@ table.list tr.grp td .mark{margin-right:.2rem}
   </div>
 </div>
 <dl class="uq">
-  <div><dt>Only the ear</dt><dd>"Is there really nothing?" — yes, and you can see it: no stage, no run row, no transcript. No sentence says so, because the absence is obvious (REQ-UIQ-06 as "named = designed, not captioned"). Stillness is confidence.</dd></div>
+  <div><dt>Only the ear</dt><dd>"Is there really nothing?" — yes, and you can see it: no stage, no run row, no transcript. No sentence says so, because the absence is obvious (REQ-UIQ-10 as "named = designed, not captioned"). Stillness is confidence.</dd></div>
   <div><dt>No line under the ear</dt><dd>"What happens when I write?" — the placeholder says it. If the conductor is not connected the field is held and its placeholder reads "The conductor isn't connected." — the state in the shape of the element, no sentence beneath.</dd></div>
 </dl>
 
@@ -1330,7 +1330,7 @@ table.list tr.grp td .mark{margin-right:.2rem}
       <tr><td><code>claude-opus-4-8</code></td><td class="by">leonardo</td><td class="by">added by you · checked</td></tr>
       <tr><td><code>claude-sonnet-4-6</code></td><td class="by">leonardo</td><td class="by">added by you · checked</td></tr>
       <tr><td><code>claude-haiku-4-5</code></td><td class="by">leonardo</td><td class="by">added by you · checked</td></tr>
-      <tr><td><code>claude-opus-5-1</code></td><td class="by">leonardo</td><td><span class="pill warn" title="The dry run on first use found no such model at Anthropic; nothing is cast to it">unknown at the provider</span></td></tr>
+      <tr><td><code>claude-opus-5-1</code></td><td class="by">leonardo</td><td><span class="pill warn" title="The dry run on first use found no such model at Anthropic; the entry cannot be selected">unknown at the provider</span></td></tr>
       <tr class="grp"><td colspan="3"><i class="mark" title="Codex">O</i> OpenAI · leonardo</td></tr>
       <tr><td><code>gpt-5.6-sol</code></td><td class="by">leonardo</td><td class="by"></td></tr>
       <tr><td><code>gpt-5.5</code></td><td class="by">leonardo</td><td class="by"></td></tr>
@@ -1349,7 +1349,7 @@ table.list tr.grp td .mark{margin-right:.2rem}
   </div>
 </div>
 <dl class="uq">
-  <div><dt>Head = the project switcher</dt><dd>"Which project am I in, how do I switch?" — the name with ▾: one click shows the other projects; the same click that switches lands here, in the switched project's Settings (REQ-UI-04). No word "project", no second switcher anywhere.</dd></div>
+  <div><dt>Head = the project switcher</dt><dd>"Which project am I in, how do I switch?" — the name with ▾: one click shows the other projects; the same click that switches lands here, in the switched project's Settings (REQ-UI-23). No word "project", no second switcher anywhere.</dd></div>
   <div><dt>Source: kind (Items / Library) · form only on deviation (group)</dt><dd>"What does this connection deliver — items or building blocks — and how big is it?" — both kinds in one view; a GitLab group brings its projects along.</dd></div>
   <div><dt>"issues and change requests"</dt><dd>"What can I pick from this in the start sheet?" — exactly the source's capabilities, in two words; only the deviation (group, 3 projects) carries a word.</dd></div>
   <div><dt>Library: "scanned 2 min ago · 1 newer revision · Pull"</dt><dd>"Is my library current, and how do I catch up?" — scan silent, intake on click (ADR 0018 §3).</dd></div>
@@ -1357,7 +1357,7 @@ table.list tr.grp td .mark{margin-right:.2rem}
   <div><dt>"Connect a source"</dt><dd>"How do I add one?" — a button that opens the sheet (next frame); the conductor may do the same on request, with the stage as its question.</dd></div>
   <div><dt>Models: per connected provider, exact ids</dt><dd>"Which models can this house use?" — the <b>registry</b>: configuration, not code — one versioned record per provider, changed here and nowhere else. A line is an exact model id (<code>claude-opus-5</code>, <code>gpt-5.6-sol</code>) with its Account; no rating, no rung — the house does not judge models, you choose them beneath. A new model is one line, never a rebuild. Provenance and check stand only where they deviate: "added by you · checked" beside what discovery did not bring; a discovered line carries nothing.</dd></div>
   <div><dt>"Discovered from the pinned CLI where the provider lists models; added ids are checked on first use."</dt><dd>"Where do these lines come from, and can I trust an id I typed?" — the one line the table cannot show: where the provider's pinned CLI lists its models (Codex, Grok), discovery pre-fills the registry; where it does not (Claude), you add the id and the house checks it by a dry run on first use.</dd></div>
-  <div><dt>"unknown at the provider" (ochre pill)</dt><dd>"Did my id hold?" — no: the dry run found no such model; the line stays so you can correct it, nothing is cast to it, and the house says it plainly instead of failing a run later.</dd></div>
+  <div><dt>"unknown at the provider" (ochre pill)</dt><dd>"Did my id hold?" — no: the dry run found no such model; the line stays so you can correct it, the entry cannot be selected, and the house says it plainly instead of failing a run later.</dd></div>
   <div><dt>"Add a model"</dt><dd>"A model came out — how do I use it?" — one row: the id; the check happens on first use.</dd></div>
   <div><dt>Model defaults: Difficulty 3 · 2 · 1 → one model from the list</dt><dd>"Who does what in this project?" — the one durable assignment, three lines long, <b>your choice</b>: each dropdown lists the Models above and writes on change; nothing is derived, nothing is scored; each a model id and its Account (<code>claude-opus-5 · Account leonardo</code>) — not the prompt file, which stays neutral (ADR 0018 §1). A role of difficulty n takes row n; a role whose workflow says <code>family_differs_from</code> refuses the family it names — the condition is the workflow's, the house adds none, and there is no cost heuristic. There is no second table, no per-role line, no flags: what should differ for one role is the workflow's pin or this run's choice on the start sheet.</dd></div>
   <div><dt>An empty row</dt><dd>"Must I fill all three?" — no: a difficulty without a default takes the next higher one's (#557); only a difficulty with none above it either (or one the role's family rule refuses) shows where it bites: ochre on the role in the start sheet, and the conductor's question in the conversation.</dd></div>

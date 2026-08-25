@@ -2,8 +2,7 @@
 
 - Status: ACCEPTED 2026-08-25 — operator blessing of the picture
   [`0003-ziel-ui-mockup-v8.html`](../requirements/0003-ziel-ui-mockup-v8.html)
-  (v8.13) on [#711](https://github.com/FlexOr2/atelier-2/issues/711); open
-  decision 4 (Settings › Models) is the one frame still under ruling. Accepting
+  (v8.13) on [#711](https://github.com/FlexOr2/atelier-2/issues/711). Accepting
   this record accepts the rooms, the four building blocks, the rules, the
   HEART amendments and the successor rules in §5; it claims nothing about what
   is built. The requirement document 0003 is pinned
@@ -52,8 +51,9 @@
 
 ## Context
 
-Requirement 0003 names Mockup v5 as the gestalt owner: a rail with four
-surfaces — Chat, Board, Workflows, History — under the project as context.
+The predecessor revision of Requirement 0003 names Mockup v5 as the gestalt
+owner: a rail with four surfaces — Chat, Board, Workflows, History — under the
+project as context.
 Building against it produced a house whose first thing in the room is
 navigation, whose finished runs stand in two places, whose starting has two
 doors (a Workflows room and a catalog "Start"), and whose Chat is a page you
@@ -65,9 +65,10 @@ count stands where an action should.
 The picture is the answer: four rooms built from four blocks under one rule
 against restating, every element carrying the user question it answers, and
 every gate measured rather than asserted. It contradicts sixteen sentences
-of the owner documents (§5). **No owner document today contains the word
-"Workbench" or "Werkbank"**: the room this picture is built around exists
-nowhere in HEART or 0003 yet, and this record introduces it.
+of the owner documents (§5). **No owner document, before this decision,
+contains the word "Workbench" or "Werkbank"**: the room this picture is built
+around exists nowhere in HEART or 0003 before this record, which introduces
+it.
 
 ## Decision
 
@@ -83,7 +84,7 @@ Settings entry in every room. Each room answers one question:
 | Workbench | What needs me now, what is moving, what did we say today, what do I say next? | a chronicle, a library, a shelf title, anything twice, a number without an action |
 | Catalog | What can this house do, from where, how do I get more, how do I start one by hand? | editing, a hash on a card, the conductor |
 | History | Which run was that — when, for what, with what result? | anything still moving or waiting; counting or grading |
-| Settings | Which project am I in, what is it connected to, which models does each provider have, which one answers each difficulty? | a second door into a room, the queue, provider lines, a secret in clear text |
+| Settings | Which project am I in, what is it connected to, which models does each provider have, which one answers each difficulty? | a second door into a room, the queue, hard-coded provider lines, a secret in clear text |
 
 The **Run** is a view, not a room: the same graph in three tenses (still,
 live, frozen), reached from a row and trailing back to the room the run's
@@ -98,8 +99,7 @@ meant to carry moves to owners that already exist: the decision is the first
 thing on the workbench; the ochre count in the rail is the notification; scale
 lives on the workbench's living shelf; the queue — imported items, priority,
 admission — is one line on the workbench that unfolds in place into its list;
-it lives nowhere else. A Board returns only if humans must
-re-sort work by hand, which no requirement names.
+it lives nowhere else.
 
 **There is no Workflows room and no Chat room.** Starting lives in the catalog
 detail (one door, #704); the conversation lives on the workbench, whose ear
@@ -239,7 +239,7 @@ Surfaces that exist today and are **removed** by this picture:
 | --- | --- |
 | Board room, its "Needs you · N / Running · N" groups, the inline "Answer here ▾" disclosure, `BoardWaitingAnswer` | §1; the stage on the workbench is the one place to answer outside the run |
 | Workflows room and its start cards; "Open Workflows" empty-state links | starting lives in the catalog detail; the rail is the only door between rooms |
-| `NewRunPage`: "Saved workflow / Publish YAML" radios, both YAML textareas, "Edit", "Review publication", the publish dialog, "Expert fields" (profile, revision, provider, model, executor, auth mode), JSON order editor, "Change" | the start sheet is generated from the order schema; every order type has one rendering; casting is a dropdown per role; no editor (REQ-UI-03, non-goals) |
+| `NewRunPage`: "Saved workflow / Publish YAML" radios, both YAML textareas, "Edit", "Review publication", the publish dialog, "Expert fields" (profile, revision, provider, model, executor, auth mode), JSON order editor, "Change" | the start sheet is generated from the order schema; every order type has one rendering; casting is a dropdown per role; no editor (REQ-UI-22, non-goals) |
 | `CatalogImportDoor` ×2 (paste textareas, per-kind "Import a workflow / an agent") | one "Import" button and the whole page as drop surface; a file is the unit |
 | Catalog "Admit into catalog" button and its busy/error states | catalog admission happens inside the import transaction (ADR 0018 §2). The word **Admit** is not removed: it moves to the workbench's queue list, where "Admit" on a work item is both the not-yet state and the attributed click (#79) |
 | Project page: count tiles, reference cards (Board/History/Workflows), workflow-occupancy `<select>` + "Save"/"✓ Saved", and the occupancy record behind it | the Project room becomes **Settings**: the switcher in its head, sources, the model registry, model defaults; every dropdown writes on change, no Save. The occupancy per lineage is retired (§3) |
@@ -256,13 +256,12 @@ It is operator-level repair; where it lives is an open decision, see *Open*.
 
 ### 5. Owner sentences this picture contradicts, and their successors
 
-Sixteen sentences change: five in HEART (four amended in place — HEART is not
-id-bound — plus one quoted and kept verbatim), nine identified rules of 0003
-(each gets a **new identifier**; the old one is marked superseded-by and never
-reused), and three unnumbered 0003 passages (title, Intent, Non-goals). Old text is quoted verbatim in its own
-language; the successor stays in that language, so no requirement changes
-language. The 0003 successor revision is drafted from this table and approved
-through the requirement lifecycle.
+Sixteen sentences change: four in HEART, nine rules, three passages; a fifth
+HEART row records one sentence kept verbatim. Every rule gets a **new
+identifier**; the old one is marked superseded-by and never reused. Old text
+is quoted verbatim in its own language; the successor stays in that language,
+so no requirement changes language. The 0003 successor revision is drafted
+from this table and approved through the requirement lifecycle.
 
 **HEART — amended in place**
 
@@ -300,7 +299,7 @@ head, the double role of the click).
 | Intent: „Um diesen Kern sitzt die Ziel-UI nach Mockup v5: eine Werkstatt, geordnet durch eine Rail mit vier Flächen — Chat, Board, Workflows, History — unter dem Projekt als Kontext (Operator-Ruling 22.08.2026, Epic #516). Mockup v5 ist der Gestalt-Owner." | „Um diesen Kern sitzt die Ziel-UI nach Mockup v8: eine Werkstatt, geordnet durch eine Rail mit drei Räumen — Workbench, Catalog, History — und Settings am Fuß als Kontext darüber, mit dem Projekt-Umschalter im Kopf (ADR 0019). Mockup v8 ist der Gestalt-Owner." |
 | Non-goals: „Keine Dashboards und kein Benachrichtigungszentrum neben dem Board." | „Keine Dashboards, kein Board und kein Benachrichtigungszentrum: die Bühne auf der Workbench und die Ocker-Zahl in der Rail sind die Benachrichtigung." |
 
-No other owner document may keep a Board sentence.
+No other owner document may retain Board as a room or owner.
 
 ## Consequences
 
@@ -333,8 +332,8 @@ No other owner document may keep a Board sentence.
   taste.
 - The frontend's three dialog implementations collapse into one stage-shaped
   dialog; the six Retry/Discard copies into one error pattern.
-- Requirement 0003 needs a successor revision carrying §5's identifiers; the
-  frozen 0003 bytes stay as they are until then.
+- Requirement 0003's successor carries §5; the predecessor remains in
+  revision history.
 - Nothing here is built by accepting it; PRODUCT.md owns what is.
 
 ## Open decisions for the operator
@@ -410,4 +409,6 @@ The four-surface rail of REQ-UI-01 as ruled on #516 (22.08.2026) and Mockup
 v5 as gestalt owner (REQ-UI-18), through the successor identifiers in §5. It
 amends HEART "The place" (two paragraphs, one of them the #684 text
 retracted) and the second sentence of HEART "The ear" as quoted in §5; "you
-do not visit a chat page" stands. It applies ADR 0018 unchanged.
+do not visit a chat page" stands. It creates one explicit exception to ADR
+0018 §1 — the workflow's optional model pin — to be written into ADR 0018 as
+an amendment; otherwise ADR 0018 applies unchanged.
