@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App.svelte";
 import {
   CockpitRequestError,
-  encodePublicRunReference,
   type AnyRun,
   type CockpitApi,
   type Problem,
@@ -26,7 +25,6 @@ import { boardBadgeCounts } from "../../src/lib/workshop";
 import { cockpitApiStub, FakeRunEventFeed, PAGE_CURSORS } from "../support/cockpitApi";
 import { notCancellableBlock } from "../support/runV3";
 import {
-  completedRun,
   eventCursor,
   publicReference,
   revisionHash,
@@ -36,41 +34,15 @@ import {
   waitingReconciliationRun
 } from "../support/workflowV1";
 
-/**
- * A frozen noon, not the real wall clock: the Board's "Done today" group
- * compares a row's real V3 end stamp against the page's own `new Date()`,
- * so a `minutesAgo`/`daysAgoLocal` fixture anchored to the real clock could
- * cross local midnight between its own computation and the component's read
- * of "today" -- or simply drift a fixture meant to stay "today" onto
- * yesterday -- whenever the suite happens to run within a couple of hours of
- * midnight. Faking only `Date` (never the timers `waitFor`/`findBy*` need)
- * to a fixed noon removes that hour of the day as a variable entirely, the
- * same way `vi.setSystemTime` is used elsewhere in this codebase.
- */
-const FROZEN_NOON = new Date(2026, 0, 15, 12, 0, 0);
-
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(FROZEN_NOON);
   sessionStorage.clear();
   boardBadgeCounts.set(null);
 });
 
 afterEach(() => {
-  vi.useRealTimers();
   vi.restoreAllMocks();
   cleanup();
 });
-
-function minutesAgo(minutes: number): string {
-  return new Date(Date.now() - minutes * 60_000).toISOString();
-}
-
-/** A local calendar day before today, immune to the hour the suite runs at. */
-function daysAgoLocal(days: number): string {
-  const today = new Date();
-  return new Date(today.getFullYear(), today.getMonth(), today.getDate() - days, 12, 0, 0).toISOString();
-}
 
 function listRunsByState(runs: AnyRun[]) {
   return vi.fn(async (_after?: string, state?: string) => ({
@@ -205,8 +177,6 @@ describe("the board is the level the workshop opens on", () => {
     await screen.findByRole("region", { name: "Running · 1" });
 
     expect(listRuns.mock.calls.map(([, state]) => state).sort()).toEqual([
-      "COMPLETED",
-      "FAILED",
       "STARTED",
       "WAITING_INPUT",
       "WAITING_RECONCILIATION"
@@ -303,7 +273,7 @@ describe("Needs you names what waits for a human", () => {
   });
 
   it("shows no Needs you section when nothing waits for a human", async () => {
-    openStudio([startedRun(), completedRun({ public_run_reference: "run1.Yg" })]);
+    openStudio([startedRun()]);
 
     await screen.findByRole("region", { name: "Running · 1" });
 
@@ -321,19 +291,6 @@ describe("Needs you names what waits for a human", () => {
 });
 
 describe("Running holds only what still moves, never a landed result", () => {
-  it("keeps a failed run out of Running -- it stopped, so it groups with what is over, red, with a Why? link to the run (#581)", async () => {
-    openStudio([startedRun({ public_run_reference: "run1.YQ" }), failedRun({ public_run_reference: "run1.Yg" })]);
-
-    const running = await screen.findByRole("region", { name: "Running · 1" });
-    expect(within(running).getAllByRole("link")).toHaveLength(1);
-    expect(within(running).queryByText("Why? →")).toBeNull();
-
-    const done = screen.getByRole("region", { name: "Done today · 1" });
-    const failedRow = within(done).getByText("Why? →").closest("a");
-    expect(failedRow).not.toBeNull();
-    expect(within(failedRow as HTMLElement).getByText(`${standingWords.failed} · agent`).isConnected).toBe(true);
-  });
-
   it("names the node a running row is at, from the run's current node", async () => {
     openStudio([startedRun()]);
 
@@ -342,66 +299,18 @@ describe("Running holds only what still moves, never a landed result", () => {
   });
 });
 
-describe("Done today shows every run that landed today in plain language, newest first", () => {
-  it("orders by the real V3 landing time, and keeps a run with no timestamp after the timestamped ones", async () => {
-    const older = listedV3Run({
-      run_id: "older",
-      public_run_reference: encodePublicRunReference("older"),
-      state: "COMPLETED",
-      terminal_hash: revisionHash,
-      node_rail: [{ node_id: "final", state: "succeeded", attempt: null }],
-      ended_at: minutesAgo(90)
-    });
-    const newer = listedV3Run({
-      run_id: "newer",
-      public_run_reference: encodePublicRunReference("newer"),
-      state: "COMPLETED",
-      terminal_hash: revisionHash,
-      node_rail: [{ node_id: "final", state: "succeeded", attempt: null }],
-      ended_at: minutesAgo(5)
-    });
-    const untimed = completedRun({ public_run_reference: "run1.dW50aW1lZA" });
-    openStudio([older, newer, untimed]);
+describe("the Board never lists a terminal run -- it belongs to History instead (#581, #667)", () => {
+  it("does not list a failed run's state at all, so a failed run stays off the Board entirely", async () => {
+    const listRuns = listRunsByState([
+      startedRun({ public_run_reference: "run1.YQ" }),
+      failedRun({ public_run_reference: "run1.Yg" })
+    ]);
+    openStudio([], { listRuns });
 
-    const done = await screen.findByRole("region", { name: "Done today · 3" });
-    const names = within(done).getAllByRole("link").map((link) => link.textContent ?? "");
-    expect(names[0]).toContain("newer");
-    expect(names[1]).toContain("older");
-    expect(names[2]).toContain("run");
-  });
-
-  it("names a completed run plainly, with no fabricated result text", async () => {
-    openStudio([completedRun()]);
-
-    const done = await screen.findByRole("region", { name: "Done today · 1" });
-    expect(within(done).getByText(standingWords.done).isConnected).toBe(true);
-  });
-
-  it("moves a run that landed on an earlier local day into History, while a run with no end timestamp stays visible", async () => {
-    const landedToday = listedV3Run({
-      run_id: "landed today",
-      public_run_reference: encodePublicRunReference("landed today"),
-      state: "COMPLETED",
-      terminal_hash: revisionHash,
-      node_rail: [{ node_id: "final", state: "succeeded", attempt: null }],
-      ended_at: minutesAgo(10)
-    });
-    const landedEarlier = listedV3Run({
-      run_id: "landed two days ago",
-      public_run_reference: encodePublicRunReference("landed two days ago"),
-      state: "COMPLETED",
-      terminal_hash: revisionHash,
-      node_rail: [{ node_id: "final", state: "succeeded", attempt: null }],
-      ended_at: daysAgoLocal(2)
-    });
-    const untimed = completedRun({ public_run_reference: "run1.dW50aW1lZA" });
-    openStudio([landedToday, landedEarlier, untimed]);
-
-    const done = await screen.findByRole("region", { name: "Done today · 2" });
-    expect(within(done).getByRole("link", { name: /landed today/ }).isConnected).toBe(true);
-    expect(within(done).getByRole("link", { name: /run/ }).isConnected).toBe(true);
-    expect(within(done).queryByRole("link", { name: /landed two days ago/ })).toBeNull();
-    expect(screen.queryByText(/landed two days ago/)).toBeNull();
+    const running = await screen.findByRole("region", { name: "Running · 1" });
+    expect(within(running).getAllByRole("link")).toHaveLength(1);
+    expect(listRuns.mock.calls.some(([, state]) => state === "FAILED")).toBe(false);
+    expect(screen.queryByText(standingWords.failed)).toBeNull();
   });
 });
 
@@ -428,7 +337,7 @@ describe("the mini pipeline reads node_rail honestly", () => {
 
 describe("there is no Queued group", () => {
   it("never renders a Queued section, because no served run state names one", async () => {
-    openStudio([startedRun(), waitingInputRun({ public_run_reference: "run1.YQ" }), completedRun({ public_run_reference: "run1.Yg" })]);
+    openStudio([startedRun(), waitingInputRun({ public_run_reference: "run1.YQ" })]);
 
     await screen.findByRole("region", { name: "Running · 1" });
 
@@ -468,7 +377,7 @@ describe("an empty board teaches the one next action", () => {
     await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
 
-    const empty = await screen.findByRole("heading", { name: "Nothing is running" });
+    const empty = await screen.findByRole("heading", { name: studioPageCopy.emptyTitle });
 
     expect(empty.isConnected).toBe(true);
     // A healthy stream says nothing at all: a permanent badge is chrome, and
@@ -509,7 +418,7 @@ describe("an empty board teaches the one next action", () => {
 
   it("repeats only the failed Board read until a successful retry replaces the error", async () => {
     const listRuns = vi.fn(async (_after?: string, state?: string) => {
-      const round = Math.floor((listRuns.mock.calls.length - 1) / 5);
+      const round = Math.floor((listRuns.mock.calls.length - 1) / 3);
       if (round < 2) throw new Error("socket detail must stay private");
       return {
         items: state === "STARTED" ? [startedRun()] : [],
@@ -523,7 +432,7 @@ describe("an empty board teaches the one next action", () => {
     // mounts its own Retry control (ReadState.svelte's pattern for #514),
     // so the operator sees and clicks whatever Retry is on screen right now.
     await fireEvent.click(screen.getByRole("button", { name: "Retry board runs" }));
-    await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(10));
+    await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(6));
     await screen.findByRole("button", { name: "Retry board runs" });
     expect(screen.getAllByRole("button", { name: "Retry board runs" })).toHaveLength(1);
     expect(screen.queryByText(/socket detail/)).toBeNull();
@@ -531,7 +440,7 @@ describe("an empty board teaches the one next action", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Retry board runs" }));
 
     expect((await screen.findByRole("region", { name: "Running · 1" })).isConnected).toBe(true);
-    expect(listRuns).toHaveBeenCalledTimes(15);
+    expect(listRuns).toHaveBeenCalledTimes(9);
     expect(screen.queryByRole("button", { name: /board runs/ })).toBeNull();
     expect(window.location.pathname).toBe("/atelier");
   });
@@ -573,7 +482,7 @@ describe("an empty board teaches the one next action", () => {
 
     expect((await screen.findByText("Board runs incomplete")).isConnected).toBe(true);
     expect(screen.queryByRole("region", { name: /Running/ })).toBeNull();
-    expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: studioPageCopy.emptyTitle })).toBeNull();
     expect(screen.queryByText(/later page detail/)).toBeNull();
   });
 });
@@ -592,7 +501,7 @@ describe("the board holds GET /events", () => {
 
     await waitFor(() => expect(screen.queryByText("Looking…")).toBeNull());
     // Nothing has confirmed that nothing is running, so the board does not say it.
-    expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: studioPageCopy.emptyTitle })).toBeNull();
   });
 
   it("applies a WAITING_INPUT from the stream without already listing the run", async () => {
@@ -601,7 +510,7 @@ describe("the board holds GET /events", () => {
     const { feed } = openStudioHolding([], { getRun });
     await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
-    await screen.findByRole("heading", { name: "Nothing is running" });
+    await screen.findByRole("heading", { name: studioPageCopy.emptyTitle });
 
     feed.handlers?.event(
       JSON.stringify(
@@ -612,24 +521,24 @@ describe("the board holds GET /events", () => {
     const needsYou = await screen.findByRole("region", { name: "Needs you · 1" });
     expect(within(needsYou).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
     expect(getRun).toHaveBeenCalledWith("run1.YQ");
-    expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: studioPageCopy.emptyTitle })).toBeNull();
   });
 
-  it("applies an AGENT_FAILED from the stream without already listing the run", async () => {
+  it("applies an AGENT_FAILED from the stream by removing the run from the Board, not by showing it done (#667)", async () => {
     const getRun = vi.fn(async () => failedRun());
     const { feed } = openStudioHolding([], { getRun });
     await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
-    await screen.findByRole("heading", { name: "Nothing is running" });
+    await screen.findByRole("heading", { name: studioPageCopy.emptyTitle });
 
     feed.handlers?.event(JSON.stringify(agentFailedEvent()));
 
-    const done = await screen.findByRole("region", { name: "Done today · 1" });
-    expect(within(done).getByText("Why? →").isConnected).toBe(true);
-    expect(getRun).toHaveBeenCalledWith(publicReference);
+    await waitFor(() => expect(getRun).toHaveBeenCalledWith(publicReference));
+    // The failed run turned terminal, so it leaves the Board for History
+    // (#667) instead of landing in a "Done" group here.
+    await screen.findByRole("heading", { name: studioPageCopy.emptyTitle });
     expect(screen.queryByRole("region", { name: /Running/ })).toBeNull();
     expect(screen.queryByRole("region", { name: /Needs you/ })).toBeNull();
-    expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
   });
 
   it("keeps a projected wait when a slower list later answers the same run as started", async () => {
@@ -667,38 +576,26 @@ describe("the board holds GET /events", () => {
     expect(screen.getByRole("region", { name: "Needs you · 1" }).isConnected).toBe(true);
   });
 
-  it("replaces a projected wait when a later list answers the same run as completed at a newer version", async () => {
-    let releaseCompleted: (page: { items: RunV1[]; next_after: null }) => void = () => {
-      throw new Error("COMPLETED list was released before the test held it");
-    };
-    const completedPage = new Promise<{ items: RunV1[]; next_after: null }>((resolve) => {
-      releaseCompleted = resolve;
-    });
-    const waiting = waitingInputRun({ public_run_reference: "run1.YQ" });
-    const newerCompleted = completedRun({ public_run_reference: "run1.YQ", state_version: 4 });
-    const listRuns = vi.fn(async (_after?: string, state?: string) => {
-      if (state === "COMPLETED") return completedPage;
-      return { items: [], next_after: null };
-    });
+  it("replaces a projected wait when the attention stream later reports the same run failed, at a newer version", async () => {
+    const waiting = waitingInputRun();
+    const newerFailed = failedRun({ state_version: 4 });
     const getRun = vi.fn(async () => waiting);
-    const { feed } = openStudioHolding([], { listRuns, getRun });
+    const { feed } = openStudioHolding([], { getRun });
     await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
 
-    feed.handlers?.event(
-      JSON.stringify(
-        waitingInput(1, { public_run_reference: "run1.YQ", cursor: "event1.YQ.1" })
-      )
-    );
+    feed.handlers?.event(JSON.stringify(waitingInput(1)));
 
     const needsYou = await screen.findByRole("region", { name: "Needs you · 1" });
     expect(within(needsYou).getByRole("link", { name: /Answer/ }).isConnected).toBe(true);
 
-    releaseCompleted({ items: [newerCompleted], next_after: null });
-    await waitFor(() => {
-      expect(screen.getByRole("region", { name: "Done today · 1" }).isConnected).toBe(true);
-    });
-    expect(screen.queryByRole("region", { name: /Needs you/ })).toBeNull();
+    getRun.mockResolvedValueOnce(newerFailed);
+    feed.handlers?.event(JSON.stringify(agentFailedEvent()));
+
+    // The run turned terminal, so it leaves the Board for History (#667)
+    // instead of replacing the wait with a Done row here.
+    await waitFor(() => expect(screen.queryByRole("region", { name: /Needs you/ })).toBeNull());
+    expect(screen.queryByRole("region", { name: /Running/ })).toBeNull();
   });
 
   it("retries a failed getRun until the delivered wait is visible once", async () => {
@@ -710,7 +607,7 @@ describe("the board holds GET /events", () => {
     const { feed } = openStudioHolding([], { getRun });
     await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
-    await screen.findByRole("heading", { name: "Nothing is running" });
+    await screen.findByRole("heading", { name: studioPageCopy.emptyTitle });
 
     feed.handlers?.event(
       JSON.stringify(
@@ -743,7 +640,7 @@ describe("the board holds GET /events", () => {
     const { feed } = openStudioHolding([], { getRun });
     await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
-    await screen.findByRole("heading", { name: "Nothing is running" });
+    await screen.findByRole("heading", { name: studioPageCopy.emptyTitle });
 
     feed.handlers?.event(
       JSON.stringify(
@@ -772,13 +669,13 @@ describe("the board holds GET /events", () => {
     const { feed } = openStudioHolding([]);
     await screen.findByRole("heading", { name: "Board" });
     feed.handlers?.opened();
-    await screen.findByRole("heading", { name: "Nothing is running" });
+    await screen.findByRole("heading", { name: studioPageCopy.emptyTitle });
 
     feed.handlers?.event(JSON.stringify(streamFailedFrame()));
 
     expect((await screen.findByText("Stopped")).isConnected).toBe(true);
     expect(screen.getByText("Durable state is corrupt").isConnected).toBe(true);
-    expect(screen.queryByRole("heading", { name: "Nothing is running" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: studioPageCopy.emptyTitle })).toBeNull();
     expect(screen.queryByText("Connecting")).toBeNull();
     expect(screen.queryAllByRole("link", { name: /Start/ })).toHaveLength(0);
     expect(feed.close).toHaveBeenCalled();
@@ -796,19 +693,10 @@ describe("every Board control answers a named user question", () => {
 
     openStudio([
       startedRun({ public_run_reference: "run1.YQ" }),
-      waitingInputRun({ public_run_reference: "run1.Yw" }),
-      failedRun({ public_run_reference: "run1.ZQ" }),
-      completedRun({ public_run_reference: "run1.ZA" }),
-      listedV3Run({
-        run_id: "done-v3",
-        public_run_reference: encodePublicRunReference("done-v3"),
-        state: "COMPLETED",
-        terminal_hash: revisionHash,
-        node_rail: [{ node_id: "review", state: "succeeded", attempt: null }],
-        ended_at: minutesAgo(15)
-      })
+      waitingInputRun({ public_run_reference: "run1.Yw" })
     ]);
-    await screen.findByRole("region", { name: "Done today · 3" });
+    await screen.findByRole("region", { name: "Running · 1" });
+    await screen.findByRole("region", { name: "Needs you · 1" });
     expectStudioControlsAnswerNamedQuestions([studioQuestions.openRun.id]);
 
     cleanup();
@@ -830,7 +718,7 @@ describe("every Board control answers a named user question", () => {
     const projection = openStudioHolding([], { getRun });
     await screen.findByRole("heading", { name: "Board" });
     projection.feed.handlers?.opened();
-    await screen.findByRole("heading", { name: "Nothing is running" });
+    await screen.findByRole("heading", { name: studioPageCopy.emptyTitle });
     projection.feed.handlers?.event(
       JSON.stringify(
         waitingInput(1, { public_run_reference: "run1.YQ", cursor: "event1.YQ.1" })

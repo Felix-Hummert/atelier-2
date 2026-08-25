@@ -1,10 +1,16 @@
 import { isRunV3, type AnyRun } from "../api/client";
-import { newestActivityFirst } from "./runList";
 import type { NodeState } from "./runProjection";
 import { humanMove, runStanding, type RunStanding } from "./runState";
 
 /**
- * The three groups the Board shows, in the order it shows them.
+ * The two groups the Board shows, in the order it shows them.
+ *
+ * The Board owns what still moves or wants a human now, never what already
+ * happened -- that is History's (operator ruling #667). Only the "running"
+ * and "waiting" standings ever reach a row here: the moment a run's standing
+ * turns failed, cancelled or done it leaves the Board, whether that terminal
+ * state arrived from a list read or was upserted straight from the attention
+ * stream. There is no "done" group left to catch it.
  *
  * The mockup's fourth group, Queued, has no owner yet: no served run state
  * names a run as queued (`AnyRun["state"]` is STARTED, WAITING_INPUT,
@@ -12,22 +18,16 @@ import { humanMove, runStanding, type RunStanding } from "./runState";
  * sequencing source (#79) adds that group instead of this one inventing a
  * queue from nothing.
  *
- * A failed or cancelled run groups under Done, not Running: it is no longer
- * moving, so showing it under a heading that says "Running" would be a state
- * lie (#581) -- the row's own mark and sentence still say plainly that it
- * did not succeed. `StudioPage.svelte` reads a row's group to decide its
- * section, and its `standing` to decide its mark.
+ * `StudioPage.svelte` reads a row's group to decide its section, and its
+ * `standing` to decide its mark.
  */
-export const BOARD_GROUPS = ["needsYou", "running", "done"] as const;
+export const BOARD_GROUPS = ["needsYou", "running"] as const;
 export type BoardGroup = (typeof BOARD_GROUPS)[number];
 
 export type BoardRowStatus =
   | { kind: "waitingInput" }
   | { kind: "waitingReconciliation" }
-  | { kind: "running"; nodeId: string }
-  | { kind: "failed"; nodeId: string }
-  | { kind: "cancelled" }
-  | { kind: "completed" };
+  | { kind: "running"; nodeId: string };
 
 export type MiniPipelineDot = { nodeId: string; state: NodeState };
 
@@ -41,8 +41,6 @@ export type BoardRow = {
   humanMove: string | null;
   /** Null when the run's format carries no node_rail (a V1 run). */
   miniPipeline: readonly MiniPipelineDot[] | null;
-  /** Only ever set from a real V3 timestamp -- never guessed for V1/V2. */
-  endedAt: string | null;
 };
 
 export type BoardGroups = Record<BoardGroup, readonly BoardRow[]>;
@@ -65,22 +63,28 @@ export function resolveWorkflowName(
   return workflowNames?.get(run.workflow_revision_hash) ?? run.run_id;
 }
 
+/**
+ * The Board's live rows, grouped and ready to render.
+ *
+ * Filters to the "running" and "waiting" standings before building a row: a
+ * run whose standing already turned failed, cancelled or done never becomes
+ * a Board row, even one just upserted straight from the attention stream.
+ */
 export function projectBoardGroups(
   runs: readonly AnyRun[],
   workflowNames: ReadonlyMap<string, string | null> | null
 ): BoardGroups {
-  const rows = runs.map((run) => boardRow(run, workflowNames));
-  const rowByReference = new Map(rows.map((row) => [row.run.public_run_reference, row]));
-  const done = rows.filter((row) => row.group === "done");
+  const rows = runs
+    .filter((run) => isLive(runStanding(run.state)))
+    .map((run) => boardRow(run, workflowNames));
   return {
     needsYou: rows.filter((row) => row.group === "needsYou"),
-    running: rows.filter((row) => row.group === "running"),
-    // Reuses the one newest-first owner (runList.ts) rather than a second
-    // implementation; a Done row with no activity stamp sorts to the end.
-    done: newestActivityFirst(done.map((row) => row.run)).map(
-      (run) => rowByReference.get(run.public_run_reference)!
-    )
+    running: rows.filter((row) => row.group === "running")
   };
+}
+
+function isLive(standing: RunStanding): boolean {
+  return standing === "running" || standing === "waiting";
 }
 
 function boardRow(run: AnyRun, workflowNames: ReadonlyMap<string, string | null> | null): BoardRow {
@@ -92,45 +96,24 @@ function boardRow(run: AnyRun, workflowNames: ReadonlyMap<string, string | null>
     name: resolveWorkflowName(run, workflowNames),
     status: rowStatus(run),
     humanMove: humanMove(run.state),
-    miniPipeline: miniPipeline(run),
-    endedAt: isRunV3(run) ? (run.ended_at ?? null) : null
+    miniPipeline: miniPipeline(run)
   };
 }
 
+/** Only ever called with the "waiting" or "running" standing `projectBoardGroups` already filtered to. */
 function boardGroup(standing: RunStanding): BoardGroup {
-  if (standing === "waiting") return "needsYou";
-  if (standing === "running") return "running";
-  // Failed, cancelled and done are all runs that stopped moving: none of them
-  // belongs under a heading that says "Running" (#581).
-  return "done";
+  return standing === "waiting" ? "needsYou" : "running";
 }
 
+/** Only ever called on a run `projectBoardGroups` already filtered to a live standing. */
 function rowStatus(run: AnyRun): BoardRowStatus {
   if (run.state === "WAITING_INPUT") return { kind: "waitingInput" };
   if (run.state === "WAITING_RECONCILIATION") return { kind: "waitingReconciliation" };
-  if (run.state === "COMPLETED") return { kind: "completed" };
-  if (run.state === "FAILED") return { kind: "failed", nodeId: failedNodeId(run) };
-  if (run.state === "CANCELLED") return { kind: "cancelled" };
   return { kind: "running", nodeId: currentNodeId(run) };
 }
 
 function currentNodeId(run: AnyRun): string {
   return isRunV3(run) ? run.current_node_id : run.current_node.node_id;
-}
-
-/**
- * The node a failed run failed at.
- *
- * `node_rail` names it directly for a V2/V3 run. A V1 run carries no rail, so
- * the current node is read instead -- true because this engine only reaches
- * FAILED by failing the node the run's cursor was sitting on.
- */
-function failedNodeId(run: AnyRun): string {
-  if ("node_rail" in run) {
-    const failed = run.node_rail.find((entry) => entry.state === "failed");
-    if (failed !== undefined) return failed.node_id;
-  }
-  return currentNodeId(run);
 }
 
 function miniPipeline(run: AnyRun): readonly MiniPipelineDot[] | null {
