@@ -26,7 +26,11 @@ from dbos import DBOS
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.names import ANSWER_WORKFLOW_NAME
-from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
+from atelier2.adapters.dbos.run_store import (
+    DbosWaitAnswerer,
+    commit_wait_answered,
+    load_wait_answer,
+)
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import run_events, runs, wait_answers
 from atelier2.adapters.dbos.starter import (
@@ -65,7 +69,12 @@ from atelier2.contracts.executions import (
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_projections import NodeState
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
+    RunId,
+    RunState,
+    WorkflowRevision,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -143,28 +152,39 @@ ANSWER = b'"approved"'
 WAIT_NODE = "approve"
 
 
-@pytest.fixture
-def runtime(
-    tmp_path: Path,
-) -> Iterator[tuple[DbosRuntime, RecordingAgentExecutorFactoryV2]]:
-    """A runtime whose agent executor succeeds, so the line reaches the pause."""
-    recording = RecordingAgentExecutorFactoryV2(
+def recording_provider() -> RecordingAgentExecutorFactoryV2:
+    """The agent executor that succeeds, so the line reaches the pause."""
+    return RecordingAgentExecutorFactoryV2(
         "exact", "exact/v1", "exact-operation", PROVIDER_OUTPUT
     )
-    started = DbosRuntime(
+
+
+def wait_runtime_over(
+    root: Path, recording: RecordingAgentExecutorFactoryV2
+) -> DbosRuntime:
+    """A runtime over the durable state in this directory, as a restart builds one."""
+    return DbosRuntime(
         DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
+            root / "atelier.sqlite",
             "v3-wait-test",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+            agent_scratch_root=agent_scratch_root(root),
         ),
         LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
+            root / "external.sqlite",
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
         ExactOutputAgentExecutorFactory(),
         (recording,),
     )
+
+
+@pytest.fixture
+def runtime(
+    tmp_path: Path,
+) -> Iterator[tuple[DbosRuntime, RecordingAgentExecutorFactoryV2]]:
+    recording = recording_provider()
+    started = wait_runtime_over(tmp_path, recording)
     started.initialize_storage()
     try:
         yield started, recording
@@ -528,6 +548,84 @@ def test_the_answer_that_carries_a_run_on_reports_it_started_the_next_node(
             NodeExecutionId.for_node(RUN, workflow.revision_hash, "review")
         ),
     )
+
+
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_a_stored_answer_names_the_exact_execution_of_the_node_it_answers(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """The row is keyed by execution and round, not by the node the person saw.
+
+    A node a declared loop turns pauses once per round, so an answer that named
+    only run and node would let a message typed for one round be applied to a
+    later one. What is asserted is the key the store really holds.
+    """
+    started, _ = runtime
+    workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
+    wait_for_state(started, RunState.WAITING_INPUT)
+
+    assert isinstance(answer(started, workflow, ANSWER), AnswerAcceptedPending)
+
+    wait_for_state(started, RunState.COMPLETED)
+    with started.engine.connect() as connection:
+        stored = (
+            connection.execute(
+                sa.select(wait_answers).where(wait_answers.c.run_id == RUN.value)
+            )
+            .mappings()
+            .one()
+        )
+        paused_event = (
+            connection.execute(
+                sa.select(run_events).where(
+                    run_events.c.run_id == RUN.value,
+                    run_events.c.event_kind == RunEventKind.WAIT_ANSWERED.value,
+                )
+            )
+            .mappings()
+            .one()
+        )
+    execution = NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE)
+    assert str(stored["node_execution_id"]) == execution.value
+    assert int(stored["round_ordinal"]) == FIRST_ROUND_ORDINAL
+    assert str(paused_event["node_execution_id"]) == execution.value
+    assert int(paused_event["round_ordinal"]) == FIRST_ROUND_ORDINAL
+
+
+@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
+def test_an_already_applied_answer_replays_without_a_second_event(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """Committing an answer that is already applied answers the same and writes nothing.
+
+    This is the branch a replay takes, and only this: a process that dies
+    between the commit and the record of it comes back to an answer already
+    APPLIED, and the second call has to be the first one's answer rather than a
+    second transition on a run that has already moved. What proves it is the
+    event log rather than the return value alone -- the run's events are read
+    before and after, and they are the same list.
+
+    It says nothing about how many arguments the recovered workflow carried;
+    that is the migration suite's driven proof.
+    """
+    started, _ = runtime
+    workflow = start_and_launch(started, WAIT_AS_THE_SINK)
+    wait_for_state(started, RunState.WAITING_INPUT)
+    assert isinstance(answer(started, workflow, ANSWER), AnswerAcceptedPending)
+    wait_for_state(started, RunState.COMPLETED)
+    settled = durable_events(started)
+
+    # The replay commits, because a transaction that rolls back on the way out
+    # would hide the very write this test is looking for.
+    with started.engine.begin() as connection:
+        applied = load_wait_answer(connection, RUN, workflow.revision_hash, WAIT_NODE)
+        replayed = commit_wait_answered(connection, applied.answer)
+
+    assert applied.state is WaitAnswerState.APPLIED
+    assert replayed.event.event_kind is RunEventKind.WAIT_ANSWERED
+    assert replayed.state is RunState.COMPLETED
+    assert replayed.current_round_ordinal == FIRST_ROUND_ORDINAL
+    assert durable_events(started) == settled
 
 
 @pytest.mark.parametrize(

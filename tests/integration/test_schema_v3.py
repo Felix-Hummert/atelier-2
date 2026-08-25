@@ -608,12 +608,13 @@ def test_run_event_answer_and_action_receipt_bindings_are_immutable_and_composit
         connection.execute(
             sa.text(
                 "INSERT INTO wait_answers VALUES "
-                "('run-1',:revision,'wait',:node,:answer,:answer_hash,"
+                "('run-1',:revision,'wait',:node,:round,:answer,:answer_hash,"
                 "'answer-workflow','PENDING',0)"
             ),
             {
                 "revision": revision,
                 "node": "4" * 64,
+                "round": FIRST_ROUND_ORDINAL,
                 "answer": b"5",
                 "answer_hash": hashlib.sha256(b"5").hexdigest(),
             },
