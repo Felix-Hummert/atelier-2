@@ -944,12 +944,21 @@ def test_core_session_refuses_a_ready_whose_measurement_is_not_a_version() -> No
         "runner-provider-credential-absent",
         "runner-provider-policy-present",
         "runner-provider-toolchain-unusable",
+        "runner-session-incompatible-revision",
     ),
 )
 def test_core_learns_a_pre_start_refusal_by_name_instead_of_a_torn_socket(
     code: str,
 ) -> None:
-    """A Runner that cannot attest itself says so; Core never arms on it."""
+    """A Runner that cannot attest itself says so; Core never arms on it.
+
+    `runner-session-incompatible-revision` covers the compatibility-peer case
+    a decoder still speaking the retired `runner-session/v1` domain would
+    raise on new-core PREPARE traffic (`test_session_decoder_names_a_retired_
+    wire_revision_by_its_own_code` proves the decode side); here it is one
+    more closed pre-start reason Core must never arm on, exactly like every
+    other named refusal in this set.
+    """
     core = _Core()
     session = _session(core)
     session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))

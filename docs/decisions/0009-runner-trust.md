@@ -1,6 +1,6 @@
 # ADR 0009: One trust boundary separates the coordinating service from every worker
 
-- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-22, 2026-08-23, 2026-08-24; disposable #301-A candidate 2026-08-22 — no live Runner availability
+- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-22, 2026-08-23, 2026-08-24, 2026-08-25; disposable #301-A candidate 2026-08-22 — no live Runner availability
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
 - Decision authority: [Issue #21](https://github.com/FlexOr2/atelier-2/issues/21),
@@ -596,6 +596,23 @@ unchanged through the chain, so depth never launders identity.
   protocol belong to #15. Until that protocol and the #21 carrier decision are
   implemented, remote and CI bindings are represented but refused as
   unavailable rather than advertised as working.
+
+**2026-08-25 amendment (Independent review, #672): the session wire's own
+revision is explicit, not inferred from a field count.** `PREPARE` widened
+from 19 to 21 fields to carry an Attempt's declared output schema and pinned
+turn limit alongside what it already carried — the same `AgentExecutionRequestV2`
+content `#663` gave every `LOCAL_PROCESS` Attempt, now reaching a
+`RUNNER_LEASE` carrier too. A payload's field count is an implementation
+detail of one message, not a fact a peer can safely infer a whole protocol
+generation from, so the session wire now names its own generation in the
+frame domain a peer must match exactly (`runner-session/v2`, up from
+`runner-session/v1`). A frame built to that superseded domain is a real,
+well-formed peer speaking a revision this decoder no longer serves — decode
+answers it by name, `runner-session-incompatible-revision`, not by folding it
+into the generic `runner-session-noncanonical` malformed-bytes bucket. This
+keeps §10's own rule for every other boundary here: a stale peer fails loud
+and named, before anything is armed, rather than surfacing as a decode error
+indistinguishable from corruption.
 
 ## Refusals
 
