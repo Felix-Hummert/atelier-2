@@ -18,6 +18,7 @@
     type CatalogAgentRow,
     type CatalogWorkflowRow
   } from "../lib/catalogRows";
+  import { onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { humanErrorMessage } from "../lib/humanRefusal";
   import { publicationMutation } from "../lib/mutationJournal";
@@ -48,6 +49,12 @@
   onMount(() => {
     void loadWorkflows();
     void loadAgents();
+    // A read that failed while the connection was lost is worth asking again
+    // on its own once it returns, with no reload (#700).
+    return onConnectionRecovered(() => {
+      void loadWorkflows();
+      void loadAgents();
+    });
   });
 
   async function loadWorkflows(): Promise<void> {

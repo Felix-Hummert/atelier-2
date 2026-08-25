@@ -48,7 +48,6 @@ from atelier2.ports.published_revisions import (
     CatalogMemberAdmitted,
     CatalogNameFound,
     CatalogNameMissing,
-    CatalogReferenceLookup,
     CatalogRetirementExisting,
     CatalogRevisionPosition,
     FoundCatalogLineageResult,
@@ -440,50 +439,58 @@ class DbosCatalogStore:
         kind: RevisionKind,
         lineage_id: CatalogLineageId,
         revision_hash: PublishedRevisionHash,
-    ) -> CatalogReferenceLookup:
-        with self._engine.connect() as connection:
-            lineage_record = (
-                connection.execute(
-                    sa.select(catalog_lineages).where(
-                        catalog_lineages.c.lineage_id == lineage_id.value
+    ) -> ResolvePublishedRevisionResult:
+        try:
+            with self._engine.connect() as connection:
+                lineage_record = (
+                    connection.execute(
+                        sa.select(catalog_lineages).where(
+                            catalog_lineages.c.lineage_id == lineage_id.value
+                        )
                     )
+                    .mappings()
+                    .one_or_none()
                 )
-                .mappings()
-                .one_or_none()
-            )
-            if lineage_record is None:
-                return PublishedRevisionMissing()
-            lineage = catalog_lineage_from_record(lineage_record)
-            if lineage.kind is not kind:
-                return PublishedRevisionMissing()
-            member = (
-                connection.execute(
-                    sa.select(catalog_lineage_members).where(
-                        catalog_lineage_members.c.lineage_id
-                        == lineage.lineage_id.value,
-                        catalog_lineage_members.c.revision_hash == revision_hash.value,
+                if lineage_record is None:
+                    return PublishedRevisionMissing()
+                lineage = catalog_lineage_from_record(lineage_record)
+                if lineage.kind is not kind:
+                    return PublishedRevisionMissing()
+                member = (
+                    connection.execute(
+                        sa.select(catalog_lineage_members).where(
+                            catalog_lineage_members.c.lineage_id
+                            == lineage.lineage_id.value,
+                            catalog_lineage_members.c.revision_hash
+                            == revision_hash.value,
+                        )
                     )
+                    .mappings()
+                    .one_or_none()
                 )
-                .mappings()
-                .one_or_none()
-            )
-            if member is None:
-                return PublishedRevisionMissing()
-            revision_record = (
-                connection.execute(
-                    sa.select(published_revisions).where(
-                        published_revisions.c.kind == kind.value,
-                        published_revisions.c.revision_hash == revision_hash.value,
+                if member is None:
+                    return PublishedRevisionMissing()
+                revision_record = (
+                    connection.execute(
+                        sa.select(published_revisions).where(
+                            published_revisions.c.kind == kind.value,
+                            published_revisions.c.revision_hash == revision_hash.value,
+                        )
                     )
+                    .mappings()
+                    .one_or_none()
                 )
-                .mappings()
-                .one_or_none()
+            if revision_record is None:
+                raise ValueError(
+                    "catalog lineage member names a published revision that is missing"
+                )
+            return PublishedRevisionFound(
+                published_revision_from_record(revision_record)
             )
-        if revision_record is None:
-            raise ValueError(
-                "catalog lineage member names a published revision that is missing"
-            )
-        return PublishedRevisionFound(published_revision_from_record(revision_record))
+        except (OperationalError, PoolTimeoutError):
+            return PublishedRevisionsUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
 
     def found_lineage(
         self,
@@ -655,78 +662,88 @@ class DbosCatalogStore:
         lineage_id_or_name: CatalogLineageQuery,
         position: CatalogRevisionPosition,
     ) -> ResolveCatalogNameResult:
-        with self._engine.connect() as connection:
-            if isinstance(lineage_id_or_name, CatalogLineageId):
-                record = _lineage_record(connection, lineage_id_or_name)
-                if record is None:
-                    return CatalogNameMissing(lineage_id_or_name, position)
-                lineage = catalog_lineage_from_record(record)
-                if lineage.kind is not kind:
-                    return CatalogNameMissing(lineage_id_or_name, position)
-            else:
-                holders = (
-                    connection.execute(
-                        sa.select(catalog_lineage_aliases.c.lineage_id)
-                        .select_from(
-                            catalog_lineage_aliases.join(
-                                catalog_lineages,
-                                catalog_lineages.c.lineage_id
-                                == catalog_lineage_aliases.c.lineage_id,
+        try:
+            with self._engine.connect() as connection:
+                if isinstance(lineage_id_or_name, CatalogLineageId):
+                    record = _lineage_record(connection, lineage_id_or_name)
+                    if record is None:
+                        return CatalogNameMissing(lineage_id_or_name, position)
+                    lineage = catalog_lineage_from_record(record)
+                    if lineage.kind is not kind:
+                        return CatalogNameMissing(lineage_id_or_name, position)
+                else:
+                    holders = (
+                        connection.execute(
+                            sa.select(catalog_lineage_aliases.c.lineage_id)
+                            .select_from(
+                                catalog_lineage_aliases.join(
+                                    catalog_lineages,
+                                    catalog_lineages.c.lineage_id
+                                    == catalog_lineage_aliases.c.lineage_id,
+                                )
                             )
+                            .where(
+                                catalog_lineage_aliases.c.name
+                                == lineage_id_or_name.value,
+                                catalog_lineages.c.kind == kind.value,
+                            )
+                            .distinct()
                         )
-                        .where(
-                            catalog_lineage_aliases.c.name == lineage_id_or_name.value,
-                            catalog_lineages.c.kind == kind.value,
-                        )
-                        .distinct()
+                        .scalars()
+                        .all()
                     )
-                    .scalars()
-                    .all()
+                    if len(holders) > 1:
+                        raise ValueError(
+                            "catalog name is held by more than one lineage of one kind"
+                        )
+                    if not holders:
+                        return CatalogNameMissing(lineage_id_or_name, position)
+                    record = _lineage_record(
+                        connection, CatalogLineageId(str(holders[0]))
+                    )
+                    if record is None:
+                        raise ValueError(
+                            "catalog alias names a lineage that is missing"
+                        )
+                    lineage = catalog_lineage_from_record(record)
+                member_statement = sa.select(catalog_lineage_members).where(
+                    catalog_lineage_members.c.lineage_id == lineage.lineage_id.value
                 )
-                if len(holders) > 1:
-                    raise ValueError(
-                        "catalog name is held by more than one lineage of one kind"
+                if position == "head":
+                    member_statement = member_statement.order_by(
+                        catalog_lineage_members.c.revision_number.desc()
+                    ).limit(1)
+                else:
+                    member_statement = member_statement.where(
+                        catalog_lineage_members.c.revision_number == position
                     )
-                if not holders:
+                member = connection.execute(member_statement).mappings().one_or_none()
+                if member is None:
                     return CatalogNameMissing(lineage_id_or_name, position)
-                record = _lineage_record(connection, CatalogLineageId(str(holders[0])))
-                if record is None:
-                    raise ValueError("catalog alias names a lineage that is missing")
-                lineage = catalog_lineage_from_record(record)
-            member_statement = sa.select(catalog_lineage_members).where(
-                catalog_lineage_members.c.lineage_id == lineage.lineage_id.value
-            )
-            if position == "head":
-                member_statement = member_statement.order_by(
-                    catalog_lineage_members.c.revision_number.desc()
-                ).limit(1)
-            else:
-                member_statement = member_statement.where(
-                    catalog_lineage_members.c.revision_number == position
-                )
-            member = connection.execute(member_statement).mappings().one_or_none()
-            if member is None:
-                return CatalogNameMissing(lineage_id_or_name, position)
-            revision_hash = PublishedRevisionHash(str(member["revision_hash"]))
-            published = (
-                connection.execute(
-                    sa.select(published_revisions).where(
-                        published_revisions.c.kind == kind.value,
-                        published_revisions.c.revision_hash == revision_hash.value,
+                revision_hash = PublishedRevisionHash(str(member["revision_hash"]))
+                published = (
+                    connection.execute(
+                        sa.select(published_revisions).where(
+                            published_revisions.c.kind == kind.value,
+                            published_revisions.c.revision_hash == revision_hash.value,
+                        )
                     )
+                    .mappings()
+                    .one_or_none()
                 )
-                .mappings()
-                .one_or_none()
-            )
-            if published is None:
-                raise ValueError(
-                    "catalog lineage member names a published revision that is missing"
+                if published is None:
+                    raise ValueError(
+                        "catalog lineage member names a published revision that is missing"
+                    )
+                published_revision_from_record(published)
+                return CatalogNameFound(
+                    lineage.lineage_id,
+                    revision_hash,
+                    int(member["revision_number"]),
+                    _current_display_name(connection, lineage.lineage_id),
+                    retired=_is_retired(connection, lineage.lineage_id),
                 )
-            published_revision_from_record(published)
-            return CatalogNameFound(
-                lineage.lineage_id,
-                revision_hash,
-                int(member["revision_number"]),
-                _current_display_name(connection, lineage.lineage_id),
-                retired=_is_retired(connection, lineage.lineage_id),
-            )
+        except (OperationalError, PoolTimeoutError):
+            return PublishedRevisionsUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()

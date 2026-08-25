@@ -71,7 +71,20 @@ type StudioReadReply = "populated" | "unavailable" | "empty";
 async function routeStudioReads(page: Page, read: () => StudioReadReply): Promise<void> {
   await page.route("**/atelier/api/v1/runs*", async (route: Route) => {
     if (read() === "unavailable") {
-      await route.abort();
+      // A real HTTP answer the server gave, not a round trip that never
+      // happened -- the page-local "unavailable" this test wants, never the
+      // central, cross-page reachability signal #700 owns (which a raw
+      // `route.abort()` would trip, since that models an outage, not one
+      // read's own failure).
+      await route.fulfill({
+        status: 503,
+        json: {
+          type: "urn:atelier2:problem:v1:temporarily-unavailable",
+          title: "Temporarily unavailable",
+          status: 503,
+          detail: "the durable run store is unreachable"
+        }
+      });
       return;
     }
     const url = new URL(route.request().url());

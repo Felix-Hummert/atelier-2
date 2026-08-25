@@ -887,10 +887,18 @@
     {#if snapshot.request.state === "loading"}<p class="status compact-status" role="status">Refreshing</p>{/if}
 
     {#if projection !== null}
-      <p class="connection connection-{projection.connection}" class:connection-problem={streamStopped(projection)} role="status">
-        <span aria-hidden="true">{streamStopped(projection) ? "◇" : projection.connection === "complete" ? "✓" : projection.connection === "live" ? "●" : "↻"}</span>
-        {connectionLabel(projection)}
-      </p>
+      <!-- A dropped-but-recovering stream (connection "reconnecting", no
+           protocol or terminal problem) is exactly the generic reachability
+           loss the central connection store already names once, above every
+           room (#700) -- this status line only ever speaks for what is
+           specific to this stream: still connecting, live, complete, or a
+           real protocol/terminal failure. -->
+      {#if streamStopped(projection) || projection.connection !== "reconnecting"}
+        <p class="connection connection-{projection.connection}" class:connection-problem={streamStopped(projection)} role="status">
+          <span aria-hidden="true">{streamStopped(projection) ? "◇" : projection.connection === "complete" ? "✓" : projection.connection === "live" ? "●" : "↻"}</span>
+          {connectionLabel(projection)}
+        </p>
+      {/if}
       {#if streamStopped(projection)}
         <button
           class="quiet"
