@@ -323,16 +323,13 @@ test("opens the project level from a cold link and survives a reload", async ({ 
   await expect(page).toHaveURL(/\/atelier\/project$/);
 });
 
-test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read): Board recovers one retained five-list-plus-catalog read", async ({ page }) => {
+test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read): Board recovers one retained three-list-plus-catalog read", async ({ page }) => {
   const runListPath = "/atelier/api/v1/runs";
   const catalogPath = "/atelier/api/v1/workflow-revisions";
-  const expectedStates = [
-    "COMPLETED",
-    "FAILED",
-    "STARTED",
-    "WAITING_INPUT",
-    "WAITING_RECONCILIATION"
-  ];
+  // The Board reads only the non-terminal run states -- what still moves or
+  // wants a human now (operator ruling #667). A terminal run belongs to
+  // History instead, so it is never asked for here.
+  const expectedStates = ["STARTED", "WAITING_INPUT", "WAITING_RECONCILIATION"];
   let readsFail = true;
   const observed: Array<{ method: string; path: string; state: string | null }> = [];
   page.on("request", (request) => {

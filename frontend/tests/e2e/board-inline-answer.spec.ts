@@ -130,11 +130,12 @@ test("proves(a-boolean-board-card-answers-inline): a boolean wait gate answers o
 
     await yes.click();
 
-    // The row leaving Needs you and landing in Done is the visible
-    // confirmation of the send -- no separate banner to word (operator
-    // ruling 23.08.).
+    // The row leaving Needs you and disappearing from the Board is the
+    // visible confirmation of the send -- no separate banner to word
+    // (operator ruling 23.08.). The answered run turned terminal, so it
+    // moves to History instead of landing in a "Done" group here (#667).
     await expect(page.getByRole("region", { name: /Needs you/ })).toHaveCount(0);
-    await expect(page.getByRole("region", { name: "Done today · 1" })).toBeVisible();
+    await expect(page.getByRole("region", { name: /Running/ })).toHaveCount(0);
     await page.screenshot({
       path: `test-results/board-inline-answer-confirmed-${viewport.name}.png`,
       fullPage: true

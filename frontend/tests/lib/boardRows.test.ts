@@ -25,30 +25,12 @@ function v3Run(state: RunV3["state"], runId: string): RunV3 {
   };
 }
 
-describe("the Board's true groups (#581)", () => {
+describe("the Board's true groups (#581, #667)", () => {
   it("keeps a running run under Running", () => {
     const groups = projectBoardGroups([v3Run("STARTED", "run-a")], new Map());
 
     expect(groups.running.map((row) => row.run.run_id)).toEqual(["run-a"]);
-    expect(groups.done).toEqual([]);
-  });
-
-  it("never shows a failed run under Running or Waiting -- it stopped, so it groups with what is over", () => {
-    const groups = projectBoardGroups([v3Run("FAILED", "run-failed")], new Map());
-
-    expect(groups.running).toEqual([]);
     expect(groups.needsYou).toEqual([]);
-    expect(groups.done.map((row) => row.run.run_id)).toEqual(["run-failed"]);
-    expect(groups.done[0]?.status).toEqual({ kind: "failed", nodeId: "build" });
-  });
-
-  it("never shows a cancelled run under Running or Waiting -- it stopped, so it groups with what is over", () => {
-    const groups = projectBoardGroups([v3Run("CANCELLED", "run-cancelled")], new Map());
-
-    expect(groups.running).toEqual([]);
-    expect(groups.needsYou).toEqual([]);
-    expect(groups.done.map((row) => row.run.run_id)).toEqual(["run-cancelled"]);
-    expect(groups.done[0]?.status).toEqual({ kind: "cancelled" });
   });
 
   it("keeps a run waiting for a human under Needs you, not Running", () => {
@@ -57,4 +39,18 @@ describe("the Board's true groups (#581)", () => {
     expect(groups.needsYou.map((row) => row.run.run_id)).toEqual(["run-waiting"]);
     expect(groups.running).toEqual([]);
   });
+
+  it.each([
+    ["FAILED", "run-failed"],
+    ["CANCELLED", "run-cancelled"],
+    ["COMPLETED", "run-completed"]
+  ] as const)(
+    "never shows a %s run on the Board -- it stopped, so it belongs to History (#667)",
+    (state, runId) => {
+      const groups = projectBoardGroups([v3Run(state, runId)], new Map());
+
+      expect(groups.running).toEqual([]);
+      expect(groups.needsYou).toEqual([]);
+    }
+  );
 });

@@ -46,9 +46,6 @@ function answeredRun(overrides: Partial<RunV3> = {}): RunV3 {
     state: "COMPLETED",
     terminal_hash: "d".repeat(64),
     node_rail: [{ node_id: "approve", state: "succeeded", attempt: null }],
-    // Real "now": the Board's own "Done today" group compares this against
-    // its own `new Date()`, so a fixed-in-the-past stamp would silently move
-    // to History instead of Done the moment the calendar day rolls over.
     ended_at: new Date().toISOString(),
     ...overrides
   });
@@ -146,10 +143,12 @@ describe("a boolean or enum wait gate answers inline on its Board card (#572)", 
       answer_base64: btoa("true")
     });
 
-    // The row leaving Needs you and landing in Done is the visible
-    // confirmation (operator ruling 23.08.) -- no separate banner to word.
+    // The row leaving Needs you and disappearing from the Board is the
+    // visible confirmation (operator ruling #667) -- a run that turned
+    // terminal moves to History, not into a "Done" group the Board still
+    // owns, so no separate banner is needed to word it.
     await waitFor(() => expect(screen.queryByRole("region", { name: /Needs you/ })).toBeNull());
-    expect(screen.getByRole("region", { name: "Done today · 1" }).isConnected).toBe(true);
+    expect(screen.queryByRole("region", { name: /Running/ })).toBeNull();
   });
 
   it("renders one button per enum member and sends its exact JSON", async () => {
@@ -260,9 +259,10 @@ describe("a boolean or enum wait gate answers inline on its Board card (#572)", 
 
     await waitFor(() => expect(getRun).toHaveBeenCalledWith(publicReference));
     // The card never keeps offering an answer the durable run already moved
-    // past -- it shows what is true now instead (operator ruling, #572).
+    // past -- it shows what is true now instead (operator ruling, #572), and
+    // a run resolved to terminal leaves the Board for History (#667).
     await waitFor(() => expect(screen.queryByRole("region", { name: /Needs you/ })).toBeNull());
-    expect(screen.getByRole("region", { name: "Done today · 1" }).isConnected).toBe(true);
+    expect(screen.queryByRole("region", { name: /Running/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
