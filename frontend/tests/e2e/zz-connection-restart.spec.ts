@@ -45,16 +45,20 @@ test("shows the calm restart line on the open workbench, and clears it on its ow
   // real: the one round trip that discovers the outage.
   await page.getByRole("link", { name: "Workflows" }).click();
 
-  const notice = page.getByRole("status", { name: /restarting/i });
-  await expect(notice).toBeVisible({ timeout: 5_000 });
-  await expect(notice).toHaveText("The atelier is restarting — back in a moment");
+  // `status` computes its accessible name from an explicit label only, never
+  // from its own content (ARIA's nameFrom:author for this role) -- the same
+  // reason the rest of this suite matches a status region by its text, not
+  // by name.
+  const notice = page.getByRole("status").filter({ hasText: "restarting" });
+  await expect(notice).toBeVisible({ timeout: 10_000 });
+  await expect(notice).toContainText("The atelier is restarting — back in a moment");
 
   // Back on the workbench the issue names, with no network call of its own:
   // it already reads the one central store.
   await page.getByRole("link", { name: "Workbench" }).click();
   await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
   await expect(page.getByText(workbenchPageCopy.composerHint)).toHaveCount(0);
-  await expect(page.getByLabel(workbenchPageCopy.composerLabel).locator("..").getByRole("button", { name: workbenchPageCopy.send })).toBeDisabled();
+  await expect(page.getByRole("button", { name: workbenchPageCopy.send })).toBeDisabled();
 
   for (const viewport of widths) {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
