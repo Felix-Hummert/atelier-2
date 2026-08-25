@@ -343,3 +343,27 @@ def test_name_resolution_carries_a_reference_store_failure_through(
         resolve_catalog_name(RevisionKind.WORKFLOW, display_name, "head", catalog)
         == expected
     )
+
+
+@pytest.mark.parametrize(
+    ("port_answer", "expected"),
+    [
+        (
+            PublishedRevisionsUnavailable("store asleep"),
+            ReadUnavailable("store asleep"),
+        ),
+        (PortDurableStateCorrupt(), DurableStateCorrupt()),
+    ],
+)
+def test_name_resolution_becomes_this_layers_own_refusal(
+    port_answer: ResolveCatalogNameResult, expected: object
+) -> None:
+    """A store failure resolving the name itself is this layer's refusal too,
+    never a raise -- the same as a failure resolving the reference it names."""
+    query = CatalogLineageDisplayName("lasagne")
+    catalog = ScriptedCatalogResolver(name_answers={(query, "head"): port_answer})
+
+    assert (
+        resolve_catalog_name(RevisionKind.WORKFLOW, query, "head", catalog) == expected
+    )
+    assert catalog.reference_calls == []

@@ -132,7 +132,12 @@ class CatalogNameMissing:
             raise ValueError("a catalog position must be head or a positive integer")
 
 
-type ResolveCatalogNameResult = CatalogNameFound | CatalogNameMissing
+type ResolveCatalogNameResult = (
+    CatalogNameFound
+    | CatalogNameMissing
+    | PublishedRevisionsUnavailable
+    | DurableStateCorrupt
+)
 
 
 type FoundCatalogLineageResult = (

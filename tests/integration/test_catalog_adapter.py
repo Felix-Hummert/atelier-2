@@ -654,3 +654,44 @@ def test_a_reference_lookup_missing_its_published_bytes_is_state_corruption(
     )
 
     assert resolved == DurableStateCorrupt()
+
+
+def test_a_name_lookup_the_store_cannot_serve_answers_unavailable(
+    harness: CatalogHarness, scene: CatalogScene
+) -> None:
+    """`resolve_name` (#735) answers the same refusal as `resolve`, not a 500."""
+    published = _workflow(b"name: lasagne\n")
+    display_name = CatalogLineageDisplayName("lasagne")
+    harness.catalog.publish_revision(published)
+    harness.found(published, display_name, scene)
+    with harness.engine.begin() as connection:
+        connection.execute(sa.text("ALTER TABLE published_revisions RENAME TO moved"))
+
+    resolved = harness.catalog.resolve_name(published.kind, display_name, "head")
+
+    assert resolved == PublishedRevisionsUnavailable()
+
+
+def test_a_name_lookup_missing_its_published_bytes_is_state_corruption(
+    harness: CatalogHarness, scene: CatalogScene
+) -> None:
+    """A name resolving to a member whose bytes vanished is corruption, not a 500."""
+    founding = _workflow(b"name: pasta\n")
+    later = _workflow(b"name: lasagne\n")
+    display_name = CatalogLineageDisplayName("lasagne")
+    harness.catalog.publish_revision(founding)
+    harness.catalog.publish_revision(later)
+    lineage = harness.found(founding, CatalogLineageDisplayName("pasta"), scene)
+    harness.admit(lineage, later, display_name, scene)
+    with harness.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER published_revisions_no_delete")
+        connection.execute(
+            published_revisions.delete().where(
+                published_revisions.c.kind == later.kind.value,
+                published_revisions.c.revision_hash == later.revision_hash.value,
+            )
+        )
+
+    resolved = harness.catalog.resolve_name(later.kind, display_name, "head")
+
+    assert resolved == DurableStateCorrupt()

@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.schema import published_revisions
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
 from atelier2.api.openapi import API_PREFIX
@@ -276,3 +277,38 @@ def test_a_reference_lookup_outage_answers_unavailable_instead_of_a_500(
 
     assert response.status_code == 503
     assert response.json()["type"].endswith("temporarily-unavailable")
+
+
+def test_a_database_corruption_answers_durable_state_corrupt_instead_of_a_500(
+    runtime: DbosRuntime,
+) -> None:
+    """A member the name resolves to, whose published bytes vanished, is
+    corruption (#735) -- real end to end, since `resolve_name` is guarded now too."""
+    found(runtime)
+    store = DbosCatalogStore(runtime.engine)
+    second = PublishedRevision(RevisionKind.WORKFLOW, SECOND_DOCUMENT)
+    store.publish_revision(second)
+    found_name = store.resolve_name(
+        RevisionKind.WORKFLOW, CatalogLineageDisplayName(NAME), "head"
+    )
+    assert isinstance(found_name, CatalogNameFound)
+    store.admit_member(
+        found_name.lineage_id,
+        second,
+        CatalogLineageDisplayName(NAME),
+        CatalogActor("operator"),
+        CatalogActivatedAt("2026-08-17T00:02:00Z"),
+    )
+    with runtime.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER published_revisions_no_delete")
+        connection.execute(
+            published_revisions.delete().where(
+                published_revisions.c.kind == second.kind.value,
+                published_revisions.c.revision_hash == second.revision_hash.value,
+            )
+        )
+
+    response = client(runtime).get(f"{API_PREFIX}/workflow-revisions/by-name/{NAME}")
+
+    assert response.status_code == 500
+    assert response.json()["type"].endswith("durable-state-corrupt")

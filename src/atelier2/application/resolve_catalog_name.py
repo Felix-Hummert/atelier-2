@@ -144,5 +144,9 @@ def resolve_catalog_name(
                     assert_never(unreachable)
         case PortCatalogNameMissing(query=query, position=missing_position):
             return CatalogNameMissing(query, missing_position)
+        case PublishedRevisionsUnavailable(detail):
+            return ReadUnavailable(detail)
+        case PortDurableStateCorrupt():
+            return DurableStateCorrupt()
         case _ as unreachable:
             assert_never(unreachable)
