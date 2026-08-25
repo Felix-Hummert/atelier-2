@@ -17,13 +17,7 @@ from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
-from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
-from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
-from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
-from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
-from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
-from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import (
     DbosWaitAnswerer,
     commit_action_completed,
@@ -37,20 +31,10 @@ from atelier2.adapters.dbos.runtime import (
     DbosRuntimeSettings,
 )
 from atelier2.adapters.dbos.schema import effect_intents
-from atelier2.adapters.dbos.starter import (
-    DbosDurableRunStarter,
-    DbosWorkflowRevisionPublisher,
-)
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.adapters.markdown_agent_definitions import (
-    parse_agent_definition,
-    render_agent_definition,
-)
-from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.app import create_app
-from atelier2.api.context import ApiPorts
 from atelier2.api.references import encode_public_run_reference
 from atelier2.api.stream import (
     BoundedQueryRunner,
@@ -92,6 +76,7 @@ from tests.scenarios.api import (
     SSE_CURSOR_AFTER_THREE,
     SSE_PUBLIC_RUN_REFERENCE,
     api_limits,
+    durable_ports,
     durable_queries,
     event_poll_backoff,
     stream_page_reader,
@@ -202,37 +187,11 @@ def _complete_history(runtime: DbosRuntime) -> tuple[RunId, WorkflowRevision]:
 
 
 def _client(runtime: DbosRuntime, page_size: int = 2) -> TestClient:
-    queries = durable_queries(runtime.engine)
     app = create_app(
         source_commit="commit",
         source_tree="tree",
-        ports=ApiPorts(
-            DbosWorkflowRevisionPublisher(runtime.engine),
-            DbosDurableRunStarter(
-                runtime.engine,
-                runtime.settings,
-                runtime.agent_executor_registry,
-                effect_adapter_proves_absence=True,
-            ),
-            DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
-            DbosEffectReconcileCommander(runtime.engine, runtime.settings),
-            queries,
-            queries,
-            queries,
-            parse_workflow_document,
-            parse_agent_definition,
-            render_agent_definition,
-            DbosAgentConfigurationCatalog(
-                runtime.engine, runtime.agent_executor_registry
-            ),
-            DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version),
-            DbosCatalogStore(runtime.engine),
-            DbosCatalogStore(runtime.engine),
-            DbosCatalogStore(runtime.engine),
-            DbosCatalogStore(runtime.engine),
-            DbosArtifactStore(runtime.engine),
-            DbosHostConfigurationChannel(runtime.engine),
-            DbosQueueProjectionStore(runtime.engine),
+        ports=durable_ports(
+            runtime.engine, runtime.settings, runtime.agent_executor_registry
         ),
         limits=api_limits(event_page_size=page_size),
         event_poll_backoff=event_poll_backoff(),

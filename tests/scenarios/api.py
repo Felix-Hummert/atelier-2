@@ -18,7 +18,7 @@ from atelier2.adapters.dbos.queries import DbosQueries
 from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
-from atelier2.adapters.dbos.runtime import DbosRuntime
+from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -44,6 +44,7 @@ from atelier2.contracts.run_projections import (
     RunProjection,
 )
 from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
+from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.issue_observation import TrackerItemSource
 from atelier2.ports.run_events import (
     RunEventQueries,
@@ -311,6 +312,57 @@ def api_ports(**overrides: object) -> ApiPorts:
     return ApiPorts(**ports)
 
 
+def durable_ports(
+    engine: Engine,
+    settings: DbosRuntimeSettings,
+    agent_executor_registry: AgentExecutorRegistry,
+    queries: DbosQueries | None = None,
+    **overrides: object,
+) -> ApiPorts:
+    """The real DBOS-backed port set every durable test composes identically.
+
+    This is the one production shape `atelier2.host.serving` wires, built for a
+    test engine instead. `queries` is the one port call sites genuinely
+    disagree on -- some share a plain reader across all three query ports,
+    one bounds it to a publication limit -- so it is the one named parameter;
+    anything else a caller passes overrides the matching field verbatim.
+    """
+    resolved_queries = queries if queries is not None else durable_queries(engine)
+    catalog = DbosCatalogStore(engine)
+    ports: dict[str, Any] = {
+        "workflow_revision_publisher": DbosWorkflowRevisionPublisher(engine),
+        "published_run_starter": DbosDurableRunStarter(
+            engine,
+            settings,
+            agent_executor_registry,
+            effect_adapter_proves_absence=True,
+        ),
+        "wait_answerer": DbosWaitAnswerer(engine, settings.application_version),
+        "reconcile_commander": DbosEffectReconcileCommander(engine, settings),
+        "workflow_revision_queries": resolved_queries,
+        "run_queries": resolved_queries,
+        "run_event_queries": resolved_queries,
+        "workflow_document_parser": parse_workflow_document,
+        "agent_definition_parser": parse_agent_definition,
+        "agent_definition_renderer": render_agent_definition,
+        "agent_configuration_catalog": DbosAgentConfigurationCatalog(
+            engine, agent_executor_registry
+        ),
+        "agent_attempt_canceller": DbosAgentAttemptStore(
+            engine, settings.application_version
+        ),
+        "catalog_resolver": catalog,
+        "catalog_admissions": catalog,
+        "published_revision_registry": catalog,
+        "published_revision_listing": catalog,
+        "artifact_publisher": DbosArtifactStore(engine),
+        "host_configuration_channel": DbosHostConfigurationChannel(engine),
+        "queue_projection": DbosQueueProjectionStore(engine),
+    }
+    ports.update(overrides)
+    return ApiPorts(**ports)
+
+
 def api_limits(**changes: int) -> ApiLimits:
     event_page_size = changes.pop("event_page_size", 50)
     configured = ApiLimits(
@@ -438,43 +490,13 @@ def durable_asgi_app(
     needs the app itself so one event loop can drive many requests.
     """
 
-    queries = durable_queries(runtime.engine)
     return create_app(
         source_commit="commit",
         source_tree="tree",
-        ports=ApiPorts(
-            workflow_revision_publisher=DbosWorkflowRevisionPublisher(runtime.engine),
-            published_run_starter=DbosDurableRunStarter(
-                runtime.engine,
-                runtime.settings,
-                runtime.agent_executor_registry,
-                effect_adapter_proves_absence=True,
-            ),
-            wait_answerer=DbosWaitAnswerer(
-                runtime.engine, runtime.settings.application_version
-            ),
-            reconcile_commander=DbosEffectReconcileCommander(
-                runtime.engine, runtime.settings
-            ),
-            workflow_revision_queries=queries,
-            run_queries=queries,
-            run_event_queries=queries,
-            workflow_document_parser=parse_workflow_document,
-            agent_definition_parser=parse_agent_definition,
-            agent_definition_renderer=render_agent_definition,
-            agent_configuration_catalog=DbosAgentConfigurationCatalog(
-                runtime.engine, runtime.agent_executor_registry
-            ),
-            agent_attempt_canceller=DbosAgentAttemptStore(
-                runtime.engine, runtime.settings.application_version
-            ),
-            catalog_resolver=DbosCatalogStore(runtime.engine),
-            catalog_admissions=DbosCatalogStore(runtime.engine),
-            published_revision_registry=DbosCatalogStore(runtime.engine),
-            published_revision_listing=DbosCatalogStore(runtime.engine),
-            artifact_publisher=DbosArtifactStore(runtime.engine),
-            host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
-            queue_projection=DbosQueueProjectionStore(runtime.engine),
+        ports=durable_ports(
+            runtime.engine,
+            runtime.settings,
+            runtime.agent_executor_registry,
             tracker_item_source=tracker_item_source,
         ),
         limits=api_limits() if limits is None else limits,
