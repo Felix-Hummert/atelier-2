@@ -6,6 +6,10 @@
  *
  * Folding this into `runPageCopy.ts` once both own the same run page is a
  * named follow-up on #716's body, not a claim this file makes permanent.
+ * `unreadable` below and `runPageCopy.answerContextUnreadable` say the same
+ * thing in two words for two different surfaces (a stored value bytes could
+ * not decode); the same follow-up folds them into one word once they share
+ * an owner.
  */
 
 export const runResultCopy = {

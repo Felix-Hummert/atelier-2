@@ -170,6 +170,16 @@
    */
   $: answerText = detail.answer === null ? null : decodeUtf8Base64(detail.answer.value_base64);
   $: jobText = detail.job_base64 === null ? null : decodeUtf8Base64(detail.job_base64);
+
+  /**
+   * A scrollable exact-bytes box takes a tab stop the same way
+   * `RunCockpitPage.svelte`'s own event evidence already does: through an
+   * action, not a static `tabindex` attribute, because a static one on a
+   * non-interactive element is exactly what the house's a11y lint refuses.
+   */
+  function keyboardScrollableRegion(region: HTMLElement): void {
+    region.tabIndex = 0;
+  }
 </script>
 
 <aside class="node-panel" aria-labelledby="node-panel-title">
@@ -246,7 +256,12 @@
       {:else if jobText === null}
         <p class="muted">{wrapDisplayCopy(runResultCopy.unreadable)}</p>
       {:else}
-        <pre class="exact">{jobText}</pre>
+        <pre
+          class="exact"
+          role="region"
+          use:keyboardScrollableRegion
+          aria-label={wrapDisplayCopy(runPageCopy.tabPrompt)}
+        >{jobText}</pre>
       {/if}
     {:else if tab === "log"}
       <p class="muted">{wrapDisplayCopy(runPageCopy.processLogInLease)}</p>
@@ -454,11 +469,23 @@
     font-size: var(--text-sm);
   }
 
-  /* The Prompt tab's own exact-bytes box -- kept value-for-value the same as
-     `ReadableResult.svelte`'s own `.exact` (Svelte scopes each component's
-     CSS, so the two files cannot share one rule without a global style, and
-     `styles.css` is under another lane's exact-scope claim while this fix
-     lands). */
+  .result-shown-above a {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--tap);
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  .result-shown-above a:hover {
+    text-decoration: underline;
+  }
+
+  /* The Prompt tab's own exact-bytes box: a value copy of
+     `ReadableResult.svelte`'s own `.exact` rule, not one shared selector --
+     Svelte scopes CSS per component, and folding both into `styles.css` is a
+     named follow-up, not done here because that file is under another
+     lane's exact-scope claim while this fix lands. */
   .exact {
     margin: 0;
     max-height: var(--scroll-box);
@@ -469,6 +496,11 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     font-size: var(--text-sm);
+  }
+
+  .exact:focus-visible {
+    outline: var(--edge-focus) solid var(--accent);
+    outline-offset: var(--edge-focus);
   }
 
   section {

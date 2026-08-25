@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { CockpitApi, NodeDetail, RunV3 } from "../../src/api/client";
 import NodeDetailPanel from "../../src/components/NodeDetailPanel.svelte";
+import V3AnswerCard from "../../src/components/V3AnswerCard.svelte";
 import V3RunView from "../../src/components/V3RunView.svelte";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { runPageCopy } from "../../src/lib/runPageCopy";
@@ -268,5 +269,32 @@ describe("the node panel's Result tab renders the same readable form (#716)", ()
     expect(screen.queryByText(runResultCopy.exactText, { selector: "summary" })).toBeNull();
     const link = screen.getByRole("link", { name: runResultCopy.shownAbove });
     expect(link.getAttribute("href")).toBe("#run-outcome");
+  });
+});
+
+describe("V3AnswerCard renders a predecessor's declared answer through the same reader (#716)", () => {
+  it("shows the answer sentence and its remaining field inside the answer-context region, exact JSON collapsed", () => {
+    const raw = '{"answer":"Reviewed the diff.","started_run_ids":["run1.a"]}';
+    render(V3AnswerCard, {
+      props: {
+        question: "Merge this, or name the blocking defect.",
+        questionMissing: false,
+        sources: [{ nodeId: "review", text: raw }],
+        pending: null,
+        pendingAnswer: null,
+        onAnswer: () => {},
+        onRetry: () => {},
+        onDiscard: () => {}
+      }
+    });
+
+    const context = screen.getByRole("region", { name: runPageCopy.answerContext });
+    expect(within(context).getByText("Reviewed the diff.", { exact: true }).isConnected).toBe(true);
+    expect(within(context).getByText("started_run_ids").isConnected).toBe(true);
+    expect(within(context).getByText("run1.a").isConnected).toBe(true);
+    const disclosure = within(context)
+      .getByText(runResultCopy.exactText, { selector: "summary" })
+      .closest("details");
+    expect(disclosure?.open).toBe(false);
   });
 });

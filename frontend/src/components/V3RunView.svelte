@@ -519,6 +519,16 @@
     (projection.protocol_problem === null &&
       projection.connection !== "reconnecting" &&
       projection.connection !== "failed");
+
+  /**
+   * The outcome banner takes a tab stop the same way
+   * `RunCockpitPage.svelte`'s own event evidence already does: through an
+   * action, not a static `tabindex` attribute, because a static one on a
+   * non-interactive element is exactly what the house's a11y lint refuses.
+   */
+  function keyboardScrollableRegion(region: HTMLElement): void {
+    region.tabIndex = 0;
+  }
 </script>
 
 <section class="v3-run" aria-labelledby="v3-run-title">
@@ -542,7 +552,12 @@
   {#if outcomeFailure !== null}
     <ProblemNotice title="This run's result could not be read" message={outcomeFailure} />
   {:else if outcomeText !== null}
-    <section id="run-outcome" class="run-outcome card" aria-label={wrapDisplayCopy(runPageCopy.tabResult)}>
+    <section
+      id="run-outcome"
+      class="run-outcome card"
+      use:keyboardScrollableRegion
+      aria-label={wrapDisplayCopy(runPageCopy.tabResult)}
+    >
       <ReadableResult decodedAnswer={outcomeText} />
     </section>
   {/if}
@@ -723,6 +738,11 @@
   .run-outcome {
     max-height: var(--scroll-box);
     overflow: auto;
+  }
+
+  .run-outcome:focus-visible {
+    outline: var(--edge-focus) solid var(--accent);
+    outline-offset: var(--edge-focus);
   }
 
   .stream-stale {
