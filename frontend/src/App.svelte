@@ -54,7 +54,13 @@
 
 <svelte:head><meta name="theme-color" content="#f2efe7" /><title>{PRODUCT_NAME}</title></svelte:head>
 
-<ConnectionNotice />
+<!-- The Workbench already speaks its own connection state through its
+     composer -- "the ear" (HEART) always names its state in one sentence of
+     its own. A second banner above it would be the same fact said twice, so
+     only every other room, which holds no such ear, shows this line (#700). -->
+{#if route.page !== "chat"}
+  <ConnectionNotice />
+{/if}
 <WorkshopShell bind:this={workshopShell} {route} {navigate}>
   {#if route.page === "chat"}
     <WorkbenchPage {cockpitApi} {mutationJournal} {navigate} />

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { get } from "svelte/store";
 
   import { isRunV3, type AnyRun, type CockpitApi, type RunV3 } from "../api/client";
   import PinnedDecision from "../components/PinnedDecision.svelte";
@@ -16,7 +17,7 @@
     sendConductorMessage,
     type ConductorConnection
   } from "../lib/conductorEpisode";
-  import { connectionState, restartNoticeCopy } from "../lib/connectionState";
+  import { connectionState, restartNoticeCopy, type ConnectionStatus } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import type { MutationJournal } from "../lib/mutationJournal";
   import { runPath } from "../lib/route";
@@ -70,7 +71,22 @@
       // region re-reads so a new decision does not wait for the next visit.
       if (settledALine) void loadPins();
     });
-    return unsubscribe;
+    // A read that failed while the connection was lost stays failed once the
+    // connection returns until something asks again -- reload was the only
+    // way out (#700). The edge from "reconnecting" back to "connected" is
+    // that ask, for every read this page took on mount.
+    let previousConnection: ConnectionStatus = get(connectionState);
+    const unsubscribeConnection = connectionState.subscribe((value) => {
+      if (previousConnection === "reconnecting" && value === "connected") {
+        void loadPins();
+        void resolveConductor();
+      }
+      previousConnection = value;
+    });
+    return () => {
+      unsubscribe();
+      unsubscribeConnection();
+    };
   });
 
   async function resolveConductor(): Promise<void> {
@@ -232,7 +248,13 @@
       ></textarea>
       <button class="primary" type="submit" disabled={$connectionState === "reconnecting"}>{wrapDisplayCopy(workbenchPageCopy.send)}</button>
     </div>
-    {#if conductorLink.kind === "connected"}
+    {#if $connectionState === "reconnecting"}
+      <!-- The ear always names its own state in one sentence (HEART, "The
+           ear"): while the connection is lost that sentence is this one,
+           replacing whatever it would otherwise say, and no separate banner
+           repeats it above (#700, App.svelte). -->
+      <p class="composer-hint">{wrapDisplayCopy(restartNoticeCopy)}</p>
+    {:else if conductorLink.kind === "connected"}
       <p class="composer-hint">{wrapDisplayCopy(conductorChatCopy.composerHint)}</p>
     {:else if conductorLink.kind === "absent"}
       <p class="composer-hint">{wrapDisplayCopy(workbenchPageCopy.composerHint)}</p>
