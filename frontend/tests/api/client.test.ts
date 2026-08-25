@@ -558,6 +558,21 @@ describe("closed API decoders", () => {
     expect(problem.status).toBe(422);
   });
 
+  it("decodes an agent-definition-revision-not-found problem the read door answers", () => {
+    const problem = decodeProblem({
+      type: "urn:atelier2:problem:v1:agent-definition-revision-not-found",
+      title: "Agent definition revision not found",
+      status: 404,
+      detail: "Publish the exact agent definition revision before reading its fields."
+    });
+    expect(problem).toEqual({
+      type: "urn:atelier2:problem:v1:agent-definition-revision-not-found",
+      title: "Agent definition revision not found",
+      status: 404,
+      detail: "Publish the exact agent definition revision before reading its fields."
+    });
+  });
+
   it("decodes a published run-input-refused problem instead of calling it undocumented", () => {
     const problem = decodeProblem({
       type: "urn:atelier2:problem:v1:run-input-refused",
