@@ -32,6 +32,7 @@ from atelier2.api.openapi import (
 from atelier2.api.references import (
     CATALOG_LINEAGE_ID_PATTERN,
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    MAXIMUM_RUN_ORDERS,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
 )
 from atelier2.api.wire import events as wire_events
@@ -728,3 +729,18 @@ def test_served_agent_attempt_state_is_exactly_the_public_vocabulary() -> None:
         "title": "State",
         "type": "string",
     }
+
+
+def test_openapi_pins_the_run_order_bounds() -> None:
+    """A run resource never echoes an order's own bytes -- the served document
+    names the shape and the page bound that make that true, not only the
+    running server.
+    """
+    schema = served_app().openapi()
+    order = schema["components"]["schemas"]["RunOrderResource"]
+    run_v3 = schema["components"]["schemas"]["RunResourceV3"]
+
+    assert set(order["properties"]) == {"name", "bytes", "schema_revision_hash"}
+    assert "value_base64" not in order["properties"]
+    assert "preview" not in order["properties"]
+    assert run_v3["properties"]["orders"]["maxItems"] == MAXIMUM_RUN_ORDERS

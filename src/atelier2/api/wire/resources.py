@@ -21,6 +21,7 @@ from atelier2.api.references import (
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
+    MAXIMUM_RUN_ORDERS,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
     PUBLIC_RUN_REFERENCE_PATTERN,
     REVISION_HASH_PATTERN,
@@ -34,6 +35,7 @@ from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
 )
+from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.catalog_v3 import (
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
 )
@@ -1146,6 +1148,29 @@ class RunCancellabilityResource(ApiModel):
         return self
 
 
+class RunOrderResource(ApiModel):
+    """One order a V3 run was started with, told safely -- never its own bytes.
+
+    An order's material can be a secret a caller pasted by mistake, or an
+    artifact up to `MAXIMUM_ARTIFACT_BYTES`, and this resource is served on
+    every listed run -- so it never echoes the order's bytes at all.
+
+    `bytes` is how large the order's material is. `schema_revision_hash` is
+    the schema the order satisfies -- the workflow revision's own
+    `WorkflowDeclaredOrderResourceV3` already names the `ref` a caller reads,
+    so this is only the identity a caller compares it against.
+
+    No text preview travels here yet: a redacted glance at an order's material
+    needs the redaction owner #666 is building, and shipping a second one here
+    ahead of it would be a parallel copy of a decision that head has not made
+    yet. #738's own body carries that as its named next step.
+    """
+
+    name: str = Field(min_length=1)
+    bytes: int = Field(ge=0, le=MAXIMUM_ARTIFACT_BYTES)
+    schema_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
 class RunResourceV3(ApiModel):
     """One V3 run as it reads back: its own format, never a V2 one renumbered.
 
@@ -1182,6 +1207,17 @@ class RunResourceV3(ApiModel):
     agent_bindings: tuple[AgentBindingResourceV2, ...] = Field(
         max_length=MAXIMUM_RUN_AGENT_BINDINGS
     )
+    orders: tuple[RunOrderResource, ...] = Field(max_length=MAXIMUM_RUN_ORDERS)
+    """Every order this run was started with, in the order the store returns them.
+
+    A run's purpose is what these were, not a guess parsed back out of one
+    agent node's composed job text (PR #736 review, RESLICE): these come from
+    `run_inputs_v3` untouched by any node's job, so a reader learns why a run
+    started without reading a node, without parsing anything, and without the
+    order's own bytes ever reaching this resource (review 25.08.: RunResourceV3
+    is served on every listed run, and an order can be a secret or up to an
+    artifact's own size).
+    """
     state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
     state: Literal[
         "STARTED",

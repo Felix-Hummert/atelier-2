@@ -25,6 +25,7 @@ from atelier2.adapters.dbos.run_store import (
     _agent_receipt_v2_from_record,
     load_node_outputs,
     load_run_inputs,
+    load_run_orders,
 )
 from atelier2.adapters.dbos.run_transitions import (
     RunTransitionConflict,
@@ -1403,6 +1404,7 @@ class DbosQueries:
                 RecordedAt(str(record["started_at"])),
                 None if ended is None else RecordedAt(str(ended)),
             )
+        orders_by_run = load_run_orders(connection, run_ids)
 
         projections = []
         for run in loaded_runs:
@@ -1481,6 +1483,7 @@ class DbosQueries:
                     attempt_projections,
                     None if instant is None else instant[0],
                     None if instant is None else instant[1],
+                    orders=orders_by_run.get(run.run_id.value, ()),
                 )
             )
         return tuple(projections)

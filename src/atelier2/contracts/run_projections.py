@@ -16,6 +16,7 @@ from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.contracts.effects import EffectIntentSnapshot, ReconcileCommandSnapshot
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId
 from atelier2.contracts.when import RecordedAt
@@ -143,6 +144,7 @@ class RunProjection:
     agent_attempts: tuple[AgentAttemptProjection, ...] = ()
     started_at: RecordedAt | None = None
     ended_at: RecordedAt | None = None
+    orders: tuple[RunInput, ...] = ()
 
     @property
     def current_agent_attempt(self) -> AgentAttemptProjection | None:
