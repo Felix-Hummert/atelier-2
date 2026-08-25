@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from atelier2.adapters.markdown_agent_definitions import parse_agent_definition
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.prepare_run_events import (
     EventCursorAhead,
@@ -17,6 +18,10 @@ from atelier2.application.read_agent_configurations import (
     AuthProfileRevisionsListed,
     list_agent_configuration_revisions,
     list_auth_profile_revisions,
+)
+from atelier2.application.read_agent_definition_revisions import (
+    AgentDefinitionRevisionsListed,
+    list_agent_definition_revisions,
 )
 from atelier2.application.read_runs import (
     RunNotFound,
@@ -54,6 +59,8 @@ from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateC
 from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
     PublishedRevisionMissing,
+    PublishedRevisionPage,
+    PublishedRevisionsUnavailable,
 )
 from atelier2.ports.run_events import (
     CursorAhead,
@@ -359,6 +366,59 @@ def test_list_agent_configuration_revisions_becomes_this_layers_own_outcome() ->
         catalog: Any = Catalog(port_answer)
         assert list_agent_configuration_revisions(None, 50, catalog) == expected
         assert catalog.asked == [(None, 50)]
+
+
+def test_list_agent_definition_revisions_becomes_this_layers_own_outcome() -> None:
+    class Listing:
+        def __init__(self, answer: object) -> None:
+            self.answer = answer
+            self.asked: list[tuple[object, object, int]] = []
+
+        def list_revisions(self, kind: object, after: object, limit: int) -> object:
+            self.asked.append((kind, after, limit))
+            return self.answer
+
+    for port_answer, expected in (
+        (PublishedRevisionPage((), None), AgentDefinitionRevisionsListed((), None)),
+        (
+            PublishedRevisionsUnavailable("store asleep"),
+            ReadUnavailable("store asleep"),
+        ),
+        (PortDurableStateCorrupt(), DurableStateCorrupt()),
+    ):
+        listing: Any = Listing(port_answer)
+        assert (
+            list_agent_definition_revisions(None, 50, listing, parse_agent_definition)
+            == expected
+        )
+        assert listing.asked == [(RevisionKind.AGENT_DEFINITION, None, 50)]
+
+
+def test_a_stored_definition_that_no_longer_parses_is_named_as_corruption() -> None:
+    """The publish door refuses what this parser refuses, so unreadable bytes lie.
+
+    Skipping the entry would show a shorter catalog than the store holds, which
+    is the one answer a browse must never give.
+    """
+
+    class Listing:
+        def list_revisions(self, kind: object, after: object, limit: int) -> object:
+            del kind, after, limit
+            return PublishedRevisionPage(
+                (
+                    PublishedRevision(
+                        RevisionKind.AGENT_DEFINITION, b"no frontmatter here\n"
+                    ),
+                ),
+                None,
+            )
+
+    listing: Any = Listing()
+
+    assert (
+        list_agent_definition_revisions(None, 50, listing, parse_agent_definition)
+        == DurableStateCorrupt()
+    )
 
 
 def test_list_auth_profile_revisions_becomes_this_layers_own_outcome() -> None:

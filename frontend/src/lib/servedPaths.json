@@ -8,5 +8,6 @@
   "/atelier/runs/{public_ref}",
   "/atelier/workflows",
   "/atelier/workflows/{workflow_name}",
+  "/atelier/catalog",
   "/atelier/history"
 ]

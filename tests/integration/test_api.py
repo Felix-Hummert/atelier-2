@@ -796,6 +796,7 @@ def _client(
                 catalog_resolver=DbosCatalogStore(runtime.engine),
                 catalog_admissions=DbosCatalogStore(runtime.engine),
                 published_revision_registry=DbosCatalogStore(runtime.engine),
+                published_revision_listing=DbosCatalogStore(runtime.engine),
                 artifact_publisher=DbosArtifactStore(runtime.engine),
                 host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
                 queue_projection=DbosQueueProjectionStore(runtime.engine),

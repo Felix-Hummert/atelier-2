@@ -31,7 +31,13 @@ afterEach(() => {
   window.history.replaceState(null, "", "/atelier");
 });
 
-const OWNED_RAIL = ["[[[ Workbench ]]]", "[[[ Board ]]]", "[[[ Workflows ]]]", "[[[ History ]]]"];
+const OWNED_RAIL = [
+  "[[[ Workbench ]]]",
+  "[[[ Board ]]]",
+  "[[[ Workflows ]]]",
+  "[[[ Catalog ]]]",
+  "[[[ History ]]]"
+];
 
 function open(pathname: string) {
   window.history.replaceState(null, "", pathname);

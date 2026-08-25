@@ -21,6 +21,7 @@
     chat: "▸",
     board: "◫",
     workflows: "⧉",
+    catalog: "▤",
     history: "≡"
   };
 

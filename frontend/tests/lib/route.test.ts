@@ -25,6 +25,7 @@ const REACHED_COLD: Record<CockpitRoute["page"], boolean> = {
   new: true,
   workflows: true,
   workflow: true,
+  catalog: true,
   history: true,
   run: true,
   "not-found": false

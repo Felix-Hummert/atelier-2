@@ -55,6 +55,7 @@ app = create_app(
         DbosCatalogStore(engine),
         DbosCatalogStore(engine),
         DbosCatalogStore(engine),
+        DbosCatalogStore(engine),
         DbosArtifactStore(engine),
         DbosHostConfigurationChannel(engine),
         DbosQueueProjectionStore(engine),

@@ -437,6 +437,31 @@ export const agentConfigurationRevisionPageSchema = z
   .strict();
 
 /**
+ * One published agent definition as its author named it, and no more.
+ *
+ * An imported agent is provider-bound and passed through whole, so the rest of
+ * the file belongs to that provider's runtime rather than to a catalog row.
+ */
+export const agentDefinitionRevisionListItemSchema = z
+  .object({
+    agent_definition_revision_hash: sha256,
+    name: z.string().min(1),
+    description: z.string().min(1)
+  })
+  .strict();
+
+export const agentDefinitionRevisionPageSchema = z
+  .object({
+    items: z.array(agentDefinitionRevisionListItemSchema),
+    next_after_revision_hash: sha256.nullable()
+  })
+  .strict();
+
+export const agentDefinitionRevisionSchema = z
+  .object({ agent_definition_revision_hash: sha256 })
+  .strict();
+
+/**
  * The listing of published auth profiles, in the item form publication already
  * answers with. Held to the frozen document by servedVocabulary.
  */
@@ -1310,6 +1335,13 @@ export type AgentConfigurationRevision = z.infer<typeof agentConfigurationRevisi
 export type AgentConfigurationRevisionListItem = z.infer<
   typeof agentConfigurationRevisionListItemSchema
 >;
+export type AgentDefinitionRevision = z.infer<typeof agentDefinitionRevisionSchema>;
+export type AgentDefinitionRevisionListItem = z.infer<
+  typeof agentDefinitionRevisionListItemSchema
+>;
+export type AgentDefinitionRevisionPage = z.infer<
+  typeof agentDefinitionRevisionPageSchema
+>;
 export type AgentConfigurationRevisionPage = z.infer<
   typeof agentConfigurationRevisionPageSchema
 >;
@@ -1333,6 +1365,8 @@ export interface CockpitApi {
   ): Promise<HttpResult<OccupancyRevision>>;
   listWorkflowRevisions(after?: string): Promise<WorkflowRevisionPage>;
   listAgentConfigurationRevisions(after?: string): Promise<AgentConfigurationRevisionPage>;
+  listAgentDefinitionRevisions(after?: string): Promise<AgentDefinitionRevisionPage>;
+  publishAgentDefinition(document: string): Promise<HttpResult<AgentDefinitionRevision>>;
   getRevisionByName(name: string): Promise<CatalogNameResolution>;
   foundCatalogLineage(input: CatalogAdmissionInput): Promise<HttpResult<CatalogAdmission>>;
   admitCatalogMember(
@@ -1473,6 +1507,30 @@ export function createCockpitApi(
         {},
         [200],
         agentConfigurationRevisionPageSchema
+      ),
+    listAgentDefinitionRevisions: (after?: string) =>
+      requestJson(
+        fetcher,
+        after === undefined
+          ? "/atelier/api/v1/agent-definition-revisions?limit=50"
+          : `/atelier/api/v1/agent-definition-revisions?limit=50&after_revision_hash=${encodeURIComponent(after)}`,
+        {},
+        [200],
+        agentDefinitionRevisionPageSchema
+      ),
+    // The authored file travels as the exact bytes the author wrote, so the
+    // hash the store answers with is the hash of what is on their disk.
+    publishAgentDefinition: (document: string) =>
+      requestJsonResult(
+        fetcher,
+        "/atelier/api/v1/agent-definition-revisions",
+        {
+          method: "POST",
+          headers: { "content-type": "text/markdown" },
+          body: new TextEncoder().encode(document)
+        },
+        [200, 201],
+        agentDefinitionRevisionSchema
       ),
     getRevisionByName: async (name: string) => {
       const resolution = await requestJson(
