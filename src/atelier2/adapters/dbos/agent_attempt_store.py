@@ -2094,7 +2094,10 @@ class DbosAgentAttemptStore:
             )
 
     def complete_project_verification_failure(
-        self, execution: AgentAttemptExecution, verdict: str
+        self,
+        execution: AgentAttemptExecution,
+        verdict: str,
+        transcript: AttemptTranscript | None = None,
     ) -> AgentAttemptFailed:
         """End the armed attempt whose granted verification never produced an exit.
 
@@ -2103,6 +2106,12 @@ class DbosAgentAttemptStore:
         `tool_redemptions` row. The attempt ends on the same
         `PROJECT_VERIFICATION_FAILED` seam a nonzero exit uses, with `verdict`
         naming why -- the declared timeout, not an invented code.
+
+        The provider had already answered when the check went silent, so its
+        steps are kept here too. Losing them on this one path would make the
+        transcript's absence mean two different things -- "no executor decoded
+        one" and "a verification timed out afterwards" -- and a reader could not
+        tell which.
         """
         if not verdict:
             raise ValueError(
@@ -2128,6 +2137,7 @@ class DbosAgentAttemptStore:
                     NodeReceiptReason.PROJECT_VERIFICATION_FAILED,
                     verdict,
                 ),
+                transcript=transcript,
             )
 
     def request_cancellation(

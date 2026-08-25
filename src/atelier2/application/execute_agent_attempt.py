@@ -122,8 +122,13 @@ def execute_agent_attempt(
             except ProjectVerificationUnavailable as error:
                 # The claim already won; letting this escape leaves the attempt
                 # LAUNCH_ARMED, and a replay would report AgentAttemptPossiblyRan.
+                # The provider had already answered when the check went silent,
+                # so its steps travel into this ending too rather than this
+                # being the one path that drops them.
                 outcome = store.complete_project_verification_failure(
-                    execution, _verification_unavailable_verdict(error)
+                    execution,
+                    _verification_unavailable_verdict(error),
+                    result.transcript,
                 )
             else:
                 outcome = store.complete_success(execution, result, redemption)

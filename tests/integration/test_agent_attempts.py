@@ -592,6 +592,96 @@ def test_a_terminal_attempt_names_the_transcript_its_executor_decoded(
         runtime.close()
 
 
+def test_a_verification_that_never_answered_still_keeps_what_the_agent_did(
+    tmp_path: Path,
+) -> None:
+    """The agent's work is not undone by the check's silence.
+
+    This was the one ending that dropped the steps, which would have made an
+    absent transcript mean two different things -- "no executor decoded one" and
+    "a verification timed out after one was" -- with no way to tell them apart.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime, "attempt/verification-silent")
+        store = DbosAgentAttemptStore(runtime.engine)
+        execution = agent_attempt_execution(request)
+        store.prepare(execution)
+        store.claim(execution)
+        transcript = AttemptTranscript.of(_DECODED_STEPS)
+
+        outcome = store.complete_project_verification_failure(
+            execution, "timeout 30 seconds", transcript
+        )
+
+        assert isinstance(outcome, AgentAttemptFailed)
+        assert (
+            outcome.attempt.failure_code
+            is AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED
+        )
+        with runtime.engine.connect() as connection:
+            kept = connection.scalar(
+                sa.select(agent_attempts.c.transcript_artifact_hash)
+            )
+            assert (
+                connection.scalar(
+                    sa.select(artifacts.c.content).where(
+                        artifacts.c.artifact_hash == kept
+                    )
+                )
+                == transcript.document
+            )
+    finally:
+        runtime.close()
+
+
+def test_a_refused_verification_failure_leaves_no_transcript_behind_either(
+    tmp_path: Path,
+) -> None:
+    """The artifact and the pointer naming it stand or fall together.
+
+    The transcript is kept inside the same write that ends the attempt, so an
+    abort further down has to take the bytes with it -- otherwise a store would
+    accumulate material no attempt ever names, published by writes that in the
+    end never happened.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime, "attempt/verification-refused")
+        store = DbosAgentAttemptStore(runtime.engine)
+        execution = agent_attempt_execution(request)
+        store.prepare(execution)
+        store.claim(execution)
+        with runtime.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TRIGGER fail_attempt BEFORE UPDATE ON agent_attempts "
+                "WHEN NEW.state='FAILED' "
+                "BEGIN SELECT RAISE(ABORT, 'failpoint'); END"
+            )
+
+        with pytest.raises(DatabaseError, match="failpoint"):
+            store.complete_project_verification_failure(
+                execution, "timeout 30 seconds", AttemptTranscript.of(_DECODED_STEPS)
+            )
+
+        with runtime.engine.connect() as connection:
+            attempt = connection.execute(sa.select(agent_attempts)).mappings().one()
+            artifact_count = connection.scalar(
+                sa.select(sa.func.count()).select_from(artifacts)
+            )
+        assert (attempt["state"], attempt["transcript_artifact_hash"]) == (
+            "LAUNCH_ARMED",
+            None,
+        )
+        assert artifact_count == 0
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize("known_failure", (False, True))
 def test_terminal_attempt_commit_is_atomic_and_matches_success_or_known_failure(
     tmp_path: Path, known_failure: bool

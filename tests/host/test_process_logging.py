@@ -344,9 +344,12 @@ class _FailingAttemptStore:
         raise AssertionError((execution, result, redemption))
 
     def complete_project_verification_failure(
-        self, execution: AgentAttemptExecution, verdict: str
+        self,
+        execution: AgentAttemptExecution,
+        verdict: str,
+        transcript: AttemptTranscript | None = None,
     ) -> AgentAttemptFailed:
-        raise AssertionError((execution, verdict))
+        raise AssertionError((execution, verdict, transcript))
 
     def request_cancellation(
         self, request: CancelAgentAttemptRequest

@@ -29,6 +29,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     AgentAttemptState,
 )
+from atelier2.contracts.agent_transcripts import AssistantTurn, AttemptTranscript
 from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.hashing import Sha256Hash
@@ -387,6 +388,12 @@ class _TimeoutVerifications:
         )
 
 
+DECODED_TRANSCRIPT = AttemptTranscript.of(
+    [AssistantTurn("I changed the file the check was about.")]
+)
+"""What this provider decoded before the granted check stopped answering."""
+
+
 @dataclass
 class _ClaimingStore:
     """A store that wins the claim, then records how the attempt was ended."""
@@ -394,6 +401,7 @@ class _ClaimingStore:
     calls: list[str] = field(default_factory=list)
     attempt: AgentAttempt | None = None
     verdict: str | None = None
+    kept_transcript: AttemptTranscript | None = None
 
     def prepare(self, execution: AgentAttemptExecution) -> AgentAttempt:
         self.calls.append("prepare")
@@ -418,11 +426,15 @@ class _ClaimingStore:
         )
 
     def complete_project_verification_failure(
-        self, execution: AgentAttemptExecution, verdict: str
+        self,
+        execution: AgentAttemptExecution,
+        verdict: str,
+        transcript: AttemptTranscript | None = None,
     ) -> AgentAttemptFailed:
         del execution
         self.calls.append("fail")
         self.verdict = verdict
+        self.kept_transcript = transcript
         assert self.attempt is not None
         self.attempt = replace(
             self.attempt,
@@ -445,7 +457,7 @@ class _SucceedingExecutor:
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult:
         del invocation, completion
-        return AgentExecutionResult(b'"ok"')
+        return AgentExecutionResult(b'"ok"', DECODED_TRANSCRIPT)
 
     def release_credential_channel(self, command: AgentProcessCommand) -> None:
         del command
@@ -529,6 +541,9 @@ def test_a_verification_that_times_out_after_claim_fails_the_attempt_named(
     assert store.attempt.state is not AgentAttemptState.LAUNCH_ARMED
     assert store.calls == ["prepare", "claim", "fail"]
     assert store.verdict == f"timeout {timeout_seconds} seconds"
+    # The provider had already answered when the check went silent, so what
+    # it did reaches the ending rather than being dropped on this one path.
+    assert store.kept_transcript == DECODED_TRANSCRIPT
     assert verifications.ran == 1
     assert workspaces.acquired == 1
     assert workspaces.released == 1

@@ -376,13 +376,22 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         ...
 
     def complete_project_verification_failure(
-        self, execution: AgentAttemptExecution, verdict: str
+        self,
+        execution: AgentAttemptExecution,
+        verdict: str,
+        transcript: AttemptTranscript | None = None,
     ) -> AgentAttemptFailed:
         """End an armed attempt whose granted verification never produced an exit.
 
         `verdict` names why -- the declared timeout, not an invented exit code.
         The attempt ends on the same `PROJECT_VERIFICATION_FAILED` seam a
         nonzero exit uses, without a `tool_redemptions` row.
+
+        `transcript` is what the provider did before a check that never
+        answered, and it is kept for the reason every other ending keeps its
+        own: the agent's work is not undone by the verification's silence, and
+        whoever reads this failure has to see what was produced before deciding
+        whether the check or the work is at fault.
         """
         ...
 
