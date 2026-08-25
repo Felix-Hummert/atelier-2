@@ -44,6 +44,7 @@ from atelier2.contracts.run_cancellations import CancelRunRequest
 from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
 from atelier2.contracts.run_projections import (
     AgentAttemptProjection,
+    NodeState,
     PublicAgentAttemptState,
     RunCancellationRefusal,
     RunProjection,
@@ -404,12 +405,18 @@ def _wait_graph() -> WorkflowGraphV3:
     )
 
 
-def _on_the_wait_node(state: RunState) -> RunProjection:
+def on_the_wait_node(
+    state: RunState,
+    *,
+    terminal_hash: Sha256Hash | None = None,
+    last_event_sequence: int = 0,
+) -> RunProjection:
     """A V3 run standing at its Wait node, in the state the caller names.
 
     STARTED there runs no agent a cancel could stop; WAITING_INPUT there is the
-    resting pause #668 made cancellable. One builder for both, because the only
-    thing that differs is the word on the run.
+    resting pause #668 made cancellable; CANCELLED there is that pause after an
+    operator ended it. One builder for all three, because the only thing that
+    differs is the word on the run and the hash an ended one carries.
     """
     return RunProjection(
         RunV3(
@@ -420,8 +427,9 @@ def _on_the_wait_node(state: RunState) -> RunProjection:
             state,
             WAIT_NODE_ID,
             0,
-            0,
+            last_event_sequence,
             RunConfigurationRevisionHash("c" * 64),
+            terminal_hash,
         ),
         _wait_graph(),
         None,
@@ -447,7 +455,7 @@ def test_a_live_started_agent_run_is_shown_cancellable_with_its_fence() -> None:
 
 def test_a_run_resting_at_a_wait_is_cancellable_and_fences_on_that_pause() -> None:
     """#668: the pause itself is the fence, not whatever agent ran before it."""
-    cancellation = _cancellation(_on_the_wait_node(RunState.WAITING_INPUT))
+    cancellation = _cancellation(on_the_wait_node(RunState.WAITING_INPUT))
 
     assert cancellation.cancellable is True
     assert cancellation.reason is None
@@ -455,6 +463,29 @@ def test_a_run_resting_at_a_wait_is_cancellable_and_fences_on_that_pause() -> No
         cancellation.target_node_execution_id
         == NodeExecutionId.for_node(RUN_ID, REVISION_HASH, WAIT_NODE_ID).value
     )
+
+
+def test_a_pause_a_cancel_ended_reads_as_cancelled_rather_than_still_working() -> None:
+    """The rail on the answer an operator actually gets back, not on a stream frame.
+
+    A run resource projects its rail from the snapshot with no events at all, so
+    an ended pause has nothing but the run's own word to be read from. Before
+    #668 that word was unhandled and every reader of a cancelled Wait was told
+    the node was `working` -- a run that had stopped, still posing as busy.
+    """
+    resource = run_resource(
+        on_the_wait_node(
+            RunState.CANCELLED,
+            terminal_hash=Sha256Hash.of(b"stopped at the pause"),
+            last_event_sequence=1,
+        )
+    )
+
+    assert isinstance(resource, RunResourceV3)
+    assert [(entry.node_id, entry.state) for entry in resource.node_rail] == [
+        (WAIT_NODE_ID, NodeState.CANCELLED)
+    ]
+    assert resource.cancellation.reason == RunCancellationRefusal.ALREADY_ENDED.value
 
 
 @pytest.mark.parametrize(
@@ -473,7 +504,7 @@ def test_a_run_resting_at_a_wait_is_cancellable_and_fences_on_that_pause() -> No
             RunCancellationRefusal.WAITING_FOR_YOU,
         ),
         (
-            _on_the_wait_node(RunState.STARTED),
+            on_the_wait_node(RunState.STARTED),
             RunCancellationRefusal.NODE_RUNS_NO_AGENT,
         ),
         (

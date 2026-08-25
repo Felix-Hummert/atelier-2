@@ -705,6 +705,8 @@ export const RUN_STATES_V3 = [
   "CANCELLED"
 ] as const;
 
+export type RunStateV3 = (typeof RUN_STATES_V3)[number];
+
 /** Why the server says a V3 run cannot be operator-cancelled; #439 D3's closed set. */
 export const RUN_NOT_CANCELLABLE_REASONS = [
   "between-nodes",

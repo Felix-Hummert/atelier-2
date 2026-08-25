@@ -1028,6 +1028,27 @@ describe("cancelling a version 3 run from the cockpit", () => {
     expect(screen.queryByRole("button", { name: cancel.open })).toBeNull();
   });
 
+  it.each([
+    ["WAITING_INPUT", cancel.consequenceWaiting, cancel.consequenceWorking],
+    ["STARTED", cancel.consequenceWorking, cancel.consequenceWaiting]
+  ] as const)(
+    "tells a %s run what cancelling really costs it, and not the other run's cost",
+    async (state, said, unsaid) => {
+      render(RunCancelCard, {
+        props: {
+          run: v3Run({ state, cancellation: cancellableBlock(targetNodeExecutionId) }),
+          cockpitApi: api(v3Run()),
+          mutationJournal: new MutationJournal(sessionStorage)
+        }
+      });
+
+      await openStagedDecision();
+
+      expect(screen.getByText(said)).toBeTruthy();
+      expect(screen.queryByText(unsaid)).toBeNull();
+    }
+  );
+
   it.each([...RUN_NOT_CANCELLABLE_REASONS])(
     "reads %s to the operator as a sentence rather than the server's token",
     (reason) => {

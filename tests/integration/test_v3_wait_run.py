@@ -880,6 +880,45 @@ def test_a_cancel_arriving_on_an_accepted_answer_refuses_rather_than_drop_it(
     assert str(answer_state) == WaitAnswerState.PENDING.value
 
 
+UNSETTLED_WORKFLOW_STATUSES = ("PENDING", "ENQUEUED")
+"""DBOS's own words for a workflow that still owes this store an outcome."""
+
+_UNSETTLED_WORKFLOWS = sa.text(
+    "SELECT COUNT(*) FROM workflow_status WHERE status IN :unsettled"
+).bindparams(sa.bindparam("unsettled", expanding=True))
+
+
+def wait_for_recovery_to_drain(runtime: DbosRuntime) -> None:
+    """Block until nothing this runtime recovered is still owed an outcome.
+
+    `DbosRuntime.launch` is already the barrier for recovery having *happened*:
+    it arms DBOS recovery and runs every convergence sweep synchronously under
+    its lock before it returns. What it does not wait for is a workflow that
+    recovery armed and handed to the queue, which runs afterwards -- so that is
+    what is waited on here, by DBOS's own status rather than by a duration.
+
+    A run resting at a pause leaves nothing unsettled, so this returns at once
+    today. That is the condition being true, not the check being absent: the
+    day recovery does re-arm a Wait node, this holds until that workflow has
+    run and the assertions below see what it wrote.
+    """
+    deadline = time.monotonic() + 8
+    unsettled = -1
+    while time.monotonic() < deadline:
+        with runtime.engine.connect() as connection:
+            unsettled = int(
+                connection.scalar(
+                    _UNSETTLED_WORKFLOWS,
+                    {"unsettled": list(UNSETTLED_WORKFLOW_STATUSES)},
+                )
+                or 0
+            )
+        if unsettled == 0:
+            return
+        time.sleep(0.025)
+    raise AssertionError(f"{unsettled} workflows never settled after recovery")
+
+
 def test_a_cancelled_pause_stays_ended_when_a_new_runtime_comes_up_over_it(
     tmp_path: Path,
 ) -> None:
@@ -890,6 +929,11 @@ def test_a_cancelled_pause_stays_ended_when_a_new_runtime_comes_up_over_it(
     cancellation is not what keeps the run ended -- the record is. A restarting
     runtime replays whatever DBOS still holds, and a Wait node re-driven here
     would try to write WAITING_INPUT onto a CANCELLED run.
+
+    Nothing here waits out a duration. `launch()` returns only once recovery is
+    armed and every convergence sweep has run, and `wait_for_recovery_to_drain`
+    then holds until the queue owes nothing -- so the event log compared below
+    is the one recovery actually left, not the one a sleep happened to catch.
     """
     recording = recording_provider()
     started = wait_runtime_over(tmp_path, recording)
@@ -912,7 +956,7 @@ def test_a_cancelled_pause_stays_ended_when_a_new_runtime_comes_up_over_it(
     recovered = wait_runtime_over(tmp_path, recording)
     try:
         recovered.launch()
-        time.sleep(0.3)
+        wait_for_recovery_to_drain(recovered)
         with recovered.engine.connect() as connection:
             run = (
                 connection.execute(sa.select(runs).where(runs.c.run_id == RUN.value))

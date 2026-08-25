@@ -1,4 +1,4 @@
-import type { RunNotCancellableReason } from "../api/client";
+import type { RunNotCancellableReason, RunStateV3 } from "../api/client";
 import type { NodeState } from "./runProjection";
 
 /**
@@ -95,7 +95,11 @@ export const runPageCopy = {
     open: "Cancel this run",
     /** The staged decision (HEART "Decision as stage"): a real question, honest buttons. */
     question: "Cancel this run?",
-    consequence: "The agent working now is stopped and the run ends here. This cannot be undone.",
+    /** What cancelling costs, in the two shapes a cancellable run can have. */
+    consequenceWorking:
+      "The agent working now is stopped and the run ends here. This cannot be undone.",
+    consequenceWaiting:
+      "This run is waiting for your answer. Cancelling ends it here instead, unanswered. This cannot be undone.",
     confirm: "Cancel run",
     dismiss: "Keep running",
     /** In flight, in the operator's words. */
@@ -108,6 +112,20 @@ export const runPageCopy = {
     discard: "Discard"
   }
 } as const;
+
+/**
+ * What the staged cancel decision says it will cost, for the run in front of it.
+ *
+ * A run resting at a pause has no agent working, so promising to stop one would
+ * be a sentence the operator can see is false -- and the real cost, an answer
+ * nobody will now give, would go unsaid at the one moment it decides the answer.
+ * Every other cancellable standing is a live attempt, which is the other line.
+ */
+export function cancelConsequence(state: RunStateV3): string {
+  return state === "WAITING_INPUT"
+    ? runPageCopy.cancel.consequenceWaiting
+    : runPageCopy.cancel.consequenceWorking;
+}
 
 /**
  * The sentence the cockpit shows when the server says a run cannot be cancelled
