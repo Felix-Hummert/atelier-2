@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.openapi.models import OpenAPI
 from fastapi.openapi.utils import get_openapi
 
+from atelier2.api.limits import ApiLimits
 from atelier2.api.problems import (
     ADAPTER_OPERATION_DOCUMENT_PROBLEM_CODES,
     AGENT_DEFINITION_DOCUMENT_PROBLEM_CODES,
@@ -96,6 +97,7 @@ QUEUE_ADMISSIONS_PATH = API_PREFIX + "/queue-admissions"
 QUEUE_ITEMS_PATH = API_PREFIX + "/queue-items"
 OBSERVED_QUEUE_ITEMS_PATH = API_PREFIX + "/observed-queue-items"
 PROJECT_SOURCE_IMPORT_PATH = API_PREFIX + "/project-sources/import"
+LIBRARY_RECOGNITIONS_PATH = API_PREFIX + "/library/recognitions"
 
 EVENT_MODELS = (
     AgentCompletedEventResource,
@@ -227,6 +229,13 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "invalid-request",
         "temporarily-unavailable",
         "durable-state-corrupt",
+        "internal-error",
+    ),
+    (LIBRARY_RECOGNITIONS_PATH, "post"): (
+        "library-document-ambiguous",
+        "invalid-request",
+        "unsupported-media-type",
+        "temporarily-unavailable",
         "internal-error",
     ),
     (API_PREFIX + "/workflow-revisions", "post"): (
@@ -487,7 +496,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
 }
 
 
-def install_custom_openapi(app: FastAPI) -> None:
+def install_custom_openapi(app: FastAPI, limits: ApiLimits) -> None:
     def custom_openapi() -> dict[str, Any]:
         if app.openapi_schema is not None:
             return app.openapi_schema
@@ -504,6 +513,7 @@ def install_custom_openapi(app: FastAPI) -> None:
         _install_problem_responses(schema)
         _install_workflow_document_grammar(schema)
         _install_publication_request_body(schema)
+        _install_recognition_limits(schema, limits)
         _install_event_components(schema)
         _install_parameter_contracts(schema)
         _install_versioned_run_unions(schema)
@@ -596,6 +606,41 @@ def _install_publication_request_body(schema: dict[str, Any]) -> None:
         "content": {
             "text/markdown": {"schema": {"type": "string", "format": "binary"}}
         },
+    }
+
+
+def _install_recognition_limits(schema: dict[str, Any], limits: ApiLimits) -> None:
+    """Publish the two bounds the recognition door enforces, from the limits it reads.
+
+    The body is opaque bytes, so `maxLength` there counts bytes -- the same
+    number the body middleware refuses above -- and the file name is one field
+    under the field bound every other query string meets.
+    """
+
+    operation = schema["paths"][LIBRARY_RECOGNITIONS_PATH]["post"]
+    operation["requestBody"] = {
+        "required": True,
+        "content": {
+            "application/octet-stream": {
+                "schema": {
+                    "type": "string",
+                    "format": "binary",
+                    "maxLength": limits.maximum_request_body_bytes,
+                }
+            }
+        },
+    }
+    (file_name,) = (
+        parameter
+        for parameter in operation["parameters"]
+        if parameter["name"] == "file_name"
+    )
+    file_name["schema"] = {
+        "anyOf": [
+            {"type": "string", "maxLength": limits.maximum_field_characters},
+            {"type": "null"},
+        ],
+        "title": "File Name",
     }
 
 

@@ -22,6 +22,7 @@ from atelier2.api.openapi import (
     CANCELLATION_PATH,
     EVENT_NAMES,
     EVENT_PATH,
+    LIBRARY_RECOGNITIONS_PATH,
     OCCUPANCY_PATH,
     PROJECT_PATH,
     PROJECT_ROOT_PATH,
@@ -91,6 +92,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/tool-grant-revisions",
     API_PREFIX + "/adapter-operation-revisions",
     API_PREFIX + "/agent-definition-revisions",
+    LIBRARY_RECOGNITIONS_PATH,
     API_PREFIX + "/workflow-revisions",
     API_PREFIX + "/workflow-revisions/by-name/{name}",
     API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
@@ -178,6 +180,7 @@ EXPECTED_ROUTE_SEQUENCE = (
         API_PREFIX + "/agent-definition-revisions",
         "list_agent_definition_revisions_route",
     ),
+    ("POST", LIBRARY_RECOGNITIONS_PATH, "recognize_library_document_route"),
     ("POST", API_PREFIX + "/workflow-revisions", "publish_revision"),
     ("GET", API_PREFIX + "/workflow-revisions", "list_revisions"),
     (
@@ -247,6 +250,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/tool-grant-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/adapter-operation-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/agent-definition-revisions", "post"): {"200", "201"},
+    (LIBRARY_RECOGNITIONS_PATH, "post"): {"200"},
     (API_PREFIX + "/workflow-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "get"): {"200"},
     (API_PREFIX + "/workflow-revisions/{workflow_revision_hash}", "get"): {"200"},
@@ -530,6 +534,37 @@ def test_openapi_declares_every_success_and_exact_request_media_type() -> None:
             "text/markdown": {"schema": {"type": "string", "format": "binary"}}
         },
     }
+
+    recognition = schema["paths"][LIBRARY_RECOGNITIONS_PATH]["post"]
+    assert recognition["requestBody"] == {
+        "required": True,
+        "content": {
+            "application/octet-stream": {
+                "schema": {
+                    "type": "string",
+                    "format": "binary",
+                    "maxLength": api_limits().maximum_request_body_bytes,
+                }
+            }
+        },
+    }
+    assert recognition["parameters"] == [
+        {
+            "name": "file_name",
+            "in": "query",
+            "required": False,
+            "schema": {
+                "anyOf": [
+                    {
+                        "type": "string",
+                        "maxLength": api_limits().maximum_field_characters,
+                    },
+                    {"type": "null"},
+                ],
+                "title": "File Name",
+            },
+        }
+    ]
 
     for path in (
         API_PREFIX + "/auth-profile-revisions",

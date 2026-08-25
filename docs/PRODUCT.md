@@ -767,7 +767,20 @@ choice is not a muted twin of a refusal. After a choice the list collapses
 onto that card with a Change path, and the start form sits directly under it.
 Unnamed documents stay one row each, as they did. A V3 publish from the CLI or the
 cockpit then names the revision through `POST /workflow-lineages`; publication
-and admission stay two HTTP acts. Details repeats what the published graph already answers —
+and admission stay two HTTP acts. Before either act, `POST /library/recognitions`
+says what a loose document is without writing anything: opaque bytes plus an
+optional `file_name`, answered as a recognized workflow (format, authored name
+and description), a recognized agent definition (name, description, provider
+mark), a kind the library recognises but does not hold yet (a `SKILL.md` with
+a closed frontmatter block, or JSON with `mcpServers`, each with its reason), or
+unrecognized with what every kind expected and why these bytes are not it. A
+document two markers claim is refused naming both; the file name is a marker,
+not a tie-breaker, so a `SKILL.md` whose frontmatter is a valid agent
+definition is ambiguous and only a `SKILL.md` that is not a valid agent is a
+skill. The document publishes the byte bound of the body and the character
+bound of `file_name`. Recognition reuses the workflow and
+agent-definition parsers publication already runs; no skill or MCP store
+exists. Details repeats what the published graph already answers —
 format, roles and node count where the V3 resource carries them, executability,
 declared orders with the schema each pinned, the lineage's revision history,
 and the graph miniature. A hash sits behind a proof affordance — hidden until

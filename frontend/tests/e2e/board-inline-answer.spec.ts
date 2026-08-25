@@ -2,7 +2,7 @@ import { expect, test, type Page, type Route } from "@playwright/test";
 
 import { encodePublicRunReference, type RunV3, type WorkflowRevisionDetail } from "../../src/api/client";
 import { runPageCopy } from "../../src/lib/runPageCopy";
-import { notCancellableBlock } from "../support/runV3";
+import { cancellableBlock } from "../support/runV3";
 
 /**
  * Chromium proof for #572: a boolean wait gate answers on its own Board
@@ -31,7 +31,9 @@ function waitingRun(overrides: Partial<RunV3> = {}): RunV3 {
     state: "WAITING_INPUT",
     current_node_id: "approve",
     node_rail: [{ node_id: "approve", state: "needs_you", attempt: null }],
-    cancellation: notCancellableBlock("waiting-for-you"),
+    // A resting Wait is operator-cancellable (#668): ending it there is the
+    // wait's own honest exit, not a state the Board card has to explain.
+    cancellation: cancellableBlock(),
     terminal_hash: null,
     latest_event_cursor: null,
     started_at: new Date().toISOString(),
