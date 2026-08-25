@@ -9,16 +9,21 @@ import pytest
 from referencing.exceptions import Unretrievable
 
 from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.application.bind_run_configuration import bind_run_configuration
 from atelier2.application.compose_preview import compose_preview
+from atelier2.application.evaluate_executability import (
+    DocumentNotExecutable,
+    resolve_document_references,
+)
 from atelier2.application.resolve_references import resolve_declared_reference
 from atelier2.contracts import schemas_v3
-from atelier2.contracts.agents import AgentBindingSetHash
 from atelier2.contracts.capabilities_v3 import (
     AttestedCapabilities,
     PublishedSkills,
 )
-from atelier2.contracts.composed_preview_v3 import ConfigurationBinding
+from atelier2.contracts.composed_preview_v3 import (
+    ComposedPreview,
+    ConfigurationBinding,
+)
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
@@ -28,7 +33,6 @@ from atelier2.contracts.run_configuration_v3 import (
     DeclaredReference,
     ReferenceRefusal,
     ReferenceRefusalReason,
-    ReferenceResolutionRefused,
     ReferenceSite,
     ResolvedReference,
 )
@@ -266,18 +270,11 @@ def test_the_binding_refuses_the_snapshot_the_preview_keeps_drawing() -> None:
     registry = ManyRevisionRegistry((SETTLE, prose))
     revision_hash = WorkflowRevisionHash.of(b"one settled verdict")
 
-    with pytest.raises(ReferenceResolutionRefused) as refused:
-        bind_run_configuration(
-            revision_hash,
-            document,
-            SubworkflowBinding(),
-            AgentBindingSetHash.of(b"no agent roles"),
-            registry,
-        )
+    refused = resolve_document_references(document, registry)
 
-    assert (
-        refused.value.refusal.reason is ReferenceRefusalReason.UNUSABLE_SCHEMA_DOCUMENT
-    )
+    assert isinstance(refused, DocumentNotExecutable), refused
+    assert refused.refusal is not None
+    assert refused.refusal.reason is ReferenceRefusalReason.UNUSABLE_SCHEMA_DOCUMENT
 
     composed = compose_preview(
         revision_hash,
@@ -290,6 +287,7 @@ def test_the_binding_refuses_the_snapshot_the_preview_keeps_drawing() -> None:
         ConfigurationBinding.BOUND,
     )
 
+    assert isinstance(composed, ComposedPreview), composed
     assert [
         (entry.reason, entry.site.node, entry.site.field)
         for entry in composed.graph.unresolved_references

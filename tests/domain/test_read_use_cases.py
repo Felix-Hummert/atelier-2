@@ -7,6 +7,11 @@ import pytest
 
 from atelier2.adapters.markdown_agent_definitions import parse_agent_definition
 from atelier2.adapters.yaml_workflows import parse_workflow_document
+from atelier2.application.evaluate_executability import (
+    DocumentNotExecutable,
+    ExecutableDocument,
+    evaluate_executability,
+)
 from atelier2.application.prepare_run_events import (
     EventCursorAhead,
     RunEventStreamPrepared,
@@ -83,7 +88,15 @@ from atelier2.ports.workflow_revisions import (
 
 REVISION_HASH = WorkflowRevisionHash("a" * 64)
 RUN_ID = RunId("run")
-REVISION_PROJECTION: Any = object()
+V1_DOCUMENT = b"""format_version: 1
+start: final
+nodes:
+  - {id: final, type: subworkflow, operation: add, operands: [1, 2], next: null}
+"""
+REVISION_PROJECTION = WorkflowRevisionProjection(
+    WorkflowRevision(V1_DOCUMENT), parse_workflow_document(V1_DOCUMENT)
+)
+"""A V1 revision: executable whole, declaring nothing a resolver would be asked."""
 RUN_PROJECTION: Any = object()
 
 
@@ -158,11 +171,13 @@ READS: list[
 ] = [
     (
         "get-workflow-revision",
-        lambda queries: get_workflow_revision(REVISION_HASH, queries),
+        lambda queries: get_workflow_revision(
+            REVISION_HASH, queries, ScriptedResolver(PublishedRevisionMissing())
+        ),
         [
             (
                 WorkflowRevisionFound(REVISION_PROJECTION),
-                WorkflowRevisionRead(REVISION_PROJECTION),
+                WorkflowRevisionRead(REVISION_PROJECTION, None),
             ),
             (WorkflowRevisionMissing(), WorkflowRevisionNotFound()),
             *PORT_REFUSALS,
@@ -251,7 +266,9 @@ def test_a_read_hands_the_projection_on_untouched_rather_than_rendering_it() -> 
     revision = ScriptedQueries(WorkflowRevisionFound(REVISION_PROJECTION))
 
     read_run = get_run(RUN_ID, run)
-    read_revision = get_workflow_revision(REVISION_HASH, revision)
+    read_revision = get_workflow_revision(
+        REVISION_HASH, revision, ScriptedResolver(PublishedRevisionMissing())
+    )
 
     assert isinstance(read_run, RunRead)
     assert read_run.projection is RUN_PROJECTION
@@ -299,6 +316,49 @@ nodes:
     return WorkflowRevisionProjection(
         WorkflowRevision(document), parse_workflow_document(document)
     )
+
+
+def test_a_document_whose_pinned_reference_nothing_published_answers_is_not_executable() -> (
+    None
+):
+    """The reader's verdict is the start's: a form nothing binds, or a reference
+    nothing published answers, and the reason names which."""
+    projection = _wait_revision_projection(WELL_FORMED_UNPUBLISHED_HASH)
+
+    evaluated = evaluate_executability(
+        projection.graph, ScriptedResolver(PublishedRevisionMissing())
+    )
+
+    assert isinstance(evaluated, DocumentNotExecutable), evaluated
+    assert "no published revision of this kind carries this hash" in evaluated.reason
+    assert f"decision@{WELL_FORMED_UNPUBLISHED_HASH}" in evaluated.reason
+
+
+def test_a_document_whose_every_reference_resolves_waits_for_nothing() -> None:
+    schema = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "boolean"}')
+    projection = _wait_revision_projection(schema.revision_hash.value)
+
+    evaluated = evaluate_executability(
+        projection.graph, ScriptedResolver(PublishedRevisionFound(schema))
+    )
+
+    assert isinstance(evaluated, ExecutableDocument), evaluated
+    assert [entry.revision_hash for entry in evaluated.resolutions] == [
+        schema.revision_hash
+    ]
+
+
+def test_a_registry_that_cannot_answer_for_a_pinned_reference_is_a_read_refusal() -> (
+    None
+):
+    """Not `free`, not `not executable`: the store did not answer, and the read says so."""
+    projection = _wait_revision_projection(WELL_FORMED_UNPUBLISHED_HASH)
+    queries = ScriptedQueries(WorkflowRevisionFound(projection))
+    resolver = ScriptedResolver(PublishedRevisionsUnavailable("registry asleep"))
+
+    result = get_workflow_revision(REVISION_HASH, queries, resolver)
+
+    assert result == ReadUnavailable("registry asleep")
 
 
 @pytest.mark.parametrize(

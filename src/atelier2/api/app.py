@@ -162,6 +162,7 @@ def bound_use_cases(
                 limit,
                 enriched_page_budget,
                 ports.workflow_revision_queries,
+                ports.published_revision_registry,
             )
         ),
         get_run=lambda run_id: get_run(run_id, ports.run_queries),
@@ -197,6 +198,7 @@ def bound_use_cases(
             ports.workflow_revision_publisher,
             ports.workflow_document_parser,
             projection_limit,
+            ports.published_revision_registry,
         ),
         publish_artifact=lambda content: publish_artifact(
             content, ports.artifact_publisher

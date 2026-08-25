@@ -21,14 +21,14 @@ from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.api.openapi import API_PREFIX
-from atelier2.application.bind_run_configuration import bind_run_configuration
-from atelier2.contracts.agents import AgentBindingSetHash
+from atelier2.application.evaluate_executability import (
+    ExecutableDocument,
+    resolve_document_references,
+)
 from atelier2.contracts.budgets_v3 import BudgetField, BudgetRevisionRefusal
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_configuration_v3 import ReferenceSite, ResolvedReference
-from atelier2.contracts.runs import WorkflowRevisionHash
-from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflows_v3 import VersionedReference, WorkflowGraphV3
 from atelier2.ports.published_revisions import PublishedRevisionMissing
 from tests.scenarios.api import durable_api_client
@@ -108,13 +108,8 @@ def test_a_budget_published_over_http_is_the_hash_an_agent_node_binds(
     assert published.status_code == 201, published.text
     graph = parse_workflow_document(bounded_document(budget_hash))
     assert isinstance(graph, WorkflowGraphV3)
-    snapshot = bind_run_configuration(
-        WorkflowRevisionHash(published.json()["workflow_revision_hash"]),
-        graph,
-        SubworkflowBinding(),
-        AgentBindingSetHash.of(b"no agent roles"),
-        DbosCatalogStore(runtime.engine),
-    )
+    snapshot = resolve_document_references(graph, DbosCatalogStore(runtime.engine))
+    assert isinstance(snapshot, ExecutableDocument), snapshot
 
     assert snapshot.resolutions == (
         ResolvedReference(

@@ -268,7 +268,8 @@ def test_the_conductor_document_publishes_once_through_the_production_path(
     _app, runtime = compose_application(_doors_armed_settings(tmp_path))
     runtime.initialize_storage()
     try:
-        DbosCatalogStore(runtime.engine).publish_revision(_ANY_JSON_SCHEMA)
+        catalog = DbosCatalogStore(runtime.engine)
+        catalog.publish_revision(_ANY_JSON_SCHEMA)
         publisher = DbosWorkflowRevisionPublisher(runtime.engine)
         document = _conductor_document()
 
@@ -277,22 +278,24 @@ def test_the_conductor_document_publishes_once_through_the_production_path(
             publisher,
             parse_workflow_document,
             permissive_projection_limit(),
+            catalog,
         )
         republished = publish_workflow_revision(
             document,
             publisher,
             parse_workflow_document,
             permissive_projection_limit(),
+            catalog,
         )
 
         assert isinstance(created, PublicationCreated)
         assert isinstance(republished, PublicationExisting)
         assert (
-            republished.projection.revision.revision_hash
-            == created.projection.revision.revision_hash
+            republished.read.projection.revision.revision_hash
+            == created.read.projection.revision.revision_hash
         )
-        assert isinstance(created.projection.graph, WorkflowGraphV3)
-        assert created.projection.graph.name == CONDUCTOR_WORKFLOW_NAME
+        assert isinstance(created.read.projection.graph, WorkflowGraphV3)
+        assert created.read.projection.graph.name == CONDUCTOR_WORKFLOW_NAME
     finally:
         runtime.close()
 

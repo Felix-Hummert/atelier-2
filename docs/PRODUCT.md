@@ -476,8 +476,10 @@ no runtime executes a child.
 
 A valid V3 document is publishable long before all of it is executable: it
 becomes an immutable revision under the same exact-bytes hash identity as V1 and V2,
-and the revision projection names its format and says what still has no owner, while an
-invalid one is refused at publication carrying that named node and field. One shape of
+and the revision projection names its format and says what still has no owner -- an
+authored form nothing binds, or a pinned reference no published revision answers -- by
+the same two rules the start applies, so no reading promises a start the service then
+refuses; an invalid one is refused at publication carrying that named node and field. One shape of
 it runs: a single line of Agent, Wait and linear Action nodes, each entered by at most
 one dependency and followed by at most one dependent, declaring no optional form the
 runtime does not bind. `required_context` and `available_context` are parsed target
