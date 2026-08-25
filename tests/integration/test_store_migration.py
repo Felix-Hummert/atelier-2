@@ -21,11 +21,15 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from dbos import DBOSClient, EnqueueOptions
+from dbos._serialization import DefaultSerializer
 from sqlalchemy.engine import Connection
 from sqlalchemy.schema import CreateIndex
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.names import ANSWER_WORKFLOW_NAME, QUEUE_NAME
 from atelier2.adapters.dbos.published_schema_shapes import PUBLISHED_TABLE_SHAPES
+from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.run_transitions import event_from_record
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
@@ -88,6 +92,10 @@ from atelier2.adapters.dbos.schema import (
     workflow_revisions,
 )
 from atelier2.adapters.dbos.workflow_ids import answer_workflow_id_for
+from atelier2.application.answer_wait import (
+    AnswerAcceptedPending,
+    answer_wait_result,
+)
 from atelier2.contracts.agents import (
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
@@ -112,6 +120,16 @@ from atelier2.contracts.runs import (
 from atelier2.host import main
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.integration.test_runner_terminal_evidence_store import _bound
+from tests.integration.test_v3_wait_run import (
+    ANSWER,
+    RUN,
+    WAIT_IN_THE_MIDDLE,
+    WAIT_NODE,
+    recording_provider,
+    start_and_launch,
+    wait_for_state,
+    wait_runtime_over,
+)
 from tests.scenarios.agents import agent_attempt_execution
 
 ARCHIVED_RUN_ID = "live/erster-lauf-nach-der-nacht"
@@ -1013,18 +1031,37 @@ END
 """
 
 
+_PARKED_CURRENT_WAIT_ANSWERS = "wait_answers_of_the_current_schema"
+
+
 def _revert_wait_answers_execution_key(connection: sqlite3.Connection) -> None:
     """Restore the run-and-node key and roundless payload trigger the #671 hop moved.
 
     `wait_answers` has carried one shape since it was introduced, so every
     "exact vNN store" fixture up to V33 shares this one predecessor -- the #671
     hop is the first to touch it at all.
+
+    Rows are carried back the way the hop carries them forward, dropping the
+    round the predecessor has no column for. An empty table copies nothing, so
+    the fixtures that only want the shape pay nothing for it, and a store that
+    was driven to a real pause keeps the answer that pause accepted.
     """
 
     for trigger in _WAIT_ANSWERS_TRIGGERS:
         connection.execute(f"DROP TRIGGER {trigger}")
-    connection.execute(f"DROP TABLE {wait_answers.name}")
+    connection.execute(
+        f"ALTER TABLE {wait_answers.name} RENAME TO {_PARKED_CURRENT_WAIT_ANSWERS}"
+    )
     connection.execute(_PREDECESSOR_WAIT_ANSWERS_DDL)
+    carried = ", ".join(
+        str(record[1])
+        for record in connection.execute(f"PRAGMA table_info({wait_answers.name})")
+    )
+    connection.execute(
+        f"INSERT INTO {wait_answers.name} ({carried}) "
+        f"SELECT {carried} FROM {_PARKED_CURRENT_WAIT_ANSWERS}"
+    )
+    connection.execute(f"DROP TABLE {_PARKED_CURRENT_WAIT_ANSWERS}")
     connection.execute(_PREDECESSOR_WAIT_ANSWERS_PAYLOAD_TRIGGER_DDL)
     connection.execute(_PRODUCT_TRIGGERS["wait_answers_state_transition"])
     connection.execute(_PRODUCT_TRIGGERS["wait_answers_no_delete"])
@@ -2595,3 +2632,152 @@ def test_a_refused_answer_rekey_leaves_the_v33_store_untouched(
         assert connection.execute(
             "SELECT version FROM atelier_schema_versions"
         ).fetchone() == (33,)
+
+
+def _enqueue_a_three_argument_answer_workflow(
+    database_path: Path,
+    application_version: str,
+    revision_hash: WorkflowRevisionHash,
+    execution_id: NodeExecutionId,
+) -> None:
+    """Record the answer invocation a store written before the round existed holds.
+
+    A predecessor enqueued run, revision and node and nothing else. Recording it
+    under the identity the answer will be minted with is what makes it the same
+    workflow the submission would otherwise have enqueued: the submission's own
+    enqueue then finds the id taken and adds nothing, so what stands in the queue
+    across the hop is the three-argument shape and only that.
+    """
+
+    engine = create_canonical_engine(database_path)
+    client = DBOSClient(system_database_engine=engine, use_listen_notify=False)
+    try:
+        options: EnqueueOptions = {
+            "workflow_name": ANSWER_WORKFLOW_NAME,
+            "queue_name": QUEUE_NAME,
+            "workflow_id": answer_workflow_id_for(execution_id),
+            "app_version": application_version,
+        }
+        client.enqueue(options, RUN.value, revision_hash.value, WAIT_NODE)
+    finally:
+        client.destroy()
+        engine.dispose()
+
+
+def _recorded_positional_arguments(serialized: str) -> tuple[object, ...]:
+    """The arguments DBOS really recorded for a workflow, read the way DBOS reads them.
+
+    The queue row is the artifact under test here, so it is decoded rather than
+    trusted: the point of the fixture is that three arguments and not four are
+    what a recovering executor will hand to `durable_answer`.
+    """
+    return tuple(DefaultSerializer().deserialize(serialized)["args"])
+
+
+def _downgrade_a_driven_store_to_v33(database_path: Path) -> None:
+    with sqlite3.connect(database_path) as connection:
+        _revert_wait_answers_execution_key(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V33_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V33_SCHEMA_HANDOFF.version)
+
+
+def test_a_v33_answer_enqueued_without_a_round_still_applies_after_the_v34_hop(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The answer a predecessor accepted is applied by the runtime that comes after.
+
+    This is the sentence the hop has to earn. An operator answered on the old
+    schema; the process holding the run died before the answer workflow ran; the
+    store was migrated offline; a new process came up. Nothing about that
+    sequence is arranged after the fact -- the answer workflow is recorded with
+    the three arguments a predecessor really wrote, the first runtime is closed
+    while the answer is still PENDING and nothing is left to consume it, and the
+    store is put back into its exact published V33 shape, fingerprint and all,
+    with that PENDING row inside it.
+
+    What is then asserted is that the answer is not stranded: it becomes APPLIED
+    in the first round, writes exactly one WAIT_ANSWERED event, and carries the
+    line on to the heir its author declared -- run by a runtime that never saw a
+    byte of it in memory.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    recording = recording_provider()
+    paused = wait_runtime_over(tmp_path, recording)
+    paused.initialize_storage()
+    try:
+        workflow = start_and_launch(paused, WAIT_IN_THE_MIDDLE)
+        wait_for_state(paused, RunState.WAITING_INPUT)
+        application_version = paused.settings.application_version
+    finally:
+        paused.close()
+
+    execution_id = NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE)
+    _enqueue_a_three_argument_answer_workflow(
+        database_path, application_version, workflow.revision_hash, execution_id
+    )
+    engine = create_canonical_engine(database_path)
+    try:
+        accepted = answer_wait_result(
+            RUN,
+            workflow.revision_hash,
+            WAIT_NODE,
+            ANSWER,
+            DbosWaitAnswerer(engine, application_version),
+        )
+    finally:
+        engine.dispose()
+    assert isinstance(accepted, AnswerAcceptedPending), accepted
+
+    _downgrade_a_driven_store_to_v33(database_path)
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT state FROM wait_answers WHERE node_execution_id = ?",
+            (execution_id.value,),
+        ).fetchone() == (WaitAnswerState.PENDING.value,)
+        recorded_inputs = connection.execute(
+            "SELECT inputs FROM workflow_status WHERE workflow_uuid = ?",
+            (answer_workflow_id_for(execution_id),),
+        ).fetchone()
+    assert recorded_inputs is not None
+    assert _recorded_positional_arguments(str(recorded_inputs[0])) == (
+        RUN.value,
+        workflow.revision_hash.value,
+        WAIT_NODE,
+    )
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    recovered = wait_runtime_over(tmp_path, recording)
+    try:
+        recovered.launch()
+        wait_for_state(recovered, RunState.COMPLETED)
+        with recovered.engine.connect() as connection:
+            stored = connection.execute(sa.select(wait_answers)).mappings().one()
+            answered = connection.execute(
+                sa.select(run_events.c.node_id, run_events.c.round_ordinal).where(
+                    run_events.c.event_kind == RunEventKind.WAIT_ANSWERED.value
+                )
+            ).all()
+            heirs = (
+                connection.execute(
+                    sa.select(run_events.c.node_id).where(
+                        run_events.c.event_kind == RunEventKind.AGENT_COMPLETED.value
+                    )
+                )
+                .scalars()
+                .all()
+            )
+    finally:
+        recovered.close()
+
+    assert str(stored["state"]) == WaitAnswerState.APPLIED.value
+    assert int(stored["round_ordinal"]) == FIRST_ROUND_ORDINAL
+    assert bytes(stored["answer_bytes"]) == ANSWER
+    assert answered == [(WAIT_NODE, FIRST_ROUND_ORDINAL)]
+    assert list(heirs) == ["implement", "review"]

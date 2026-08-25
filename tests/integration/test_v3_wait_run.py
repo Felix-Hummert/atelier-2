@@ -28,8 +28,6 @@ from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.names import ANSWER_WORKFLOW_NAME
 from atelier2.adapters.dbos.run_store import (
     DbosWaitAnswerer,
-    commit_wait_answered,
-    load_wait_answer,
 )
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import run_events, runs, wait_answers
@@ -152,28 +150,39 @@ ANSWER = b'"approved"'
 WAIT_NODE = "approve"
 
 
-@pytest.fixture
-def runtime(
-    tmp_path: Path,
-) -> Iterator[tuple[DbosRuntime, RecordingAgentExecutorFactoryV2]]:
-    """A runtime whose agent executor succeeds, so the line reaches the pause."""
-    recording = RecordingAgentExecutorFactoryV2(
+def recording_provider() -> RecordingAgentExecutorFactoryV2:
+    """The agent executor that succeeds, so the line reaches the pause."""
+    return RecordingAgentExecutorFactoryV2(
         "exact", "exact/v1", "exact-operation", PROVIDER_OUTPUT
     )
-    started = DbosRuntime(
+
+
+def wait_runtime_over(
+    root: Path, recording: RecordingAgentExecutorFactoryV2
+) -> DbosRuntime:
+    """A runtime over the durable state in this directory, as a restart builds one."""
+    return DbosRuntime(
         DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
+            root / "atelier.sqlite",
             "v3-wait-test",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+            agent_scratch_root=agent_scratch_root(root),
         ),
         LoopbackEffectAdapterFactory(
-            tmp_path / "external.sqlite",
+            root / "external.sqlite",
             AdapterRevision("loopback-v1"),
             EffectDestination("loopback-test"),
         ),
         ExactOutputAgentExecutorFactory(),
         (recording,),
     )
+
+
+@pytest.fixture
+def runtime(
+    tmp_path: Path,
+) -> Iterator[tuple[DbosRuntime, RecordingAgentExecutorFactoryV2]]:
+    recording = recording_provider()
+    started = wait_runtime_over(tmp_path, recording)
     started.initialize_storage()
     try:
         yield started, recording
@@ -579,34 +588,6 @@ def test_a_stored_answer_names_the_exact_execution_of_the_node_it_answers(
     assert int(stored["round_ordinal"]) == FIRST_ROUND_ORDINAL
     assert str(paused_event["node_execution_id"]) == execution.value
     assert int(paused_event["round_ordinal"]) == FIRST_ROUND_ORDINAL
-
-
-@pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
-def test_an_answer_workflow_recovered_without_a_round_still_reaches_its_answer(
-    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
-) -> None:
-    """An answer enqueued before rounds existed carries three arguments, not four.
-
-    Such a row recovers into `durable_answer` with no round, so the lookup it
-    makes is the roundless one. It has to reach the same stored answer and
-    commit the same transition, or the hop would strand every answer a
-    predecessor had already accepted.
-    """
-    started, _ = runtime
-    workflow = start_and_launch(started, WAIT_AS_THE_SINK)
-    wait_for_state(started, RunState.WAITING_INPUT)
-    assert isinstance(answer(started, workflow, ANSWER), AnswerAcceptedPending)
-    wait_for_state(started, RunState.COMPLETED)
-
-    with started.engine.connect() as connection:
-        recovered = load_wait_answer(connection, RUN, workflow.revision_hash, WAIT_NODE)
-        replayed = commit_wait_answered(connection, recovered.answer)
-
-    assert recovered.answer.answer_bytes == ANSWER
-    assert recovered.answer.round_ordinal == FIRST_ROUND_ORDINAL
-    assert recovered.state is WaitAnswerState.APPLIED
-    assert replayed.event.event_kind is RunEventKind.WAIT_ANSWERED
-    assert replayed.state is RunState.COMPLETED
 
 
 @pytest.mark.parametrize(

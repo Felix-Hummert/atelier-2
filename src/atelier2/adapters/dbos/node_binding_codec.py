@@ -169,7 +169,7 @@ def decode_node_binding(encoded: Mapping[str, object]) -> NodeBinding:
             return ActionNodeBinding()
         case "wait":
             _refuse_foreign_keys(encoded, _FORM_ONLY_KEYS, _WAIT_OPTIONAL_KEYS)
-            return WaitNodeBinding(_declared_wait_round_ordinal(encoded))
+            return _decode_wait(encoded)
         case "subworkflow":
             _refuse_foreign_keys(encoded, _SUBWORKFLOW_KEYS)
             return SubworkflowNodeBinding(
@@ -327,11 +327,24 @@ def _declared_tool_grant(encoded: Mapping[str, object]) -> DeclaredToolGrant | N
         ) from error
 
 
-def _declared_wait_round_ordinal(encoded: Mapping[str, object]) -> int:
-    """The round a durable Wait binding names, or the one a legacy row meant."""
-    if "round_ordinal" not in encoded:
-        return FIRST_ROUND_ORDINAL
-    return _whole_number(encoded, "round_ordinal")
+def _decode_wait(encoded: Mapping[str, object]) -> WaitNodeBinding:
+    """The pause this row binds, in the round it names or the one a legacy row meant.
+
+    A round the contract refuses -- zero, negative -- is a durable row this
+    adapter never wrote, so it is refused in this codec's own words rather than
+    raised as the contract's `ValueError` at whatever recovered the run.
+    """
+    round_ordinal = (
+        FIRST_ROUND_ORDINAL
+        if "round_ordinal" not in encoded
+        else _whole_number(encoded, "round_ordinal")
+    )
+    try:
+        return WaitNodeBinding(round_ordinal)
+    except ValueError as error:
+        raise RunBindingConflict(
+            "a durable wait binding carries a round no run can stand in"
+        ) from error
 
 
 def _declared_output_schema_document(encoded: Mapping[str, object]) -> str | None:

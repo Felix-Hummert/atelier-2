@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from atelier2.contracts.agents import ResolvedAgentBinding
 from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.run_bindings import RunBindingConflict
-from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
+from atelier2.contracts.runs import FIRST_ROUND_ORDINAL, require_exact_round_ordinal
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant
 
 
@@ -95,6 +95,9 @@ class WaitNodeBinding:
     may already stand in the next round, so a recovered pause would answer for
     an execution it never was.
     """
+
+    def __post_init__(self) -> None:
+        require_exact_round_ordinal(self.round_ordinal)
 
 
 @dataclass(frozen=True)

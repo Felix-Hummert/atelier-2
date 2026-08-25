@@ -391,12 +391,35 @@ def test_a_wait_row_written_before_rounds_existed_still_means_the_first_round() 
     assert decode_node_binding({"type": "wait"}) == WaitNodeBinding(FIRST_ROUND_ORDINAL)
 
 
+@pytest.mark.parametrize("round_ordinal", [0, -1], ids=["zero", "negative"])
+@pytest.mark.proves("a-node-binding-is-decided-where-no-store-can-be-reached")
+def test_a_pause_cannot_be_bound_to_a_round_no_run_can_stand_in(
+    round_ordinal: int,
+) -> None:
+    """The contract that owns the ordinal is what refuses it, not the store's CHECK.
+
+    A binding is built long before any row is written, so a round the schema
+    would reject has to be unconstructible here; otherwise the first thing to
+    notice would be an integrity error naming a column nobody chose.
+    """
+    with pytest.raises(ValueError, match="a whole count from 1"):
+        WaitNodeBinding(round_ordinal)
+
+
 @pytest.mark.parametrize(
     ("encoded", "refusal"),
     (
         ({"type": "agent-v4"}, "names no form this adapter writes"),
         ({"job": "build it"}, "names no form this adapter writes"),
         ({"type": "wait", "answer": 3}, "a key its form does not declare"),
+        (
+            {"type": "wait", "round_ordinal": 0},
+            "a round no run can stand in",
+        ),
+        (
+            {"type": "wait", "round_ordinal": -1},
+            "a round no run can stand in",
+        ),
         (
             {"type": "wait", "round_ordinal": "2"},
             "round_ordinal as a value of the wrong type",
@@ -430,6 +453,8 @@ def test_a_wait_row_written_before_rounds_existed_still_means_the_first_round() 
         "unknown form",
         "no form at all",
         "extra key on a closed form",
+        "wait round of zero",
+        "wait round below zero",
         "wait round of the wrong type",
         "missing key",
         "operand of the wrong type",

@@ -1054,9 +1054,10 @@ def register_durable_run_workflow(
         )
         # The heir starts in the round the answered pause stood in. That is the
         # exact round while a Wait may not stand inside a loop body, because
-        # every node outside a loop stands in the first round; legalising one
-        # there has to widen this step to report the target round, which is a
-        # change to a recorded step's shape and not a change of argument.
+        # every node outside a loop stands in the first round. #658 P3 legalises
+        # one there and owes this step a target round of its own: that is a
+        # change to a recorded step's return shape, not to an argument, so it
+        # cannot be carried by a default the way this workflow's round is.
         if RunState(state) is RunState.STARTED:
             start_node(typed_run_id, typed_revision, head, round_ordinal)
         return state
