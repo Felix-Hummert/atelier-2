@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from atelier2.contracts.agents import (
+    AgentBinding,
     AgentBindingSet,
     AuthProfileRevisionHash,
     ResolvedAgentBinding,
 )
+from atelier2.contracts.host_configuration import OccupancyRevision
 from atelier2.contracts.workflows import AgentNodeV2, WorkflowGraphV2
 from atelier2.contracts.workflows_v3 import AgentNodeV3, WorkflowGraphV3
 from atelier2.ports.agent_configurations import AgentConfigurationBindingReads
@@ -47,6 +49,15 @@ class AuthProfileMissingForConfiguration(Exception):
         self.auth_profile_revision_hash = auth_profile_revision_hash
 
 
+def declared_agent_roles(graph: WorkflowGraphV2 | WorkflowGraphV3) -> frozenset[str]:
+    """Every role this document declares an `Agent` node for."""
+    return frozenset(
+        node.role
+        for node in graph.nodes
+        if isinstance(node, (AgentNodeV2, AgentNodeV3))
+    )
+
+
 def agent_role_completeness_refusal(
     graph: WorkflowGraphV2 | WorkflowGraphV3, agent_bindings: AgentBindingSet
 ) -> DurableInvalidAgentBindings | None:
@@ -60,15 +71,39 @@ def agent_role_completeness_refusal(
     alone. `resolve_start_bindings` still asks it first internally for every
     other caller, so the one answer has one owner either way.
     """
-    expected_roles = {
-        node.role
-        for node in graph.nodes
-        if isinstance(node, (AgentNodeV2, AgentNodeV3))
-    }
     requested_roles = {binding.role.value for binding in agent_bindings.bindings}
-    if expected_roles != requested_roles:
+    if declared_agent_roles(graph) != requested_roles:
         return DurableInvalidAgentBindings()
     return None
+
+
+def cast_unbound_roles(
+    graph: WorkflowGraphV2 | WorkflowGraphV3,
+    requested: AgentBindingSet,
+    recommendation: OccupancyRevision | None,
+) -> AgentBindingSet:
+    """The requested bindings, with roles nobody bound taken from the occupancy.
+
+    The precedence is fixed here because it is one decision: an explicit
+    binding stands, a role the caller left open is filled from the served
+    project's occupancy, and a role neither answers stays open -- so
+    `agent_role_completeness_refusal` still refuses that start rather than a
+    guess being started. The occupancy fills only roles this document declares:
+    a recommendation older than the document cannot inject a role the document
+    no longer has.
+    """
+    if recommendation is None:
+        return requested
+    bound = {binding.role.value for binding in requested.bindings}
+    open_roles = declared_agent_roles(graph) - bound
+    cast = tuple(
+        AgentBinding(binding.role, binding.agent_configuration_revision_hash)
+        for binding in recommendation.bindings
+        if binding.role.value in open_roles
+    )
+    if not cast:
+        return requested
+    return AgentBindingSet(requested.bindings + cast)
 
 
 def resolve_start_bindings(
