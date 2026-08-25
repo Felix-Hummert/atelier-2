@@ -23,6 +23,17 @@ MAXIMUM_RUNNER_SESSION_WIRE_FRAME_BYTES = 1_078_295
 PREPARE_AUTH_REFERENCE_FIELD = 18
 _FRAME_PREFIX = b"ATELIER2\x00"
 
+# The whole session protocol's own identity, not just PREPARE's field count:
+# #672 widened PREPARE from 19 to 21 fields, so a wire frame's domain now
+# names the revision that shape belongs to. `_RETIRED_FRAME_DOMAIN_V1` is the
+# domain every pre-#672 peer still encodes -- a real, well-formed frame this
+# decoder no longer serves, not corrupt bytes. Naming it here, rather than
+# folding it into "unrecognized domain", is what lets decode answer a stale
+# peer with an explicit revision refusal instead of the generic malformed one
+# (ADR 0009 amendment, #672).
+_FRAME_DOMAIN = "runner-session/v2"
+_RETIRED_FRAME_DOMAIN_V1 = b"runner-session/v1"
+
 
 class RunnerSessionCodecError(ValueError):
     """The peer supplied no canonical, bounded session frame."""
@@ -39,7 +50,7 @@ def runner_session_body_length(prefix: bytes) -> int:
 
 
 def encode_runner_session_frame(session: RunnerSessionFrame) -> bytes:
-    body = frame("runner-session/v1", *session.fields())
+    body = frame(_FRAME_DOMAIN, *session.fields())
     if len(body) > MAXIMUM_RUNNER_SESSION_BODY_BYTES:
         raise RunnerSessionCodecError("runner-session-oversized")
     return struct.pack(">I", len(body)) + body
@@ -91,7 +102,12 @@ def _decode_frame_body(body: bytes) -> tuple[bytes, ...]:
     domain_length = struct.unpack(">I", body[cursor : cursor + 4])[0]
     cursor += 4
     domain_end = cursor + domain_length
-    if domain_end > len(body) or body[cursor:domain_end] != b"runner-session/v1":
+    if domain_end > len(body):
+        raise RunnerSessionCodecError("runner-session-noncanonical")
+    domain = body[cursor:domain_end]
+    if domain == _RETIRED_FRAME_DOMAIN_V1:
+        raise RunnerSessionCodecError("runner-session-incompatible-revision")
+    if domain != _FRAME_DOMAIN.encode("utf-8"):
         raise RunnerSessionCodecError("runner-session-noncanonical")
     cursor = domain_end
     fields: list[bytes] = []

@@ -711,7 +711,8 @@ def test_replacement_not_allowed_maps_to_the_a_refusal_without_a_second_attempt(
 def test_closed_refusal_vocabulary_is_the_reviewed_a_set() -> None:
     assert "runner-replacement-not-supported-a" in RUNNER_SESSION_REFUSAL_CODES
     assert "runner-cancel-conflict" in RUNNER_SESSION_REFUSAL_CODES
-    assert len(RUNNER_SESSION_REFUSAL_CODES) == 38
+    assert "runner-session-incompatible-revision" in RUNNER_SESSION_REFUSAL_CODES
+    assert len(RUNNER_SESSION_REFUSAL_CODES) == 39
 
 
 def _free_request(**changes: object) -> AgentExecutionRequestV2:

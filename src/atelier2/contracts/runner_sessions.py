@@ -111,6 +111,7 @@ RUNNER_SESSION_REFUSAL_CODES = frozenset(
         "runner-session-oversized",
         "runner-session-truncated",
         "runner-session-noncanonical",
+        "runner-session-incompatible-revision",
         "runner-session-message-unknown",
         "runner-session-out-of-order",
         "runner-session-sequence-mismatch",
