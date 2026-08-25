@@ -106,8 +106,8 @@ function retiredByName(): GetRevisionByName {
   });
 }
 
-describe("the workflows catalog list", () => {
-  it("shows a card for each named workflow and its one-line description", async () => {
+describe("the workflows start room", () => {
+  it("shows a card for each admitted, startable workflow and its one-line description", async () => {
     openAt("/atelier/workflows", {
       listWorkflowRevisions: vi.fn(async () => ({
         items: [namedSummary(), unnamedSummary()],
@@ -120,7 +120,7 @@ describe("the workflows catalog list", () => {
     expect(card.textContent).toContain("build, then review");
   });
 
-  it("never shows the unnamed revision -- the library shows names, never hashes", async () => {
+  it("never shows the unnamed revision -- the start room shows names, never hashes", async () => {
     openAt("/atelier/workflows", {
       listWorkflowRevisions: vi.fn(async () => ({
         items: [unnamedSummary()],
@@ -128,7 +128,7 @@ describe("the workflows catalog list", () => {
       }))
     });
 
-    await screen.findByText("No named workflows yet");
+    await screen.findByText("Nothing is admitted yet");
     expect(screen.queryByText(UNNAMED_HASH)).toBeNull();
   });
 
@@ -158,7 +158,7 @@ describe("the workflows catalog list", () => {
     expect(card.textContent).not.toContain("an older, no-longer-current revision");
   });
 
-  it("shows a name with no catalog admission rather than hiding it", async () => {
+  it("keeps an unadmitted name out of this room entirely -- the Catalog owns it", async () => {
     openAt("/atelier/workflows", {
       listWorkflowRevisions: vi.fn(async () => ({
         items: [namedSummary()],
@@ -169,23 +169,33 @@ describe("the workflows catalog list", () => {
       })
     });
 
-    const card = await screen.findByRole("button", { name: /iterate-code/ });
-    expect(card.textContent).toContain("Not admitted to the catalog.");
+    await screen.findByText("Nothing is admitted yet");
+    expect(screen.queryByRole("button", { name: /iterate-code/ })).toBeNull();
   });
 
-  it("opens a workflow's detail page on a card click", async () => {
+  it("sends every card straight to the start door instead of a detail page", async () => {
     openAt("/atelier/workflows", {
       listWorkflowRevisions: vi.fn(async () => ({
         items: [namedSummary()],
         next_after_revision_hash: null
       })),
-      getRevisionByName: admittedByName(),
-      getWorkflowRevision: vi.fn(async () => namedDetail())
+      getRevisionByName: admittedByName()
     });
 
     fireEvent.click(await screen.findByRole("button", { name: /iterate-code/ }));
 
-    expect((await screen.findByRole("heading", { name: WORKFLOW_NAME })).isConnected).toBe(true);
+    expect((await screen.findByRole("heading", { name: "Choose a workflow" })).isConnected).toBe(true);
+  });
+
+  it("sends an empty room to the Catalog, where admission happens", async () => {
+    openAt("/atelier/workflows", {
+      listWorkflowRevisions: vi.fn(async () => ({ items: [], next_after_revision_hash: null }))
+    });
+    await screen.findByText("Nothing is admitted yet");
+
+    fireEvent.click(await screen.findByRole("link", { name: "Open the catalog" }));
+
+    expect((await screen.findByRole("heading", { name: "Catalog" })).isConnected).toBe(true);
   });
 });
 

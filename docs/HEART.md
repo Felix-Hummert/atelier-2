@@ -16,6 +16,11 @@ History owns what already happened. A run lives in exactly one of the two at
 any moment, and it crosses from Board to History once, at the instant it turns
 terminal, never lingering in both.
 
+Workflows owns starting — nothing lives there but what is already admitted and
+ready to run; Catalog owns the library — everything this workshop has ever
+been given, with where it came from and whether it may yet be started. A piece
+is admitted in the Catalog and started in Workflows, never the other way.
+
 ## One thing alive
 
 On any screen, exactly one element may move: the piece that is being worked on
