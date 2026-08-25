@@ -3,20 +3,31 @@ import { writable, type Writable } from "svelte/store";
 import type { CockpitRoute } from "./route";
 
 /**
- * The four destinations the target-UI rail names: Workbench, Board, Workflows,
- * History. Each one opens a page this cockpit serves — the rail holds no
- * disabled item, because a rail entry that cannot be clicked is a promise the
- * house does not keep. What a page cannot do yet, that page says in its own
+ * The destinations the target-UI rail names: Workbench, Board, Workflows,
+ * Catalog, History. Each one opens a page this cockpit serves — the rail holds
+ * no disabled item, because a rail entry that cannot be clicked is a promise
+ * the house does not keep. What a page cannot do yet, that page says in its own
  * words.
  *
  * The Workbench keeps the `/atelier/chat` address it grew from (issue #580):
  * the surface became the composer plus its pinned decisions, but its served
  * path is a durable bookmark this rename leaves untouched.
+ *
+ * Catalog is the newest room (#659): it is where a piece enters the atelier and
+ * where everything published — workflows, agents, skills — is seen with its
+ * provenance. Workflows still owns browsing a named workflow's graph and
+ * starting it, so the two rooms overlap in their workflow list today; #660
+ * reshapes the Catalog into the Git window and owns collapsing that overlap.
  */
 export type WorkshopDestination = {
-  id: "chat" | "board" | "workflows" | "history";
+  id: "chat" | "board" | "workflows" | "catalog" | "history";
   label: string;
-  path: "/atelier/chat" | "/atelier" | "/atelier/workflows" | "/atelier/history";
+  path:
+    | "/atelier/chat"
+    | "/atelier"
+    | "/atelier/workflows"
+    | "/atelier/catalog"
+    | "/atelier/history";
 };
 
 /** Each destination by name, for the trail that leads back to one of them. */
@@ -24,6 +35,7 @@ export const WORKSHOP_DESTINATION: Record<WorkshopDestination["id"], WorkshopDes
   chat: { id: "chat", label: "Workbench", path: "/atelier/chat" },
   board: { id: "board", label: "Board", path: "/atelier" },
   workflows: { id: "workflows", label: "Workflows", path: "/atelier/workflows" },
+  catalog: { id: "catalog", label: "Catalog", path: "/atelier/catalog" },
   history: { id: "history", label: "History", path: "/atelier/history" }
 };
 
@@ -31,6 +43,7 @@ export const WORKSHOP_DESTINATIONS: readonly WorkshopDestination[] = [
   WORKSHOP_DESTINATION.chat,
   WORKSHOP_DESTINATION.board,
   WORKSHOP_DESTINATION.workflows,
+  WORKSHOP_DESTINATION.catalog,
   WORKSHOP_DESTINATION.history
 ];
 
@@ -57,6 +70,9 @@ export function activeWorkshopDestination(route: CockpitRoute): WorkshopDestinat
   }
   if (route.page === "workflows" || route.page === "workflow" || route.page === "new") {
     return "workflows";
+  }
+  if (route.page === "catalog") {
+    return "catalog";
   }
   if (route.page === "history") {
     return "history";

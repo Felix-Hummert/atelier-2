@@ -126,6 +126,29 @@ class AgentDefinitionRevisionResource(ApiModel):
     agent_definition_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
 
 
+class AgentDefinitionRevisionListItemResource(ApiModel):
+    """One published agent definition, read back into what its author named it.
+
+    Listing echoes the two authored fields publication does not, because a
+    reader browsing the catalog holds no hash to recognise and needs the name.
+
+    It stops there. An imported agent is provider-bound and passed through
+    whole, so the rest of the file — its model, its tool declaration, its
+    prompt — is one provider's runtime contract, not a capability this catalog
+    may re-serve as if it were portable. Whoever must read those bytes reads
+    the revision itself.
+    """
+
+    agent_definition_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+
+
+class AgentDefinitionRevisionPageResource(ApiModel):
+    items: tuple[AgentDefinitionRevisionListItemResource, ...]
+    next_after_revision_hash: str | None = Field(pattern=REVISION_HASH_PATTERN)
+
+
 class AuthProfileRevisionResource(ApiModel):
     profile_id: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
     revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)

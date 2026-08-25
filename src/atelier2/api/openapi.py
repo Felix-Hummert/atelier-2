@@ -185,6 +185,11 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
+    (API_PREFIX + "/schema-revisions/{schema_revision_hash}", "get"): (
+        "invalid-revision-hash",
+        "schema-revision-not-found",
+        "internal-error",
+    ),
     (API_PREFIX + "/budget-revisions", "post"): (
         *BUDGET_DOCUMENT_PROBLEM_CODES,
         "budget-revision-collision",
@@ -213,6 +218,13 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         *AGENT_DEFINITION_DOCUMENT_PROBLEM_CODES,
         "agent-definition-revision-collision",
         "unsupported-media-type",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (API_PREFIX + "/agent-definition-revisions", "get"): (
+        "invalid-revision-hash",
+        "invalid-request",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -643,7 +655,7 @@ def _install_problem_components(schema: dict[str, Any]) -> None:
                             },
                         }
                     }
-                    if code == "invalid-request"
+                    if code in ("invalid-request", "run-input-refused")
                     else {}
                 ),
             },
@@ -843,6 +855,12 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
                 API_PREFIX + "/workflow-revisions/{workflow_revision_hash}",
                 "get",
                 "workflow_revision_hash",
+                "path",
+            ),
+            (
+                API_PREFIX + "/schema-revisions/{schema_revision_hash}",
+                "get",
+                "schema_revision_hash",
                 "path",
             ),
         ),

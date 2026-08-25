@@ -512,6 +512,47 @@ def test_the_public_start_route_names_an_undeclared_order(
         assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
 
 
+@pytest.mark.proves("an-order-the-start-cannot-honour-is-refused-by-its-own-name")
+def test_the_public_start_route_names_the_violated_field(runtime: DbosRuntime) -> None:
+    """The field pointer `_first_violation` locates reaches the wire, not just prose.
+
+    The starter already computes exactly where a value diverges from its
+    schema (#678). A route that dropped that place on the floor would still
+    422 with a readable sentence, but `invalid_fields` -- the mechanism every
+    other field-level refusal already answers through -- would stay empty,
+    and a caller would have to parse `detail`'s prose to find the field.
+    """
+    workflow, bindings = publish_ordered_workflow(runtime)
+    binding = bindings.bindings[0]
+
+    refused = durable_api_client(runtime).post(
+        API_PREFIX + "/runs",
+        json={
+            "workflow_format_version": 3,
+            "run_id": "v3/violated-field",
+            "workflow_revision_hash": workflow.revision_hash.value,
+            "agent_bindings": [
+                {
+                    "role": binding.role.value,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash.value
+                    ),
+                }
+            ],
+            "orders": [{"name": ORDER_NAME, "value": '{"portions": 0}'}],
+        },
+    )
+
+    assert refused.status_code == 422
+    problem = refused.json()
+    assert problem["type"] == "urn:atelier2:problem:v1:run-input-refused"
+    assert problem["invalid_fields"] == [
+        {"path": "/portions", "reason": "0 is less than the minimum of 1"}
+    ]
+    with runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+
+
 @pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
 def test_one_published_revision_serves_two_different_orders(
     runtime: DbosRuntime, cook: RecordingAgentExecutorFactoryV2
@@ -1258,6 +1299,7 @@ def application(runtime: DbosRuntime) -> FastAPI:
             catalog_resolver=catalog,
             catalog_admissions=catalog,
             published_revision_registry=catalog,
+            published_revision_listing=catalog,
             artifact_publisher=DbosArtifactStore(runtime.engine),
             host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
             queue_projection=DbosQueueProjectionStore(runtime.engine),

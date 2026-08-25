@@ -69,7 +69,10 @@ from atelier2.application.publish_agent_definition_revision import (
 )
 from atelier2.application.publish_artifact import publish_artifact
 from atelier2.application.publish_budget_revision import publish_budget_revision
-from atelier2.application.publish_schema_revision import publish_schema_revision
+from atelier2.application.publish_schema_revision import (
+    get_schema_revision,
+    publish_schema_revision,
+)
 from atelier2.application.publish_tool_grant_revision import publish_tool_grant_revision
 from atelier2.application.publish_workflow_revision import (
     WorkflowPublicationLimits,
@@ -78,6 +81,9 @@ from atelier2.application.publish_workflow_revision import (
 from atelier2.application.read_agent_configurations import (
     list_agent_configuration_revisions,
     list_auth_profile_revisions,
+)
+from atelier2.application.read_agent_definition_revisions import (
+    list_agent_definition_revisions,
 )
 from atelier2.application.read_attention_events import read_attention_events
 from atelier2.application.read_projects import get_project, list_projects
@@ -195,6 +201,9 @@ def bound_use_cases(
         publish_schema_revision=lambda document: publish_schema_revision(
             document, ports.published_revision_registry
         ),
+        get_schema_revision=lambda revision_hash: get_schema_revision(
+            revision_hash, ports.published_revision_registry
+        ),
         publish_budget_revision=lambda document: publish_budget_revision(
             document, ports.published_revision_registry
         ),
@@ -212,6 +221,14 @@ def bound_use_cases(
                 ports.agent_definition_parser,
                 ports.agent_definition_renderer,
                 ports.published_revision_registry,
+            )
+        ),
+        list_agent_definition_revisions=(
+            lambda after, limit: list_agent_definition_revisions(
+                after,
+                limit,
+                ports.published_revision_listing,
+                ports.agent_definition_parser,
             )
         ),
         publish_auth_profile_revision=(
@@ -425,6 +442,7 @@ COCKPIT_INDEX_PATHS: tuple[str, ...] = (
     "/atelier/runs/{public_ref}",
     "/atelier/workflows",
     "/atelier/workflows/{workflow_name}",
+    "/atelier/catalog",
     "/atelier/history",
 )
 

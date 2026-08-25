@@ -36,6 +36,7 @@ export type CockpitRoute =
   | { page: "project" }
   | { page: "new" }
   | { page: "workflows" }
+  | { page: "catalog" }
   | { page: "workflow"; name: string }
   | { page: "history" }
   | { page: "run"; publicReference: string; origin: RunOrigin | null }
@@ -61,6 +62,9 @@ export function cockpitRoute(path: string): CockpitRoute {
   }
   if (pathname === "/atelier/workflows" || pathname === "/atelier/workflows/") {
     return { page: "workflows" };
+  }
+  if (pathname === "/atelier/catalog" || pathname === "/atelier/catalog/") {
+    return { page: "catalog" };
   }
   if (pathname === "/atelier/history" || pathname === "/atelier/history/") {
     return { page: "history" };

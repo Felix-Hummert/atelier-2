@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from atelier2.adapters.bounded_processes import (
@@ -24,6 +24,11 @@ from atelier2.contracts.agents import (
     AgentExecutorRevision,
     AuthMode,
     ProviderId,
+)
+from atelier2.contracts.schemas_v3 import (
+    SchemaAccepted,
+    declared_instance_in_answer,
+    read_schema_document,
 )
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
@@ -433,7 +438,40 @@ def _credential_environment(
     )
 
 
+@dataclass(frozen=True)
+class ClaudeProcessCommand(AgentProcessCommand):
+    """One Claude headless command plus the output schema its node declared.
+
+    The schema is what the decode below narrows the answer against, and decode
+    is handed the invocation rather than the request, so the document travels
+    on the command. It is published bytes -- the same revision the output seam
+    later judges -- so a command that may be durably retained carries nothing
+    secret by carrying it.
+    """
+
+    declared_output_schema_bytes: bytes | None = field(default=None, kw_only=True)
+
+
+def _declared_schema_of(command: AgentProcessCommand) -> SchemaAccepted | None:
+    """The accepted schema this invocation's node declared, where there is one.
+
+    A schema this profile cannot read is answered as none rather than refused:
+    a published revision was vetted before it could be pinned, and an executor
+    that started disagreeing about it would be a second voice over bytes the
+    output seam already owns.
+    """
+
+    if not isinstance(command, ClaudeProcessCommand):
+        return None
+    document = command.declared_output_schema_bytes
+    if document is None:
+        return None
+    schema = read_schema_document(document)
+    return schema if isinstance(schema, SchemaAccepted) else None
+
+
 def _decoded_claude_answer(
+    invocation: AgentProcessInvocation,
     completion: AgentProcessCompletion,
 ) -> AgentExecutionResult | AgentExecutionFailure:
     """Read one `claude -p --output-format json` frame back, or refuse it.
@@ -441,6 +479,28 @@ def _decoded_claude_answer(
     The envelope is the CLI's contract rather than one operation's, so every
     executor in this module reads it the same way and a release that changed it
     would move all of them at once.
+
+    Where the node declared an output schema, the answer is narrowed to the
+    bytes that really are a value it admits (`declared_instance_in_answer`).
+    Asking a model in prose for bare JSON made the conductor a coin flip: the
+    same brief came back bare, fenced or introduced by a sentence, and only the
+    first was decodable (#663). Narrowing is not acceptance -- an answer
+    carrying no such value travels on unchanged, and the output seam refuses it
+    by name as before.
+
+    This CLI's own structured-output control is measured and deliberately not
+    carried by any vector here. On 2.1.221 `--json-schema <object>` exists and
+    really parses (an unparseable value is refused as "not valid JSON", a
+    boolean schema as "must be a JSON object"), while `--output-schema` and
+    `--structured-output` are unknown options. What keeps it out is what it is
+    made of: the release fulfils it with a synthetic `StructuredOutput` TOOL
+    the model must call, and delivers the value in a `structured_output` field
+    beside `result` rather than in `result`. Every vector here passes
+    `--tools=`, and the doors vector pre-approves door tools only, so whether
+    that tool survives them -- and what `result` then carries -- is exactly
+    what no unbilled probe can see. Wiring it unmeasured could turn an answer
+    this module decodes today into no answer at all, so it waits on the same
+    operator-gated billed call the rest of this module's unmeasured half does.
     """
 
     if completion.return_code != 0:
@@ -463,7 +523,11 @@ def _decoded_claude_answer(
     output_bytes = result.encode("utf-8")
     if len(output_bytes) > MAXIMUM_AGENT_OUTPUT_BYTES_V2:
         return _UNUSABLE_PROVIDER_ANSWER
-    return AgentExecutionResult(output_bytes)
+    schema = _declared_schema_of(invocation.command)
+    if schema is None:
+        return AgentExecutionResult(output_bytes)
+    declared = declared_instance_in_answer(output_bytes, schema)
+    return AgentExecutionResult(output_bytes if declared is None else declared)
 
 
 @dataclass(frozen=True)
@@ -558,7 +622,7 @@ class ClaudeSubscriptionExecutor:
                 "the Claude subscription executor serves subscription profiles only"
             )
         settings = self.settings
-        return AgentProcessCommand(
+        return ClaudeProcessCommand(
             (
                 str(settings.executable),
                 _PRINT_FLAG,
@@ -583,15 +647,16 @@ class ClaudeSubscriptionExecutor:
             # in the process table of a host the operator shares.
             request.job_bytes,
             standard_output_frame_bytes=CLAUDE_SUBSCRIPTION_FRAME_BYTES,
+            declared_output_schema_bytes=request.declared_output_schema_bytes,
         )
 
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
-        """The answer travels inside the process result, so the invocation is
-        not consulted: this executor holds no state to correlate."""
-        del invocation
-        return _decoded_claude_answer(completion)
+        """The answer travels inside the process result; the invocation carries
+        only the output schema it is narrowed against."""
+
+        return _decoded_claude_answer(invocation, completion)
 
     def release_credential_channel(self, command: AgentProcessCommand) -> None:
         """Nothing to take back: `CLAUDE_CONFIG_DIR` names the operator's own
@@ -887,7 +952,7 @@ class ClaudeWorkspaceToolExecutor:
                 "the Claude workspace-tool executor serves subscription profiles only"
             )
         settings = self.settings
-        return AgentProcessCommand(
+        return ClaudeProcessCommand(
             _workspace_tool_arguments(
                 settings.executable,
                 binding.configuration.model,
@@ -898,20 +963,21 @@ class ClaudeWorkspaceToolExecutor:
             # in the process table of a host the operator shares.
             request.job_bytes,
             standard_output_frame_bytes=CLAUDE_SUBSCRIPTION_FRAME_BYTES,
+            declared_output_schema_bytes=request.declared_output_schema_bytes,
         )
 
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
-        """The answer travels inside the process result, so the invocation is
-        not consulted: this executor holds no state to correlate.
+        """The answer travels inside the process result; the invocation carries
+        only the output schema it is narrowed against.
 
         What the process wrote beside the answer stays in the workspace the
         attempt leased. This executor reads none of it: making a file durable is
         the artifact store's decision and its own slice (#352).
         """
-        del invocation
-        return _decoded_claude_answer(completion)
+
+        return _decoded_claude_answer(invocation, completion)
 
     def release_credential_channel(self, command: AgentProcessCommand) -> None:
         """Nothing to take back: `CLAUDE_CONFIG_DIR` names the operator's own
@@ -1175,7 +1241,7 @@ class ClaudeAtelierDoorsExecutor:
                 "the Claude atelier-doors executor serves subscription profiles only"
             )
         settings = self.settings
-        return AgentProcessCommand(
+        return ClaudeProcessCommand(
             _atelier_doors_arguments(
                 settings,
                 binding.configuration.model,
@@ -1186,16 +1252,16 @@ class ClaudeAtelierDoorsExecutor:
             # in the process table of a host the operator shares.
             request.job_bytes,
             standard_output_frame_bytes=CLAUDE_SUBSCRIPTION_FRAME_BYTES,
+            declared_output_schema_bytes=request.declared_output_schema_bytes,
         )
 
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
-        """The answer travels inside the process result, so the invocation is
-        not consulted: this executor holds no state to correlate."""
+        """The answer travels inside the process result; the invocation carries
+        only the output schema it is narrowed against."""
 
-        del invocation
-        return _decoded_claude_answer(completion)
+        return _decoded_claude_answer(invocation, completion)
 
     def release_credential_channel(self, command: AgentProcessCommand) -> None:
         """Nothing to take back: `CLAUDE_CONFIG_DIR` names the operator's own

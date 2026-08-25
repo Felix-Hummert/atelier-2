@@ -17,6 +17,7 @@
   import StudioPage from "./pages/StudioPage.svelte";
   import WorkflowDetailPage from "./pages/WorkflowDetailPage.svelte";
   import WorkflowsPage from "./pages/WorkflowsPage.svelte";
+  import CatalogPage from "./pages/CatalogPage.svelte";
   import HistoryPage from "./pages/HistoryPage.svelte";
 
   export let cockpitApi: CockpitApi = createCockpitApi();
@@ -56,6 +57,8 @@
     <NewRunPage {cockpitApi} {mutationJournal} {navigate} {createRunId} />
   {:else if route.page === "workflows"}
     <WorkflowsPage {cockpitApi} {navigate} />
+  {:else if route.page === "catalog"}
+    <CatalogPage {cockpitApi} />
   {:else if route.page === "workflow"}
     <WorkflowDetailPage {cockpitApi} {navigate} name={route.name} />
   {:else if route.page === "history"}

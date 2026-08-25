@@ -1,8 +1,12 @@
 # ADR 0014: A declared loop repeats a stretch of one graph, and the round is the fourth dimension of a node execution identity
 
-- Status: structurally SUPERSEDED by #449 — the document form remains authored and
-  readable but unexecutable. The former durable round, execution and bound runtime
-  claims below are historical rather than current implementation.
+- Status: ACCEPTED 2026-08-18 — implemented: the loop declaration, the round as
+  the fourth dimension of node execution identity, and the bounded round-repeat
+  runtime landed with this record and run a real loop to `COMPLETED`; see
+  `tests/integration/test_v3_bounded_loop_run.py` and
+  [docs/PRODUCT.md](../PRODUCT.md). [#449](https://github.com/FlexOr2/atelier-2/issues/449)
+  withdrew only the Subworkflow `iterate` binder ADR 0013 authored — not this
+  record's in-graph loop; see "What happens to ADR 0013" below.
 - Supersedes: the structural finding of
   [ADR 0013](0013-bounded-iteration.md) — "A loop inside one graph is therefore
   identity-impossible" — and, with it, ADR 0013's decision that a round is a child

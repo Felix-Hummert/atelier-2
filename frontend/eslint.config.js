@@ -21,6 +21,7 @@ export default tseslint.config(
         HTMLButtonElement: "readonly",
         HTMLDivElement: "readonly",
         HTMLElement: "readonly",
+        HTMLInputElement: "readonly",
         CSS: "readonly",
         ResizeObserver: "readonly"
       }

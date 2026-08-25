@@ -251,11 +251,27 @@ class InstanceAccepted:
 
 
 @dataclass(frozen=True, slots=True)
+class InstanceSchemaViolation:
+    """Where one `SCHEMA_VIOLATED` refusal is about, and why -- for a caller that
+    points an author at a field rather than reading `subject`'s prose.
+
+    `pointer` is the RFC 6901 pointer `_first_violation` already located the
+    violation at, or `None` when the earliest violation is not about one
+    addressable field -- a `required` property missing at the value's own root
+    has no pointer, because RFC 6901 has none for a key that does not exist.
+    """
+
+    pointer: str | None
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class InstanceRefused:
     """One named refusal, with the exact thing it is about when there is one."""
 
     refusal: InstanceRefusal
     subject: str | None = None
+    violation: InstanceSchemaViolation | None = None
 
     def __str__(self) -> str:
         named = "" if self.subject is None else f": {self.subject}"
@@ -362,6 +378,87 @@ def read_instance_document(
     return InstanceAccepted(decoded.value)
 
 
+# Where a JSON document may begin. A declared value the profile admits is an
+# object or an array, so these two characters are the only places an embedded
+# one can start.
+_JSON_DOCUMENT_OPENERS = "{["
+
+
+def declared_instance_in_answer(
+    answer: bytes,
+    schema: SchemaAccepted,
+    maximum_bytes: int = MAXIMUM_INSTANCE_DOCUMENT_BYTES,
+) -> bytes | None:
+    """The bytes of one free-text answer that are a value this schema admits.
+
+    A provider asked in prose for JSON answers in prose: the same brief comes
+    back bare, wrapped in a Markdown fence, or introduced by a sentence, and the
+    first of those three is the only one `read_instance_document` accepts. That
+    made an episode's success a coin flip (#663), so the question "which bytes
+    of this answer are the declared value" gets an owner here, beside the rule
+    that judges them, rather than a guess in each adapter.
+
+    Exactly two places are looked in, in this order: the whole answer, and the
+    one JSON document that starts at the answer's first opener. Both candidates
+    are judged by `read_instance_document`, so extraction only proposes a span
+    and the profile alone decides -- canonical numbers, unique keys, depth and
+    value bounds included. Nothing is stripped, repaired or re-serialized: the
+    answer is narrowed to bytes it really carries, or nothing is returned.
+
+    Answering `None` rather than a refusal is deliberate. This says only that
+    the answer carries no value the schema admits; naming *why* an output is
+    refused belongs to the seam that records the refusal durably, and a second
+    voice for it would let two owners disagree about the same bytes.
+
+    `maximum_bytes` bounds the candidates, not the answer: an answer is prose
+    around a value and is legitimately larger than the value it carries, so its
+    own size stays bounded by the route it arrived on -- for a provider answer,
+    the executor's durable output bound -- exactly as `read_instance_document`
+    says about the same argument.
+    """
+
+    if isinstance(
+        read_instance_document(answer, schema, maximum_bytes), InstanceAccepted
+    ):
+        return answer
+    embedded = _first_json_document_in(answer)
+    if embedded is None:
+        return None
+    if isinstance(
+        read_instance_document(embedded, schema, maximum_bytes), InstanceAccepted
+    ):
+        return embedded
+    return None
+
+
+def _first_json_document_in(answer: bytes) -> bytes | None:
+    """The one JSON document starting at this answer's first opener, if there is one.
+
+    One decode at one offset, never a scan over every opener: a rule that tried
+    each of them would read a different document out of the same answer as
+    prose around it changed, and the cost would grow with the square of an
+    answer's length.
+    """
+
+    try:
+        text = answer.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    openers = [
+        found
+        for found in (text.find(opener) for opener in _JSON_DOCUMENT_OPENERS)
+        if found >= 0
+    ]
+    if not openers:
+        return None
+    start = min(openers)
+    try:
+        _value, end = json.JSONDecoder().raw_decode(text, start)
+    except json.JSONDecodeError:
+        return None
+    return text[start:end].encode("utf-8")
+
+
 _DECODING_REFUSALS = {
     SchemaDocumentRefusal.DOCUMENT_NOT_JSON: InstanceRefusal.INSTANCE_NOT_JSON,
     SchemaDocumentRefusal.NON_CANONICAL_NUMBER: InstanceRefusal.NON_CANONICAL_NUMBER,
@@ -425,7 +522,11 @@ def _first_violation(value: JsonValue, schema: Schema) -> InstanceRefused | None
     first = errors[0]
     located = _pointer(first.absolute_path)
     place = "the value itself" if located == "" else located
-    return InstanceRefused(InstanceRefusal.SCHEMA_VIOLATED, f"{place}: {first.message}")
+    return InstanceRefused(
+        InstanceRefusal.SCHEMA_VIOLATED,
+        f"{place}: {first.message}",
+        InstanceSchemaViolation(None if located == "" else located, first.message),
+    )
 
 
 def _ordered_path(path: Iterable[object]) -> tuple[tuple[int, int, str], ...]:

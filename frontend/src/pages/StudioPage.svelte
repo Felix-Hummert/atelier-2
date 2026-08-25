@@ -42,7 +42,6 @@
     protocolTitle,
     streamStopped
   } from "../lib/streamStatus";
-  import { ageLabel, parseUtc } from "../lib/when";
   import { boardBadgeCounts } from "../lib/workshop";
 
   export let cockpitApi: CockpitApi;
@@ -61,8 +60,7 @@
 
   const groupTitle = {
     needsYou: studioPageCopy.needsYou,
-    running: studioPageCopy.running,
-    done: studioPageCopy.done
+    running: studioPageCopy.running
   } as const satisfies Record<keyof BoardGroups, string>;
 
   let home: RetainedRead<StudioHome, StudioReadFailure> =
@@ -74,7 +72,6 @@
   let disposed = false;
   let eventQueue: Promise<void> = Promise.resolve();
   const pendingEvents: RunEvent[] = [];
-  const now = new Date();
 
   onMount(() => {
     void load();
@@ -90,21 +87,22 @@
     const begun = beginRead(home);
     home = begun.read;
     try {
-      const [started, waitingInput, waitingReconciliation, completed, failed, revisions] =
+      const [started, waitingInput, waitingReconciliation, revisions] =
         await Promise.all([
           readEveryRun((after) => cockpitApi.listRuns(after, "STARTED")),
           readEveryRun((after) => cockpitApi.listRuns(after, "WAITING_INPUT")),
           readEveryRun((after) => cockpitApi.listRuns(after, "WAITING_RECONCILIATION")),
-          readEveryRun((after) => cockpitApi.listRuns(after, "COMPLETED")),
-          readEveryRun((after) => cockpitApi.listRuns(after, "FAILED")),
           readEveryRevision((after) => cockpitApi.listWorkflowRevisions(after))
         ]);
-      // The five run-state lists are the confirmed board truth: any one of
-      // them incomplete stops the confirm, same discipline as before. The
-      // catalog read is enrichment over that truth, never a gate on it -- a
-      // run still confirms with its own real fields on a failed catalog read,
-      // falling back to run_id honestly instead of losing the whole board.
-      const runReadings = [started, waitingInput, waitingReconciliation, completed, failed];
+      // The Board reads only the non-terminal run states -- what still moves
+      // or wants a human now (operator ruling #667). A terminal run belongs
+      // to History instead, so it is never asked for here. Any of these
+      // three lists incomplete stops the confirm, same discipline as before.
+      // The catalog read is enrichment over that truth, never a gate on it --
+      // a run still confirms with its own real fields on a failed catalog
+      // read, falling back to run_id honestly instead of losing the whole
+      // board.
+      const runReadings = [started, waitingInput, waitingReconciliation];
       if (runReadings.some((reading) => !reading.complete)) {
         home = failRead(home, begun.generation, {
           kind: "incomplete",
@@ -115,9 +113,7 @@
       const known = mergedRuns(home.confirmed?.runs ?? [], [
         ...started.runs,
         ...waitingInput.runs,
-        ...waitingReconciliation.runs,
-        ...completed.runs,
-        ...failed.runs
+        ...waitingReconciliation.runs
       ]);
       const workflowNames = revisions.complete
         ? new Map(revisions.revisions.map((revision) => [revision.workflow_revision_hash, revision.name]))
@@ -247,21 +243,11 @@
   }
 
   $: snapshot = home.confirmed;
-  $: rawGroups = snapshot === null ? null : projectBoardGroups(snapshot.runs, snapshot.workflowNames);
-  // The mockup's "Done today" group is an honest day boundary, not the raw
-  // Done group boardRows.ts computes: a landed run older than the local
-  // calendar day belongs to History, not the Board. A run with no end
-  // timestamp stays visible -- hiding it without evidence it landed today
-  // would be a lie the board cannot back up.
-  $: groups = rawGroups === null ? null : {
-    ...rawGroups,
-    done: rawGroups.done.filter((row) => row.endedAt === null || endedToday(row.endedAt, now))
-  };
+  $: groups = snapshot === null ? null : projectBoardGroups(snapshot.runs, snapshot.workflowNames);
   $: empty =
     groups !== null &&
     groups.needsYou.length === 0 &&
     groups.running.length === 0 &&
-    groups.done.length === 0 &&
     hold.connection === "live" &&
     !streamStopped(hold);
   // Gates the empty state's one action: a projection the board could not
@@ -269,15 +255,6 @@
   // so the board withholds the next action rather than act on a guess.
   $: canStart = !attentionStopped(hold) && projectionFailure === null;
   $: streamTitle = protocolTitle(hold);
-
-  function endedToday(iso: string, today: Date): boolean {
-    const ended = parseUtc(iso);
-    return (
-      ended.getFullYear() === today.getFullYear() &&
-      ended.getMonth() === today.getMonth() &&
-      ended.getDate() === today.getDate()
-    );
-  }
 </script>
 
 <section class="board-page surface" aria-labelledby="board-title">
@@ -359,10 +336,7 @@
                       <span class="row-name">{row.name}</span>
                       <span class="row-status">
                         {#if row.status.kind === "waitingInput" || row.status.kind === "waitingReconciliation"}{wrapDisplayCopy(standingWords.waiting)}
-                        {:else if row.status.kind === "running"}{wrapDisplayCopy(standingWords.running)} · {row.status.nodeId}
-                        {:else if row.status.kind === "failed"}{wrapDisplayCopy(standingWords.failed)} · {row.status.nodeId}
-                        {:else if row.status.kind === "cancelled"}{wrapDisplayCopy(standingWords.cancelled)}
-                        {:else}{wrapDisplayCopy(standingWords.done)}{/if}
+                        {:else}{wrapDisplayCopy(standingWords.running)} · {row.status.nodeId}{/if}
                       </span>
                       {#if row.miniPipeline !== null}
                         <span class="row-pipeline" aria-hidden="true">
@@ -370,9 +344,6 @@
                             <i class="pipe-dot pipe-dot-{dot.state}"></i>
                           {/each}
                         </span>
-                      {/if}
-                      {#if row.endedAt !== null}
-                        <span class="row-time">{ageLabel(row.endedAt, now, "ago")}</span>
                       {/if}
                       {#if inlineAnswer}
                         <!-- The inline "Answer here" toggle below is the primary
@@ -383,8 +354,6 @@
                         <span class="row-action row-action-quiet">{wrapDisplayCopy(studioPageCopy.openRun)} →</span>
                       {:else if row.humanMove !== null}
                         <span class="row-action">{wrapDisplayCopy(row.humanMove)} →</span>
-                      {:else if row.status.kind === "failed"}
-                        <span class="row-action row-action-bad">{wrapDisplayCopy(studioPageCopy.why)} →</span>
                       {/if}
                     </a>
                     {#if row.status.kind === "waitingInput" && isRunV3(row.run)}
@@ -478,15 +447,6 @@
     color: var(--signal-attention-mark);
   }
 
-  .board-row-failed .row-mark {
-    color: var(--signal-failure);
-  }
-
-  .board-row-done .row-mark,
-  .board-row-cancelled .row-mark {
-    color: var(--signal-quiet);
-  }
-
   .row-name {
     flex: none;
     font-weight: var(--weight-strong);
@@ -504,10 +464,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .board-row-failed .row-status {
-    color: var(--signal-failure);
   }
 
   .row-pipeline {
@@ -546,21 +502,11 @@
     background: var(--signal-failure);
   }
 
-  .row-time {
-    flex: none;
-    color: var(--ink-dim);
-    font-size: var(--text-xs);
-  }
-
   .row-action {
     flex: none;
     font-weight: var(--weight-strong);
     font-size: var(--text-xs);
     color: var(--accent);
-  }
-
-  .row-action-bad {
-    color: var(--signal-failure);
   }
 
   /* The run-path door stays visible once a boolean/enum wait offers its own
