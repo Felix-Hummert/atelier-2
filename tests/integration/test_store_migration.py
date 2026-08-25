@@ -21,21 +21,27 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from dbos import DBOSClient, EnqueueOptions
+from dbos._serialization import DefaultSerializer
 from sqlalchemy.engine import Connection
 from sqlalchemy.schema import CreateIndex
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.names import ANSWER_WORKFLOW_NAME, QUEUE_NAME
 from atelier2.adapters.dbos.published_schema_shapes import PUBLISHED_TABLE_SHAPES
+from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.run_transitions import event_from_record
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
     _AGENT_ATTEMPTS_TRIGGERS,
+    _PREDECESSOR_WAIT_ANSWERS,
     _PRODUCT_TRIGGERS,
     _V17_AGENT_ATTEMPT_TRIGGERS,
     _V23_AGENT_ATTEMPT_TRIGGERS,
     _V24_AGENT_ATTEMPT_TRIGGERS,
     _V27_AGENT_ATTEMPT_STATE_TRANSITION,
     _VERSION_TWENTY,
+    _WAIT_ANSWERS_TRIGGERS,
     PRODUCT_SCHEMA_HANDOFF,
     SCHEMA_VERSION,
     V13_SCHEMA_HANDOFF,
@@ -50,6 +56,7 @@ from atelier2.adapters.dbos.schema import (
     V29_SCHEMA_HANDOFF,
     V31_SCHEMA_HANDOFF,
     V32_SCHEMA_HANDOFF,
+    V33_SCHEMA_HANDOFF,
     MigrationRequired,
     _rebuild_product_table,
     _require_product_shape,
@@ -80,21 +87,49 @@ from atelier2.adapters.dbos.schema import (
     run_instants,
     runs,
     tool_redemptions,
+    wait_answers,
     webhook_delivery_cursor,
     workflow_revisions,
+)
+from atelier2.adapters.dbos.workflow_ids import answer_workflow_id_for
+from atelier2.application.answer_wait import (
+    AnswerAcceptedPending,
+    answer_wait_result,
 )
 from atelier2.contracts.agents import (
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
 )
 from atelier2.contracts.catalog_v3 import CatalogLineage
-from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEvent,
+    RunEventKind,
+    WaitAnswerState,
+)
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId, ProjectRootRevision
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
-from atelier2.contracts.runs import FIRST_ROUND_ORDINAL, RunId, WorkflowRevisionHash
+from atelier2.contracts.runs import (
+    FIRST_ROUND_ORDINAL,
+    RunId,
+    RunState,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
 from atelier2.host import main
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.integration.test_runner_terminal_evidence_store import _bound
+from tests.integration.test_v3_wait_run import (
+    ANSWER,
+    RUN,
+    WAIT_IN_THE_MIDDLE,
+    WAIT_NODE,
+    recording_provider,
+    start_and_launch,
+    wait_for_state,
+    wait_runtime_over,
+)
 from tests.scenarios.agents import agent_attempt_execution
 
 ARCHIVED_RUN_ID = "live/erster-lauf-nach-der-nacht"
@@ -531,6 +566,7 @@ def _create_populated_v13_store(database_path: Path) -> None:
         _drop_queue_items_table(predecessor)
         _drop_webhook_delivery_cursor_table(predecessor)
         _drop_project_source_connection_table(predecessor)
+        _revert_wait_answers_execution_key(predecessor)
     published = PublishedRevision(RevisionKind.WORKFLOW, b"name: lasagne\n")
     lineage = CatalogLineage(published.kind, published.revision_hash)
     configuration = "44" * 32
@@ -960,6 +996,77 @@ def _drop_project_source_connection_table(connection: sqlite3.Connection) -> Non
     connection.execute(f"DROP TABLE {host_project_source_connection_revisions.name}")
 
 
+_PREDECESSOR_WAIT_ANSWERS_DDL = """
+CREATE TABLE wait_answers (
+	run_id TEXT NOT NULL, 
+	revision_hash TEXT NOT NULL, 
+	node_id TEXT NOT NULL, 
+	node_execution_id TEXT NOT NULL, 
+	answer_bytes BLOB NOT NULL, 
+	answer_hash TEXT NOT NULL, 
+	answer_workflow_id TEXT NOT NULL, 
+	state TEXT NOT NULL, 
+	state_version INTEGER NOT NULL, 
+	PRIMARY KEY (run_id, node_id), 
+	FOREIGN KEY(run_id, revision_hash) REFERENCES runs (run_id, revision_hash), 
+	CHECK (length(node_id) > 0), 
+	CHECK (length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (length(answer_hash) = 64 AND answer_hash NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (length(answer_workflow_id) > 0), 
+	CHECK (state IN ('PENDING', 'APPLIED')), 
+	CHECK (state_version IN (0, 1)), 
+	CHECK ((state = 'PENDING' AND state_version = 0) OR (state = 'APPLIED' AND state_version = 1)), 
+	UNIQUE (node_execution_id), 
+	UNIQUE (answer_workflow_id)
+)
+"""
+
+_PREDECESSOR_WAIT_ANSWERS_PAYLOAD_TRIGGER_DDL = """
+CREATE TRIGGER wait_answers_payload_no_update
+BEFORE UPDATE OF run_id, revision_hash, node_id, node_execution_id,
+                 answer_bytes, answer_hash, answer_workflow_id
+ON wait_answers BEGIN
+  SELECT RAISE(ABORT, 'wait answer bindings are immutable');
+END
+"""
+
+
+_PARKED_CURRENT_WAIT_ANSWERS = "wait_answers_of_the_current_schema"
+
+
+def _revert_wait_answers_execution_key(connection: sqlite3.Connection) -> None:
+    """Restore the run-and-node key and roundless payload trigger the #671 hop moved.
+
+    `wait_answers` has carried one shape since it was introduced, so every
+    "exact vNN store" fixture up to V33 shares this one predecessor -- the #671
+    hop is the first to touch it at all.
+
+    Rows are carried back the way the hop carries them forward, dropping the
+    round the predecessor has no column for. An empty table copies nothing, so
+    the fixtures that only want the shape pay nothing for it, and a store that
+    was driven to a real pause keeps the answer that pause accepted.
+    """
+
+    for trigger in _WAIT_ANSWERS_TRIGGERS:
+        connection.execute(f"DROP TRIGGER {trigger}")
+    connection.execute(
+        f"ALTER TABLE {wait_answers.name} RENAME TO {_PARKED_CURRENT_WAIT_ANSWERS}"
+    )
+    connection.execute(_PREDECESSOR_WAIT_ANSWERS_DDL)
+    carried = ", ".join(
+        str(record[1])
+        for record in connection.execute(f"PRAGMA table_info({wait_answers.name})")
+    )
+    connection.execute(
+        f"INSERT INTO {wait_answers.name} ({carried}) "
+        f"SELECT {carried} FROM {_PARKED_CURRENT_WAIT_ANSWERS}"
+    )
+    connection.execute(f"DROP TABLE {_PARKED_CURRENT_WAIT_ANSWERS}")
+    connection.execute(_PREDECESSOR_WAIT_ANSWERS_PAYLOAD_TRIGGER_DDL)
+    connection.execute(_PRODUCT_TRIGGERS["wait_answers_state_transition"])
+    connection.execute(_PRODUCT_TRIGGERS["wait_answers_no_delete"])
+
+
 def _revert_cancelled_run_state(connection: sqlite3.Connection) -> None:
     """Restore the pre-CANCELLED `runs` CHECK the #439 P1 hop widened.
 
@@ -1017,6 +1124,7 @@ def _create_exact_v21_store(database_path: Path) -> None:
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_refused_attempts(connection)
         _drop_occupancy_channel(connection)
@@ -1053,6 +1161,7 @@ def _create_exact_v22_store(database_path: Path) -> None:
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_refused_attempts(connection)
         _drop_occupancy_channel(connection)
@@ -1076,6 +1185,7 @@ def _create_exact_v23_store(database_path: Path) -> None:
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_project_verification_failed_attempts(connection)
         _drop_occupancy_channel(connection)
@@ -1099,6 +1209,7 @@ def _create_exact_v24_store(database_path: Path) -> None:
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
@@ -1122,6 +1233,7 @@ def _create_exact_v25_store(database_path: Path) -> None:
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
@@ -1144,6 +1256,7 @@ def _create_exact_v26_store(database_path: Path) -> None:
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         connection.execute(
@@ -1195,6 +1308,7 @@ def _create_exact_v27_store(database_path: Path, *, access: bool = False) -> Non
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_attempts_trigger_to_v27(connection)
         connection.execute(
@@ -1216,6 +1330,7 @@ def _create_exact_v28_store(database_path: Path) -> None:
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_attempts_trigger_to_v27(connection)
         connection.execute(
@@ -1239,6 +1354,7 @@ def _create_exact_v29_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_attempts_trigger_to_v27(connection)
         connection.execute(
@@ -1608,6 +1724,7 @@ def test_v26_attempt_bytes_cross_v27_and_v28_unchanged_with_none_evidence(
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
+        _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         connection.execute(
@@ -2038,6 +2155,7 @@ def _create_exact_v31_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _drop_project_source_connection_table(connection)
+        _revert_wait_answers_execution_key(connection)
         connection.execute("DROP TRIGGER agent_attempts_state_transition")
         connection.execute(_V27_AGENT_ATTEMPT_STATE_TRANSITION)
         connection.execute(
@@ -2109,6 +2227,7 @@ def test_a_populated_v31_runner_attempt_survives_the_v32_trigger_swap(
 
     with sqlite3.connect(database_path) as connection:
         _drop_project_source_connection_table(connection)
+        _revert_wait_answers_execution_key(connection)
         connection.execute("DROP TRIGGER agent_attempts_state_transition")
         connection.execute(_V27_AGENT_ATTEMPT_STATE_TRANSITION)
         connection.execute(
@@ -2147,6 +2266,7 @@ def _create_exact_v32_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _drop_project_source_connection_table(connection)
+        _revert_wait_answers_execution_key(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V32_SCHEMA_HANDOFF.version,),
@@ -2285,3 +2405,383 @@ def test_a_refused_connection_table_hop_rolls_back_the_trigger_swap_before_it(
         assert connection.execute(
             "SELECT version FROM atelier_schema_versions"
         ).fetchone() == (31,)
+
+
+def _create_exact_v33_store(database_path: Path) -> None:
+    """A current store with the pre-#671 answer table: the published V33 shape.
+
+    V33 differs from the current schema only in `wait_answers`: keyed by run and
+    node, without the round, and with a payload trigger whose column list does
+    not name one. The fixture is a fresh store with that table and its payload
+    trigger restored to their V33 text, and the pinned V33 fingerprint refuses
+    it the moment a character drifts.
+    """
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _revert_wait_answers_execution_key(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V33_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V33_SCHEMA_HANDOFF.version)
+
+
+_ANSWER_NODE_ID = "approve"
+
+
+def _v33_wait_answer_values(
+    run_id: RunId, revision_hash: WorkflowRevisionHash, answer_bytes: bytes
+) -> tuple[str | bytes, ...]:
+    """One predecessor answer row, derived from the identities production derives."""
+    execution_id = NodeExecutionId.for_node(run_id, revision_hash, _ANSWER_NODE_ID)
+    return (
+        run_id.value,
+        revision_hash.value,
+        _ANSWER_NODE_ID,
+        execution_id.value,
+        answer_bytes,
+        Sha256Hash.of(answer_bytes).value,
+        answer_workflow_id_for(execution_id),
+    )
+
+
+def _populate_v33_wait_answers(database_path: Path) -> None:
+    """One resting run holding a PENDING answer, one finished run holding an APPLIED.
+
+    Both states have to cross the hop, because they are the two halves of the
+    one thing this table exists for: an answer already written and not yet
+    applied, and one whose transition already happened.
+    """
+
+    revision = WorkflowRevision(b"name: freigabe\n")
+    resting_run = RunId("live/wartet-noch")
+    answered_run = RunId("live/beantwortet")
+    terminal_hash = Sha256Hash.of(b"the run this answer finished")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            "INSERT INTO workflow_revisions (revision_hash, document) VALUES (?, ?)",
+            (revision.revision_hash.value, revision.document),
+        )
+        connection.executemany(
+            "INSERT INTO runs (run_id, bootstrap_workflow_id, revision_hash, "
+            "workflow_format_version, current_node_id, current_round_ordinal, "
+            "state, state_version, last_event_sequence, terminal_hash) "
+            "VALUES (?, ?, ?, 1, ?, ?, ?, 1, 1, ?)",
+            [
+                (
+                    resting_run.value,
+                    f"bootstrap-{resting_run.value}",
+                    revision.revision_hash.value,
+                    _ANSWER_NODE_ID,
+                    FIRST_ROUND_ORDINAL,
+                    RunState.WAITING_INPUT.value,
+                    None,
+                ),
+                (
+                    answered_run.value,
+                    f"bootstrap-{answered_run.value}",
+                    revision.revision_hash.value,
+                    _ANSWER_NODE_ID,
+                    FIRST_ROUND_ORDINAL,
+                    RunState.COMPLETED.value,
+                    terminal_hash.value,
+                ),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO wait_answers (run_id, revision_hash, node_id, "
+            "node_execution_id, answer_bytes, answer_hash, answer_workflow_id, "
+            "state, state_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                _v33_wait_answer_values(
+                    resting_run, revision.revision_hash, b'"noch nicht"'
+                )
+                + (WaitAnswerState.PENDING.value, 0),
+                _v33_wait_answer_values(
+                    answered_run, revision.revision_hash, b'"freigegeben"'
+                )
+                + (WaitAnswerState.APPLIED.value, 1),
+            ],
+        )
+        connection.commit()
+
+
+def test_an_exact_v33_store_migrates_to_v34_by_rekeying_the_answer_table(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v33_store(database_path)
+
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 33"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    shown = capsys.readouterr()
+    assert "33" in shown.out and "34" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
+        )
+    engine.dispose()
+
+    with sqlite3.connect(database_path) as connection:
+        key_columns = tuple(
+            str(record[1])
+            for record in connection.execute("PRAGMA table_info(wait_answers)")
+            if int(record[5]) > 0
+        )
+        parents = tuple(
+            (str(record[2]), str(record[3]), str(record[4]))
+            for record in connection.execute("PRAGMA foreign_key_list(wait_answers)")
+        )
+    assert key_columns == ("node_execution_id",)
+    assert set(parents) == {
+        ("runs", "run_id", "run_id"),
+        ("runs", "revision_hash", "revision_hash"),
+    }
+
+
+def test_pending_and_applied_v33_answers_survive_the_v34_rekey_as_round_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v33_store(database_path)
+    _populate_v33_wait_answers(database_path)
+    with sqlite3.connect(database_path) as connection:
+        predecessor_rows = connection.execute(
+            "SELECT run_id, revision_hash, node_id, node_execution_id, answer_bytes, "
+            "answer_hash, answer_workflow_id, state, state_version FROM wait_answers "
+            "ORDER BY run_id"
+        ).fetchall()
+    assert len(predecessor_rows) == 2
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        carried = connection.execute(
+            "SELECT run_id, revision_hash, node_id, node_execution_id, answer_bytes, "
+            "answer_hash, answer_workflow_id, state, state_version FROM wait_answers "
+            "ORDER BY run_id"
+        ).fetchall()
+        rounds = connection.execute(
+            "SELECT state, round_ordinal FROM wait_answers ORDER BY run_id"
+        ).fetchall()
+    assert carried == predecessor_rows
+    assert rounds == [
+        (WaitAnswerState.APPLIED.value, FIRST_ROUND_ORDINAL),
+        (WaitAnswerState.PENDING.value, FIRST_ROUND_ORDINAL),
+    ]
+
+
+def test_the_three_answer_triggers_are_live_again_after_the_v34_rekey(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A rebuild drops every trigger, so each one is proved by what it refuses."""
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v33_store(database_path)
+    _populate_v33_wait_answers(database_path)
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="bindings are immutable"):
+            connection.execute("UPDATE wait_answers SET round_ordinal = 2")
+        with pytest.raises(sqlite3.IntegrityError, match="invalid wait answer"):
+            connection.execute(
+                "UPDATE wait_answers SET state = 'PENDING', state_version = 0 "
+                "WHERE state = 'APPLIED'"
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="answers are immutable"):
+            connection.execute("DELETE FROM wait_answers")
+
+
+def test_a_refused_answer_rekey_leaves_the_v33_store_untouched(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A name already holding the parking object refuses before the first statement."""
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v33_store(database_path)
+    _populate_v33_wait_answers(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(f"CREATE TABLE {_PREDECESSOR_WAIT_ANSWERS} (wrong TEXT)")
+        connection.commit()
+    before = _logical_dump(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 1
+
+    shown = capsys.readouterr()
+    assert _PREDECESSOR_WAIT_ANSWERS in shown.err
+    assert "will not alter" in shown.err
+    assert _logical_dump(database_path) == before
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (33,)
+
+
+def _enqueue_a_three_argument_answer_workflow(
+    database_path: Path,
+    application_version: str,
+    revision_hash: WorkflowRevisionHash,
+    execution_id: NodeExecutionId,
+) -> None:
+    """Record the answer invocation a store written before the round existed holds.
+
+    A predecessor enqueued run, revision and node and nothing else. Recording it
+    under the identity the answer will be minted with is what makes it the same
+    workflow the submission would otherwise have enqueued: the submission's own
+    enqueue then finds the id taken and adds nothing, so what stands in the queue
+    across the hop is the three-argument shape and only that.
+    """
+
+    engine = create_canonical_engine(database_path)
+    client = DBOSClient(system_database_engine=engine, use_listen_notify=False)
+    try:
+        options: EnqueueOptions = {
+            "workflow_name": ANSWER_WORKFLOW_NAME,
+            "queue_name": QUEUE_NAME,
+            "workflow_id": answer_workflow_id_for(execution_id),
+            "app_version": application_version,
+        }
+        client.enqueue(options, RUN.value, revision_hash.value, WAIT_NODE)
+    finally:
+        client.destroy()
+        engine.dispose()
+
+
+def _recorded_invocation(
+    serialized: str,
+) -> tuple[tuple[object, ...], dict[str, object]]:
+    """Every argument DBOS really recorded, read the way DBOS reads them.
+
+    Both halves of the call, because the positional ones alone do not say what
+    the recovered workflow is handed: three positional arguments and
+    `round_ordinal` as a keyword would satisfy an assertion about the tuple and
+    would need no compatibility default at all. The queue row is the artifact
+    under test, so it is decoded whole rather than trusted.
+    """
+    recorded = DefaultSerializer().deserialize(serialized)
+    return tuple(recorded["args"]), dict(recorded["kwargs"])
+
+
+def _downgrade_a_driven_store_to_v33(database_path: Path) -> None:
+    with sqlite3.connect(database_path) as connection:
+        _revert_wait_answers_execution_key(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V33_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V33_SCHEMA_HANDOFF.version)
+
+
+def test_a_v33_answer_enqueued_without_a_round_still_applies_after_the_v34_hop(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The answer a predecessor accepted is applied by the runtime that comes after.
+
+    This is the sentence the hop has to earn. An operator answered on the old
+    schema; the process holding the run died before the answer workflow ran; the
+    store was migrated offline; a new process came up. Nothing about that
+    sequence is arranged after the fact -- the answer workflow is recorded with
+    the three arguments a predecessor really wrote, the first runtime is closed
+    while the answer is still PENDING and nothing is left to consume it, and the
+    store is put back into its exact published V33 shape, fingerprint and all,
+    with that PENDING row inside it.
+
+    What is then asserted is that the answer is not stranded: it becomes APPLIED
+    in the first round, writes exactly one WAIT_ANSWERED event, and carries the
+    line on to the heir its author declared -- run by a runtime that never saw a
+    byte of it in memory.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    recording = recording_provider()
+    paused = wait_runtime_over(tmp_path, recording)
+    paused.initialize_storage()
+    try:
+        workflow = start_and_launch(paused, WAIT_IN_THE_MIDDLE)
+        wait_for_state(paused, RunState.WAITING_INPUT)
+        application_version = paused.settings.application_version
+    finally:
+        paused.close()
+
+    execution_id = NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE)
+    _enqueue_a_three_argument_answer_workflow(
+        database_path, application_version, workflow.revision_hash, execution_id
+    )
+    engine = create_canonical_engine(database_path)
+    try:
+        accepted = answer_wait_result(
+            RUN,
+            workflow.revision_hash,
+            WAIT_NODE,
+            ANSWER,
+            DbosWaitAnswerer(engine, application_version),
+        )
+    finally:
+        engine.dispose()
+    assert isinstance(accepted, AnswerAcceptedPending), accepted
+
+    _downgrade_a_driven_store_to_v33(database_path)
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT state FROM wait_answers WHERE node_execution_id = ?",
+            (execution_id.value,),
+        ).fetchone() == (WaitAnswerState.PENDING.value,)
+        recorded_inputs = connection.execute(
+            "SELECT inputs FROM workflow_status WHERE workflow_uuid = ?",
+            (answer_workflow_id_for(execution_id),),
+        ).fetchone()
+    assert recorded_inputs is not None
+    assert _recorded_invocation(str(recorded_inputs[0])) == (
+        (RUN.value, workflow.revision_hash.value, WAIT_NODE),
+        {},
+    )
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    recovered = wait_runtime_over(tmp_path, recording)
+    try:
+        recovered.launch()
+        wait_for_state(recovered, RunState.COMPLETED)
+        with recovered.engine.connect() as connection:
+            stored = connection.execute(sa.select(wait_answers)).mappings().one()
+            answered = connection.execute(
+                sa.select(run_events.c.node_id, run_events.c.round_ordinal).where(
+                    run_events.c.event_kind == RunEventKind.WAIT_ANSWERED.value
+                )
+            ).all()
+            heirs = (
+                connection.execute(
+                    sa.select(run_events.c.node_id).where(
+                        run_events.c.event_kind == RunEventKind.AGENT_COMPLETED.value
+                    )
+                )
+                .scalars()
+                .all()
+            )
+    finally:
+        recovered.close()
+
+    assert str(stored["state"]) == WaitAnswerState.APPLIED.value
+    assert int(stored["round_ordinal"]) == FIRST_ROUND_ORDINAL
+    assert bytes(stored["answer_bytes"]) == ANSWER
+    assert answered == [(WAIT_NODE, FIRST_ROUND_ORDINAL)]
+    assert list(heirs) == ["implement", "review"]
