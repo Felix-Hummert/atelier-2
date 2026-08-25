@@ -104,6 +104,21 @@ describe("the workbench door", () => {
     expect(screen.getByText(workbenchPageCopy.emptyTitle).isConnected).toBe(true);
   });
 
+  it("links a conductor episode with the chat as its named origin, so its trail leads back here (#654)", async () => {
+    const { takeConductorTurn, markConductorRun } = await import("../../src/lib/chatTranscript");
+    const { conductorChatCopy } = await import("../../src/lib/conductorChatCopy");
+    openChat();
+    const { screen } = testingLibrary;
+    await screen.findByRole("heading", { name: "Workbench" });
+
+    const pendingId = takeConductorTurn("Starte die Kanarienprobe", conductorChatCopy.reading);
+    expect(pendingId).not.toBeNull();
+    markConductorRun(pendingId ?? "", "run1.cnVu");
+
+    const episode = await screen.findByRole("link", { name: conductorChatCopy.openEpisode });
+    expect(episode.getAttribute("href")).toBe("/atelier/runs/run1.cnVu?from=chat");
+  });
+
   it("keeps the conversation across a rail change and back, since that is not leaving the page", async () => {
     openChat();
     const { screen, within } = testingLibrary;

@@ -18,6 +18,18 @@ export const PUBLIC_REFERENCE_PLACEHOLDER = "{public_ref}";
 /** Where a workflow's name stands in a served path. */
 export const WORKFLOW_NAME_PLACEHOLDER = "{workflow_name}";
 
+/**
+ * Where the operator opened a run from, when it was not the Board.
+ *
+ * The run page's trail leads back to the room the operator actually left
+ * (#654: coming from the chat, "← Board" was a lie). The origin travels as a
+ * query parameter so it survives a reload, and a link without one keeps the
+ * Board as the trail's home.
+ */
+export type RunOrigin = "chat";
+
+const RUN_ORIGIN_PARAMETER = "from";
+
 export type CockpitRoute =
   | { page: "chat" }
   | { page: "studio" }
@@ -26,10 +38,11 @@ export type CockpitRoute =
   | { page: "workflows" }
   | { page: "workflow"; name: string }
   | { page: "history" }
-  | { page: "run"; publicReference: string }
+  | { page: "run"; publicReference: string; origin: RunOrigin | null }
   | { page: "not-found" };
 
-export function cockpitRoute(pathname: string): CockpitRoute {
+export function cockpitRoute(path: string): CockpitRoute {
+  const [pathname = "", query = ""] = path.split("?", 2);
   if (pathname === "/atelier" || pathname === "/atelier/") {
     return { page: "studio" };
   }
@@ -69,15 +82,21 @@ export function cockpitRoute(pathname: string): CockpitRoute {
       return { page: "not-found" };
     }
     if (decodePublicRunReference(publicReference) !== null) {
-      return { page: "run", publicReference };
+      return { page: "run", publicReference, origin: runOrigin(query) };
     }
   }
   return { page: "not-found" };
 }
 
+function runOrigin(query: string): RunOrigin | null {
+  const named = new URLSearchParams(query).get(RUN_ORIGIN_PARAMETER);
+  return named === "chat" ? named : null;
+}
+
 /** The one place the path of a run is built. */
-export function runPath(publicReference: string): string {
-  return `/atelier/runs/${publicReference}`;
+export function runPath(publicReference: string, origin?: RunOrigin): string {
+  const path = `/atelier/runs/${publicReference}`;
+  return origin === undefined ? path : `${path}?${RUN_ORIGIN_PARAMETER}=${origin}`;
 }
 
 /** The one place the path of a workflow's catalog page is built. */

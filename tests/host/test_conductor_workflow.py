@@ -108,9 +108,10 @@ def test_the_conductor_document_carries_its_own_fence() -> None:
     """One agent node, the granted doors only, and the fence in its own orders.
 
     Beyond the gate's link: the document parses under the production V3
-    grammar, its description names the run-starting power in plain words, its
-    instruction names exactly the three granted doors and neither write-shaped
-    one, and the builder's own validation door accepts it.
+    grammar, its description names the run-starting power in the operator's
+    own words (the run view shows it, #654), its instruction names exactly the
+    three granted doors and neither write-shaped one, grounds every offer in
+    the listed catalog, and the builder's own validation door accepts it.
     """
 
     document = _conductor_document()
@@ -119,7 +120,7 @@ def test_the_conductor_document_carries_its_own_fence() -> None:
     assert isinstance(parsed, WorkflowGraphV3)
     assert parsed.name == CONDUCTOR_WORKFLOW_NAME
     assert parsed.description is not None
-    assert "STARTS REAL CATALOG RUNS" in parsed.description
+    assert "starts the real run you ask for" in parsed.description
     assert len(parsed.nodes) == 1
     node = parsed.nodes[0]
     assert isinstance(node, AgentNodeV3)
@@ -129,6 +130,9 @@ def test_the_conductor_document_carries_its_own_fence() -> None:
     for withheld in (McpToolName.ANSWER_WAIT, McpToolName.PUBLISH_ARTIFACT):
         assert withheld.value not in node.instruction
     assert f"Never start the workflow named '{CONDUCTOR_WORKFLOW_NAME}'" in (
+        node.instruction
+    )
+    assert "never promise help with a workflow the catalog does not hold" in (
         node.instruction
     )
     assert require_conductor_document(document) is None

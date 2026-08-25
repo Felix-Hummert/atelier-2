@@ -157,7 +157,9 @@ def _conductor_instruction() -> str:
         f"{McpToolName.START_RUN.value} and {McpToolName.RUN_STATUS.value}: "
         "when the message asks for catalog work, list the catalog, start the "
         "workflow it asks for once with a fresh run_id, and read its status. "
-        "Start nothing the message does not ask for. "
+        "Start nothing the message does not ask for. Offer only workflows the "
+        f"{McpToolName.LIST_WORKFLOWS.value} result actually names; never "
+        "promise help with a workflow the catalog does not hold. "
         f"{_RECURSION_FENCE_SENTENCE} You never answer waits of started runs; "
         "humans do. Answer with exactly one JSON object and no other text: "
         f'{{"{_REPORT_ANSWER_FIELD}": a short reply to the operator, naming '
@@ -176,18 +178,17 @@ def conductor_workflow_document(
     (the hash of the published schema the brief and the report agree to), so
     they arrive as parameters rather than being invented here. The description
     names the run-starting power in plain words, because a reviewer reading the
-    catalog must see the side effect where the document is read.
+    catalog must see the side effect where the document is read -- and it is
+    the copy the run view shows the operator (#654), so it speaks in human
+    words while the agent's orders stay in the instruction.
     """
 
     instruction = _conductor_instruction()
     document = f"""format_version: 3
 name: {CONDUCTOR_WORKFLOW_NAME}
 description: >-
-  The conductor. Its agent operates the atelier's own doors and STARTS REAL
-  CATALOG RUNS from the operator's brief: it lists the catalog, starts the
-  workflow the brief asks for, observes it, and reports the run reference.
-  It never starts the conductor itself, and it cannot answer waits or publish
-  artifacts.
+  Answers your workshop message: it reads the workflow catalog, starts the
+  real run you ask for, and reports back with the run reference.
 graph_inputs:
   - name: {CONDUCTOR_BRIEF_INPUT}
     schema: {{ref: conductor-brief, revision: "{brief_schema_revision}"}}

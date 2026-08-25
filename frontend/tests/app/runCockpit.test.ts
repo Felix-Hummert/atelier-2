@@ -282,6 +282,36 @@ describe("read-only run cockpit", () => {
   });
 });
 
+describe("the trail back from a run (#654)", () => {
+  async function trailLink(): Promise<HTMLElement> {
+    const feed = new FakeRunEventFeed();
+    render(App, {
+      props: {
+        cockpitApi: api({ openRunEvents: feed.open }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    const trail = await screen.findByRole("navigation", { name: "Where you are" });
+    return within(trail).getByRole("link");
+  }
+
+  it("leads back to the Board when the run names no other origin", async () => {
+    const link = await trailLink();
+
+    expect(link.textContent).toContain("Board");
+    expect(link.getAttribute("href")).toBe("/atelier");
+  });
+
+  it("leads back to the Workbench when the run was opened from the chat", async () => {
+    window.history.replaceState(null, "", `/atelier/runs/${publicReference}?from=chat`);
+
+    const link = await trailLink();
+
+    expect(link.textContent).toContain("Workbench");
+    expect(link.getAttribute("href")).toBe("/atelier/chat");
+  });
+});
+
 function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
   return cockpitApiStub({
     getRun: vi.fn(async () => startedRun()),

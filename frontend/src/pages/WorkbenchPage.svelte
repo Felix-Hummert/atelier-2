@@ -18,6 +18,7 @@
   } from "../lib/conductorEpisode";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import type { MutationJournal } from "../lib/mutationJournal";
+  import { runPath } from "../lib/route";
   import { readEveryRevision, readEveryRun } from "../lib/runPages";
   import { workbenchPageCopy } from "../lib/workbenchPageCopy";
 
@@ -196,12 +197,13 @@
             <span class="conversation-speaker">{wrapDisplayCopy(speakerLabels[message.speaker])}</span>
             {message.text}
             {#if message.runReference !== undefined}
+              {@const episodePath = runPath(message.runReference, "chat")}
               <a
                 class="conversation-run-link"
-                href={`/atelier/runs/${message.runReference}`}
+                href={episodePath}
                 onclick={(event) => {
                   event.preventDefault();
-                  navigate(`/atelier/runs/${message.runReference}`);
+                  navigate(episodePath);
                 }}
               >{wrapDisplayCopy(conductorChatCopy.openEpisode)}</a>
             {/if}

@@ -19,11 +19,19 @@ export type WorkshopDestination = {
   path: "/atelier/chat" | "/atelier" | "/atelier/workflows" | "/atelier/history";
 };
 
+/** Each destination by name, for the trail that leads back to one of them. */
+export const WORKSHOP_DESTINATION: Record<WorkshopDestination["id"], WorkshopDestination> = {
+  chat: { id: "chat", label: "Workbench", path: "/atelier/chat" },
+  board: { id: "board", label: "Board", path: "/atelier" },
+  workflows: { id: "workflows", label: "Workflows", path: "/atelier/workflows" },
+  history: { id: "history", label: "History", path: "/atelier/history" }
+};
+
 export const WORKSHOP_DESTINATIONS: readonly WorkshopDestination[] = [
-  { id: "chat", label: "Workbench", path: "/atelier/chat" },
-  { id: "board", label: "Board", path: "/atelier" },
-  { id: "workflows", label: "Workflows", path: "/atelier/workflows" },
-  { id: "history", label: "History", path: "/atelier/history" }
+  WORKSHOP_DESTINATION.chat,
+  WORKSHOP_DESTINATION.board,
+  WORKSHOP_DESTINATION.workflows,
+  WORKSHOP_DESTINATION.history
 ];
 
 /**
@@ -31,16 +39,20 @@ export const WORKSHOP_DESTINATIONS: readonly WorkshopDestination[] = [
  *
  * `new` marks Workflows (Operator ruling 22.08.): starting a run is a
  * Workflows-owned action reachable from Board and from a workflow's own detail
- * page, not a History concern. `run` marks Board: a run being watched is the
- * Board's own row opened, and the run page's trail leads back there. `project`
- * marks nothing — the project is the context above the four destinations, not
- * a fifth one.
+ * page, not a History concern. `run` marks the room it was opened from — the
+ * Workbench for a chat episode, otherwise the Board, whose row a watched run
+ * is — and the run page's trail leads back to the same room. `project` marks
+ * nothing — the project is the context above the four destinations, not a
+ * fifth one.
  */
 export function activeWorkshopDestination(route: CockpitRoute): WorkshopDestination["id"] | null {
   if (route.page === "chat") {
     return "chat";
   }
-  if (route.page === "studio" || route.page === "run") {
+  if (route.page === "run") {
+    return route.origin ?? "board";
+  }
+  if (route.page === "studio") {
     return "board";
   }
   if (route.page === "workflows" || route.page === "workflow" || route.page === "new") {

@@ -24,11 +24,13 @@
   export let createRunId: () => string = makeRunId;
   export let createReconcileCommandId: () => string = makeReconcileCommandId;
 
-  let route = cockpitRoute(window.location.pathname);
+  let route = cockpitRoute(window.location.pathname + window.location.search);
   let workshopShell: WorkshopShell;
 
   onMount(() => {
-    const readRoute = () => { route = cockpitRoute(window.location.pathname); };
+    const readRoute = () => {
+      route = cockpitRoute(window.location.pathname + window.location.search);
+    };
     window.addEventListener("popstate", readRoute);
     return () => window.removeEventListener("popstate", readRoute);
   });
@@ -63,6 +65,7 @@
       {cockpitApi}
       {mutationJournal}
       publicReference={route.publicReference}
+      origin={route.origin}
       {navigate}
       {createReconcileCommandId}
     />

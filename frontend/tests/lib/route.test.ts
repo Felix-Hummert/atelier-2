@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   cockpitRoute,
   PUBLIC_REFERENCE_PLACEHOLDER,
+  runPath,
   SERVED_PATHS,
   WORKFLOW_NAME_PLACEHOLDER,
   workflowPath,
@@ -95,5 +96,31 @@ describe("the paths the server is asked to serve", () => {
 
   it("answers a malformed percent-encoding in a workflow path with not-found", () => {
     expect(cockpitRoute("/atelier/workflows/%").page).toBe("not-found");
+  });
+});
+
+describe("where a run was opened from (#654)", () => {
+  it("carries the chat origin from the link the Workbench builds, reload included", () => {
+    expect(cockpitRoute(runPath(SAMPLE_PUBLIC_REFERENCE, "chat"))).toEqual({
+      page: "run",
+      publicReference: SAMPLE_PUBLIC_REFERENCE,
+      origin: "chat"
+    });
+  });
+
+  it("keeps the Board as the trail's home for a run link that names no origin", () => {
+    expect(cockpitRoute(runPath(SAMPLE_PUBLIC_REFERENCE))).toEqual({
+      page: "run",
+      publicReference: SAMPLE_PUBLIC_REFERENCE,
+      origin: null
+    });
+  });
+
+  it("treats an origin it does not know as none rather than a broken page", () => {
+    expect(cockpitRoute(`/atelier/runs/${SAMPLE_PUBLIC_REFERENCE}?from=somewhere`)).toEqual({
+      page: "run",
+      publicReference: SAMPLE_PUBLIC_REFERENCE,
+      origin: null
+    });
   });
 });
