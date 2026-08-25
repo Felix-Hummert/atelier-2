@@ -119,7 +119,7 @@ def bind_node(
     if isinstance(node, (ActionNode, ActionNodeV3)):
         return ActionNodeBinding()
     if isinstance(node, ANY_WAIT_NODE_KINDS):
-        return WaitNodeBinding()
+        return WaitNodeBinding(run.current_round_ordinal)
     if isinstance(node, SubworkflowNode):
         return SubworkflowNodeBinding(node.operands)
     raise AssertionError("closed WorkflowNode union was not exhaustive")

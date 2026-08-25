@@ -55,13 +55,11 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head gives the project-source connection record (#567)
-# its durable, append-only home -- one new immutable table on the host
-# configuration channel, carrying identities and a credential-directory
-# reference, never a credential value. Predecessor is the published schema
-# that admitted the never-launched runner-lease cancel transition (#584).
-# Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 32
+# Movable hop: this head keys a wait answer by the execution it answers (#671)
+# instead of by run and node, and gives it the round that execution stands in.
+# Predecessor is the published schema that gave the project-source connection
+# record its durable home (#567). Change only this constant to restack.
+_HOP_PREDECESSOR_VERSION = 33
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -88,6 +86,7 @@ _VERSION_THIRTY = 30
 _VERSION_THIRTY_ONE = 31
 _VERSION_THIRTY_TWO = 32
 _VERSION_THIRTY_THREE = 33
+_VERSION_THIRTY_FOUR = 34
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -152,6 +151,15 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # connected platform adapter interprets, a credential-directory reference --
 # never a credential value -- the chosen auth method, and the connecting
 # actor.
+# V34 keys a wait answer by the node execution it answers and records the round
+# that execution stands in (#671). The predecessor key -- run and node -- said
+# one answer per node per run forever, which stops being true the moment a
+# declared loop turns a Wait a second time. Every stored answer already carries
+# its execution id, and round one derives byte-identically to the roundless
+# derivation, so the key moves losslessly and every carried row is filled with
+# round one. It rewrites no bytes of an answer and reinterprets nothing; the
+# cutover is offline like every other, so "preserved" means preserved by the
+# migrate command and never by a running store.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -182,6 +190,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     31: "60d98794edd55744b3ec2cc4f4d7b9bf7a23106b4b7f0d4b9a009042d054a419",
     32: "0cdbeaf303f2839661930234a508e141cd995b8552def9b426a52aaad1eab84e",
     33: "f634d04c6cc525147ead8aa0dad8ef728189a6ef9554049c8a2aad56f3caeea8",
+    34: "28dab0f4a152d7be66fa699d1123fdd130a94fe80ad705c19330f075e4fdd85a",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -278,6 +287,10 @@ V31_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V32_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_THIRTY_TWO,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_TWO],
+)
+V33_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_THIRTY_THREE,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_THREE],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1185,17 +1198,22 @@ wait_answers = sa.Table(
     sa.Column("run_id", sa.Text, nullable=False),
     sa.Column("revision_hash", sa.Text, nullable=False),
     sa.Column("node_id", sa.Text, nullable=False),
-    sa.Column("node_execution_id", sa.Text, nullable=False, unique=True),
+    sa.Column("node_execution_id", sa.Text, nullable=False),
+    sa.Column("round_ordinal", sa.Integer, nullable=False),
     sa.Column("answer_bytes", sa.LargeBinary, nullable=False),
     sa.Column("answer_hash", sa.Text, nullable=False),
     sa.Column("answer_workflow_id", sa.Text, nullable=False, unique=True),
     sa.Column("state", sa.Text, nullable=False),
     sa.Column("state_version", sa.Integer, nullable=False),
-    sa.PrimaryKeyConstraint("run_id", "node_id"),
+    # The execution is the key, not the node: a node a declared loop turns
+    # pauses once per round, and run-and-node would say one answer per node
+    # per run forever.
+    sa.PrimaryKeyConstraint("node_execution_id"),
     sa.ForeignKeyConstraint(
         ("run_id", "revision_hash"), ("runs.run_id", "runs.revision_hash")
     ),
     sa.CheckConstraint("length(node_id) > 0"),
+    sa.CheckConstraint(f"round_ordinal >= {FIRST_ROUND_ORDINAL}"),
     sa.CheckConstraint(
         "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
     ),
@@ -2152,7 +2170,8 @@ _PRODUCT_TRIGGERS = {
     "wait_answers_payload_no_update": """
         CREATE TRIGGER wait_answers_payload_no_update
         BEFORE UPDATE OF run_id, revision_hash, node_id, node_execution_id,
-                         answer_bytes, answer_hash, answer_workflow_id
+                         round_ordinal, answer_bytes, answer_hash,
+                         answer_workflow_id
         ON wait_answers BEGIN
           SELECT RAISE(ABORT, 'wait answer bindings are immutable');
         END
@@ -2627,7 +2646,9 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    if version == SCHEMA_VERSION:
+    # V33 holds the same tables as the current version: the hop between them
+    # moved one table's key and columns, not the set of tables.
+    if version in {SCHEMA_VERSION, _VERSION_THIRTY_THREE}:
         return PRODUCT_TABLE_NAMES
     if version in {_VERSION_THIRTY_TWO, _VERSION_THIRTY_ONE}:
         return PRODUCT_TABLE_NAMES - connections
@@ -3742,6 +3763,38 @@ def _apply_v31_to_v32(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_THIRTY_ONE, _VERSION_THIRTY_TWO)
 
 
+_WAIT_ANSWERS_TRIGGERS = (
+    "wait_answers_payload_no_update",
+    "wait_answers_state_transition",
+    "wait_answers_no_delete",
+)
+_PREDECESSOR_WAIT_ANSWERS = "wait_answers_before_the_execution_key"
+
+
+def _apply_v33_to_v34(connection: sqlite3.Connection) -> None:
+    """Key a wait answer by its execution and give it a round, keeping every row.
+
+    Nothing already written is reinterpreted. A stored answer's own
+    `node_execution_id` is already unique and is already the identity of the
+    node's first round -- round one derives byte-identically to the roundless
+    derivation -- so making it the key renames nothing and loses nothing. The
+    round a carried row is filled with is that same first round, stated rather
+    than inferred, because an execution hash cannot be read backwards to
+    recover which round produced it.
+    """
+
+    _rebuild_product_table(
+        connection,
+        wait_answers,
+        _PREDECESSOR_WAIT_ANSWERS,
+        _WAIT_ANSWERS_TRIGGERS,
+        _VERSION_THIRTY_THREE,
+        _VERSION_THIRTY_FOUR,
+        {wait_answers.c.round_ordinal.name: str(FIRST_ROUND_ORDINAL)},
+    )
+    _raise_declared_version(connection, _VERSION_THIRTY_THREE, _VERSION_THIRTY_FOUR)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -3849,6 +3902,11 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
             _VERSION_THIRTY_TWO,
             _VERSION_THIRTY_THREE,
         ),
+    ),
+    _SchemaMigrationStep(
+        _VERSION_THIRTY_THREE,
+        _VERSION_THIRTY_FOUR,
+        _apply_v33_to_v34,
     ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
