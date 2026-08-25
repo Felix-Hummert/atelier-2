@@ -2,7 +2,12 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import { CockpitRequestError, type CockpitApi, type RunV3 } from "../../src/api/client";
+import {
+  CockpitRequestError,
+  RUN_NOT_CANCELLABLE_REASONS,
+  type CockpitApi,
+  type RunV3
+} from "../../src/api/client";
 import RunCancelCard from "../../src/components/RunCancelCard.svelte";
 import { prepareCancel } from "../../src/lib/cancelRunDelivery";
 import { shortFingerprint } from "../../src/lib/fingerprint";
@@ -1022,6 +1027,37 @@ describe("cancelling a version 3 run from the cockpit", () => {
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: cancel.open })).toBeNull();
   });
+
+  it.each([
+    ["WAITING_INPUT", cancel.consequenceWaiting, cancel.consequenceWorking],
+    ["STARTED", cancel.consequenceWorking, cancel.consequenceWaiting]
+  ] as const)(
+    "tells a %s run what cancelling really costs it, and not the other run's cost",
+    async (state, said, unsaid) => {
+      render(RunCancelCard, {
+        props: {
+          run: v3Run({ state, cancellation: cancellableBlock(targetNodeExecutionId) }),
+          cockpitApi: api(v3Run()),
+          mutationJournal: new MutationJournal(sessionStorage)
+        }
+      });
+
+      await openStagedDecision();
+
+      expect(screen.getByText(said)).toBeTruthy();
+      expect(screen.queryByText(unsaid)).toBeNull();
+    }
+  );
+
+  it.each([...RUN_NOT_CANCELLABLE_REASONS])(
+    "reads %s to the operator as a sentence rather than the server's token",
+    (reason) => {
+      const sentence = cancelReasonSentence(reason, "implement");
+
+      expect(sentence).not.toContain(reason);
+      expect(sentence.endsWith(".")).toBe(true);
+    }
+  );
 });
 
 async function failedEvent(nodeId: string, reason: string, sequence: number) {

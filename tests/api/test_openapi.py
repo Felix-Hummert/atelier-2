@@ -321,9 +321,9 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head adds the published-agent list `GET /agent-definition-revisions`,
-    the read the catalog view needs to show a name where publication answers only
-    a hash (#659).
+    it. This head adds `answer-in-flight` to the closed set of reasons a V3 run
+    cannot be cancelled: a pause still holding an accepted answer refuses the
+    command rather than dropping that message (#668).
     Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 
