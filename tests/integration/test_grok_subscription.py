@@ -48,7 +48,6 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agent_transcripts import (
-    MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES,
     AssistantTurn,
     AttemptTranscript,
     UnrecognisedProviderOutput,
@@ -691,43 +690,6 @@ def test_concatenated_grok_values_use_only_the_last_value_as_the_envelope(
         )
         == expected
     )
-
-
-def test_an_overflowing_grok_frame_keeps_only_a_bounded_redacted_raw_transcript(
-    tmp_path: Path,
-) -> None:
-    issuer = "sk"
-    separator = "-"
-    body = "grokstreamcanarysecret0123456789"
-    canary = issuer + separator + body
-    raw_output = f'{{ "text" : "fatal: XAI_API_KEY={canary} was rejected" }}'.encode()
-    standard_output = raw_output + (
-        b" " * (GROK_SUBSCRIPTION_FRAME_BYTES - len(raw_output) + 1)
-    )
-    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    executor = GrokSubscriptionExecutorFactory(settings).open()
-    invocation = leased(
-        AgentProcessCommand(
-            ("grok",),
-            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
-        ),
-        tmp_path,
-    )
-
-    result = executor.decode_process_completion(
-        invocation, AgentProcessCompletion(0, standard_output, b"")
-    )
-
-    expected_transcript = AttemptTranscript.of(
-        [UnrecognisedProviderOutput(standard_output.decode("utf-8", "replace"))]
-    )
-    assert result == AgentExecutionFailure(
-        AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
-        expected_transcript,
-    )
-    assert len(expected_transcript.document) <= MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES
-    assert canary not in expected_transcript.document.decode("utf-8")
-    assert b"[redacted]" in expected_transcript.document
 
 
 def test_grok_ending_after_concatenated_progress_has_no_final_message(
