@@ -13,6 +13,7 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from atelier2.adapters.dbos.artifact_store import read_stored_artifact
 from atelier2.adapters.dbos.attention_events import load_attention_event_page
 from atelier2.adapters.dbos.effect_store import (
     command_snapshot_from_record,
@@ -70,6 +71,7 @@ from atelier2.contracts.agents import (
     AgentExecutionRequestV2,
     AgentExecutorOperationalIdentity,
 )
+from atelier2.contracts.artifacts import ArtifactHash
 from atelier2.contracts.effects import (
     EffectIntentState,
     ReconcileCommandId,
@@ -110,6 +112,7 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.secret_redaction import redact_credentials
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflow_projections import (
@@ -525,6 +528,60 @@ def _node_receipt_refusal(
         str(record.reason)
     )
     return reason
+
+
+def _node_receipt_refusal_output(
+    connection: Connection,
+    execution_id: NodeExecutionId,
+) -> NodeAnswer | None:
+    """A redacted presentation of what a schema owner judged and refused.
+
+    Only a judged `node-receipt/v3` row names a value hash at all
+    (`store_node_receipt_reason`); a plain reason, an unjudged failure, or an
+    absent receipt has nothing to resolve, and this reads honestly absent for
+    each of them. Where a hash is named, the failure transaction that wrote it
+    also published these exact bytes as an artifact under that same address
+    (#664) -- so a reader who wants to see what was refused, not just that it
+    was, reads them back through the one content-addressed store every other
+    artifact uses. A run written before that publish existed, or judged bytes
+    that were themselves empty, named a hash nothing resolves; that absence is
+    the honest answer, never manufactured here.
+
+    A provider's refused output is untrusted text on its way to a browser, and
+    a schema refusal is exactly the shape of episode where a provider might
+    have echoed a credential it was handed -- so `redact_credentials` runs over
+    it here, at the read boundary, before this projection's caller ever builds
+    a wire resource from it (#664). `value_hash` is left exactly as the receipt
+    named it: the hash of the original, unredacted bytes the schema judged, so
+    it goes on proving what was judged even though the returned `value` is a
+    presentation of that judgment rather than its exact preimage. Bytes that do
+    not decode as UTF-8 cannot be scanned for a credential shape at all, and
+    showing them unscanned would be exactly the leak this exists to close -- so
+    that case answers honestly absent too, the same as an unresolvable hash.
+    """
+    record = connection.execute(
+        sa.select(node_receipts_v3.c.disposition, node_receipts_v3.c.reason).where(
+            node_receipts_v3.c.node_execution_id == execution_id.value
+        )
+    ).one_or_none()
+    if record is None:
+        return None
+    disposition = PersistedReceiptDisposition(str(record.disposition))
+    if disposition is PersistedReceiptDisposition.SUCCEEDED:
+        return None
+    _reason, _schema_revision, value_hash = read_stored_node_receipt_reason(
+        str(record.reason)
+    )
+    if value_hash is None:
+        return None
+    artifact = read_stored_artifact(connection, ArtifactHash(value_hash.value))
+    if artifact is None:
+        return None
+    try:
+        text = artifact.content.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
 
 
 def _unavailable_executor_refusal(
@@ -1009,6 +1066,9 @@ class DbosQueries:
                         refusal=durable_refusal
                         if durable_refusal is not None
                         else refusal,
+                        refusal_output=_node_receipt_refusal_output(
+                            connection, execution_id
+                        ),
                         started_at=started_at,
                         ended_at=ended_at,
                     )
