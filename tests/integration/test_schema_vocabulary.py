@@ -441,6 +441,11 @@ UNOWNED_VOCABULARIES: Mapping[str, str] = {
         "the fixed identity of the one durable delivery-cursor row, not a "
         "closed vocabulary of interchangeable values"
     ),
+    "tool_redemptions.exit_code": (
+        "the one exit a stored redemption can record, because a redemption is "
+        "the record of a check that passed; a nonzero exit is the verdict that "
+        "ends the attempt instead, not another member of a vocabulary"
+    ),
 }
 
 DECLARED_VOCABULARIES = _declared_vocabularies(SCHEMA_CONDITIONS)

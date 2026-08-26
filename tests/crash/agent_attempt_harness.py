@@ -5,8 +5,10 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
+from atelier2.adapters.candidate_store import GitCandidateTreeStore
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.run_transitions import load_run
@@ -17,12 +19,14 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.adapters.project_verification import declared_project
 from atelier2.application.cancel_agent_attempt import (
     continue_agent_attempt_cancellation,
 )
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
+    AgentAttemptId,
     AgentAttemptProcessPhase,
     AgentAttemptReplacement,
     AgentAttemptState,
@@ -45,6 +49,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
+from atelier2.contracts.project_sources import CandidateTree, ProjectSourcePin
 from atelier2.contracts.run_cancellations import CancelRunRequest
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.agent_attempts import (
@@ -52,7 +57,10 @@ from atelier2.ports.agent_attempts import (
     RunCancellationAccepted,
     RunCancellationTerminalRetry,
 )
+from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
+from atelier2.ports.candidate_store import CandidateTreeStore
 from atelier2.ports.durable_runs import StartPublishedRunRequestV2
+from atelier2.ports.project_verification import PinnedProjectSource
 from atelier2.ports.run_queries import (
     RunFound,
 )
@@ -68,6 +76,7 @@ from tests.scenarios.agents import (
     runtime_workspace_owner,
 )
 from tests.scenarios.api import durable_queries
+from tests.scenarios.projects import git_project
 
 CRASHED = 86
 DOCUMENT = b"""format_version: 2
@@ -104,6 +113,40 @@ def controlled_process_executor(counter: Path) -> RecordingAgentExecutorV2:
         command=launching(sys.executable, "-c", _APPENDS_TO_COUNTER, str(counter)),
         decoder=decoding_to(b"done"),
     )
+
+
+class DiesOnceTheWorkIsKept:
+    """A store that really keeps the work, then loses the process that kept it.
+
+    The crash has to land between two writes that no transaction can join: the
+    candidate is a git ref and the attempt a durable row. Wrapping the real
+    store rather than imitating one is what makes the proof worth anything --
+    what stands afterwards was written by the same code a live run uses.
+    """
+
+    def __init__(self, kept: CandidateTreeStore) -> None:
+        self._kept = kept
+
+    def capture(
+        self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
+    ) -> CandidateTree:
+        self._kept.capture(pin, lease)
+        os._exit(CRASHED)
+
+    def read(self, attempt_id: AgentAttemptId) -> CandidateTree | None:
+        return self._kept.read(attempt_id)
+
+
+def pinned_project_of(root: Path) -> PinnedProjectSource:
+    """One real repository beside the store, pinned as an attempt would get it."""
+
+    checkout = root / "project"
+    pin = git_project(checkout, {"pyproject.toml": "", "src/tool.py": "print('x')\n"})
+    return declared_project(checkout, root / "atelier.sqlite").pinned(pin, None)
+
+
+def candidate_store_of(root: Path) -> GitCandidateTreeStore:
+    return GitCandidateTreeStore(root / "project", root / "atelier.sqlite")
 
 
 def run_controlled_process(counter: Path) -> None:
@@ -390,6 +433,26 @@ def main(root: Path, mode: str) -> None:
             raise AssertionError(
                 "operator run-cancel during parent death was not recovered"
             )
+        if mode == "crash-once-the-candidate-is-kept":
+            project = pinned_project_of(root)
+            (root / "pinned-tree").write_text(project.pin.tree, encoding="utf-8")
+            execute_agent_attempt(
+                agent_attempt_execution(exact_request),
+                controlled_process_executor(root / "counter"),
+                store,
+                lease.agent_process_supervisor,
+                runtime_workspace_owner(lease),
+                replace(project, candidates=DiesOnceTheWorkIsKept(project.candidates)),
+            )
+            raise AssertionError("the kept candidate was supposed to end this process")
+        if mode == "read-candidate":
+            kept = candidate_store_of(root).read(
+                agent_attempt_execution(exact_request).attempt_id
+            )
+            (root / "kept-tree").write_text(
+                "" if kept is None else kept.tree, encoding="utf-8"
+            )
+            return
         if mode == "recover":
             execute_agent_attempt(
                 agent_attempt_execution(exact_request),

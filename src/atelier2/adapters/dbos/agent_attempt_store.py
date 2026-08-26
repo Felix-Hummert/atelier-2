@@ -507,6 +507,7 @@ def _fail_current_attempt(
     judged_value: bytes | None = None,
     runner_evidence_hash: RunnerTerminalEvidenceHash | None = None,
     transcript: AttemptTranscript | None = None,
+    redemption: ToolRedemptionReceipt | None = None,
 ) -> AgentAttemptFailed:
     """One durable failure seam for every way an armed attempt ends badly.
 
@@ -535,12 +536,22 @@ def _fail_current_attempt(
     the way to this ending, and it is kept here for the same reason: the ending
     an operator most needs to read is the one nobody can explain, and a failure
     whose steps are nowhere is that silence again one level down (#733).
+
+    `redemption` is present only where the attempt's granted check *passed* and
+    the attempt failed afterwards -- today, where the work could not be kept. It
+    is written in this same transaction because it is evidence of something that
+    really happened: dropping it because the ending turned out badly would erase
+    a command that ran and exited zero, and leave an operator reading a failure
+    with no way to tell whether the project's own check had ever been satisfied.
+    Endings that failed *because* the check failed pass none, and there is
+    nothing to write (#642).
     """
     request = execution.request
     attempt_id = execution.attempt_id
     value_hash = None if judged_value is None else Sha256Hash.of(judged_value)
     if judged_value:
         keep_artifact(connection, Artifact(judged_value))
+    _keep_tool_redemption(connection, execution, redemption)
     keep_node_receipt(
         connection,
         request.node_execution_id,
@@ -621,6 +632,24 @@ def _kept_verdict(
     return read_verdict(load_kept_value(session, request.node_execution_id))
 
 
+def _proof_of_a_passed_check(
+    redemption: ToolRedemptionReceipt | None,
+) -> ToolRedemptionReceipt | None:
+    """This redemption where the project's check passed, and nothing where not.
+
+    Every ending that keeps proof beside a failure asks here rather than reading
+    the receipt itself, so no branch can persist a row saying the check did not
+    pass. A nonzero exit is not a weaker proof of the same thing: it is the
+    verdict that ends the attempt under `PROJECT_VERIFICATION_FAILED`, and a
+    stored redemption is by definition the record of a command that was
+    satisfied.
+    """
+
+    if redemption is None or not redemption.satisfied_the_project:
+        return None
+    return redemption
+
+
 def _keep_tool_redemption(
     connection: Any,
     execution: AgentAttemptExecution,
@@ -630,11 +659,19 @@ def _keep_tool_redemption(
 
     A retry of the same durable attempt runs the verification again, and the row
     that is already there decides: identical evidence is the same redemption
-    written twice, and different evidence is two answers about one node
-    execution, which is a contradiction rather than a second receipt.
+    written twice, and different evidence is two answers about one attempt,
+    which is a contradiction rather than a second receipt.
+
+    Read back by the attempt, because the attempt is what this row is keyed by:
+    a node execution can have a second attempt with a redemption of its own, and
+    asking by node execution would find that one and call it a contradiction.
     """
     if redemption is None:
         return
+    if not redemption.satisfied_the_project:
+        raise ToolRedemptionConflict(
+            "a stored tool redemption is the record of a check that passed"
+        )
     if (
         redemption.node_execution_id != execution.request.node_execution_id
         or redemption.attempt_id != execution.attempt_id
@@ -648,8 +685,7 @@ def _keep_tool_redemption(
     stored = (
         connection.execute(
             sa.select(tool_redemptions).where(
-                tool_redemptions.c.node_execution_id
-                == redemption.node_execution_id.value
+                tool_redemptions.c.attempt_id == redemption.attempt_id.value
             )
         )
         .mappings()
@@ -1644,6 +1680,7 @@ class DbosAgentAttemptStore:
                         result.output_bytes,
                         runner_evidence_hash,
                         result.transcript,
+                        _proof_of_a_passed_check(redemption),
                     )
                     return failed
             refusal = why_a_value_its_declared_schema_refuses(
@@ -1662,6 +1699,7 @@ class DbosAgentAttemptStore:
                     result.output_bytes,
                     runner_evidence_hash,
                     result.transcript,
+                    _proof_of_a_passed_check(redemption),
                 )
                 return failed
         if redemption is not None and redemption.exit_code != 0:
@@ -2109,10 +2147,65 @@ class DbosAgentAttemptStore:
         one" and "a verification timed out afterwards" -- and a reader could not
         tell which.
         """
+        return self._judged_armed_failure(
+            execution,
+            AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED,
+            NodeReceiptReason.PROJECT_VERIFICATION_FAILED,
+            verdict,
+            transcript,
+        )
+
+    def complete_candidate_capture_failure(
+        self,
+        execution: AgentAttemptExecution,
+        verdict: str,
+        transcript: AttemptTranscript | None = None,
+        redemption: ToolRedemptionReceipt | None = None,
+    ) -> AgentAttemptFailed:
+        """End the armed attempt whose finished work could not be kept.
+
+        Nothing about this attempt went wrong except the last thing: the process
+        answered, the schema admitted the bytes and any granted check passed.
+        What failed is the keeping, so `verdict` carries the store's own words
+        rather than an exit code no process produced.
+
+        `redemption` is that passed check's own proof, and it becomes durable in
+        this same write. The check really ran and really exited zero; the work
+        being unkeepable afterwards says nothing about it, and discarding its
+        evidence would leave an operator unable to tell a project whose tests
+        pass from one whose tests were never satisfied.
+
+        The provider's steps are kept here for a stronger reason than anywhere
+        else. Once the workspace is released, the transcript is the only
+        surviving evidence that this work was ever done at all.
+        """
+        return self._judged_armed_failure(
+            execution,
+            AgentAttemptFailureCode.CANDIDATE_CAPTURE_FAILED,
+            NodeReceiptReason.CANDIDATE_CAPTURE_FAILED,
+            verdict,
+            transcript,
+            _proof_of_a_passed_check(redemption),
+        )
+
+    def _judged_armed_failure(
+        self,
+        execution: AgentAttemptExecution,
+        failure: AgentAttemptFailureCode,
+        token: NodeReceiptReason,
+        verdict: str,
+        transcript: AttemptTranscript | None,
+        redemption: ToolRedemptionReceipt | None = None,
+    ) -> AgentAttemptFailed:
+        """End this run's armed current attempt under one judged ending.
+
+        Every ending an attempt reaches *after* its claim has won -- and that
+        no process exit judged -- passes through here, because which attempt may
+        end is one rule: the armed current attempt of a started run, and nothing
+        else. Two copies of that rule would be two chances for it to drift.
+        """
         if not verdict:
-            raise ValueError(
-                "a project-verification failure names why the command did not complete"
-            )
+            raise ValueError(f"an ending named {token.value} says why it happened")
         request = execution.request
         with canonical_write_transaction(self._engine) as connection:
             run, _graph = _validate_request(connection, request)
@@ -2128,12 +2221,10 @@ class DbosAgentAttemptStore:
                 connection,
                 execution,
                 durable,
-                AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED,
-                node_receipt_reason(
-                    NodeReceiptReason.PROJECT_VERIFICATION_FAILED,
-                    verdict,
-                ),
+                failure,
+                node_receipt_reason(token, verdict),
                 transcript=transcript,
+                redemption=redemption,
             )
 
     def request_cancellation(

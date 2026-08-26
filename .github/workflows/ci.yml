@@ -217,6 +217,9 @@ jobs:
           REQUIREMENT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: uv run --locked python scripts/check_documentation_order.py --base-revision "${REQUIREMENT_BASE_SHA}"
 
+      - name: Check product-status partition
+        run: uv run --locked python scripts/check_product_status.py
+
       - name: Check source
         run: uv run --locked ruff check .
 

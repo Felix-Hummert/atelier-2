@@ -28,6 +28,7 @@ import stat
 import subprocess
 import tempfile
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -36,6 +37,13 @@ from atelier2.adapters.bounded_processes import (
     bounded_process_streams,
 )
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
+from atelier2.contracts.agent_transcripts import (
+    MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES,
+    AssistantTurn,
+    AttemptTranscript,
+    TranscriptEvent,
+    UnrecognisedProviderOutput,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentExecutionCapability,
@@ -58,19 +66,20 @@ GROK_SUBSCRIPTION_EXECUTOR_KEY = AgentExecutorKey(
     ProviderId("xai"), AgentExecutorRevision("grok-subscription/v1")
 )
 GROK_SUBSCRIPTION_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
-    "headless-print-json/v1"
+    "headless-print-json/v2"
 )
 
-# This executor's own frame, stated here rather than borrowed from the port's
-# ceiling: a frame another provider measures must not widen what this process
-# may write. Measured on grok 1.0.4 `--output-format json` (re-measured
-# 19.08.2026, build d846eb93d9): the durable answer is `text`; `thought` is the
-# turn narration and is not the answer. `--json-schema` adds `structuredOutput`
-# as the parsed form of `text`, not a later assistant message. Metadata size is
-# not a tighter allowance. A durable-legal answer still fits: JSON escaping
-# expands one source byte to at most six frame bytes (6 * 49,152 = 294,912),
-# leaving the remainder for metadata.
-GROK_SUBSCRIPTION_FRAME_BYTES = 8 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
+# The final envelope follows the same escaping bound as the durable answer;
+# values before it are the transcript. Measured on grok 1.0.4 / grok-4.6
+# (#392): `--output-format json` may concatenate several JSON values without a
+# record separator. Strings before the final envelope are turn narration; only
+# the final envelope's `text` is the answer. A frame therefore reserves room
+# independently for one envelope and one bounded transcript, rather than
+# making progress messages consume the answer allowance.
+GROK_SUBSCRIPTION_ENVELOPE_BYTES = 8 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
+GROK_SUBSCRIPTION_FRAME_BYTES = (
+    GROK_SUBSCRIPTION_ENVELOPE_BYTES + MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES
+)
 
 CONFORMANT_GROK_VERSIONS = frozenset({(1, 0, 4)})
 
@@ -169,9 +178,15 @@ _CREDENTIAL_DIRECTORY_VARIABLE = "GROK_HOME"
 _SEARCH_PATH_VARIABLE = "PATH"
 _TEXT_FIELD = "text"
 
-_UNUSABLE_PROVIDER_ANSWER = AgentExecutionFailure(
-    AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
-)
+
+def _unusable_provider_answer(
+    transcript: AttemptTranscript | None,
+) -> AgentExecutionFailure:
+    """This call produced no answer this executor may use, with what it wrote."""
+
+    return AgentExecutionFailure(
+        AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY, transcript
+    )
 
 
 class GrokSubscriptionAuthModeUnsupported(ValueError):
@@ -184,6 +199,16 @@ class GrokExecutableUnsupported(ValueError):
 
 class GrokContainmentUnattested(ValueError):
     """The composed profile discovers a surface this executor never granted."""
+
+
+@dataclass(frozen=True)
+class GrokProviderEndedWithoutFinalMessage(AgentExecutionFailure):
+    """Grok ended after progress messages without publishing a final envelope."""
+
+    code: AgentAttemptFailureCode = field(
+        default=AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+        init=False,
+    )
 
 
 def _parsed_version(reported: str) -> tuple[int, int, int] | None:
@@ -615,6 +640,80 @@ def _headless_arguments(
     )
 
 
+def _json_values(standard_output: bytes) -> tuple[object, ...] | None:
+    """Read every JSON value Grok concatenated onto standard output.
+
+    Grok 1.0.4 does not put a separator between its JSON values. `raw_decode`
+    returns the first value and the character where the next one begins, which
+    makes it the framing owner instead of treating a whole stream as one JSON
+    instance. Invalid UTF-8 and an unreadable value leave the raw frame for the
+    transcript rather than inventing a partial answer.
+    """
+
+    try:
+        source = standard_output.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    decoder = json.JSONDecoder()
+    values: list[object] = []
+    index = 0
+    while index < len(source):
+        while index < len(source) and source[index] in " \t\r\n":
+            index += 1
+        if index == len(source):
+            break
+        try:
+            value, index = decoder.raw_decode(source, index)
+        except (ValueError, RecursionError):
+            return None
+        values.append(value)
+    return tuple(values)
+
+
+def _canonical_json(value: object) -> str:
+    """One decoded provider value in the transcript's readable representation."""
+
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _grok_value_step(value: object) -> TranscriptEvent:
+    """Keep narration as speech and every other intermediate shape as evidence."""
+
+    if isinstance(value, str):
+        return AssistantTurn(value)
+    return UnrecognisedProviderOutput(_canonical_json(value))
+
+
+def _grok_transcript(values: Sequence[object]) -> AttemptTranscript | None:
+    """What Grok published before an answer this adapter may accept, if any."""
+
+    return (
+        AttemptTranscript.of(_grok_value_step(value) for value in values)
+        if values
+        else None
+    )
+
+
+def _final_grok_envelope_text(values: Sequence[object]) -> str | None:
+    """The final provider answer, never a progress value or a partial envelope."""
+
+    final_value = values[-1]
+    if not isinstance(final_value, dict):
+        return None
+    text = final_value.get(_TEXT_FIELD)
+    return text if isinstance(text, str) and text else None
+
+
+def _unreadable_grok_transcript(standard_output: bytes) -> AttemptTranscript | None:
+    """Keep an unreadable raw frame as bounded, redacted evidence."""
+
+    if not standard_output:
+        return None
+    return AttemptTranscript.of(
+        [UnrecognisedProviderOutput(standard_output.decode("utf-8", "replace"))]
+    )
+
+
 @dataclass(frozen=True)
 class GrokSubscriptionProcessCommand(AgentProcessCommand):
     """One Grok headless command plus the decode mark that travels with it.
@@ -700,30 +799,31 @@ class GrokSubscriptionExecutor:
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
+        values = _json_values(completion.standard_output)
+        if values is None:
+            return _unusable_provider_answer(
+                _unreadable_grok_transcript(completion.standard_output)
+            )
         if completion.return_code != 0:
-            return _UNUSABLE_PROVIDER_ANSWER
-        if len(completion.standard_output) > GROK_SUBSCRIPTION_FRAME_BYTES:
-            return _UNUSABLE_PROVIDER_ANSWER
-        try:
-            envelope: object = json.loads(completion.standard_output)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return _UNUSABLE_PROVIDER_ANSWER
-        if not isinstance(envelope, dict):
-            return _UNUSABLE_PROVIDER_ANSWER
-        # Measured on grok 1.0.4 `--output-format json` (re-measured
-        # 19.08.2026, build d846eb93d9): `text` is the final answer message;
-        # `thought` is the turn narration. `--json-schema` adds
-        # `structuredOutput` as the parsed form of `text`, not a second
+            return _unusable_provider_answer(_grok_transcript(values))
+        if not values:
+            return GrokProviderEndedWithoutFinalMessage()
+        # Last value wins: only the final JSON value can be the envelope. Measured
+        # on grok 1.0.4 / grok-4.6 (#392), values before it are progress messages;
+        # a progress value after an envelope is therefore
+        # GrokProviderEndedWithoutFinalMessage. `text` is the final answer and
+        # `thought` is narration. `--json-schema`
+        # adds `structuredOutput` as the parsed form of `text`, not a later
         # assistant message. An empty or missing `text` is a named refusal —
-        # passing `thought`, the parsed value, or the raw frame would hand
-        # the schema seam the story of the run or an unquoted string body.
+        # passing narration, the parsed value, or the raw frame would hand the
+        # schema seam the story of the run or an unquoted string body.
         # A bare string schema never took that flag: free `text` is serialized
         # here so the seam sees one JSON string by construction. The yes/no
         # travels on the command (see `GrokSubscriptionProcessCommand`);
         # HOME and executor state are not consulted.
-        text = envelope.get(_TEXT_FIELD)
-        if not isinstance(text, str) or text == "":
-            return _UNUSABLE_PROVIDER_ANSWER
+        text = _final_grok_envelope_text(values)
+        if text is None:
+            return GrokProviderEndedWithoutFinalMessage(_grok_transcript(values))
         command = invocation.command
         canonicalize = (
             isinstance(command, GrokSubscriptionProcessCommand)
@@ -734,8 +834,8 @@ class GrokSubscriptionExecutor:
         else:
             output_bytes = text.encode("utf-8")
         if len(output_bytes) > MAXIMUM_AGENT_OUTPUT_BYTES_V2:
-            return _UNUSABLE_PROVIDER_ANSWER
-        return AgentExecutionResult(output_bytes)
+            return _unusable_provider_answer(_grok_transcript(values))
+        return AgentExecutionResult(output_bytes, _grok_transcript(values[:-1]))
 
     def release_credential_channel(self, command: AgentProcessCommand) -> None:
         """Take back the private home this invocation handed the provider.
