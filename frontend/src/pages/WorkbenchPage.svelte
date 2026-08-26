@@ -156,7 +156,7 @@
           )
         : null;
       confirm(begun.generation, {
-        runs: runReadings.flatMap((reading) => reading.runs),
+        runs: oneRowPerRun(runReadings.flatMap((reading) => reading.runs)),
         workflowNames
       });
     } catch {
@@ -165,6 +165,25 @@
         title: wrapDisplayCopy(workbenchPageCopy.runsUnavailable)
       });
     }
+  }
+
+  /**
+   * One row per run, whatever the three reads saw.
+   *
+   * The three state lists are asked at the same moment but answered
+   * separately, so a run that moves between them -- a wait that opens while
+   * the started list is already on the wire -- comes back in two of them. The
+   * fresher `state_version` is the run's truth; the room shows it once.
+   */
+  function oneRowPerRun(runs: readonly AnyRun[]): AnyRun[] {
+    const byReference = new Map<string, AnyRun>();
+    for (const run of runs) {
+      const known = byReference.get(run.public_run_reference);
+      if (known === undefined || known.state_version <= run.state_version) {
+        byReference.set(run.public_run_reference, run);
+      }
+    }
+    return [...byReference.values()];
   }
 
   function confirm(generation: number, confirmed: WorkbenchRuns): void {

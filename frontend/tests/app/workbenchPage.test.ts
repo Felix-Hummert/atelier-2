@@ -325,6 +325,39 @@ describe("the workbench is the room the workshop opens on", () => {
     await waitFor(() => expect(window.location.pathname).toBe("/atelier/runs/run1.YQ"));
   });
 
+  // The three state lists are asked at once and answered separately, so a run
+  // that opens a wait while the started list is still on the wire comes back in
+  // two of them.
+  it("shows a run once when two of the three reads answer with it, and keeps the fresher truth", async () => {
+    openRoom([], {
+      listRuns: vi.fn(async (_after?: string, state?: string) => {
+        if (state === "STARTED") {
+          return {
+            items: [startedRun({ public_run_reference: "run1.YQ", run_id: "moving run" })],
+            next_after: null
+          };
+        }
+        if (state === "WAITING_INPUT") {
+          return {
+            items: [
+              waitingInputRun({
+                public_run_reference: "run1.YQ",
+                run_id: "moving run",
+                state_version: 2
+              })
+            ],
+            next_after: null
+          };
+        }
+        return { items: [], next_after: null };
+      })
+    });
+    const { screen } = testingLibrary;
+
+    expect(await screen.findAllByRole("link", { name: /moving run/ })).toHaveLength(1);
+    expect(screen.getByText(/Answer →/).isConnected).toBe(true);
+  });
+
   it("names a row by the catalog's workflow name, and falls back to the run id when the catalog names nothing", async () => {
     openRoom(
       [
