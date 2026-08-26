@@ -1,5 +1,23 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "string",
-  "pattern": "^Befund 1[^0-9][\\s\\S]*\\nVerdict: (accepted|revise)$"
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["findings", "verdict"],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "text"],
+        "properties": {
+          "file": {"type": "string"},
+          "text": {"type": "string"}
+        }
+      }
+    },
+    "verdict": {
+      "enum": ["accepted", "revise"]
+    }
+  }
 }

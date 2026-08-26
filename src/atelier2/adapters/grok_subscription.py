@@ -66,7 +66,7 @@ GROK_SUBSCRIPTION_EXECUTOR_KEY = AgentExecutorKey(
     ProviderId("xai"), AgentExecutorRevision("grok-subscription/v1")
 )
 GROK_SUBSCRIPTION_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
-    "headless-print-json/v2"
+    "headless-print-json-output-schema/v3"
 )
 
 # The final envelope follows the same escaping bound as the durable answer;
@@ -324,43 +324,6 @@ class GrokSubscriptionSettings:
             raise ValueError("the Grok executable search path must be nonempty")
 
 
-_BARE_STRING_SCHEMA_FIELDS = frozenset(
-    {
-        "$schema",
-        "$id",
-        "title",
-        "description",
-        "type",
-        "minLength",
-        "maxLength",
-        "pattern",
-    }
-)
-
-
-def _is_bare_string_schema(document: bytes | None) -> bool:
-    """A string schema with only documentary, length, or pattern keywords.
-
-    Measured 19.08.2026 on grok 1.0.4 / grok-4.6 (#392): a plain string schema
-    sent as `--json-schema` forces one JSON document. The model fills it with
-    an announcement or trails `<|eos|>`. `structuredOutput` is the parsed
-    `text`, not a later answer — Extra-data leaves the twin absent
-    (`structuredOutputError`); an announcement twin is the same sentence.
-    These string schemas stay off the flag and the Atelier schema seam judges
-    any pattern. Object schemas still travel.
-    """
-
-    if document is None:
-        return False
-    try:
-        payload = json.loads(document)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return False
-    if not isinstance(payload, dict) or payload.get("type") != "string":
-        return False
-    return set(payload) <= _BARE_STRING_SCHEMA_FIELDS
-
-
 def _json_schema_flag(declared_output_schema_bytes: bytes | None) -> tuple[str, ...]:
     """The `--json-schema` pair, or nothing where the node declared none.
 
@@ -370,16 +333,11 @@ def _json_schema_flag(declared_output_schema_bytes: bytes | None) -> tuple[str, 
     ignores it is still refused by the seam. The CLI accepts
     `{"type":"string"}` and refuses a boolean schema (`true`) with
     "must be a JSON object describing a JSON Schema"; this seam does not
-    rewrite that form. A bare string schema is the exception: the flag stays
-    off and the decoder serializes free `text` itself (see
-    `_is_bare_string_schema`). Re-measured 19.08.2026 on build d846eb93d9:
-    other schemas still carry `structuredOutput` as the parsed `text`. The
-    decoder still takes `text` for those, because a string body needs those
-    JSON bytes; the parsed value is the unquoted body.
+    rewrite that form. A schema-bearing result carries `structuredOutput`,
+    which this adapter serializes without deciding whether it satisfies the
+    contract; the output seam remains the final judge.
     """
-    if declared_output_schema_bytes is None or _is_bare_string_schema(
-        declared_output_schema_bytes
-    ):
+    if declared_output_schema_bytes is None:
         return ()
     try:
         return (
@@ -728,16 +686,9 @@ def _unreadable_grok_transcript(standard_output: bytes) -> AttemptTranscript | N
 
 @dataclass(frozen=True)
 class GrokSubscriptionProcessCommand(AgentProcessCommand):
-    """One Grok headless command plus the decode mark that travels with it.
+    """One Grok headless command and the output schema it carried."""
 
-    A bare string schema never takes `--json-schema`. The model writes free
-    text; decode serializes it as one JSON string. That yes/no is this field,
-    set at prepare and read at decode. Spark 5341439755 / Desk 5341572142:
-    a HOME-keyed executor set was a prepare→decode state bridge. The
-    invocation is the correlation object; this executor holds none.
-    """
-
-    serialize_free_text_as_json_string: bool = field(default=False, kw_only=True)
+    declared_output_schema_bytes: bytes | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -791,9 +742,7 @@ class GrokSubscriptionExecutor:
                 _child_environment(settings, state_directory),
                 b"",
                 standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
-                serialize_free_text_as_json_string=_is_bare_string_schema(
-                    request.declared_output_schema_bytes
-                ),
+                declared_output_schema_bytes=request.declared_output_schema_bytes,
             )
             with self._lifecycle_lock:
                 if self._closed.is_set():
@@ -826,24 +775,27 @@ class GrokSubscriptionExecutor:
         # GrokProviderEndedWithoutFinalMessage. `text` is the final answer and
         # `thought` is narration. `--json-schema`
         # adds `structuredOutput` as the parsed form of `text`, not a later
-        # assistant message. An empty or missing `text` is a named refusal —
-        # passing narration, the parsed value, or the raw frame would hand the
-        # schema seam the story of the run or an unquoted string body.
-        # A bare string schema never took that flag: free `text` is serialized
-        # here so the seam sees one JSON string by construction. The yes/no
-        # travels on the command (see `GrokSubscriptionProcessCommand`);
-        # HOME and executor state are not consulted.
-        text = _final_grok_envelope_text(values)
-        if text is None:
-            return GrokProviderEndedWithoutFinalMessage(_grok_transcript(values))
         command = invocation.command
-        canonicalize = (
+        schema_bearing = (
             isinstance(command, GrokSubscriptionProcessCommand)
-            and command.serialize_free_text_as_json_string
+            and command.declared_output_schema_bytes is not None
         )
-        if canonicalize:
-            output_bytes = json.dumps(text, ensure_ascii=False).encode("utf-8")
+        final_value = values[-1]
+        if schema_bearing:
+            if (
+                not isinstance(final_value, dict)
+                or "structuredOutput" not in final_value
+            ):
+                return GrokProviderEndedWithoutFinalMessage(_grok_transcript(values))
+            output_bytes = json.dumps(
+                final_value["structuredOutput"],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
         else:
+            text = _final_grok_envelope_text(values)
+            if text is None:
+                return GrokProviderEndedWithoutFinalMessage(_grok_transcript(values))
             output_bytes = text.encode("utf-8")
         if len(output_bytes) > MAXIMUM_AGENT_OUTPUT_BYTES_V2:
             return _unusable_provider_answer(_grok_transcript(values))
@@ -921,7 +873,7 @@ GROK_WORKSPACE_TOOLS_EXECUTOR_KEY = AgentExecutorKey(
 # decision is what an operational identity stands for, so every durable
 # attempt record keeps saying which of the two ran.
 GROK_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
-    "headless-workspace-tools-json/v1"
+    "headless-workspace-tools-json-output-schema/v2"
 )
 
 # Headless user-guide names `run_terminal_cmd`; Getting Started names
@@ -1136,8 +1088,8 @@ class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
     WHAT IT KEEPS. Every other flag and the whole private HOME of the
     tool-free call, unchanged: `--prompt-file`, `--output-format json`, the
     inert compatibility configuration, no memory, no subagents, no web
-    search, a bounded turn count. The decoder still takes `text` and refuses
-    an empty or missing one; it does not hop the output schema.
+    search, a bounded turn count. Schema-bearing calls take `structuredOutput`;
+    calls without a schema take nonempty `text`.
 
     WHAT IT DOES NOT CLAIM. No operating-system isolation. The process runs as
     the serving user, and the named tools reach every path that user reaches
