@@ -320,8 +320,7 @@ def test_a_run_stream_names_an_omitted_overlong_receipt_reason() -> None:
     assert not ("x" * (MAXIMUM_AGENT_FIELD_CHARACTERS + 1)).startswith(reason)
     assert "omitted" in reason
     assert (
-        "GET /atelier/api/v1/runs/"
-        f"{encode_public_run_reference(RUN_ID)}/nodes/agent"
+        f"GET /atelier/api/v1/runs/{encode_public_run_reference(RUN_ID)}/nodes/agent"
     ) in reason
     assert len(reason) <= api_limits().maximum_field_characters
 
@@ -342,7 +341,9 @@ def test_an_omitted_receipt_reason_percent_encodes_its_real_node_detail_path() -
     ) in summary
 
 
-def test_an_omitted_receipt_reason_names_event_fields_when_its_detail_path_is_too_long() -> None:
+def test_an_omitted_receipt_reason_names_event_fields_when_its_detail_path_is_too_long() -> (
+    None
+):
     projection = persisted_v3_failure_with_overlong_receipt_reason(
         RunId("r" * MAXIMUM_AGENT_FIELD_CHARACTERS),
         "n" * MAXIMUM_AGENT_FIELD_CHARACTERS,
