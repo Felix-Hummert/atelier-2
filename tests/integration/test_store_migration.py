@@ -3642,16 +3642,31 @@ def _armed_attempt_values(revision_hash: WorkflowRevisionHash) -> dict[str, obje
     }
 
 
-def _write_armed_attempt(connection: sqlite3.Connection) -> None:
+_RUNNER_BINDING: Mapping[str, object] = {
+    "runner_manifest_id": Sha256Hash.of(b"runner/one-manifest").value,
+    "runner_generation_id": "generation/one-runner",
+    "runner_invocation_id": "invocation/one-runner",
+    "process_phase": "NONE",
+    "process_owner_id": None,
+    "watchdog_generation_id": None,
+}
+"""What makes an armed attempt a runner's rather than this host's own process."""
+
+
+def _write_armed_attempt(
+    connection: sqlite3.Connection, binding: Mapping[str, object] = {}
+) -> None:
     """One started run standing at an armed attempt, written into an open store.
 
     Shared by every fixture that measures an attempt hop, because the evidence
     each of them needs is the same row; what differs between them is only which
-    shape the store was reverted to before it was written.
+    shape the store was reverted to before it was written, and `binding` -- which
+    of the two carriers the armed attempt belongs to, since each reaches FAILED
+    through a transition of its own.
     """
 
     revision = WorkflowRevision(b"name: bauhuette\n")
-    values = _armed_attempt_values(revision.revision_hash)
+    values = {**_armed_attempt_values(revision.revision_hash), **binding}
     connection.execute("PRAGMA foreign_keys=ON")
     connection.execute(
         "INSERT INTO workflow_revisions (revision_hash, document) VALUES (?, ?)",
@@ -4546,4 +4561,93 @@ def test_every_v38_attempt_column_crosses_the_v39_rebuild_unchanged(
         assert (
             connection.execute(f"SELECT {projected} FROM agent_attempts").fetchone()
             == predecessor_row
+        )
+
+
+_FAIL_THE_LOCAL_ATTEMPT = (
+    "UPDATE agent_attempts SET state = 'FAILED', state_version = 2, failure_code = ?"
+)
+_FAIL_THE_RUNNER_ATTEMPT = (
+    "UPDATE agent_attempts SET state = 'FAILED', state_version = 2, "
+    "failure_code = ?, runner_terminal_evidence_hash = ?, "
+    "runner_evidence_acceptance_phase = 'CORE_COMMITTED'"
+)
+_RUNNER_EVIDENCE_HASH = Sha256Hash.of(b"runner/terminal-evidence").value
+
+
+def _populated_v38_store_with(
+    database_path: Path, binding: Mapping[str, object]
+) -> None:
+    """A published V38 store holding one armed attempt of the named carrier."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _revert_the_candidate_capture_code(connection)
+        _write_armed_attempt(connection, binding)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V38_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V38_SCHEMA_HANDOFF.version)
+
+
+@pytest.mark.parametrize(
+    ("binding", "statement", "arguments"),
+    [
+        pytest.param(
+            {},
+            _FAIL_THE_LOCAL_ATTEMPT,
+            (AgentAttemptFailureCode.CANDIDATE_CAPTURE_FAILED.value,),
+            id="the-attempt-this-host-ran-itself",
+        ),
+        pytest.param(
+            _RUNNER_BINDING,
+            _FAIL_THE_RUNNER_ATTEMPT,
+            (
+                AgentAttemptFailureCode.CANDIDATE_CAPTURE_FAILED.value,
+                _RUNNER_EVIDENCE_HASH,
+            ),
+            id="the-attempt-a-runner-returned-evidence-for",
+        ),
+    ],
+)
+def test_every_failed_transition_admits_the_lost_candidate_only_after_the_v39_hop(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    binding: Mapping[str, object],
+    statement: str,
+    arguments: tuple[str, ...],
+) -> None:
+    """One vocabulary, so both ways an attempt ends FAILED gain the word together.
+
+    An attempt reaches FAILED through the transition its carrier owns, and a
+    schema admitting a code on one of them but not the other would hold two
+    answers to "which failure codes exist" -- the CHECK's and the trigger's. The
+    hop is asked from both sides here for that reason, not because both carriers
+    capture a candidate today.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _populated_v38_store_with(database_path, binding)
+
+    with (
+        sqlite3.connect(database_path) as connection,
+        pytest.raises(sqlite3.IntegrityError),
+    ):
+        connection.execute(statement, arguments)
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(statement, arguments)
+        connection.commit()
+        assert connection.execute(
+            "SELECT state, failure_code FROM agent_attempts"
+        ).fetchone() == (
+            "FAILED",
+            AgentAttemptFailureCode.CANDIDATE_CAPTURE_FAILED.value,
         )

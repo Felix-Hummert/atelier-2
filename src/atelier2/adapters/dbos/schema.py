@@ -224,14 +224,16 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # candidate before the attempt is completed; a capture that fails leaves the work
 # lost, and every code published before this one would have said something untrue
 # about how -- that a process died, or that a form refused what no form saw. The
-# widened CHECK admits the word on the table, and `agent_attempts_transition`
-# admits it on exactly one transition: the armed attempt of a *local* process
-# ending FAILED. The runner-evidence transition beside it is deliberately left
-# alone, because a runner-lease attempt is refused a pinned project source
-# before it ever starts (`adapters/dbos/workflow.py`), so a candidate capture
-# cannot happen there and a row saying it did would be unreachable by any real
-# run. Only the vocabulary widens; every stored row keeps its bytes, its key and
-# its meaning.
+# widened CHECK admits the word on the table, and both FAILED transitions of
+# `agent_attempts_state_transition` admit it: the armed local-process attempt
+# that reaches this ending today, and the runner-evidence one beside it. Which
+# carrier can reach an ending is the carrier's business, not the vocabulary's --
+# today no runner-lease attempt captures a candidate, because it is refused a
+# pinned project source before it starts, but a schema that encoded that refusal
+# as a narrower word list would have to be migrated again the day the carrier
+# changes, and until then it would hold two disagreeing answers to "which codes
+# exist". Only the vocabulary widens; every stored row keeps its bytes, its key
+# and its meaning.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -267,7 +269,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     36: "c9f4b5d99a9ff8e33796e36151b66f00175eceaa797e30461bf6e01264266ce8",
     37: "e41cf318212e0a79d6605413b5818ef68d6245baaf05a53b888b8aac40131a13",
     38: "aebd8b6bad8a719864f0c02828db643dd3dcbe7c89198beb6a8c1c4c30100824",
-    39: "d7674fdebe1da01b090aee0fc205c44c4899b1ac6bee7e2591e4ea376b2594c6",
+    39: "85424b6c3a93beca4981da86ed68069f2600de845403542d090534235164744c",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -2239,7 +2241,8 @@ _PRODUCT_TRIGGERS = {
              AND NEW.failure_code IN
                ('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED',
                 'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED',
-                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED')
+                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED',
+                'CANDIDATE_CAPTURE_FAILED')
              AND NEW.receipt_hash IS NULL)
             OR
             (OLD.state = 'CANCEL_REQUESTED'
@@ -3915,9 +3918,10 @@ _V38_AGENT_ATTEMPT_TRIGGERS = {
 Derived rather than copied out, the way every earlier vocabulary hop here is
 derived: the whole difference *is* the failure-code list, so writing the other
 250 lines again would be 250 more lines able to drift from the ones they have to
-match. The seven-code list occurs once -- the runner-evidence transition beside
-it still names six, because a runner-lease attempt never captures a candidate --
-so this replacement reaches exactly the transition the hop widened."""
+match. The replacement reaches **both** places the list appears, because the
+vocabulary is one set: a code this schema admits at all is admitted wherever an
+attempt may end FAILED, and a trigger naming a narrower subset would be a
+second, quieter definition of what a failure code is."""
 
 
 def _apply_v16_to_v17(connection: sqlite3.Connection) -> None:
