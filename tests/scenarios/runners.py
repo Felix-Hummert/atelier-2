@@ -362,13 +362,22 @@ class PreparedFreeRunnerAttempt:
     auth_reference: str
 
 
-def prepared_free_runner_attempt(
-    root: Path,
-    run_id_value: str,
-    job: FreeRunnerPrintJob | FreeRunnerHoldJob,
-) -> PreparedFreeRunnerAttempt:
+def free_runner_core_runtime(root: Path) -> DbosRuntime:
+    """The durable runtime one free-runner Core process opens over `root`.
+
+    Named on its own so a test can close it and open it again over the same
+    files, which is all a Serve restart leaves of Core: the durable attempt
+    survives and every in-memory session does not. Nothing may reconstruct
+    these settings a second time by hand -- two spellings of one database
+    would prove recovery against a store no Serve actually runs on.
+
+    The free-runner executor is composed here because a Serve reopening a
+    store that still holds a nonterminal free-runner attempt is refused
+    without it, exactly as a real deployment would be: a runtime may not
+    reopen work whose executor it does not carry.
+    """
     workspace = root / "workspace"
-    workspace.mkdir(mode=0o700, exist_ok=True)
+    workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
     runtime = DbosRuntime(
         DbosRuntimeSettings(
             root / "core.sqlite3",
@@ -381,9 +390,18 @@ def prepared_free_runner_attempt(
             EffectDestination("execute-agent-attempt-on-runner-test"),
         ),
         ExactOutputAgentExecutorFactory(),
-        (),
+        (FreeRunnerExecutorFactory(),),
     )
     runtime.initialize_storage()
+    return runtime
+
+
+def prepared_free_runner_attempt(
+    root: Path,
+    run_id_value: str,
+    job: FreeRunnerPrintJob | FreeRunnerHoldJob,
+) -> PreparedFreeRunnerAttempt:
+    runtime = free_runner_core_runtime(root)
     DbosCatalogStore(runtime.engine).publish_revision(FREE_RUNNER_OUTPUT_SCHEMA)
     runner_registry = AgentExecutorRegistry((FreeRunnerExecutorFactory(),))
     catalog = DbosAgentConfigurationCatalog(runtime.engine, runner_registry)
@@ -479,6 +497,46 @@ class RunnerSessionAdvancerLike(Protocol):
     ) -> RunnerSessionFrame | None: ...
 
 
+def drive_free_runner_session_to_started(
+    session: RunnerSessionAdvancerLike,
+    binding: RunnerGenerationBinding,
+    invocation_id: RunnerInvocationId,
+    manifest: RunnerManifestV1,
+    auth_reference: str,
+) -> None:
+    """Play the Runner side only as far as STARTED, and stop there.
+
+    The half of a session that a launcher and its Runner have finished before
+    any terminal evidence exists: Core has armed this invocation and the provider
+    is running. A scenario that wants the shape a Serve crash finds mid-session --
+    an Attempt durably armed, its lease claimed, its ending still to come -- stops
+    here and lays the Runner's retained record in the handoff itself, exactly as
+    the launcher's own journal would have.
+
+    `drive_free_runner_session_to_released` opens with these same frames, and
+    calls this rather than repeating them: one owner for the beginning of a
+    session means a scenario that stops early and one that runs through cannot
+    disagree about what a Runner said first.
+    """
+
+    def _frame(
+        message: RunnerSessionMessage,
+        sequence: int,
+        payload: tuple[bytes, ...] = (),
+    ) -> RunnerSessionFrame:
+        return RunnerSessionFrame(message, sequence, binding, invocation_id, payload)
+
+    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+    session.accept(
+        _frame(
+            RunnerSessionMessage.READY,
+            2,
+            encode_runner_ready_payload(manifest, auth_reference, ABSENT_PROVIDER_CLI),
+        )
+    )
+    session.accept(_frame(RunnerSessionMessage.STARTED, 3, (b"\x00" * 8,)))
+
+
 def drive_free_runner_session_to_released(
     session: RunnerSessionAdvancerLike,
     binding: RunnerGenerationBinding,
@@ -511,12 +569,9 @@ def drive_free_runner_session_to_released(
     ) -> RunnerSessionFrame:
         return RunnerSessionFrame(message, sequence, binding, invocation_id, payload)
 
-    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
-    ready_payload = encode_runner_ready_payload(
-        manifest, auth_reference, ABSENT_PROVIDER_CLI
+    drive_free_runner_session_to_started(
+        session, binding, invocation_id, manifest, auth_reference
     )
-    session.accept(_frame(RunnerSessionMessage.READY, 2, ready_payload))
-    session.accept(_frame(RunnerSessionMessage.STARTED, 3, (b"\x00" * 8,)))
     envelope = RunnerTerminalEvidenceEnvelope(
         binding,
         invocation_id,

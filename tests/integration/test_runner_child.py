@@ -31,9 +31,11 @@ from atelier2.contracts.runner_manifests import (
     candidate_runner_manifest,
 )
 from atelier2.runner.session import (
+    REAL_TIME,
     _control_or_child_exit,
-    _CoreFrameFence,
+    _InvocationSpan,
     _reap_child,
+    _SessionWire,
 )
 
 _GUARD_IMPORTS = (
@@ -257,7 +259,8 @@ def test_post_start_control_wait_ends_at_the_manifest_attempt_span() -> None:
     core_side, runner_side = socket.socketpair()
     try:
         with core_side, runner_side:
-            fence = _CoreFrameFence(
+            span = _InvocationSpan(REAL_TIME, manifest)
+            wire = _SessionWire(
                 runner_side,
                 RunnerGenerationBinding(
                     AgentAttemptId("a" * 64),
@@ -266,10 +269,11 @@ def test_post_start_control_wait_ends_at_the_manifest_attempt_span() -> None:
                     RunnerManifestId("c" * 64),
                 ),
                 RunnerInvocationId("B" * 43),
+                span,
             )
             waited_from = time.monotonic()
 
-            assert _control_or_child_exit(fence, child, manifest) is None
+            assert _control_or_child_exit(wire, child, span) is None
             # The hardcoded span this replaces waited 60 seconds.
             assert time.monotonic() - waited_from < 30
     finally:

@@ -68,6 +68,7 @@ from tests.integration.test_runner_session_application import (
     _free_request as _application_free_request,
 )
 from tests.integration.test_runner_session_wire import (
+    _ONE_CONNECTION_SOURCE,
     _PRINT_JOB_BYTES,
     _STUBBED_PROCESS_LIMIT,
     _denied_identity_directory,
@@ -88,7 +89,8 @@ from tests.scenarios.agents import agent_attempt_execution
 # named test process, monkeypatches the two no-op crash-cut seams
 # `session.py` exposes for exactly this purpose. Nothing about production
 # code changes: the seams are no-ops unless a test replaces them.
-_RESUMABLE_CANDIDATE_DRIVER = """
+_RESUMABLE_CANDIDATE_DRIVER = (
+    """
 import ctypes
 import os
 import socket
@@ -127,8 +129,12 @@ elif crash_point == "after-ack-tombstone":
 elif crash_point:
     raise ValueError(f"unknown crash point {crash_point!r}")
 
+channel = socket.socket(fileno=int(fd))
+"""
+    + _ONE_CONNECTION_SOURCE
+    + """
 run_candidate_session(
-    socket.socket(fileno=int(fd)),
+    _connect_to_core,
     RunnerGenerationBinding(
         AgentAttemptId(attempt_id),
         AgentExecutionRequestHash(request_hash),
@@ -142,6 +148,7 @@ run_candidate_session(
     Path(journal_directory),
 )
 """
+)
 
 
 def _spawn_resumable_candidate(

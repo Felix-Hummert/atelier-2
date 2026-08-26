@@ -29,7 +29,7 @@ from atelier2.adapters.dbos.host_configuration import (
     append_project_root,
     project_root_for,
 )
-from atelier2.adapters.dbos.names import QUEUE_NAME
+from atelier2.adapters.dbos.names import QUEUE_NAME, RUNNER_LEASE_QUEUE_NAME
 from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 from atelier2.adapters.dbos.runner_session_core import DbosRunnerSessionCore
@@ -43,14 +43,17 @@ from atelier2.adapters.dbos.schema import (
     run_agent_bindings,
     runs,
 )
-from atelier2.adapters.dbos.uncontinuable_runs import DbosUncontinuableRunStore
+from atelier2.adapters.dbos.uncontinuable_runs import (
+    DbosUncontinuableRunStore,
+    live_driver_workflow_ids,
+)
 from atelier2.adapters.dbos.workflow import (
     AgentExecutorMap,
     RunnerLeaseAttemptDriver,
     reconstruct_agent_attempt,
     register_durable_run_workflow,
 )
-from atelier2.adapters.dbos.workflow_ids import driving_workflow_id
+from atelier2.adapters.dbos.workflow_ids import driving_workflow_ids
 from atelier2.adapters.file_runner_leases import FileRunnerLeasePublisher
 from atelier2.adapters.file_runner_terminal_evidence import (
     FileRunnerTerminalEvidenceSource,
@@ -533,21 +536,6 @@ class DbosRunnerLeaseAttemptDriver:
         )
 
 
-# DBOS owns this table and these tokens; this module only reads them, and only
-# to answer whether a workflow that owes a Runner-lease attempt its next move
-# is still going to run (`#540` C-3.6 D-8a) -- the same narrow read
-# `atelier2.adapters.dbos.uncontinuable_runs` and
-# `atelier2.adapters.dbos.agent_attempt_store` each already keep their own
-# copy of, rather than a shared owner neither of those files' scope invites
-# widening today.
-_dbos_workflow_status = sa.table(
-    "workflow_status",
-    sa.column("workflow_uuid"),
-    sa.column("status"),
-)
-_DRIVING_WORKFLOW_STATUSES = ("PENDING", "ENQUEUED", "DELAYED")
-
-
 def _withdraw_open_runner_leases(
     leases: FileRunnerLeasePublisher, open_directory: Path
 ) -> None:
@@ -614,18 +602,19 @@ def _driverless_runner_lease_attempts(
         return ()
     candidates = tuple(store.load(AgentAttemptId(value)) for value in candidate_ids)
     with engine.connect() as connection:
-        driving = set(
-            connection.scalars(
-                sa.select(_dbos_workflow_status.c.workflow_uuid).where(
-                    _dbos_workflow_status.c.workflow_uuid.in_(
-                        tuple(driving_workflow_id(attempt) for attempt in candidates)
-                    ),
-                    _dbos_workflow_status.c.status.in_(_DRIVING_WORKFLOW_STATUSES),
-                )
-            )
+        driving = live_driver_workflow_ids(
+            connection,
+            (
+                workflow_id
+                for attempt in candidates
+                for workflow_id in driving_workflow_ids(attempt)
+            ),
+            application_version,
         )
     return tuple(
-        attempt for attempt in candidates if driving_workflow_id(attempt) not in driving
+        attempt
+        for attempt in candidates
+        if driving.isdisjoint(driving_workflow_ids(attempt))
     )
 
 
@@ -1108,6 +1097,40 @@ def _dbos_config(settings: DbosRuntimeSettings, engine: Engine) -> DBOSConfig:
     }
 
 
+def _register_queues() -> None:
+    """The two queues a launched runtime polls, and what each admits at a time.
+
+    The run queue admits as much as there are workers. The Runner-lease queue
+    admits one Attempt: `RUNNER_LEASE` sessions share one fixed Core listener
+    port (`atelier2.adapters.runner_tls.CORE_SESSION_PORT`), so at most one
+    Runner Attempt may ever be in flight (`#540` C-3.6 D-8b, D1). That bound
+    serializes rather than fails a second arrival -- no run may end
+    unsuccessfully only because another Runner Attempt was already running --
+    and every run waiting for the slot is a queue row rather than a blocked DBOS
+    worker, so a second lease-carried run cannot starve the pool the whole
+    process shares (#636).
+
+    Both are polled rather than notified, because this deployment runs without
+    LISTEN/NOTIFY, and polled often enough that a freed place is taken without an
+    operator-visible pause. Registering on every launch is deliberate: the
+    configuration lives in the system database, and this is the process that owns
+    what it should say.
+    """
+
+    polling_interval_sec = 0.05
+    DBOS.register_queue(
+        QUEUE_NAME,
+        polling_interval_sec=polling_interval_sec,
+        on_conflict="always_update",
+    )
+    DBOS.register_queue(
+        RUNNER_LEASE_QUEUE_NAME,
+        concurrency=1,
+        polling_interval_sec=polling_interval_sec,
+        on_conflict="always_update",
+    )
+
+
 class _DbosProcessOwner:
     """Owner of the one DBOS global, canonical engine, and workflow registry a
     process may hold.
@@ -1373,9 +1396,7 @@ class _DbosProcessOwner:
     def _start(bound: _BoundRuntime) -> None:
         DBOS(config=_dbos_config(bound.settings, bound.engine))
         DBOS.launch()
-        DBOS.register_queue(
-            QUEUE_NAME, polling_interval_sec=0.05, on_conflict="always_update"
-        )
+        _register_queues()
         bound.storage_ready = True
 
 
