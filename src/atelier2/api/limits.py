@@ -9,6 +9,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from atelier2.api.problems import artifact_problem_code
 from atelier2.api.references import (
     MAXIMUM_RUN_ORDERS,
+    base64_characters_for,
     encode_event_cursor,
     encode_public_run_reference,
 )
@@ -51,17 +52,6 @@ def durable_projection_limit(limits: ApiLimits) -> WorkflowPublicationLimits:
 
 class ApiLimitExceeded(ValueError):
     pass
-
-
-def base64_characters_for(payload_bytes: int) -> int:
-    """The exact base64 length of a payload of this many bytes.
-
-    Base64 encodes three source bytes as four characters and pads the final
-    group, so a payload occupies four characters per started group of three:
-    4 * ceil(payload_bytes / 3), in exact integer arithmetic.
-    """
-    started_groups_of_three = (payload_bytes + 2) // 3
-    return 4 * started_groups_of_three
 
 
 @dataclass(frozen=True)
