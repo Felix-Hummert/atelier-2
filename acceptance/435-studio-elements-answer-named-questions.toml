@@ -1,7 +1,12 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/435"
 
+# The sentence's wording is revised, its identifier is not (the same revision
+# discipline #521 used): the stage it measures moved from the Board to the
+# Workbench when ADR 0019 retired the Board as a room, and the named-question
+# map moved with it (`workbenchQuestions.ts`). Refs #698, #773.
+
 [[sentence]]
 id = "studio-elements-answer-named-questions"
 requirement = "REQ-UIQ-01"
-text = "Every interactive control in the Studio stage is listed against one named user question; a control with no question fails CI."
+text = "Every interactive control in the Workbench stage is listed against one named user question; a control with no question fails CI."

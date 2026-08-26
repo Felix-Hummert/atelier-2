@@ -10,11 +10,11 @@
     type WorkflowRevisionDetail,
     type WorkflowRevisionSummary
   } from "../api/client";
-  import BackLink from "../components/BackLink.svelte";
   import ReadState from "../components/ReadState.svelte";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { THE_ONE_PROJECT } from "../lib/project";
-  import { projectPageCopy } from "../lib/projectPageCopy";
+  import { settingsPageCopy } from "../lib/settingsPageCopy";
+  import { WORKSHOP_DESTINATION } from "../lib/workshop";
   import {
     beginRead,
     confirmRead,
@@ -30,6 +30,8 @@
 
   export let cockpitApi: CockpitApi;
   export let navigate: (path: string) => void;
+
+  const catalogPath = WORKSHOP_DESTINATION.catalog.path;
 
   interface ProjectSnapshot {
     runs: AnyRun[];
@@ -91,7 +93,7 @@
       if (!reading.complete) {
         project = failRead(project, begun.generation, {
           kind: "incomplete",
-          title: wrapDisplayCopy(projectPageCopy.runsIncomplete)
+          title: wrapDisplayCopy(settingsPageCopy.runsIncomplete)
         });
         return;
       }
@@ -99,7 +101,7 @@
     } catch {
       project = failRead(project, begun.generation, {
         kind: "unavailable",
-        title: wrapDisplayCopy(projectPageCopy.runsUnavailable)
+        title: wrapDisplayCopy(settingsPageCopy.runsUnavailable)
       });
     }
   }
@@ -314,23 +316,21 @@
 </script>
 
 <section class="project-page" aria-labelledby="project-title">
-  <BackLink label={projectPageCopy.board} path="/atelier" {navigate} />
-
   <header>
     <h1 id="project-title">{THE_ONE_PROJECT}</h1>
   </header>
 
   <section class="project-block" aria-labelledby="project-work-title">
-    <h2 id="project-work-title">{wrapDisplayCopy(projectPageCopy.workTitle)}</h2>
+    <h2 id="project-work-title">{wrapDisplayCopy(settingsPageCopy.workTitle)}</h2>
     <ReadState read={project} label="project runs" onRetry={() => { void load(); }} />
     {#if project.confirmed !== null}
       {#if workCounts.length === 0}
-        <p class="muted">{wrapDisplayCopy(projectPageCopy.noRuns)}</p>
+        <p class="muted">{wrapDisplayCopy(settingsPageCopy.noRuns)}</p>
         <a
           class="button primary"
-          href="/atelier/workflows"
-          onclick={(event) => { event.preventDefault(); navigate("/atelier/workflows"); }}
-        >{wrapDisplayCopy(projectPageCopy.noRunsNext)}</a>
+          href={catalogPath}
+          onclick={(event) => { event.preventDefault(); navigate(catalogPath); }}
+        >{wrapDisplayCopy(settingsPageCopy.noRunsNext)}</a>
       {:else}
         <ul class="project-counts">
           {#each workCounts as entry (entry.standing)}
@@ -345,30 +345,9 @@
     {/if}
   </section>
 
-  <section class="project-block" aria-labelledby="project-references-title">
-    <h2 id="project-references-title">{wrapDisplayCopy(projectPageCopy.referencesTitle)}</h2>
-    <ul class="project-references">
-      {#each [
-        { label: projectPageCopy.board, description: projectPageCopy.boardDescription, path: "/atelier" },
-        { label: projectPageCopy.history, description: projectPageCopy.historyDescription, path: "/atelier/history" },
-        { label: projectPageCopy.workflows, description: projectPageCopy.workflowsDescription, path: "/atelier/workflows" }
-      ] as reference (reference.path)}
-        <li>
-          <a
-            href={reference.path}
-            onclick={(event) => { event.preventDefault(); navigate(reference.path); }}
-          >
-            <strong>{wrapDisplayCopy(reference.label)}</strong>
-            <span>{wrapDisplayCopy(reference.description)}</span>
-          </a>
-        </li>
-      {/each}
-    </ul>
-  </section>
-
   <section class="occupancy-editor" aria-labelledby="occupancy-title">
-    <p class="eyebrow">{wrapDisplayCopy(projectPageCopy.occupancyEyebrow)}</p>
-    <h2 id="occupancy-title">{wrapDisplayCopy(projectPageCopy.occupancyTitle)}</h2>
+    <p class="eyebrow">{wrapDisplayCopy(settingsPageCopy.occupancyEyebrow)}</p>
+    <h2 id="occupancy-title">{wrapDisplayCopy(settingsPageCopy.occupancyTitle)}</h2>
     {#if frozenWrite === null}
       {#if selectedWorkflowHash === ""}
         <ReadState read={occupancyEditor} label="project occupancy" onRetry={() => { void loadOccupancyEditor(); }} />
@@ -485,17 +464,13 @@
     color: var(--ink-dim);
   }
 
-  .project-counts,
-  .project-references {
+  .project-counts {
     display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), 1fr));
     gap: var(--space-3);
     margin: 0;
     padding: 0;
     list-style: none;
-  }
-
-  .project-counts {
-    grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), 1fr));
   }
 
   .project-count {
@@ -532,32 +507,6 @@
 
   .project-count-done .project-count-mark {
     color: var(--signal-quiet);
-  }
-
-  .project-references {
-    grid-template-columns: repeat(auto-fit, minmax(var(--card-min), 1fr));
-  }
-
-  .project-references a {
-    display: grid;
-    gap: var(--space-1);
-    height: 100%;
-    border: var(--edge) solid var(--line);
-    border-radius: var(--r-lg);
-    padding: var(--space-4) var(--space-5);
-    background: var(--panel2);
-    color: inherit;
-    text-decoration: none;
-  }
-
-  .project-references a:hover,
-  .project-references a:focus-visible {
-    border-color: var(--accent);
-  }
-
-  .project-references span {
-    color: var(--ink-dim);
-    font-size: var(--text-sm);
   }
 
   .muted {

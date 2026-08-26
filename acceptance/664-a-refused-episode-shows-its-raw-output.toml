@@ -1,0 +1,49 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/664"
+
+# THE READ SIDE OF #664's SECOND SLICE. PR #683 kept the bytes a schema
+# refuses instead of throwing them away: the failure transaction now holds
+# them as an artifact under exactly the value hash its own `failed`
+# `node-receipt/v3` already named. That closed the write side; the operator
+# still could not see them, because nothing between the store and the panel
+# resolved that hash back into bytes.
+#
+# This slice is that resolution, end to end: `queries.py` reads the artifact
+# behind a judged refusal and hands it to `NodeDetail` as its own field --
+# never `answer`, because `answer` is the value a run accepted and a
+# schema-refused value never was that. The wire (`NodeRefusalOutputResource`)
+# and the client (`frontend/src/api/client.ts`, a strict Zod mirror) carry the
+# same field under the same name, and the node panel's Result tab shows the
+# bytes under its existing "Stopped here" sentence, with the hash listed
+# beside the run's other proof anchors on the Evidence tab.
+#
+# HARDENED after review (25.08.): a refused episode is untrusted provider text
+# on its way to a browser, and a schema refusal is exactly the shape of
+# episode where a provider might echo a credential it was handed. `queries.py`
+# now runs `contracts.secret_redaction` over the judged bytes before either the
+# domain projection or the wire resource is ever built, and the panel's own
+# copy says so -- a redacted presentation, never "exact". `value_hash` is left
+# untouched: it is the receipt's own hash of the original, unredacted bytes,
+# so it keeps proving what the schema judged even though the value beside it
+# is that judgment's presentation, not its exact preimage. Bytes that do not
+# decode as UTF-8 cannot be scanned for a credential shape at all, so they
+# answer honestly absent rather than unscanned. `NodeRefusalOutputResource`
+# (not the general `NodeAnswerResource` `answer` already uses, which also
+# carries Action/Subworkflow payloads with no shared bound) bounds
+# `value_base64` to the agent output cap (`MAXIMUM_AGENT_OUTPUT_BYTES_V2`,
+# already held upstream by every executor adapter before a schema ever judges
+# anything) -- but restated through `secret_redaction.maximum_redacted_length`,
+# not the cap's own encoding directly: replacing a short credential with the
+# longer `REDACTION_MARKER` can grow the text past what the cap alone would
+# suggest, and a bound unaware of that would refuse real refused output at the
+# cap. Mirrored the same way in the Zod schema.
+#
+# NAMED OPEN, deliberately not written by this slice: usage, the
+# provider-resolved model and `session_id` for a FAILED attempt (#664's third
+# slice, sequenced after its own schema hop) and the `docs/PRODUCT.md`
+# refusal paragraph's own sentence about this being readable now, which
+# belongs to `docs/PRODUCT.md`'s current claimed lane rather than this one.
+
+[[sentence]]
+id = "a-refused-episode-shows-its-raw-output-and-hash-in-the-node-panel"
+text = "A node whose own output a schema refused answers node detail with a redacted presentation of the refused bytes -- credential shapes replaced by contracts.secret_redaction before either the domain projection or the wire resource is built -- and the value hash of the original, unredacted bytes the schema judged, resolved from the artifact the failure transaction kept under that same hash, as a field of its own bounded to the agent output cap as restated through the redaction owner's own declared worst-case growth -- never the accepted-answer field, which a schema-refused value never satisfied, and never the general answer resource's own unbounded shape, which also serves larger payloads with no shared bound. The node panel's Result tab shows the redacted bytes under the sentence that already names where the run stopped, states plainly that credential-shaped text was replaced, and the Evidence tab lists the hash -- still proof of what was judged -- beside the run's other proof anchors. A refusal with nothing to resolve -- no receipt at all, an unjudged process death, bytes that do not decode as UTF-8, or a run written before this write existed -- answers with no such field, never a placeholder."

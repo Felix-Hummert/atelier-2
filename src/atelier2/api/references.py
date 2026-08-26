@@ -5,6 +5,7 @@ import binascii
 import re
 from dataclasses import dataclass
 
+from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
 from atelier2.contracts.hashing import SHA256_HEX_DIGEST
 from atelier2.contracts.host_configuration import (
     MAXIMUM_PROJECT_ID_CHARACTERS,
@@ -12,6 +13,7 @@ from atelier2.contracts.host_configuration import (
     ProjectUnknown,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.secret_redaction import maximum_redacted_length
 
 MAX_SIGNED_INT64 = 9_223_372_036_854_775_807
 # The wire's own bound: no durable owner caps how many roles one run binds, so
@@ -30,6 +32,40 @@ MAXIMUM_RUN_ORDERS = 100
 # problem object decides the glance once.
 MAXIMUM_INVALID_FIELD_PATH_CHARACTERS = 256
 MAXIMUM_INVALID_FIELD_REASON_CHARACTERS = 512
+
+
+def base64_characters_for(payload_bytes: int) -> int:
+    """The exact base64 length of a payload of this many bytes.
+
+    Base64 encodes three source bytes as four characters and pads the final
+    group, so a payload occupies four characters per started group of three:
+    4 * ceil(payload_bytes / 3), in exact integer arithmetic. Lives here, not
+    beside `ApiLimits` in `api.limits`, because a wire schema (`api.wire.resources`)
+    needs it to state a field bound too, and `api.limits` already depends on
+    `api.wire.resources` through `api.problems` -- naming it on that side would
+    close a cycle rather than share one fact.
+    """
+    started_groups_of_three = (payload_bytes + 2) // 3
+    return 4 * started_groups_of_three
+
+
+MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS = base64_characters_for(
+    maximum_redacted_length(MAXIMUM_AGENT_OUTPUT_BYTES_V2)
+)
+"""The wire's own name for a bound `NodeDetail.refusal_output` already keeps.
+
+Only a V3 agent node's own schema-refused output ever reaches that field
+(#664), and every executor adapter already refuses to hand the domain more
+than `MAXIMUM_AGENT_OUTPUT_BYTES_V2` bytes before any schema judgment even
+happens -- so the byte count this rests on is not a new limit, it is that
+existing invariant. What travels on the wire is not those exact bytes, though:
+`queries.py` redacts credential shapes out of them first (#664), and the
+redaction owner's own `maximum_redacted_length` names how much longer that can
+ever make them -- so this bound is the agent output cap *after* the one
+transform this field's value is guaranteed to have been through, restated in
+the encoding the browser reads it under, once, so the Pydantic resource and
+its Zod mirror cannot each pick a different one.
+"""
 SHA256_HASH_PATTERN = f"^{SHA256_HEX_DIGEST.pattern}$"
 REVISION_HASH_PATTERN = SHA256_HASH_PATTERN
 CATALOG_LINEAGE_ID_PATTERN = SHA256_HASH_PATTERN

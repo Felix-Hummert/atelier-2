@@ -2,14 +2,14 @@
  * Copy the History surface renders: only finished runs, as ruhige Zeilen
  * (mockup v8 §05) -- no Start, no Refresh, no queue prose.
  *
- * One owner for this screen's strings, the same convention `workflowsPageCopy`
- * and `studioPageCopy` already hold to, so `?pseudo-locale=1`
+ * One owner for this screen's strings, the same convention `catalogPageCopy`
+ * and `workbenchPageCopy` already hold to, so `?pseudo-locale=1`
  * (`wrapDisplayCopy`) can prove every string here has a source instead of a
  * second hardcoded copy inline in the page.
  *
  * The word for a run's state is not owned here: `standingWords` in
  * `runState.ts` owns it for every surface, so "Done" reads the same on the
- * Board, on the run and in this table (operator ruling 23.08.).
+ * Workbench, on the run and in this table (operator ruling 23.08.).
  */
 export const historyPageCopy = {
   title: "History",
@@ -18,8 +18,8 @@ export const historyPageCopy = {
   listUnavailable: "History unavailable",
   listIncomplete: "History incomplete",
   emptyTitle: "No finished runs yet",
-  emptyDescription: "Runs land here once they finish — start one from a workflow.",
-  emptyNext: "Open Workflows",
+  emptyDescription: "Runs land here once they finish — start one from the Catalog.",
+  emptyNext: "Open the Catalog",
   /** Mockup v8 §05: "Purpose (the order sentence), workflow small beneath". */
   columnName: "Purpose",
   columnWhen: "When",

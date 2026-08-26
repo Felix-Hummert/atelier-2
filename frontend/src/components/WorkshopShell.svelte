@@ -4,9 +4,10 @@
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { railCopy } from "../lib/railCopy";
   import {
-    WORKSHOP_DESTINATIONS,
+    WORKSHOP_DESTINATION,
+    WORKSHOP_ROOMS,
     activeWorkshopDestination,
-    boardBadgeCounts
+    runsWaitingForYou
   } from "../lib/workshop";
 
   export let route: CockpitRoute;
@@ -17,13 +18,7 @@
     stage.focus();
   }
 
-  const destinationMarks: Record<(typeof WORKSHOP_DESTINATIONS)[number]["id"], string> = {
-    chat: "▸",
-    board: "◫",
-    workflows: "⧉",
-    catalog: "▤",
-    history: "≡"
-  };
+  const settings = WORKSHOP_DESTINATION.settings;
 
   $: active = activeWorkshopDestination(route);
 </script>
@@ -32,44 +27,48 @@
   <nav class="workshop-rail" aria-label="Workshop">
     <div class="rail-brand">{wrapDisplayCopy(railCopy.brand)}</div>
 
-    {#each WORKSHOP_DESTINATIONS as destination (destination.id)}
+    {#each WORKSHOP_ROOMS as room (room.id)}
       <a
         class="nav-destination"
-        class:active={active === destination.id}
-        href={destination.path}
-        aria-current={active === destination.id ? "page" : undefined}
+        class:active={active === room.id}
+        href={room.path}
+        aria-current={active === room.id ? "page" : undefined}
         onclick={(event) => {
           event.preventDefault();
-          navigate(destination.path);
+          navigate(room.path);
         }}
       >
-        <span class="nav-destination-mark" aria-hidden="true">{destinationMarks[destination.id]}</span>
-        <span class="nav-destination-label">{wrapDisplayCopy(destination.label)}</span>
-        {#if destination.id === "board" && $boardBadgeCounts !== null}
-          {#if $boardBadgeCounts.running > 0}
-            <span class="rail-badge rail-badge-running" aria-label={`${$boardBadgeCounts.running} ${wrapDisplayCopy(railCopy.runningBadgeSuffix)}`}>{$boardBadgeCounts.running}</span>
-          {/if}
-          {#if $boardBadgeCounts.needsYou > 0}
-            <span class="rail-badge rail-badge-needs-you" aria-label={`${$boardBadgeCounts.needsYou} ${wrapDisplayCopy(railCopy.needsYouBadgeSuffix)}`}>{$boardBadgeCounts.needsYou}</span>
-          {/if}
+        <span class="nav-destination-mark" aria-hidden="true">{room.glyph}</span>
+        <span class="nav-destination-label">{wrapDisplayCopy(room.label)}</span>
+        <!-- The one number the rail carries, and only where something wants
+             you: the count in the rail is the notification (ADR 0019 §1). -->
+        {#if room.id === "workbench" && $runsWaitingForYou !== null && $runsWaitingForYou > 0}
+          <span
+            class="rail-count"
+            aria-label={`${$runsWaitingForYou} ${wrapDisplayCopy(railCopy.needsYouCountSuffix)}`}
+          >{$runsWaitingForYou}</span>
         {/if}
       </a>
     {/each}
 
     <div class="rail-grow"></div>
 
-    <div class="rail-project" title={wrapDisplayCopy(railCopy.switchProjectHint)}>
-      <b>{THE_ONE_PROJECT}</b>
-      <span>{wrapDisplayCopy(railCopy.switchProject)}</span>
-    </div>
-    <div class="rail-settings">
-      <span aria-hidden="true">⚙</span>
-      <span title={wrapDisplayCopy(railCopy.settingsHint)}>{wrapDisplayCopy(railCopy.settings)}</span>
-      ·
-      <span aria-hidden="true">◯</span>
-      <span title={wrapDisplayCopy(railCopy.profileHint)}>{wrapDisplayCopy(railCopy.profile)}</span>
-      <small>{wrapDisplayCopy(railCopy.later)}</small>
-    </div>
+    <!-- Settings stands at the foot, set apart by a line: the context above the
+         three rooms, carrying the name of the project it is the context of. -->
+    <a
+      class="nav-destination rail-foot"
+      class:active={active === settings.id}
+      href={settings.path}
+      aria-current={active === settings.id ? "page" : undefined}
+      onclick={(event) => {
+        event.preventDefault();
+        navigate(settings.path);
+      }}
+    >
+      <span class="nav-destination-mark" aria-hidden="true">{settings.glyph}</span>
+      <span class="nav-destination-label">{wrapDisplayCopy(settings.label)}</span>
+      <span class="rail-project">{THE_ONE_PROJECT}</span>
+    </a>
   </nav>
 
   <main bind:this={stage} class="workshop-stage" tabindex="-1">
@@ -78,25 +77,15 @@
 </div>
 
 <style>
-  .rail-badge {
+  /* Ochre, and only where something wants you: the count carries the state's
+     own hue, never a second sentence beside it. */
+  .rail-count {
     margin-left: auto;
     border-radius: var(--r-pill);
     padding: 0 var(--space-2);
+    background: var(--signal-attention);
+    color: var(--signal-ink);
     font-size: var(--text-2xs);
     font-weight: var(--weight-heavy);
-    color: var(--signal-ink);
-  }
-
-  /* Only the first rendered badge pushes the group right; a second sits beside it. */
-  .rail-badge + .rail-badge {
-    margin-left: 0;
-  }
-
-  .rail-badge-running {
-    background: var(--signal-live);
-  }
-
-  .rail-badge-needs-you {
-    background: var(--signal-attention);
   }
 </style>
