@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator, Mapping
+from decimal import Decimal
 from typing import Any, assert_never
 
 import sqlalchemy as sa
@@ -31,8 +33,8 @@ from atelier2.adapters.dbos.run_store import (
     _tool_redemption_values,
     load_kept_value,
     load_node_outputs,
+    load_published_schema_document,
     load_run_inputs,
-    why_a_value_its_declared_schema_refuses,
 )
 from atelier2.adapters.dbos.run_transitions import (
     RunTransitionConflict,
@@ -99,6 +101,7 @@ from atelier2.contracts.agent_refusals import (
 )
 from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_FIELD_CHARACTERS,
     AgentExecutionRequestHash,
     AgentExecutionRequestV2,
     AgentExecutionResult,
@@ -141,6 +144,12 @@ from atelier2.contracts.runs import (
     RunState,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.schemas_v3 import (
+    InstanceRefused,
+    SchemaRefused,
+    read_instance_document,
+    read_schema_document,
+)
 from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
 from atelier2.contracts.verdicts import Verdict, read_verdict
 from atelier2.contracts.workflows import (
@@ -153,6 +162,7 @@ from atelier2.contracts.workflows import (
 )
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
+    NodeOutput,
     WorkflowGraphV3,
     verdict_condition_of,
 )
@@ -621,11 +631,12 @@ def _fail_current_attempt(
     reason lifted one level, not a second vocabulary. Nothing remains that can
     continue this line: a replacement is a later, conscious reopen, not a
     STARTED row that still reads as "Running". `receipt_reason` is the words of
-    whoever judged this ending -- the schema owner where an answer was refused,
-    the supervision where a process died -- and every way through here carries
-    one, because a failure whose reason is nowhere is the silent death this
-    seam exists to end. A schema judgment also keeps the identity it judged; a
-    process that died judged nothing, so those fields stay honestly empty.
+    whoever judged this ending -- a compact schema-refusal diagnosis where an
+    answer was refused, the supervision where a process died -- and every way
+    through here carries one, because a failure whose reason is nowhere is the
+    silent death this seam exists to end. A schema judgment also keeps the
+    identity it judged; a process that died judged nothing, so those fields stay
+    honestly empty.
 
     `judged_value` is the exact bytes that judgment read, and it arrives as
     bytes rather than as a hash because the seam that records the verdict is the
@@ -717,6 +728,71 @@ def _fail_current_attempt(
         target_round_ordinal=request.round_ordinal,
     )
     return AgentAttemptFailed(durable_failure)
+
+
+def _declared_output_schema_refusal(
+    session: Any, node_id: str, declared: NodeOutput, payload: bytes
+) -> InstanceRefused | None:
+    """Read one declared output against its pinned schema without losing its shape."""
+    document = load_published_schema_document(
+        session, declared.schema_reference.revision
+    )
+    if document is None:
+        raise RunTransitionConflict(
+            f"the schema node {node_id!r} pinned for output "
+            f"{declared.name!r} is absent from the store"
+        )
+    schema = read_schema_document(document)
+    if isinstance(schema, SchemaRefused):
+        raise RunTransitionConflict(
+            f"the schema node {node_id!r} pinned for output "
+            f"{declared.name!r} is not one: {schema}"
+        )
+    verdict = read_instance_document(payload, schema)
+    return verdict if isinstance(verdict, InstanceRefused) else None
+
+
+def _value_at_schema_violation(payload: bytes, pointer: str | None) -> object:
+    """Read the one JSON value whose repr JSON Schema put in its diagnostic."""
+    value: object = json.loads(payload.decode("utf-8"), parse_float=Decimal)
+    if pointer is None:
+        return value
+    for escaped_part in pointer.removeprefix("/").split("/"):
+        part = escaped_part.replace("~1", "/").replace("~0", "~")
+        if isinstance(value, list):
+            value = value[int(part)]
+        elif isinstance(value, dict):
+            value = value[part]
+        else:
+            raise TypeError(
+                f"schema violation pointer {pointer!r} does not address its value"
+            )
+    return value
+
+
+def _schema_rule_without_rejected_value(reason: str, rejected_value: object) -> str:
+    """Remove exactly JSON Schema's repr of the rejected value from its rule."""
+    rendered_value = repr(rejected_value)
+    return reason.replace(rendered_value, "", 1).strip()
+
+
+def _compact_schema_refusal(refusal: InstanceRefused, payload: bytes) -> str:
+    """Name the schema's place and rule without embedding rejected output."""
+    violation = refusal.violation
+    if violation is None:
+        words = str(refusal)
+    else:
+        place = "the value itself" if violation.pointer is None else violation.pointer
+        words = (
+            f"{refusal.refusal.value}: {place}: "
+            f"{_schema_rule_without_rejected_value(violation.reason, _value_at_schema_violation(payload, violation.pointer))}"
+        )
+    maximum_words = (
+        MAXIMUM_AGENT_FIELD_CHARACTERS
+        - len(NodeReceiptReason.OUTPUT_SCHEMA_REFUSED.value)
+        - len(": ")
+    )
+    return words[:maximum_words]
 
 
 def _kept_verdict(
@@ -1796,7 +1872,7 @@ class DbosAgentAttemptStore:
                         _proof_of_a_passed_check(redemption),
                     )
                     return failed
-            refusal = why_a_value_its_declared_schema_refuses(
+            refusal = _declared_output_schema_refusal(
                 connection, node.id, declared, result.output_bytes
             )
             if refusal is not None:
@@ -1806,7 +1882,8 @@ class DbosAgentAttemptStore:
                     durable,
                     AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED,
                     node_receipt_reason(
-                        NodeReceiptReason.OUTPUT_SCHEMA_REFUSED, refusal
+                        NodeReceiptReason.OUTPUT_SCHEMA_REFUSED,
+                        _compact_schema_refusal(refusal, result.output_bytes),
                     ),
                     PublishedRevisionHash(declared.schema_reference.revision),
                     result.output_bytes,
@@ -2166,9 +2243,10 @@ class DbosAgentAttemptStore:
         `AGENT_COMPLETED` event and no advanced run -- a success nobody may take
         back must not be written for an answer this product cannot honour. What
         the refusal leaves instead is its durable name: a `failed`
-        `node-receipt/v3` carrying the schema owner's words, and the attempt on
-        the same failure seam `PROCESS_EXITED_UNSUCCESSFULLY` runs on today, so
-        the driver ends named instead of dying on an exception nobody stored.
+        `node-receipt/v3` carrying a compact schema-refusal diagnosis, and the
+        attempt on the same failure seam `PROCESS_EXITED_UNSUCCESSFULLY` runs
+        on today, so the driver ends named instead of dying on an exception
+        nobody stored.
         A granted verification that exits nonzero is the same named seam under
         `PROJECT_VERIFICATION_FAILED`, with how the command ended in the reason
         and without a `tool_redemptions` row.
