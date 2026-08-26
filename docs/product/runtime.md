@@ -211,10 +211,11 @@ what the call did write, so a refusal names more than its own code. Undeclared, 
 provider factory and behaves exactly as before. When the
 operator also declares a Grok executable, workspace, and credential directory,
 the host composes one Grok subscription executor beside Claude. It runs the
-bound model headless through `grok --output-format json`, takes only the
-envelope's final answer to the output seam — never the turn narration —
-and refuses an unreadable, empty, or answer-less envelope instead of
-recording the raw frame or the story of the run. When the node declared an
+bound model headless through `grok --output-format json`, decodes every
+concatenated JSON value the CLI writes, keeps progress values in the attempt
+transcript, and takes only the last envelope's final answer to the output seam.
+It names an ending with no final message, rather than recording progress as an
+answer. When the node declared an
 output schema that is not a bare `type: string`, the same published
 document bytes the seam later judges travel as `--json-schema`; the
 seam remains the last instance if the provider ignores the flag. A

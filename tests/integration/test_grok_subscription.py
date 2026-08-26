@@ -35,6 +35,7 @@ from atelier2.adapters.grok_subscription import (
     WORKSPACE_TOOLS,
     GrokContainmentUnattested,
     GrokExecutableUnsupported,
+    GrokProviderEndedWithoutFinalMessage,
     GrokSubscriptionAuthModeUnsupported,
     GrokSubscriptionExecutorFactory,
     GrokSubscriptionProcessCommand,
@@ -46,6 +47,11 @@ from atelier2.adapters.grok_subscription import (
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
+from atelier2.contracts.agent_transcripts import (
+    AssistantTurn,
+    AttemptTranscript,
+    UnrecognisedProviderOutput,
+)
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -274,6 +280,12 @@ def measured_headless_json_envelope(
     if structured_output is not None:
         envelope["structuredOutput"] = structured_output
     return json.dumps(envelope).encode()
+
+
+def recorded_grok_json_values(*values: object) -> bytes:
+    """The JSON values grok 1.0.4 concatenated without a record separator."""
+
+    return b"".join(json.dumps(value, ensure_ascii=False).encode() for value in values)
 
 
 def launched(command: AgentProcessCommand, workspace: Path) -> AgentProcessCompletion:
@@ -531,6 +543,189 @@ def test_a_non_subscription_profile_is_refused_before_any_invocation(
         executor.prepare_process(request)
 
 
+def test_concatenated_grok_progress_values_stay_in_the_transcript(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    invocation = leased(
+        AgentProcessCommand(
+            ("grok",),
+            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+        ),
+        tmp_path,
+    )
+    first_finding = f"{'Befund'} {1}"
+    progress = (
+        (
+            f'"{first_finding}" is the required first token; I am gathering '
+            "the surrounding contract, callers, and tests."
+        ),
+        (
+            f'"{first_finding}" stays first in the final reply; I am comparing '
+            "the empty-file gate with its host-init twin."
+        ),
+    )
+    answer = '{"verdict":"pass"}'
+    final_envelope = json.loads(
+        measured_headless_json_envelope(
+            text=answer,
+            thought="I have enough evidence to answer now.",
+        )
+    )
+
+    result = executor.decode_process_completion(
+        invocation,
+        AgentProcessCompletion(
+            0,
+            recorded_grok_json_values(*progress, final_envelope),
+            b"",
+        ),
+    )
+
+    assert result == AgentExecutionResult(
+        answer.encode(),
+        AttemptTranscript.of([AssistantTurn(message) for message in progress]),
+    )
+
+
+@pytest.mark.parametrize(
+    "standard_output",
+    [
+        pytest.param(
+            b'{"text":"complete"}{"text":',
+            id="a partial trailing JSON value",
+        ),
+        pytest.param(
+            b"1" + (b"0" * 4_300),
+            id="an integer beyond the JSON decoder limit",
+        ),
+        pytest.param(
+            b'{"text":"complete"}\xff',
+            id="invalid UTF-8 after a JSON value",
+        ),
+    ],
+)
+def test_unreadable_concatenated_grok_values_are_typed_failures(
+    tmp_path: Path, standard_output: bytes
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    invocation = leased(
+        AgentProcessCommand(
+            ("grok",),
+            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+        ),
+        tmp_path,
+    )
+
+    result = executor.decode_process_completion(
+        invocation, AgentProcessCompletion(0, standard_output, b"")
+    )
+
+    assert isinstance(result, AgentExecutionFailure)
+    assert result.code == AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
+    assert result.transcript is not None
+
+
+@pytest.mark.parametrize(
+    ("standard_output", "expected"),
+    [
+        pytest.param(
+            recorded_grok_json_values(7, {"text": '{"verdict":"pass"}'}),
+            AgentExecutionResult(
+                b'{"verdict":"pass"}',
+                AttemptTranscript.of([UnrecognisedProviderOutput("7")]),
+            ),
+            id="a scalar before the envelope",
+        ),
+        pytest.param(
+            recorded_grok_json_values(
+                ["collecting evidence"], {"text": '{"verdict":"pass"}'}
+            ),
+            AgentExecutionResult(
+                b'{"verdict":"pass"}',
+                AttemptTranscript.of(
+                    [UnrecognisedProviderOutput('["collecting evidence"]')]
+                ),
+            ),
+            id="an array before the envelope",
+        ),
+        pytest.param(
+            recorded_grok_json_values(
+                {"text": '{"verdict":"pass"}'}, "still collecting evidence"
+            ),
+            GrokProviderEndedWithoutFinalMessage(
+                AttemptTranscript.of(
+                    [
+                        UnrecognisedProviderOutput(
+                            '{"text":"{\\"verdict\\":\\"pass\\"}"}'
+                        ),
+                        AssistantTurn("still collecting evidence"),
+                    ]
+                )
+            ),
+            id="progress after an envelope means the last value wins",
+        ),
+    ],
+)
+def test_concatenated_grok_values_use_only_the_last_value_as_the_envelope(
+    tmp_path: Path,
+    standard_output: bytes,
+    expected: AgentExecutionResult | GrokProviderEndedWithoutFinalMessage,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    invocation = leased(
+        AgentProcessCommand(
+            ("grok",),
+            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+        ),
+        tmp_path,
+    )
+
+    assert (
+        executor.decode_process_completion(
+            invocation, AgentProcessCompletion(0, standard_output, b"")
+        )
+        == expected
+    )
+
+
+def test_grok_ending_after_concatenated_progress_has_no_final_message(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    invocation = leased(
+        AgentProcessCommand(
+            ("grok",),
+            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+        ),
+        tmp_path,
+    )
+    first_finding = f"{'Befund'} {1}"
+    progress = (
+        (
+            f'"{first_finding}" is the required first token; I am gathering '
+            "the surrounding contract, callers, and tests."
+        ),
+        (
+            f'"{first_finding}" stays first in the final reply; I am comparing '
+            "the empty-file gate with its host-init twin."
+        ),
+    )
+
+    result = executor.decode_process_completion(
+        invocation,
+        AgentProcessCompletion(0, recorded_grok_json_values(*progress), b""),
+    )
+
+    assert result == GrokProviderEndedWithoutFinalMessage(
+        AttemptTranscript.of([AssistantTurn(message) for message in progress])
+    )
+
+
 def test_the_final_answer_reaches_the_output_seam_not_the_turn_narration(
     tmp_path: Path,
 ) -> None:
@@ -606,62 +801,47 @@ def test_an_unusable_envelope_is_a_typed_process_failure(tmp_path: Path) -> None
     )
     narration = "Ich prüfe zuerst die Dateien und die Werkzeuge."
 
-    assert (
-        executor.decode_process_completion(
-            invocation, AgentProcessCompletion(1, b'{"text":"no"}', b"")
-        )
-        == refusal
+    failed_with_output = executor.decode_process_completion(
+        invocation, AgentProcessCompletion(1, b'{"text":"no"}', b"")
     )
-    assert (
-        executor.decode_process_completion(
-            invocation, AgentProcessCompletion(0, b"not-json", b"")
-        )
-        == refusal
+    assert isinstance(failed_with_output, AgentExecutionFailure)
+    assert failed_with_output.code == refusal.code
+    assert failed_with_output.transcript is not None
+    not_json = executor.decode_process_completion(
+        invocation, AgentProcessCompletion(0, b"not-json", b"")
     )
-    assert (
-        executor.decode_process_completion(
-            invocation, AgentProcessCompletion(0, b'{"result":"wrong field"}', b"")
-        )
-        == refusal
+    assert isinstance(not_json, AgentExecutionFailure)
+    assert not_json.code == refusal.code
+    wrong_field = executor.decode_process_completion(
+        invocation, AgentProcessCompletion(0, b'{"result":"wrong field"}', b"")
     )
+    assert isinstance(wrong_field, AgentExecutionFailure)
+    assert wrong_field.code == refusal.code
     assert (
         executor.decode_process_completion(
             invocation, AgentProcessCompletion(0, b"", b"")
         )
-        == refusal
+        == GrokProviderEndedWithoutFinalMessage()
     )
-    assert (
-        executor.decode_process_completion(
-            invocation, AgentProcessCompletion(0, b"{}", b"")
-        )
-        == refusal
-    )
-    assert (
-        executor.decode_process_completion(
-            invocation,
-            AgentProcessCompletion(
-                0,
-                measured_headless_json_envelope(text="", thought=narration),
-                b"",
+    for completion in (
+        AgentProcessCompletion(0, b"{}", b""),
+        AgentProcessCompletion(
+            0,
+            measured_headless_json_envelope(text="", thought=narration),
+            b"",
+        ),
+        AgentProcessCompletion(
+            0,
+            measured_headless_json_envelope(
+                text="",
+                thought=narration,
+                structured_output="pass-token",
             ),
-        )
-        == refusal
-    )
-    assert (
-        executor.decode_process_completion(
-            invocation,
-            AgentProcessCompletion(
-                0,
-                measured_headless_json_envelope(
-                    text="",
-                    thought=narration,
-                    structured_output="pass-token",
-                ),
-                b"",
-            ),
-        )
-        == refusal
-    )
+            b"",
+        ),
+    ):
+        result = executor.decode_process_completion(invocation, completion)
+        assert isinstance(result, GrokProviderEndedWithoutFinalMessage)
 
 
 def test_only_the_measured_grok_release_is_admitted(tmp_path: Path) -> None:
@@ -1278,6 +1458,10 @@ def test_the_workspace_tool_factory_offers_its_own_identity_and_only_its_capabil
     tool_free = GrokSubscriptionExecutorFactory(settings)
 
     assert factory.key == GROK_WORKSPACE_TOOLS_EXECUTOR_KEY
+    assert tool_free.key == GROK_SUBSCRIPTION_EXECUTOR_KEY
+    assert tool_free.operational_identity == AgentExecutorOperationalIdentity(
+        "headless-print-json/v2"
+    )
     assert factory.key.provider_id == tool_free.key.provider_id
     assert factory.key.executor_revision != tool_free.key.executor_revision
     assert factory.operational_identity != tool_free.operational_identity
@@ -1472,6 +1656,41 @@ def test_a_node_requesting_grok_tools_starts_through_the_production_starter(
 
     assert isinstance(started, DurableRunCreated)
     assert started_runs == 1
+
+
+def test_a_tool_free_grok_attempt_persists_the_v2_operational_identity(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    runtime = grok_subscription_runtime(tmp_path, settings)
+    runtime.initialize_storage()
+    try:
+        execution = grok_subscription_attempt(
+            runtime,
+            "grok/tool-free-identity",
+            requested_capability=AgentExecutionCapability.HEADLESS,
+            executor_revision=GROK_SUBSCRIPTION_EXECUTOR_KEY.executor_revision,
+            operational_identity=GROK_SUBSCRIPTION_OPERATIONAL_IDENTITY,
+        )
+        workspaces = runtime_workspace_owner(runtime)
+        outcome = execute_agent_attempt(
+            execution,
+            GrokSubscriptionExecutorFactory(settings).open(),
+            DbosAgentAttemptStore(runtime.engine),
+            runtime.agent_process_supervisor,
+            workspaces,
+        )
+        with runtime.engine.connect() as connection:
+            receipts = connection.execute(sa.select(agent_receipts_v2)).mappings().all()
+    finally:
+        runtime.close()
+
+    assert isinstance(outcome, AgentAttemptSucceeded)
+    assert len(receipts) == 1
+    assert receipts[0]["executor_revision"] == (
+        GROK_SUBSCRIPTION_EXECUTOR_KEY.executor_revision.value
+    )
+    assert receipts[0]["executor_operational_identity"] == "headless-print-json/v2"
 
 
 def test_a_tool_bearing_grok_attempt_writes_in_its_lease_and_answers_what_it_wrote(
