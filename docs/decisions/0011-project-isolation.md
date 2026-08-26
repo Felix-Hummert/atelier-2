@@ -4,7 +4,10 @@
   mapping plus the runtime and zero-or-one HTTP reads that treat it as a
   project; store-per-project and a second project are not implemented;
   decision 2 and the catalog-export loss list amended 2026-08-25 (candidate
-  store, operator ruling on issue #642) — decision only, unimplemented
+  store, operator ruling on issue #642) and again 2026-08-26 (#642 P2b, the
+  order that carries the candidate invariant); the candidate store of decision 2
+  is the one part now implemented — an attempt keeps its work in it before it is
+  completed — while everything else here remains decision only
 - Date: 2026-08-15
 - Decision authority: [Issue #23](https://github.com/FlexOr2/atelier-2/issues/23),
   SHA-256 over the exact served UTF-8 body bytes with nothing appended — 847 bytes,
@@ -180,6 +183,17 @@ the same way as `<database>.parent/.atelier2-candidates.git` (2026-08-25 amendme
 #642-Journal: the project-owned bare-repository home for an attempt's captured
 candidate trees that ADR 0010 decision 5's `push-atelier-commit` pushes) — and its
 workspace and clone tree.
+
+**A candidate is kept before its attempt is completed, and the two writes do not
+share a transaction** (2026-08-26 amendment, #642 P2b). They cannot: the candidate
+is a git ref in the project's own bare repository and the attempt is a row in the
+project's SQLite store, and no transaction spans both. The invariant is therefore
+carried by the order — the ref is written first, and only then is the attempt
+completed — so a process dying in the gap leaves work that is readable beside an
+attempt that never succeeded, never the reverse. A capture that fails ends the
+attempt `FAILED` under `CANDIDATE_CAPTURE_FAILED` rather than escaping, because an
+escaped error would leave the attempt armed and unresolvable. What this record
+claims about the candidate store is placement, not atomicity.
 
 **Nothing of a project exists outside its root**, and that is the whole rule this
 record decides. It is a **placement** rule about the product's own writes: every

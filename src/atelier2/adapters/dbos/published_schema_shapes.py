@@ -199,6 +199,39 @@ predecessor has to be given the vocabulary that version actually stated.
 """
 
 
+_EFFECT_INTENTS_WITH_ABANDONMENT = """
+CREATE TABLE effect_intents (
+	logical_key TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	canonical_request BLOB NOT NULL,
+	request_hash TEXT NOT NULL,
+	workflow_revision_hash TEXT NOT NULL,
+	adapter_revision TEXT NOT NULL,
+	destination_identity TEXT NOT NULL,
+	adapter_operational_identity TEXT NOT NULL,
+	state TEXT NOT NULL,
+	state_version INTEGER NOT NULL,
+	reconciliation_owner_command_id TEXT,
+	PRIMARY KEY (logical_key),
+	UNIQUE (logical_key, run_id, workflow_revision_hash),
+	FOREIGN KEY(run_id, workflow_revision_hash) REFERENCES runs (run_id, revision_hash),
+	CHECK (length(logical_key) > 0),
+	CHECK (length(run_id) > 0),
+	CHECK (length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'),
+	CHECK (length(workflow_revision_hash) = 64 AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'),
+	CHECK (length(adapter_revision) > 0),
+	CHECK (length(destination_identity) > 0),
+	CHECK (length(adapter_operational_identity) > 0),
+	CHECK (state IN ('PREPARED', 'WAITING_RECONCILIATION', 'RECONCILING', 'CONFIRMED', 'ABANDONED')),
+	CHECK (state_version >= 0),
+	CHECK ((state = 'RECONCILING' AND reconciliation_owner_command_id IS NOT NULL AND length(reconciliation_owner_command_id) > 0) OR (state <> 'RECONCILING' AND reconciliation_owner_command_id IS NULL)),
+	FOREIGN KEY(run_id) REFERENCES runs (run_id),
+	FOREIGN KEY(workflow_revision_hash) REFERENCES workflow_revisions (revision_hash),
+	FOREIGN KEY(reconciliation_owner_command_id) REFERENCES reconcile_commands (command_id) ON DELETE RESTRICT
+)
+
+"""
+
 PUBLISHED_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
     (16, "run_events"): """
 CREATE TABLE run_events (
@@ -792,6 +825,10 @@ CREATE TABLE run_events (
     (36, "agent_attempts"): _AGENT_ATTEMPTS_BEFORE_THE_TRANSCRIPT,
     (37, "agent_attempts"): _AGENT_ATTEMPTS_WITH_THE_TRANSCRIPT,
     (37, "effect_intents"): _EFFECT_INTENTS_BEFORE_ABANDONMENT,
+    # V38 rebuilt `effect_intents` alone, so an attempt's shape at 38 is still
+    # exactly the text 37 published, and the hop off 38 parks that same text.
+    (38, "agent_attempts"): _AGENT_ATTEMPTS_WITH_THE_TRANSCRIPT,
+    (38, "effect_intents"): _EFFECT_INTENTS_WITH_ABANDONMENT,
 }
 
 _RUN_EVENTS_INDEXES_BEFORE_THE_REPEATABLE_PAUSE = (

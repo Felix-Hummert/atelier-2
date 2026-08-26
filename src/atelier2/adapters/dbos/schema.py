@@ -58,12 +58,12 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head gives an effect intent the word for a run that ended
-# without resolving it (#705), so a prepared effect no workflow will move again
-# stops standing PREPARED forever. Predecessor is the published schema that gave
-# an attempt the address of its transcript (#666).
+# Movable hop: this head gives an attempt the word for work that was done and
+# could not be kept (#642), so an attempt whose candidate was never anchored
+# ends by its own name instead of borrowing one that would be a lie. Predecessor
+# is the published schema that admitted `ABANDONED` as an intent ending (#705).
 # Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 37
+_HOP_PREDECESSOR_VERSION = 38
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -95,6 +95,7 @@ _VERSION_THIRTY_FIVE = 35
 _VERSION_THIRTY_SIX = 36
 _VERSION_THIRTY_SEVEN = 37
 _VERSION_THIRTY_EIGHT = 38
+_VERSION_THIRTY_NINE = 39
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -218,6 +219,19 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # `effect_intents_no_abandoned_insert` closes the other door: a row born
 # ABANDONED would be an ending no run ever reached. Only the vocabulary widens;
 # every stored row keeps its bytes, its key and its meaning.
+# V39 admits CANDIDATE_CAPTURE_FAILED as an attempt failure code (#642). An
+# attempt's work lives only in the directory it was made in, so it is kept as a
+# candidate before the attempt is completed; a capture that fails leaves the work
+# lost, and every code published before this one would have said something untrue
+# about how -- that a process died, or that a form refused what no form saw. The
+# widened CHECK admits the word on the table, and `agent_attempts_transition`
+# admits it on exactly one transition: the armed attempt of a *local* process
+# ending FAILED. The runner-evidence transition beside it is deliberately left
+# alone, because a runner-lease attempt is refused a pinned project source
+# before it ever starts (`adapters/dbos/workflow.py`), so a candidate capture
+# cannot happen there and a row saying it did would be unreachable by any real
+# run. Only the vocabulary widens; every stored row keeps its bytes, its key and
+# its meaning.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -253,6 +267,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     36: "c9f4b5d99a9ff8e33796e36151b66f00175eceaa797e30461bf6e01264266ce8",
     37: "e41cf318212e0a79d6605413b5818ef68d6245baaf05a53b888b8aac40131a13",
     38: "aebd8b6bad8a719864f0c02828db643dd3dcbe7c89198beb6a8c1c4c30100824",
+    39: "d7674fdebe1da01b090aee0fc205c44c4899b1ac6bee7e2591e4ea376b2594c6",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -369,6 +384,10 @@ V36_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V37_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_THIRTY_SEVEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_SEVEN],
+)
+V38_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_THIRTY_EIGHT,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_EIGHT],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1137,7 +1156,8 @@ agent_attempts = sa.Table(
         "AND failure_code IN "
         "('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED', "
         "'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED', "
-        "'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED') "
+        "'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED', "
+        "'CANDIDATE_CAPTURE_FAILED') "
         "AND receipt_hash IS NULL)"
     ),
 )
@@ -2104,7 +2124,8 @@ _PRODUCT_TRIGGERS = {
              AND NEW.failure_code IN
                ('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED',
                 'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED',
-                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED')
+                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED',
+                'CANDIDATE_CAPTURE_FAILED')
              AND NEW.runner_manifest_id IS NULL
              AND NEW.receipt_hash IS NULL
              AND NEW.cancellation_command_id IS NULL)
@@ -2775,11 +2796,12 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    # V33 to V37 hold the same tables as the current version: the hops between
-    # them moved one table's key and columns, two tables' state vocabulary, one
+    # V33 to V38 hold the same tables as the current version: the hops between
+    # them moved one table's key and columns, three tables' state vocabulary, one
     # table's index and one table's column set, never the set of tables.
     if version in {
         SCHEMA_VERSION,
+        _VERSION_THIRTY_EIGHT,
         _VERSION_THIRTY_SEVEN,
         _VERSION_THIRTY_SIX,
         _VERSION_THIRTY_FIVE,
@@ -3871,6 +3893,31 @@ _V32_AGENT_ATTEMPT_TRIGGERS = {
     "agent_attempts_state_transition": _V32_AGENT_ATTEMPT_STATE_TRANSITION,
     "agent_attempts_no_delete": _PRODUCT_TRIGGERS["agent_attempts_no_delete"],
 }
+_SEVEN_FAILURE_CODES = (
+    "('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED',\n"
+    "                'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED',\n"
+    "                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED',\n"
+    "                'CANDIDATE_CAPTURE_FAILED')"
+)
+_SIX_FAILURE_CODES = (
+    "('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED',\n"
+    "                'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED',\n"
+    "                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED')"
+)
+_V38_AGENT_ATTEMPT_TRIGGERS = {
+    "agent_attempts_state_transition": _PRODUCT_TRIGGERS[
+        "agent_attempts_state_transition"
+    ].replace(_SEVEN_FAILURE_CODES, _SIX_FAILURE_CODES),
+    "agent_attempts_no_delete": _PRODUCT_TRIGGERS["agent_attempts_no_delete"],
+}
+"""What V33 to V38 published: today's trigger without one word.
+
+Derived rather than copied out, the way every earlier vocabulary hop here is
+derived: the whole difference *is* the failure-code list, so writing the other
+250 lines again would be 250 more lines able to drift from the ones they have to
+match. The seven-code list occurs once -- the runner-evidence transition beside
+it still names six, because a runner-lease attempt never captures a candidate --
+so this replacement reaches exactly the transition the hop widened."""
 
 
 def _apply_v16_to_v17(connection: sqlite3.Connection) -> None:
@@ -4315,6 +4362,9 @@ def _apply_v36_to_v37(connection: sqlite3.Connection) -> None:
     COLUMN`. The attempt table's state-transition and no-delete triggers are
     reinstalled by the rebuild, because an attempt row that could take an
     unguarded transition for the length of one hop would be no ledger at all.
+    The triggers it reinstalls are V37's own, not today's: a hop must leave the
+    store standing at exactly the version it published, and the V39 word this
+    version has no CHECK for would break its own fingerprint one step later.
     """
 
     _rebuild_product_table(
@@ -4324,6 +4374,7 @@ def _apply_v36_to_v37(connection: sqlite3.Connection) -> None:
         _AGENT_ATTEMPTS_TRIGGERS,
         _VERSION_THIRTY_SIX,
         _VERSION_THIRTY_SEVEN,
+        trigger_source=_V38_AGENT_ATTEMPT_TRIGGERS,
     )
     _raise_declared_version(connection, _VERSION_THIRTY_SIX, _VERSION_THIRTY_SEVEN)
 
@@ -4366,6 +4417,32 @@ def _apply_v37_to_v38(connection: sqlite3.Connection) -> None:
     for trigger in _EFFECT_INTENTS_ABANDONMENT_TRIGGERS:
         connection.execute(_PRODUCT_TRIGGERS[trigger])
     _raise_declared_version(connection, _VERSION_THIRTY_SEVEN, _VERSION_THIRTY_EIGHT)
+
+
+_PREDECESSOR_ATTEMPTS_BEFORE_CANDIDATE_CAPTURE_FAILED = (
+    "agent_attempts_before_candidate_capture_failed"
+)
+
+
+def _apply_v38_to_v39(connection: sqlite3.Connection) -> None:
+    """Admit CANDIDATE_CAPTURE_FAILED as a failure code, and keep every row.
+
+    Every stored FAILED attempt carries one of the six older codes, which the
+    widened constraint still admits, so no ending changes meaning. Nothing is
+    backfilled either: an attempt that ended before this word could not have
+    failed for this reason, and saying it did would invent a loss that never
+    happened.
+    """
+
+    _rebuild_product_table(
+        connection,
+        agent_attempts,
+        _PREDECESSOR_ATTEMPTS_BEFORE_CANDIDATE_CAPTURE_FAILED,
+        _AGENT_ATTEMPTS_TRIGGERS,
+        _VERSION_THIRTY_EIGHT,
+        _VERSION_THIRTY_NINE,
+    )
+    _raise_declared_version(connection, _VERSION_THIRTY_EIGHT, _VERSION_THIRTY_NINE)
 
 
 @dataclass(frozen=True)
@@ -4500,6 +4577,11 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _VERSION_THIRTY_SEVEN,
         _VERSION_THIRTY_EIGHT,
         _apply_v37_to_v38,
+    ),
+    _SchemaMigrationStep(
+        _VERSION_THIRTY_EIGHT,
+        _VERSION_THIRTY_NINE,
+        _apply_v38_to_v39,
     ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {

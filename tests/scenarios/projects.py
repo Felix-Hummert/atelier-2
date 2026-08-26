@@ -14,11 +14,18 @@ import json
 import os
 import subprocess
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from atelier2.adapters.project_source import LocalGitProjectSource
 from atelier2.adapters.project_verification import PROJECT_MANIFEST_NAME
-from atelier2.contracts.project_sources import GitObjectFormat, ProjectSourcePin
+from atelier2.contracts.agent_attempts import AgentAttemptId
+from atelier2.contracts.project_sources import (
+    CandidateTree,
+    GitObjectFormat,
+    ProjectSourcePin,
+)
+from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
 
 COMMITTING_SCENARIO = {
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -31,6 +38,33 @@ COMMITTING_SCENARIO = {
     "GIT_COMMITTER_DATE": "2026-01-01T00:00:00+00:00",
 }
 """Who commits and when, so a scenario's pins depend on its content alone."""
+
+
+@dataclass
+class CandidatesKeptInMemory:
+    """A candidate store for tests whose subject is not the keeping itself.
+
+    An attempt that cannot keep its work is a failed attempt, so every test
+    driving one has to give it somewhere to keep it -- even when what that test
+    is about is the grant, the process or the log. This answers the way the real
+    store answers, reduced to what a caller can observe: the work stated as the
+    tree it became, readable afterwards under the attempt that made it.
+
+    The tree it states is the pin's own, because a store inventing an object
+    name would let a test assert an address no repository could ever produce.
+    """
+
+    kept: dict[AgentAttemptId, CandidateTree] = field(default_factory=dict)
+
+    def capture(
+        self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
+    ) -> CandidateTree:
+        candidate = CandidateTree(lease.attempt_id, pin.tree)
+        self.kept[lease.attempt_id] = candidate
+        return candidate
+
+    def read(self, attempt_id: AgentAttemptId) -> CandidateTree | None:
+        return self.kept.get(attempt_id)
 
 
 def git_project(

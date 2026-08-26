@@ -48,6 +48,7 @@ from atelier2.adapters.dbos.schema import (
     _V24_AGENT_ATTEMPT_TRIGGERS,
     _V27_AGENT_ATTEMPT_STATE_TRANSITION,
     _V32_AGENT_ATTEMPT_TRIGGERS,
+    _V38_AGENT_ATTEMPT_TRIGGERS,
     _VERSION_TWENTY,
     _WAIT_ANSWERS_TRIGGERS,
     PRODUCT_SCHEMA_HANDOFF,
@@ -69,6 +70,7 @@ from atelier2.adapters.dbos.schema import (
     V35_SCHEMA_HANDOFF,
     V36_SCHEMA_HANDOFF,
     V37_SCHEMA_HANDOFF,
+    V38_SCHEMA_HANDOFF,
     MigrationRequired,
     _rebuild_product_table,
     _require_product_shape,
@@ -3640,37 +3642,48 @@ def _armed_attempt_values(revision_hash: WorkflowRevisionHash) -> dict[str, obje
     }
 
 
-def _populate_v36_attempt(database_path: Path) -> None:
-    """A store claiming the pre-transcript version, holding one armed attempt."""
+def _write_armed_attempt(connection: sqlite3.Connection) -> None:
+    """One started run standing at an armed attempt, written into an open store.
+
+    Shared by every fixture that measures an attempt hop, because the evidence
+    each of them needs is the same row; what differs between them is only which
+    shape the store was reverted to before it was written.
+    """
 
     revision = WorkflowRevision(b"name: bauhuette\n")
     values = _armed_attempt_values(revision.revision_hash)
+    connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute(
+        "INSERT INTO workflow_revisions (revision_hash, document) VALUES (?, ?)",
+        (revision.revision_hash.value, revision.document),
+    )
+    connection.execute(
+        "INSERT INTO runs (run_id, bootstrap_workflow_id, revision_hash, "
+        "workflow_format_version, current_node_id, current_round_ordinal, "
+        "state, state_version, last_event_sequence, terminal_hash) "
+        "VALUES (?, ?, ?, 1, ?, ?, ?, 1, 0, NULL)",
+        (
+            _ARMED_RUN.value,
+            f"bootstrap-{_ARMED_RUN.value}",
+            revision.revision_hash.value,
+            _ARMED_NODE,
+            FIRST_ROUND_ORDINAL,
+            RunState.STARTED.value,
+        ),
+    )
+    connection.execute(
+        f"INSERT INTO agent_attempts ({', '.join(values)}) "
+        f"VALUES ({', '.join('?' for _ in values)})",
+        tuple(values.values()),
+    )
+
+
+def _populate_v36_attempt(database_path: Path) -> None:
+    """A store claiming the pre-transcript version, holding one armed attempt."""
+
     with sqlite3.connect(database_path) as connection:
         _revert_the_attempt_transcript_pointer(connection)
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute(
-            "INSERT INTO workflow_revisions (revision_hash, document) VALUES (?, ?)",
-            (revision.revision_hash.value, revision.document),
-        )
-        connection.execute(
-            "INSERT INTO runs (run_id, bootstrap_workflow_id, revision_hash, "
-            "workflow_format_version, current_node_id, current_round_ordinal, "
-            "state, state_version, last_event_sequence, terminal_hash) "
-            "VALUES (?, ?, ?, 1, ?, ?, ?, 1, 0, NULL)",
-            (
-                _ARMED_RUN.value,
-                f"bootstrap-{_ARMED_RUN.value}",
-                revision.revision_hash.value,
-                _ARMED_NODE,
-                FIRST_ROUND_ORDINAL,
-                RunState.STARTED.value,
-            ),
-        )
-        connection.execute(
-            f"INSERT INTO agent_attempts ({', '.join(values)}) "
-            f"VALUES ({', '.join('?' for _ in values)})",
-            tuple(values.values()),
-        )
+        _write_armed_attempt(connection)
         _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -4048,6 +4061,29 @@ def _revert_the_abandoned_intent_state(connection: sqlite3.Connection) -> None:
     )
 
 
+_PARKED_CURRENT_ATTEMPTS_V39 = "agent_attempts_after_the_candidate_capture"
+
+
+def _revert_the_candidate_capture_code(connection: sqlite3.Connection) -> None:
+    """Restore the attempt table as V37 and V38 both published it.
+
+    The #642 hop widened one CHECK and one transition; no hop between V37 and
+    V38 moved this table at all, so one published record is the record for both
+    versions, and each fixture's own pinned fingerprint refuses it the moment
+    anything else about the table drifted.
+    """
+
+    _rebuild_product_table(
+        connection,
+        agent_attempts,
+        _PARKED_CURRENT_ATTEMPTS_V39,
+        _AGENT_ATTEMPTS_TRIGGERS,
+        SCHEMA_VERSION,
+        V38_SCHEMA_HANDOFF.version,
+        trigger_source=_V38_AGENT_ATTEMPT_TRIGGERS,
+    )
+
+
 def _create_exact_v37_store(database_path: Path) -> None:
     """A current store with no word for an abandoned intent: the V37 shape.
 
@@ -4060,6 +4096,7 @@ def _create_exact_v37_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _revert_the_candidate_capture_code(connection)
         _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -4114,6 +4151,7 @@ def _create_populated_v37_store(database_path: Path) -> None:
     revision = _DRIVERLESS_REVISION
     values = _prepared_intent_values()
     with sqlite3.connect(database_path) as connection:
+        _revert_the_candidate_capture_code(connection)
         _revert_the_abandoned_intent_state(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(
@@ -4413,3 +4451,99 @@ def test_a_refused_abandonment_hop_leaves_the_v37_store_untouched(
         assert connection.execute(
             "SELECT version FROM atelier_schema_versions"
         ).fetchone() == (37,)
+
+
+def _create_exact_v38_store(database_path: Path) -> None:
+    """A current store with no word for work that was done and lost: the V38 shape.
+
+    V38 differs from the current schema in one CHECK and one transition -- no
+    column, no key, no other table -- and the pinned V38 fingerprint refuses the
+    fixture the moment anything else about it drifts.
+    """
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _revert_the_candidate_capture_code(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V38_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V38_SCHEMA_HANDOFF.version)
+
+
+def _create_populated_v38_store(database_path: Path) -> None:
+    """A published V38 store with one armed attempt already in it."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _revert_the_candidate_capture_code(connection)
+        _write_armed_attempt(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V38_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V38_SCHEMA_HANDOFF.version)
+
+
+def test_an_exact_v38_store_migrates_to_v39_by_admitting_a_lost_candidate(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v38_store(database_path)
+
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 38"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    shown = capsys.readouterr()
+    assert "38" in shown.out and "39" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
+        )
+    engine.dispose()
+
+
+def test_every_v38_attempt_column_crosses_the_v39_rebuild_unchanged(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The hop widens a vocabulary; it reinterprets no stored attempt.
+
+    An attempt this store already holds could not have failed for a reason the
+    schema had no word for, so the hop backfills nothing and rewrites nothing --
+    it only makes the next attempt able to say it.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v38_store(database_path)
+    columns = tuple(
+        _armed_attempt_values(WorkflowRevision(b"name: bauhuette\n").revision_hash)
+    )
+    projected = ", ".join(columns)
+    with sqlite3.connect(database_path) as connection:
+        predecessor_row = connection.execute(
+            f"SELECT {projected} FROM agent_attempts"
+        ).fetchone()
+    assert predecessor_row is not None
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            connection.execute(f"SELECT {projected} FROM agent_attempts").fetchone()
+            == predecessor_row
+        )

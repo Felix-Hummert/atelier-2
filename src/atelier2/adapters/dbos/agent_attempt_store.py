@@ -2109,10 +2109,56 @@ class DbosAgentAttemptStore:
         one" and "a verification timed out afterwards" -- and a reader could not
         tell which.
         """
+        return self._judged_armed_failure(
+            execution,
+            AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED,
+            NodeReceiptReason.PROJECT_VERIFICATION_FAILED,
+            verdict,
+            transcript,
+        )
+
+    def complete_candidate_capture_failure(
+        self,
+        execution: AgentAttemptExecution,
+        verdict: str,
+        transcript: AttemptTranscript | None = None,
+    ) -> AgentAttemptFailed:
+        """End the armed attempt whose finished work could not be kept.
+
+        Nothing about this attempt went wrong except the last thing: the process
+        answered, the schema admitted the bytes and any granted check passed.
+        What failed is the keeping, so `verdict` carries the store's own words
+        rather than an exit code no process produced.
+
+        The provider's steps are kept here for a stronger reason than anywhere
+        else. Once the workspace is released, the transcript is the only
+        surviving evidence that this work was ever done at all.
+        """
+        return self._judged_armed_failure(
+            execution,
+            AgentAttemptFailureCode.CANDIDATE_CAPTURE_FAILED,
+            NodeReceiptReason.CANDIDATE_CAPTURE_FAILED,
+            verdict,
+            transcript,
+        )
+
+    def _judged_armed_failure(
+        self,
+        execution: AgentAttemptExecution,
+        failure: AgentAttemptFailureCode,
+        token: NodeReceiptReason,
+        verdict: str,
+        transcript: AttemptTranscript | None,
+    ) -> AgentAttemptFailed:
+        """End this run's armed current attempt under one judged ending.
+
+        Every ending an attempt reaches *after* its claim has won -- and that
+        no process exit judged -- passes through here, because which attempt may
+        end is one rule: the armed current attempt of a started run, and nothing
+        else. Two copies of that rule would be two chances for it to drift.
+        """
         if not verdict:
-            raise ValueError(
-                "a project-verification failure names why the command did not complete"
-            )
+            raise ValueError(f"an ending named {token.value} says why it happened")
         request = execution.request
         with canonical_write_transaction(self._engine) as connection:
             run, _graph = _validate_request(connection, request)
@@ -2128,11 +2174,8 @@ class DbosAgentAttemptStore:
                 connection,
                 execution,
                 durable,
-                AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED,
-                node_receipt_reason(
-                    NodeReceiptReason.PROJECT_VERIFICATION_FAILED,
-                    verdict,
-                ),
+                failure,
+                node_receipt_reason(token, verdict),
                 transcript=transcript,
             )
 

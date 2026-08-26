@@ -459,7 +459,7 @@ def test_the_binding_of_a_node_pins_the_project_source_it_will_work_in(
             RUN,
             workflow.revision_hash,
             "implement",
-            declared_project(root),
+            declared_project(root, runtime.settings.database_path),
         ),
     )
 
