@@ -38,7 +38,6 @@ from atelier2.adapters.bounded_processes import (
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
-    MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
     AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutionResult,
@@ -62,15 +61,16 @@ GROK_SUBSCRIPTION_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
     "headless-print-json/v1"
 )
 
-# Same portable ceiling as the process port. Measured on grok 1.0.4
-# `--output-format json` (re-measured 19.08.2026, build d846eb93d9): the
-# durable answer is `text`; `thought` is the turn narration and is not the
-# answer. `--json-schema` adds `structuredOutput` as the parsed form of
-# `text`, not a later assistant message. Metadata size is not a tighter
-# allowance. A durable-legal answer still fits: JSON escaping expands one
-# source byte to at most six frame bytes (6 * 49,152 = 294,912), leaving
-# the remainder for metadata.
-GROK_SUBSCRIPTION_FRAME_BYTES = MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES
+# This executor's own frame, stated here rather than borrowed from the port's
+# ceiling: a frame another provider measures must not widen what this process
+# may write. Measured on grok 1.0.4 `--output-format json` (re-measured
+# 19.08.2026, build d846eb93d9): the durable answer is `text`; `thought` is the
+# turn narration and is not the answer. `--json-schema` adds `structuredOutput`
+# as the parsed form of `text`, not a later assistant message. Metadata size is
+# not a tighter allowance. A durable-legal answer still fits: JSON escaping
+# expands one source byte to at most six frame bytes (6 * 49,152 = 294,912),
+# leaving the remainder for metadata.
+GROK_SUBSCRIPTION_FRAME_BYTES = 8 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
 
 CONFORMANT_GROK_VERSIONS = frozenset({(1, 0, 4)})
 
