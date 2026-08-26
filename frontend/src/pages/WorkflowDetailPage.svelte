@@ -18,11 +18,14 @@
   } from "../lib/readResource";
   import { readEveryRevision } from "../lib/runPages";
   import { groupSavedWorkflows } from "../lib/savedWorkflows";
-  import { catalogStateNote, workflowsPageCopy } from "../lib/workflowsPageCopy";
+  import { WORKSHOP_DESTINATION } from "../lib/workshop";
+  import { catalogPageCopy, catalogStateNote, workflowDetailCopy } from "../lib/catalogPageCopy";
 
   export let cockpitApi: CockpitApi;
   export let navigate: (path: string) => void;
   export let name: string;
+
+  const catalog = WORKSHOP_DESTINATION.catalog;
 
   type ReadFailure =
     | { kind: "unavailable"; title: string }
@@ -76,7 +79,7 @@
       if (!reading.complete) {
         detail = failRead(detail, begun.generation, {
           kind: "incomplete",
-          title: workflowsPageCopy.detailUnavailable
+          title: workflowDetailCopy.detailUnavailable
         });
         return;
       }
@@ -85,7 +88,7 @@
       if (newestByName === null) {
         detail = failRead(detail, begun.generation, {
           kind: "unavailable",
-          title: workflowsPageCopy.detailUnavailable
+          title: workflowDetailCopy.detailUnavailable
         });
         return;
       }
@@ -100,10 +103,10 @@
       const full = await cockpitApi.getWorkflowRevision(head.workflow_revision_hash);
       detail = confirmRead(detail, begun.generation, { kind: "found", detail: full, catalogState });
     } catch (error) {
-      failureMessage = humanErrorMessage(error, workflowsPageCopy.detailUnavailable);
+      failureMessage = humanErrorMessage(error, workflowDetailCopy.detailUnavailable);
       detail = failRead(detail, begun.generation, {
         kind: "unavailable",
-        title: workflowsPageCopy.detailUnavailable
+        title: workflowDetailCopy.detailUnavailable
       });
     }
   }
@@ -128,14 +131,14 @@
 </script>
 
 <section class="surface" aria-labelledby="workflow-detail-title">
-  <BackLink label="Workflows" path="/atelier/workflows" {navigate} />
+  <BackLink label={catalog.label} path={catalog.path} {navigate} />
 
   <ReadState read={detail} label="workflow detail" onRetry={() => { void load(); }} />
   {#if failureMessage !== null}<p class="failure" role="alert">{failureMessage}</p>{/if}
 
   {#if detail.confirmed?.kind === "not-found"}
-    <p class="empty-title">{wrapDisplayCopy(workflowsPageCopy.notFoundTitle)}</p>
-    <p class="muted">{wrapDisplayCopy(workflowsPageCopy.notFoundDescription)}</p>
+    <p class="empty-title">{wrapDisplayCopy(workflowDetailCopy.notFoundTitle)}</p>
+    <p class="muted">{wrapDisplayCopy(workflowDetailCopy.notFoundDescription)}</p>
   {:else if graph !== null}
     <header class="surface-head detail-head">
       <div>
@@ -152,11 +155,11 @@
         class="primary"
         disabled={retired || (graph.workflow_format_version === 3 && !graph.executable)}
         onclick={goToStart}
-      >{wrapDisplayCopy(workflowsPageCopy.start)}</button>
+      >{wrapDisplayCopy(catalogPageCopy.start)}</button>
     </header>
 
     {#if retired}
-      <p class="failure" role="alert">{wrapDisplayCopy(workflowsPageCopy.retiredNotice)}</p>
+      <p class="failure" role="alert">{wrapDisplayCopy(workflowDetailCopy.retiredNotice)}</p>
     {:else if graph.workflow_format_version === 3 && !graph.executable}
       <p class="failure" role="alert">{cannotBeStarted(graph.not_executable_reason)}</p>
     {/if}
@@ -164,7 +167,7 @@
     {#if previews !== null}
       <WorkflowGraphDrawing {previews} {loops} onSelect={selectNode} {selectedNodeId} />
     {:else}
-      <p class="muted">{wrapDisplayCopy(workflowsPageCopy.graphUnavailable)}</p>
+      <p class="muted">{wrapDisplayCopy(workflowDetailCopy.graphUnavailable)}</p>
     {/if}
 
     {#if selectedPreview !== null}

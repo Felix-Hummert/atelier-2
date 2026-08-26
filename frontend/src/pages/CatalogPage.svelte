@@ -35,6 +35,13 @@
   export let cockpitApi: CockpitApi;
   export let navigate: (path: string) => void;
 
+  /**
+   * The door that starts a run by hand. It keeps its own address for now;
+   * moving it into the entry's own detail page, with the order form and the
+   * roles, is the successor phase's work.
+   */
+  const START_DOOR_PATH = "/atelier/new";
+
   type ReadFailure =
     | { kind: "unavailable"; title: string }
     | { kind: "incomplete"; title: string };
@@ -213,10 +220,13 @@
                   )}</button
                 >
               {:else if row.state?.kind === "startable"}
+                <!-- Starting lives in this room now that the Workflows room is
+                     gone: the entry leads straight to the start door instead of
+                     through a second room (ADR 0019 §1). -->
                 <a
                   class="button"
-                  href="/atelier/workflows"
-                  onclick={(event) => { event.preventDefault(); navigate("/atelier/workflows"); }}
+                  href={START_DOOR_PATH}
+                  onclick={(event) => { event.preventDefault(); navigate(START_DOOR_PATH); }}
                   >{wrapDisplayCopy(catalogPageCopy.start)}</a
                 >
               {/if}

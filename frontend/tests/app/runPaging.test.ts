@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App.svelte";
 import type { CockpitApi, RunV1 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
-import { projectPageCopy } from "../../src/lib/projectPageCopy";
+import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
 import { standingMarks, standingWords } from "../../src/lib/runState";
 import {
   cockpitApiStub,
@@ -51,7 +51,7 @@ describe("the workshop reads the durable list to its end", () => {
 
     // The finished run lives only on the second page: it is counted only if
     // the reader followed the cursor to the end.
-    const work = await screen.findByRole("region", { name: projectPageCopy.workTitle });
+    const work = await screen.findByRole("region", { name: settingsPageCopy.workTitle });
     await within(work).findAllByRole("listitem");
     const counts = within(work)
       .getAllByRole("listitem")
@@ -64,7 +64,7 @@ describe("the workshop reads the durable list to its end", () => {
 
   it("stops saying that reading further is unbuilt, because it is built", async () => {
     open("/atelier/project", pagedListRuns([firstPage, secondPage]));
-    const work = await screen.findByRole("region", { name: projectPageCopy.workTitle });
+    const work = await screen.findByRole("region", { name: settingsPageCopy.workTitle });
     await within(work).findAllByRole("listitem");
 
     expect(within(work).queryByText(/not built yet/i)).toBeNull();
@@ -86,7 +86,7 @@ describe("the workshop reads the durable list to its end", () => {
 
     const notice = await screen.findByRole("alert");
 
-    expect(notice.textContent).toContain(projectPageCopy.runsIncomplete);
+    expect(notice.textContent).toContain(settingsPageCopy.runsIncomplete);
     expect(screen.queryByText(standingWords.running)).toBeNull();
     expect(screen.queryByText("run-0")).toBeNull();
     expect(screen.queryByText(standingWords.done)).toBeNull();
@@ -107,7 +107,7 @@ describe("the workshop reads the durable list to its end", () => {
 
     const notice = await screen.findByRole("alert");
 
-    expect(notice.textContent).toContain(projectPageCopy.runsIncomplete);
+    expect(notice.textContent).toContain(settingsPageCopy.runsIncomplete);
     expect(listRuns.mock.calls.length).toBeLessThanOrEqual(3);
     expect(screen.queryByText(standingWords.done)).toBeNull();
     expect(screen.queryByText("the-finished-one")).toBeNull();

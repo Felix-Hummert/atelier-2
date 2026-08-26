@@ -32,6 +32,24 @@ function activityMs(run: AnyRun): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
+/**
+ * Resolves a run's workflow name from the described catalog listing, keyed by
+ * `workflow_revision_hash`.
+ *
+ * A hash the catalog never described, a described revision with no name (a V1
+ * revision names nothing, per the served document), and a catalog this round
+ * could not read at all (`null`) all fall back to the run id honestly --
+ * never a placeholder that reads like a real name. The catalog read is
+ * enrichment over the confirmed run list, not a gate on it: a run still shows
+ * with its own real fields even when its name could not be resolved.
+ */
+export function resolveWorkflowName(
+  run: AnyRun,
+  workflowNames: ReadonlyMap<string, string | null> | null
+): string {
+  return workflowNames?.get(run.workflow_revision_hash) ?? run.run_id;
+}
+
 /** Published V3 titles keyed by the revision hash the run already carries. */
 export async function workflowNamesOf(
   runs: readonly AnyRun[],

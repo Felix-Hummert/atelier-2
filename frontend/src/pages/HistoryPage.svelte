@@ -23,9 +23,12 @@
   import { workflowNamesOf } from "../lib/runList";
   import { readEveryRun } from "../lib/runPages";
   import { ageLabel, exactLocal } from "../lib/when";
+  import { WORKSHOP_DESTINATION } from "../lib/workshop";
 
   export let cockpitApi: CockpitApi;
   export let navigate: (path: string) => void;
+
+  const catalogPath = WORKSHOP_DESTINATION.catalog.path;
 
   interface HistorySnapshot {
     runs: AnyRun[];
@@ -115,8 +118,8 @@
         <p>{wrapDisplayCopy(historyPageCopy.emptyDescription)}</p>
         <a
           class="button primary"
-          href="/atelier/workflows"
-          onclick={(event) => { event.preventDefault(); navigate("/atelier/workflows"); }}
+          href={catalogPath}
+          onclick={(event) => { event.preventDefault(); navigate(catalogPath); }}
         >{wrapDisplayCopy(historyPageCopy.emptyNext)}</a>
       </div>
     {:else}

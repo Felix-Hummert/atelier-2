@@ -5,7 +5,7 @@ import { shortFingerprint } from "../../src/lib/fingerprint";
 import { NAMED_AGENT_CHOICE_STORAGE_KEY } from "../../src/lib/namedAgentChoice";
 import { PRODUCT_NAME } from "../../src/lib/productName";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
-import { projectPageCopy } from "../../src/lib/projectPageCopy";
+import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { standingWords } from "../../src/lib/runState";
 
@@ -52,35 +52,35 @@ function declaredOutput(schemaHash: string, name = "result"): string[] {
 
 test("the target-UI shell names today's doors and does not fake the rest", async ({ page }) => {
   await page.goto("/atelier");
-  await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
 
   const rail = page.getByRole("navigation", { name: "Workshop" });
-  // The brand wordmark and the project slot share one name source (#654),
-  // so the one product name stands in the rail exactly twice.
+  // The brand wordmark and the project name under Settings share one source
+  // (#654), so the one product name stands in the rail exactly twice.
   await expect(rail.getByText(PRODUCT_NAME, { exact: true })).toHaveCount(2);
   await expect(page).toHaveTitle(PRODUCT_NAME);
-  await expect(rail.getByRole("link", { name: "Board" })).toBeVisible();
-  await expect(rail.getByRole("link", { name: "Workflows" })).toBeVisible();
-  await expect(rail.getByRole("link", { name: "History" })).toBeVisible();
   await expect(rail.getByRole("link", { name: "Workbench" })).toBeVisible();
-  await expect(rail.getByText("switch project")).toBeVisible();
-  await expect(rail.getByText("Settings", { exact: true })).toBeVisible();
-  await expect(rail.getByText("Profile", { exact: true })).toBeVisible();
-  // Only Settings and Profile are still marked later; every rail destination
-  // opens a page now.
-  await expect(rail.getByText("Not built yet", { exact: true })).toHaveCount(1);
+  await expect(rail.getByRole("link", { name: "Catalog" })).toBeVisible();
+  await expect(rail.getByRole("link", { name: "History" })).toBeVisible();
+  await expect(rail.getByRole("link", { name: /Settings/ })).toBeVisible();
+  // The rooms the picture retired leave no entry behind, and the rail holds no
+  // slot that cannot be clicked (ADR 0019 §1 and §4).
+  await expect(rail.getByRole("link", { name: "Board" })).toHaveCount(0);
+  await expect(rail.getByRole("link", { name: "Workflows" })).toHaveCount(0);
+  await expect(rail.getByText("Not built yet", { exact: true })).toHaveCount(0);
+  await expect(rail.getByText("Profile", { exact: true })).toHaveCount(0);
 
   await rail.getByRole("link", { name: "History" }).click();
   await expect(page.getByRole("heading", { name: "History" })).toBeVisible();
   await expect(page).toHaveURL(/\/atelier\/history$/);
 
-  await rail.getByRole("link", { name: "Workflows" }).click();
-  await expect(page.getByRole("heading", { name: "Workflows" })).toBeVisible();
-  await expect(page).toHaveURL(/\/atelier\/workflows$/);
+  await rail.getByRole("link", { name: "Catalog" }).click();
+  await expect(page.getByRole("heading", { name: "Catalog" })).toBeVisible();
+  await expect(page).toHaveURL(/\/atelier\/catalog$/);
 
-  await rail.getByRole("link", { name: "Board" }).click();
-  await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
-  await expect(page).toHaveURL(/\/atelier$/);
+  await rail.getByRole("link", { name: "Workbench" }).click();
+  await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
+  await expect(page).toHaveURL(/\/atelier\/chat$/);
 
   await page.screenshot({ path: "test-results/shell-desktop.png", fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -124,17 +124,15 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
     localStorage.setItem(key, JSON.stringify({ builder: hash }));
   }, { key: NAMED_AGENT_CHOICE_STORAGE_KEY, hash: configurationHash });
 
-  // Starting a run is Workflows' own door now (#532: Board carries no Start of
-  // any kind). The V2 workflow this journey starts declares no name of its
-  // own -- only a V3 document can (`boardRows.ts`'s honest run-id fallback
-  // says the same) -- so a second, minimal named V3 workflow exists purely as
-  // the keyboard vehicle into New Run; the run this journey proves out is
-  // still chosen by its own hash below, unrelated to this vehicle. Workflows
-  // is the start room now (#684): only an admitted, startable workflow gets a
-  // card there, so this vehicle is admitted the moment it is published.
+  // Starting a run is the Catalog's own door now (ADR 0019 §1). The V2
+  // workflow this journey starts declares no name of its own -- only a V3
+  // document can -- so a second, minimal named V3 workflow exists purely as
+  // the keyboard vehicle into the start door; the run this journey proves out
+  // is still chosen by its own hash below, unrelated to this vehicle. Only an
+  // admitted, startable entry offers Start, so this vehicle is admitted the
+  // moment it is published.
   const doorSchemaHash = await anyJsonSchema(page);
-  // A catalog-grammar name (#684: Workflows shows only what the catalog
-  // admits, and admission takes its name from this field).
+  // A catalog-grammar name: admission takes its name from this field.
   const doorName = "keyboard-journey-door";
   const door = await page.request.post("/atelier/api/v1/workflow-revisions", {
     headers: { "content-type": "application/yaml" },
@@ -170,25 +168,26 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
     Object.assign(window, { observedMainMarkers: observed });
   });
   const stage = page.getByRole("main");
-  // The harness seeds two waiting runs at boot, so Board is never in its
-  // empty state here.
   const rail = page.getByRole("navigation", { name: "Workshop" });
-  const workflowsLink = rail.getByRole("link", { name: "Workflows" });
-  for (let tab = 0; tab < 8 && !(await workflowsLink.evaluate((element) => element === document.activeElement)); tab += 1) {
+  const catalogLink = rail.getByRole("link", { name: "Catalog" });
+  for (let tab = 0; tab < 8 && !(await catalogLink.evaluate((element) => element === document.activeElement)); tab += 1) {
     await page.keyboard.press("Tab");
   }
-  await expect(workflowsLink).toBeFocused();
+  await expect(catalogLink).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(stage).toBeFocused();
 
-  // Every card in the start room leads straight to New Run (#684): one
-  // keyboard act, not a hop through a detail page first.
-  const doorCard = page.getByRole("button", { name: new RegExp(doorName) });
-  await expect(doorCard).toBeVisible();
-  for (let tab = 0; tab < 8 && !(await doorCard.evaluate((element) => element === document.activeElement)); tab += 1) {
+  // A startable entry's own Start leads straight to the start door (ADR 0019
+  // §1): one keyboard act, with no second room in between.
+  const doorStart = page
+    .locator("li.entry")
+    .filter({ hasText: doorName })
+    .getByRole("link", { name: "Start", exact: true });
+  await expect(doorStart).toBeVisible();
+  for (let tab = 0; tab < 60 && !(await doorStart.evaluate((element) => element === document.activeElement)); tab += 1) {
     await page.keyboard.press("Tab");
   }
-  await expect(doorCard).toBeFocused();
+  await expect(doorStart).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(stage).toBeFocused();
   const savedRevision = page
@@ -304,23 +303,23 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
   await assertNoSeriousAccessibilityFindings(page);
   await assertMobileSurface(page);
   await page.screenshot({ path: "test-results/v2-keyboard-journey-390x844.png", fullPage: true });
-  const board = page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: "Board" });
-  for (let tab = 0; tab < 40 && !(await board.evaluate((element) => element === document.activeElement)); tab += 1) {
+  const home = page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: "Workbench" });
+  for (let tab = 0; tab < 40 && !(await home.evaluate((element) => element === document.activeElement)); tab += 1) {
     await page.keyboard.press("Tab");
   }
-  await expect(board).toBeFocused();
+  await expect(home).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(stage).toBeFocused();
-  await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { observedMainMarkers: string[] }).observedMainMarkers)).toEqual([
-    // The whole keyboard journey, surface by surface: the start room, the
-    // door workflow's own start door, the run it started, and back to the
-    // Board -- one hop, not two, since a start-room card leads straight to
-    // New Run (#684).
-    "workflows-title",
+    // The whole keyboard journey, surface by surface: the catalog, the start
+    // door the entry leads straight to, the run it started, and back to the
+    // Workbench -- one hop, not two, since the entry's Start needs no second
+    // room in between (ADR 0019 §1).
+    "catalog-title",
     "new-title",
     "run-title",
-    "board-title"
+    "workbench-title"
   ]);
 });
 
@@ -339,11 +338,13 @@ test("opens the project level from a cold link and survives a reload", async ({ 
   await expect(page).toHaveURL(/\/atelier\/project$/);
 });
 
-test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read): Board recovers one retained three-list-plus-catalog read", async ({ page }) => {
+// The identifier stays "the-studio-…" (acceptance/440): the room whose read it
+// measures is the Workbench since ADR 0019 retired the Board.
+test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read): the Workbench recovers one retained three-list-plus-catalog read", async ({ page }) => {
   const runListPath = "/atelier/api/v1/runs";
   const catalogPath = "/atelier/api/v1/workflow-revisions";
-  // The Board reads only the non-terminal run states -- what still moves or
-  // wants a human now (operator ruling #667). A terminal run belongs to
+  // The Workbench reads only the non-terminal run states -- what still moves
+  // or wants a human now (operator ruling #667). A terminal run belongs to
   // History instead, so it is never asked for here.
   const expectedStates = ["STARTED", "WAITING_INPUT", "WAITING_RECONCILIATION"];
   let readsFail = true;
@@ -366,7 +367,7 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
     }
   });
 
-  const expectOnlyBoardRead = (): void => {
+  const expectOnlyRoomRead = (): void => {
     const runRequests = observed.filter(({ path }) => path === runListPath);
     const catalogRequests = observed.filter(({ path }) => path === catalogPath);
     expect(observed).toHaveLength(runRequests.length + catalogRequests.length);
@@ -377,19 +378,19 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
   };
 
   await page.goto("/atelier");
-  await expect(page.getByText("Board runs unavailable")).toBeVisible();
+  await expect(page.getByText("Workbench runs unavailable")).toBeVisible();
   await expect(page.getByText(/Failed to fetch/)).toHaveCount(0);
-  const retry = page.getByRole("button", { name: "Retry board runs" });
+  const retry = page.getByRole("button", { name: "Retry workbench runs" });
   await expect(retry).toHaveCount(1);
-  const boardUrl = page.url();
+  const roomUrl = page.url();
 
   observed.length = 0;
   await retry.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByText("Board runs unavailable")).toBeVisible();
+  await expect(page.getByText("Workbench runs unavailable")).toBeVisible();
   await expect(retry).toBeFocused();
-  expectOnlyBoardRead();
-  expect(page.url()).toBe(boardUrl);
+  expectOnlyRoomRead();
+  expect(page.url()).toBe(roomUrl);
 
   await page.keyboard.press("Shift+Tab");
   await page.keyboard.press("Tab");
@@ -398,29 +399,28 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
   await assertNoSeriousAccessibilityFindings(page);
   await page.addStyleTag({ content: "html { filter: grayscale(1); }" });
   await page.screenshot({
-    path: "test-results/read-recovery-studio-grayscale-desktop.png",
+    path: "test-results/read-recovery-workbench-grayscale-desktop.png",
     fullPage: true
   });
   await page.setViewportSize({ width: 390, height: 844 });
   await assertMobileSurface(page);
   await page.screenshot({
-    path: "test-results/read-recovery-studio-grayscale-390x844.png",
+    path: "test-results/read-recovery-workbench-grayscale-390x844.png",
     fullPage: true
   });
   await page.locator("style").last().evaluate((element) => element.remove());
 
   readsFail = false;
   observed.length = 0;
-  await page.getByRole("button", { name: "Retry board runs" }).click();
-  const board = page.locator(".board-page");
-  await expect(page.getByText("Board runs unavailable")).toHaveCount(0);
-  await expect(board).toBeVisible();
+  await page.getByRole("button", { name: "Retry workbench runs" }).click();
+  const room = page.locator(".workbench");
+  await expect(page.getByText("Workbench runs unavailable")).toHaveCount(0);
+  await expect(room).toBeVisible();
   // One freshness model, once confirmed: no Refresh or Retry control remains
-  // beside the live indicator (#532) -- the redundant permanent control this
-  // lane removes.
-  await expect(page.getByRole("button", { name: /board runs/ })).toHaveCount(0);
-  expectOnlyBoardRead();
-  expect(page.url()).toBe(boardUrl);
+  // (#532) -- the redundant permanent control this lane removes.
+  await expect(page.getByRole("button", { name: /workbench runs/ })).toHaveCount(0);
+  expectOnlyRoomRead();
+  expect(page.url()).toBe(roomUrl);
 });
 
 test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-read): Project recovers one atomic run-and-name read", async ({ page }) => {
@@ -585,7 +585,7 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
   observed.length = 0;
   await retry.click();
   await expect(page.getByText("Project runs unavailable")).toHaveCount(0);
-  await expect(page.getByRole("region", { name: projectPageCopy.workTitle })).toContainText(
+  await expect(page.getByRole("region", { name: settingsPageCopy.workTitle })).toContainText(
     `2 ${standingWords.running}`
   );
   // The rows themselves are the Board's, never repeated here (#536).
@@ -1198,15 +1198,13 @@ test("proves(new-run-confirms-workflow-detail-before-committing-selection-and-dr
   expect(page.url()).toBe(newRunUrl);
 });
 
-test("walks the whole workshop: board into the run, and one named way back", async ({ page }) => {
+test("walks the whole workshop: the workbench into the run, and one named way back", async ({ page }) => {
   await page.goto("/atelier");
-  await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
 
-  await page
-    .getByRole("region", { name: "Needs you" })
-    .getByRole("link")
-    .first()
-    .click();
+  // The living shelf beneath the pinned decisions: the run rows this room
+  // holds, each one click from its graph.
+  await page.locator("a.living-row").first().click();
   // This V1 fixture declares no workflow name; the title says that honestly
   // instead of leading with the raw run id (#506).
   await expect(page.getByRole("heading", { name: "Unnamed workflow" })).toBeVisible();
@@ -1214,14 +1212,14 @@ test("walks the whole workshop: board into the run, and one named way back", asy
   // repeats the page's own title beside it (operator ruling 23.08.).
   const trail = page.getByRole("navigation", { name: "Where you are" });
   await expect(trail.getByRole("link")).toHaveCount(1);
-  await expect(trail.getByRole("link", { name: "Board" })).toBeVisible();
+  await expect(trail.getByRole("link", { name: "Workbench" })).toBeVisible();
   await expect(trail).not.toContainText("Unnamed workflow");
   await page.screenshot({ path: "test-results/run-trail-desktop.png", fullPage: true });
   await assertNoSeriousAccessibilityFindings(page);
 
-  await trail.getByRole("link", { name: "Board" }).click();
-  await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
-  await expect(page).toHaveURL(/\/atelier$/);
+  await trail.getByRole("link", { name: "Workbench" }).click();
+  await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
+  await expect(page).toHaveURL(/\/atelier\/chat$/);
 });
 
 test("mobile Found and Absent reconcile exact durable runs", async ({ browser }) => {
@@ -2589,7 +2587,7 @@ test("a node whose answer its own contract refuses never reports success", async
 
   // The project counts the standing; the row itself is the Board's (#536).
   await page.goto(`/atelier/project`);
-  await expect(page.getByRole("region", { name: projectPageCopy.workTitle })).toContainText(
+  await expect(page.getByRole("region", { name: settingsPageCopy.workTitle })).toContainText(
     standingWords.failed
   );
 
@@ -3000,15 +2998,15 @@ test("two revisions of one lineage are one picker row; the older choice changes 
   });
 });
 
-test("Needs you names a run that is waiting for a person, by its catalog name", async ({ page }) => {
+test("the Workbench pins a run that is waiting for a person, by its catalog name", async ({ page }) => {
   const api = "/atelier/api/v1";
   const schemaHash = await anyJsonSchema(page);
-  const runId = "studio/waiting-inbox";
+  const runId = "workbench/waiting-inbox";
   const published = await page.request.post(`${api}/workflow-revisions`, {
     headers: { "content-type": "application/yaml" },
     data: [
       "format_version: 3",
-      "name: Waiting in the studio",
+      "name: Waiting on the workbench",
       "nodes:",
       "  - id: ask",
       "    type: wait",
@@ -3041,25 +3039,27 @@ test("Needs you names a run that is waiting for a person, by its catalog name", 
 
   await page.goto("/atelier");
   // This backend is shared across every earlier test in this file, so other
-  // runs may already sit in Needs you: this run is named, not counted.
-  const needsYou = page.getByRole("region", { name: /^Needs you/ });
-  const row = needsYou.getByRole("link", { name: /Waiting in the studio/ });
-  await expect(row).toBeVisible();
-  // A V3 wait carries its own inline "Answer here" disclosure inside this same
-  // card (#572, Leonardo-Gate 23.08.): the card names the deed, the row link
-  // itself stays the quiet door to the whole run.
-  const card = row.locator("xpath=ancestor::li[1]");
-  await expect(card.getByRole("button", { name: "Answer here" })).toBeVisible();
-  const boardLink = page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: /Board/ });
-  await expect(boardLink).toContainText(/[1-9]/);
+  // runs may already wait here: this run is named, not counted.
+  const pin = page.locator("section.pinned-decision").filter({ hasText: "Waiting on the workbench" });
+  await expect(pin).toBeVisible();
+  // The stage carries the question itself, and one quiet door to the whole run
+  // beside it -- never a second answer control of equal weight.
+  await expect(pin.getByRole("heading", { name: /Approve this/ })).toBeVisible();
+  const door = pin.getByRole("link");
+  await expect(door).toHaveCount(1);
+  // The one number the rail carries, ochre and only where something wants you.
+  const workbenchLink = page
+    .getByRole("navigation", { name: "Workshop" })
+    .getByRole("link", { name: /Workbench/ });
+  await expect(workbenchLink).toContainText(/[1-9]/);
 
-  await page.screenshot({ path: "test-results/studio-inbox-desktop.png", fullPage: true });
+  await page.screenshot({ path: "test-results/workbench-inbox-desktop.png", fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(row).toBeVisible();
+  await expect(pin).toBeVisible();
   await assertMobileSurface(page);
-  await page.screenshot({ path: "test-results/studio-inbox-390x844.png", fullPage: true });
+  await page.screenshot({ path: "test-results/workbench-inbox-390x844.png", fullPage: true });
 
-  await row.click();
+  await door.click();
   await expect(page).toHaveURL(new RegExp(`/atelier/runs/${reference.replace(".", "\\.")}$`));
 });
 

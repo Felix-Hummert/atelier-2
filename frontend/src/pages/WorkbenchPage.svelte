@@ -3,7 +3,7 @@
 
   import { isRunV3, type AnyRun, type CockpitApi, type RunV3 } from "../api/client";
   import PinnedDecision from "../components/PinnedDecision.svelte";
-  import { resolveWorkflowName } from "../lib/boardRows";
+  import ReadState from "../components/ReadState.svelte";
   import {
     currentChatTranscript,
     sendChatTurn,
@@ -19,28 +19,51 @@
   import { connectionState, onConnectionRecovered, restartNoticeCopy } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import type { MutationJournal } from "../lib/mutationJournal";
+  import {
+    beginRead,
+    confirmRead,
+    failRead,
+    retainedRead,
+    updateConfirmed,
+    type RetainedRead
+  } from "../lib/readResource";
   import { runPath } from "../lib/route";
+  import { resolveWorkflowName } from "../lib/runList";
   import { readEveryRevision, readEveryRun } from "../lib/runPages";
+  import { humanMove, runStanding, standingMarks } from "../lib/runState";
   import { workbenchPageCopy } from "../lib/workbenchPageCopy";
+  import { workbenchQuestionAttribute, workbenchQuestions } from "../lib/workbenchQuestions";
+  import { WORKSHOP_DESTINATION, runsWaitingForYou } from "../lib/workshop";
 
   /**
-   * The Workbench: the composer, and above it a fixed "Needs you" region that
-   * pins every open decision until it is answered. The pin is the whole point
-   * (issue #580) -- a decision request once got lost in the growing stream, so
-   * here it lives in its own non-scrolling region, never in the conversation
-   * that scrolls beneath it.
+   * The Workbench: what wants you now, what is moving, what was said, and the
+   * ear (ADR 0019 §1).
+   *
+   * A decision stands pinned in its own non-scrolling region until it is
+   * answered -- the whole point of issue #580, because a decision request once
+   * got lost in the growing stream. Beneath it lies the living shelf: the runs
+   * that are moving, each one click from its graph. The Board that used to hold
+   * those runs is gone, and nothing shows them twice.
    */
   export let cockpitApi: CockpitApi;
   export let mutationJournal: MutationJournal;
   export let navigate: (path: string) => void;
 
-  type Pin = { run: RunV3; workflowName: string };
+  type WorkbenchRuns = {
+    runs: AnyRun[];
+    /** Null when the described catalog could not be read this round: enrichment, not a gate. */
+    workflowNames: ReadonlyMap<string, string | null> | null;
+  };
+
+  type ReadFailure =
+    | { kind: "unavailable"; title: string }
+    | { kind: "incomplete"; title: string };
 
   /**
-   * Whether a conductor reads this composer. "reading" is the moment before
-   * the answer is known and "unreadable" the honest state when the reads
-   * themselves failed -- neither pretends "connected" or "absent", because
-   * either would be a guess dressed as a fact.
+   * Whether a conductor reads this ear. "reading" is the moment before the
+   * answer is known and "unreadable" the honest state when the reads themselves
+   * failed -- neither pretends "connected" or "absent", because either would be
+   * a guess dressed as a fact.
    */
   type ConductorLink =
     | { kind: "reading" }
@@ -48,7 +71,7 @@
     | { kind: "absent" }
     | { kind: "connected"; connection: ConductorConnection };
 
-  let pins: readonly Pin[] = [];
+  let live: RetainedRead<WorkbenchRuns, ReadFailure> = retainedRead<WorkbenchRuns, ReadFailure>();
   let transcript: readonly ChatMessage[] = currentChatTranscript();
   let typed = "";
   let composer: { focus(): void };
@@ -59,22 +82,24 @@
     house: workbenchPageCopy.houseLabel
   };
 
+  const catalogPath = WORKSHOP_DESTINATION.catalog.path;
+
   onMount(() => {
-    void loadPins();
+    void load();
     void resolveConductor();
     const unsubscribe = subscribeChatTranscript((next) => {
       const settledALine =
         transcript.some((line) => line.pending) && !next.some((line) => line.pending);
       transcript = next;
-      // A settled episode may have started runs or opened waits; the pinned
-      // region re-reads so a new decision does not wait for the next visit.
-      if (settledALine) void loadPins();
+      // A settled episode may have started runs or opened waits; the room
+      // re-reads so a new decision does not wait for the next visit.
+      if (settledALine) void load();
     });
     // A read that failed while the connection was lost stays failed once the
     // connection returns until something asks again -- reload was the only
     // way out (#700).
     const unsubscribeConnection = onConnectionRecovered(() => {
-      void loadPins();
+      void load();
       void resolveConductor();
     });
     return () => {
@@ -94,43 +119,85 @@
   }
 
   /**
-   * Every run stopped for a person, read the same way the Board reads it, so
-   * every open decision is pinned. These are read fresh on each visit (this
-   * runs on mount), not streamed: a decision that opens while the operator is
-   * already sitting on the Workbench appears on the next visit, not the moment
-   * it opens. Consuming the live attention stream the Board owns
-   * (`openAttentionEvents`) is a named successor gap, not built here. A read
-   * that could not name a workflow still pins the decision under the run's own
-   * id rather than losing it, the same honesty `resolveWorkflowName` already
-   * holds to.
+   * Every run that still moves or waits for a person, read fresh on each visit.
+   *
+   * The three non-terminal run states are one logical read: any of them
+   * incomplete stops the confirm, because a part shown as the whole would hide
+   * a run that wants you. A terminal run belongs to History and is never asked
+   * for here. The catalog read is enrichment over that truth, never a gate on
+   * it -- a run still confirms with its own real fields when its name could not
+   * be resolved, falling back to the run id honestly.
+   *
+   * These runs are not streamed: a decision that opens while the operator is
+   * already sitting here appears on the next read, not the moment it opens.
+   * Consuming the live attention stream is a named successor gap.
    */
-  async function loadPins(): Promise<void> {
-    const [waiting, revisions] = await Promise.all([
-      readEveryRun((after) => cockpitApi.listRuns(after, "WAITING_INPUT")),
-      readEveryRevision((after) => cockpitApi.listWorkflowRevisions(after))
-    ]);
-    const workflowNames = revisions.complete
-      ? new Map(revisions.revisions.map((revision) => [revision.workflow_revision_hash, revision.name]))
-      : null;
-    pins = waiting.runs
-      .filter(isRunV3)
-      .map((run) => ({ run, workflowName: resolveWorkflowName(run, workflowNames) }));
+  async function load(): Promise<void> {
+    const begun = beginRead(live);
+    live = begun.read;
+    try {
+      const [started, waitingInput, waitingReconciliation, revisions] = await Promise.all([
+        readEveryRun((after) => cockpitApi.listRuns(after, "STARTED")),
+        readEveryRun((after) => cockpitApi.listRuns(after, "WAITING_INPUT")),
+        readEveryRun((after) => cockpitApi.listRuns(after, "WAITING_RECONCILIATION")),
+        readEveryRevision((after) => cockpitApi.listWorkflowRevisions(after))
+      ]);
+      const runReadings = [started, waitingInput, waitingReconciliation];
+      if (runReadings.some((reading) => !reading.complete)) {
+        live = failRead(live, begun.generation, {
+          kind: "incomplete",
+          title: wrapDisplayCopy(workbenchPageCopy.runsIncomplete)
+        });
+        return;
+      }
+      const workflowNames = revisions.complete
+        ? new Map(
+            revisions.revisions.map((revision) => [revision.workflow_revision_hash, revision.name])
+          )
+        : null;
+      confirm(begun.generation, {
+        runs: runReadings.flatMap((reading) => reading.runs),
+        workflowNames
+      });
+    } catch {
+      live = failRead(live, begun.generation, {
+        kind: "unavailable",
+        title: wrapDisplayCopy(workbenchPageCopy.runsUnavailable)
+      });
+    }
+  }
+
+  function confirm(generation: number, confirmed: WorkbenchRuns): void {
+    const before = live;
+    live = confirmRead(live, generation, confirmed);
+    if (live !== before) publishCount(confirmed.runs);
+  }
+
+  /** The rail's ochre count: the last confirmed read, and no earlier. */
+  function publishCount(runs: readonly AnyRun[]): void {
+    runsWaitingForYou.set(runs.filter((run) => runStanding(run.state) === "waiting").length);
   }
 
   /**
    * A decision answered on its pinned card carries its run on: still waiting
    * (an accepted-but-uncertain answer) keeps the pin with the fresher run;
-   * anything else has moved past this gate, so the pin is retired. The pin
-   * never lingers as a question the run no longer asks.
+   * anything else has moved past this gate, so the run leaves this room for
+   * History. The pin never lingers as a question the run no longer asks.
    */
   function onRunRead(read: AnyRun): void {
-    if (isRunV3(read) && read.state === "WAITING_INPUT") {
-      pins = pins.map((pin) =>
-        pin.run.public_run_reference === read.public_run_reference ? { ...pin, run: read } : pin
-      );
-      return;
-    }
-    pins = pins.filter((pin) => pin.run.public_run_reference !== read.public_run_reference);
+    const confirmed = live.confirmed;
+    if (confirmed === null) return;
+    const others = confirmed.runs.filter(
+      (run) => run.public_run_reference !== read.public_run_reference
+    );
+    const runs = runHasMoved(read) ? others : [...others, read];
+    live = updateConfirmed(live, { ...confirmed, runs });
+    publishCount(runs);
+  }
+
+  function runHasMoved(run: AnyRun): boolean {
+    const standing = runStanding(run.state);
+    return standing !== "waiting" && standing !== "running";
   }
 
   /**
@@ -166,6 +233,27 @@
     if (event.key !== "Enter" || event.shiftKey) return;
     void send(event);
   }
+
+  $: snapshot = live.confirmed;
+  $: pins = (snapshot?.runs ?? [])
+    .filter((run): run is RunV3 => isRunV3(run) && run.state === "WAITING_INPUT")
+    .map((run) => ({
+      run,
+      workflowName: resolveWorkflowName(run, snapshot?.workflowNames ?? null)
+    }));
+  // Everything the pins do not already hold as a stage: what is moving, and
+  // what waits in a shape this room cannot answer inline (a reconciliation, a
+  // run of an older format). Each is one row, one click from its graph -- and
+  // nothing stands in both places.
+  $: shelf = (snapshot?.runs ?? [])
+    .filter((run) => !pins.some((pin) => pin.run.public_run_reference === run.public_run_reference))
+    .map((run) => ({
+      run,
+      standing: runStanding(run.state),
+      name: resolveWorkflowName(run, snapshot?.workflowNames ?? null),
+      at: isRunV3(run) ? run.current_node_id : run.current_node.node_id,
+      move: humanMove(run.state)
+    }));
 </script>
 
 <section class="workbench surface" aria-labelledby="workbench-title">
@@ -173,11 +261,17 @@
     <h1 id="workbench-title">{wrapDisplayCopy(workbenchPageCopy.title)}</h1>
   </header>
 
-  <section class="needs-you" aria-labelledby="needs-you-title">
-    <h2 id="needs-you-title" class="needs-you-title">{wrapDisplayCopy(workbenchPageCopy.needsYouTitle)}</h2>
-    {#if pins.length === 0}
-      <p class="needs-you-none">{wrapDisplayCopy(workbenchPageCopy.needsYouNone)}</p>
-    {:else}
+  <ReadState
+    read={live}
+    label={workbenchQuestions.reloadWorkbenchRuns.readLabel}
+    onRetry={() => { void load(); }}
+  />
+  {#if snapshot !== null && snapshot.workflowNames === null}
+    <p class="names-notice" role="status">{wrapDisplayCopy(workbenchPageCopy.workflowNamesUnavailable)}</p>
+  {/if}
+
+  {#if pins.length > 0}
+    <div class="needs-you">
       <ul class="needs-you-list">
         {#each pins as pin (pin.run.public_run_reference)}
           <li>
@@ -192,8 +286,32 @@
           </li>
         {/each}
       </ul>
-    {/if}
-  </section>
+    </div>
+  {/if}
+
+  <!-- The living shelf: what is moving, one click from its graph. No title
+       above it -- a framed row that opens says what it is (ADR 0019 §3). -->
+  {#if shelf.length > 0}
+    <ul class="living-shelf">
+      {#each shelf as row (row.run.public_run_reference)}
+        {@const path = runPath(row.run.public_run_reference)}
+        <li>
+          <a
+            class="living-row living-row-{row.standing}"
+            href={path}
+            onclick={(event) => { event.preventDefault(); navigate(path); }}
+          >
+            <span class="living-mark" aria-hidden="true">{standingMarks[row.standing]}</span>
+            <span class="living-name">{row.name}</span>
+            <span class="living-at">{row.at}</span>
+            {#if row.move !== null}
+              <span class="living-move">{wrapDisplayCopy(row.move)} →</span>
+            {/if}
+          </a>
+        </li>
+      {/each}
+    </ul>
+  {/if}
 
   {#if transcript.length === 0}
     <div class="workbench-empty card empty-state">
@@ -202,6 +320,12 @@
         <p>{wrapDisplayCopy(conductorChatCopy.emptyDescription)}</p>
       {:else}
         <p>{wrapDisplayCopy(workbenchPageCopy.emptyDescription)}</p>
+        <a
+          class="button primary"
+          href={catalogPath}
+          {...{ [workbenchQuestionAttribute]: workbenchQuestions.emptyStart.id }}
+          onclick={(event) => { event.preventDefault(); navigate(catalogPath); }}
+        >{wrapDisplayCopy(workbenchPageCopy.emptyStart)}</a>
       {/if}
     </div>
   {:else}
@@ -212,7 +336,7 @@
             <span class="conversation-speaker">{wrapDisplayCopy(speakerLabels[message.speaker])}</span>
             {message.text}
             {#if message.runReference !== undefined}
-              {@const episodePath = runPath(message.runReference, "chat")}
+              {@const episodePath = runPath(message.runReference)}
               <a
                 class="conversation-run-link"
                 href={episodePath}
@@ -240,7 +364,12 @@
         bind:this={composer}
         onkeydown={keydown}
       ></textarea>
-      <button class="primary" type="submit" disabled={$connectionState === "reconnecting"}>{wrapDisplayCopy(workbenchPageCopy.send)}</button>
+      <button
+        class="primary"
+        type="submit"
+        disabled={$connectionState === "reconnecting"}
+        {...{ [workbenchQuestionAttribute]: workbenchQuestions.saySomething.id }}
+      >{wrapDisplayCopy(workbenchPageCopy.send)}</button>
     </div>
     {#if $connectionState === "reconnecting"}
       <!-- The ear always names its own state in one sentence (HEART, "The
@@ -259,8 +388,8 @@
 </section>
 
 <style>
-  /* The pinned region and the composer are the two fixtures of the Workbench:
-     they hold to the top and bottom of the stage while the conversation scrolls
+  /* The pinned region and the ear are the two fixtures of the Workbench: they
+     hold to the top and bottom of the stage while the conversation scrolls
      between them, so an open decision never leaves the screen (issue #580). The
      stage's own ground shows through, so each fixture wears it to occlude the
      lines sliding under its edge. */
@@ -275,23 +404,6 @@
     background: var(--ground);
   }
 
-  /* The section title stays dim in both the empty and the populated state, the
-     Board's manners: hue belongs to a state that wants something, and here the
-     call for attention is the pinned card's clay border, not the heading. */
-  .needs-you-title {
-    margin: 0;
-    font-size: var(--text-2xs);
-    letter-spacing: var(--tracking-label);
-    text-transform: uppercase;
-    color: var(--ink-dim);
-  }
-
-  .needs-you-none {
-    margin: 0;
-    color: var(--ink-dim);
-    font-size: var(--text-sm);
-  }
-
   .needs-you-list {
     display: grid;
     gap: var(--space-3);
@@ -302,6 +414,71 @@
 
   .needs-you-list li {
     min-width: 0;
+  }
+
+  .names-notice {
+    margin: 0;
+    color: var(--ink-dim);
+    font-size: var(--text-xs);
+  }
+
+  .living-shelf {
+    display: grid;
+    gap: var(--space-2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  /* A framed row that opens: what lies on the living shelf is still in hand
+     (ADR 0019 §3), unlike History's ruled lines. */
+  .living-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2) var(--space-3);
+    min-height: var(--tap);
+    border: var(--edge) solid var(--line);
+    border-radius: var(--r-lg);
+    padding: var(--space-3) var(--space-4);
+    background: var(--panel2);
+    color: inherit;
+    font-size: var(--text-sm);
+    text-decoration: none;
+  }
+
+  .living-row:hover,
+  .living-row:focus-visible {
+    border-color: var(--accent);
+  }
+
+  .living-row-running .living-mark {
+    color: var(--signal-live);
+  }
+
+  .living-row-waiting .living-mark {
+    color: var(--signal-attention-mark);
+  }
+
+  .living-name {
+    font-weight: var(--weight-strong);
+    overflow-wrap: anywhere;
+  }
+
+  /* Which hand is at work, as the node's own name -- the fact, not a state
+     word beside a colour that already says it. */
+  .living-at {
+    margin-left: auto;
+    color: var(--ink-dim);
+    font-size: var(--text-xs);
+  }
+
+  /* The move a person still owes this run, where there is one: the row's own
+     door already opens it, so the words name the move, not the state. */
+  .living-move {
+    color: var(--accent);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-strong);
   }
 
   .conversation {
