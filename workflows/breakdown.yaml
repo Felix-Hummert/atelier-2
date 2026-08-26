@@ -6,11 +6,11 @@ description: >-
 graph_inputs:
   - name: item_body
     schema:
-      ref: diff_review_diff
+      ref: nonempty_string
       revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
   - name: owner_documents
     schema:
-      ref: diff_review_diff
+      ref: nonempty_string
       revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
 nodes:
   - id: plan
