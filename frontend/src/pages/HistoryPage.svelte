@@ -121,8 +121,9 @@
       </div>
     {:else}
       <div class="history-head-row" aria-hidden="true">
-        <span class="col-name">{wrapDisplayCopy(historyPageCopy.columnName)}</span>
         <span class="col-when">{wrapDisplayCopy(historyPageCopy.columnWhen)}</span>
+        <span class="col-name">{wrapDisplayCopy(historyPageCopy.columnName)}</span>
+        <span class="col-work-item">{wrapDisplayCopy(historyPageCopy.columnWorkItem)}</span>
         <span class="col-result">{wrapDisplayCopy(historyPageCopy.columnResult)}</span>
         <span class="col-duration">{wrapDisplayCopy(historyPageCopy.columnDuration)}</span>
       </div>
@@ -134,10 +135,6 @@
               href={runPath(row.run.public_run_reference)}
               onclick={open(row.run.public_run_reference)}
             >
-              <span class="row-name">
-                <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnName)}: </span>
-                {row.name}
-              </span>
               <span class="row-when">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnWhen)}: </span>
                 {#if row.activityAt !== null}
@@ -147,6 +144,19 @@
                 {:else}
                   {wrapDisplayCopy(historyPageCopy.notRecorded)}
                 {/if}
+              </span>
+              <span class="row-name">
+                <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnName)}: </span>
+                <span class="row-purpose">{row.purpose ?? row.workflowName}</span>
+                {#if row.purpose !== null}
+                  <small class="row-workflow">{row.workflowName}</small>
+                {/if}
+              </span>
+              <span class="row-work-item">
+                <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnWorkItem)}: </span>
+                <!-- Every run reads the honest placeholder until PR #766 projects a
+                     real work item onto a run; nothing here derives one. -->
+                {wrapDisplayCopy(historyPageCopy.workItemPlaceholder)}
               </span>
               <span class="row-result">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnResult)}: </span>
@@ -228,6 +238,11 @@
     width: var(--when-column);
   }
 
+  .col-work-item {
+    flex: none;
+    width: var(--work-item-column);
+  }
+
   .col-result {
     flex: 1;
     min-width: 0;
@@ -268,10 +283,30 @@
   }
 
   .row-name {
+    display: flex;
     flex: none;
+    flex-direction: column;
     width: var(--name-column);
-    font-weight: var(--weight-strong);
+    min-width: 0;
+  }
+
+  /* The purpose line (mockup v8 §05: "Purpose (the order sentence)"); it can
+     be as terse as one order's own name today (#717's honest first slice), so
+     it stays on one line rather than wrapping. */
+  .row-purpose {
     overflow: hidden;
+    font-weight: var(--weight-strong);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* "…, workflow small beneath" (mockup v8 §05): the recipe name, dim and
+     smaller, shown only when the purpose line above says something the
+     workflow name does not already say on its own. */
+  .row-workflow {
+    overflow: hidden;
+    font-size: var(--text-xs);
+    color: var(--ink-dim);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -306,6 +341,16 @@
     color: var(--signal-failure);
   }
 
+  .row-work-item {
+    flex: none;
+    width: var(--work-item-column);
+    overflow: hidden;
+    color: var(--ink-dim);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .row-duration {
     flex: none;
     width: var(--duration-column);
@@ -321,7 +366,7 @@
   }
 
   /**
-   * Names each row's fragments (Name/When/Result/Duration) for a
+   * Names each row's fragments (When/Purpose/Work item/Result/Duration) for a
    * screen reader without repeating the header aloud for every row --
    * sighted eyes already read the column from `.history-head-row`'s
    * alignment, and duplicating that header once per row would be visual
@@ -343,7 +388,12 @@
      23.08.): a promise a narrow screen hides while the data still sits in
      columns is a geometry the header no longer honestly describes. Duration
      is the one column dropped at this width, so Result -- the fact that must
-     never truncate -- gets the room instead (issue #717). */
+     never truncate -- gets the room instead (issue #717). Work item drops
+     with it, but only because it is empty: mockup v8 §05's own narrow layout
+     hides an unfilled work item cell the same way. Once PR #766 lets a row
+     carry a real one, this rule needs the mockup's own answer for a filled
+     cell (a second line spanning the row), not silent disappearance -- named
+     here as that PR's own gap, not solved by guessing at it now. */
   @media (max-width: 32rem) {
     .row-name {
       flex: 1 1 auto;
@@ -356,7 +406,9 @@
     }
 
     .row-duration,
-    .col-duration {
+    .col-duration,
+    .row-work-item,
+    .col-work-item {
       display: none;
     }
   }
