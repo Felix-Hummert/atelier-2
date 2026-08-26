@@ -1,0 +1,39 @@
+format_version: 3
+name: diff-review
+description: >-
+  One headless agent reviews a diff it is handed. Its output contract makes
+  the operator's review criteria a fact of the schema rather than a hope in
+  the prompt: the first characters of an accepted finding are always "Befund
+  1", so no greeting or announcement can ever precede it and reach a success
+  (#392).
+graph_inputs:
+  - name: diff
+    schema:
+      ref: diff_review_diff
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+nodes:
+  - id: review
+    type: agent
+    role: reviewer
+    mode: headless
+    instruction: >-
+      Review the diff carried under "diff" against this repository's coding
+      and architecture conventions. Write nothing before your first finding:
+      no greeting, no restatement of these rules, and no sentence announcing
+      what you are about to do. Your very first characters must be exactly
+      "Befund 1", naming that finding with the exact file and the exact
+      change it is about. Name every further finding the same way, numbered
+      in order as "Befund 2", "Befund 3", and so on; state "Befund 1: keine."
+      when the diff has none. Close with exactly one line naming the one word
+      this product's verdict vocabulary gives a review that is done: "Verdict:
+      accepted" when nothing you found blocks the diff, or "Verdict: revise"
+      when it does.
+    inputs:
+      - name: diff
+        from:
+          graph_input: diff
+    outputs:
+      - name: finding
+        schema:
+          ref: diff_review_finding
+          revision: "40b6a304993fff805267a59520002936344f5fa679100576c1243c1a28840eb8"
