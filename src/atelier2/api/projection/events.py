@@ -108,7 +108,7 @@ def run_event_resource(
         )
     if event.event_kind is RunEventKind.ACTION_COMPLETED:
         if projection.receipt is None:
-            raise ValueError("completed Action event has no receipt")
+            raise ValueError("completed effect event has no receipt")
         return ActionCompletedEventResource(
             event=event.event_kind.value,
             receipt=receipt_resource(projection.receipt),
@@ -264,7 +264,7 @@ def _run_event_resource_v2(
         )
     if event.event_kind is RunEventKind.ACTION_COMPLETED:
         if projection.receipt is None:
-            raise ValueError("completed V2 Action event has no receipt")
+            raise ValueError("completed V2 effect event has no receipt")
         return ActionCompletedEventResourceV2(
             event=event.event_kind.value,
             receipt=receipt_resource(projection.receipt),
@@ -421,7 +421,7 @@ def _run_event_resource_v3(
         )
     if event.event_kind is RunEventKind.ACTION_COMPLETED:
         if projection.receipt is None:
-            raise ValueError("completed V3 Action event has no receipt")
+            raise ValueError("completed V3 effect event has no receipt")
         return ActionCompletedEventResourceV3(
             event=event.event_kind.value,
             receipt=receipt_resource(projection.receipt),

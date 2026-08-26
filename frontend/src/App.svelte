@@ -14,7 +14,6 @@
   import ConnectionNotice from "./components/ConnectionNotice.svelte";
   import WorkshopShell from "./components/WorkshopShell.svelte";
   import WorkbenchPage from "./pages/WorkbenchPage.svelte";
-  import NewRunPage from "./pages/NewRunPage.svelte";
   import RunCockpitPage from "./pages/RunCockpitPage.svelte";
   import SettingsPage from "./pages/SettingsPage.svelte";
   import WorkflowDetailPage from "./pages/WorkflowDetailPage.svelte";
@@ -65,12 +64,10 @@
     <WorkbenchPage {cockpitApi} {mutationJournal} {navigate} />
   {:else if route.page === "settings"}
     <SettingsPage {cockpitApi} />
-  {:else if route.page === "new"}
-    <NewRunPage {cockpitApi} {mutationJournal} {navigate} {createRunId} />
   {:else if route.page === "catalog"}
     <CatalogPage {cockpitApi} {navigate} />
   {:else if route.page === "workflow"}
-    <WorkflowDetailPage {cockpitApi} {navigate} name={route.name} />
+    <WorkflowDetailPage {cockpitApi} {mutationJournal} {navigate} {createRunId} name={route.name} />
   {:else if route.page === "history"}
     <HistoryPage {cockpitApi} {navigate} />
   {:else if route.page === "run"}

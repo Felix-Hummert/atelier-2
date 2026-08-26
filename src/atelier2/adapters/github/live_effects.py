@@ -217,8 +217,8 @@ class LiveGitHubEffectAdapterFactory:
     def proves_absence(self) -> bool:
         # A live-GitHub pull request search is eventually consistent, so a
         # not-found readback is `EffectUnknownOutcome`, never an authoritative
-        # absence (ADR 0010 §5). Admission refuses an agent `open-pr` grant
-        # against this destination for exactly that reason.
+        # absence (ADR 0010 §5). The shared effect path durably moves that
+        # outcome to reconciliation before an agent run can advance.
         return False
 
     def open(self) -> LiveGitHubEffectAdapter:

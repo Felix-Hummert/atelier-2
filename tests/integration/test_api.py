@@ -244,7 +244,6 @@ def test_every_typed_writer_maps_connection_contention_to_unavailable(
             configured,
             runtime.settings,
             NO_AGENT_EXECUTORS,
-            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequest(RunId("contended-start"), revision.revision_hash)
         ),
@@ -286,7 +285,6 @@ def test_missing_revision_is_a_typed_in_transaction_start_result(
         runtime.engine,
         runtime.settings,
         NO_AGENT_EXECUTORS,
-        effect_adapter_proves_absence=True,
     )
 
     result = starter.start_published(
@@ -346,7 +344,6 @@ def test_missing_revision_start_never_acquires_a_write_lock_or_blocks_publicatio
             runtime.engine,
             runtime.settings,
             NO_AGENT_EXECUTORS,
-            effect_adapter_proves_absence=True,
         ).start_published(StartPublishedRunRequest(RunId("missing-lock"), requested))
     finally:
         event.remove(
@@ -372,7 +369,6 @@ def test_concurrent_start_enqueues_only_the_transaction_that_created_the_run(
         runtime.engine,
         runtime.settings,
         NO_AGENT_EXECUTORS,
-        effect_adapter_proves_absence=True,
     )
     request = StartPublishedRunRequest(
         RunId("concurrent/start"), revision.revision_hash
@@ -1477,7 +1473,6 @@ def test_start_parses_workflow_before_begin_immediate(
         runtime.engine,
         runtime.settings,
         NO_AGENT_EXECUTORS,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequest(
             RunId("parse-before-start-lock"), revision.revision_hash
@@ -1551,7 +1546,6 @@ def test_start_rechecks_revision_bytes_after_outside_parse_without_mutation(
         runtime.engine,
         runtime.settings,
         NO_AGENT_EXECUTORS,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequest(RunId("revision-drift-start"), revision.revision_hash)
     )

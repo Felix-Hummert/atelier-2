@@ -6,9 +6,8 @@ Two `EffectAdapterFactory` implementations share the one `open-pr` contract:
 against real GitHub (ADR 0010). The live one is composed on serve from the
 served project's source-connection record, whose opaque address this package
 alone decodes (`atelier2.adapters.github.composition`); the fake stays a test
-double. Because live GitHub cannot prove absence, admission refuses an
-agent-authored `open-pr` grant against the live adapter (`#430`/`#431`); only
-an Action node's `open-pr` reaches it.
+double. Live GitHub cannot prove absence, so an unmatched readback waits for
+operator reconciliation before an agent or Action effect can execute.
 """
 
 from atelier2.adapters.github.composition import (

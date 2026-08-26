@@ -285,7 +285,6 @@ def start(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV3(
             run_id, workflow.revision_hash, bindings, tuple(orders)
@@ -420,7 +419,6 @@ def test_an_authored_order_reaches_the_agent(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV3(
             run_id,
@@ -1058,7 +1056,6 @@ def start_authored(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV3(
             run_id, workflow.revision_hash, bindings, orders=tuple(orders)

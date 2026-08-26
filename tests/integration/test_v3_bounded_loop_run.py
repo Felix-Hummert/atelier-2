@@ -199,7 +199,6 @@ def start_loop(runtime: DbosRuntime, run_id: RunId = RUN) -> WorkflowRevision:
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
     )
@@ -214,7 +213,6 @@ def start_healthy_peer(runtime: DbosRuntime) -> None:
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequest(HEALTHY_RUN, workflow.revision_hash))
     assert isinstance(started, DurableRunCreated), started
 

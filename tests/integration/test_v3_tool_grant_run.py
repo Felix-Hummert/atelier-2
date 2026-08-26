@@ -325,7 +325,6 @@ def test_a_granted_node_runs_the_projects_verification_and_leaves_the_proof(
         started_runtime.engine,
         started_runtime.settings,
         started_runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     assert isinstance(started, DurableRunCreated)
 
@@ -405,7 +404,6 @@ def test_a_nonzero_project_verification_fails_the_attempt_and_leaves_no_success(
         started_runtime.engine,
         started_runtime.settings,
         started_runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(FAILED_RUN, workflow.revision_hash, bindings)
     )
@@ -506,7 +504,6 @@ def test_a_verification_that_times_out_after_claim_fails_the_attempt_named(
         started_runtime.engine,
         started_runtime.settings,
         started_runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(TIMEOUT_RUN, workflow.revision_hash, bindings)
     )
@@ -606,7 +603,6 @@ def test_a_grant_no_registry_carries_refuses_the_start_and_leaves_no_run(
         started_runtime.engine,
         started_runtime.settings,
         started_runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(
             RunId("v3/unpublished-grant"), ungranted.revision_hash, bindings
@@ -637,7 +633,6 @@ def test_an_attempt_that_could_not_keep_its_work_says_so_in_its_node_receipt(
         started_runtime.engine,
         started_runtime.settings,
         started_runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(UNKEPT_RUN, workflow.revision_hash, bindings)
     )
@@ -749,7 +744,6 @@ def test_a_check_that_said_no_decides_the_ending_even_when_the_work_is_lost(
         started_runtime.engine,
         started_runtime.settings,
         started_runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(BOTH_LOST_RUN, workflow.revision_hash, bindings)
     )
