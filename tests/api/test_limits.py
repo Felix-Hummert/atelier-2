@@ -17,7 +17,11 @@ from atelier2.adapters.markdown_agent_definitions import (
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits, RequestBodyLimitMiddleware
-from atelier2.api.openapi import API_PREFIX, LIBRARY_RECOGNITIONS_PATH
+from atelier2.api.openapi import (
+    API_PREFIX,
+    LIBRARY_ADDITIONS_PATH,
+    LIBRARY_RECOGNITIONS_PATH,
+)
 from atelier2.api.references import (
     encode_canonical_base64,
     encode_event_cursor,
@@ -25,7 +29,15 @@ from atelier2.api.references import (
 )
 from atelier2.api.wire.resources import AgentAttemptResourceV2
 from atelier2.contracts.agents import MAXIMUM_AGENT_OUTPUT_BYTES_V2
+from atelier2.contracts.catalog_v3 import (
+    CatalogActivatedAt,
+    CatalogActor,
+    CatalogLineage,
+    CatalogLineageDisplayName,
+    CatalogLineageFounded,
+)
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
 )
@@ -48,12 +60,29 @@ from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 @dataclass
 class RecordingMutationPorts:
     publications: list[WorkflowRevision] = field(default_factory=list)
+    additions: list[WorkflowRevision] = field(default_factory=list)
     starts: list[object] = field(default_factory=list)
     answers: list[object] = field(default_factory=list)
 
     def publish(self, revision: WorkflowRevision) -> DurableRevisionCreated:
         self.publications.append(revision)
         return DurableRevisionCreated(revision)
+
+    def add_workflow(
+        self,
+        revision: WorkflowRevision,
+        display_name: CatalogLineageDisplayName,
+        actor: CatalogActor,
+        activated_at: CatalogActivatedAt,
+    ) -> CatalogLineageFounded:
+        del actor, activated_at
+        self.additions.append(revision)
+        published = PublishedRevision(RevisionKind.WORKFLOW, revision.document)
+        return CatalogLineageFounded(
+            CatalogLineage(published.kind, published.revision_hash),
+            published,
+            display_name,
+        )
 
     def start_published(self, request: object) -> DurableRunRevisionMissing:
         self.starts.append(request)
@@ -73,6 +102,7 @@ def client_for(mutations: RecordingMutationPorts, limits: ApiLimits) -> TestClie
                 workflow_revision_publisher=mutations,
                 published_run_starter=mutations,
                 wait_answerer=mutations,
+                library_additions=mutations,
                 workflow_document_parser=parse_executable_workflow_document,
                 agent_definition_parser=parse_agent_definition,
                 agent_definition_renderer=render_agent_definition,
@@ -162,6 +192,7 @@ def test_encoded_projection_limit_branches_are_explicit(
         (API_PREFIX + "/workflow-revisions", "invalid-workflow-document"),
         (API_PREFIX + "/runs", "invalid-request"),
         (LIBRARY_RECOGNITIONS_PATH, "invalid-request"),
+        (LIBRARY_ADDITIONS_PATH, "invalid-request"),
     ],
 )
 @pytest.mark.parametrize(
@@ -310,6 +341,51 @@ def test_recognition_body_limit_rejects_one_byte_more_than_the_envelope() -> Non
 
     assert exact.status_code == 200
     assert_problem(oversized, 422, "invalid-request")
+
+
+def named_workflow_document() -> bytes:
+    """A workflow the library will take, so only the envelope can turn it away."""
+
+    return (
+        b"format_version: 3\n"
+        b"name: review-bounded-diff\n"
+        b"nodes:\n"
+        b"  - id: review\n"
+        b"    type: agent\n"
+        b"    role: reviewer\n"
+        b"    mode: headless\n"
+        b"    instruction: Review one bounded diff.\n"
+        b"    outputs:\n"
+        b"      - name: findings\n"
+        b"        schema: {ref: review_verdict, revision: schema-verdict}\n"
+    )
+
+
+@pytest.mark.proves("a-refused-addition-publishes-nothing")
+def test_addition_body_limit_rejects_one_byte_more_than_the_envelope() -> None:
+    """The envelope refuses before the one act that would publish and admit."""
+
+    document = named_workflow_document()
+    mutations = RecordingMutationPorts()
+    client = client_for(mutations, api_limits(maximum_request_body_bytes=len(document)))
+    attribution = {"actor": "operator", "activated_at": "2026-08-26T00:00:00Z"}
+
+    exact = client.post(
+        LIBRARY_ADDITIONS_PATH,
+        content=document,
+        params=attribution,
+        headers={"content-type": "application/octet-stream"},
+    )
+    oversized = client.post(
+        LIBRARY_ADDITIONS_PATH,
+        content=document + b" ",
+        params=attribution,
+        headers={"content-type": "application/octet-stream"},
+    )
+
+    assert exact.status_code == 201, exact.text
+    assert_problem(oversized, 422, "invalid-request")
+    assert mutations.additions == [WorkflowRevision(document)]
 
 
 def test_missing_content_length_is_bounded_while_receiving_chunks() -> None:

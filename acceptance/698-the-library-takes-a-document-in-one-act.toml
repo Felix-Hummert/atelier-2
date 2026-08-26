@@ -1,0 +1,62 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/698"
+
+# THE LIBRARY TAKES A DOCUMENT IN ONE ACT, OR TAKES NOTHING.
+#
+# The operator's report (25.08.): adding something to the library is a developer
+# form -- paste the bytes, press import, then press "Admit". Two presses exist
+# because the API had two doors and nothing joined them, so the state between
+# them -- published, nameless, listed nowhere -- was reachable by simply
+# stopping. ADR 0018 §2 ("one click is one commit") says it should not be.
+#
+# This head adds `POST /library/additions`: bytes in, the library entry out.
+# The kind is decided by the recognition contract phase B landed, so this door
+# recognises exactly what the write-free door recognises and reads no document
+# twice with two minds. For a workflow the publication and the admission share
+# one durable transaction; for an agent definition the published revision is
+# the entry, because that is what the library lists.
+#
+# ADR 0007 Decision 3 is untouched: publication and admission remain two
+# STATES, and a merely published revision is still no catalog member
+# (REQ-KATALOG-05). What changes is that one attributed act now reaches the
+# second state, instead of leaving the operator holding a hash.
+#
+# What is deliberately absent, and why:
+#
+#   - THE SURFACE. This is the API alone. The one add door in the catalog room
+#     is #698 phase D1 and lands on the blessed picture; until then the cockpit
+#     keeps its two-step import, and `acceptance/659-…` still describes it
+#     truthfully.
+#   - SKILLS AND MCP SERVERS. Recognised, and refused with the reason phase B
+#     already words: no executor loads a skill and no blessing crosses the MCP
+#     trust boundary, so there is no store to add one to.
+#   - A NAME THE DOCUMENT DOES NOT AUTHOR. The library files a workflow under
+#     the name its own bytes carry. A format older than 3 authors none, and a
+#     V3 name outside the catalog's name grammar is not one either; both are
+#     refused rather than published nameless. Reconciling the V3 one-line name
+#     with the catalog's slug grammar is its own decision and is not smuggled
+#     in here.
+
+[[sentence]]
+id = "a-workflow-document-becomes-a-named-library-entry-in-one-call"
+requirement = "REQ-KATALOG-05"
+text = "An operator who holds only a V3 workflow document hands it to the library in one attributed call and is answered with the entry it became -- the name its own bytes authored, the lineage that name holds and the revision's position in it -- and the catalog's own name lookup answers with the same revision."
+
+[[sentence]]
+id = "the-same-document-added-twice-leaves-the-library-unchanged"
+requirement = "REQ-KATALOG-05"
+text = "Adding the identical document a second time answers with the entry the library already holds and writes no second member, alias or lineage."
+
+[[sentence]]
+id = "a-later-revision-joins-the-name-its-own-bytes-author"
+requirement = "REQ-KATALOG-05"
+text = "A changed revision of a workflow whose authored name the catalog already holds is added in the same one call, joins that lineage as its next member, and the name then answers with the later revision."
+
+[[sentence]]
+id = "a-refused-addition-publishes-nothing"
+requirement = "REQ-KATALOG-05"
+text = "When the library refuses the addition -- because the document is unrecognised, because two markers claim it, because its kind is not held, because its bytes author no usable name, because this build will not store the workflow they describe, because the envelope is oversized, or because the lineage that holds the name is retired -- the refusal names its own reason and no workflow revision, published revision or catalog row is left behind."
+
+[[sentence]]
+id = "an-authored-agent-file-becomes-a-library-entry-in-the-same-call"
+text = "The same one call takes an authored agent definition file, recognises it by its frontmatter, and answers with the library entry: the name and description its own frontmatter authored, its provider mark, and the revision the library now holds."
