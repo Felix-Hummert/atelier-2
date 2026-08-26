@@ -34,7 +34,7 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevision
-from tests.crash.workflow_graph_harness import OPEN_PR_OPERATION
+from tests.crash.workflow_graph_harness import OPEN_PR_GRANT, OPEN_PR_OPERATION
 from tests.scenarios.workflows import declared_output
 
 CRASHED = 86
@@ -113,8 +113,25 @@ nodes:
     depends_on: [implement]
 """.encode()
 )
+V3_AGENT_OPEN_PR_DOCUMENT = (
+    b"""format_version: 3
+name: An agent opens a pull request before it advances
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Open the pull request this node earned.
+    tools:
+      - {ref: open-pr, revision: """
+    + OPEN_PR_GRANT.revision_hash.value.encode()
+    + b"""}
+"""
+    + declared_output()
+)
 V3_RUN_ID = "v3/two-agents/recovery"
 V3_ACTION_RUN_ID = "v3/agent-then-action/recovery"
+V3_AGENT_OPEN_PR_RUN_ID = "v3/agent-open-pr/recovery"
 V3_WAIT_RUN_ID = "v3/a-person-approves/recovery"
 V3_ANSWER = '"approved"'
 V3_PROVIDER_OUTPUT = b'"the exact provider bytes"'
@@ -456,6 +473,17 @@ def initialize_and_seed_v3_action(root: Path) -> None:
         "seed-v3",
         V3_ACTION_RUN_ID,
         V3_ACTION_DOCUMENT.hex(),
+        str(int(AgentConfigurationRevisionFormatVersion.V2)),
+    )
+
+
+def initialize_and_seed_v3_agent_open_pr(root: Path) -> None:
+    child(root, "initialize")
+    child(
+        root,
+        "seed-v3",
+        V3_AGENT_OPEN_PR_RUN_ID,
+        V3_AGENT_OPEN_PR_DOCUMENT.hex(),
         str(int(AgentConfigurationRevisionFormatVersion.V2)),
     )
 
@@ -1101,6 +1129,47 @@ def test_a_v3_action_in_flight_survives_the_death_of_its_process(
     assert v3_action_run_row(tmp_path) == ("COMPLETED", "publish")
     assert event_kinds(tmp_path) == ("AGENT_COMPLETED", "ACTION_COMPLETED")
     assert scalar(tmp_path, "SELECT state FROM effect_intents") == "CONFIRMED"
+    assert scalar(tmp_path, "SELECT COUNT(*) FROM effect_receipts") == 1
+    assert database_row(
+        tmp_path, "external.sqlite", "SELECT COUNT(*) FROM loopback_effect_calls"
+    ) == (1,)
+
+
+def test_an_agent_effect_checkpoint_recovers_after_its_continuation_commit(
+    tmp_path: Path,
+) -> None:
+    """A replay accepts the effect-confirmed run state it already advanced."""
+
+    initialize_and_seed_v3_agent_open_pr(tmp_path)
+    marker = tmp_path / "agent-effect-checkpoint-crash"
+
+    child(
+        tmp_path,
+        "execute-v3-until-complete",
+        V3_AGENT_OPEN_PR_RUN_ID,
+        str(marker),
+        ACTION_CHECKPOINT_STEP_NAME,
+        expected=CRASHED,
+    )
+
+    assert marker.read_text() == f"{ACTION_CHECKPOINT_STEP_NAME}:before-record"
+    assert database_row(
+        tmp_path,
+        "atelier.sqlite",
+        "SELECT state,current_node_id,last_event_sequence FROM runs WHERE run_id=?",
+        (V3_AGENT_OPEN_PR_RUN_ID,),
+    ) == ("COMPLETED", "implement", 2)
+    assert scalar(tmp_path, "SELECT COUNT(*) FROM effect_receipts") == 1
+
+    child(
+        tmp_path,
+        "execute-v3-until-complete",
+        V3_AGENT_OPEN_PR_RUN_ID,
+        "NONE",
+        "NONE",
+    )
+
+    assert event_kinds(tmp_path) == ("AGENT_COMPLETED", "ACTION_COMPLETED")
     assert scalar(tmp_path, "SELECT COUNT(*) FROM effect_receipts") == 1
     assert database_row(
         tmp_path, "external.sqlite", "SELECT COUNT(*) FROM loopback_effect_calls"

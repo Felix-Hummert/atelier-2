@@ -289,9 +289,11 @@ def validate_run_graph_binding(run: AnyRun, graph: AnyWorkflowDocument) -> None:
     ):
         raise RunTransitionConflict("WAITING_INPUT must name a Wait node")
     if run.state is RunState.WAITING_RECONCILIATION and not isinstance(
-        node, ANY_ACTION_NODE_KINDS
+        node, (*ANY_ACTION_NODE_KINDS, AgentNodeV3)
     ):
-        raise RunTransitionConflict("WAITING_RECONCILIATION must name an Action node")
+        raise RunTransitionConflict(
+            "WAITING_RECONCILIATION must name an effect-owning node"
+        )
     if run.state is RunState.COMPLETED and not is_sink_node(graph, run.current_node_id):
         raise RunTransitionConflict("COMPLETED must name the run's sink node")
     _require_a_round_the_graph_declares(run, graph)
@@ -586,9 +588,11 @@ def _commit_event(
     ):
         raise RunTransitionConflict("WAITING_INPUT target is not a Wait node")
     if target_state is RunState.WAITING_RECONCILIATION and not isinstance(
-        target_node, ANY_ACTION_NODE_KINDS
+        target_node, (*ANY_ACTION_NODE_KINDS, AgentNodeV3)
     ):
-        raise RunTransitionConflict("WAITING_RECONCILIATION target is not an Action")
+        raise RunTransitionConflict(
+            "WAITING_RECONCILIATION target is not an effect-owning node"
+        )
     # Which words end a run has one owner, and CANCELLED is one of them (#668):
     # a run resting at a pause ends here, under its own attestation, rather than
     # standing WAITING_INPUT forever because no attempt existed to stop.
@@ -742,6 +746,7 @@ def commit_reconciliation_required(
     revision_hash: WorkflowRevisionHash,
     node_id: str,
     request: bytes,
+    current_round_ordinal: int = FIRST_ROUND_ORDINAL,
 ) -> TransitionSnapshot:
     return _commit_event(
         session,
@@ -753,6 +758,8 @@ def commit_reconciliation_required(
         RunState.STARTED,
         RunState.WAITING_RECONCILIATION,
         node_id,
+        round_ordinal=current_round_ordinal,
+        target_round_ordinal=current_round_ordinal,
     )
 
 
@@ -820,6 +827,7 @@ def commit_reconciliation_resolved(
     logical_key: LogicalEffectKey,
     result: bytes,
     result_hash: Sha256Hash,
+    current_round_ordinal: int = FIRST_ROUND_ORDINAL,
 ) -> TransitionSnapshot:
     return _commit_event(
         session,
@@ -833,4 +841,6 @@ def commit_reconciliation_resolved(
         node_id,
         logical_key,
         result_hash,
+        round_ordinal=current_round_ordinal,
+        target_round_ordinal=current_round_ordinal,
     )

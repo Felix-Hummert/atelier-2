@@ -20,18 +20,28 @@ from atelier2.application.resolve_references import (
     declared_through,
     resolve_declared_reference,
 )
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_configuration_v3 import (
     ReferenceRefusal,
     ReferenceRefusalReason,
     ResolvedReference,
 )
+from atelier2.contracts.tool_grants_v3 import (
+    ToolGrantAccepted,
+    read_tool_grant_document,
+    redeems_as_platform_effect,
+)
 from atelier2.contracts.workflow_bindings_v3 import SubworkflowBinding
 from atelier2.contracts.workflows_v3 import (
+    AgentNodeV3,
     AnyWorkflowDocument,
     WorkflowGraphV3,
     what_a_v3_document_still_waits_for,
 )
-from atelier2.ports.published_revisions import PublishedRevisionResolver
+from atelier2.ports.published_revisions import (
+    PublishedRevisionFound,
+    PublishedRevisionResolver,
+)
 
 
 @dataclass(frozen=True)
@@ -73,7 +83,47 @@ def evaluate_executability(
     waiting = what_a_v3_document_still_waits_for(graph)
     if waiting is not None:
         return DocumentNotExecutable(waiting)
-    return resolve_document_references(graph, resolver)
+    resolved = resolve_document_references(graph, resolver)
+    if not isinstance(resolved, ExecutableDocument):
+        return resolved
+    refusal = _looped_platform_effect_grant_refusal(graph, resolver)
+    return resolved if refusal is None else DocumentNotExecutable(refusal)
+
+
+def _looped_platform_effect_grant_refusal(
+    graph: WorkflowGraphV3, resolver: PublishedRevisionResolver
+) -> str | None:
+    """Name a loop member whose grant needs a round-aware external marker.
+
+    The generic effect key already carries the round, but GitHub's durable
+    idempotency marker is the canonical request hash. Repeated identical output
+    would therefore read back the prior round's pull request as this round's
+    receipt. The start refuses before it writes a run or an external effect.
+    """
+    for node in graph.nodes:
+        if not isinstance(node, AgentNodeV3):
+            continue
+        loop = graph.loop_of(node.id)
+        if loop is None:
+            continue
+        for reference in node.tools:
+            try:
+                revision_hash = PublishedRevisionHash(reference.revision)
+            except ValueError:
+                continue
+            resolved = resolver.resolve(RevisionKind.TOOL, revision_hash)
+            if not isinstance(resolved, PublishedRevisionFound):
+                continue
+            grant = read_tool_grant_document(resolved.revision.document)
+            if isinstance(grant, ToolGrantAccepted) and redeems_as_platform_effect(
+                grant.capability
+            ):
+                return (
+                    f"node {node.id!r} is a member of loop {loop.id!r} and pins "
+                    "an effect grant; this runtime has no round-aware external "
+                    "marker contract"
+                )
+    return None
 
 
 def resolve_document_references(
