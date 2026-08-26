@@ -25,6 +25,7 @@ from atelier2.contracts.revisions_v3 import (
     PublishedRevisionHash,
     RevisionKind,
 )
+from atelier2.contracts.runs import WorkflowRevision
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
 
@@ -168,6 +169,15 @@ type AdmitCatalogMemberResult = (
 )
 
 
+type AddWorkflowToLibraryResult = FoundCatalogLineageResult | AdmitCatalogMemberResult
+"""Whichever of the two admissions the addition turned out to be.
+
+Which one it is depends on durable state the caller cannot see -- whether a
+lineage already holds the authored name -- so the door answers with the union
+rather than making the caller ask first and then choose.
+"""
+
+
 @dataclass(frozen=True)
 class CatalogLineageRetired:
     lineage_id: CatalogLineageId
@@ -248,6 +258,27 @@ class CatalogAdmissions(Protocol):
         actor: CatalogActor,
         activated_at: CatalogActivatedAt,
     ) -> AdmitCatalogMemberResult: ...
+
+
+class LibraryAdditions(Protocol):
+    """Publishing a document and naming it, as one durable act.
+
+    ADR 0007 Decision 3 keeps publication and admission two *states*; ADR 0018
+    §2 keeps one addition one commit. `CatalogAdmissions` serves a caller who
+    already holds a published hash and cannot serve one who holds only bytes:
+    between its two calls a revision stays published under no name, which is the
+    half-added library an operator meets when the second call never comes.
+    """
+
+    def add_workflow(
+        self,
+        revision: WorkflowRevision,
+        display_name: CatalogLineageDisplayName,
+        actor: CatalogActor,
+        activated_at: CatalogActivatedAt,
+    ) -> AddWorkflowToLibraryResult:
+        """Publish these bytes and found or join the lineage that holds this name."""
+        ...
 
 
 class CatalogResolver(PublishedRevisionResolver, Protocol):

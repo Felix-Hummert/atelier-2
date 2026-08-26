@@ -401,6 +401,21 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Document matches more than one library kind",
         "Rename or edit the document so exactly one kind's marker claims it.",
     ),
+    "library-document-unrecognized": ProblemDefinition(
+        422,
+        "Document matches no library kind",
+        "Give the document the marker one kind reads, named in the detail.",
+    ),
+    "library-kind-not-held": ProblemDefinition(
+        422,
+        "Library recognises this kind but holds none",
+        "Keep the document outside until the store this kind needs exists.",
+    ),
+    "library-name-unusable": ProblemDefinition(
+        422,
+        "Document authors no name the library can file it under",
+        "Author a catalog name in the document itself, then add it again.",
+    ),
     "unsupported-media-type": ProblemDefinition(
         415,
         "Unsupported media type",

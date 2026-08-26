@@ -208,6 +208,7 @@ class RequestBodyLimitMiddleware:
         self._start_run_path = api_prefix + "/runs"
         self._artifact_publication_path = api_prefix + "/artifacts"
         self._library_recognition_path = api_prefix + "/library/recognitions"
+        self._library_addition_path = api_prefix + "/library/additions"
         self._run_command_path = re.compile(
             re.escape(api_prefix) + r"/runs/[^/]+/(?:answers|reconciliations)"
         )
@@ -272,6 +273,7 @@ class RequestBodyLimitMiddleware:
         if path in (
             self._start_run_path,
             self._library_recognition_path,
+            self._library_addition_path,
         ) or self._run_command_path.fullmatch(path):
             return _BodyLimit("invalid-request", self._maximum_body_bytes)
         if path == self._artifact_publication_path:

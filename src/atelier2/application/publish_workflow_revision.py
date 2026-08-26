@@ -139,6 +139,36 @@ type PublishWorkflowRevisionResult = (
 )
 
 
+@dataclass(frozen=True)
+class PublishableWorkflow:
+    """Bytes this build accepts as a workflow revision, read once."""
+
+    revision: WorkflowRevision
+    graph: AnyWorkflowDocument
+
+
+def read_publishable_workflow(
+    document: bytes,
+    parser: WorkflowDocumentParser,
+    limits: WorkflowPublicationLimits,
+) -> PublishableWorkflow | PublicationInvalid:
+    """Say whether these bytes may enter the store, in one verdict.
+
+    Every door that writes a workflow revision asks the same question, and it
+    has one answer: a document the publication door would refuse must not reach
+    the store through the library's one-step addition either.
+    """
+    try:
+        revision = WorkflowRevision(document)
+        graph = parser(document)
+        limits.validate(document, graph)
+    except WorkflowDocumentInvalid as refused:
+        return PublicationInvalid(str(refused), refused.refusal)
+    except (TypeError, ValueError) as error:
+        return PublicationInvalid(str(error))
+    return PublishableWorkflow(revision, graph)
+
+
 def publish_workflow_revision(
     document: bytes,
     publisher: WorkflowRevisionPublisher,
@@ -153,14 +183,10 @@ def publish_workflow_revision(
     not in the bytes. One describer serves the publication and the read, so the
     two cannot disagree about the revision just written.
     """
-    try:
-        revision = WorkflowRevision(document)
-        graph = parser(document)
-        limits.validate(document, graph)
-    except WorkflowDocumentInvalid as refused:
-        return PublicationInvalid(str(refused), refused.refusal)
-    except (TypeError, ValueError) as error:
-        return PublicationInvalid(str(error))
+    publishable = read_publishable_workflow(document, parser, limits)
+    if isinstance(publishable, PublicationInvalid):
+        return publishable
+    revision, graph = publishable.revision, publishable.graph
     result = publisher.publish(revision)
     match result:
         case DurableRevisionCreated(stored):
