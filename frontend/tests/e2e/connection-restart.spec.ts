@@ -18,8 +18,8 @@ const widths = [
  * about the restart itself, not about the server's seeded state (#742: this
  * suite's server is shared across spec files that may run in any order).
  *
- * The proof stays off any page holding an open durable-event stream (the
- * Board, a run cockpit): the harness's graceful shutdown only disables
+ * The proof stays off any page holding an open durable-event stream (a run
+ * cockpit): the harness's graceful shutdown only disables
  * keep-alive on an in-flight connection, it never closes one still
  * streaming, so an open `EventSource` at the moment of the restart would
  * hang `/__e2e/recompose` forever. The Workbench holds no stream (#700
@@ -60,7 +60,10 @@ test("shows the calm restart line on the open workbench, and clears it on its ow
 
   // An in-app navigation (no reload) whose own mount read now fails for
   // real: the one round trip that discovers the outage.
-  await page.getByRole("link", { name: "Workflows" }).click();
+  await page
+    .getByRole("navigation", { name: "Workshop" })
+    .getByRole("link", { name: "Catalog", exact: true })
+    .click();
 
   // `status` computes its accessible name from an explicit label only, never
   // from its own content (ARIA's nameFrom:author for this role) -- the same

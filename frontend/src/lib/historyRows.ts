@@ -1,6 +1,5 @@
 import { isRunV3, type AnyRun } from "../api/client";
-import { resolveWorkflowName } from "./boardRows";
-import { newestActivityFirst, runActivityAt } from "./runList";
+import { newestActivityFirst, resolveWorkflowName, runActivityAt } from "./runList";
 import { parseUtc } from "./when";
 
 /** The window the silent period chip names by default (mockup v5 §05: "7 days"). */
@@ -40,10 +39,10 @@ export type HistoryRow = {
  * The finished runs History shows, newest activity first.
  *
  * Only COMPLETED and FAILED runs become a row: this is what "ist gelaufen"
- * (has run) means for History, unlike the Board, which still tracks a failed
- * run as live work. The name comes from the one join owner (`boardRows.ts`'s
- * `resolveWorkflowName`), including its honest run-id fallback -- not a
- * second implementation of the same lookup.
+ * (has run) means for History, unlike the Workbench, which still holds a run
+ * that moves or waits. The name comes from the one join owner
+ * (`runList.ts`'s `resolveWorkflowName`), including its honest run-id
+ * fallback -- not a second implementation of the same lookup.
  */
 export function projectHistoryRows(
   runs: readonly AnyRun[],
@@ -85,12 +84,9 @@ function historySpan(run: AnyRun): { startedAt: string; endedAt: string } | null
 /**
  * The node a failed run failed at.
  *
- * Mirrors `boardRows.ts`'s private `failedNodeId`/`currentNodeId`: `node_rail`
- * names it directly for a V2/V3 run; a V1 run carries no rail, so the current
- * node is read instead -- true because this engine only reaches FAILED by
- * failing the node the run's cursor was sitting on. Duplicated rather than
- * imported because History (#526) and Board (#519) sit in separate build
- * fences; `boardRows.ts` should export this once both lanes can share one.
+ * `node_rail` names the failed node directly for a V2/V3 run; a V1 run carries
+ * no rail, so the current node is read instead -- true because this engine only
+ * reaches FAILED by failing the node the run's cursor was sitting on.
  */
 function historyFailedNodeId(run: AnyRun): string {
   if ("node_rail" in run) {
