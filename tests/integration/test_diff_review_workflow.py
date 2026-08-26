@@ -19,6 +19,7 @@ on an inline fixture that could quietly drift from it.
 from __future__ import annotations
 
 import json
+import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -70,7 +71,7 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionExisting,
 )
 from atelier2.ports.run_queries import NodeDetailFound
-from tests.scenarios.agents import RecordingAgentExecutorFactoryV2, agent_scratch_root
+from tests.scenarios.agents import RecordingAgentExecutorFactoryV2
 from tests.scenarios.api import durable_queries
 
 WORKFLOWS_DIRECTORY = Path(__file__).parents[2] / "workflows"
@@ -133,12 +134,16 @@ def test_the_finding_schema_avoids_unsupported_regex_tokens_and_refuses_befund_1
     assert isinstance(refused, InstanceRefused)
 
 
-def runtime_over(root: Path, provider: RecordingAgentExecutorFactoryV2) -> DbosRuntime:
+def runtime_over(
+    root: Path,
+    provider: RecordingAgentExecutorFactoryV2,
+    scratch_root: Path,
+) -> DbosRuntime:
     return DbosRuntime(
         DbosRuntimeSettings(
             root / "atelier.sqlite",
             "diff-review-test",
-            agent_scratch_root=agent_scratch_root(root),
+            agent_scratch_root=scratch_root,
         ),
         LoopbackEffectAdapterFactory(
             root / "external.sqlite",
@@ -158,10 +163,20 @@ def provider(request: pytest.FixtureRequest) -> RecordingAgentExecutorFactoryV2:
 
 
 @pytest.fixture
+def scratch_root_outside_a_worktree() -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(
+        prefix="atelier2-diff-review-scratch-", dir="/var/tmp"
+    ) as directory:
+        yield Path(directory)
+
+
+@pytest.fixture
 def runtime(
-    tmp_path: Path, provider: RecordingAgentExecutorFactoryV2
+    tmp_path: Path,
+    provider: RecordingAgentExecutorFactoryV2,
+    scratch_root_outside_a_worktree: Path,
 ) -> Iterator[DbosRuntime]:
-    started = runtime_over(tmp_path, provider)
+    started = runtime_over(tmp_path, provider, scratch_root_outside_a_worktree)
     started.initialize_storage()
     try:
         yield started
@@ -259,6 +274,9 @@ def test_a_compliant_finding_completes_the_run_with_the_diff_the_order_carried(
     handed = provider.opened.requests[0].job_bytes
     assert b"--- order: diff ---" in handed
     assert DIFF_ORDER_VALUE in handed
+    assert b"cannot read files, run anything, or use tools" in handed
+    assert b"the diff text is your only evidence" in handed
+    assert b"one final message with no progress narration" in handed
 
     detail = durable_queries(runtime.engine).get_node_detail(run_id, "review")
     assert isinstance(detail, NodeDetailFound), detail
