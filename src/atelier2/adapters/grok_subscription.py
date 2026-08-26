@@ -694,6 +694,16 @@ def _grok_transcript(values: Sequence[object]) -> AttemptTranscript | None:
     )
 
 
+def _final_grok_envelope_text(values: Sequence[object]) -> str | None:
+    """The final provider answer, never a progress value or a partial envelope."""
+
+    final_value = values[-1]
+    if not isinstance(final_value, dict):
+        return None
+    text = final_value.get(_TEXT_FIELD)
+    return text if isinstance(text, str) and text else None
+
+
 def _unreadable_grok_transcript(standard_output: bytes) -> AttemptTranscript | None:
     """Keep an unreadable raw frame as bounded, redacted evidence."""
 
@@ -798,9 +808,6 @@ class GrokSubscriptionExecutor:
             return _unusable_provider_answer(_grok_transcript(values))
         if not values:
             return GrokProviderEndedWithoutFinalMessage()
-        envelope = values[-1]
-        if not isinstance(envelope, dict):
-            return GrokProviderEndedWithoutFinalMessage(_grok_transcript(values))
         # Last value wins: only the final JSON value can be the envelope. Measured
         # on grok 1.0.4 / grok-4.6 (#392), values before it are progress messages;
         # a progress value after an envelope is therefore
@@ -814,8 +821,8 @@ class GrokSubscriptionExecutor:
         # here so the seam sees one JSON string by construction. The yes/no
         # travels on the command (see `GrokSubscriptionProcessCommand`);
         # HOME and executor state are not consulted.
-        text = envelope.get(_TEXT_FIELD)
-        if not isinstance(text, str) or text == "":
+        text = _final_grok_envelope_text(values)
+        if text is None:
             return GrokProviderEndedWithoutFinalMessage(_grok_transcript(values))
         command = invocation.command
         canonicalize = (
