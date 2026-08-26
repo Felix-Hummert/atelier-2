@@ -1,0 +1,41 @@
+format_version: 3
+name: vision-variants
+description: >-
+  One headless agent turns operator fragments into deliberately divergent,
+  concrete variants, checks them against the supplied owners, and makes the
+  real choices easy to answer with proposed defaults.
+graph_inputs:
+  - name: fragments
+    schema:
+      ref: diff_review_diff
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+  - name: owner_documents
+    schema:
+      ref: diff_review_diff
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+nodes:
+  - id: develop_variants
+    type: agent
+    role: visioner
+    mode: headless
+    instruction: >-
+      Read the operator fragments carried under "fragments" and first hunt
+      contradictions against the existing owners carried under
+      "owner_documents" before writing. Produce two or three deliberately
+      divergent concrete variants for the operator to react to: variants are
+      not questions, and they must not contradict the supplied owners. Ask
+      decision questions only for genuine choices or contradictions, and give
+      every such question a proposed default answer. Record each contradiction
+      you find against an existing owner.
+    inputs:
+      - name: fragments
+        from:
+          graph_input: fragments
+      - name: owner_documents
+        from:
+          graph_input: owner_documents
+    outputs:
+      - name: result
+        schema:
+          ref: vision_variants_result
+          revision: "9a5980608b31482957002cd7b869243536adf1999bb76f433ec95901e80b5eb5"
