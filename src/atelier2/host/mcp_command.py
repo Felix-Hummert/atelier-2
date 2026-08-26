@@ -41,6 +41,7 @@ from atelier2.api.wire.requests import (
     InlineOrderResource,
     RevisionListingView,
     StartRunAgentBindingResourceV2,
+    WorkItemOrderResource,
 )
 from atelier2.api.wire.resources import (
     AnyRunResource,
@@ -81,6 +82,7 @@ from atelier2.host.run_command import (
     SuppliedArtifactOrder,
     SuppliedOrder,
     SuppliedStartOrder,
+    SuppliedWorkItemOrder,
     UnreadableServiceAnswer,
     UnusableRunOrder,
     resolve_published_name,
@@ -411,6 +413,8 @@ def _supplied_start_order(order: AnyStartRunOrderResource) -> SuppliedStartOrder
             return SuppliedOrder(name, value.encode())
         case ArtifactOrderResource(name=name, artifact_hash=artifact_hash):
             return SuppliedArtifactOrder(name, artifact_hash)
+        case WorkItemOrderResource(name=name, work_item=work_item):
+            return SuppliedWorkItemOrder(name, work_item)
         case _ as unreachable:
             assert_never(unreachable)
 

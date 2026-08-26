@@ -23,12 +23,18 @@ inside an order value (ADR 0010 decision 1, 2026-08-26 amendment).
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Final
 
-from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.queue_projection import TrackerItemReference
-from atelier2.contracts.when import RecordedAt
+from atelier2.contracts.hashing import SHA256_HEX_DIGEST, Sha256Hash
+from atelier2.contracts.queue_projection import (
+    MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
+    TrackerItemReference,
+)
+from atelier2.contracts.schemas_v3 import SUPPORTED_DIALECT
+from atelier2.contracts.when import RECORDED_AT_PATTERN, RecordedAt
 
 MAXIMUM_WORK_ITEM_CHANGE_MARKER_CHARACTERS = 1_024
 
@@ -87,6 +93,15 @@ class ObservedWorkItemRevision:
             raise TypeError(
                 "an observed work item revision carries the exact served bytes"
             )
+        try:
+            self.body.decode("utf-8")
+        except UnicodeDecodeError:
+            # ADR 0010 §5's canonical rule is about the UTF-8 bytes a platform
+            # served, and a run reads them back as text; bytes that are not
+            # text are not a revision this contract can carry.
+            raise ValueError(
+                "an observed work item revision carries UTF-8 body bytes"
+            ) from None
         if not isinstance(self.change_marker, WorkItemChangeMarker):
             raise TypeError(
                 "an observed work item revision carries its change marker "
@@ -101,3 +116,71 @@ class ObservedWorkItemRevision:
         # re-derives from the object alone, which a framed preimage would make
         # Atelier-only.
         object.__setattr__(self, "digest", Sha256Hash.of(self.body))
+
+
+def work_item_order_document(revision: ObservedWorkItemRevision) -> bytes:
+    """The exact bytes one work-item order carries into the run that reads it.
+
+    A run's order is material, and material is bytes: this is the one
+    serialization of an observed revision, so the value a run stores, the value
+    an agent reads, and the value `WORK_ITEM_ORDER_SCHEMA_DOCUMENT` describes
+    are the same thing. Keys are sorted and separators are tight, so the same
+    read always produces the same bytes and therefore the same value hash.
+    """
+
+    return json.dumps(
+        {
+            "body": revision.body.decode("utf-8"),
+            "change_marker": revision.change_marker.value,
+            "digest": revision.digest.value,
+            "kind": revision.kind.value,
+            "observed_at": revision.observed_at.value,
+            "reference": revision.item.value,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+_WORK_ITEM_ORDER_SCHEMA: Final = {
+    "$schema": SUPPORTED_DIALECT,
+    "title": "work item",
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "body",
+        "change_marker",
+        "digest",
+        "kind",
+        "observed_at",
+        "reference",
+    ],
+    "properties": {
+        "body": {"type": "string"},
+        "change_marker": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": MAXIMUM_WORK_ITEM_CHANGE_MARKER_CHARACTERS,
+        },
+        "digest": {"type": "string", "pattern": f"^{SHA256_HEX_DIGEST.pattern}$"},
+        "kind": {"type": "string", "enum": [kind.value for kind in WorkItemKind]},
+        "observed_at": {"type": "string", "pattern": RECORDED_AT_PATTERN},
+        "reference": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
+        },
+    },
+}
+
+WORK_ITEM_ORDER_SCHEMA_DOCUMENT: Final = json.dumps(
+    _WORK_ITEM_ORDER_SCHEMA, sort_keys=True, separators=(",", ":")
+).encode("utf-8")
+"""The schema a workflow pins to declare an order as a tracker work item.
+
+A workflow author does not invent a shape for what the adapter reads: they pin
+this document's published revision and get the neutral kinds, the digest and
+the change marker with it. Restricting a workflow to one kind is that author's
+own schema built on this one, not a second grammar in the document.
+"""

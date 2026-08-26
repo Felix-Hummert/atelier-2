@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from atelier2.contracts.queue_projection import TrackerItemReference
+from atelier2.contracts.schemas_v3 import (
+    InstanceAccepted,
+    SchemaAccepted,
+    read_instance_document,
+    read_schema_document,
+)
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.work_items import (
+    WORK_ITEM_ORDER_SCHEMA_DOCUMENT,
     ObservedWorkItemRevision,
     WorkItemChangeMarker,
     WorkItemKind,
+    work_item_order_document,
 )
 
 _ITEM = TrackerItemReference("gh:712")
@@ -67,3 +77,45 @@ def test_a_body_that_is_not_the_served_bytes_is_refused() -> None:
 def test_a_change_marker_outside_its_bound_is_refused(value: str) -> None:
     with pytest.raises(ValueError):
         WorkItemChangeMarker(value)
+
+
+def test_body_bytes_that_are_not_utf8_are_not_a_revision() -> None:
+    """A revision is read back as text; bytes that are not text are not one."""
+
+    with pytest.raises(ValueError):
+        revision(b"\xff\xfe not utf-8")
+
+
+def test_the_order_document_carries_the_read_a_run_has_to_reproduce() -> None:
+    document = json.loads(work_item_order_document(revision(b"the item said this")))
+
+    assert document == {
+        "body": "the item said this",
+        "change_marker": 'W/"5f2a"',
+        "digest": revision(b"the item said this").digest.value,
+        "kind": "issue",
+        "observed_at": _OBSERVED_AT.value,
+        "reference": _ITEM.value,
+    }
+
+
+def test_the_same_read_always_writes_the_same_order_bytes() -> None:
+    """The value hash a run stores must not depend on dictionary order."""
+
+    assert work_item_order_document(revision()) == work_item_order_document(revision())
+
+
+@pytest.mark.parametrize(
+    "body",
+    [b"", b"plain", b"Umlaut, CRLF\r\nund kein Schluss"],
+    ids=["empty", "plain", "non-ascii-with-carriage-return"],
+)
+def test_the_house_schema_admits_the_order_document_it_describes(body: bytes) -> None:
+    """The workflow pins this schema, so the start would refuse a value it rejects."""
+
+    schema = read_schema_document(WORK_ITEM_ORDER_SCHEMA_DOCUMENT)
+    assert isinstance(schema, SchemaAccepted), schema
+
+    verdict = read_instance_document(work_item_order_document(revision(body)), schema)
+
+    assert isinstance(verdict, InstanceAccepted), verdict

@@ -327,9 +327,10 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head adds `answer-in-flight` to the closed set of reasons a V3 run
-    cannot be cancelled: a pause still holding an accepted answer refuses the
-    command rather than dropping that message (#668).
+    it. This head adds `WorkItemOrderResource` to the orders a V3 start accepts:
+    a caller names an item in the connected project's tracker and the start
+    reads it, so the run pins the observed revision rather than bytes the caller
+    typed (#712).
     Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 

@@ -7,16 +7,16 @@ from typing import Never
 
 import pytest
 
-from atelier2.application.import_project_source_issues import (
-    ProjectSourceNotConnected,
-    SourcePayloadMalformed,
-)
 from atelier2.application.read_work_item_snapshot import (
     WorkItemNotInTracker,
     WorkItemSnapshotRead,
     read_work_item_snapshot,
 )
-from atelier2.application.refusals import ReadUnavailable
+from atelier2.application.refusals import (
+    ProjectSourceNotConnected,
+    ReadUnavailable,
+    SourcePayloadMalformed,
+)
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import TrackerItemReference, WorkItemReference
 from atelier2.contracts.when import RecordedAt
@@ -67,8 +67,28 @@ def test_an_observed_revision_is_named_under_the_served_projects_item_identity()
 
     outcome = read_work_item_snapshot(PROJECT, source, ITEM)
 
-    assert outcome == WorkItemSnapshotRead(WorkItemReference(PROJECT, ITEM), REVISION)
+    assert outcome == WorkItemSnapshotRead(PROJECT, REVISION)
+    assert isinstance(outcome, WorkItemSnapshotRead)
+    assert outcome.item_reference == WorkItemReference(PROJECT, ITEM)
     assert source.asked_for == [ITEM]
+
+
+def test_a_source_answering_about_another_item_is_refused_not_recorded() -> None:
+    """A revision for `gh:713` must never land under the name `gh:712` was read by."""
+
+    other = ObservedWorkItemRevision(
+        TrackerItemReference("gh:713"),
+        WorkItemKind.ISSUE,
+        b"the other item's text",
+        WorkItemChangeMarker('W/"5f2a"'),
+        RecordedAt("2026-08-26T09:15:00Z"),
+    )
+
+    outcome = read_work_item_snapshot(
+        PROJECT, _SnapshotSource(WorkItemRevisionObserved(other)), ITEM
+    )
+
+    assert isinstance(outcome, SourcePayloadMalformed)
 
 
 def test_an_item_the_tracker_does_not_hold_is_named_by_its_item_identity() -> None:

@@ -59,6 +59,7 @@ class _FakeGitHubIssues:
     issues: list[dict[str, Any]] = field(default_factory=list)
     status: int = 200
     override_payload: Any = None
+    override_content: bytes | None = None
     raise_transport_error: bool = False
     entity_tag: str | None = 'W/"3f1a9c"'
     requested_paths: list[str] = field(default_factory=list)
@@ -91,6 +92,14 @@ class _FakeGitHubIssues:
         if self.status != 200:
             return httpx.Response(self.status, json={"message": "refused"})
         headers = {} if self.entity_tag is None else {"ETag": self.entity_tag}
+        if self.override_content is not None:
+            # Raw bytes, because a payload this test needs -- an escaped lone
+            # surrogate -- is one no JSON encoder here would produce.
+            return httpx.Response(
+                200,
+                content=self.override_content,
+                headers={**headers, "Content-Type": "application/json"},
+            )
         if self.override_payload is not None:
             return httpx.Response(200, json=self.override_payload, headers=headers)
         for issue in self.issues:
@@ -346,12 +355,46 @@ def test_a_reference_this_source_cannot_address_is_unknown_without_a_request(
 
 @pytest.mark.parametrize(
     "payload",
-    ["not an object", {"number": 712}, {"number": 712, "body": 3}],
+    [
+        "not an object",
+        {"number": 712},
+        {"number": 712, "body": 3},
+        {"body": "no number at all"},
+    ],
 )
 def test_a_snapshot_payload_shape_this_source_refuses_is_typed_malformed(
     source: LiveGitHubIssueSource, github: _FakeGitHubIssues, payload: Any
 ) -> None:
     github.override_payload = payload
+
+    answer = source.snapshot(TrackerItemReference("gh:712"))
+
+    assert isinstance(answer, TrackerPayloadMalformed)
+
+
+def test_an_answer_about_another_item_is_refused_rather_than_pinned(
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
+) -> None:
+    """Otherwise one item's bytes would be pinned under another item's name."""
+
+    github.override_payload = {"number": 713, "body": "the other item's text"}
+
+    answer = source.snapshot(TrackerItemReference("gh:712"))
+
+    assert isinstance(answer, TrackerPayloadMalformed)
+
+
+def test_a_body_that_is_not_encodable_as_utf8_is_refused_by_name(
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
+) -> None:
+    """An escaped lone surrogate decodes as text and encodes as nothing.
+
+    JSON admits `\\ud800` unpaired, so a provider answer can carry text no
+    UTF-8 encoder accepts. This source promises a typed refusal for a payload
+    it will not read, and that promise has to hold here rather than raise.
+    """
+
+    github.override_content = b'{"number": 712, "body": "lone \\ud800 surrogate"}'
 
     answer = source.snapshot(TrackerItemReference("gh:712"))
 

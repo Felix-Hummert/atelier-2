@@ -162,15 +162,34 @@ already is. The listing keeps refusing pull requests, because which items the
 queue observes is #79's question; reading one by name is a different question
 and answers the neutral kind.
 
+**The caller of `snapshot()` is the start, and it pins what it read.** A start
+door accepts an order that names an item instead of carrying bytes; the start
+reads that item once and stores the observed revision as the order's own value,
+which is why the reading is here rather than in a workflow node. Three
+consequences are decided with it. The value is a **house-known schema
+revision** — one document Atelier owns, describing the neutral kind, the bytes,
+the digest, the change marker and the read time — so a workflow declares a work
+item without inventing a shape and without naming a platform. The read happens
+**before any durable row exists**, so a start that cannot read the item writes
+nothing and answers why. And a run's material is what the platform said *at that
+moment*: two starts naming the same item across an edit are two runs with two
+different values, which is the reproducibility the reference alone could never
+give.
+
 **What this amendment leaves undecided, deliberately.** `capabilities()` and
 `reference_grammar()` stay unruled until a caller lands — this record still
 neither adopts nor refuses them as a design. A snapshot carries no title, no
 item state and no linked items, because none of them has a caller yet, and no
 discussion and no diff, because those are unbounded and belong in an artifact
 addressed by hash rather than in a second byte budget inside an order value.
-And a reference that is not in the composed adapter's own grammar earns no
-outcome of its own here: it addresses no item in the connected tracker, which
-is what the caller is told.
+An item whose body exceeds the inline order bound is refused by that bound like
+any other oversized value; the artifact path is what a later slice gives it.
+A reference that is not in the composed adapter's own grammar earns no outcome
+of its own here: it addresses no item in the connected tracker, which is what
+the caller is told. And nothing here publishes the house schema for an
+operator: a project that wants work-item orders publishes that document as a
+schema revision like any other, and seeding it at serve time is a later
+decision with its own owner.
 
 ### 2. Auth: the operator chooses the method when a project is connected
 
@@ -820,7 +839,15 @@ this record borrows that owner rather than opening a second vocabulary.
   unknown rather than as a read that may yet succeed.
 - **(2026-08-26 amendment, #712)** A pull request read by name answers the
   neutral `change_request` kind, and no GitHub noun travels with it past the
-  adapter boundary.
+  adapter boundary. A read answering about a different item than the one asked
+  for is refused rather than pinned under the asked-for name, at the adapter and
+  again above it.
+- **(2026-08-26 amendment, #712)** A start naming a work-item order stores the
+  observed revision the start read, under the house schema the workflow pinned;
+  the same item read across an edit yields two different stored values, and a
+  start that cannot read the item — no connection, no such item, an unreachable
+  platform, a refused payload — writes no run row and answers which of the four
+  it was.
 - **(2026-08-25 amendment, #642-Journal)** A durable projection, event, receipt,
   and log all show no credential or secret material for a `push-atelier-commit`
   run under whichever credential handoff it is specified for — the PAT file

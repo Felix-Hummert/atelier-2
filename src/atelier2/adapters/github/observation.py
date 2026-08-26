@@ -177,14 +177,28 @@ class LiveGitHubIssueSource:
                 f"{number}: {error}"
             )
         return self._observed_revision(
-            reference, response.raw_response.json(), response.raw_response.headers
+            reference,
+            number,
+            response.raw_response.json(),
+            response.raw_response.headers,
         )
 
     def _observed_revision(
-        self, reference: TrackerItemReference, payload: Any, headers: httpx.Headers
+        self,
+        reference: TrackerItemReference,
+        number: int,
+        payload: Any,
+        headers: httpx.Headers,
     ) -> ObserveWorkItemRevisionResult:
         if not isinstance(payload, dict):
             return TrackerPayloadMalformed("the item read was not an item object")
+        # An answer about another item would pin one item's bytes under another
+        # item's reference, so the identity the platform states is read rather
+        # than assumed from the request.
+        if payload.get("number") != number:
+            return TrackerPayloadMalformed(
+                f"the item read answered for another item than {number}"
+            )
         if "body" not in payload:
             return TrackerPayloadMalformed("the item read carried no body field")
         body = payload["body"]
@@ -198,6 +212,16 @@ class LiveGitHubIssueSource:
             return TrackerPayloadMalformed(
                 "the item read carried no usable entity tag to pin it"
             )
+        try:
+            # GitHub serves an item with no text as a null body, which is an
+            # empty read rather than a missing one. JSON text can also carry an
+            # escaped lone surrogate, which is not encodable as UTF-8 -- a
+            # payload this source refuses rather than a crash on its way out.
+            served_bytes = ("" if body is None else body).encode("utf-8")
+        except UnicodeEncodeError:
+            return TrackerPayloadMalformed(
+                "an item body carried text that is not encodable as UTF-8"
+            )
         kind = (
             WorkItemKind.CHANGE_REQUEST
             if _PULL_REQUEST_KEY in payload
@@ -207,9 +231,7 @@ class LiveGitHubIssueSource:
             ObservedWorkItemRevision(
                 reference,
                 kind,
-                # GitHub serves an item with no text as a null body, which is
-                # an empty read rather than a missing one.
-                ("" if body is None else body).encode("utf-8"),
+                served_bytes,
                 WorkItemChangeMarker(entity_tag),
                 self.clock(),
             )

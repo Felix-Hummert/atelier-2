@@ -62,6 +62,7 @@ from atelier2.api.wire.requests import (
     StartRunRequestResource,
     StartRunRequestResourceV2,
     StartRunRequestResourceV3,
+    WorkItemOrderResource,
 )
 from atelier2.api.wire.resources import (
     AgentConfigurationRevisionResource,
@@ -252,7 +253,15 @@ class SuppliedArtifactOrder:
     artifact_hash: str
 
 
-type SuppliedStartOrder = SuppliedOrder | SuppliedArtifactOrder
+@dataclass(frozen=True)
+class SuppliedWorkItemOrder:
+    """One order the caller named by an item in the project's own tracker."""
+
+    name: str
+    work_item: str
+
+
+type SuppliedStartOrder = SuppliedOrder | SuppliedArtifactOrder | SuppliedWorkItemOrder
 
 
 @dataclass(frozen=True)
@@ -677,6 +686,8 @@ def start_request_body(
 def _wire_start_order(order: SuppliedStartOrder) -> AnyStartRunOrderResource:
     if isinstance(order, SuppliedArtifactOrder):
         return ArtifactOrderResource(name=order.name, artifact_hash=order.artifact_hash)
+    if isinstance(order, SuppliedWorkItemOrder):
+        return WorkItemOrderResource(name=order.name, work_item=order.work_item)
     return InlineOrderResource(name=order.name, value=order.value.decode("utf-8"))
 
 

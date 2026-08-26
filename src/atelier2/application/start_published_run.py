@@ -3,17 +3,34 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import assert_never
 
-from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
+from atelier2.application.read_work_item_snapshot import (
+    WorkItemNotInTracker,
+    WorkItemSnapshotRead,
+    read_work_item_snapshot,
+)
+from atelier2.application.refusals import (
+    DurableStateCorrupt,
+    ProjectSourceNotConnected,
+    ReadUnavailable,
+    SourcePayloadMalformed,
+    WriteUnavailable,
+)
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevisionHash,
     AgentRole,
 )
-from atelier2.contracts.orders import AuthoredOrderValue
+from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.orders import (
+    InlineOrderValue,
+    StartOrderValue,
+    WorkItemOrderValue,
+)
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import InstanceSchemaViolation
+from atelier2.contracts.work_items import work_item_order_document
 from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
     DurableAgentConfigurationRevisionMissing,
@@ -41,6 +58,7 @@ from atelier2.ports.durable_runs import (
 from atelier2.ports.durable_runs import (
     DurableStateCorrupt as PortDurableStateCorrupt,
 )
+from atelier2.ports.issue_observation import TrackerItemSource
 
 
 @dataclass(frozen=True)
@@ -124,6 +142,7 @@ type StartPublishedRunResult = (
     | AgentExecutorBindingUnavailable
     | BindingConstraintRefused
     | RunInputRefused
+    | WorkItemOrderUnreadable
     | AgentPlatformEffectUnreconcilable
     | WriteUnavailable
     | DurableStateCorrupt
@@ -143,7 +162,25 @@ class AuthoredOrder:
     """An order as a caller supplies it: a name and where its value comes from."""
 
     name: str
-    value: AuthoredOrderValue
+    value: StartOrderValue
+
+
+@dataclass(frozen=True)
+class WorkItemOrderUnreadable:
+    """The start could not read the tracker item one order names.
+
+    It carries the read's own refusal rather than flattening four different
+    answers -- no connection, no such item, an unreachable platform, a payload
+    its adapter refused -- into one word a caller cannot act on.
+    """
+
+    name: str
+    reason: (
+        ProjectSourceNotConnected
+        | WorkItemNotInTracker
+        | SourcePayloadMalformed
+        | ReadUnavailable
+    )
 
 
 def start_published_run(
@@ -152,6 +189,8 @@ def start_published_run(
     bindings: tuple[AuthoredAgentBinding, ...] | None,
     starter: DurablePublishedRunStarter,
     orders: tuple[AuthoredOrder, ...] = (),
+    project: ProjectId | None = None,
+    tracker: TrackerItemSource | None = None,
 ) -> StartPublishedRunResult:
     """Start one published revision, from the values an author supplied.
 
@@ -164,8 +203,16 @@ def start_published_run(
     statement from binding an empty set. `orders` is the material the document
     declared as `graph_inputs`; the start pins each one to the schema the
     document named, so a caller does not repeat that hash.
+
+    An order naming a work item is read here, against the served project's
+    connected tracker, and becomes the exact observed revision the run pins
+    (ADR 0010 §5) -- before any durable row exists, so a start that cannot read
+    the item writes nothing.
     """
-    request = _durable_request(run_id, revision_hash, bindings, orders)
+    read = _orders_with_work_items_read(orders, project, tracker)
+    if isinstance(read, WorkItemOrderUnreadable):
+        return read
+    request = _durable_request(run_id, revision_hash, bindings, read)
     if request is None:
         return InvalidAgentBindings()
     result = starter.start_published(request)
@@ -202,11 +249,43 @@ def start_published_run(
             assert_never(unreachable)
 
 
+def _orders_with_work_items_read(
+    orders: tuple[AuthoredOrder, ...],
+    project: ProjectId | None,
+    tracker: TrackerItemSource | None,
+) -> tuple[PortAuthoredOrder, ...] | WorkItemOrderUnreadable:
+    """Turn every work-item order into the exact bytes of one observed revision."""
+
+    read: list[PortAuthoredOrder] = []
+    for order in orders:
+        if not isinstance(order.value, WorkItemOrderValue):
+            read.append(PortAuthoredOrder(order.name, order.value))
+            continue
+        match read_work_item_snapshot(project, tracker, order.value.reference):
+            case WorkItemSnapshotRead(revision=revision):
+                read.append(
+                    PortAuthoredOrder(
+                        order.name,
+                        InlineOrderValue(work_item_order_document(revision)),
+                    )
+                )
+            case (
+                ProjectSourceNotConnected()
+                | WorkItemNotInTracker()
+                | SourcePayloadMalformed()
+                | ReadUnavailable()
+            ) as refusal:
+                return WorkItemOrderUnreadable(order.name, refusal)
+            case _ as unreachable:
+                assert_never(unreachable)
+    return tuple(read)
+
+
 def _durable_request(
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     bindings: tuple[AuthoredAgentBinding, ...] | None,
-    orders: tuple[AuthoredOrder, ...] = (),
+    orders: tuple[PortAuthoredOrder, ...] = (),
 ) -> AnyStartPublishedRunRequest | None:
     if bindings is None:
         if orders:
@@ -229,9 +308,7 @@ def _durable_request(
                 run_id,
                 revision_hash,
                 binding_set,
-                orders=tuple(
-                    PortAuthoredOrder(order.name, order.value) for order in orders
-                ),
+                orders=orders,
             )
         return StartPublishedRunRequestV2(run_id, revision_hash, binding_set)
     except (TypeError, ValueError):

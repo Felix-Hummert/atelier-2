@@ -22,13 +22,16 @@ import socket
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Thread
+from typing import Any, Never
 
 import pytest
 import sqlalchemy as sa
 import uvicorn
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
@@ -68,8 +71,10 @@ from atelier2.contracts.artifacts import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
+from atelier2.contracts.queue_projection import TrackerItemReference
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
@@ -82,6 +87,14 @@ from atelier2.contracts.runs import (
     WorkflowRevisionHash,
 )
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
+from atelier2.contracts.when import RecordedAt
+from atelier2.contracts.work_items import (
+    WORK_ITEM_ORDER_SCHEMA_DOCUMENT,
+    ObservedWorkItemRevision,
+    WorkItemChangeMarker,
+    WorkItemKind,
+    work_item_order_document,
+)
 from atelier2.host.run_command import (
     AgentBindingSource,
     RunOrder,
@@ -102,6 +115,13 @@ from atelier2.ports.durable_runs import (
     DurableV3StartInputRefused,
     StartPublishedRunRequestV3,
     V3InputRefusal,
+)
+from atelier2.ports.issue_observation import (
+    ObserveWorkItemRevisionResult,
+    TrackerItemUnknown,
+    TrackerPayloadMalformed,
+    TrackerSourceUnavailable,
+    WorkItemRevisionObserved,
 )
 from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
@@ -1336,3 +1356,202 @@ def test_the_same_cli_command_twice_reports_one_run(runtime: DbosRuntime) -> Non
             )
             == 1
         )
+
+
+WORK_ITEM_SCHEMA = PublishedRevision(
+    RevisionKind.SCHEMA, WORK_ITEM_ORDER_SCHEMA_DOCUMENT
+)
+SERVED_PROJECT = ProjectId("studio")
+ASKED_ITEM = TrackerItemReference("gh:712")
+
+
+def observed_item(
+    body: bytes = b"Cook exactly seven portions.",
+    change_marker: str = 'W/"3f1a9c"',
+    item: TrackerItemReference = ASKED_ITEM,
+) -> ObservedWorkItemRevision:
+    return ObservedWorkItemRevision(
+        item,
+        WorkItemKind.ISSUE,
+        body,
+        WorkItemChangeMarker(change_marker),
+        RecordedAt("2026-08-26T09:15:00Z"),
+    )
+
+
+@dataclass
+class _TrackerAnswering:
+    """The connected tracker, as the composed server reaches it."""
+
+    answer: ObserveWorkItemRevisionResult
+
+    def open_items(self) -> Never:
+        raise AssertionError("a start never lists the open items")
+
+    def snapshot(
+        self, reference: TrackerItemReference
+    ) -> ObserveWorkItemRevisionResult:
+        return self.answer
+
+
+def work_item_client(
+    runtime: DbosRuntime, answer: ObserveWorkItemRevisionResult
+) -> TestClient:
+    return durable_api_client(
+        runtime,
+        served_project_id=SERVED_PROJECT,
+        tracker_item_source=_TrackerAnswering(answer),
+    )
+
+
+def start_with_work_item(
+    client: TestClient,
+    workflow: WorkflowRevision,
+    bindings: AgentBindingSet,
+    run_id: str,
+    work_item: str = ASKED_ITEM.value,
+) -> Any:
+    binding = bindings.bindings[0]
+    return client.post(
+        API_PREFIX + "/runs",
+        json={
+            "workflow_format_version": 3,
+            "run_id": run_id,
+            "workflow_revision_hash": workflow.revision_hash.value,
+            "agent_bindings": [
+                {
+                    "role": binding.role.value,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash.value
+                    ),
+                }
+            ],
+            "orders": [{"name": ORDER_NAME, "work_item": work_item}],
+        },
+    )
+
+
+def stored_order(runtime: DbosRuntime, run_id: str) -> tuple[bytes, str]:
+    with runtime.engine.connect() as connection:
+        row = connection.execute(
+            sa.select(
+                run_inputs_v3.c.value, run_inputs_v3.c.schema_revision_hash
+            ).where(run_inputs_v3.c.run_id == run_id)
+        ).one()
+    return bytes(row.value), str(row.schema_revision_hash)
+
+
+def test_a_work_item_order_pins_the_revision_the_start_read(
+    runtime: DbosRuntime,
+) -> None:
+    """The caller names an item; what the run stores is what the platform said.
+
+    This is the whole point of reading at the start rather than passing a
+    reference through: the run carries the bytes, their digest and the change
+    marker of the read, so what the agent works from is reproducible without
+    asking the tracker again.
+    """
+
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+    revision = observed_item()
+
+    started = start_with_work_item(
+        work_item_client(runtime, WorkItemRevisionObserved(revision)),
+        workflow,
+        bindings,
+        "v3/work-item-order",
+    )
+
+    assert started.status_code == 201
+    value, schema_revision_hash = stored_order(runtime, "v3/work-item-order")
+    assert value == work_item_order_document(revision)
+    assert schema_revision_hash == WORK_ITEM_SCHEMA.revision_hash.value
+
+
+def test_the_pinned_work_item_value_satisfies_the_schema_the_house_publishes(
+    runtime: DbosRuntime,
+) -> None:
+    """The start would refuse the value otherwise, so the two are one contract."""
+
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+    text = "Kommentar mit Umlaut, CRLF\r\nund keinem Schlusszeilenumbruch"
+
+    started = start_with_work_item(
+        work_item_client(
+            runtime,
+            WorkItemRevisionObserved(observed_item(text.encode("utf-8"))),
+        ),
+        workflow,
+        bindings,
+        "v3/work-item-utf8",
+    )
+
+    assert started.status_code == 201
+    value, _ = stored_order(runtime, "v3/work-item-utf8")
+    assert json.loads(value)["body"] == text
+
+
+def test_the_same_item_read_across_an_edit_pins_two_different_values(
+    runtime: DbosRuntime,
+) -> None:
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+    before = observed_item(b"Cook two portions.", change_marker='W/"one"')
+    after = observed_item(b"Cook seven portions.", change_marker='W/"two"')
+
+    for run_id, revision in (("v3/item-before", before), ("v3/item-after", after)):
+        started = start_with_work_item(
+            work_item_client(runtime, WorkItemRevisionObserved(revision)),
+            workflow,
+            bindings,
+            run_id,
+        )
+        assert started.status_code == 201
+
+    assert stored_order(runtime, "v3/item-before") != stored_order(
+        runtime, "v3/item-after"
+    )
+
+
+@pytest.mark.parametrize(
+    ("answer", "status"),
+    [
+        (TrackerItemUnknown(ASKED_ITEM), 422),
+        (TrackerSourceUnavailable("GitHub answered 503"), 503),
+        (TrackerPayloadMalformed("the item read carried no body field"), 502),
+    ],
+    ids=["unknown-item", "unreachable-platform", "malformed-payload"],
+)
+def test_an_unreadable_work_item_refuses_the_start_before_any_row(
+    runtime: DbosRuntime, answer: ObserveWorkItemRevisionResult, status: int
+) -> None:
+    """Each way the read can fail answers differently, and none starts a run."""
+
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+
+    refused = start_with_work_item(
+        work_item_client(runtime, answer), workflow, bindings, "v3/unreadable-item"
+    )
+
+    assert refused.status_code == status
+    with runtime.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(runs)
+                .where(runs.c.run_id == "v3/unreadable-item")
+            )
+            == 0
+        )
+
+
+def test_an_instance_with_no_connected_tracker_refuses_a_work_item_order(
+    runtime: DbosRuntime,
+) -> None:
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+
+    refused = start_with_work_item(
+        durable_api_client(runtime), workflow, bindings, "v3/no-connection"
+    )
+
+    assert refused.status_code == 409
+    assert refused.json()["type"].endswith("project-source-not-connected")

@@ -1200,6 +1200,25 @@ readiness, and no priority exist for this projection yet, and nothing in it
 holds a tracker item's title, description, or comments -- REQ-QUEUE-14 keeps
 those with the tracker.
 
+A run reads one of those items as its own material through the start door: a V3
+start order may name a work item (`{"name": ..., "work_item": "gh:<n>"}` on
+`POST /atelier/api/v1/runs` and on the MCP `start_run` tool) instead of
+carrying bytes, and the start reads that item from the served project's
+connected tracker before any durable row exists. What the run stores is the
+observed revision of ADR 0010 §5 -- the exact served body bytes, their
+SHA-256, the neutral kind (`issue` or `change_request`, so a GitHub pull
+request carries no GitHub noun into the core), the read's entity tag and its
+read time -- serialized under the house schema `contracts.work_items` owns, so
+a workflow declares a work item by pinning that schema revision rather than by
+naming a platform. The value is pinned, not re-read: the same item started
+across an edit is two runs with two different values. A start that cannot read
+the item answers which of the four ways it failed -- no connected project, no
+such item in the tracker, an unreachable platform, a payload its adapter
+refused -- and writes nothing. Publishing the house schema is still the
+operator's own act, an item body past the inline order bound is refused by that
+bound rather than published as an artifact, and no picker offers the items in a
+surface yet.
+
 On 2026-08-19 at `ed6376b` this landing measured how many concurrent
 fake-executor runs one SQLite instance carries. The harness is in-process ASGI on one event loop,
 production query-admission bounds, a V3 one-agent document, and
