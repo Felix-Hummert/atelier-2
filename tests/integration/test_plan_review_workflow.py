@@ -68,7 +68,7 @@ WORKFLOWS_DIRECTORY = Path(__file__).parents[2] / "workflows"
 PLAN_REVIEW_DOCUMENT = (WORKFLOWS_DIRECTORY / "plan-review.yaml").read_bytes()
 TEXT_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
-    (WORKFLOWS_DIRECTORY / "schemas" / "diff_review_diff.json").read_bytes(),
+    (WORKFLOWS_DIRECTORY / "schemas" / "nonempty_string.json").read_bytes(),
 )
 RESULT_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
