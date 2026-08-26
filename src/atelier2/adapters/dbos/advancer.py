@@ -20,7 +20,8 @@ from atelier2.adapters.dbos.schema import (
     run_events,
     runs,
 )
-from atelier2.adapters.dbos.workflow_ids import driving_workflow_id
+from atelier2.adapters.dbos.uncontinuable_runs import live_driver_workflow_ids
+from atelier2.adapters.dbos.workflow_ids import driving_workflow_ids
 from atelier2.contracts.effects import (
     CanonicalRequest,
     EffectAdapterBinding,
@@ -277,22 +278,9 @@ def first_agent_platform_effect_node(
     return None
 
 
-# DBOS owns this table and these tokens; this module only reads them, to answer
-# whether a workflow that would re-run an agent open-pr redemption is still one
-# recovery will resume. `atelier2.adapters.dbos`'s other readers of
-# `workflow_status` each keep their own narrow copy for the same reason -- a
-# shared owner is not a widening either file's scope invites today.
-_dbos_workflow_status = sa.table(
-    "workflow_status",
-    sa.column("workflow_uuid"),
-    sa.column("status"),
-)
-_RECOVERABLE_WORKFLOW_STATUSES = ("PENDING", "ENQUEUED", "DELAYED")
-"""The DBOS statuses under which a workflow is still owed its next step, so
-recovery on the next launch resumes it rather than leaving it where it lies."""
-
-
-def agent_open_pr_runs_pending_live_redemption(engine: sa.Engine) -> tuple[RunId, ...]:
+def agent_open_pr_runs_pending_live_redemption(
+    engine: sa.Engine, application_version: str
+) -> tuple[RunId, ...]:
     """Every V3 run whose agent open-pr grant could still redeem against live GitHub.
 
     Admission refuses an agent-authored `open-pr` grant against an adapter that
@@ -312,6 +300,11 @@ def agent_open_pr_runs_pending_live_redemption(engine: sa.Engine) -> tuple[RunId
     is still driven has not redeemed yet. `_still_owes_live_redemption` is the
     predicate that catches both the in-flight run and that window while letting a
     run whose sink-node attempts have all finished driving serve.
+
+    The application version is what makes "still driven" mean recoverable rather
+    than merely unfinished: a `PENDING` row a retired version left behind will
+    never be resumed, and reading it as a live driver would block every later
+    live-GitHub start on a redemption nothing is going to make.
     """
     with engine.connect() as connection:
         blocking: list[RunId] = []
@@ -329,13 +322,15 @@ def agent_open_pr_runs_pending_live_redemption(engine: sa.Engine) -> tuple[RunId
             .all()
         ):
             if _still_owes_live_redemption(
-                connection, record
+                connection, record, application_version
             ) and _carries_agent_open_pr_grant(connection, record):
                 blocking.append(RunId(str(record["run_id"])))
         return tuple(blocking)
 
 
-def _still_owes_live_redemption(connection: Any, record: Mapping[Any, Any]) -> bool:
+def _still_owes_live_redemption(
+    connection: Any, record: Mapping[Any, Any], application_version: str
+) -> bool:
     """Whether this run could still redeem an agent open-pr grant on a next launch.
 
     A non-terminal run is still advancing -- or parked at input -- toward that
@@ -350,22 +345,22 @@ def _still_owes_live_redemption(connection: Any, record: Mapping[Any, Any]) -> b
 
     if RunState(str(record["state"])) not in TERMINAL_RUN_STATES:
         return True
-    return _current_node_attempt_still_driving(connection, record)
+    return _current_node_attempt_still_driving(connection, record, application_version)
 
 
 def _current_node_attempt_still_driving(
-    connection: Any, record: Mapping[Any, Any]
+    connection: Any, record: Mapping[Any, Any], application_version: str
 ) -> bool:
     """Whether any attempt of the run's current node is still owed its next move.
 
     A run reaching COMPLETED leaves its current node at the sink node that
     completed it, and the post-COMPLETED redemption runs inside whichever workflow
-    still drives one of that node's attempts. `driving_workflow_id` is the one
+    still drives one of that node's attempts. `driving_workflow_ids` is the one
     owner of that mapping -- the node workflow for the original attempt, the
-    replacement workflow for one that was cancelled and replaced -- so asking it
-    for every attempt of the node covers both crash windows without enumerating
-    either workflow form here. A recoverable status under any of those ids names a
-    redemption recovery would still resume.
+    replacement workflow for one that was cancelled and replaced, the Runner slot
+    for a lease-carried one -- so asking it for every attempt of the node covers
+    every crash window without enumerating any workflow form here. A recoverable
+    status under any of those ids names a redemption recovery would still resume.
     """
 
     execution_id = NodeExecutionId.for_node(
@@ -374,27 +369,21 @@ def _current_node_attempt_still_driving(
         str(record["current_node_id"]),
         int(record["current_round_ordinal"]),
     )
-    driving_ids = [
-        driving_workflow_id(attempt_from_record(attempt_record))
-        for attempt_record in connection.execute(
+    attempt_records = (
+        connection.execute(
             sa.select(agent_attempts).where(
                 agent_attempts.c.node_execution_id == execution_id.value
             )
         )
         .mappings()
         .all()
-    ]
-    if not driving_ids:
-        return False
-    found = connection.scalar(
-        sa.select(_dbos_workflow_status.c.workflow_uuid)
-        .where(
-            _dbos_workflow_status.c.workflow_uuid.in_(driving_ids),
-            _dbos_workflow_status.c.status.in_(_RECOVERABLE_WORKFLOW_STATUSES),
-        )
-        .limit(1)
     )
-    return found is not None
+    driving_ids = [
+        workflow_id
+        for attempt_record in attempt_records
+        for workflow_id in driving_workflow_ids(attempt_from_record(attempt_record))
+    ]
+    return bool(live_driver_workflow_ids(connection, driving_ids, application_version))
 
 
 def _carries_agent_open_pr_grant(connection: Any, record: Mapping[Any, Any]) -> bool:
