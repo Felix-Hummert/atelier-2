@@ -1,7 +1,12 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/435"
+# Room names revised on 26.08.2026 (#773, refs #698, #704): ADR 0019 retired
+# the Board and the Workflows room, so the journey walks the rooms that exist
+# -- the Catalog is where a run is now started by hand, and the rail leads home
+# to the Workbench. The sentence identifier stands unchanged, so no proof and
+# no claim is renamed.
 
 [[sentence]]
 id = "core-surfaces-support-one-complete-keyboard-journey"
 requirement = "REQ-UIQ-05"
-text = "One keyboard-only journey navigates the core Studio, Project, New Run, and V2 Run surfaces; starts the existing singleton V2 run with a remembered published agent; refreshes it exactly twice to terminal evidence; scrolls named event evidence; and returns through the Studio rail with focus on each newly rendered main stage."
+text = "One keyboard-only journey navigates the core Workbench, Catalog, New Run, and V2 Run surfaces; starts the existing singleton V2 run with a remembered published agent; refreshes it exactly twice to terminal evidence; scrolls named event evidence; and returns through the rail to the Workbench with focus on each newly rendered main stage."
