@@ -118,6 +118,20 @@ DOCUMENT_CASES = (
         ),
         False,
     ),
+    DocumentCase(
+        "a role pinned to one exact model",
+        ONE_AGENT_DOCUMENT.replace(
+            AGENT_KIND_LINE, AGENT_KIND_LINE + b"    model: claude-opus-5\n"
+        ),
+        True,
+    ),
+    DocumentCase(
+        "a role pinned to an alias instead of a model id",
+        ONE_AGENT_DOCUMENT.replace(
+            AGENT_KIND_LINE, AGENT_KIND_LINE + b"    model: newest opus\n"
+        ),
+        False,
+    ),
     DocumentCase("a declared loop", LOOPED_LINE_DOCUMENT, True),
     DocumentCase(
         "a loop without the bound it must declare",
