@@ -70,8 +70,10 @@ from atelier2.host.mcp_tools import (
     tool_definitions,
 )
 from atelier2.host.run_command import (
+    ARTIFACT_PATH,
     DEFAULT_CATALOG_POSITION,
     JSON_MEDIA_TYPE,
+    OCTET_STREAM_MEDIA_TYPE,
     REQUEST_TIMEOUT_SECONDS,
     RUN_PATH,
     WORKFLOW_REVISION_PATH,
@@ -95,8 +97,6 @@ _described_page = TypeAdapter(VersionedWorkflowRevisionPageResource)
 _artifact_resource = TypeAdapter(ArtifactResource)
 _start_run_order = TypeAdapter(AnyStartRunOrderResource)
 
-ARTIFACT_PATH = "/artifacts"
-OCTET_STREAM_MEDIA_TYPE = "application/octet-stream"
 MAXIMUM_MESSAGE_BYTES = 1_048_576
 JSONRPC_PARSE_ERROR = -32700
 JSONRPC_INVALID_REQUEST = -32600

@@ -28,11 +28,24 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.dbos.workflow_ids import driving_workflow_id
+from atelier2.adapters.dbos.workflow_ids import (
+    cancellation_workflow_id_for,
+    driving_workflow_ids,
+    runner_lease_workflow_id_for,
+)
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
-from atelier2.contracts.agent_attempts import AgentAttempt, AgentAttemptFailureCode
+from atelier2.contracts.agent_attempts import (
+    AGENT_ATTEMPT_ORDINAL,
+    AgentAttempt,
+    AgentAttemptFailureCode,
+    AgentAttemptReplacement,
+    CancelAgentAttemptRequest,
+    RunnerGenerationBinding,
+    RunnerGenerationId,
+    stop_command_for,
+)
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
     AttemptTranscript,
@@ -59,6 +72,7 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS, PageLimit
 from atelier2.contracts.run_bindings import RunV2
+from atelier2.contracts.runner_manifests import runner_manifest_id
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.contracts.workflows import (
     AgentNodeV2,
@@ -67,6 +81,7 @@ from atelier2.contracts.workflows import (
     WorkflowGraphV2,
 )
 from atelier2.ports.agent_attempts import (
+    AgentAttemptCancellationAccepted,
     AgentAttemptClaimedByThisCall,
     AgentAttemptFailed,
     AgentAttemptPossiblyRan,
@@ -101,6 +116,7 @@ from tests.scenarios.agents import (
     runtime_workspace_owner,
 )
 from tests.scenarios.api import durable_queries
+from tests.scenarios.runners import free_runner_candidate_manifest
 
 _DOCUMENT = b"""format_version: 2
 start: build
@@ -187,24 +203,63 @@ def attempt_request(
     )
 
 
+def _the_driving_workflow(attempt: AgentAttempt) -> str:
+    """The one workflow a local-process attempt ever holds a status under.
+
+    `driving_workflow_ids` also names the Runner slot, because a lease-carried
+    attempt's row cannot say whether the slot has taken it over. These attempts
+    are local-process, so no workflow is ever minted under that second id.
+    """
+
+    return driving_workflow_ids(attempt)[0]
+
+
+def _driverless_store(runtime: DbosRuntime) -> DbosAgentAttemptStore:
+    """A store that may be asked which attempts are driverless.
+
+    `iter_driverless_attempts` refuses without an application version, because
+    "still driven" means "by a workflow this version of the runtime will resume".
+    """
+
+    return DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+
 def _record_driving_workflow(
-    runtime: DbosRuntime, workflow_id: str, status: str
+    runtime: DbosRuntime,
+    workflow_id: str,
+    status: str,
+    *,
+    application_version: str | None = None,
 ) -> None:
     """Leave one DBOS workflow row in the state a real one would be found in.
 
     The durable runtime owns this table; a test that wants to ask about a
     workflow in a status only a crash or a raise produces cannot reach that
     status by running one.
+
+    The version is half of what makes a row live: DBOS resumes only workflows of
+    the version it is running, so a row a retired one left behind is dead however
+    driving its status reads. It defaults to this runtime's own; a test of that
+    retired case names another.
     """
 
     with runtime.engine.begin() as connection:
         connection.execute(
             sa.text(
                 "INSERT INTO workflow_status "
-                "(workflow_uuid, status, created_at, updated_at, priority) "
-                "VALUES (:workflow_id, :status, 0, 0, 0)"
+                "(workflow_uuid, status, application_version, "
+                "created_at, updated_at, priority) "
+                "VALUES (:workflow_id, :status, :application_version, 0, 0, 0)"
             ),
-            {"workflow_id": workflow_id, "status": status},
+            {
+                "workflow_id": workflow_id,
+                "status": status,
+                "application_version": (
+                    runtime.settings.application_version
+                    if application_version is None
+                    else application_version
+                ),
+            },
         )
 
 
@@ -1001,13 +1056,102 @@ def test_an_attempt_is_driverless_once_its_workflow_can_no_longer_move_it(
     runtime.initialize_storage()
     try:
         request = attempt_request(runtime)
-        store = DbosAgentAttemptStore(runtime.engine)
+        store = _driverless_store(runtime)
         attempt = store.prepare(agent_attempt_execution(request))
-        _record_driving_workflow(runtime, driving_workflow_id(attempt), status)
+        _record_driving_workflow(runtime, _the_driving_workflow(attempt), status)
 
         assert tuple(store.iter_driverless_attempts(PageLimit(1))) == (
             (attempt,) if driverless else ()
         )
+    finally:
+        runtime.close()
+
+
+def test_a_cancelled_runner_bound_attempt_is_still_owed_a_move_by_the_slot(
+    tmp_path: Path,
+) -> None:
+    """#584: cancelling a lease a launcher already claimed defers the ending.
+
+    The cancellation workflow does not finish such an Attempt itself; it hands it
+    back to the slot workflow that is driving the session, which ends it on the
+    Runner's own evidence. Naming only the cancellation would leave a restart's
+    sweep free to converge an Attempt the slot is about to end -- two writers for
+    one ending -- so both are named and the status read decides which is alive.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime)
+        store = _driverless_store(runtime)
+        execution = agent_attempt_execution(request)
+        prepared = store.prepare(execution)
+        armed = store.bind_runner_generation(
+            execution,
+            RunnerGenerationBinding(
+                prepared.attempt_id,
+                prepared.request_hash,
+                RunnerGenerationId("g" * 43),
+                runner_manifest_id(free_runner_candidate_manifest()),
+            ),
+        )
+        accepted = store.request_cancellation(
+            CancelAgentAttemptRequest(
+                armed.run_id,
+                armed.attempt_id,
+                "operator-cancel:lease",
+                armed.state_version,
+                AgentAttemptReplacement.NONE,
+            )
+        )
+        assert isinstance(accepted, AgentAttemptCancellationAccepted), accepted
+        cancelled = store.load(armed.attempt_id)
+        assert cancelled.cancellation is not None
+        assert cancelled.runner_manifest_id is not None
+
+        named = driving_workflow_ids(cancelled)
+        assert cancellation_workflow_id_for(stop_command_for(cancelled)) in named
+        assert (
+            runner_lease_workflow_id_for(
+                cancelled.node_execution_id, AGENT_ATTEMPT_ORDINAL
+            )
+            in named
+        )
+    finally:
+        runtime.close()
+
+
+def test_a_driving_row_of_a_retired_version_does_not_hide_a_driverless_attempt(
+    tmp_path: Path,
+) -> None:
+    """A driving row belongs to the version that wrote it, and to no other.
+
+    DBOS resumes workflows of the version it is running, so a row a retired
+    deployment left behind is never going to move again however driving its
+    status reads. Counting it as a live driver hides its attempt from every later
+    sweep, and the attempt then stands non-terminal for as long as the store
+    exists.
+
+    This is the sweep that owns attempts no Runner carries; the Runner-bound half
+    of the same rule is proven against the sweep that owns those, in
+    `tests/integration/test_workflow_lease_dispatch.py`.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime)
+        store = _driverless_store(runtime)
+        attempt = store.prepare(agent_attempt_execution(request))
+        for workflow_id in driving_workflow_ids(attempt):
+            _record_driving_workflow(
+                runtime,
+                workflow_id,
+                "PENDING",
+                application_version="a-version-this-runtime-retired",
+            )
+
+        assert tuple(store.iter_driverless_attempts(PageLimit(1))) == (attempt,)
     finally:
         runtime.close()
 
@@ -1019,7 +1163,7 @@ def test_an_attempt_whose_workflow_never_reached_the_store_is_driverless(
     runtime.initialize_storage()
     try:
         request = attempt_request(runtime)
-        store = DbosAgentAttemptStore(runtime.engine)
+        store = _driverless_store(runtime)
         attempt = store.prepare(agent_attempt_execution(request))
 
         assert tuple(store.iter_driverless_attempts(PageLimit(1))) == (attempt,)
@@ -1032,7 +1176,7 @@ def test_a_terminal_attempt_is_never_driverless(tmp_path: Path) -> None:
     runtime.initialize_storage()
     try:
         request = attempt_request(runtime)
-        store = DbosAgentAttemptStore(runtime.engine)
+        store = _driverless_store(runtime)
         execute_agent_attempt(
             agent_attempt_execution(request),
             inspecting_executor(runtime),
@@ -1052,10 +1196,10 @@ def test_driverless_iteration_advances_past_a_fully_driven_page(
     runtime = attempt_runtime(tmp_path)
     runtime.initialize_storage()
     try:
-        store = DbosAgentAttemptStore(runtime.engine)
+        store = _driverless_store(runtime)
         ordered = _ordered_prepared_attempts(runtime, store, "attempt/keyset", 3)
         for attempt in ordered[:2]:
-            _record_driving_workflow(runtime, driving_workflow_id(attempt), "PENDING")
+            _record_driving_workflow(runtime, _the_driving_workflow(attempt), "PENDING")
 
         assert tuple(store.iter_driverless_attempts(PageLimit(2))) == (ordered[2],)
     finally:
@@ -1068,7 +1212,7 @@ def test_driverless_iteration_loads_only_one_page_before_its_first_yield(
     runtime = attempt_runtime(tmp_path)
     runtime.initialize_storage()
     try:
-        store = DbosAgentAttemptStore(runtime.engine)
+        store = _driverless_store(runtime)
         ordered = _ordered_prepared_attempts(runtime, store, "attempt/lazy", 3)
         observed_reads: list[str] = []
 
@@ -1110,12 +1254,12 @@ def test_driverless_iteration_reads_later_pages_from_fresh_durable_truth(
     runtime = attempt_runtime(tmp_path)
     runtime.initialize_storage()
     try:
-        store = DbosAgentAttemptStore(runtime.engine)
+        store = _driverless_store(runtime)
         ordered = _ordered_prepared_attempts(runtime, store, "attempt/fresh", 2)
 
         attempts = store.iter_driverless_attempts(PageLimit(1))
         assert next(attempts) == ordered[0]
-        _record_driving_workflow(runtime, driving_workflow_id(ordered[1]), "PENDING")
+        _record_driving_workflow(runtime, _the_driving_workflow(ordered[1]), "PENDING")
 
         assert tuple(attempts) == ()
     finally:
@@ -1126,7 +1270,7 @@ def test_driverless_iteration_restart_has_no_hidden_cursor(tmp_path: Path) -> No
     runtime = attempt_runtime(tmp_path)
     runtime.initialize_storage()
     try:
-        store = DbosAgentAttemptStore(runtime.engine)
+        store = _driverless_store(runtime)
         ordered = _ordered_prepared_attempts(runtime, store, "attempt/restart", 2)
 
         interrupted = store.iter_driverless_attempts(PageLimit(1))
@@ -1191,9 +1335,9 @@ def test_driverless_iteration_bounds_ten_thousand_row_queries(
         try:
             discovered = sum(
                 1
-                for _attempt in DbosAgentAttemptStore(
-                    runtime.engine
-                ).iter_driverless_attempts(PageLimit(MAXIMUM_PAGE_ITEMS))
+                for _attempt in _driverless_store(runtime).iter_driverless_attempts(
+                    PageLimit(MAXIMUM_PAGE_ITEMS)
+                )
             )
         finally:
             event.remove(runtime.engine, "before_cursor_execute", observe_reads)
@@ -1207,7 +1351,11 @@ def test_driverless_iteration_bounds_ten_thousand_row_queries(
         assert discovered == 10_000
         assert len(attempt_reads) == 101
         assert len(workflow_reads) == 100
-        assert max(workflow_reads) == MAXIMUM_PAGE_ITEMS + 3
+        # One page of attempts, each naming the workflows that can still drive it
+        # -- its own, and the Runner slot its row cannot rule out -- plus the
+        # three driving statuses and the application version they must belong to.
+        # Bounded by the page, not by the store's size.
+        assert max(workflow_reads) == MAXIMUM_PAGE_ITEMS * 2 + 4
         assert len(observed_reads) == 201
     finally:
         runtime.close()
