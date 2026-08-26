@@ -11,6 +11,7 @@ from atelier2.api.wire.events import AgentFailedEventResourceV3
 from atelier2.api.wire.resources import RunResourceV3
 from atelier2.application.project_node_rail import project_node_rail
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
+from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
 from atelier2.contracts.node_records_v3 import NodeReceiptReason
 from atelier2.contracts.run_events import RunEventPage
 from atelier2.contracts.run_projections import (
@@ -57,6 +58,7 @@ def test_an_agent_failed_event_carries_the_stored_receipt_reason(runtime) -> Non
     assert persisted.node_receipt_reason.startswith(
         f"{NodeReceiptReason.OUTPUT_SCHEMA_REFUSED.value}: "
     )
+    assert len(persisted.node_receipt_reason) <= MAXIMUM_AGENT_FIELD_CHARACTERS
 
     found = queries.get_run(RUN)
     assert isinstance(found, RunFound)

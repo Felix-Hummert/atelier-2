@@ -10,12 +10,14 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any, Never
+from urllib.parse import quote
 
 import pytest
 from fastapi.sse import ServerSentEvent
 
 from atelier2.api.openapi import API_PREFIX, EVENT_PATH
 from atelier2.api.problems import PROJECTION_LIMIT_DETAIL
+from atelier2.api.projection.events import bounded_event_summary
 from atelier2.api.references import (
     MAX_SIGNED_INT64,
     encode_public_run_reference,
@@ -31,10 +33,12 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptId,
     AgentAttemptReplacement,
 )
+from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
 from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEvent,
+    RunEventAgentAttemptBinding,
     RunEventCancellationBinding,
     RunEventKind,
 )
@@ -164,6 +168,26 @@ def persisted_v1_cancellation() -> PersistedRunEvent:
     )
 
 
+def persisted_v3_failure_with_overlong_receipt_reason(
+    run_id: RunId = RUN_ID, node_id: str = "agent"
+) -> PersistedRunEvent:
+    return PersistedRunEvent(
+        RunEvent(
+            run_id,
+            REVISION_HASH,
+            1,
+            node_id,
+            NodeExecutionId.for_node(run_id, REVISION_HASH, node_id),
+            RunEventKind.AGENT_FAILED,
+            b"OUTPUT_SCHEMA_REFUSED",
+            attempt_binding=RunEventAgentAttemptBinding(AgentAttemptId("a" * 64), 1),
+        ),
+        None,
+        WorkflowFormatVersion.V3,
+        "x" * (MAXIMUM_AGENT_FIELD_CHARACTERS + 1),
+    )
+
+
 def one_event_page(
     kind: RunEventKind, payload: bytes, sequence: int = 1
 ) -> RunEventPage:
@@ -279,6 +303,63 @@ def test_an_event_beyond_the_configured_limits_ends_the_stream_as_unavailable() 
 
     assert problem["type"].endswith(":temporarily-unavailable")
     assert problem["detail"] == PROJECTION_LIMIT_DETAIL
+
+
+def test_a_run_stream_names_an_omitted_overlong_receipt_reason() -> None:
+    frames = streamed_frames(
+        OnePageQueries(
+            RunEventPage((persisted_v3_failure_with_overlong_receipt_reason(),), True)
+        )
+    )
+
+    assert len(frames) == 1
+    event: dict[str, Any] = json.loads(frames[0].data.model_dump_json())
+    assert event["event"] == "AGENT_FAILED"
+    reason = event["reason"]
+    assert reason is not None
+    assert not ("x" * (MAXIMUM_AGENT_FIELD_CHARACTERS + 1)).startswith(reason)
+    assert "omitted" in reason
+    assert (
+        f"GET /atelier/api/v1/runs/{encode_public_run_reference(RUN_ID)}/nodes/agent"
+    ) in reason
+    assert len(reason) <= api_limits().maximum_field_characters
+
+
+def test_an_omitted_receipt_reason_percent_encodes_its_real_node_detail_path() -> None:
+    projection = persisted_v3_failure_with_overlong_receipt_reason(
+        RunId("summary-route"), "agent / review"
+    )
+
+    summary = bounded_event_summary(projection).node_receipt_reason
+    encoded_node_id = quote(projection.event.node_id, safe="-_.!~*'()")
+
+    assert summary is not None
+    assert (
+        "GET /atelier/api/v1/runs/"
+        f"{encode_public_run_reference(projection.event.run_id)}/nodes/"
+        f"{encoded_node_id}"
+    ) in summary
+
+
+def test_an_omitted_receipt_reason_names_event_fields_when_its_detail_path_is_too_long() -> (
+    None
+):
+    projection = persisted_v3_failure_with_overlong_receipt_reason(
+        RunId("r" * MAXIMUM_AGENT_FIELD_CHARACTERS),
+        "n" * MAXIMUM_AGENT_FIELD_CHARACTERS,
+    )
+
+    summary = bounded_event_summary(projection).node_receipt_reason
+    stored_reason = projection.node_receipt_reason
+
+    assert summary is not None
+    assert stored_reason is not None
+    assert not stored_reason.startswith(summary)
+    assert "omitted" in summary
+    assert "node-detail resource" in summary
+    assert "public_run_reference" in summary
+    assert "node_id" in summary
+    assert len(summary) <= MAXIMUM_AGENT_FIELD_CHARACTERS
 
 
 @pytest.mark.parametrize(
