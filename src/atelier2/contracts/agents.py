@@ -5,6 +5,7 @@ import struct
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 
+from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash, frame
@@ -24,11 +25,19 @@ MAXIMUM_AGENT_OUTPUT_BYTES_V2 = 49_152
 # pull-request diff hit. What a given provider accepts is a narrower, separate
 # limit each invocation still declares at the process port.
 MAXIMUM_AGENT_PROCESS_INPUT_BYTES = MAXIMUM_ARTIFACT_BYTES
-# Current process-frame ceiling, earned by the measured JSON frame of every
-# Claude Code this repository admits (see the Claude subscription adapter's
-# conformance set); each invocation still declares its exact lower limit at the
-# process port.
-MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES = 8 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
+# The ceiling every invocation's declared stdout frame must fit inside, and
+# deliberately nobody's own frame: each provider states its exact number at the
+# process port, derived from the wire format that produces it. That separation
+# is the point. While this constant *was* one provider's measurement, raising it
+# for a new operation would silently have widened what every other provider's
+# process may write, and a frame nobody re-measured is a frame nobody knows.
+#
+# It stands above every frame the repository declares. The largest is the Claude
+# subscription adapter's transcript-bearing stream, which carries a whole
+# attempt's steps ahead of the same final envelope the envelope-only operation
+# produced. This leaves room above that rather than tracking it exactly, so a
+# provider measuring a slightly wider frame moves its own line and not the port's.
+MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES = 32 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
 MAXIMUM_SIGNED_INT64 = 2**63 - 1
 MAXIMUM_PROVIDER_ID_CHARACTERS = 64
 # The slug's own width, so the pattern, the store's CHECK and the wire cannot
@@ -377,7 +386,18 @@ class AgentExecutionRequest:
 
 @dataclass(frozen=True)
 class AgentExecutionResult:
+    """What one execution answered, and what it did to get there where that is known.
+
+    The transcript is optional because it is a fact about the provider's wire
+    format, not about this contract: an executor whose CLI publishes a
+    structured stream decodes one, and an executor whose CLI publishes only a
+    final answer leaves it `None` rather than inventing a shape. It is already
+    bounded and redacted when it arrives -- `AttemptTranscript` is the only way
+    to make one -- so the terminal write keeps it without judging it again.
+    """
+
     output_bytes: bytes
+    transcript: AttemptTranscript | None = None
 
 
 @dataclass(frozen=True)

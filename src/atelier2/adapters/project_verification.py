@@ -25,7 +25,6 @@ from pathlib import Path, PurePosixPath
 
 from atelier2.adapters.bounded_processes import bounded_process_answer
 from atelier2.adapters.project_source import LocalGitProjectSource
-from atelier2.contracts.agents import MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.tool_grants_v3 import MAXIMUM_VERIFICATION_COMMAND_BYTES
@@ -47,6 +46,23 @@ PROJECT_MANIFEST_PATH = PurePosixPath(PROJECT_MANIFEST_NAME)
 
 DECLARED_VERIFICATION_PATH = ("tool", "atelier2", "verification")
 """Where in the manifest a project states its own verification."""
+
+MAXIMUM_VERIFICATION_OUTPUT_BYTES = 393_216
+"""What one declared verification may write on a stream before it is refused.
+
+This owner's own number, deliberately not the process port's ceiling. That
+ceiling is the largest frame ANY provider declares, and it moved the day one
+provider's wire format grew (#666) -- which would have quadrupled what a
+verification may print here without anybody deciding to. A test run's console
+output has nothing to do with a provider's envelope, so it does not inherit a
+provider's measurement.
+
+The number is the width that has been in force since this adapter was written,
+kept exactly rather than re-derived: no measurement of a real verification's
+output has been taken, and inventing a derivation would dress a guess as one.
+What it costs is one resident copy of that output, because the runtime reads the
+whole answer to hash it -- only the digest is kept, never the text.
+"""
 
 _COMMAND_KEY = "command"
 _TIMEOUT_KEY = "timeout_seconds"
@@ -98,7 +114,7 @@ class LocalProjectVerificationRunner:
             exit_code, standard_output = bounded_process_answer(
                 process,
                 declared.timeout_seconds,
-                MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
+                MAXIMUM_VERIFICATION_OUTPUT_BYTES,
             )
         except OSError as error:
             raise ProjectVerificationUnavailable(

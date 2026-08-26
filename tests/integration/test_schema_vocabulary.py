@@ -455,6 +455,7 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "agent_attempts.request_hash",
         "agent_attempts.runner_manifest_id",
         "agent_attempts.runner_terminal_evidence_hash",
+        "agent_attempts.transcript_artifact_hash",
         "agent_attempts.workflow_revision_hash",
         "agent_configuration_revisions.auth_profile_revision_hash",
         "agent_configuration_revisions.revision_hash",

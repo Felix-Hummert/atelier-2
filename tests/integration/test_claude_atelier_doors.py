@@ -167,7 +167,8 @@ def test_the_doors_vector_admits_exactly_the_granted_doors(tmp_path: Path) -> No
         str(settings.deployment.executable),
         "-p",
         "--output-format",
-        "json",
+        "stream-json",
+        "--verbose",
         "--model",
         "claude-sonnet-4-6",
         "--tools=",
@@ -569,4 +570,5 @@ def test_an_episode_whose_node_declared_no_schema_keeps_the_answer_it_was_given(
         leased(request, command, workspace), launched(command, workspace)
     )
 
-    assert outcome == AgentExecutionResult(b"plain words")
+    assert isinstance(outcome, AgentExecutionResult)
+    assert outcome.output_bytes == b"plain words"
