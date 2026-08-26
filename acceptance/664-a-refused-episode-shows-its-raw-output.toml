@@ -30,10 +30,13 @@ story = "https://github.com/FlexOr2/atelier-2/issues/664"
 # answer honestly absent rather than unscanned. `NodeRefusalOutputResource`
 # (not the general `NodeAnswerResource` `answer` already uses, which also
 # carries Action/Subworkflow payloads with no shared bound) bounds
-# `value_base64` to the wire's own encoding of the agent output cap
-# (`MAXIMUM_AGENT_OUTPUT_BYTES_V2`, already held upstream by every executor
-# adapter before a schema ever judges anything), mirrored the same way in the
-# Zod schema.
+# `value_base64` to the agent output cap (`MAXIMUM_AGENT_OUTPUT_BYTES_V2`,
+# already held upstream by every executor adapter before a schema ever judges
+# anything) -- but restated through `secret_redaction.maximum_redacted_length`,
+# not the cap's own encoding directly: replacing a short credential with the
+# longer `REDACTION_MARKER` can grow the text past what the cap alone would
+# suggest, and a bound unaware of that would refuse real refused output at the
+# cap. Mirrored the same way in the Zod schema.
 #
 # NAMED OPEN, deliberately not written by this slice: usage, the
 # provider-resolved model and `session_id` for a FAILED attempt (#664's third
@@ -43,4 +46,4 @@ story = "https://github.com/FlexOr2/atelier-2/issues/664"
 
 [[sentence]]
 id = "a-refused-episode-shows-its-raw-output-and-hash-in-the-node-panel"
-text = "A node whose own output a schema refused answers node detail with a redacted presentation of the refused bytes -- credential shapes replaced by contracts.secret_redaction before either the domain projection or the wire resource is built -- and the value hash of the original, unredacted bytes the schema judged, resolved from the artifact the failure transaction kept under that same hash, as a field of its own bounded to the wire's own encoding of the agent output cap -- never the accepted-answer field, which a schema-refused value never satisfied, and never the general answer resource's own unbounded shape, which also serves larger payloads with no shared bound. The node panel's Result tab shows the redacted bytes under the sentence that already names where the run stopped, states plainly that credential-shaped text was replaced, and the Evidence tab lists the hash -- still proof of what was judged -- beside the run's other proof anchors. A refusal with nothing to resolve -- no receipt at all, an unjudged process death, bytes that do not decode as UTF-8, or a run written before this write existed -- answers with no such field, never a placeholder."
+text = "A node whose own output a schema refused answers node detail with a redacted presentation of the refused bytes -- credential shapes replaced by contracts.secret_redaction before either the domain projection or the wire resource is built -- and the value hash of the original, unredacted bytes the schema judged, resolved from the artifact the failure transaction kept under that same hash, as a field of its own bounded to the agent output cap as restated through the redaction owner's own declared worst-case growth -- never the accepted-answer field, which a schema-refused value never satisfied, and never the general answer resource's own unbounded shape, which also serves larger payloads with no shared bound. The node panel's Result tab shows the redacted bytes under the sentence that already names where the run stopped, states plainly that credential-shaped text was replaced, and the Evidence tab lists the hash -- still proof of what was judged -- beside the run's other proof anchors. A refusal with nothing to resolve -- no receipt at all, an unjudged process death, bytes that do not decode as UTF-8, or a run written before this write existed -- answers with no such field, never a placeholder."

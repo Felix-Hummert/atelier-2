@@ -838,15 +838,19 @@ const nodeAnswerSchema = z
   .strict();
 
 /**
- * `base64_characters_for(MAXIMUM_AGENT_OUTPUT_BYTES_V2)` (`api/references.py`),
- * mirrored here as a plain number the way every other server-owned wire bound
- * already is on this side (see `.max(64)` above). Only a V3 agent node's own
- * schema-refused output ever reaches `refusal_output`, and every executor
- * adapter already refuses the domain more than 49,152 bytes before that
- * judgment runs -- this is that existing bound restated in the encoding the
- * browser reads it under, not a new one invented here.
+ * `base64_characters_for(maximum_redacted_length(MAXIMUM_AGENT_OUTPUT_BYTES_V2))`
+ * (`api/references.py`), mirrored here as a plain number the way every other
+ * server-owned wire bound already is on this side (see `.max(64)` above).
+ * Only a V3 agent node's own schema-refused output ever reaches
+ * `refusal_output`, and every executor adapter already refuses the domain
+ * more than 49,152 bytes before that judgment runs -- but the server redacts
+ * credential shapes out of that text before it is served (#664), and
+ * replacing a short credential with the longer `[redacted]` marker can grow
+ * it. `maximum_redacted_length` is the redaction owner's own declared
+ * worst case for that growth, so this bound rests on the agent output cap
+ * *and* that owner's own number, not a third one invented on this side.
  */
-export const MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS = 65_536;
+export const MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS = 81_920;
 
 const nodeRefusalOutputSchema = z
   .object({

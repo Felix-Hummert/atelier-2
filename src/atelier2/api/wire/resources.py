@@ -1046,19 +1046,23 @@ class NodeRefusalOutputResource(ApiModel):
     unbounded. `refusal_output` is served for exactly one narrower case: a V3
     agent node's own execution, judged and refused (#664). Every executor
     adapter already refuses to hand the domain more than
-    `MAXIMUM_AGENT_OUTPUT_BYTES_V2` bytes before that judgment runs, so
-    `value_base64` here restates that already-held bound at the wire
-    (`MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS`) rather than serving it
-    unbounded like the general case.
+    `MAXIMUM_AGENT_OUTPUT_BYTES_V2` bytes before that judgment runs, so this
+    field's own bound (`MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS`) rests on
+    that already-held cap rather than inventing a new one.
 
     `value_base64` is also not the exact judged bytes: `contracts.secret_redaction`
     runs over them before this resource is built, and any credential-shaped span
-    is replaced (#664). `value_hash`, by contrast, is untouched -- it is the
-    receipt's own hash of the original, unredacted bytes, so it still proves
-    what the schema owner judged even though the text shown beside it is a
-    presentation of that judgment, not a preimage of the hash. A reader who
-    rehashes `value_base64` to check it against `value_hash` is comparing two
-    different things on purpose.
+    is replaced (#664). Replacing a short credential with the longer
+    `REDACTION_MARKER` can make the text longer than what was judged, never
+    shorter than the cap alone would suggest -- so `MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS`
+    is derived through the same redaction owner's own `maximum_redacted_length`,
+    not from the agent output cap directly, and a value at the cap with the
+    shortest credential shape redacted out of it still fits. `value_hash`, by
+    contrast, is untouched -- it is the receipt's own hash of the original,
+    unredacted bytes, so it still proves what the schema owner judged even
+    though the text shown beside it is a presentation of that judgment, not a
+    preimage of the hash. A reader who rehashes `value_base64` to check it
+    against `value_hash` is comparing two different things on purpose.
     """
 
     value_base64: str = Field(max_length=MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS)

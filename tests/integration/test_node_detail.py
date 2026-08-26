@@ -42,6 +42,7 @@ from atelier2.api.references import MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS
 from atelier2.api.wire.resources import NodeRefusalOutputResource
 from atelier2.application.answer_wait import AnswerAcceptedPending, answer_wait_result
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
@@ -858,3 +859,48 @@ def test_the_refusal_output_field_is_bounded_to_the_agent_output_cap() -> None:
 
     with pytest.raises(ValidationError):
         NodeRefusalOutputResource(value_base64=at_bound + "a", value_hash="a" * 64)
+
+
+@pytest.mark.proves("a-refused-episode-shows-its-raw-output-and-hash-in-the-node-panel")
+def test_a_refusal_at_the_byte_cap_with_one_short_credential_still_validates_on_the_wire(
+    tmp_path: Path,
+) -> None:
+    """The re-review's residual: redaction can grow the text past a naive bound.
+
+    `MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS` used to be
+    `base64_characters_for(MAXIMUM_AGENT_OUTPUT_BYTES_V2)` -- the agent output
+    cap's own encoding, unaware that replacing a short credential with the
+    longer `REDACTION_MARKER` can make the redacted text longer than what was
+    judged. One minimal `Authorization: Basic` header (the shape's own
+    declared 8-character minimum) at the byte cap already overflowed that
+    bound by four base64 characters; the fix derives the bound from
+    `secret_redaction.maximum_redacted_length` instead of the byte cap alone,
+    and this is the smallest input that actually needed it -- not a
+    contrived worst case, the one the old bound would have refused wrongly.
+    """
+    credential = b"Authorization: Basic xxxxxxxx"
+    answer = b"." * (MAXIMUM_AGENT_OUTPUT_BYTES_V2 - len(credential)) + credential
+    assert len(answer) == MAXIMUM_AGENT_OUTPUT_BYTES_V2
+
+    runtime = _own_schema_refused_runtime(tmp_path, answer)
+    try:
+        publish_and_start(runtime)
+        runtime.launch()
+        wait_for_run_state(runtime, RUN, RunState.FAILED)
+        found = durable_queries(runtime.engine).get_node_detail(RUN, "implement")
+    finally:
+        runtime.close()
+
+    assert isinstance(found, NodeDetailFound), found
+    detail = found.detail
+    assert detail.refusal_output is not None
+    redacted_text = detail.refusal_output.value.decode("utf-8")
+    assert REDACTION_MARKER in redacted_text
+    # The growth this whole fix exists for actually happened, not merely
+    # something the arithmetic allows for.
+    assert len(redacted_text) > len(answer)
+
+    # Must not raise: this is exactly the case the old, byte-cap-only bound
+    # would have rejected.
+    resource = node_detail_resource(detail)
+    assert isinstance(resource.refusal_output, NodeRefusalOutputResource)
