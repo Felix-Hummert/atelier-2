@@ -27,6 +27,7 @@ from atelier2.api.routes import (
     health,
     occupancy,
     project_root,
+    project_source_connection,
     projects,
     queue,
     revisions,
@@ -57,6 +58,9 @@ from atelier2.application.occupancy import (
     publish_occupancy_revision,
 )
 from atelier2.application.prepare_run_events import prepare_run_events
+from atelier2.application.project_connections import (
+    get_served_project_source_connection,
+)
 from atelier2.application.project_root import (
     get_project_root_revision,
     publish_project_root_revision,
@@ -366,6 +370,14 @@ def bound_use_cases(
                 )
             )
         ),
+        get_project_source_connection=lambda project_id: (
+            get_served_project_source_connection(
+                project_id,
+                served_project_id,
+                ports.host_configuration_channel,
+                ports.project_source_connection_channel,
+            )
+        ),
         admit_queue_item=lambda command: admit_queue_item(
             command, ports.queue_projection
         ),
@@ -460,6 +472,7 @@ def create_app(
     app.include_router(projects.router)
     app.include_router(occupancy.router)
     app.include_router(project_root.router)
+    app.include_router(project_source_connection.router)
     app.include_router(runs.router)
     app.include_router(events.router)
     app.include_router(queue.router)

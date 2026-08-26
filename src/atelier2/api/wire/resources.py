@@ -49,6 +49,9 @@ from atelier2.contracts.host_configuration import (
     MAXIMUM_PROJECT_ID_CHARACTERS,
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SERVED_PROJECTS,
+    MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
+    MAXIMUM_SOURCE_KIND_CHARACTERS,
+    SourceConnectionAuthMethod,
 )
 from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
@@ -297,6 +300,20 @@ class OccupancyRevisionResource(ApiModel):
     bindings: tuple[OccupancyBindingResource, ...] = Field(
         max_length=MAXIMUM_OCCUPANCY_BINDINGS, strict=False
     )
+
+
+class ProjectSourceConnectionRevisionResource(ApiModel):
+    public_project_reference: str = Field(
+        pattern=PUBLIC_PROJECT_REFERENCE_PATTERN,
+        max_length=MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    )
+    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    source_kind: str = Field(min_length=1, max_length=MAXIMUM_SOURCE_KIND_CHARACTERS)
+    source_address: str = Field(
+        min_length=1, max_length=MAXIMUM_SOURCE_ADDRESS_CHARACTERS
+    )
+    auth_method: SourceConnectionAuthMethod
+    project_source_connection_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
 class AgentReceiptResource(ApiModel):

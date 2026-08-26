@@ -54,6 +54,8 @@ from atelier2.contracts.host_configuration import (
     MAXIMUM_PROJECT_ID_CHARACTERS,
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SERVED_PROJECTS,
+    MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
+    MAXIMUM_SOURCE_KIND_CHARACTERS,
 )
 from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
@@ -174,6 +176,13 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
         MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS
     ),
     "ProjectRootRevisionResource.root_path": MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
+    "ProjectSourceConnectionRevisionResource.public_project_reference": (
+        MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS
+    ),
+    "ProjectSourceConnectionRevisionResource.source_address": (
+        MAXIMUM_SOURCE_ADDRESS_CHARACTERS
+    ),
+    "ProjectSourceConnectionRevisionResource.source_kind": MAXIMUM_SOURCE_KIND_CHARACTERS,
     "PutProjectRootRevisionRequestResource.root_path": (
         MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS
     ),

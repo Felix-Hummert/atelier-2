@@ -3,18 +3,13 @@
 
   import {
     type AgentConfigurationRevisionListItem,
-    type AnyRun,
-    CockpitRequestError,
     type CockpitApi,
-    type OccupancyRevision,
-    type WorkflowRevisionDetail,
-    type WorkflowRevisionSummary
+    type ProjectSourceConnectionRevision
   } from "../api/client";
   import ReadState from "../components/ReadState.svelte";
+  import { problemCode } from "../lib/catalogName";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { THE_ONE_PROJECT } from "../lib/project";
-  import { settingsPageCopy } from "../lib/settingsPageCopy";
-  import { WORKSHOP_DESTINATION } from "../lib/workshop";
   import {
     beginRead,
     confirmRead,
@@ -22,494 +17,157 @@
     retainedRead,
     type RetainedRead
   } from "../lib/readResource";
-  import { readEveryAgentConfiguration, readEveryRevision, readEveryRun } from "../lib/runPages";
-  import { catalogHeadsOf, catalogNameStateOf, problemCode, type CatalogNameState } from "../lib/catalogName";
-  import { namedAgentLabel } from "../lib/namedAgentChoice";
-  import { agentRolesOf, groupSavedWorkflows } from "../lib/savedWorkflows";
-  import { countStanding, standingMarks, standingOrder, standingWords } from "../lib/runState";
+  import { readEveryAgentConfiguration } from "../lib/runPages";
+  import { settingsPageCopy } from "../lib/settingsPageCopy";
 
   export let cockpitApi: CockpitApi;
-  export let navigate: (path: string) => void;
 
-  const catalogPath = WORKSHOP_DESTINATION.catalog.path;
+  type SourcesRead = ProjectSourceConnectionRevision | null;
+  type SettingsFailure = { kind: "unavailable"; title: string };
 
-  interface ProjectSnapshot {
-    runs: AnyRun[];
-  }
+  let sources: RetainedRead<SourcesRead, SettingsFailure> = retainedRead();
+  let models: RetainedRead<AgentConfigurationRevisionListItem[], SettingsFailure> =
+    retainedRead();
 
-  type ProjectReadFailure =
-    | { kind: "unavailable"; title: string }
-    | { kind: "incomplete"; title: string };
-
-  interface OccupancyEditorSnapshot {
-    projectReference: string;
-    workflows: WorkflowRevisionSummary[];
-    newestByName: Record<string, string>;
-    catalogByName: Record<string, CatalogNameState>;
-    agents: AgentConfigurationRevisionListItem[];
-  }
-
-  interface SelectedOccupancy {
-    revision: WorkflowRevisionSummary;
-    lineageId: string;
-    detail: WorkflowRevisionDetail;
-    occupancy: OccupancyRevision | null;
-    selections: Record<string, string>;
-  }
-
-  type OccupancyEditorFailure = { kind: "unavailable"; title: string };
-
-  let project: RetainedRead<ProjectSnapshot, ProjectReadFailure> =
-    retainedRead<ProjectSnapshot, ProjectReadFailure>();
-
-  let occupancyEditor: RetainedRead<OccupancyEditorSnapshot, OccupancyEditorFailure> = retainedRead();
-  let occupancySelection: RetainedRead<SelectedOccupancy, OccupancyEditorFailure> = retainedRead();
-  let selectedWorkflowHash = "";
-  let frozenWrite: {
-    projectReference: string;
-    lineageId: string;
-    input: { revision_number: number; bindings: Array<{ role: string; agent_configuration_revision_hash: string }> };
-    body: string;
-  } | null = null;
-  let writeInFlight = false;
-  let saveFailure: "conflict" | "uncertain" | "unavailable" | null = null;
-  let saveConfirmed = false;
-
-  onMount(() => { void load(); void loadOccupancyEditor(); });
-
-  function clearOccupancySelection(): void {
-    occupancySelection = {
-      confirmed: null,
-      generation: occupancySelection.generation + 1,
-      request: { state: "idle" }
-    };
-  }
+  onMount(() => { void load(); });
 
   async function load(): Promise<void> {
-    const begun = beginRead(project);
-    project = begun.read;
+    const sourcesBegun = beginRead(sources);
+    const modelsBegun = beginRead(models);
+    sources = sourcesBegun.read;
+    models = modelsBegun.read;
     try {
-      const reading = await readEveryRun((after) => cockpitApi.listRuns(after));
-      if (!reading.complete) {
-        project = failRead(project, begun.generation, {
-          kind: "incomplete",
-          title: wrapDisplayCopy(settingsPageCopy.runsIncomplete)
+      const projects = await cockpitApi.listProjects();
+      const project = projects.items[0];
+      if (project === undefined) throw new Error("served project missing");
+      try {
+        sources = confirmRead(
+          sources,
+          sourcesBegun.generation,
+          await cockpitApi.getProjectSourceConnection(project.public_project_reference)
+        );
+      } catch (error) {
+        if (problemCode(error) === "project-source-not-connected") {
+          sources = confirmRead(sources, sourcesBegun.generation, null);
+        } else {
+          sources = failRead(sources, sourcesBegun.generation, {
+            kind: "unavailable",
+            title: settingsPageCopy.sourcesUnavailable
+          });
+        }
+      }
+      const reading = await readEveryAgentConfiguration((after) =>
+        cockpitApi.listAgentConfigurationRevisions(after)
+      );
+      if (!reading.complete) throw new Error("model page incomplete");
+      models = confirmRead(models, modelsBegun.generation, reading.configurations);
+    } catch {
+      if (sources.request.state === "loading") {
+        sources = failRead(sources, sourcesBegun.generation, {
+          kind: "unavailable",
+          title: settingsPageCopy.sourcesUnavailable
         });
-        return;
       }
-      project = confirmRead(project, begun.generation, { runs: reading.runs });
-    } catch {
-      project = failRead(project, begun.generation, {
+      models = failRead(models, modelsBegun.generation, {
         kind: "unavailable",
-        title: wrapDisplayCopy(settingsPageCopy.runsUnavailable)
+        title: settingsPageCopy.modelsUnavailable
       });
     }
   }
-
-  async function loadOccupancyEditor(): Promise<void> {
-    if (frozenWrite !== null || selectedWorkflowHash !== "") return;
-    const begun = beginRead(occupancyEditor);
-    occupancyEditor = begun.read;
-    selectedWorkflowHash = "";
-    clearOccupancySelection();
-    saveFailure = null;
-    try {
-      const [projects, workflowReading, agentReading] = await Promise.all([
-        cockpitApi.listProjects(),
-        readEveryRevision((after) => cockpitApi.listWorkflowRevisions(after)),
-        readEveryAgentConfiguration((after) => cockpitApi.listAgentConfigurationRevisions(after))
-      ]);
-      if (projects.items.length !== 1 || !workflowReading.complete || !agentReading.complete) throw new Error("incomplete");
-      const names = [...new Set(workflowReading.revisions.flatMap((item) => item.name === null ? [] : [item.name]))];
-      const states = Object.fromEntries(await Promise.all(names.map(async (name) => [
-        name,
-        await catalogNameStateOf(name, (asked) => cockpitApi.getRevisionByName(asked))
-      ]))) as Record<string, CatalogNameState>;
-      const newestByName = catalogHeadsOf(workflowReading.revisions, states);
-      if (newestByName === null) throw new Error("skew");
-      const projectResource = projects.items[0];
-      if (projectResource === undefined) throw new Error("project missing");
-      occupancyEditor = confirmRead(occupancyEditor, begun.generation, {
-        projectReference: projectResource.public_project_reference,
-        workflows: workflowReading.revisions,
-        newestByName,
-        catalogByName: states,
-        agents: agentReading.configurations
-      });
-    } catch {
-      occupancyEditor = failRead(occupancyEditor, begun.generation, {
-        kind: "unavailable", title: "Project occupancy unavailable"
-      });
-    }
-  }
-
-  async function selectOccupancy(revision: WorkflowRevisionSummary | null): Promise<void> {
-    if (frozenWrite !== null || occupancyEditor.request.state !== "idle") return;
-    selectedWorkflowHash = revision?.workflow_revision_hash ?? "";
-    frozenWrite = null;
-    saveFailure = null;
-    saveConfirmed = false;
-    if (revision === null) {
-      clearOccupancySelection();
-      return;
-    }
-    const snapshot = occupancyEditor.confirmed;
-    if (snapshot === null || revision.name === null) return;
-    const state = snapshot.catalogByName[revision.name];
-    if (state?.kind !== "admitted" || state.revisionHash !== revision.workflow_revision_hash) {
-      selectedWorkflowHash = "";
-      clearOccupancySelection();
-      return;
-    }
-    const begun = beginRead(occupancySelection);
-    occupancySelection = { ...begun.read, confirmed: null };
-    const baseGeneration = occupancyEditor.generation;
-    try {
-      const [detail, occupancy] = await Promise.all([
-        cockpitApi.getWorkflowRevision(revision.workflow_revision_hash),
-        cockpitApi.getProjectOccupancy(snapshot.projectReference, state.lineageId).catch((error: unknown) => {
-          if (problemCode(error) === "occupancy-missing") return null;
-          throw error;
-        })
-      ]);
-      if (
-        occupancyEditor.confirmed !== snapshot ||
-        occupancyEditor.generation !== baseGeneration ||
-        selectedWorkflowHash !== revision.workflow_revision_hash ||
-        detail.workflow_revision_hash !== revision.workflow_revision_hash
-      ) return;
-      const roles = agentRolesOf(detail.graph);
-      occupancySelection = confirmRead(occupancySelection, begun.generation, {
-        revision, lineageId: state.lineageId, detail, occupancy,
-        selections: Object.fromEntries(roles.map((role) => [role, occupancy?.bindings.find((binding) => binding.role === role)?.agent_configuration_revision_hash ?? ""]))
-      });
-    } catch {
-      if (selectedWorkflowHash !== revision.workflow_revision_hash) return;
-      occupancySelection = failRead(occupancySelection, begun.generation, {
-        kind: "unavailable", title: "Project occupancy unavailable"
-      });
-    }
-  }
-
-  function setOccupancyRole(role: string, value: string): void {
-    const selected = occupancySelection.confirmed;
-    if (selected === null || frozenWrite !== null) return;
-    occupancySelection = { ...occupancySelection, confirmed: { ...selected, selections: { ...selected.selections, [role]: value } } };
-    saveFailure = null;
-    saveConfirmed = false;
-  }
-
-  function occupancyInputOf(selected: SelectedOccupancy) {
-    const roles = new Set(agentRolesOf(selected.detail.graph));
-    const preserved = (selected.occupancy?.bindings ?? []).filter((binding) => !roles.has(binding.role));
-    const authored = [...roles].flatMap((role) => {
-      const hash = selected.selections[role] ?? "";
-      return hash === "" ? [] : [{ role, agent_configuration_revision_hash: hash }];
-    });
-    return {
-      revision_number: (selected.occupancy?.revision_number ?? 0) + 1,
-      bindings: [...preserved, ...authored]
-    };
-  }
-
-  function sameBindings(left: readonly { role: string; agent_configuration_revision_hash: string }[], right: readonly { role: string; agent_configuration_revision_hash: string }[]): boolean {
-    if (left.length !== right.length) return false;
-    const rightByRole = new Map(right.map((binding) => [binding.role, binding.agent_configuration_revision_hash]));
-    if (rightByRole.size !== right.length) return false;
-    return left.every((binding) => rightByRole.get(binding.role) === binding.agent_configuration_revision_hash);
-  }
-
-  async function saveOccupancy(retry = false): Promise<void> {
-    const snapshot = occupancyEditor.confirmed;
-    const selected = occupancySelection.confirmed;
-    if (snapshot === null || selected === null || writeInFlight || (frozenWrite !== null && !retry)) return;
-    const state = selected.revision.name === null ? null : snapshot.catalogByName[selected.revision.name];
-    if (
-      occupancyEditor.request.state !== "idle" ||
-      state?.kind !== "admitted" ||
-      state.revisionHash !== selected.revision.workflow_revision_hash ||
-      state.lineageId !== selected.lineageId ||
-      !snapshot.workflows.some((item) => item.workflow_revision_hash === selected.revision.workflow_revision_hash)
-    ) {
-      saveFailure = "unavailable";
-      return;
-    }
-    const currentRevision = selected.occupancy?.revision_number ?? 0;
-    if (!Number.isSafeInteger(currentRevision) || currentRevision >= Number.MAX_SAFE_INTEGER) {
-      saveFailure = "unavailable";
-      return;
-    }
-    if (retry === false && sameBindings(occupancyInputOf(selected).bindings, selected.occupancy?.bindings ?? [])) {
-      return;
-    }
-    const input = occupancyInputOf(selected);
-    const body = JSON.stringify(input);
-    const frozen = retry ? frozenWrite : {
-      projectReference: snapshot.projectReference,
-      lineageId: selected.lineageId,
-      input: JSON.parse(body) as typeof input,
-      body
-    };
-    if (frozen === null) return;
-    const baseSnapshot = snapshot;
-    const selectionGeneration = occupancySelection.generation;
-    frozenWrite = frozen;
-    writeInFlight = true;
-    saveFailure = null;
-    try {
-      const result = await cockpitApi.putProjectOccupancy(frozen.projectReference, frozen.lineageId, frozen);
-      if (
-        result.value.public_project_reference !== frozen.projectReference ||
-        result.value.lineage_id !== frozen.lineageId ||
-        result.value.revision_number !== frozen.input.revision_number ||
-        !sameBindings(result.value.bindings, frozen.input.bindings)
-      ) throw new Error("identity");
-      if (
-        occupancyEditor.confirmed !== baseSnapshot ||
-        occupancySelection.generation !== selectionGeneration ||
-        selectedWorkflowHash !== selected.revision.workflow_revision_hash
-      ) {
-        frozenWrite = null;
-        writeInFlight = false;
-        saveFailure = "unavailable";
-        return;
-      }
-      occupancySelection = { ...occupancySelection, confirmed: { ...selected, occupancy: result.value } };
-      frozenWrite = null;
-      writeInFlight = false;
-      saveConfirmed = true;
-    } catch (error) {
-      writeInFlight = false;
-      saveFailure = problemCode(error) === "occupancy-revision-conflict"
-        ? "conflict"
-        : problemCode(error) === "durable-state-corrupt" || (error instanceof CockpitRequestError && error.definitive_failure)
-          ? "unavailable"
-          : "uncertain";
-    }
-  }
-
-  function reloadOccupancy(): void {
-    frozenWrite = null;
-    saveFailure = null;
-    saveConfirmed = false;
-    const revision = occupancySelection.confirmed?.revision
-      ?? occupancyEditor.confirmed?.workflows.find((item) => item.workflow_revision_hash === selectedWorkflowHash)
-      ?? null;
-    void selectOccupancy(revision);
-  }
-
-  /**
-   * How much work this project holds, one number per standing.
-   *
-   * A count is the whole statement here: the rows themselves are the Board's
-   * (live) and History's (finished), and repeating them at this level was the
-   * same list a third time (#536).
-   */
-  $: workCounts = standingOrder
-    .map((standing) => ({ standing, count: countStanding(project.confirmed?.runs ?? [], standing) }))
-    .filter((entry) => entry.count > 0);
-  $: occupancyRows = groupSavedWorkflows(occupancyEditor.confirmed?.workflows ?? [], occupancyEditor.confirmed?.newestByName ?? {});
-  $: selectedRevision = occupancyEditor.confirmed?.workflows.find((item) => item.workflow_revision_hash === selectedWorkflowHash) ?? null;
-  $: selectedOccupancy = occupancySelection.confirmed;
-  $: selectedRoles = selectedOccupancy === null ? [] : agentRolesOf(selectedOccupancy.detail.graph);
-  $: occupancyChanged = selectedOccupancy !== null && !sameBindings(occupancyInputOf(selectedOccupancy).bindings, selectedOccupancy.occupancy?.bindings ?? []);
 </script>
 
-<section class="project-page" aria-labelledby="project-title">
+<section class="settings-page" aria-labelledby="settings-title">
   <header>
-    <h1 id="project-title">{THE_ONE_PROJECT}</h1>
+    <h1 id="settings-title">{THE_ONE_PROJECT}</h1>
   </header>
 
-  <section class="project-block" aria-labelledby="project-work-title">
-    <h2 id="project-work-title">{wrapDisplayCopy(settingsPageCopy.workTitle)}</h2>
-    <ReadState read={project} label="project runs" onRetry={() => { void load(); }} />
-    {#if project.confirmed !== null}
-      {#if workCounts.length === 0}
-        <p class="muted">{wrapDisplayCopy(settingsPageCopy.noRuns)}</p>
-        <a
-          class="button primary"
-          href={catalogPath}
-          onclick={(event) => { event.preventDefault(); navigate(catalogPath); }}
-        >{wrapDisplayCopy(settingsPageCopy.noRunsNext)}</a>
-      {:else}
-        <ul class="project-counts">
-          {#each workCounts as entry (entry.standing)}
-            <li class="project-count project-count-{entry.standing}">
-              <span class="project-count-mark" aria-hidden="true">{standingMarks[entry.standing]}</span>
-              <b>{entry.count}</b>
-              <span>{wrapDisplayCopy(standingWords[entry.standing])}</span>
-            </li>
-          {/each}
-        </ul>
-      {/if}
+  <section aria-labelledby="sources-title">
+    <h2 id="sources-title">{wrapDisplayCopy(settingsPageCopy.sourcesTitle)}</h2>
+    <ReadState read={sources} label={settingsPageCopy.sourcesLabel} onRetry={() => { void load(); }} />
+    {#if sources.confirmed === null && sources.request.state === "idle"}
+      <p class="muted">{wrapDisplayCopy(settingsPageCopy.sourcesEmpty)}</p>
+    {:else if sources.confirmed !== null}
+      <dl class="source-list">
+        <div><dt>{wrapDisplayCopy(settingsPageCopy.sourceKind)}</dt><dd>{sources.confirmed.source_kind}</dd></div>
+        <div><dt>{wrapDisplayCopy(settingsPageCopy.sourceAddress)}</dt><dd>{sources.confirmed.source_address}</dd></div>
+        <div><dt>{wrapDisplayCopy(settingsPageCopy.sourceAuthMethod)}</dt><dd>{sources.confirmed.auth_method}</dd></div>
+        <div><dt>{wrapDisplayCopy(settingsPageCopy.sourceRevision)}</dt><dd>{sources.confirmed.revision_number}</dd></div>
+      </dl>
     {/if}
   </section>
 
-  <section class="occupancy-editor" aria-labelledby="occupancy-title">
-    <p class="eyebrow">{wrapDisplayCopy(settingsPageCopy.occupancyEyebrow)}</p>
-    <h2 id="occupancy-title">{wrapDisplayCopy(settingsPageCopy.occupancyTitle)}</h2>
-    {#if frozenWrite === null}
-      {#if selectedWorkflowHash === ""}
-        <ReadState read={occupancyEditor} label="project occupancy" onRetry={() => { void loadOccupancyEditor(); }} />
-      {/if}
-    {:else if writeInFlight}
-      <p class="muted" role="status">Saving occupancy…</p>
-    {/if}
-    {#if occupancyEditor.confirmed !== null}
-      {#if occupancyRows.length === 0}
-        <p class="muted">No admitted workflows yet.</p>
+  <section aria-labelledby="models-title">
+    <h2 id="models-title">{wrapDisplayCopy(settingsPageCopy.modelsTitle)}</h2>
+    <ReadState read={models} label={settingsPageCopy.modelsLabel} onRetry={() => { void load(); }} />
+    {#if models.confirmed !== null}
+      {#if models.confirmed.length === 0}
+        <p class="muted">{wrapDisplayCopy(settingsPageCopy.modelsEmpty)}</p>
       {:else}
-        <label class="named-agent">Workflow
-          <select
-            aria-label="Workflow occupancy"
-            disabled={frozenWrite !== null || occupancyEditor.request.state !== "idle"}
-            value={selectedWorkflowHash}
-            onchange={(event) => {
-              const selector = event.currentTarget;
-              const revision = occupancyEditor.confirmed?.workflows.find((item) => item.workflow_revision_hash === event.currentTarget.value);
-              void selectOccupancy(revision ?? null).then(() => { selector.value = selectedWorkflowHash; });
-            }}
-          >
-            <option value="">Choose</option>
-            {#each occupancyRows as row (row.key)}
-              {@const revision = row.revisions[0]}
-              {#if revision !== undefined && revision.name !== null && occupancyEditor.confirmed.catalogByName[revision.name]?.kind === "admitted"}
-                <option value={revision.workflow_revision_hash}>{revision.name}</option>
-              {/if}
-            {/each}
-          </select>
-        </label>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>{wrapDisplayCopy(settingsPageCopy.model)}</th><th>{wrapDisplayCopy(settingsPageCopy.provider)}</th><th>{wrapDisplayCopy(settingsPageCopy.executorRevision)}</th></tr></thead>
+            <tbody>{#each models.confirmed as configuration (configuration.agent_configuration_revision_hash)}
+              <tr><td><code>{configuration.model}</code></td><td>{configuration.provider_id}</td><td><code>{configuration.executor_revision}</code></td></tr>
+            {/each}</tbody>
+          </table>
+        </div>
       {/if}
-      {#if occupancySelection.request.state !== "idle"}
-        <ReadState
-          read={occupancySelection}
-          label="selected project occupancy"
-          onRetry={() => { void selectOccupancy(selectedRevision); }}
-        />
-      {/if}
-      {#if selectedOccupancy !== null}
-        {#if selectedRoles.length === 0}
-          <p class="muted">This workflow declares no agent roles.</p>
-        {:else}
-          {#if selectedOccupancy.occupancy === null || selectedOccupancy.occupancy.bindings.length === 0}
-            <p class="muted">No project recommendations yet.</p>
-          {/if}
-          {#if occupancyEditor.confirmed.agents.length === 0}
-            <p class="muted">No published agents yet.</p>
-          {/if}
-          <div class="binding-list">
-            {#each selectedRoles as role (role)}
-              <label class="named-agent">{role}
-                <select
-                  value={selectedOccupancy.selections[role] ?? ""}
-                  aria-label={`Recommendation for ${role}`}
-                  disabled={frozenWrite !== null}
-                  onchange={(event) => setOccupancyRole(role, event.currentTarget.value)}
-                >
-                  <option value="">None</option>
-                  {#if selectedOccupancy.selections[role] && !occupancyEditor.confirmed.agents.some((agent) => agent.agent_configuration_revision_hash === selectedOccupancy?.selections[role])}
-                    <option value={selectedOccupancy.selections[role]} disabled>Unavailable</option>
-                  {/if}
-                  {#each occupancyEditor.confirmed.agents as agent (agent.agent_configuration_revision_hash)}
-                    <option value={agent.agent_configuration_revision_hash}>{namedAgentLabel(agent)}</option>
-                  {/each}
-                </select>
-              </label>
-            {/each}
-          </div>
-          {#if saveConfirmed}
-            <p class="occupancy-confirmed"><span aria-hidden="true">✓</span> Saved</p>
-          {/if}
-          {#if saveFailure === "conflict"}
-            <div class="inbox-card" role="alert"><span class="inbox-mark" aria-hidden="true">◇</span><strong>Occupancy changed elsewhere.</strong></div>
-            <button type="button" onclick={reloadOccupancy}>Reload</button>
-          {:else if saveFailure === "uncertain" && frozenWrite !== null}
-            <div class="inbox-card" role="alert"><span class="inbox-mark" aria-hidden="true">◇</span><strong>Occupancy save unconfirmed.</strong></div>
-            <button type="button" onclick={() => { void saveOccupancy(true); }}>Retry</button>
-          {:else if saveFailure === "unavailable"}
-            <div class="inbox-card" role="alert"><span class="inbox-mark" aria-hidden="true">◇</span><strong>Project occupancy unavailable.</strong></div>
-            <button type="button" onclick={reloadOccupancy}>Reload</button>
-          {:else}
-            <button class="primary" type="button" disabled={frozenWrite !== null || !occupancyChanged} onclick={() => { void saveOccupancy(); }}>Save</button>
-          {/if}
-        {/if}
-      {/if}
+      <p class="muted">{wrapDisplayCopy(settingsPageCopy.discovery)}</p>
     {/if}
   </section>
-
 </section>
 
 <style>
-  /* Sections of a surface stand a section apart, so a label reads as
-     belonging to the group under it rather than floating between two. */
-  .project-page {
+  .settings-page {
     display: grid;
     align-content: start;
     gap: var(--space-section);
     min-width: 0;
   }
-
-  .project-block {
-    display: grid;
-    gap: var(--space-3);
-    min-width: 0;
-  }
-
-  .project-block h2 {
-    margin: 0;
+  section { display: grid; gap: var(--space-3); }
+  h1, h2 { margin: 0; }
+  h2 {
+    color: var(--ink-dim);
     font-size: var(--text-2xs);
     font-weight: var(--weight-heavy);
     letter-spacing: var(--tracking-label);
     text-transform: uppercase;
-    color: var(--ink-dim);
   }
-
-  .project-counts {
+  .muted { color: var(--ink-dim); }
+  .source-list {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: var(--space-3);
     margin: 0;
-    padding: 0;
-    list-style: none;
   }
-
-  .project-count {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-2);
+  .source-list div {
     border: var(--edge) solid var(--line);
     border-radius: var(--r-lg);
-    padding: var(--space-4) var(--space-5);
-    background: var(--panel2);
+    padding: var(--space-3);
   }
-
-  .project-count b {
-    font-size: var(--text-lg);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .project-count span:last-child {
+  dt {
     color: var(--ink-dim);
-    font-size: var(--text-sm);
+    font-size: var(--text-2xs);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
   }
-
-  .project-count-running .project-count-mark {
-    color: var(--signal-live);
+  dd { margin: var(--space-1) 0 0; overflow-wrap: anywhere; }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; min-width: var(--table-min); width: 100%; }
+  th, td {
+    border-bottom: var(--edge) solid var(--line);
+    padding: var(--space-3);
+    text-align: left;
+    white-space: nowrap;
   }
-
-  .project-count-waiting .project-count-mark {
-    color: var(--signal-attention-mark);
-  }
-
-  .project-count-failed .project-count-mark {
-    color: var(--signal-failure);
-  }
-
-  .project-count-done .project-count-mark {
-    color: var(--signal-quiet);
-  }
-
-  .muted {
+  th {
     color: var(--ink-dim);
+    font-size: var(--text-2xs);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+  }
+  @media (max-width: 32rem) {
+    .source-list { grid-template-columns: 1fr 1fr; }
+    .table-wrap { mask-image: linear-gradient(to right, var(--ink) calc(100% - var(--space-6)), transparent); }
   }
 </style>

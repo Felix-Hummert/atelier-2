@@ -9,15 +9,12 @@ import {
   executableGraph,
   type CockpitApi,
   type RunEventHandlers,
-  type RunPage,
   type RunEvent,
   type RunV1,
   type RunV2,
   type WorkflowRevisionDetail
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
-import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
-import { standingMarks, standingWords } from "../../src/lib/runState";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import { base64Bytes, bytesBase64 } from "../support/exactBytes";
 
@@ -36,48 +33,6 @@ afterEach(() => {
 });
 
 describe("mobile run entry", () => {
-  it("lists a bounded durable run page and offers no manual refresh once confirmed", async () => {
-    const listRuns = vi.fn().mockResolvedValue({ items: [run()], next_after: null });
-    const cockpitApi = api({
-      listRuns,
-      listProjects: vi.fn(async () => ({ items: [{ public_project_reference: "project1.dGVzdA" }] }))
-    });
-    render(App, { props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) } });
-
-    // Settings counts the work; the rows themselves are the Workbench's (#536).
-    const work = await screen.findByRole("region", { name: settingsPageCopy.workTitle });
-    await within(work).findAllByRole("listitem");
-    expect(
-      within(work)
-        .getAllByRole("listitem")
-        .map((entry) => entry.textContent?.replace(/\s+/g, " ").trim())
-    ).toEqual([`${standingMarks.running} 1 ${standingWords.running}`]);
-    expect(screen.queryByRole("button", { name: /project runs/ })).toBeNull();
-  });
-
-  it("says the durable run list is still loading instead of showing an empty one", async () => {
-    const listRuns = vi.fn(() => new Promise<RunPage>(() => undefined));
-    render(App, {
-      props: { cockpitApi: api({ listRuns }), mutationJournal: new MutationJournal(sessionStorage) }
-    });
-
-    expect(within(await screen.findByRole("status")).getByText("Looking…").isConnected).toBe(true);
-    expect(screen.queryByText(standingWords.running)).toBeNull();
-  });
-
-  it("shows a project with no runs as empty of groups, still naming where a run comes from", async () => {
-    const listRuns = vi.fn(async () => ({ items: [], next_after: null }));
-    render(App, {
-      props: { cockpitApi: api({ listRuns }), mutationJournal: new MutationJournal(sessionStorage) }
-    });
-
-    expect((await screen.findByText(settingsPageCopy.noRuns)).isConnected).toBe(true);
-    expect(
-      screen.getByRole("link", { name: settingsPageCopy.noRunsNext }).getAttribute("href")
-    ).toBe("/atelier/catalog");
-    expect(screen.queryByRole("status")).toBeNull();
-  });
-
   it("new_saved_mobile starts a saved revision with one visible Run ID and stable bytes", async () => {
     window.history.replaceState(null, "", "/atelier/new");
     const cockpitApi = api();
