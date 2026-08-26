@@ -161,7 +161,8 @@ variables without validating them, so this carrier is reachable from the
 shipped container while an undeclared deployment stays runner-free — no
 runner value or identity file is baked into the image. At most one
 `RUNNER_LEASE` Attempt runs at a time per Serve process — its Core session listener binds one fixed port — and a second,
-concurrent one waits for the runner slot rather than failing. At every start
+concurrent one waits as a durable queue row, holding no worker, rather than
+failing. At every start
 Serve withdraws its own still-open leases and converges every `RUNNER_LEASE`
 Attempt no workflow still owes its next move: it reads the launcher's own
 retained terminal record back from the Attempt's handoff and commits it to the
@@ -700,9 +701,11 @@ one process later: it ends the effect or reconcile workflow in a terminal
 error status nothing replays, so a serve start routes every intent such a dead
 workflow still owed — a `PREPARED` one under the exact transition an in-band
 unknown takes, a `RECONCILING` one by closing its dead command and reopening
-the door — to `WAITING_RECONCILIATION`, never to an invented absence. Initial
-receipt creation commits atomically
-with intent confirmation. Reconciliation resolution separately commits its
+the door — to `WAITING_RECONCILIATION`, never to an invented absence. That door
+lifts a live run, so an intent whose run has already ended takes no door at all:
+it becomes `ABANDONED`, the run's own ending said on the intent, claiming
+neither a receipt nor an absence and keeping the prepared request bytes
+readable. Initial receipt creation commits atomically with intent confirmation. Reconciliation resolution separately commits its
 receipt, intent, command, run, and resolved event. The later `ACTION_COMPLETED`
 transition is another crash-safe transaction.
 [ADR 0001](decisions/0001-durable-runtime.md) owns the runtime and recovery

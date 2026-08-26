@@ -626,7 +626,9 @@ def _refuse_pending_agent_open_pr_runs(runtime: DbosRuntime) -> None:
     loud startup refusal, naming the runs the operator must let finish or cancel.
     """
 
-    blocking = agent_open_pr_runs_pending_live_redemption(runtime.engine)
+    blocking = agent_open_pr_runs_pending_live_redemption(
+        runtime.engine, runtime.settings.application_version
+    )
     if blocking:
         named = ", ".join(sorted(run.value for run in blocking))
         raise LiveGitHubOpenPrRunPending(

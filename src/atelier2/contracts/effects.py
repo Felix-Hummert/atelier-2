@@ -146,6 +146,7 @@ EFFECT_INTENT_VERSION_WAITING: Final = EffectIntentStateVersion(1)
 EFFECT_INTENT_VERSION_RECONCILING: Final = EffectIntentStateVersion(2)
 EFFECT_INTENT_VERSION_CONFIRMED_INITIAL: Final = EffectIntentStateVersion(1)
 EFFECT_INTENT_VERSION_CONFIRMED_RECONCILED: Final = EffectIntentStateVersion(3)
+EFFECT_INTENT_VERSION_ABANDONED: Final = EffectIntentStateVersion(1)
 
 
 class EffectIntentState(StrEnum):
@@ -153,6 +154,18 @@ class EffectIntentState(StrEnum):
     WAITING_RECONCILIATION = "WAITING_RECONCILIATION"
     RECONCILING = "RECONCILING"
     CONFIRMED = "CONFIRMED"
+    ABANDONED = "ABANDONED"
+    """The run this intent was prepared on ended before anything resolved it.
+
+    Reached only from PREPARED, and never left. It says exactly what is known:
+    no workflow will move this intent again, and the run's own ending is
+    already written, so the reconciliation door -- which lifts a live run to
+    `WAITING_RECONCILIATION` -- has nothing left to lift. It is not
+    `CONFIRMED`, which would claim a receipt nobody holds, and it is not an
+    absence, which only the destination itself may establish. Whether the
+    effect happened stays unknown; the prepared request bytes stay on the row,
+    so what was about to be sent remains readable.
+    """
 
 
 class ReconcileCommandState(StrEnum):
