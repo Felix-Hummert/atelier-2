@@ -437,6 +437,7 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
     agent_binding_set_hash: "3".repeat(64),
     run_configuration_revision_hash: "4".repeat(64),
     agent_bindings: [],
+    orders: [],
     state_version: 1,
     state: "STARTED",
     current_node_id: "review",
