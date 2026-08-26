@@ -694,12 +694,12 @@ def test_an_unusable_envelope_is_a_typed_process_failure(tmp_path: Path) -> None
     )
     narration = "Ich prüfe zuerst die Dateien und die Werkzeuge."
 
-    assert (
-        executor.decode_process_completion(
-            invocation, AgentProcessCompletion(1, b'{"text":"no"}', b"")
-        )
-        == refusal
+    failed_with_output = executor.decode_process_completion(
+        invocation, AgentProcessCompletion(1, b'{"text":"no"}', b"")
     )
+    assert isinstance(failed_with_output, AgentExecutionFailure)
+    assert failed_with_output.code == refusal.code
+    assert failed_with_output.transcript is not None
     assert (
         executor.decode_process_completion(
             invocation, AgentProcessCompletion(0, b"not-json", b"")
