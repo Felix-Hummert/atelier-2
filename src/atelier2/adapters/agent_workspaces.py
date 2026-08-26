@@ -35,6 +35,22 @@ class AgentAttemptWorkspaceRefused(RuntimeError):
     """This attempt cannot be given the blank workspace it requires."""
 
 
+def _marks_a_git_worktree(git_entry: Path) -> bool:
+    """Whether this `.git` entry is one git itself would treat as a worktree.
+
+    A file or a link is a `gitdir:` pointer. A directory is a worktree only
+    when it holds `HEAD` -- the same fact git uses to decide it has found a
+    repository. An empty leftover `.git` directory is not a worktree: git
+    walks past it, and treating it as one would refuse every scratch root
+    under that parent, including every pytest root under `/tmp` once a stray
+    `/tmp/.git` directory exists.
+    """
+
+    if git_entry.is_symlink() or git_entry.is_file():
+        return True
+    return (git_entry / "HEAD").exists() or (git_entry / "HEAD").is_symlink()
+
+
 def _refuse_unusable_path(scratch_root: Path) -> None:
     """Read the named path before it is opened, and refuse what it stands in.
 
@@ -43,6 +59,8 @@ def _refuse_unusable_path(scratch_root: Path) -> None:
     inside a git worktree would put provider scratch files into a checkout the
     operator is working in. Both are refused by name, because whoever first
     points `--agent-scratch-root` at a repository path deserves to read why.
+    The walk only reads: a `.git` marker that was not there before this call
+    is not created by it.
     """
 
     if not scratch_root.is_absolute():
@@ -57,7 +75,7 @@ def _refuse_unusable_path(scratch_root: Path) -> None:
                 "attempt's directory between two calls"
             )
         git_entry = component / _GIT_ENTRY
-        if git_entry.exists() or git_entry.is_symlink():
+        if _marks_a_git_worktree(git_entry):
             raise AgentScratchRootRefused(
                 f"the agent scratch root must lie outside every git worktree, but "
                 f"{git_entry} exists: a provider writes into its workspace, so a "

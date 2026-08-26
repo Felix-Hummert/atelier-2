@@ -342,7 +342,7 @@ test("proves(Settings retains its current project surface on reload", async ({ p
   await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
-  await expect(page.getByRole("region", { name: settingsPageCopy.workTitle })).toBeVisible();
+  await expect(page.getByRole("region", { name: settingsPageCopy.sourcesTitle })).toBeVisible();
 });
 
 test("Catalog cold-loads and retains a slash-named workflow detail route across reload", async ({ page }) => {
@@ -933,7 +933,7 @@ test("Catalog work-item start sheet sends a missing source to Settings", async (
 test("Settings keeps the project context available to the Catalog", async ({ page }) => {
   await page.goto("/atelier/settings");
   await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
-  await expect(page.getByRole("region", { name: settingsPageCopy.workTitle })).toBeVisible();
+  await expect(page.getByRole("region", { name: settingsPageCopy.sourcesTitle })).toBeVisible();
   await page.getByRole("link", { name: "Catalog" }).click();
   await expect(page.getByRole("heading", { name: "Catalog" })).toBeVisible();
 });
