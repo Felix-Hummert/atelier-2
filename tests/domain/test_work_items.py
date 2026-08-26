@@ -123,6 +123,13 @@ def test_the_house_schema_admits_the_order_document_it_describes(body: bytes) ->
     assert isinstance(verdict, InstanceAccepted), verdict
 
 
+def written(**fields: str) -> bytes:
+    """The document a read writes, with exactly the named fields bent."""
+
+    written_document = json.loads(work_item_order_document(revision()))
+    return json.dumps({**written_document, **fields}).encode("utf-8")
+
+
 def test_a_written_order_reads_back_as_the_document_it_was_written_from() -> None:
     """A retry compares the item, so reading one back has to be exact."""
 
@@ -130,11 +137,11 @@ def test_a_written_order_reads_back_as_the_document_it_was_written_from() -> Non
 
     assert document == WorkItemOrderDocument(
         body="work item body",
-        change_marker='W/"5f2a"',
-        digest=revision().digest.value,
+        change_marker=WorkItemChangeMarker('W/"5f2a"'),
+        digest=revision().digest,
         kind=WorkItemKind.ISSUE,
-        observed_at=_OBSERVED_AT.value,
-        reference=_ITEM.value,
+        observed_at=_OBSERVED_AT,
+        reference=_ITEM,
     )
 
 
@@ -144,7 +151,7 @@ def test_two_reads_of_one_item_read_back_as_the_same_item() -> None:
     )
 
     assert edited is not None
-    assert edited.reference == _ITEM.value
+    assert edited.reference == _ITEM
 
 
 @pytest.mark.parametrize(
@@ -154,47 +161,15 @@ def test_two_reads_of_one_item_read_back_as_the_same_item() -> None:
         b"[]",
         b'{"body": "no other field"}',
         b"\xff",
-        json.dumps(
-            {
-                "body": "work item body",
-                "change_marker": 'W/"5f2a"',
-                "digest": "0" * 64,
-                "kind": "issue",
-                "observed_at": "2026-08-26T09:15:00Z",
-                "reference": "gh:712",
-            }
-        ).encode(),
-        json.dumps(
-            {
-                "body": "work item body",
-                "change_marker": 'W/"5f2a"',
-                "digest": revision().digest.value,
-                "kind": "merge_request",
-                "observed_at": "2026-08-26T09:15:00Z",
-                "reference": "gh:712",
-            }
-        ).encode(),
-        json.dumps(
-            {
-                "body": "work item body",
-                "change_marker": 'W/"5f2a"',
-                "digest": revision().digest.value,
-                "kind": "issue",
-                "observed_at": "yesterday",
-                "reference": "gh:712",
-            }
-        ).encode(),
-        json.dumps(
-            {
-                "body": "work item body",
-                "change_marker": 'W/"5f2a"',
-                "digest": revision().digest.value,
-                "extra": "field",
-                "kind": "issue",
-                "observed_at": "2026-08-26T09:15:00Z",
-                "reference": "gh:712",
-            }
-        ).encode(),
+        written(digest="0" * 64),
+        written(digest="not a digest"),
+        written(kind="merge_request"),
+        written(observed_at="yesterday"),
+        written(observed_at="2026-02-31T09:15:00Z"),
+        written(reference="g" * 1_025),
+        written(reference=""),
+        written(change_marker=""),
+        written(extra="field"),
     ],
     ids=[
         "not-json",
@@ -202,12 +177,17 @@ def test_two_reads_of_one_item_read_back_as_the_same_item() -> None:
         "incomplete",
         "not-utf8",
         "digest-that-is-not-the-body's",
+        "digest-that-is-not-a-digest",
         "a-kind-no-tracker-answers",
         "an-instant-that-is-not-one",
+        "an-instant-no-calendar-has",
+        "a-reference-longer-than-one-can-be",
+        "an-empty-reference",
+        "an-empty-change-marker",
         "a-field-the-writer-never-writes",
     ],
 )
 def test_bytes_this_module_never_wrote_are_not_that_document(document: bytes) -> None:
-    """Complete is the point: a partial match would let a value mean a read."""
+    """Every field is read back through the contract that wrote it, or not at all."""
 
     assert read_work_item_order_document(document) is None

@@ -357,7 +357,7 @@ def _requested_order_identity(
     if schema_hash == WORK_ITEM_ORDER_SCHEMA_REVISION.value:
         document = read_work_item_order_document(value)
         if document is not None:
-            return (name, schema_hash, document.reference)
+            return (name, schema_hash, document.reference.value)
     return (name, schema_hash, Sha256Hash.of(value).value)
 
 
@@ -465,7 +465,7 @@ def _stored_order_identity(
             raise _DurableOrderCorrupt(
                 f"stored order {name!r} is not the work item document its schema owns"
             )
-        return (name, schema_hash, document.reference)
+        return (name, schema_hash, document.reference.value)
     return (name, schema_hash, Sha256Hash.of(value).value)
 
 

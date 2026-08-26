@@ -73,6 +73,7 @@ from atelier2.contracts.artifacts import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
@@ -1840,6 +1841,14 @@ def test_a_retry_mixing_a_work_item_with_an_artifact_is_the_same_run(
     assert counting.reads == 0
 
 
+def bent_work_item_order(**fields: str) -> bytes:
+    """The document a read writes, with exactly the named fields bent."""
+
+    return json.dumps(
+        {**json.loads(work_item_order_document(observed_item())), **fields}
+    ).encode("utf-8")
+
+
 def fabricate_run_with_order(
     runtime: DbosRuntime, source_run_id: str, run_id: str, **corrupt: object
 ) -> None:
@@ -1872,6 +1881,11 @@ def fabricate_run_with_order(
                 }
             )
         )
+        bent = corrupt.get("value")
+        if isinstance(bent, bytes):
+            # The hash follows the value it is stored beside, so a bent value
+            # exercises the document check rather than the hash check.
+            corrupt = {**corrupt, "value_hash": Sha256Hash.of(bent).value}
         connection.execute(
             run_inputs_v3.insert().values(**{**order, "run_id": run_id, **corrupt})
         )
@@ -1883,8 +1897,16 @@ def fabricate_run_with_order(
         {"value": b'{"reference": "gh:712"}'},
         {"value_hash": "b" * 64},
         {"value": b"not a document at all"},
+        {"value": bent_work_item_order(reference="g" * 1_025)},
+        {"value": bent_work_item_order(observed_at="2026-02-31T09:15:00Z")},
     ],
-    ids=["incomplete-document", "hash-that-is-not-its-value", "not-json"],
+    ids=[
+        "incomplete-document",
+        "hash-that-is-not-its-value",
+        "not-json",
+        "a-reference-longer-than-one-can-be",
+        "an-instant-no-calendar-has",
+    ],
 )
 def test_a_stored_order_that_contradicts_itself_stops_the_next_start(
     runtime: DbosRuntime, corrupt: dict[str, object]

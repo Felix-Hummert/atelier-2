@@ -24,7 +24,6 @@ inside an order value (ADR 0010 decision 1, 2026-08-26 amendment).
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
@@ -37,8 +36,6 @@ from atelier2.contracts.queue_projection import (
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.schemas_v3 import SUPPORTED_DIALECT
 from atelier2.contracts.when import RECORDED_AT_PATTERN, RecordedAt
-
-_RECORDED_AT_INSTANT: Final = re.compile(RECORDED_AT_PATTERN)
 
 MAXIMUM_WORK_ITEM_CHANGE_MARKER_CHARACTERS = 1_024
 
@@ -208,24 +205,30 @@ _WORK_ITEM_ORDER_FIELDS: Final = frozenset(
 
 @dataclass(frozen=True)
 class WorkItemOrderDocument:
-    """One work-item order value, read back as the fields this module writes."""
+    """One work-item order value, read back as the typed fields it was written from.
+
+    Typed, because a reader that answered strings would let a caller decide what
+    "the item this order names" is: a reference longer than one can be, an
+    instant no calendar has. Reading it back through the same contracts that
+    wrote it is what makes the answer worth comparing runs by.
+    """
 
     body: str
-    change_marker: str
-    digest: str
+    change_marker: WorkItemChangeMarker
+    digest: Sha256Hash
     kind: WorkItemKind
-    observed_at: str
-    reference: str
+    observed_at: RecordedAt
+    reference: TrackerItemReference
 
 
 def read_work_item_order_document(document: bytes) -> WorkItemOrderDocument | None:
     """These bytes as the complete document `work_item_order_document` writes.
 
     Complete is the point, not merely parseable: every field this module writes
-    is present, no other is, and the digest is the one those body bytes have.
-    A reader that accepted less would let a value under the work-item schema
-    mean something no read produced -- which is exactly what a stored order
-    under that schema is not allowed to be.
+    is present, no other is, each is the value type that wrote it, and the
+    digest is the one those body bytes have. A reader that accepted less would
+    let a value under the work-item schema mean something no read produced --
+    which is exactly what a stored order under that schema is not allowed to be.
 
     `None` says these bytes are not that document. Whether that is a caller's
     material or durable state that lies is the caller's judgement, and the two
@@ -240,19 +243,20 @@ def read_work_item_order_document(document: bytes) -> WorkItemOrderDocument | No
         return None
     if not all(isinstance(field_value, str) for field_value in value.values()):
         return None
-    if value["kind"] not in tuple(kind.value for kind in WorkItemKind):
+    try:
+        read = WorkItemOrderDocument(
+            value["body"],
+            WorkItemChangeMarker(value["change_marker"]),
+            Sha256Hash(value["digest"]),
+            WorkItemKind(value["kind"]),
+            RecordedAt(value["observed_at"]),
+            TrackerItemReference(value["reference"]),
+        )
+    except ValueError:
+        # Every field is read back through the contract that wrote it, so a
+        # reference too long to be one or an instant no calendar has answers
+        # here rather than travelling on as a fact.
         return None
-    if not value["reference"] or not value["change_marker"]:
+    if read.digest != Sha256Hash.of(read.body.encode("utf-8")):
         return None
-    if _RECORDED_AT_INSTANT.fullmatch(value["observed_at"]) is None:
-        return None
-    if value["digest"] != Sha256Hash.of(value["body"].encode("utf-8")).value:
-        return None
-    return WorkItemOrderDocument(
-        value["body"],
-        value["change_marker"],
-        value["digest"],
-        WorkItemKind(value["kind"]),
-        value["observed_at"],
-        value["reference"],
-    )
+    return read
