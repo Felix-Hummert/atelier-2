@@ -34,11 +34,6 @@ from atelier2.contracts.agents import (
     AuthMode,
     ProviderId,
 )
-from atelier2.contracts.schemas_v3 import (
-    SchemaAccepted,
-    declared_instance_in_answer,
-    read_schema_document,
-)
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
     AgentExecutorKey,
@@ -59,14 +54,15 @@ CLAUDE_SUBSCRIPTION_EXECUTOR_KEY = AgentExecutorKey(
 # would be a different operation and would need a new identity here rather than
 # a widened conformance set.
 #
-# V2 is exactly that. The vector now asks for `--output-format stream-json`
+# V2 was exactly that. The vector now asks for `--output-format stream-json`
 # (with the `--verbose` that format demands) instead of `json`, so the process
 # writes every turn and tool result on its way to the same final envelope
 # (#666). A different vector reaching a different wire shape is a different
-# operation, whatever it ends up answering, so the name moves with it and no
-# attempt recorded under V1 is ever read as having run this one.
+# operation, whatever it ends up answering, so the name moved with it and no
+# attempt recorded under V1 is read as having run it. V3 additionally sends a
+# declared output schema through Claude's native structured-output path.
 CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
-    "headless-print-stream-json/v2"
+    "headless-print-stream-json-structured-output/v3"
 )
 
 # The largest final `result` line one call may write. It is deliberately larger
@@ -171,7 +167,10 @@ _OUTPUT_FORMAT_FLAG = "--output-format"
 # The two therefore travel as one decision and are never spelled apart.
 _STREAM_JSON_OUTPUT_FORMAT = "stream-json"
 _VERBOSE_FLAG = "--verbose"
+_JSON_OUTPUT_FORMAT = "json"
+_JSON_SCHEMA_FLAG = "--json-schema"
 _MODEL_FLAG = "--model"
+_STRUCTURED_OUTPUT_TOOL = "StructuredOutput"
 
 # The containment flags, each measured against every conformant version (see
 # the class docstring for what each one was observed to stop). The two that
@@ -226,6 +225,7 @@ _ENVELOPE_TYPE_FIELD = "type"
 _RESULT_ENVELOPE_TYPE = "result"
 _ERROR_FLAG_FIELD = "is_error"
 _RESULT_FIELD = "result"
+_STRUCTURED_OUTPUT_FIELD = "structured_output"
 
 # The stream line shapes this executor reads as steps. Everything else on the
 # stream is kept whole rather than mapped, so a line shape a release adds is
@@ -507,32 +507,50 @@ def _credential_environment(
 class ClaudeProcessCommand(AgentProcessCommand):
     """One Claude headless command plus the output schema its node declared.
 
-    The schema is what the decode below narrows the answer against, and decode
-    is handed the invocation rather than the request, so the document travels
-    on the command. It is published bytes -- the same revision the output seam
-    later judges -- so a command that may be durably retained carries nothing
-    secret by carrying it.
+    Decode is handed the invocation rather than the request, so the document
+    travels on the command. It is published bytes -- the same revision the
+    output seam later judges -- so a command that may be durably retained
+    carries nothing secret by carrying it.
     """
 
     declared_output_schema_bytes: bytes | None = field(default=None, kw_only=True)
 
 
-def _declared_schema_of(command: AgentProcessCommand) -> SchemaAccepted | None:
-    """The accepted schema this invocation's node declared, where there is one.
+def _output_format_arguments(
+    declared_output_schema_bytes: bytes | None,
+) -> tuple[str, ...]:
+    """Choose Claude's measured native output mode for this node contract."""
 
-    A schema this profile cannot read is answered as none rather than refused:
-    a published revision was vetted before it could be pinned, and an executor
-    that started disagreeing about it would be a second voice over bytes the
-    output seam already owns.
-    """
+    if declared_output_schema_bytes is None:
+        return (_OUTPUT_FORMAT_FLAG, _STREAM_JSON_OUTPUT_FORMAT, _VERBOSE_FLAG)
+    try:
+        schema = declared_output_schema_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("declared output schema bytes must be UTF-8") from error
+    return (_OUTPUT_FORMAT_FLAG, _JSON_OUTPUT_FORMAT, _JSON_SCHEMA_FLAG, schema)
 
-    if not isinstance(command, ClaudeProcessCommand):
-        return None
-    document = command.declared_output_schema_bytes
-    if document is None:
-        return None
-    schema = read_schema_document(document)
-    return schema if isinstance(schema, SchemaAccepted) else None
+
+def _tools_for_schema(
+    permitted_tools: tuple[str, ...], declared_output_schema_bytes: bytes | None
+) -> str:
+    """Name the native schema tool only when this node declared a schema."""
+
+    tools = (
+        permitted_tools
+        if declared_output_schema_bytes is None
+        else (*permitted_tools, _STRUCTURED_OUTPUT_TOOL)
+    )
+    return ",".join(tools)
+
+
+def _tool_free_tools_argument(declared_output_schema_bytes: bytes | None) -> str:
+    """Keep a tool-free call tool-free except for native structured output."""
+
+    return (
+        _NO_TOOLS
+        if declared_output_schema_bytes is None
+        else f"--tools={_STRUCTURED_OUTPUT_TOOL}"
+    )
 
 
 def _stream_lines(standard_output: bytes) -> tuple[str, ...]:
@@ -724,27 +742,11 @@ def _decoded_claude_answer(
     and an empty standard error explain nothing about (#733), and it is
     strictly more than the predecessor kept, which was nothing at all.
 
-    Where the node declared an output schema, the answer is narrowed to the
-    bytes that really are a value it admits (`declared_instance_in_answer`).
-    Asking a model in prose for bare JSON made the conductor a coin flip: the
-    same brief came back bare, fenced or introduced by a sentence, and only the
-    first was decodable (#663). Narrowing is not acceptance -- an answer
-    carrying no such value travels on unchanged, and the output seam refuses it
-    by name as before.
-
-    This CLI's own structured-output control is measured and deliberately not
-    carried by any vector here. On 2.1.221 `--json-schema <object>` exists and
-    really parses (an unparseable value is refused as "not valid JSON", a
-    boolean schema as "must be a JSON object"), while `--output-schema` and
-    `--structured-output` are unknown options. What keeps it out is what it is
-    made of: the release fulfils it with a synthetic `StructuredOutput` TOOL
-    the model must call, and delivers the value in a `structured_output` field
-    beside `result` rather than in `result`. Every vector here passes
-    `--tools=`, and the doors vector pre-approves door tools only, so whether
-    that tool survives them -- and what `result` then carries -- is exactly
-    what no unbilled probe can see. Wiring it unmeasured could turn an answer
-    this module decodes today into no answer at all, so it waits on the same
-    operator-gated billed call the rest of this module's unmeasured half does.
+    A node that declared a schema uses `--output-format json --json-schema`.
+    Claude puts that native structured result in `structured_output`, alongside
+    its terminal `result` envelope. The output seam remains the final schema
+    judge: this adapter serializes the provider value without deciding whether
+    it is valid.
     """
 
     lines = _stream_lines(completion.standard_output)
@@ -765,16 +767,22 @@ def _decoded_claude_answer(
         or not isinstance(result, str)
     ):
         return _unusable_provider_answer(transcript)
-    output_bytes = result.encode("utf-8")
+    command = invocation.command
+    if isinstance(command, ClaudeProcessCommand) and (
+        command.declared_output_schema_bytes is not None
+    ):
+        if _STRUCTURED_OUTPUT_FIELD not in envelope:
+            return _unusable_provider_answer(transcript)
+        output_bytes = json.dumps(
+            envelope[_STRUCTURED_OUTPUT_FIELD],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    else:
+        output_bytes = result.encode("utf-8")
     if len(output_bytes) > MAXIMUM_AGENT_OUTPUT_BYTES_V2:
         return _unusable_provider_answer(transcript)
-    schema = _declared_schema_of(invocation.command)
-    declared = (
-        None if schema is None else declared_instance_in_answer(output_bytes, schema)
-    )
-    return AgentExecutionResult(
-        output_bytes if declared is None else declared, transcript
-    )
+    return AgentExecutionResult(output_bytes, transcript)
 
 
 @dataclass(frozen=True)
@@ -873,12 +881,10 @@ class ClaudeSubscriptionExecutor:
             (
                 str(settings.executable),
                 _PRINT_FLAG,
-                _OUTPUT_FORMAT_FLAG,
-                _STREAM_JSON_OUTPUT_FORMAT,
-                _VERBOSE_FLAG,
+                *_output_format_arguments(request.declared_output_schema_bytes),
                 _MODEL_FLAG,
                 binding.configuration.model,
-                _NO_TOOLS,
+                _tool_free_tools_argument(request.declared_output_schema_bytes),
                 _NO_SETTING_SOURCES,
                 _SAFE_MODE_FLAG,
                 _STRICT_MCP_CONFIG_FLAG,
@@ -902,7 +908,7 @@ class ClaudeSubscriptionExecutor:
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
         """The answer travels inside the process result; the invocation carries
-        only the output schema it is narrowed against."""
+        the schema-bearing output mode it must decode."""
 
         return _decoded_claude_answer(invocation, completion)
 
@@ -955,11 +961,11 @@ CLAUDE_WORKSPACE_TOOLS_EXECUTOR_KEY = AgentExecutorKey(
 # argument vector differs from the tool-free one in exactly one decision -- the
 # tools this call may use -- and that decision is what an operational identity
 # stands for, so every durable attempt record keeps saying which of the two ran.
-# V2 for the same reason its sibling is: the vector asks for the transcript-
-# bearing stream instead of a single envelope (#666), which is a different
-# operation of the same CLI rather than a later revision of this one.
+# V2 moved to the transcript-bearing stream instead of a single envelope
+# (#666). V3 additionally sends a declared output schema through Claude's
+# native structured-output path, a different operation of the same CLI.
 CLAUDE_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
-    "headless-workspace-tools-print-stream-json/v2"
+    "headless-workspace-tools-print-stream-json-structured-output/v3"
 )
 
 # The exact built-in tools this operation offers, named once and used twice:
@@ -1011,6 +1017,7 @@ _INVOCATION_PROBE_OUTPUT_BYTES = 16_384
 def _workspace_tool_arguments(
     executable: Path,
     model: str,
+    declared_output_schema_bytes: bytes | None = None,
     maximum_assistant_turns: int | None = None,
 ) -> tuple[str, ...]:
     """The exact argument vector one workspace-tool invocation is launched with."""
@@ -1018,15 +1025,13 @@ def _workspace_tool_arguments(
     return (
         str(executable),
         _PRINT_FLAG,
-        _OUTPUT_FORMAT_FLAG,
-        _STREAM_JSON_OUTPUT_FORMAT,
-        _VERBOSE_FLAG,
+        *_output_format_arguments(declared_output_schema_bytes),
         _MODEL_FLAG,
         model,
         _TOOLS_FLAG,
-        _WORKSPACE_TOOL_LIST,
+        _tools_for_schema(WORKSPACE_TOOLS, declared_output_schema_bytes),
         _ALLOWED_TOOLS_FLAG,
-        _WORKSPACE_TOOL_LIST,
+        _tools_for_schema(WORKSPACE_TOOLS, declared_output_schema_bytes),
         _NO_SETTING_SOURCES,
         _SAFE_MODE_FLAG,
         _STRICT_MCP_CONFIG_FLAG,
@@ -1223,6 +1228,7 @@ class ClaudeWorkspaceToolExecutor:
             _workspace_tool_arguments(
                 settings.executable,
                 binding.configuration.model,
+                request.declared_output_schema_bytes,
                 request.maximum_assistant_turns,
             ),
             _credential_environment(settings),
@@ -1237,7 +1243,7 @@ class ClaudeWorkspaceToolExecutor:
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
         """The answer travels inside the process result; the invocation carries
-        only the output schema it is narrowed against.
+        the schema-bearing output mode it must decode.
 
         What the process wrote beside the answer stays in the workspace the
         attempt leased. This executor reads none of it: making a file durable is
@@ -1297,11 +1303,11 @@ CLAUDE_ATELIER_DOORS_EXECUTOR_KEY = AgentExecutorKey(
 # ones. Its distinguishing decision is the tool surface it opens -- the
 # product's own MCP doors instead of built-ins -- and that decision is what an
 # operational identity stands for, so every durable attempt record keeps saying
-# which of the three ran. V2 for the same reason its two siblings are: the
-# vector asks for the transcript-bearing stream instead of a single envelope
-# (#666), which is a different operation rather than a later revision.
+# which of the three ran. V2 moved to the transcript-bearing stream instead of
+# a single envelope (#666); V3 additionally sends a declared output schema
+# through Claude's native structured-output path.
 CLAUDE_ATELIER_DOORS_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
-    "headless-atelier-doors-print-stream-json/v2"
+    "headless-atelier-doors-print-stream-json-structured-output/v3"
 )
 
 # Claude Code's allowlistable name for one MCP tool: `mcp__<server>__<tool>`.
@@ -1387,6 +1393,7 @@ class ClaudeAtelierDoorsSettings:
 def _atelier_doors_arguments(
     settings: ClaudeAtelierDoorsSettings,
     model: str,
+    declared_output_schema_bytes: bytes | None = None,
     maximum_assistant_turns: int | None = None,
 ) -> tuple[str, ...]:
     """The exact argument vector one atelier-doors invocation is launched with.
@@ -1405,14 +1412,12 @@ def _atelier_doors_arguments(
     return (
         str(settings.deployment.executable),
         _PRINT_FLAG,
-        _OUTPUT_FORMAT_FLAG,
-        _STREAM_JSON_OUTPUT_FORMAT,
-        _VERBOSE_FLAG,
+        *_output_format_arguments(declared_output_schema_bytes),
         _MODEL_FLAG,
         model,
-        _NO_TOOLS,
+        _tool_free_tools_argument(declared_output_schema_bytes),
         _ALLOWED_TOOLS_FLAG,
-        ",".join(settings.allowed_door_tools),
+        _tools_for_schema(settings.allowed_door_tools, declared_output_schema_bytes),
         _NO_SETTING_SOURCES,
         _STRICT_MCP_CONFIG_FLAG,
         _MCP_CONFIG_FLAG,
@@ -1533,6 +1538,7 @@ class ClaudeAtelierDoorsExecutor:
             _atelier_doors_arguments(
                 settings,
                 binding.configuration.model,
+                request.declared_output_schema_bytes,
                 request.maximum_assistant_turns,
             ),
             _credential_environment(settings.deployment),
@@ -1547,7 +1553,7 @@ class ClaudeAtelierDoorsExecutor:
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
         """The answer travels inside the process result; the invocation carries
-        only the output schema it is narrowed against."""
+        the schema-bearing output mode it must decode."""
 
         return _decoded_claude_answer(invocation, completion)
 

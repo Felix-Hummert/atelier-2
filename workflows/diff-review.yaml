@@ -1,13 +1,9 @@
 format_version: 3
 name: diff-review
 description: >-
-  One headless agent reviews a diff it is handed. Its output contract makes
-  the operator's review criteria a fact of the schema rather than a hope in
-  the prompt: the first characters of an accepted finding are always "Befund
-  1", so no greeting or announcement can ever precede it and reach a success,
-  and its last line must name one of the two words this product's verdict
-  vocabulary gives a finished review, so a finding that never says whether
-  the diff stands cannot reach a success either (#392).
+  One headless agent reviews a diff it is handed. The review artifact is a
+  structured list of findings and the product's verdict vocabulary; the schema
+  owns that contract rather than the prompt.
 graph_inputs:
   - name: diff
     schema:
@@ -21,16 +17,8 @@ nodes:
     instruction: >-
       Review the diff carried under "diff". You cannot read files, run
       anything, or use tools in this headless call; the diff text is your only
-      evidence. Answer in one final message with no progress narration, no
-      greeting, no restatement of these rules, and no sentence announcing what
-      you are about to do. Your very first characters must be exactly "Befund
-      1", naming that finding with the exact file and the exact change it is
-      about. Name every further finding the same way, numbered in order as
-      "Befund 2", "Befund 3", and so on; state "Befund 1: keine." when the
-      diff has none. Close with exactly one line naming the one word this
-      product's verdict vocabulary gives a review that is done: "Verdict:
-      accepted" when nothing you found blocks the diff, or "Verdict: revise"
-      when it does.
+      evidence. Accept the diff when nothing you find blocks it; otherwise
+      revise it.
     inputs:
       - name: diff
         from:
@@ -39,4 +27,4 @@ nodes:
       - name: finding
         schema:
           ref: diff_review_finding
-          revision: "e8b4fb7fd4f427526870ad3d6bb5b98d4af04e666bd8cb119a21cbe1432727e0"
+          revision: "6caef83845ecfe5d9922d2c9b6662bcf3ec298bff81c9af4eb6a6f345c9fae14"

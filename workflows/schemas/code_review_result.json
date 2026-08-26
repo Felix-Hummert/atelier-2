@@ -9,15 +9,19 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["file", "text"],
+        "required": ["file", "line", "severity", "text"],
         "properties": {
           "file": {"type": "string"},
+          "line": {"type": "integer"},
+          "severity": {
+            "enum": ["high", "medium", "low"]
+          },
           "text": {"type": "string"}
         }
       }
     },
     "verdict": {
-      "enum": ["accepted", "revise"]
+      "enum": ["approve", "revise"]
     }
   }
 }

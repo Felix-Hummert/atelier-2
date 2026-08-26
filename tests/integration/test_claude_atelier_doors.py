@@ -217,6 +217,23 @@ def test_the_doors_vector_admits_exactly_the_granted_doors(tmp_path: Path) -> No
     assert "HOME" not in observed["environment"]
 
 
+def test_a_schema_bearing_doors_call_adds_only_structured_output(
+    tmp_path: Path,
+) -> None:
+    settings = doors_deployment(tmp_path, "deployment", INTROSPECTING_CLAUDE)
+    command = (
+        ClaudeAtelierDoorsExecutorFactory(settings)
+        .open()
+        .prepare_process(
+            doors_request(declared_output_schema_bytes=b'{"type":"object"}')
+        )
+    )
+    expected_doors = ",".join((*settings.allowed_door_tools, "StructuredOutput"))
+
+    assert "--tools=StructuredOutput" in command.arguments
+    assert argument_after(command.arguments, "--allowedTools") == expected_doors
+
+
 def test_a_pinned_budget_replaces_the_default_turn_bound(tmp_path: Path) -> None:
     settings = doors_deployment(tmp_path, "deployment", INTROSPECTING_CLAUDE)
     executor = ClaudeAtelierDoorsExecutorFactory(settings).open()
@@ -415,10 +432,9 @@ _EPISODE_REPORT = {
     "started_run_ids": ["run-tidy-1"],
 }
 
-# The four shapes one identical brief really came back in (#663, live 25.08.):
-# bare, with a trailing newline, introduced by a sentence, and inside a
-# Markdown fence. Only the first two decoded, so an episode's success was a
-# coin flip.
+# The four result-text shapes one identical brief really came back in (#663,
+# live 25.08.). Native structured output now carries the durable object while
+# the text remains provider narration.
 _OBSERVED_ANSWER_SHAPES = (
     "{report}",
     "{report}\n",
@@ -449,19 +465,21 @@ def cycling_claude(shapes: tuple[str, ...]) -> str:
         "        'type': 'result',\n"
         "        'is_error': False,\n"
         "        'result': shapes[answered % len(shapes)].replace('{report}', report),\n"
+        "        'structured_output': json.loads(report),\n"
         "    },\n"
         "    sys.stdout,\n"
         ")\n"
     )
 
 
-def answering_claude(answer: str) -> str:
-    """A fake CLI that answers exactly this text to every episode."""
+def answering_claude(answer: str, structured_output: object | None = None) -> str:
+    """A fake CLI that answers text and, where present, a native schema value."""
 
     return (
         "import json, sys\n"
         "sys.stdin.buffer.read()\n"
-        f"json.dump({{'type': 'result', 'is_error': False, 'result': {answer!r}}}, "
+        f"json.dump({{'type': 'result', 'is_error': False, 'result': {answer!r}, "
+        f"'structured_output': {structured_output!r}}}, "
         "sys.stdout)\n"
     )
 
@@ -493,11 +511,9 @@ def test_ten_identical_episodes_all_answer_a_value_the_report_schema_admits(
 ) -> None:
     """The defect this closes: one brief, one schema, and a coin flip between them.
 
-    Two live episodes of the same brief on the same job hash ended one
-    COMPLETED and one `output-schema-refused: instance-not-json` (#663). Ten
-    episodes here meet every wrapper that was observed, and each one answers
-    the value the declared schema admits -- the same value, whatever prose the
-    provider put around it.
+    Ten episodes here meet every result-text wrapper that was observed. Each
+    returns the same provider-native value, so narration cannot decide whether
+    the output seam accepts the run.
     """
 
     settings = doors_deployment(
@@ -514,45 +530,34 @@ def test_ten_identical_episodes_all_answer_a_value_the_report_schema_admits(
 
 @pytest.mark.proves("an-episode-answering-no-such-value-is-still-refused")
 @pytest.mark.parametrize(
-    ("answer", "refusal"),
+    "structured_output",
     [
         pytest.param(
-            "I could not reach the catalog, sorry.",
-            InstanceRefusal.INSTANCE_NOT_JSON,
-            id="prose only",
+            {"answer": "done"},
+            id="an object missing required fields",
         ),
         pytest.param(
-            '{"answer": "done"}',
-            InstanceRefusal.SCHEMA_VIOLATED,
-            id="a bare JSON object missing a required field",
-        ),
-        pytest.param(
-            'Here you go:\n```json\n{"answer": "done"}\n```',
-            InstanceRefusal.INSTANCE_NOT_JSON,
-            id="a wrapped JSON object missing a required field",
+            [],
+            id="an array instead of a report object",
         ),
     ],
 )
 def test_an_episode_carrying_no_declared_value_is_refused_rather_than_narrowed(
-    tmp_path: Path, answer: str, refusal: InstanceRefusal
+    tmp_path: Path, structured_output: object
 ) -> None:
-    """Fail loud: narrowing may find a declared value, never invent or repair one.
+    """Fail loud: the output seam judges an invalid native provider value."""
 
-    The last case is where that costs something, said here rather than found
-    later: an answer whose wrapped value is real but of the wrong shape travels
-    on whole, so the seam names the wrapper (`instance-not-json`) instead of the
-    field the value is missing. That is exactly what the same answer was named
-    before this narrowing existed, and making a refusal say more about a value
-    it is refusing is its own subject.
-    """
-
-    settings = doors_deployment(tmp_path, "refusing", answering_claude(answer))
+    settings = doors_deployment(
+        tmp_path,
+        "refusing",
+        answering_claude("the provider returned a structured value", structured_output),
+    )
     workspace = provider_workspace(tmp_path)
 
     verdict = report_verdict(episode_output(settings, workspace))
 
     assert isinstance(verdict, InstanceRefused)
-    assert verdict.refusal is refusal
+    assert verdict.refusal is InstanceRefusal.SCHEMA_VIOLATED
 
 
 def test_an_episode_whose_node_declared_no_schema_keeps_the_answer_it_was_given(
