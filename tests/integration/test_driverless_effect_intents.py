@@ -14,6 +14,14 @@ as the `workflow_status` row DBOS leaves behind, and asks the sweep to route
 only what no live workflow owes: to WAITING_RECONCILIATION, onto the attention
 feed, and through the operator door -- never to an invented absence (ADR 0010).
 
+Routing to that door lifts a STARTED run, so a run that had already ended took
+none of it: the intent stayed PREPARED forever behind a door refusing it, and
+the sweep's own transition raised on the terminal run rather than converging
+(#705). ABANDONED is what such an intent gets instead, and the tests below ask
+for exactly what that word may cost: the run keeps its ending and gains no
+event, the operator door answers stale rather than opening, a second sweep is a
+no-op, and a driver that comes back writes no receipt over the ending.
+
 The key the sweep matches against is round-bound (ADR 0014): `graph_action_
 intent` used to mint it from round one's execution id unconditionally, so a
 run a declared loop had carried past round one would compare a round-aware
@@ -41,10 +49,21 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-from atelier2.adapters.dbos.effect_store import converge_driverless_effect_intents
+from atelier2.adapters.dbos.effect_store import (
+    DurableEffectConflict,
+    commit_resolution,
+    converge_driverless_effect_intents,
+    encode_found,
+)
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
+from atelier2.adapters.dbos.run_transitions import lift_started_run
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import effect_intents, run_events, runs
+from atelier2.adapters.dbos.schema import (
+    effect_intents,
+    effect_receipts,
+    run_events,
+    runs,
+)
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.uncontinuable_runs import LIVE_DRIVER_WORKFLOW_STATUSES
 from atelier2.adapters.dbos.workflow_ids import (
@@ -56,10 +75,13 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.reconcile_effect import (
     ReconciliationAcceptedPending,
     ReconciliationExistingRejected,
+    ReconciliationStale,
     reconcile_effect_result,
 )
 from atelier2.contracts.effects import (
+    EFFECT_INTENT_VERSION_ABANDONED,
     AdapterRevision,
+    ConfirmationSource,
     EffectDestination,
     EffectId,
     EffectIntent,
@@ -68,6 +90,7 @@ from atelier2.contracts.effects import (
     EffectResult,
     LogicalEffectKey,
     OperatorFoundEffect,
+    PerformedEffect,
     ReconcileActor,
     ReconcileCommand,
     ReconcileCommandId,
@@ -238,6 +261,25 @@ def intent_row(engine: Engine) -> tuple[object, ...]:
                 )
             ).one()
         )
+
+
+def run_event_kinds(engine: Engine) -> tuple[str, ...]:
+    with engine.connect() as connection:
+        return tuple(
+            str(kind)
+            for kind in connection.execute(
+                sa.select(run_events.c.event_kind).order_by(run_events.c.event_sequence)
+            ).scalars()
+        )
+
+
+ABANDONED_ROW = (
+    EffectIntentState.ABANDONED.value,
+    EFFECT_INTENT_VERSION_ABANDONED.value,
+    None,
+)
+"""The exact intent row an abandonment leaves: the word, its one advance,
+and no owning command -- there is no reconciliation to own it."""
 
 
 def route_to_waiting(runtime: DbosRuntime, intent: EffectIntent) -> None:
@@ -421,6 +463,160 @@ def test_prepared_intent_still_owed_a_driver_is_left_alone(
     assert intent_row(runtime.engine) == (EffectIntentState.PREPARED.value, 0, None)
     with runtime.engine.connect() as connection:
         assert connection.scalar(sa.select(runs.c.state)) == RunState.STARTED.value
+
+
+def end_the_run(runtime: DbosRuntime, intent: EffectIntent, ending: RunState) -> None:
+    """Close the run where it stands, the way serve-start's inventory does.
+
+    `lift_started_run` is the one owner of that ending -- the same call
+    `uncontinuable_runs` makes -- so the run really carries a terminal word and
+    the hash folded over its own log, rather than a state string written by
+    hand into a row no transition ever produced.
+    """
+
+    with canonical_write_transaction(runtime.engine) as connection:
+        run = (
+            connection.execute(
+                sa.select(runs.c.state_version, runs.c.last_event_sequence).where(
+                    runs.c.run_id == intent.binding.run_id.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert lift_started_run(
+            connection,
+            intent.binding.run_id,
+            intent.binding.workflow_revision_hash,
+            int(run["state_version"]),
+            int(run["last_event_sequence"]),
+            ending,
+        )
+
+
+def abandon(runtime: DbosRuntime, intent: EffectIntent, ending: RunState) -> None:
+    """The whole #705 shape: no driver left, the run ended, the sweep run."""
+
+    node_workflow_ended_before_the_enqueue(runtime, intent)
+    end_the_run(runtime, intent, ending)
+    assert converge(runtime.engine, runtime.settings.application_version) == (
+        intent.binding.logical_key,
+    )
+
+
+@pytest.mark.parametrize(
+    "ending", [RunState.FAILED, RunState.CANCELLED, RunState.COMPLETED]
+)
+@pytest.mark.parametrize(
+    "leave_dead_driver",
+    [
+        pytest.param(effect_workflow_ended("ERROR"), id="effect-workflow-raised"),
+        pytest.param(
+            node_workflow_ended_before_the_enqueue,
+            id="node-workflow-ended-before-the-enqueue",
+        ),
+    ],
+)
+def test_prepared_intent_on_a_run_that_already_ended_is_abandoned(
+    prepared: tuple[DbosRuntime, EffectIntent],
+    leave_dead_driver: Callable[[DbosRuntime, EffectIntent], None],
+    ending: RunState,
+) -> None:
+    """The run's ending is written onto the intent, and nothing else moves.
+
+    No door opens, because opening one lifts a live run and this one is over;
+    no event is appended, because the run's terminal event is already the last
+    word its hash folds over; the prepared request bytes stay exactly where an
+    operator can still read what was about to be sent.
+    """
+
+    runtime, intent = prepared
+    leave_dead_driver(runtime, intent)
+    end_the_run(runtime, intent, ending)
+    events_before = run_event_kinds(runtime.engine)
+
+    assert converge(runtime.engine, runtime.settings.application_version) == (
+        intent.binding.logical_key,
+    )
+
+    assert intent_row(runtime.engine) == ABANDONED_ROW
+    with runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(runs.c.state)) == ending.value
+        assert (
+            connection.scalar(sa.select(effect_intents.c.canonical_request))
+            == intent.request.payload
+        )
+    assert run_event_kinds(runtime.engine) == events_before
+
+
+def test_an_abandoned_intent_is_not_swept_a_second_time(
+    prepared: tuple[DbosRuntime, EffectIntent],
+) -> None:
+    """Every restart runs this sweep, so its second run must cost nothing."""
+
+    runtime, intent = prepared
+    abandon(runtime, intent, RunState.FAILED)
+
+    assert converge(runtime.engine, runtime.settings.application_version) == ()
+
+    assert intent_row(runtime.engine) == ABANDONED_ROW
+
+
+def test_the_operator_door_answers_an_abandoned_intent_stale(
+    prepared: tuple[DbosRuntime, EffectIntent],
+) -> None:
+    """There is nothing left to reconcile, and the door says so by name.
+
+    A reconciliation resolves an intent *and* lifts its run back out of
+    WAITING_RECONCILIATION. Neither is available here, so an operator command
+    is recorded and refused rather than accepted into a run that has ended.
+    """
+
+    runtime, intent = prepared
+    abandon(runtime, intent, RunState.FAILED)
+
+    answered = reconcile_effect_result(
+        command(intent), DbosEffectReconcileCommander(runtime.engine, runtime.settings)
+    )
+
+    assert answered == ReconciliationStale()
+    assert intent_row(runtime.engine) == ABANDONED_ROW
+
+
+def test_a_returning_driver_writes_no_receipt_over_an_abandonment(
+    prepared: tuple[DbosRuntime, EffectIntent],
+) -> None:
+    """The CAS is what makes abandoning a live-looking intent safe.
+
+    Nothing stops the workflow this sweep read as dead from committing one more
+    time -- a recovery nobody predicted, a status read a moment too early. Its
+    resolution must lose loudly and leave no trace, because a receipt written
+    over an ending would say the destination answered a run that was over.
+    """
+
+    runtime, intent = prepared
+    abandon(runtime, intent, RunState.FAILED)
+    performed = PerformedEffect(EffectId("external-1"), EffectResult(b"result"))
+
+    # The transaction is named second so it is the inner context and sees the
+    # raise: that rollback is the "leave no trace" half of what is under test.
+    with (
+        pytest.raises(DurableEffectConflict),
+        canonical_write_transaction(runtime.engine) as connection,
+    ):
+        commit_resolution(
+            connection,
+            intent.binding.logical_key.value,
+            intent.binding.workflow_revision_hash.value,
+            encode_found(performed, ConfirmationSource.ADAPTER_EXECUTION),
+        )
+
+    assert intent_row(runtime.engine) == ABANDONED_ROW
+    with runtime.engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(sa.func.count()).select_from(effect_receipts))
+            == 0
+        )
 
 
 def _drop_workflow(engine: Engine, workflow_id: str) -> None:
