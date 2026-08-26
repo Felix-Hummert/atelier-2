@@ -497,6 +497,46 @@ class RunnerSessionAdvancerLike(Protocol):
     ) -> RunnerSessionFrame | None: ...
 
 
+def drive_free_runner_session_to_started(
+    session: RunnerSessionAdvancerLike,
+    binding: RunnerGenerationBinding,
+    invocation_id: RunnerInvocationId,
+    manifest: RunnerManifestV1,
+    auth_reference: str,
+) -> None:
+    """Play the Runner side only as far as STARTED, and stop there.
+
+    The half of a session that a launcher and its Runner have finished before
+    any terminal evidence exists: Core has armed this invocation and the provider
+    is running. A scenario that wants the shape a Serve crash finds mid-session --
+    an Attempt durably armed, its lease claimed, its ending still to come -- stops
+    here and lays the Runner's retained record in the handoff itself, exactly as
+    the launcher's own journal would have.
+
+    `drive_free_runner_session_to_released` opens with these same frames, and
+    calls this rather than repeating them: one owner for the beginning of a
+    session means a scenario that stops early and one that runs through cannot
+    disagree about what a Runner said first.
+    """
+
+    def _frame(
+        message: RunnerSessionMessage,
+        sequence: int,
+        payload: tuple[bytes, ...] = (),
+    ) -> RunnerSessionFrame:
+        return RunnerSessionFrame(message, sequence, binding, invocation_id, payload)
+
+    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
+    session.accept(
+        _frame(
+            RunnerSessionMessage.READY,
+            2,
+            encode_runner_ready_payload(manifest, auth_reference, ABSENT_PROVIDER_CLI),
+        )
+    )
+    session.accept(_frame(RunnerSessionMessage.STARTED, 3, (b"\x00" * 8,)))
+
+
 def drive_free_runner_session_to_released(
     session: RunnerSessionAdvancerLike,
     binding: RunnerGenerationBinding,
@@ -529,12 +569,9 @@ def drive_free_runner_session_to_released(
     ) -> RunnerSessionFrame:
         return RunnerSessionFrame(message, sequence, binding, invocation_id, payload)
 
-    session.accept(_frame(RunnerSessionMessage.INVOCATION_OFFER, 1))
-    ready_payload = encode_runner_ready_payload(
-        manifest, auth_reference, ABSENT_PROVIDER_CLI
+    drive_free_runner_session_to_started(
+        session, binding, invocation_id, manifest, auth_reference
     )
-    session.accept(_frame(RunnerSessionMessage.READY, 2, ready_payload))
-    session.accept(_frame(RunnerSessionMessage.STARTED, 3, (b"\x00" * 8,)))
     envelope = RunnerTerminalEvidenceEnvelope(
         binding,
         invocation_id,

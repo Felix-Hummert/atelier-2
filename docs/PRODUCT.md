@@ -161,7 +161,8 @@ variables without validating them, so this carrier is reachable from the
 shipped container while an undeclared deployment stays runner-free — no
 runner value or identity file is baked into the image. At most one
 `RUNNER_LEASE` Attempt runs at a time per Serve process — its Core session listener binds one fixed port — and a second,
-concurrent one waits for the runner slot rather than failing. At every start
+concurrent one waits as a durable queue row, holding no worker, rather than
+failing. At every start
 Serve withdraws its own still-open leases and converges every `RUNNER_LEASE`
 Attempt no workflow still owes its next move: it reads the launcher's own
 retained terminal record back from the Attempt's handoff and commits it to the
