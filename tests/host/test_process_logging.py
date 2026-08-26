@@ -356,8 +356,9 @@ class _FailingAttemptStore:
         execution: AgentAttemptExecution,
         verdict: str,
         transcript: AttemptTranscript | None = None,
+        redemption: ToolRedemptionReceipt | None = None,
     ) -> AgentAttemptFailed:
-        raise AssertionError((execution, verdict, transcript))
+        raise AssertionError((execution, verdict, transcript, redemption))
 
     def request_cancellation(
         self, request: CancelAgentAttemptRequest

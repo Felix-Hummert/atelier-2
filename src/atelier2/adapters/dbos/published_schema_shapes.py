@@ -232,6 +232,39 @@ CREATE TABLE effect_intents (
 
 """
 
+_TOOL_REDEMPTIONS_BOUND_TO_THE_AGENT_RECEIPT = """
+CREATE TABLE tool_redemptions (
+	node_execution_id TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	workflow_revision_hash TEXT NOT NULL,
+	node_id TEXT NOT NULL,
+	attempt_id TEXT NOT NULL,
+	tool_revision_hash TEXT NOT NULL,
+	capability TEXT NOT NULL,
+	command TEXT NOT NULL,
+	exit_code INTEGER NOT NULL,
+	standard_output_hash TEXT NOT NULL,
+	receipt_hash TEXT NOT NULL,
+	PRIMARY KEY (node_execution_id),
+	FOREIGN KEY(run_id, workflow_revision_hash) REFERENCES runs (run_id, revision_hash),
+	CHECK (length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'),
+	CHECK (length(run_id) > 0),
+	CHECK (length(workflow_revision_hash) = 64 AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'),
+	CHECK (length(node_id) BETWEEN 1 AND 1024),
+	CHECK (length(attempt_id) = 64 AND attempt_id NOT GLOB '*[^0-9a-f]*'),
+	CHECK (length(tool_revision_hash) = 64 AND tool_revision_hash NOT GLOB '*[^0-9a-f]*'),
+	CHECK (capability IN ('run-project-verification')),
+	CHECK (length(command) > 0),
+	CHECK (exit_code BETWEEN -9223372036854775808 AND 9223372036854775807),
+	CHECK (length(standard_output_hash) = 64 AND standard_output_hash NOT GLOB '*[^0-9a-f]*'),
+	CHECK (length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'),
+	FOREIGN KEY(node_execution_id) REFERENCES agent_receipts_v2 (node_execution_id),
+	FOREIGN KEY(attempt_id) REFERENCES agent_attempts (attempt_id),
+	UNIQUE (receipt_hash)
+)
+
+"""
+
 PUBLISHED_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
     (16, "run_events"): """
 CREATE TABLE run_events (
@@ -829,6 +862,12 @@ CREATE TABLE run_events (
     # exactly the text 37 published, and the hop off 38 parks that same text.
     (38, "agent_attempts"): _AGENT_ATTEMPTS_WITH_THE_TRANSCRIPT,
     (38, "effect_intents"): _EFFECT_INTENTS_WITH_ABANDONMENT,
+    # V39 re-owns a redemption from the success-only agent receipt to the
+    # attempt itself, so 38 is the last version that published this shape.
+    (38, "tool_redemptions"): _TOOL_REDEMPTIONS_BOUND_TO_THE_AGENT_RECEIPT,
+    # V15 introduced the table in this shape and no hop before V39 moved it,
+    # so the step that adds it builds the record rather than today's table.
+    (15, "tool_redemptions"): _TOOL_REDEMPTIONS_BOUND_TO_THE_AGENT_RECEIPT,
 }
 
 _RUN_EVENTS_INDEXES_BEFORE_THE_REPEATABLE_PAUSE = (

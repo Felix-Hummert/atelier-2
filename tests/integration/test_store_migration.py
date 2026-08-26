@@ -43,6 +43,7 @@ from atelier2.adapters.dbos.schema import (
     _PRODUCT_TRIGGERS,
     _ROUND_SCOPED_EVENT_INDEX,
     _RUN_EVENTS_TRIGGERS,
+    _TOOL_REDEMPTIONS_TRIGGERS,
     _V17_AGENT_ATTEMPT_TRIGGERS,
     _V23_AGENT_ATTEMPT_TRIGGERS,
     _V24_AGENT_ATTEMPT_TRIGGERS,
@@ -996,6 +997,8 @@ def _revert_project_verification_failed_attempts(
 ) -> None:
     """Restore the three-code CHECK the PROJECT_VERIFICATION_FAILED hop left."""
 
+    _revert_the_redemption_owner(connection)
+
     _rebuild_product_table(
         connection,
         agent_attempts,
@@ -1009,6 +1012,8 @@ def _revert_project_verification_failed_attempts(
 
 def _revert_agent_refused_attempts(connection: sqlite3.Connection) -> None:
     """Restore the two-code CHECK the AGENT_REFUSED hop left behind."""
+
+    _revert_the_redemption_owner(connection)
 
     _rebuild_product_table(
         connection,
@@ -1173,6 +1178,8 @@ def _revert_cancelled_run_state(connection: sqlite3.Connection) -> None:
 def _revert_runner_evidence_attempts(connection: sqlite3.Connection) -> None:
     """Restore the exact V26 attempt table and its pre-Runner trigger."""
 
+    _revert_the_redemption_owner(connection)
+
     _rebuild_product_table(
         connection,
         agent_attempts,
@@ -1193,6 +1200,8 @@ def _revert_agent_attempts_trigger_to_v27(connection: sqlite3.Connection) -> Non
     also swap this trigger back, or its shape no longer matches the published
     fingerprint for the version it claims.
     """
+
+    _revert_the_redemption_owner(connection)
 
     connection.execute("DROP TRIGGER agent_attempts_state_transition")
     connection.execute(_V27_AGENT_ATTEMPT_STATE_TRANSITION)
@@ -3580,6 +3589,7 @@ def _revert_the_attempt_transcript_pointer(connection: sqlite3.Connection) -> No
         V36_SCHEMA_HANDOFF.version,
         trigger_source=_V32_AGENT_ATTEMPT_TRIGGERS,
     )
+    _revert_the_redemption_owner(connection)
 
 
 def _create_exact_v36_store(database_path: Path) -> None:
@@ -4077,15 +4087,56 @@ def _revert_the_abandoned_intent_state(connection: sqlite3.Connection) -> None:
 
 
 _PARKED_CURRENT_ATTEMPTS_V39 = "agent_attempts_after_the_candidate_capture"
+_PARKED_CURRENT_REDEMPTIONS_V39 = "tool_redemptions_owned_by_the_attempt"
+
+
+def _revert_the_redemption_owner(connection: sqlite3.Connection) -> None:
+    """Hang a redemption back off the agent receipt, as V15 to V38 published it.
+
+    Rebuilt to V38's record whichever of those versions the fixture claims,
+    because no hop between them moved this table: the text is one text, and the
+    version each fixture then declares is refused by its own pinned fingerprint
+    if anything else about the store drifted.
+
+    Asked by every revert that takes a store back past V39, and it answers only
+    once. Which of them a fixture calls depends on how far back it goes, and
+    several call more than one; making the step a no-op when the table already
+    stands in its published shape keeps each of those reverts able to say what
+    it needs without any of them having to know what the others did.
+    """
+
+    if _published_redemption_shape_stands(connection):
+        return
+    _rebuild_product_table(
+        connection,
+        tool_redemptions,
+        _PARKED_CURRENT_REDEMPTIONS_V39,
+        _TOOL_REDEMPTIONS_TRIGGERS,
+        SCHEMA_VERSION,
+        V38_SCHEMA_HANDOFF.version,
+    )
+
+
+def _published_redemption_shape_stands(connection: sqlite3.Connection) -> bool:
+    """Whether this store already holds the redemption table V38 published."""
+
+    standing = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE name = ?", (tool_redemptions.name,)
+    ).fetchone()
+    published = PUBLISHED_TABLE_SHAPES[
+        (V38_SCHEMA_HANDOFF.version, tool_redemptions.name)
+    ]
+    return standing is not None and str(standing[0]).strip() == published.strip()
 
 
 def _revert_the_candidate_capture_code(connection: sqlite3.Connection) -> None:
-    """Restore the attempt table as V37 and V38 both published it.
+    """Restore both tables the #642 hop moved, as V37 and V38 published them.
 
-    The #642 hop widened one CHECK and one transition; no hop between V37 and
-    V38 moved this table at all, so one published record is the record for both
-    versions, and each fixture's own pinned fingerprint refuses it the moment
-    anything else about the table drifted.
+    The hop widened one CHECK and both FAILED transitions of the attempt table,
+    and re-owned a redemption from the success-only agent receipt to the attempt
+    itself. No hop between V37 and V38 moved either table, so one published
+    record is the record for both versions, and each fixture's own pinned
+    fingerprint refuses it the moment anything else about them drifted.
     """
 
     _rebuild_product_table(
@@ -4097,6 +4148,7 @@ def _revert_the_candidate_capture_code(connection: sqlite3.Connection) -> None:
         V38_SCHEMA_HANDOFF.version,
         trigger_source=_V38_AGENT_ATTEMPT_TRIGGERS,
     )
+    _revert_the_redemption_owner(connection)
 
 
 def _create_exact_v37_store(database_path: Path) -> None:

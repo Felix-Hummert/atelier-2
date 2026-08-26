@@ -130,15 +130,6 @@ def execute_agent_attempt(
         else:
             try:
                 redemption = _redeemed(execution, lease, project)
-                _keep_what_the_attempt_made(lease, project)
-            except CandidateNotKept as refusal:
-                # Same reason as the branch below, for the other loss: letting
-                # this escape would leave the attempt LAUNCH_ARMED. The work is
-                # gone either way, but a named failure is a fact an operator can
-                # act on, while an armed attempt is one nobody can resolve.
-                outcome = store.complete_candidate_capture_failure(
-                    execution, str(refusal), result.transcript
-                )
             except ProjectVerificationUnavailable as error:
                 # The claim already won; letting this escape leaves the attempt
                 # LAUNCH_ARMED, and a replay would report AgentAttemptPossiblyRan.
@@ -151,7 +142,25 @@ def execute_agent_attempt(
                     result.transcript,
                 )
             else:
-                outcome = store.complete_success(execution, result, redemption)
+                # Nested rather than a second `except` beside the one above, so
+                # that the redemption below is a value this branch is *known* to
+                # have: the capture is only reached once the check has answered,
+                # and its evidence must travel into either ending.
+                try:
+                    _keep_what_the_attempt_made(lease, project)
+                except CandidateNotKept as refusal:
+                    # Same reason as the branch above, for the other loss:
+                    # letting this escape would leave the attempt LAUNCH_ARMED.
+                    # The work is gone either way, but a named failure is a fact
+                    # an operator can act on, while an armed attempt is one
+                    # nobody can resolve. What the granted check proved before
+                    # the loss is kept with it -- the check passed, and that
+                    # stays true however the keeping ended.
+                    outcome = store.complete_candidate_capture_failure(
+                        execution, str(refusal), result.transcript, redemption
+                    )
+                else:
+                    outcome = store.complete_success(execution, result, redemption)
             if isinstance(outcome, AgentAttemptFailed):
                 failure = outcome.attempt.failure_code
                 match failure:

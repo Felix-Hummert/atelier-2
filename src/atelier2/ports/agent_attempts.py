@@ -400,6 +400,7 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         execution: AgentAttemptExecution,
         verdict: str,
         transcript: AttemptTranscript | None = None,
+        redemption: ToolRedemptionReceipt | None = None,
     ) -> AgentAttemptFailed:
         """End an armed attempt whose finished work could not be kept.
 
@@ -412,6 +413,13 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         `transcript` is what the provider did before the capture, and once the
         directory is released it is the only remaining evidence that the work
         was ever done -- the strongest reason of any ending here to keep it.
+
+        `redemption` is the evidence of a granted check that *passed* before the
+        capture failed, and it becomes durable together with this ending. It is
+        absent where the node pinned no grant. The check's own result is a fact
+        about the project, not about the keeping: an ending that threw it away
+        would leave a run that verified clean indistinguishable from one that
+        never ran a check at all.
         """
         ...
 

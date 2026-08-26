@@ -375,9 +375,10 @@ def test_a_nonzero_project_verification_fails_the_attempt_and_leaves_no_success(
 
     The provider's bytes were a success the schema admits. The project's own
     command then exited 1. That ending must not write the success rows a
-    zero-exit grant writes: no agent receipt, no `AGENT_COMPLETED`, no
-    `tool_redemptions` row (its foreign key is an agent receipt a failed
-    attempt does not have). What remains is the named failure.
+    zero-exit grant writes: no agent receipt, no `AGENT_COMPLETED`, and no
+    `tool_redemptions` row -- not because a failed attempt has nowhere to put
+    one since V39, but because a check that exited 1 redeemed nothing. What
+    remains is the named failure.
     """
     started_runtime, _scratch_root, _cwd_record = failing_verification_runtime
     workflow, bindings, _grant_revision = publish_granted_node(started_runtime)
@@ -660,6 +661,20 @@ def test_an_attempt_that_could_not_keep_its_work_says_so_in_its_node_receipt(
                 node_receipts_v3.c.node_execution_id == attempt["node_execution_id"]
             )
         )
+        redemption = (
+            connection.execute(
+                sa.select(tool_redemptions).where(
+                    tool_redemptions.c.run_id == UNKEPT_RUN.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        receipt_count = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(agent_receipts_v2)
+            .where(agent_receipts_v2.c.run_id == UNKEPT_RUN.value)
+        )
 
     assert attempt["state"] == AgentAttemptState.FAILED.value
     assert attempt["failure_code"] == (
@@ -677,3 +692,17 @@ def test_an_attempt_that_could_not_keep_its_work_says_so_in_its_node_receipt(
     assert CANDIDATE_STORE_DIRECTORY_NAME in verdict
     assert schema_revision is None
     assert value_hash is None
+    # The check ran and passed, and its proof is durable beside the failure --
+    # keyed by the attempt, which is why it can exist at all now: there is no
+    # agent receipt here for it to hang from.
+    assert str(redemption["attempt_id"]) == str(attempt["attempt_id"])
+    assert str(redemption["node_id"]) == "implement"
+    assert str(redemption["capability"]) == (
+        ToolGrantCapability.RUN_PROJECT_VERIFICATION.value
+    )
+    assert int(redemption["exit_code"]) == VERIFICATION_EXIT_CODE
+    assert (
+        str(redemption["standard_output_hash"])
+        == Sha256Hash.of(VERIFICATION_OUTPUT).value
+    )
+    assert receipt_count == 0

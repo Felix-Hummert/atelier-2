@@ -269,7 +269,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     36: "c9f4b5d99a9ff8e33796e36151b66f00175eceaa797e30461bf6e01264266ce8",
     37: "e41cf318212e0a79d6605413b5818ef68d6245baaf05a53b888b8aac40131a13",
     38: "aebd8b6bad8a719864f0c02828db643dd3dcbe7c89198beb6a8c1c4c30100824",
-    39: "85424b6c3a93beca4981da86ed68069f2600de845403542d090534235164744c",
+    39: "b9de4bca92f18303982968efa1afeb3a15393cb95d346bc9d522e62851c5f45c",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -926,21 +926,26 @@ agent_receipts_v2 = sa.Table(
 tool_redemptions = sa.Table(
     "tool_redemptions",
     metadata,
-    sa.Column(
-        "node_execution_id",
-        sa.Text,
-        sa.ForeignKey("agent_receipts_v2.node_execution_id"),
-        primary_key=True,
-    ),
-    sa.Column("run_id", sa.Text, nullable=False),
-    sa.Column("workflow_revision_hash", sa.Text, nullable=False),
-    sa.Column("node_id", sa.Text, nullable=False),
+    # Keyed by the attempt, and bound to the attempt alone (V39, #642). What a
+    # redemption records is what *one attempt's* grant ran, and an attempt exists
+    # whichever way it ends -- where the agent receipt this row used to hang from
+    # is written only for a success. Anchored there, a verification that exited
+    # zero and was then followed by a capture that could not keep the work had
+    # nowhere to be written, so the proof of a check that really passed was
+    # discarded with the ending. Keyed by the attempt rather than by the node
+    # execution for the same reason: a replacement attempt of that node redeems
+    # its own grant, and two attempts of one node are two redemptions, not a
+    # collision.
     sa.Column(
         "attempt_id",
         sa.Text,
         sa.ForeignKey("agent_attempts.attempt_id"),
-        nullable=False,
+        primary_key=True,
     ),
+    sa.Column("node_execution_id", sa.Text, nullable=False),
+    sa.Column("run_id", sa.Text, nullable=False),
+    sa.Column("workflow_revision_hash", sa.Text, nullable=False),
+    sa.Column("node_id", sa.Text, nullable=False),
     sa.Column("tool_revision_hash", sa.Text, nullable=False),
     sa.Column("capability", sa.Text, nullable=False),
     sa.Column("command", sa.Text, nullable=False),
@@ -3058,6 +3063,12 @@ def _added_table_step(
     Five published steps add exactly one immutable table, so the hop is written
     once rather than copied per version; what differs between them is only the
     table, its triggers, and the two version numbers.
+
+    The table is created in the shape its *own* version published, which is
+    today's declaration only while no later hop has moved it. A step that
+    introduced a table and then built today's shape for it would leave a store
+    that skipped every change since, and the next fingerprint on the way up
+    would refuse it -- correctly, and far from the line that caused it.
     """
 
     def apply(connection: sqlite3.Connection) -> None:
@@ -3071,7 +3082,10 @@ def _added_table_step(
                 "this command will not alter it"
             )
         connection.execute(
-            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
+            PUBLISHED_TABLE_SHAPES.get(
+                (target, table.name),
+                str(CreateTable(table).compile(dialect=sqlite_dialect.dialect())),
+            )
         )
         for trigger in triggers:
             connection.execute(_PRODUCT_TRIGGERS[trigger])
@@ -4426,16 +4440,33 @@ def _apply_v37_to_v38(connection: sqlite3.Connection) -> None:
 _PREDECESSOR_ATTEMPTS_BEFORE_CANDIDATE_CAPTURE_FAILED = (
     "agent_attempts_before_candidate_capture_failed"
 )
+_PREDECESSOR_REDEMPTIONS_BOUND_TO_THE_RECEIPT = (
+    "tool_redemptions_bound_to_the_agent_receipt"
+)
+_TOOL_REDEMPTIONS_TRIGGERS = (
+    "tool_redemptions_no_update",
+    "tool_redemptions_no_delete",
+)
 
 
 def _apply_v38_to_v39(connection: sqlite3.Connection) -> None:
-    """Admit CANDIDATE_CAPTURE_FAILED as a failure code, and keep every row.
+    """Admit CANDIDATE_CAPTURE_FAILED, and re-own a redemption to its attempt.
 
     Every stored FAILED attempt carries one of the six older codes, which the
     widened constraint still admits, so no ending changes meaning. Nothing is
     backfilled either: an attempt that ended before this word could not have
     failed for this reason, and saying it did would invent a loss that never
     happened.
+
+    The redemption table is rebuilt in the same hop because the new ending needs
+    it: a redemption hung from the success-only agent receipt cannot be written
+    beside an attempt that failed, so a check that really passed would be thrown
+    away with the loss of the work. Its key moves to the attempt for the same
+    reason a replacement attempt is its own attempt -- two attempts of one node
+    redeem two grants. Every stored row already carries the attempt it belongs
+    to, so each one crosses by name with nothing derived or invented; and every
+    row that exists at V38 hangs from an agent receipt, which is one succeeded
+    attempt, so no two of them can collide on the key they are carried to.
     """
 
     _rebuild_product_table(
@@ -4443,6 +4474,14 @@ def _apply_v38_to_v39(connection: sqlite3.Connection) -> None:
         agent_attempts,
         _PREDECESSOR_ATTEMPTS_BEFORE_CANDIDATE_CAPTURE_FAILED,
         _AGENT_ATTEMPTS_TRIGGERS,
+        _VERSION_THIRTY_EIGHT,
+        _VERSION_THIRTY_NINE,
+    )
+    _rebuild_product_table(
+        connection,
+        tool_redemptions,
+        _PREDECESSOR_REDEMPTIONS_BOUND_TO_THE_RECEIPT,
+        _TOOL_REDEMPTIONS_TRIGGERS,
         _VERSION_THIRTY_EIGHT,
         _VERSION_THIRTY_NINE,
     )
