@@ -33,6 +33,25 @@ function activityMs(run: AnyRun): number | null {
 }
 
 /**
+ * One entry per run, keeping the fresher read of it.
+ *
+ * A surface that asks several state lists at one moment gets them answered
+ * separately, so a run that moves between two of those answers -- a wait that
+ * opens while the started list is still on the wire -- comes back in both. The
+ * higher `state_version` is the run's truth; the room shows it once.
+ */
+export function newestReadOfEachRun(runs: readonly AnyRun[]): AnyRun[] {
+  const newest = new Map<string, AnyRun>();
+  for (const run of runs) {
+    const known = newest.get(run.public_run_reference);
+    if (known === undefined || known.state_version <= run.state_version) {
+      newest.set(run.public_run_reference, run);
+    }
+  }
+  return [...newest.values()];
+}
+
+/**
  * Resolves a run's workflow name from the described catalog listing, keyed by
  * `workflow_revision_hash`.
  *
