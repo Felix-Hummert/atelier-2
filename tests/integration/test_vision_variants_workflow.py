@@ -66,13 +66,13 @@ from tests.scenarios.api import durable_queries
 
 WORKFLOWS_DIRECTORY = Path(__file__).parents[2] / "workflows"
 VISION_VARIANTS_DOCUMENT = (WORKFLOWS_DIRECTORY / "vision-variants.yaml").read_bytes()
+TEXT_SCHEMA = PublishedRevision(
+    RevisionKind.SCHEMA,
+    (WORKFLOWS_DIRECTORY / "schemas" / "nonempty_string.json").read_bytes(),
+)
 VISION_VARIANTS_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
     (WORKFLOWS_DIRECTORY / "schemas" / "vision_variants_result.json").read_bytes(),
-)
-DIFF_REVIEW_DIFF_SCHEMA = PublishedRevision(
-    RevisionKind.SCHEMA,
-    (WORKFLOWS_DIRECTORY / "schemas" / "diff_review_diff.json").read_bytes(),
 )
 
 FRAGMENTS_TEXT = (
@@ -177,7 +177,7 @@ def publish_vision_variants(
     runtime: DbosRuntime,
 ) -> tuple[WorkflowRevision, AgentBindingSet]:
     store = DbosCatalogStore(runtime.engine)
-    for revision in (DIFF_REVIEW_DIFF_SCHEMA, VISION_VARIANTS_SCHEMA):
+    for revision in (TEXT_SCHEMA, VISION_VARIANTS_SCHEMA):
         published = store.publish_revision(revision)
         assert isinstance(
             published, (PublishedRevisionCreated, PublishedRevisionExisting)
