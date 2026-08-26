@@ -1199,35 +1199,33 @@ def test_a_successor_carried_by_the_runner_slot_is_read_from_that_slots_own_row(
 
 
 @pytest.mark.parametrize(
-    ("minted", "named"),
+    ("minted", "ends"),
     (
         pytest.param(True, True, id="a-slot-row-its-dead-version-left"),
         pytest.param(False, False, id="nothing-was-ever-minted"),
     ),
 )
 def test_a_first_node_with_no_attempt_is_judged_by_what_was_minted_for_it(
-    runtime: DbosRuntime, minted: bool, named: bool
+    runtime: DbosRuntime, minted: bool, ends: bool
 ) -> None:
     """#636: a carrier can die before it prepares anything, leaving no attempt.
 
     Demanding a succeeded attempt as proof a run got somewhere cannot see that:
     a Runner slot workflow left behind by a version that will never run again has
     no attempt to its name, and the run it holds would go unnamed forever. A
-    workflow genuinely minted for the run is the proof instead.
+    workflow genuinely minted for the run is the proof instead, and the run ends
+    over an empty fold -- its terminal hash says this revision and nothing after
+    it, which is exactly what happened.
 
     The other case is the same rule's other edge, and the reason naming ids
     speculatively is safe: with nothing minted, every id derived for this run
     matches no row, and a run whose first workflow has simply not been picked up
-    yet must not be named at all.
-
-    Naming is as far as this shape goes: `lift_started_run` folds a terminal hash
-    over the run's events, and a run that died before its first node wrote one has
-    nothing to fold. That boundary is deliberate and older than this sweep, so the
-    ending is asserted absent rather than expected.
+    yet must stay `STARTED`.
     """
 
     run_id = RunId("inventory/lease-slot-first-node")
     execution_id = unprepared_first_node(runtime, run_id)
+    assert _event_kinds(runtime, run_id) == ()
     if minted:
         _record_node_workflow(
             runtime,
@@ -1239,9 +1237,13 @@ def test_a_first_node_with_no_attempt_is_judged_by_what_was_minted_for_it(
     store = DbosUncontinuableRunStore(
         runtime.engine, runtime.settings.application_version
     )
-    assert store.uncontinuable_runs() == ((run_id,) if named else ())
-    assert converge_uncontinuable_runs(store) == ()
-    assert _run_state(runtime, run_id) == RunState.STARTED.value
+    assert store.uncontinuable_runs() == ((run_id,) if ends else ())
+    assert converge_uncontinuable_runs(store) == ((run_id,) if ends else ())
+    assert _run_state(runtime, run_id) == (
+        RunState.FAILED.value if ends else RunState.STARTED.value
+    )
+    assert (_terminal_hash(runtime, run_id) is not None) is ends
+    assert _event_kinds(runtime, run_id) == ()
 
 
 def test_converge_does_not_end_a_run_whose_effect_workflow_is_still_driving(
