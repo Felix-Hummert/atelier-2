@@ -47,7 +47,7 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow_ids import (
     cancellation_workflow_id_for,
-    driving_workflow_id,
+    driving_workflow_ids,
     replacement_workflow_id_for,
 )
 from atelier2.application.compose_node_job import node_job
@@ -1409,13 +1409,17 @@ class DbosAgentAttemptStore:
                 if not candidates:
                     return
                 drivers = tuple(
-                    (attempt, driving_workflow_id(attempt)) for attempt in candidates
+                    (attempt, driving_workflow_ids(attempt)) for attempt in candidates
                 )
                 driving = set(
                     connection.scalars(
                         sa.select(_dbos_workflow_status.c.workflow_uuid).where(
                             _dbos_workflow_status.c.workflow_uuid.in_(
-                                tuple(driver for _attempt, driver in drivers)
+                                tuple(
+                                    workflow_id
+                                    for _attempt, workflow_ids in drivers
+                                    for workflow_id in workflow_ids
+                                )
                             ),
                             _dbos_workflow_status.c.status.in_(
                                 _DRIVING_WORKFLOW_STATUSES
@@ -1424,8 +1428,8 @@ class DbosAgentAttemptStore:
                     )
                 )
             after = candidates[-1].attempt_id
-            for attempt, driver in drivers:
-                if driver not in driving:
+            for attempt, workflow_ids in drivers:
+                if driving.isdisjoint(workflow_ids):
                     yield attempt
             if len(candidates) < page_limit.value:
                 return

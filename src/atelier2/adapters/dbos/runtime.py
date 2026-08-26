@@ -50,7 +50,7 @@ from atelier2.adapters.dbos.workflow import (
     reconstruct_agent_attempt,
     register_durable_run_workflow,
 )
-from atelier2.adapters.dbos.workflow_ids import driving_workflow_id
+from atelier2.adapters.dbos.workflow_ids import driving_workflow_ids
 from atelier2.adapters.file_runner_leases import FileRunnerLeasePublisher
 from atelier2.adapters.file_runner_terminal_evidence import (
     FileRunnerTerminalEvidenceSource,
@@ -618,14 +618,20 @@ def _driverless_runner_lease_attempts(
             connection.scalars(
                 sa.select(_dbos_workflow_status.c.workflow_uuid).where(
                     _dbos_workflow_status.c.workflow_uuid.in_(
-                        tuple(driving_workflow_id(attempt) for attempt in candidates)
+                        tuple(
+                            workflow_id
+                            for attempt in candidates
+                            for workflow_id in driving_workflow_ids(attempt)
+                        )
                     ),
                     _dbos_workflow_status.c.status.in_(_DRIVING_WORKFLOW_STATUSES),
                 )
             )
         )
     return tuple(
-        attempt for attempt in candidates if driving_workflow_id(attempt) not in driving
+        attempt
+        for attempt in candidates
+        if driving.isdisjoint(driving_workflow_ids(attempt))
     )
 
 

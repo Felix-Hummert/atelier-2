@@ -20,7 +20,7 @@ from atelier2.adapters.dbos.schema import (
     run_events,
     runs,
 )
-from atelier2.adapters.dbos.workflow_ids import driving_workflow_id
+from atelier2.adapters.dbos.workflow_ids import driving_workflow_ids
 from atelier2.contracts.effects import (
     CanonicalRequest,
     EffectAdapterBinding,
@@ -360,12 +360,12 @@ def _current_node_attempt_still_driving(
 
     A run reaching COMPLETED leaves its current node at the sink node that
     completed it, and the post-COMPLETED redemption runs inside whichever workflow
-    still drives one of that node's attempts. `driving_workflow_id` is the one
+    still drives one of that node's attempts. `driving_workflow_ids` is the one
     owner of that mapping -- the node workflow for the original attempt, the
-    replacement workflow for one that was cancelled and replaced -- so asking it
-    for every attempt of the node covers both crash windows without enumerating
-    either workflow form here. A recoverable status under any of those ids names a
-    redemption recovery would still resume.
+    replacement workflow for one that was cancelled and replaced, the Runner slot
+    for a lease-carried one -- so asking it for every attempt of the node covers
+    every crash window without enumerating any workflow form here. A recoverable
+    status under any of those ids names a redemption recovery would still resume.
     """
 
     execution_id = NodeExecutionId.for_node(
@@ -374,15 +374,19 @@ def _current_node_attempt_still_driving(
         str(record["current_node_id"]),
         int(record["current_round_ordinal"]),
     )
-    driving_ids = [
-        driving_workflow_id(attempt_from_record(attempt_record))
-        for attempt_record in connection.execute(
+    attempt_records = (
+        connection.execute(
             sa.select(agent_attempts).where(
                 agent_attempts.c.node_execution_id == execution_id.value
             )
         )
         .mappings()
         .all()
+    )
+    driving_ids = [
+        workflow_id
+        for attempt_record in attempt_records
+        for workflow_id in driving_workflow_ids(attempt_from_record(attempt_record))
     ]
     if not driving_ids:
         return False

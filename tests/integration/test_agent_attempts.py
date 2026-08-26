@@ -28,7 +28,7 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.dbos.workflow_ids import driving_workflow_id
+from atelier2.adapters.dbos.workflow_ids import driving_workflow_ids
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
@@ -185,6 +185,17 @@ def attempt_request(
         AgentExecutorOperationalIdentity("controlled-process"),
         b"build",
     )
+
+
+def _the_driving_workflow(attempt: AgentAttempt) -> str:
+    """The one workflow a local-process attempt ever holds a status under.
+
+    `driving_workflow_ids` also names the Runner slot, because a lease-carried
+    attempt's row cannot say whether the slot has taken it over. These attempts
+    are local-process, so no workflow is ever minted under that second id.
+    """
+
+    return driving_workflow_ids(attempt)[0]
 
 
 def _record_driving_workflow(
@@ -1003,7 +1014,7 @@ def test_an_attempt_is_driverless_once_its_workflow_can_no_longer_move_it(
         request = attempt_request(runtime)
         store = DbosAgentAttemptStore(runtime.engine)
         attempt = store.prepare(agent_attempt_execution(request))
-        _record_driving_workflow(runtime, driving_workflow_id(attempt), status)
+        _record_driving_workflow(runtime, _the_driving_workflow(attempt), status)
 
         assert tuple(store.iter_driverless_attempts(PageLimit(1))) == (
             (attempt,) if driverless else ()
@@ -1055,7 +1066,7 @@ def test_driverless_iteration_advances_past_a_fully_driven_page(
         store = DbosAgentAttemptStore(runtime.engine)
         ordered = _ordered_prepared_attempts(runtime, store, "attempt/keyset", 3)
         for attempt in ordered[:2]:
-            _record_driving_workflow(runtime, driving_workflow_id(attempt), "PENDING")
+            _record_driving_workflow(runtime, _the_driving_workflow(attempt), "PENDING")
 
         assert tuple(store.iter_driverless_attempts(PageLimit(2))) == (ordered[2],)
     finally:
@@ -1115,7 +1126,7 @@ def test_driverless_iteration_reads_later_pages_from_fresh_durable_truth(
 
         attempts = store.iter_driverless_attempts(PageLimit(1))
         assert next(attempts) == ordered[0]
-        _record_driving_workflow(runtime, driving_workflow_id(ordered[1]), "PENDING")
+        _record_driving_workflow(runtime, _the_driving_workflow(ordered[1]), "PENDING")
 
         assert tuple(attempts) == ()
     finally:
@@ -1207,7 +1218,10 @@ def test_driverless_iteration_bounds_ten_thousand_row_queries(
         assert discovered == 10_000
         assert len(attempt_reads) == 101
         assert len(workflow_reads) == 100
-        assert max(workflow_reads) == MAXIMUM_PAGE_ITEMS + 3
+        # One page of attempts, each naming the workflows that can still drive it
+        # -- its own, and the Runner slot its row cannot rule out -- plus the
+        # three driving statuses. Bounded by the page, not by the store's size.
+        assert max(workflow_reads) == MAXIMUM_PAGE_ITEMS * 2 + 3
         assert len(observed_reads) == 201
     finally:
         runtime.close()

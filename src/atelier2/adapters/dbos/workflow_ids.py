@@ -136,24 +136,33 @@ def runner_lease_workflow_id_for(execution_id: NodeExecutionId, ordinal: int) ->
     return RUNNER_LEASE_WORKFLOW_ID_PREFIX + digest.value
 
 
-def driving_workflow_id(attempt: AgentAttempt) -> str:
-    """The durable workflow that owes this attempt its next move.
+def driving_workflow_ids(attempt: AgentAttempt) -> tuple[str, ...]:
+    """Every durable workflow that can still owe this attempt its next move.
 
-    Exactly one workflow drives an attempt at a time, and which one it is follows
-    from the attempt itself: a cancelled attempt is owed its cleanup by the
-    cancellation it carries, a Runner-bound one by the lease-slot workflow that
-    drives every Runner attempt, a replacement by the replacement workflow that
-    was enqueued for it, and every other attempt by the node workflow of its
-    execution. Naming that here is what lets a restart ask whether anything is
-    still driving an attempt at all.
+    Which one it is follows from the attempt itself: a cancelled attempt is owed
+    its cleanup by the cancellation it carries, a Runner-bound one by the
+    lease-slot workflow that drives every Runner Attempt, a replacement by the
+    replacement workflow that was enqueued for it, and every other attempt by the
+    node workflow of its execution. Naming that here is what lets a restart ask
+    whether anything is still driving an attempt at all.
+
+    One case the row cannot settle, and there this answers with both (#636): a
+    lease-carried Attempt is durably prepared before it binds its Runner
+    generation, and between those two commits nothing on the row says that the
+    slot's workflow -- rather than the node workflow that handed the Attempt over
+    and has long since succeeded -- is the one driving it. A single answer would
+    have to guess, and guessing the node workflow ends an Attempt whose Runner
+    may be running. Both is exact instead: an id no workflow was ever minted
+    under matches nothing, so the caller's own status read still decides.
     """
 
     if attempt.cancellation is not None:
-        return cancellation_workflow_id_for(stop_command_for(attempt))
+        return (cancellation_workflow_id_for(stop_command_for(attempt)),)
+    runner_slot = runner_lease_workflow_id_for(
+        attempt.node_execution_id, attempt.attempt_ordinal
+    )
     if attempt.runner_manifest_id is not None:
-        return runner_lease_workflow_id_for(
-            attempt.node_execution_id, attempt.attempt_ordinal
-        )
+        return (runner_slot,)
     if attempt.attempt_ordinal == REPLACEMENT_AGENT_ATTEMPT_ORDINAL:
-        return replacement_workflow_id_for(attempt.attempt_id)
-    return node_workflow_id_for(attempt.node_execution_id)
+        return (replacement_workflow_id_for(attempt.attempt_id), runner_slot)
+    return (node_workflow_id_for(attempt.node_execution_id), runner_slot)

@@ -47,7 +47,7 @@ from atelier2.adapters.dbos.runtime import (
     DbosRuntimeSettings,
     runner_lease_cancellation_command_id,
 )
-from atelier2.adapters.dbos.schema import runs
+from atelier2.adapters.dbos.schema import agent_attempts, runs
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -67,7 +67,12 @@ from atelier2.application.execute_agent_attempt_on_runner import (
     RunnerAttemptLeaseMaterial,
     execute_agent_attempt_on_runner,
 )
-from atelier2.contracts.agent_attempts import RunnerInvocationId
+from atelier2.contracts.agent_attempts import (
+    TERMINAL_AGENT_ATTEMPT_STATES,
+    AgentAttemptId,
+    AgentAttemptState,
+    RunnerInvocationId,
+)
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -195,6 +200,10 @@ def _released_event() -> threading.Event:
     return event
 
 
+class _AbandonedScenarioDrive(RuntimeError):
+    """A held drive whose scenario closed its runtime before releasing it."""
+
+
 @dataclass
 class _DriveTracking:
     """What every scripted lease drive shares: whether two ever overlapped."""
@@ -204,11 +213,15 @@ class _DriveTracking:
     peak: int = 0
     completed_attempt_ids: list[str] = field(default_factory=list)
     # A drive records its overlap, then holds here until released. Set by
-    # default so every test but the two slot proofs runs straight through; those
-    # clear it, so exactly one drive is in flight while they read what the rest
-    # of the Attempts are doing -- the slot, not a chance of DBOS serialization,
-    # is then what keeps `peak` at one.
+    # default so every test but the three slot proofs runs straight through;
+    # those clear it, so exactly one drive is in flight while they read what the
+    # rest of the Attempts are doing -- the slot, not a chance of DBOS
+    # serialization, is then what keeps `peak` at one.
     released: threading.Event = field(default_factory=_released_event)
+    # Set beside `released` when the scenario has already closed the runtime a
+    # held drive belongs to. The drive then writes nothing, the way a drive taken
+    # with its own process writes nothing.
+    abandoned: threading.Event = field(default_factory=threading.Event)
 
     def entered(self) -> None:
         with self.lock:
@@ -321,9 +334,16 @@ class _ScriptedLeaseDriver:
             runner_lease_cancellation_command_id(execution.attempt_id),
             engine=self.engine,
         )
+        # The real driver's own first act (`execute_agent_attempt_on_runner`),
+        # repeated here so a held drive stands where a Runner Attempt really
+        # stands while it holds the slot: durably prepared, no generation bound
+        # yet. The real call replays it idempotently once the hold is released.
+        self.store.prepare(execution)
         self.tracking.entered()
         try:
             self.tracking.released.wait(timeout=_WAIT_SECONDS)
+            if self.tracking.abandoned.is_set():
+                raise _AbandonedScenarioDrive(execution.attempt_id.value)
             outcome = execute_agent_attempt_on_runner(
                 execution,
                 self.store,
@@ -561,6 +581,44 @@ def wait_for_waiting_lease_attempts(runtime: DbosRuntime, count: int) -> None:
     )
 
 
+def wait_for_a_prepared_unbound_attempt(runtime: DbosRuntime) -> AgentAttemptId:
+    """Wait until a Runner Attempt stands prepared with no generation bound yet.
+
+    The window every restart has to survive: the Attempt is durable, so a
+    driverless sweep can see it, and its row still says nothing about the Runner,
+    so only the workflow driving it can say who owes it a move.
+    """
+
+    deadline = time.monotonic() + _WAIT_SECONDS
+    while time.monotonic() < deadline:
+        with runtime.engine.connect() as connection:
+            found = connection.scalar(
+                sa.select(agent_attempts.c.attempt_id).where(
+                    agent_attempts.c.state == AgentAttemptState.PREPARED.value,
+                    agent_attempts.c.runner_manifest_id.is_(None),
+                )
+            )
+        if found is not None:
+            return AgentAttemptId(str(found))
+        time.sleep(_POLL_SECONDS)
+    raise AssertionError("no runner attempt ever reached its prepared, unbound window")
+
+
+def attempt_state(
+    runtime: DbosRuntime, attempt_id: AgentAttemptId
+) -> AgentAttemptState:
+    with runtime.engine.connect() as connection:
+        return AgentAttemptState(
+            str(
+                connection.scalar(
+                    sa.select(agent_attempts.c.state).where(
+                        agent_attempts.c.attempt_id == attempt_id.value
+                    )
+                )
+            )
+        )
+
+
 def wait_for_started_nodes(runtime: DbosRuntime, count: int) -> None:
     """Wait until DBOS has handed `count` node workflows to a worker.
 
@@ -735,6 +793,54 @@ def test_waiting_lease_attempts_stall_no_independent_workflow(
     finally:
         tracking.released.set()
         runtime.close()
+
+
+def test_a_restart_leaves_an_attempt_the_runner_slot_is_still_driving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restart does not end an Attempt the Runner slot still owes a move (#636).
+
+    Between preparing an Attempt and binding its Runner generation, nothing on
+    the row says which workflow drives it — and the node workflow that handed it
+    to the slot succeeded long before. A restart's driverless sweep has to find
+    the slot's own workflow anyway; if it does not, it stops an Attempt whose
+    Runner may well be running and writes the invented `INTERRUPTED` that `#540`
+    Kind #585 exists to prevent.
+
+    The deployment is mixed on purpose: the driverless sweep only runs where a
+    `LOCAL_PROCESS` key gave Serve a process supervisor to converge with.
+    """
+
+    run_id = RunId("lease-dispatch/restart-mid-window")
+    mixed = (_lease_registration(True), _local_process_registration(True))
+    held = _DriveTracking(released=threading.Event())
+    first = _build_runtime(tmp_path, monkeypatch, held, mixed)
+    try:
+        _publish_catalog(first)
+        first.launch()
+        _publish_and_start(
+            first,
+            run_id,
+            "runner",
+            _FREE_RUNNER_CONFIGURATION,
+            _free_runner_document("mid-window"),
+        )
+        attempt_id = wait_for_a_prepared_unbound_attempt(first)
+    finally:
+        # Closed without releasing: the drive is taken with its process, exactly
+        # as a Serve restart mid-Attempt takes it.
+        first.close()
+
+    restarted_hold = _DriveTracking(released=threading.Event())
+    restarted = _build_runtime(tmp_path, monkeypatch, restarted_hold, mixed)
+    try:
+        restarted.launch()
+        assert attempt_state(restarted, attempt_id) not in TERMINAL_AGENT_ATTEMPT_STATES
+    finally:
+        for tracking in (held, restarted_hold):
+            tracking.abandoned.set()
+            tracking.released.set()
+        restarted.close()
 
 
 def test_refuse_unavailable_executor_holds_for_a_lease_carried_key(
