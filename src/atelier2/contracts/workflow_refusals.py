@@ -27,6 +27,7 @@ class WorkflowRefusalReason(StrEnum):
     UNDECLARED_OUTPUT = "undeclared_output"
     UNDECLARED_CONTEXT = "undeclared_context"
     UNDECLARED_GRAPH_INPUT = "undeclared_graph_input"
+    UNDECLARED_ROLE = "undeclared_role"
     GRAPH_OUTPUT_NOT_SINK = "graph_output_not_sink"
     GRAPH_INPUT_UNREAD = "graph_input_unread"
     UNCONFIRMED_INTERACTIVE_OUTPUT = "unconfirmed_interactive_output"

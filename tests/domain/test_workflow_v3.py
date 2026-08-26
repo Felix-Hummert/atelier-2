@@ -18,6 +18,8 @@ from atelier2.contracts.verdicts import VERDICT_ANSWER_SCHEMA, Verdict
 from atelier2.contracts.workflow_refusals import WorkflowRefusal, WorkflowRefusalReason
 from atelier2.contracts.workflows_v3 import (
     AGENT_OUTPUT_SHAPE_UNAVAILABLE,
+    DEFAULT_ROLE_DIFFICULTY,
+    DEFAULT_ROLE_KIND,
     MAXIMUM_DOCUMENT_DESCRIPTION_BYTES,
     MAXIMUM_DOCUMENT_NAME_BYTES,
     MAXIMUM_INSTRUCTION_BYTES,
@@ -25,6 +27,7 @@ from atelier2.contracts.workflows_v3 import (
     ActionNodeV3,
     AgentNodeV3,
     ContextEntrySource,
+    DeclaredRole,
     DeterministicNodeV3,
     GraphInputSource,
     NodeOutputSource,
@@ -32,6 +35,7 @@ from atelier2.contracts.workflows_v3 import (
     SubworkflowNodeV3,
     WaitNodeV3,
     WorkflowGraphV3,
+    declared_roles_of,
     verdict_condition_of,
 )
 
@@ -169,6 +173,15 @@ def with_document_name(authored: str, document: bytes = DOCUMENT) -> bytes:
 
 def without_line(line: str, document: bytes = DOCUMENT) -> bytes:
     return document.replace(f"{line}\n".encode(), b"", 1)
+
+
+ONE_ROLE_TWICE = DOCUMENT.replace(b"    role: reviewer\n", b"    role: builder\n")
+"""The same chain with both its agents carrying one role.
+
+A role is the casting unit, so two nodes filled by one occupation is an
+ordinary document -- and the place where two nodes can contradict each other
+about what that one occupation should be.
+"""
 
 
 GREEN_CONDITION = (
@@ -1054,6 +1067,102 @@ REFUSALS: dict[str, tuple[bytes, WorkflowRefusalReason, str | None, str]] = {
         "publish_report",
         "outputs",
     ),
+    "difficulty-outside-the-three": (
+        with_node_line("implement", "difficulty: 4"),
+        WorkflowRefusalReason.INVALID_VALUE,
+        "implement",
+        "difficulty",
+    ),
+    "difficulty-written-as-a-name": (
+        with_node_line("implement", "difficulty: hard"),
+        WorkflowRefusalReason.INVALID_VALUE,
+        "implement",
+        "difficulty",
+    ),
+    "difficulty-written-as-a-flag": (
+        with_node_line("implement", "difficulty: true"),
+        WorkflowRefusalReason.INVALID_VALUE,
+        "implement",
+        "difficulty",
+    ),
+    "difficulty-written-as-a-decimal": (
+        with_node_line("implement", "difficulty: 2.0"),
+        WorkflowRefusalReason.INVALID_VALUE,
+        "implement",
+        "difficulty",
+    ),
+    "difficulty-refused-by-a-wait": (
+        with_node_line("approve", "difficulty: 3"),
+        WorkflowRefusalReason.REFUSED_FIELD,
+        "approve",
+        "difficulty",
+    ),
+    "kind-outside-the-two": (
+        with_node_line("implement", "kind: audit"),
+        WorkflowRefusalReason.INVALID_VALUE,
+        "implement",
+        "kind",
+    ),
+    "kind-written-as-a-number": (
+        with_node_line("implement", "kind: 2"),
+        WorkflowRefusalReason.INVALID_VALUE,
+        "implement",
+        "kind",
+    ),
+    "kind-refused-by-a-wait": (
+        with_node_line("approve", "kind: review"),
+        WorkflowRefusalReason.REFUSED_FIELD,
+        "approve",
+        "kind",
+    ),
+    "model-pinned-as-an-alias": (
+        with_node_line("implement", "model: newest opus"),
+        WorkflowRefusalReason.INVALID_VALUE,
+        "implement",
+        "model",
+    ),
+    "family-rule-naming-a-role-nothing-declares": (
+        with_node_line("implement", "family_differs_from: ghost"),
+        WorkflowRefusalReason.UNDECLARED_ROLE,
+        "implement",
+        "family_differs_from",
+    ),
+    "family-rule-naming-its-own-role": (
+        with_node_line("implement", "family_differs_from: builder"),
+        WorkflowRefusalReason.INVALID_VALUE,
+        "implement",
+        "family_differs_from",
+    ),
+    "one-role-asking-for-two-difficulties": (
+        with_node_line(
+            "code_review",
+            "difficulty: 1",
+            with_node_line("implement", "difficulty: 3", ONE_ROLE_TWICE),
+        ),
+        WorkflowRefusalReason.INVALID_VALUE,
+        "code_review",
+        "difficulty",
+    ),
+    "one-role-asking-for-two-model-pins": (
+        with_node_line(
+            "code_review",
+            "model: grok-4.6",
+            with_node_line("implement", "model: claude-opus-5", ONE_ROLE_TWICE),
+        ),
+        WorkflowRefusalReason.INVALID_VALUE,
+        "code_review",
+        "model",
+    ),
+    "one-role-asked-to-build-and-to-review": (
+        with_node_line(
+            "code_review",
+            "kind: review",
+            with_node_line("implement", "kind: build", ONE_ROLE_TWICE),
+        ),
+        WorkflowRefusalReason.INVALID_VALUE,
+        "code_review",
+        "kind",
+    ),
 }
 
 
@@ -1326,6 +1435,54 @@ def test_every_refused_v3_form_names_its_node_and_field(
     refusal = raised.value.refusal
     assert refusal is not None
     assert (refusal.reason, refusal.node, refusal.field) == (reason, node, field)
+
+
+SILENT_BUILDER = DeclaredRole(
+    "builder", DEFAULT_ROLE_DIFFICULTY, DEFAULT_ROLE_KIND, None, None
+)
+SILENT_REVIEWER = DeclaredRole(
+    "reviewer", DEFAULT_ROLE_DIFFICULTY, DEFAULT_ROLE_KIND, None, None
+)
+
+ROLE_DECLARATIONS: dict[str, tuple[bytes, tuple[DeclaredRole, ...]]] = {
+    "a document that asks nothing beyond the role names": (
+        DOCUMENT,
+        (SILENT_BUILDER, SILENT_REVIEWER),
+    ),
+    "a role naming every form the grammar has": (
+        with_node_line(
+            "code_review",
+            "kind: review",
+            with_node_line(
+                "implement",
+                "model: claude-opus-5",
+                with_node_line(
+                    "implement",
+                    "family_differs_from: reviewer",
+                    with_node_line("implement", "difficulty: 3"),
+                ),
+            ),
+        ),
+        (
+            DeclaredRole("builder", 3, "build", "reviewer", "claude-opus-5"),
+            DeclaredRole("reviewer", DEFAULT_ROLE_DIFFICULTY, "review", None, None),
+        ),
+    ),
+    "one role carried by two nodes, one of them silent": (
+        with_node_line("implement", "difficulty: 1", ONE_ROLE_TWICE),
+        (DeclaredRole("builder", 1, DEFAULT_ROLE_KIND, None, None),),
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("document", "declared"), ROLE_DECLARATIONS.values(), ids=ROLE_DECLARATIONS
+)
+def test_a_document_says_once_per_role_what_it_asks_of_whoever_fills_it(
+    document: bytes, declared: tuple[DeclaredRole, ...]
+) -> None:
+    """The seam the casting reads: one declaration per role, never per node."""
+    assert declared_roles_of(graph(document)) == declared
 
 
 @pytest.mark.parametrize("retired", RETIRED_KEY_REPLACEMENTS)
@@ -1681,6 +1838,13 @@ NOT_YET_EXECUTABLE: dict[str, bytes] = {
     % (b"c" * 64, b"d" * 64),
     "an empty authored context list": ONE_AGENT_DOCUMENT
     + b"    required_context: []\n",
+    # The role grammar and this guard land together: a start resolves a
+    # difficulty against configuration that does not exist yet, so a document
+    # naming one is authorable and refused rather than accepted and ignored.
+    "an authored difficulty": ONE_AGENT_DOCUMENT + b"    difficulty: 3\n",
+    "an authored role kind": ONE_AGENT_DOCUMENT + b"    kind: review\n",
+    "an authored model pin": ONE_AGENT_DOCUMENT + b"    model: claude-opus-5\n",
+    "an authored family rule": TWO_AGENT_CHAIN + b"    family_differs_from: builder\n",
     "a fan-out": TWO_AGENT_CHAIN
     + b"""  - id: document
     type: agent

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Annotated, Literal, assert_never
 
 from pydantic import (
@@ -39,8 +40,28 @@ MAXIMUM_DOCUMENT_DESCRIPTION_BYTES = 4 * 1024
 
 type JoinRule = Literal["all_succeeded", "all_terminal"]
 type AgentMode = Literal["headless", "headless_with_tools", "interactive"]
+type RoleDifficulty = Literal[1, 2, 3]
+type RoleKind = Literal["build", "review"]
 
 DEFAULT_SINGLE_DEPENDENCY_JOIN: JoinRule = "all_succeeded"
+
+DEFAULT_ROLE_KIND: RoleKind = "build"
+"""What a role that does not say otherwise is there to do.
+
+Judging another's work is the exception a document states, so a silent role
+builds. The word says what the work *is*, never how the role is staffed: a
+review role is filled by its difficulty like any other.
+"""
+
+DEFAULT_ROLE_DIFFICULTY: RoleDifficulty = 2
+"""How hard the work of a role that names no difficulty is taken to be.
+
+Three numbers, no names and no rating: the number says how hard the work is,
+never which model does it, and which model answers a number is configuration
+the operator changes in one place (ADR 0019 §3, sharpening #557's tier ruling).
+A document that names none means the middle, so the omission is the ordinary
+case rather than an unset field every reader has to interpret for itself.
+"""
 
 RETIRED_KEY_REPLACEMENTS: Mapping[str, str] = {
     "start": "depends_on, from which the entry set is derived",
@@ -73,6 +94,21 @@ def _declared_verdict(value: object) -> object:
 
 
 DeclaredVerdict = BeforeValidator(_declared_verdict)
+
+
+def _declared_difficulty(value: object) -> object:
+    """One of the three numbers as written, not whatever compares equal to one.
+
+    The language calls `true` equal to 1 and `2.0` equal to 2, and either would
+    be accepted as a difficulty the author never wrote -- casting the role at a
+    number nobody chose. The written kind decides.
+    """
+    if type(value) is not int:
+        raise ValueError("difficulty is written as the whole number 1, 2 or 3")
+    return value
+
+
+DeclaredDifficulty = BeforeValidator(_declared_difficulty)
 
 
 def _bounded_authored_text(text: str, subject: str, maximum_bytes: int) -> str:
@@ -292,10 +328,27 @@ class _NodeV3(_ClosedV3Model):
 
 
 class AgentNodeV3(_NodeV3):
+    """One occurrence of a role, and what this document asks of whoever fills it.
+
+    The role is a neutral name, never a provider and never an agent. Four
+    forms, and no others, say what the role is and what filling it should look
+    like: `difficulty` is how hard the work is (1, 2 or 3; absent means 2),
+    `kind` is whether the work builds or reviews (absent means build),
+    `family_differs_from` names the role this one must not share a provider
+    family with, and `model` pins one exact provider model id. There is no
+    rating and no capability sentence here -- which model answers a difficulty
+    is configuration outside the document, and the pin is the one exception a
+    document may write.
+    """
+
     type: Literal["agent"]
     role: NonemptyString
     mode: AgentMode
     instruction: NonemptyString
+    difficulty: Annotated[RoleDifficulty, DeclaredDifficulty] = DEFAULT_ROLE_DIFFICULTY
+    kind: RoleKind = DEFAULT_ROLE_KIND
+    family_differs_from: NonemptyString | None = None
+    model: NonemptyString | None = None
     profile: VersionedReference | None = None
     skills: Annotated[tuple[VersionedReference, ...], DeclaredSequence] = ()
     tools: Annotated[tuple[VersionedReference, ...], DeclaredSequence] = ()
@@ -316,6 +369,17 @@ class AgentNodeV3(_NodeV3):
         return _bounded_authored_text(
             instruction, "instruction", MAXIMUM_INSTRUCTION_BYTES
         )
+
+    @field_validator("model")
+    @classmethod
+    def exact_pinned_model(cls, model: str) -> str:
+        # A pin is sent to a provider as written, so an alias ("newest opus") or
+        # a sentence would either be refused there or, worse, resolve to
+        # whatever that provider currently means by it -- and the receipt's two
+        # ids (#434) could no longer be compared. One token, no whitespace.
+        if model.split() != [model]:
+            raise ValueError("model pins one exact provider id, never an alias")
+        return model
 
 
 class DeterministicNodeV3(_NodeV3):
@@ -409,6 +473,7 @@ class WorkflowGraphV3(_ClosedV3Model):
         _refuse_broken_graph_boundary(self)
         _refuse_broken_loops(self)
         _refuse_broken_binding_constraints(self)
+        _refuse_unfillable_role_declarations(self)
         return self
 
     def node(self, node_id: str) -> WorkflowNodeV3:
@@ -1146,6 +1211,120 @@ def _refuse_broken_binding_constraints(graph: WorkflowGraphV3) -> None:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class DeclaredRole:
+    """What one document asks of whoever fills one of its roles.
+
+    This is the whole of the document's say in the casting, and it is the seam
+    beneath `cast_unbound_roles`: `difficulty` is the number a configured model
+    default answers, `model` is the author's own exact pin, and
+    `family_differs_from` names the role this one must not share a provider
+    family with -- the rule is the workflow's, never an automatism of the house.
+    `kind` says what the work is rather than who does it, and stands beside the
+    difficulty wherever the role is shown.
+
+    A start override, the project's model defaults and the host's model registry
+    all stand above this record; their order stays one decision in
+    `cast_unbound_roles` (ADR 0019 §3).
+    """
+
+    role: str
+    difficulty: RoleDifficulty
+    kind: RoleKind
+    family_differs_from: str | None
+    model: str | None
+
+
+def declared_roles_of(graph: WorkflowGraphV3) -> tuple[DeclaredRole, ...]:
+    """Every role this document declares, once, in the order it first appears.
+
+    The casting resolves per role, not per node, so several nodes carrying one
+    role are one declaration. Folding them can never drop a statement, because
+    two nodes that author different things for the same role are refused below.
+    """
+    by_role: dict[str, list[AgentNodeV3]] = {}
+    for node in graph.nodes:
+        if isinstance(node, AgentNodeV3):
+            by_role.setdefault(node.role, []).append(node)
+    declared: list[DeclaredRole] = []
+    for role, nodes in by_role.items():
+        difficulty: RoleDifficulty | None = _agreed(
+            nodes, "difficulty", lambda node: node.difficulty
+        )
+        kind: RoleKind | None = _agreed(nodes, "kind", lambda node: node.kind)
+        declared.append(
+            DeclaredRole(
+                role,
+                DEFAULT_ROLE_DIFFICULTY if difficulty is None else difficulty,
+                DEFAULT_ROLE_KIND if kind is None else kind,
+                _agreed(
+                    nodes, "family_differs_from", lambda node: node.family_differs_from
+                ),
+                _agreed(nodes, "model", lambda node: node.model),
+            )
+        )
+    return tuple(declared)
+
+
+def _agreed[T](
+    nodes: Sequence[AgentNodeV3], field: str, read: Callable[[AgentNodeV3], T]
+) -> T | None:
+    """The one value this role's nodes authored for `field`, where they authored one.
+
+    Silence is not a statement: a node that names no difficulty inherits what
+    the role's other nodes name, and a role nobody gives one takes the default.
+    Two authored values are a contradiction, though, and the document refuses it
+    rather than obeying a precedence between nodes that nobody wrote down.
+    """
+    authored = [node for node in nodes if field in node.model_fields_set]
+    if not authored:
+        return None
+    first = authored[0]
+    for node in authored[1:]:
+        if read(node) != read(first):
+            raise _refuse(
+                WorkflowRefusalReason.INVALID_VALUE,
+                field,
+                f"role {node.role!r} declares {read(node)!r} here and "
+                f"{read(first)!r} on node {first.id!r}",
+                node.id,
+            )
+    return read(first)
+
+
+def _refuse_unfillable_role_declarations(graph: WorkflowGraphV3) -> None:
+    """Hold what a document asks of a role to something a casting could fill.
+
+    Reading the declarations is the first half: `declared_roles_of` refuses two
+    nodes that ask different things of one role, because the casting resolves
+    the role once and could only obey one of them.
+
+    The family rule is the second. One that names this node's own role asks for
+    a difference from itself, and one that names a role no node declares
+    constrains nothing at all -- both would be read as enforced and neither ever
+    is, so the document is refused rather than the run pretending it held.
+    """
+    roles = {role.role for role in declared_roles_of(graph)}
+    for node in graph.nodes:
+        if not isinstance(node, AgentNodeV3) or node.family_differs_from is None:
+            continue
+        other_role = node.family_differs_from
+        if other_role == node.role:
+            raise _refuse(
+                WorkflowRefusalReason.INVALID_VALUE,
+                "family_differs_from",
+                f"role {node.role!r} cannot differ in family from itself",
+                node.id,
+            )
+        if other_role not in roles:
+            raise _refuse(
+                WorkflowRefusalReason.UNDECLARED_ROLE,
+                "family_differs_from",
+                f"names role {other_role!r}, which no agent node declares",
+                node.id,
+            )
+
+
 def verdict_condition_of(
     graph: AnyWorkflowDocument, node_id: str
 ) -> LoopVerdictCondition | None:
@@ -1332,6 +1511,10 @@ V3_UNBOUND_AUTHORED_FORMS = (
     "cancellation",
     "required_context",
     "available_context",
+    "difficulty",
+    "kind",
+    "family_differs_from",
+    "model",
 )
 """Every authored form of an interpreted V3 node that nothing binds at run start.
 
@@ -1344,6 +1527,16 @@ The list is read against whichever forms a node actually declares, so it holds
 for the Wait kind too without naming it twice: a Wait node carries `join`,
 `cancellation` and `required_context` and no others, and each of the three is
 refused on it for the same reason it is refused on an Agent node.
+
+The four role forms joined it with the grammar that introduced them. A start
+resolves a role against the project's model defaults and the host's model
+registry, and neither exists yet, so a document naming a difficulty, a family
+rule or a model pin would start having decided nothing by them; those three
+leave together with `cast_unbound_roles`'s difficulty lookup. `kind` is not
+resolved at a start at all -- it is what the role *is*, read wherever the role
+is shown -- so it leaves this list when a surface reads it, which is the node
+panel beside the difficulty (ADR 0019 §3). Until then the grammar is authorable
+and refused, rather than accepted and ignored.
 
 `inputs` left this list when the start began binding one: it is admitted per
 source by `V3_BOUND_INPUT_SOURCES` rather than as a whole form, because only an
