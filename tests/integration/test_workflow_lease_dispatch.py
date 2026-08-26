@@ -16,9 +16,10 @@ and the ones waiting their turn hold a queue row rather than a DBOS worker.
 from __future__ import annotations
 
 import json
+import queue
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -47,11 +48,12 @@ from atelier2.adapters.dbos.runtime import (
     DbosRuntimeSettings,
     runner_lease_cancellation_command_id,
 )
-from atelier2.adapters.dbos.schema import agent_attempts, runs
+from atelier2.adapters.dbos.schema import agent_attempts, run_events, runs
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.dbos.workflow_ids import runner_lease_workflow_id_for
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.file_runner_leases import FileRunnerLeasePublisher
 from atelier2.adapters.free_runner_executor import (
@@ -68,7 +70,7 @@ from atelier2.application.execute_agent_attempt_on_runner import (
     execute_agent_attempt_on_runner,
 )
 from atelier2.contracts.agent_attempts import (
-    TERMINAL_AGENT_ATTEMPT_STATES,
+    AGENT_ATTEMPT_ORDINAL,
     AgentAttemptId,
     AgentAttemptState,
     RunnerInvocationId,
@@ -86,10 +88,19 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.executions import AgentAttemptExecution
+from atelier2.contracts.executions import (
+    AgentAttemptExecution,
+    NodeExecutionId,
+    RunEventKind,
+)
 from atelier2.contracts.runner_leases import RunnerLeaseId
 from atelier2.contracts.runner_manifests import RunnerManifestV1, runner_manifest_id
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.runs import (
+    RunId,
+    RunState,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
 from atelier2.ports.agent_attempts import RunnerTerminalEvidenceStore
 from atelier2.ports.agent_executions import (
     AgentExecutorCarrier,
@@ -104,6 +115,7 @@ from tests.scenarios.runners import (
 )
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
+_AGENT_NODE = "execute"
 _ACCEPT_TIMEOUT_SECONDS = 5.0
 _WAIT_SECONDS = 16.0
 _POLL_SECONDS = 0.025
@@ -135,8 +147,10 @@ _LOCAL_PROCESS_CONFIGURATION = AgentConfigurationRevision(
 # still waiting on a queue (`ENQUEUED`) from one a worker has already been given.
 _workflow_status = sa.table(
     "workflow_status",
+    sa.column("workflow_uuid"),
     sa.column("name"),
     sa.column("status"),
+    sa.column("created_at"),
 )
 _ENQUEUED = "ENQUEUED"
 
@@ -212,6 +226,11 @@ class _DriveTracking:
     active: int = 0
     peak: int = 0
     completed_attempt_ids: list[str] = field(default_factory=list)
+    # The order the slot admitted drives, by run. A queue rather than a flag a
+    # scenario polls: a drive hands its arrival over the moment it has it, so a
+    # scenario waits on the drive itself instead of on a clock.
+    arrivals: queue.Queue[tuple[str, str]] = field(default_factory=queue.Queue)
+    driven_run_ids: list[str] = field(default_factory=list)
     # A drive records its overlap, then holds here until released. Set by
     # default so every test but the three slot proofs runs straight through;
     # those clear it, so exactly one drive is in flight while they read what the
@@ -223,10 +242,12 @@ class _DriveTracking:
     # with its own process writes nothing.
     abandoned: threading.Event = field(default_factory=threading.Event)
 
-    def entered(self) -> None:
+    def entered(self, run_id: str, attempt_id: str) -> None:
         with self.lock:
             self.active += 1
             self.peak = max(self.peak, self.active)
+            self.driven_run_ids.append(run_id)
+        self.arrivals.put((run_id, attempt_id))
 
     def left(self, attempt_id: str) -> None:
         with self.lock:
@@ -339,7 +360,9 @@ class _ScriptedLeaseDriver:
         # stands while it holds the slot: durably prepared, no generation bound
         # yet. The real call replays it idempotently once the hold is released.
         self.store.prepare(execution)
-        self.tracking.entered()
+        self.tracking.entered(
+            execution.request.run_id.value, execution.attempt_id.value
+        )
         try:
             self.tracking.released.wait(timeout=_WAIT_SECONDS)
             if self.tracking.abandoned.is_set():
@@ -485,7 +508,7 @@ def _publish_and_start(
     role: str,
     configuration: AgentConfigurationRevision,
     document: bytes,
-) -> None:
+) -> WorkflowRevisionHash:
     workflow = WorkflowRevision(document)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     started = DbosDurableRunStarter(
@@ -503,6 +526,7 @@ def _publish_and_start(
         )
     )
     assert isinstance(started, DurableRunCreated), started
+    return WorkflowRevisionHash(workflow.revision_hash.value)
 
 
 def wait_for_state(runtime: DbosRuntime, run_id: RunId, state: RunState) -> None:
@@ -581,27 +605,47 @@ def wait_for_waiting_lease_attempts(runtime: DbosRuntime, count: int) -> None:
     )
 
 
-def wait_for_a_prepared_unbound_attempt(runtime: DbosRuntime) -> AgentAttemptId:
-    """Wait until a Runner Attempt stands prepared with no generation bound yet.
+def await_a_drive(tracking: _DriveTracking) -> tuple[RunId, AgentAttemptId]:
+    """Block until the next drive reaches the slot, and say whose it is.
 
-    The window every restart has to survive: the Attempt is durable, so a
-    driverless sweep can see it, and its row still says nothing about the Runner,
-    so only the workflow driving it can say who owes it a move.
+    A handoff, not a poll: the drive publishes its arrival the moment it has
+    durably prepared its Attempt, so a scenario that needs that exact window --
+    the Attempt is real, no Runner generation is bound yet -- waits on the drive
+    rather than on a clock reading the store behind its back.
     """
 
-    deadline = time.monotonic() + _WAIT_SECONDS
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            found = connection.scalar(
-                sa.select(agent_attempts.c.attempt_id).where(
-                    agent_attempts.c.state == AgentAttemptState.PREPARED.value,
-                    agent_attempts.c.runner_manifest_id.is_(None),
-                )
-            )
-        if found is not None:
-            return AgentAttemptId(str(found))
-        time.sleep(_POLL_SECONDS)
-    raise AssertionError("no runner attempt ever reached its prepared, unbound window")
+    try:
+        run_id, attempt_id = tracking.arrivals.get(timeout=_WAIT_SECONDS)
+    except queue.Empty:
+        raise AssertionError("no runner-lease drive ever reached the slot") from None
+    return RunId(run_id), AgentAttemptId(attempt_id)
+
+
+def slot_arrival_order(
+    runtime: DbosRuntime, started: Mapping[RunId, WorkflowRevisionHash]
+) -> list[str]:
+    """The runs whose Attempts reached the slot, in the order the queue took them.
+
+    Read from the queue's own record rather than from the order the scenario
+    started the runs: two runs started back to back reach their Agent node in
+    whichever order DBOS happens to run their node workflows, and it is that --
+    not the start -- that queues them for the slot.
+    """
+
+    ids = {
+        runner_lease_workflow_id_for(
+            NodeExecutionId.for_node(run_id, revision_hash, _AGENT_NODE),
+            AGENT_ATTEMPT_ORDINAL,
+        ): run_id.value
+        for run_id, revision_hash in started.items()
+    }
+    with runtime.engine.connect() as connection:
+        queued = connection.execute(
+            sa.select(_workflow_status.c.workflow_uuid)
+            .where(_workflow_status.c.workflow_uuid.in_(tuple(ids)))
+            .order_by(_workflow_status.c.created_at, _workflow_status.c.workflow_uuid)
+        ).scalars()
+        return [ids[str(workflow_uuid)] for workflow_uuid in queued]
 
 
 def attempt_state(
@@ -616,6 +660,34 @@ def attempt_state(
                     )
                 )
             )
+        )
+
+
+def terminal_events_of(runtime: DbosRuntime, attempt_id: AgentAttemptId) -> int:
+    """How many endings this Attempt was durably given.
+
+    A replayed or re-recovered drive that committed its own ending would show
+    here as a second one; the run would then carry two answers for one Attempt.
+    """
+
+    with runtime.engine.connect() as connection:
+        return int(
+            connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(run_events)
+                .where(
+                    run_events.c.agent_attempt_id == attempt_id.value,
+                    run_events.c.event_kind.in_(
+                        (
+                            RunEventKind.AGENT_COMPLETED.value,
+                            RunEventKind.AGENT_FAILED.value,
+                            RunEventKind.AGENT_CANCELLED.value,
+                            RunEventKind.AGENT_INTERRUPTED.value,
+                        )
+                    ),
+                )
+            )
+            or 0
         )
 
 
@@ -716,14 +788,14 @@ def test_two_concurrent_lease_attempts_both_complete_one_after_another(
     try:
         _publish_catalog(runtime)
         runtime.launch()
-        _publish_and_start(
+        revision_a = _publish_and_start(
             runtime,
             run_a,
             "runner",
             _FREE_RUNNER_CONFIGURATION,
             _free_runner_document("first"),
         )
-        _publish_and_start(
+        revision_b = _publish_and_start(
             runtime,
             run_b,
             "runner",
@@ -741,6 +813,17 @@ def test_two_concurrent_lease_attempts_both_complete_one_after_another(
         wait_for_state(runtime, run_b, RunState.COMPLETED)
         wait_for_drives(tracking, 2)
         assert tracking.peak <= 1
+        # The slot admits its waiting runs in the order they reached it, so a
+        # run that arrives second is not overtaken by one that arrives later --
+        # the property a replacement Attempt sharing this slot rests on.
+        assert tracking.driven_run_ids == slot_arrival_order(
+            runtime, {run_a: revision_a, run_b: revision_b}
+        )
+        # And each Attempt was driven once: the handoff to the slot is not a
+        # second start of work its node workflow had already begun.
+        assert sorted(set(tracking.completed_attempt_ids)) == sorted(
+            tracking.completed_attempt_ids
+        )
     finally:
         tracking.released.set()
         runtime.close()
@@ -795,17 +878,22 @@ def test_waiting_lease_attempts_stall_no_independent_workflow(
         runtime.close()
 
 
-def test_a_restart_leaves_an_attempt_the_runner_slot_is_still_driving(
+def test_a_restart_finishes_an_attempt_the_runner_slot_was_still_driving(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A restart does not end an Attempt the Runner slot still owes a move (#636).
+    """A restart resumes an Attempt in the slot rather than ending it (#636).
 
     Between preparing an Attempt and binding its Runner generation, nothing on
-    the row says which workflow drives it — and the node workflow that handed it
+    the row says which workflow drives it -- and the node workflow that handed it
     to the slot succeeded long before. A restart's driverless sweep has to find
     the slot's own workflow anyway; if it does not, it stops an Attempt whose
     Runner may well be running and writes the invented `INTERRUPTED` that `#540`
     Kind #585 exists to prevent.
+
+    Surviving the sweep is only half the claim, and the weaker half: an Attempt
+    nothing ever drives again is also never terminal. So the restarted process
+    has to carry this one all the way to a completed run, exactly once -- one
+    drive, one ending, one answer.
 
     The deployment is mixed on purpose: the driverless sweep only runs where a
     `LOCAL_PROCESS` key gave Serve a process supervisor to converge with.
@@ -825,21 +913,26 @@ def test_a_restart_leaves_an_attempt_the_runner_slot_is_still_driving(
             _FREE_RUNNER_CONFIGURATION,
             _free_runner_document("mid-window"),
         )
-        attempt_id = wait_for_a_prepared_unbound_attempt(first)
+        driving, attempt_id = await_a_drive(held)
+        assert driving == run_id
+        assert attempt_state(first, attempt_id) is AgentAttemptState.PREPARED
     finally:
         # Closed without releasing: the drive is taken with its process, exactly
         # as a Serve restart mid-Attempt takes it.
         first.close()
 
-    restarted_hold = _DriveTracking(released=threading.Event())
-    restarted = _build_runtime(tmp_path, monkeypatch, restarted_hold, mixed)
+    resumed = _DriveTracking()
+    restarted = _build_runtime(tmp_path, monkeypatch, resumed, mixed)
     try:
         restarted.launch()
-        assert attempt_state(restarted, attempt_id) not in TERMINAL_AGENT_ATTEMPT_STATES
+        wait_for_state(restarted, run_id, RunState.COMPLETED)
+        wait_for_drives(resumed, 1)
+        assert attempt_state(restarted, attempt_id) is AgentAttemptState.SUCCEEDED
+        assert resumed.completed_attempt_ids == [attempt_id.value]
+        assert terminal_events_of(restarted, attempt_id) == 1
     finally:
-        for tracking in (held, restarted_hold):
-            tracking.abandoned.set()
-            tracking.released.set()
+        held.abandoned.set()
+        held.released.set()
         restarted.close()
 
 

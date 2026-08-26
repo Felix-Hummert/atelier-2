@@ -245,18 +245,38 @@ def seed_current_node_attempt(runtime: DbosRuntime, run: RunId, ordinal: int) ->
     return driving_workflow_ids(attempt)[0]
 
 
-def seed_workflow_status(runtime: DbosRuntime, workflow_id: str, status: str) -> None:
+def seed_workflow_status(
+    runtime: DbosRuntime,
+    workflow_id: str,
+    status: str,
+    *,
+    application_version: str | None = None,
+) -> None:
     """Leave a workflow in the durable status a crash or a finish leaves.
 
     The durable runtime owns this table; a test that wants to ask about a
     workflow left mid-flight by a crash cannot reach that status by running one.
+
+    The row carries the version that wrote it, because recovery does: DBOS
+    resumes only workflows of the version it is running, so a scan asking whether
+    anything still drives a run reads a retired row as dead. This seeds the
+    runtime's own version unless a scenario names that retired case.
     """
     with runtime.engine.begin() as connection:
         connection.execute(
             sa.text(
                 "INSERT INTO workflow_status "
-                "(workflow_uuid, status, created_at, updated_at, priority) "
-                "VALUES (:workflow_id, :status, 0, 0, 0)"
+                "(workflow_uuid, status, application_version, "
+                "created_at, updated_at, priority) "
+                "VALUES (:workflow_id, :status, :application_version, 0, 0, 0)"
             ),
-            {"workflow_id": workflow_id, "status": status},
+            {
+                "workflow_id": workflow_id,
+                "status": status,
+                "application_version": (
+                    runtime.settings.application_version
+                    if application_version is None
+                    else application_version
+                ),
+            },
         )

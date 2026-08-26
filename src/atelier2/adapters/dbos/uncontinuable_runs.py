@@ -357,24 +357,46 @@ def _no_workflow_will_move_this_run(
 ) -> bool:
     """Whether nothing is ever going to move this run again.
 
-    Two questions, in order, over the same set of workflows. Was any of them ever
-    durably started -- did this run get anywhere at all? A run whose first
-    workflow has not been picked up yet is young, not dead, and every id derived
-    for it matches no row. And of the ones that were started, is any still one
-    recovery will resume? Only a run that got somewhere and has no live carrier
-    left is a dead gap.
-
-    Asking "was anything started" rather than "did an attempt succeed" is what
-    catches a carrier that died or was retired before it prepared its first
-    Attempt (#636): a Runner slot workflow left `ENQUEUED` by a version that will
-    never run again has no attempt to its name, and the run it holds would
-    otherwise stand `STARTED` for as long as the store exists.
+    Two questions, in order. Did this run ever get anywhere -- so that its
+    silence is an ending rather than a beginning? And of whatever carried it, is
+    anything still one recovery will resume? Only a run that got somewhere and
+    has no live carrier left is a dead gap.
     """
 
     workflow_ids = _gap_workflow_ids(connection, record)
-    if not minted_workflow_ids(connection, workflow_ids):
+    if not _the_run_got_somewhere(connection, record, workflow_ids):
         return False
     return not live_driver_workflow_ids(connection, workflow_ids, application_version)
+
+
+def _the_run_got_somewhere(
+    connection: Any, record: Mapping[Any, Any], workflow_ids: Iterable[str]
+) -> bool:
+    """Whether anything ever carried this run, in either of the two ways it can show.
+
+    An attempt that succeeded proves it. So does a workflow genuinely minted for
+    the run, and that second proof is the only one a carrier leaves when it dies
+    or is retired before preparing its first Attempt (#636): a Runner slot
+    workflow left `ENQUEUED` by a version that will never run again has no
+    attempt to its name, and demanding one would leave the run `STARTED` for as
+    long as the store exists.
+
+    A run nothing has carried yet has neither, which is exactly the answer
+    wanted: every id derived for it is speculative and matches no row, so a run
+    whose first workflow has not been picked up is young rather than dead.
+    """
+
+    succeeded = connection.scalar(
+        sa.select(1)
+        .select_from(agent_attempts)
+        .where(
+            agent_attempts.c.run_id == str(record["run_id"]),
+            agent_attempts.c.state == AgentAttemptState.SUCCEEDED.value,
+        )
+    )
+    if succeeded is not None:
+        return True
+    return bool(minted_workflow_ids(connection, workflow_ids))
 
 
 def _gap_workflow_ids(connection: Any, record: Mapping[Any, Any]) -> tuple[str, ...]:
