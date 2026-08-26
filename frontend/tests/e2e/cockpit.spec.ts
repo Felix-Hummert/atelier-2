@@ -25,6 +25,22 @@ const TEMPORARILY_UNAVAILABLE_PROBLEM = {
   detail: "the durable store is unreachable"
 } as const;
 
+/**
+ * This suite shares one server across every spec file (#742): a run another
+ * file already started answers a real, unmocked read this test counts, so an
+ * exact request-count proof needs the durable store back at its cold-boot
+ * baseline first, instead of depending on running before every other spec in
+ * the file listing.
+ */
+async function resetToKnownStore(page: Page): Promise<void> {
+  const reset = await page.request.post("/__e2e/recompose?reset=true");
+  expect(reset.status()).toBe(202);
+  const expectedGeneration = await reset.text();
+  await expect(async () => {
+    expect(await (await page.request.get("/__e2e/generation")).text()).toBe(expectedGeneration);
+  }).toPass({ timeout: 20_000 });
+}
+
 // Every executable V3 agent node declares exactly one output and the schema it
 // must satisfy: that is `single-json-output/v1`, the one output shape a run
 // enforces. Where a test is about something else, it pins the schema that admits
@@ -341,6 +357,7 @@ test("opens the project level from a cold link and survives a reload", async ({ 
 // The identifier stays "the-studio-…" (acceptance/440): the room whose read it
 // measures is the Workbench since ADR 0019 retired the Board.
 test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read): the Workbench recovers one retained three-list-plus-catalog read", async ({ page }) => {
+  await resetToKnownStore(page);
   const runListPath = "/atelier/api/v1/runs";
   const catalogPath = "/atelier/api/v1/workflow-revisions";
   // The Workbench reads only the non-terminal run states -- what still moves
@@ -367,10 +384,29 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
     }
   });
 
-  const expectOnlyRoomRead = (): void => {
-    const runRequests = observed.filter(({ path }) => path === runListPath);
-    const catalogRequests = observed.filter(({ path }) => path === catalogPath);
-    expect(observed).toHaveLength(runRequests.length + catalogRequests.length);
+  // The two boot-baseline fixture runs (#742) sit in WAITING_RECONCILIATION,
+  // so once a real (unmocked) run-list read succeeds, the room's own pinned-
+  // decision hold may react to them with its own detail and agent-
+  // configuration reads -- legitimate and independent of the list-read retry
+  // this test proves, but arriving at a moment this test cannot observe or
+  // force, since it is the live attention hold's own async timing, not a
+  // step this test drives. Named and excluded here by an allow-list of exact
+  // paths, not by count, so the proof stays about what this test itself
+  // drives regardless of whether the hold has reacted yet.
+  const pinnedDecisionPaths = [
+    `${runListPath}/${foundReference}`,
+    `${runListPath}/${absentReference}`,
+    "/atelier/api/v1/agent-configuration-revisions"
+  ];
+
+  const expectOnlyRoomRead = ({ pinnedDecisionReads = false } = {}): void => {
+    const recognized = pinnedDecisionReads
+      ? observed.filter(({ path }) => pinnedDecisionPaths.includes(path))
+      : [];
+    const unrecognized = observed.filter((request) => !recognized.includes(request));
+    const runRequests = unrecognized.filter(({ path }) => path === runListPath);
+    const catalogRequests = unrecognized.filter(({ path }) => path === catalogPath);
+    expect(unrecognized).toHaveLength(runRequests.length + catalogRequests.length);
     expect(runRequests.every(({ method }) => method === "GET")).toBe(true);
     expect(runRequests.map(({ state }) => state).sort()).toEqual(expectedStates);
     expect(catalogRequests).toHaveLength(1);
@@ -419,7 +455,7 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
   // One freshness model, once confirmed: no Refresh or Retry control remains
   // (#532) -- the redundant permanent control this lane removes.
   await expect(page.getByRole("button", { name: /workbench runs/ })).toHaveCount(0);
-  expectOnlyRoomRead();
+  expectOnlyRoomRead({ pinnedDecisionReads: true });
   expect(page.url()).toBe(roomUrl);
 });
 
