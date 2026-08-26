@@ -183,6 +183,19 @@ ordinary document -- and the place where two nodes can contradict each other
 about what that one occupation should be.
 """
 
+CONTRADICTED_ROLE_STATEMENTS = (
+    ("difficulty", "difficulty: 3", "difficulty: 1"),
+    ("kind", "kind: build", "kind: review"),
+    ("family_differs_from", "family_differs_from: writer", "family_differs_from: poet"),
+    ("model", "model: claude-opus-5", "model: grok-4.6"),
+)
+"""Every form of the role grammar, written twice over one role and disagreeing.
+
+The contradiction is what each case is about, so the family rule names roles
+nobody declares on purpose: a document that cannot say what it asks of a role is
+refused for saying two things, before anything asks whether either could hold.
+"""
+
 
 GREEN_CONDITION = (
     "{output: rehearsal, schema: {ref: review_verdict, revision: schema-verdict}}"
@@ -708,7 +721,21 @@ def test_a_parsed_v3_document_is_deeply_immutable() -> None:
         parsed.node("implement").id = "renamed"
 
 
-REFUSALS: dict[str, tuple[bytes, WorkflowRefusalReason, str | None, str]] = {
+type RefusalCase = tuple[bytes, WorkflowRefusalReason, str | None, str]
+
+CONTRADICTED_ROLE_REFUSALS: dict[str, RefusalCase] = {
+    f"one-role-asking-for-two-{field}-statements": (
+        with_node_line(
+            "code_review", second, with_node_line("implement", first, ONE_ROLE_TWICE)
+        ),
+        WorkflowRefusalReason.INVALID_VALUE,
+        "code_review",
+        field,
+    )
+    for field, first, second in CONTRADICTED_ROLE_STATEMENTS
+}
+
+REFUSALS: dict[str, RefusalCase] = {
     "unknown-document-field": (
         DOCUMENT + b"owner: felix\n",
         WorkflowRefusalReason.UNKNOWN_FIELD,
@@ -1133,37 +1160,7 @@ REFUSALS: dict[str, tuple[bytes, WorkflowRefusalReason, str | None, str]] = {
         "implement",
         "family_differs_from",
     ),
-    "one-role-asking-for-two-difficulties": (
-        with_node_line(
-            "code_review",
-            "difficulty: 1",
-            with_node_line("implement", "difficulty: 3", ONE_ROLE_TWICE),
-        ),
-        WorkflowRefusalReason.INVALID_VALUE,
-        "code_review",
-        "difficulty",
-    ),
-    "one-role-asking-for-two-model-pins": (
-        with_node_line(
-            "code_review",
-            "model: grok-4.6",
-            with_node_line("implement", "model: claude-opus-5", ONE_ROLE_TWICE),
-        ),
-        WorkflowRefusalReason.INVALID_VALUE,
-        "code_review",
-        "model",
-    ),
-    "one-role-asked-to-build-and-to-review": (
-        with_node_line(
-            "code_review",
-            "kind: review",
-            with_node_line("implement", "kind: build", ONE_ROLE_TWICE),
-        ),
-        WorkflowRefusalReason.INVALID_VALUE,
-        "code_review",
-        "kind",
-    ),
-}
+} | CONTRADICTED_ROLE_REFUSALS
 
 
 def refusal_of(document: bytes) -> WorkflowRefusal:
@@ -1471,6 +1468,10 @@ ROLE_DECLARATIONS: dict[str, tuple[bytes, tuple[DeclaredRole, ...]]] = {
     "one role carried by two nodes, one of them silent": (
         with_node_line("implement", "difficulty: 1", ONE_ROLE_TWICE),
         (DeclaredRole("builder", 1, DEFAULT_ROLE_KIND, None, None),),
+    ),
+    "a role whose pin is written as nothing": (
+        with_node_line("implement", "model: null"),
+        (SILENT_BUILDER, SILENT_REVIEWER),
     ),
 }
 
@@ -1841,9 +1842,17 @@ NOT_YET_EXECUTABLE: dict[str, bytes] = {
     # The role grammar and this guard land together: a start resolves a
     # difficulty against configuration that does not exist yet, so a document
     # naming one is authorable and refused rather than accepted and ignored.
+    # Authorship is what the guard reads, never the value: writing the default
+    # invokes the same unbuilt contract as writing anything else, and an
+    # authored `model: null` is the statement "no pin" rather than an absence.
     "an authored difficulty": ONE_AGENT_DOCUMENT + b"    difficulty: 3\n",
+    "an authored difficulty that is the default": ONE_AGENT_DOCUMENT
+    + b"    difficulty: 2\n",
     "an authored role kind": ONE_AGENT_DOCUMENT + b"    kind: review\n",
+    "an authored role kind that is the default": ONE_AGENT_DOCUMENT
+    + b"    kind: build\n",
     "an authored model pin": ONE_AGENT_DOCUMENT + b"    model: claude-opus-5\n",
+    "an authored empty model pin": ONE_AGENT_DOCUMENT + b"    model: null\n",
     "an authored family rule": TWO_AGENT_CHAIN + b"    family_differs_from: builder\n",
     "a fan-out": TWO_AGENT_CHAIN
     + b"""  - id: document

@@ -10,6 +10,7 @@ from pydantic import (
     ConfigDict,
     Discriminator,
     Field,
+    StringConstraints,
     Tag,
     ValidationError,
     field_validator,
@@ -94,6 +95,16 @@ def _declared_verdict(value: object) -> object:
 
 
 DeclaredVerdict = BeforeValidator(_declared_verdict)
+
+ExactModelId = Annotated[str, StringConstraints(pattern=r"^\S+$")]
+"""One provider model id as written, never an alias and never a sentence.
+
+A pin is sent to a provider as written, so `newest opus` would either be refused
+there or resolve to whatever that provider currently means by it -- and the
+receipt's two ids, the requested and the confirmed, could no longer be compared.
+The shape is part of the published grammar rather than a validator behind it, so
+a consumer authoring a document is told the rule before writing one.
+"""
 
 
 def _declared_difficulty(value: object) -> object:
@@ -348,7 +359,7 @@ class AgentNodeV3(_NodeV3):
     difficulty: Annotated[RoleDifficulty, DeclaredDifficulty] = DEFAULT_ROLE_DIFFICULTY
     kind: RoleKind = DEFAULT_ROLE_KIND
     family_differs_from: NonemptyString | None = None
-    model: NonemptyString | None = None
+    model: ExactModelId | None = None
     profile: VersionedReference | None = None
     skills: Annotated[tuple[VersionedReference, ...], DeclaredSequence] = ()
     tools: Annotated[tuple[VersionedReference, ...], DeclaredSequence] = ()
@@ -369,17 +380,6 @@ class AgentNodeV3(_NodeV3):
         return _bounded_authored_text(
             instruction, "instruction", MAXIMUM_INSTRUCTION_BYTES
         )
-
-    @field_validator("model")
-    @classmethod
-    def exact_pinned_model(cls, model: str) -> str:
-        # A pin is sent to a provider as written, so an alias ("newest opus") or
-        # a sentence would either be refused there or, worse, resolve to
-        # whatever that provider currently means by it -- and the receipt's two
-        # ids (#434) could no longer be compared. One token, no whitespace.
-        if model.split() != [model]:
-            raise ValueError("model pins one exact provider id, never an alias")
-        return model
 
 
 class DeterministicNodeV3(_NodeV3):
