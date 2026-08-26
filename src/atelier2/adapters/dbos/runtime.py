@@ -29,7 +29,7 @@ from atelier2.adapters.dbos.host_configuration import (
     append_project_root,
     project_root_for,
 )
-from atelier2.adapters.dbos.names import QUEUE_NAME
+from atelier2.adapters.dbos.names import QUEUE_NAME, RUNNER_LEASE_QUEUE_NAME
 from atelier2.adapters.dbos.queue_projection_store import DbosQueueProjectionStore
 from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 from atelier2.adapters.dbos.runner_session_core import DbosRunnerSessionCore
@@ -1108,6 +1108,40 @@ def _dbos_config(settings: DbosRuntimeSettings, engine: Engine) -> DBOSConfig:
     }
 
 
+def _register_queues() -> None:
+    """The two queues a launched runtime polls, and what each admits at a time.
+
+    The run queue admits as much as there are workers. The Runner-lease queue
+    admits one Attempt: `RUNNER_LEASE` sessions share one fixed Core listener
+    port (`atelier2.adapters.runner_tls.CORE_SESSION_PORT`), so at most one
+    Runner Attempt may ever be in flight (`#540` C-3.6 D-8b, D1). That bound
+    serializes rather than fails a second arrival -- no run may end
+    unsuccessfully only because another Runner Attempt was already running --
+    and every run waiting for the slot is a queue row rather than a blocked DBOS
+    worker, so a second lease-carried run cannot starve the pool the whole
+    process shares (#636).
+
+    Both are polled rather than notified, because this deployment runs without
+    LISTEN/NOTIFY, and polled often enough that a freed place is taken without an
+    operator-visible pause. Registering on every launch is deliberate: the
+    configuration lives in the system database, and this is the process that owns
+    what it should say.
+    """
+
+    polling_interval_sec = 0.05
+    DBOS.register_queue(
+        QUEUE_NAME,
+        polling_interval_sec=polling_interval_sec,
+        on_conflict="always_update",
+    )
+    DBOS.register_queue(
+        RUNNER_LEASE_QUEUE_NAME,
+        concurrency=1,
+        polling_interval_sec=polling_interval_sec,
+        on_conflict="always_update",
+    )
+
+
 class _DbosProcessOwner:
     """Owner of the one DBOS global, canonical engine, and workflow registry a
     process may hold.
@@ -1373,9 +1407,7 @@ class _DbosProcessOwner:
     def _start(bound: _BoundRuntime) -> None:
         DBOS(config=_dbos_config(bound.settings, bound.engine))
         DBOS.launch()
-        DBOS.register_queue(
-            QUEUE_NAME, polling_interval_sec=0.05, on_conflict="always_update"
-        )
+        _register_queues()
         bound.storage_ready = True
 
 

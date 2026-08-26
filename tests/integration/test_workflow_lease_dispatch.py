@@ -8,12 +8,14 @@ published run, and a poll for the durable state an operator would read --
 with only the Runner-lease session's own socket/TLS transport scripted, the
 same layering `tests/integration/test_execute_agent_attempt_on_runner.py`
 already established for the driver underneath it.
+
+The single Runner slot is proven here too (`#636`): one Attempt runs at a time,
+and the ones waiting their turn hold a queue row rather than a DBOS worker.
 """
 
 from __future__ import annotations
 
 import json
-import logging
 import threading
 import time
 from collections.abc import Callable
@@ -28,12 +30,17 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+from dbos import DBOSConfig
 from sqlalchemy.engine import Engine
 
 import atelier2.adapters.dbos.runtime as dbos_runtime
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.names import (
+    NODE_WORKFLOW_NAME,
+    RUNNER_LEASE_WORKFLOW_NAME,
+)
 from atelier2.adapters.dbos.runner_session_core import DbosRunnerSessionCore
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
@@ -119,6 +126,16 @@ _LOCAL_PROCESS_CONFIGURATION = AgentConfigurationRevision(
 )
 
 
+# DBOS owns this table; these scenarios read it only to tell a workflow that is
+# still waiting on a queue (`ENQUEUED`) from one a worker has already been given.
+_workflow_status = sa.table(
+    "workflow_status",
+    sa.column("name"),
+    sa.column("status"),
+)
+_ENQUEUED = "ENQUEUED"
+
+
 def _self_signed_identity(directory: Path) -> None:
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test-core")])
@@ -187,10 +204,10 @@ class _DriveTracking:
     peak: int = 0
     completed_attempt_ids: list[str] = field(default_factory=list)
     # A drive records its overlap, then holds here until released. Set by
-    # default so every test but the concurrency proof runs straight through;
-    # that proof clears it, waits for the second attempt to log that it is
-    # blocked on the runner slot, and only then sets it -- so the slot, not a
-    # chance of DBOS serialization, is what keeps `peak` at one.
+    # default so every test but the two slot proofs runs straight through; those
+    # clear it, so exactly one drive is in flight while they read what the rest
+    # of the Attempts are doing -- the slot, not a chance of DBOS serialization,
+    # is then what keeps `peak` at one.
     released: threading.Event = field(default_factory=_released_event)
 
     def entered(self) -> None:
@@ -352,6 +369,25 @@ def _scripted_driver_factory(
     return build
 
 
+def _bound_worker_pool(monkeypatch: pytest.MonkeyPatch, workers: int) -> None:
+    """Give DBOS a countable worker pool for the length of one scenario.
+
+    DBOS's default pool is unbounded, which hides what a lease node does while it
+    waits: a run that holds a worker and a run that holds a queue row look the
+    same until the pool runs out. Naming the pool size makes "a waiting run holds
+    no worker" something a scenario can assert instead of hope for.
+    """
+
+    unbounded = dbos_runtime._dbos_config
+
+    def bounded(settings: DbosRuntimeSettings, engine: Engine) -> DBOSConfig:
+        config = unbounded(settings, engine)
+        config["max_executor_threads"] = workers
+        return config
+
+    monkeypatch.setattr(dbos_runtime, "_dbos_config", bounded)
+
+
 def _build_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -484,22 +520,64 @@ def wait_for_drives(tracking: _DriveTracking, count: int) -> None:
     )
 
 
-def wait_for_awaiting_runner_slot(caplog: pytest.LogCaptureFixture) -> None:
-    """A second Runner-lease attempt logging that it is blocked on the runner
-    slot -- the proof the slot itself, not a chance of DBOS running the two
-    node workflows one at a time, is what serialized the two drives."""
+def _count_workflows(runtime: DbosRuntime, name: str, *, enqueued: bool) -> int:
+    with runtime.engine.connect() as connection:
+        return int(
+            connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(_workflow_status)
+                .where(
+                    _workflow_status.c.name == name,
+                    (
+                        _workflow_status.c.status == _ENQUEUED
+                        if enqueued
+                        else _workflow_status.c.status != _ENQUEUED
+                    ),
+                )
+            )
+            or 0
+        )
+
+
+def wait_for_waiting_lease_attempts(runtime: DbosRuntime, count: int) -> None:
+    """Wait until `count` Runner-lease attempts are waiting their turn durably.
+
+    A waiting attempt is an `ENQUEUED` row on the lease queue -- the proof the
+    single lease slot, not a chance of DBOS running the node workflows one at a
+    time, is what serializes the drives, and the proof it serializes them without
+    holding a worker each.
+    """
 
     deadline = time.monotonic() + _WAIT_SECONDS
+    waiting = 0
     while time.monotonic() < deadline:
-        if any(
-            getattr(record, "event", None) == "agent_attempt_awaiting_runner_slot"
-            for record in caplog.records
-        ):
+        waiting = _count_workflows(runtime, RUNNER_LEASE_WORKFLOW_NAME, enqueued=True)
+        if waiting >= count:
             return
         time.sleep(_POLL_SECONDS)
     raise AssertionError(
-        "no second attempt ever blocked on the runner slot; the slot did not "
-        "serialize the two concurrent drives"
+        f"only {waiting} runner-lease attempt(s) waited on the lease queue, "
+        f"expected {count}"
+    )
+
+
+def wait_for_started_nodes(runtime: DbosRuntime, count: int) -> None:
+    """Wait until DBOS has handed `count` node workflows to a worker.
+
+    A run still `ENQUEUED` on the run queue has neither parked a worker nor
+    reached the lease queue, so a scenario that counts workers has to wait for
+    this before it can conclude anything from what the pool has left.
+    """
+
+    deadline = time.monotonic() + _WAIT_SECONDS
+    started = 0
+    while time.monotonic() < deadline:
+        started = _count_workflows(runtime, NODE_WORKFLOW_NAME, enqueued=False)
+        if started >= count:
+            return
+        time.sleep(_POLL_SECONDS)
+    raise AssertionError(
+        f"only {started} node workflow(s) left the run queue, expected {count}"
     )
 
 
@@ -568,10 +646,9 @@ def test_a_local_process_node_still_runs_the_process_path_unchanged(
 def test_two_concurrent_lease_attempts_both_complete_one_after_another(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     # A cleared release holds the first drive open, so the second attempt has
-    # to reach the runner slot and block on it while the first is in flight.
+    # to reach the lease queue and wait there while the first is in flight.
     tracking = _DriveTracking(released=threading.Event())
     run_a = RunId("lease-dispatch/concurrent-a")
     run_b = RunId("lease-dispatch/concurrent-b")
@@ -581,32 +658,80 @@ def test_two_concurrent_lease_attempts_both_complete_one_after_another(
     try:
         _publish_catalog(runtime)
         runtime.launch()
-        with caplog.at_level(logging.INFO, logger="atelier2"):
-            _publish_and_start(
-                runtime,
-                run_a,
-                "runner",
-                _FREE_RUNNER_CONFIGURATION,
-                _free_runner_document("first"),
-            )
-            _publish_and_start(
-                runtime,
-                run_b,
-                "runner",
-                _FREE_RUNNER_CONFIGURATION,
-                _free_runner_document("second"),
-            )
-            # The proof: with one drive held open, the second attempt must log
-            # that it is waiting on the runner slot before either can finish.
-            # Deleting the slot lock lets both drives run at once, so this log
-            # never appears and this wait fails -- `peak <= 1` alone would pass
-            # vacuously if DBOS happened to run the two node workflows serially.
-            wait_for_awaiting_runner_slot(caplog)
-            tracking.released.set()
-            wait_for_state(runtime, run_a, RunState.COMPLETED)
-            wait_for_state(runtime, run_b, RunState.COMPLETED)
-            wait_for_drives(tracking, 2)
+        _publish_and_start(
+            runtime,
+            run_a,
+            "runner",
+            _FREE_RUNNER_CONFIGURATION,
+            _free_runner_document("first"),
+        )
+        _publish_and_start(
+            runtime,
+            run_b,
+            "runner",
+            _FREE_RUNNER_CONFIGURATION,
+            _free_runner_document("second"),
+        )
+        # The proof: with one drive held open, the second attempt must be waiting
+        # on the lease queue before either can finish. Widening the queue lets
+        # both drives run at once, so nothing ever waits and this fails --
+        # `peak <= 1` alone would pass vacuously if DBOS happened to run the two
+        # node workflows serially.
+        wait_for_waiting_lease_attempts(runtime, 1)
+        tracking.released.set()
+        wait_for_state(runtime, run_a, RunState.COMPLETED)
+        wait_for_state(runtime, run_b, RunState.COMPLETED)
+        wait_for_drives(tracking, 2)
         assert tracking.peak <= 1
+    finally:
+        tracking.released.set()
+        runtime.close()
+
+
+def test_waiting_lease_attempts_stall_no_independent_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Waiting for the single Runner slot costs a queue row, not a worker (#636).
+
+    Every lease-carried run but the one in flight waits on the lease queue, so
+    DBOS's whole worker pool stays free: an independent local-process run started
+    while they all wait still reaches `COMPLETED`. When waiting meant blocking on
+    an in-process lock, each waiting run held one worker for the full duration of
+    the attempt ahead of it, and the independent run never got one.
+    """
+
+    # One worker per lease-carried run: under the defect the pool is exactly
+    # exhausted -- one drive in flight, the rest blocked -- with none left over.
+    workers = 4
+    tracking = _DriveTracking(released=threading.Event())
+    _bound_worker_pool(monkeypatch, workers)
+    runtime = _build_runtime(
+        tmp_path,
+        monkeypatch,
+        tracking,
+        (_lease_registration(True), _local_process_registration(True)),
+    )
+    try:
+        _publish_catalog(runtime)
+        runtime.launch()
+        for ordinal in range(workers):
+            _publish_and_start(
+                runtime,
+                RunId(f"lease-dispatch/waiting-{ordinal}"),
+                "runner",
+                _FREE_RUNNER_CONFIGURATION,
+                _free_runner_document(f"waiting {ordinal}"),
+            )
+        wait_for_started_nodes(runtime, workers)
+        independent = RunId("lease-dispatch/independent")
+        _publish_and_start(
+            runtime,
+            independent,
+            "reviewer",
+            _LOCAL_PROCESS_CONFIGURATION,
+            _LOCAL_PROCESS_DOCUMENT,
+        )
+        wait_for_state(runtime, independent, RunState.COMPLETED)
     finally:
         tracking.released.set()
         runtime.close()
