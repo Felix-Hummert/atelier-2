@@ -40,6 +40,9 @@ class _SourceAnswering:
     def open_items(self) -> ObserveOpenTrackerItemsResult:
         return self.answer
 
+    def snapshot(self, reference: object) -> Never:
+        raise AssertionError("an import never reads one item's bytes")
+
 
 @dataclass
 class _QueueRecording:

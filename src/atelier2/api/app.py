@@ -292,7 +292,13 @@ def bound_use_cases(
         ),
         start_published_run=lambda run_id, revision_hash, bindings, orders=(): (
             start_published_run(
-                run_id, revision_hash, bindings, ports.published_run_starter, orders
+                run_id,
+                revision_hash,
+                bindings,
+                ports.published_run_starter,
+                orders,
+                served_project_id,
+                ports.tracker_item_source,
             )
         ),
         answer_wait=lambda run_id, revision_hash, node_id, answer_bytes: (

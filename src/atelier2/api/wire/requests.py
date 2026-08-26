@@ -179,7 +179,25 @@ class ArtifactOrderResource(ApiModel):
     artifact_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
-AnyStartRunOrderResource = InlineOrderResource | ArtifactOrderResource
+class WorkItemOrderResource(ApiModel):
+    """One order whose value the start reads from the project's own tracker.
+
+    A third shape for the same reason the second one exists: a caller says
+    which item, never what it says. The bytes the run pins are the observed
+    revision the start read at that moment (ADR 0010 §5) -- the platform's
+    own, not the caller's -- so two starts naming the same item on either side
+    of an edit are honestly two different runs.
+    """
+
+    name: str = Field(min_length=1)
+    work_item: str = Field(
+        min_length=1, max_length=MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
+    )
+
+
+AnyStartRunOrderResource = (
+    InlineOrderResource | ArtifactOrderResource | WorkItemOrderResource
+)
 
 
 class StartRunRequestResourceV3(ApiModel):
