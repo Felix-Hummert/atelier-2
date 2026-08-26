@@ -37,6 +37,10 @@ id = "an-unusable-scratch-root-is-refused-before-the-server-exists"
 text = "A scratch root that is unusable, shared, owned by somebody else, or replaced after the server bound it is refused by name without mutating anything, and a refusal leaves no descriptor behind."
 
 [[sentence]]
+id = "an-empty-git-directory-above-a-scratch-root-is-not-a-worktree"
+text = "A scratch root is not refused as lying inside a git worktree because an empty `.git` directory stands on a parent -- git does not treat that leftover as a repository -- and looking for a worktree does not create `.git` markers on any parent."
+
+[[sentence]]
 id = "an-occupied-attempt-path-starts-no-provider-and-survives-everything-after"
 text = "A path where an attempt's directory would go but the operator's own files already stand refuses the attempt and starts no provider, and it survives untouched through the cancellation and the restart that follow."
 

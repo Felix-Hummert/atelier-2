@@ -324,18 +324,30 @@ class GrokSubscriptionSettings:
             raise ValueError("the Grok executable search path must be nonempty")
 
 
-_BARE_STRING_SCHEMA_FIELDS = frozenset({"type", "minLength", "maxLength"})
+_BARE_STRING_SCHEMA_FIELDS = frozenset(
+    {
+        "$schema",
+        "$id",
+        "title",
+        "description",
+        "type",
+        "minLength",
+        "maxLength",
+        "pattern",
+    }
+)
 
 
 def _is_bare_string_schema(document: bytes | None) -> bool:
-    """A plain `type: string` schema, optionally with length bounds.
+    """A string schema with only documentary, length, or pattern keywords.
 
-    Measured 19.08.2026 on grok 1.0.4 / grok-4.6 (#392): sending this shape as
-    `--json-schema` forces one JSON document. The model fills it with an
-    announcement or trails `<|eos|>`. `structuredOutput` is the parsed `text`,
-    not a later answer — Extra-data leaves the twin absent
+    Measured 19.08.2026 on grok 1.0.4 / grok-4.6 (#392): a plain string schema
+    sent as `--json-schema` forces one JSON document. The model fills it with
+    an announcement or trails `<|eos|>`. `structuredOutput` is the parsed
+    `text`, not a later answer — Extra-data leaves the twin absent
     (`structuredOutputError`); an announcement twin is the same sentence.
-    Those bytes stay off the flag. Object schemas still travel.
+    These string schemas stay off the flag and the Atelier schema seam judges
+    any pattern. Object schemas still travel.
     """
 
     if document is None:

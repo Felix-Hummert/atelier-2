@@ -449,8 +449,19 @@ def root_below_a_symlink(root: Path) -> Path:
 
 
 def root_in_a_git_worktree(root: Path) -> Path:
-    (root / ".git").mkdir()
-    scratch = root / "scratch"
+    """A checkout-shaped parent, never the temp root itself.
+
+    The marker is a real git directory (`HEAD` present), nested under a
+    subdirectory this test owns. An empty `.git` on `root` itself would, if
+    `root` were ever the process temp directory, leave `/tmp/.git` behind and
+    make every later scratch root under `/tmp` look like a worktree.
+    """
+
+    checkout = root / "checkout"
+    git_directory = checkout / ".git"
+    git_directory.mkdir(parents=True)
+    (git_directory / "HEAD").touch()
+    scratch = checkout / "scratch"
     scratch.mkdir(mode=SCRATCH_ROOT_MODE)
     return scratch
 
@@ -523,6 +534,41 @@ def test_an_unusable_scratch_root_is_refused_without_mutating_it(
         LocalAgentAttemptWorkspaceOwner(scratch_root)
 
     assert sorted(str(path) for path in tmp_path.rglob("*")) == before
+
+
+@pytest.mark.proves("an-empty-git-directory-above-a-scratch-root-is-not-a-worktree")
+def test_an_empty_git_directory_above_a_scratch_root_is_not_a_worktree(
+    tmp_path: Path,
+) -> None:
+    """A leftover empty `.git` on `/tmp` must not poison every pytest scratch root."""
+
+    (tmp_path / ".git").mkdir()
+    owner = agent_workspace_owner(tmp_path / "below")
+    owner.close()
+
+
+@pytest.mark.proves("an-empty-git-directory-above-a-scratch-root-is-not-a-worktree")
+def test_attesting_a_scratch_root_does_not_create_git_markers_on_its_ancestors(
+    tmp_path: Path,
+) -> None:
+    """The parent walk reads `.git`; it never creates the marker it is looking for."""
+
+    scratch = agent_scratch_root(tmp_path / "nested")
+    before = tuple(
+        (
+            ancestor,
+            (ancestor / ".git").exists(),
+            (ancestor / ".git").is_symlink(),
+        )
+        for ancestor in (scratch, *scratch.parents)
+    )
+
+    LocalAgentAttemptWorkspaceOwner(scratch).close()
+
+    for ancestor, existed, linked in before:
+        marker = ancestor / ".git"
+        assert marker.exists() is existed
+        assert marker.is_symlink() is linked
 
 
 @pytest.mark.proves("an-unusable-scratch-root-is-refused-before-the-server-exists")
