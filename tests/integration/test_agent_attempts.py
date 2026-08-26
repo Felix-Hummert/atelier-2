@@ -20,6 +20,7 @@ from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
     agent_receipts_v2,
+    artifacts,
     run_events,
     runs,
 )
@@ -32,6 +33,13 @@ from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttempt, AgentAttemptFailureCode
+from atelier2.contracts.agent_transcripts import (
+    AssistantTurn,
+    AttemptTranscript,
+    ToolCalled,
+    TranscriptEvent,
+    UnrecognisedProviderOutput,
+)
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -507,6 +515,169 @@ def test_current_attempt_projection_maps_armed_and_rejects_broken_id(
             durable_queries(runtime.engine).get_run(request.run_id),
             QueryDurableStateCorrupt,
         )
+    finally:
+        runtime.close()
+
+
+_DECODED_STEPS = (
+    ToolCalled("Read", '{"file_path":"AGENTS.md"}'),
+    AssistantTurn("The file names the policy."),
+)
+_UNREADABLE_OUTPUT = (UnrecognisedProviderOutput("fatal: the model never answered"),)
+
+
+@pytest.mark.parametrize(
+    ("verdict", "steps"),
+    [
+        pytest.param(
+            AgentExecutionResult(b"done", AttemptTranscript.of(_DECODED_STEPS)),
+            _DECODED_STEPS,
+            id="a success keeps what reached the answer",
+        ),
+        pytest.param(
+            AgentExecutionFailure(
+                AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+                AttemptTranscript.of(_UNREADABLE_OUTPUT),
+            ),
+            _UNREADABLE_OUTPUT,
+            id="a failure keeps what was printed instead of an answer",
+        ),
+        pytest.param(
+            AgentExecutionResult(b"done"),
+            None,
+            id="an executor that decoded nothing keeps nothing",
+        ),
+    ],
+)
+def test_a_terminal_attempt_names_the_transcript_its_executor_decoded(
+    tmp_path: Path,
+    verdict: AgentExecutionResult | AgentExecutionFailure,
+    steps: tuple[TranscriptEvent, ...] | None,
+) -> None:
+    """The steps reach the same write that ends the attempt, or nothing does.
+
+    Both endings are asked, because the failing one is the reason this exists:
+    an exit code beside an empty standard error was the whole account of a real
+    run (#733). The pointer is resolved rather than compared to a hash spelled
+    here -- what the attempt must name is the bytes the store really holds.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime, "attempt/transcript")
+        execute_agent_attempt(
+            agent_attempt_execution(request),
+            RecordingAgentExecutorV2(
+                command=launching(sys.executable, "-c", "pass"),
+                decoder=answering(verdict),
+            ),
+            DbosAgentAttemptStore(runtime.engine),
+            runtime.agent_process_supervisor,
+            runtime_workspace_owner(runtime),
+        )
+
+        with runtime.engine.connect() as connection:
+            kept = connection.scalar(
+                sa.select(agent_attempts.c.transcript_artifact_hash)
+            )
+            stored = connection.scalar(
+                sa.select(artifacts.c.content).where(artifacts.c.artifact_hash == kept)
+            )
+        if steps is None:
+            assert kept is None
+        else:
+            assert stored == AttemptTranscript.of(steps).document
+    finally:
+        runtime.close()
+
+
+def test_a_verification_that_never_answered_still_keeps_what_the_agent_did(
+    tmp_path: Path,
+) -> None:
+    """The agent's work is not undone by the check's silence.
+
+    This was the one ending that dropped the steps, which would have made an
+    absent transcript mean two different things -- "no executor decoded one" and
+    "a verification timed out after one was" -- with no way to tell them apart.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime, "attempt/verification-silent")
+        store = DbosAgentAttemptStore(runtime.engine)
+        execution = agent_attempt_execution(request)
+        store.prepare(execution)
+        store.claim(execution)
+        transcript = AttemptTranscript.of(_DECODED_STEPS)
+
+        outcome = store.complete_project_verification_failure(
+            execution, "timeout 30 seconds", transcript
+        )
+
+        assert isinstance(outcome, AgentAttemptFailed)
+        assert (
+            outcome.attempt.failure_code
+            is AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED
+        )
+        with runtime.engine.connect() as connection:
+            kept = connection.scalar(
+                sa.select(agent_attempts.c.transcript_artifact_hash)
+            )
+            assert (
+                connection.scalar(
+                    sa.select(artifacts.c.content).where(
+                        artifacts.c.artifact_hash == kept
+                    )
+                )
+                == transcript.document
+            )
+    finally:
+        runtime.close()
+
+
+def test_a_refused_verification_failure_leaves_no_transcript_behind_either(
+    tmp_path: Path,
+) -> None:
+    """The artifact and the pointer naming it stand or fall together.
+
+    The transcript is kept inside the same write that ends the attempt, so an
+    abort further down has to take the bytes with it -- otherwise a store would
+    accumulate material no attempt ever names, published by writes that in the
+    end never happened.
+    """
+
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        request = attempt_request(runtime, "attempt/verification-refused")
+        store = DbosAgentAttemptStore(runtime.engine)
+        execution = agent_attempt_execution(request)
+        store.prepare(execution)
+        store.claim(execution)
+        with runtime.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TRIGGER fail_attempt BEFORE UPDATE ON agent_attempts "
+                "WHEN NEW.state='FAILED' "
+                "BEGIN SELECT RAISE(ABORT, 'failpoint'); END"
+            )
+
+        with pytest.raises(DatabaseError, match="failpoint"):
+            store.complete_project_verification_failure(
+                execution, "timeout 30 seconds", AttemptTranscript.of(_DECODED_STEPS)
+            )
+
+        with runtime.engine.connect() as connection:
+            attempt = connection.execute(sa.select(agent_attempts)).mappings().one()
+            artifact_count = connection.scalar(
+                sa.select(sa.func.count()).select_from(artifacts)
+            )
+        assert (attempt["state"], attempt["transcript_artifact_hash"]) == (
+            "LAUNCH_ARMED",
+            None,
+        )
+        assert artifact_count == 0
     finally:
         runtime.close()
 
