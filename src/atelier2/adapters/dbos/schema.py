@@ -4467,11 +4467,15 @@ def _refuse_redemptions_that_cannot_be_re_owned(
     never ran it -- quietly, and past every guard the store has.
 
     So the three are read against each other in full: the same run, the same
-    workflow revision, the same node, the same node execution, and the attempt's
-    own receipt hash naming the very receipt found. Beside that, a row is
-    refused where two claim one attempt (the new key cannot hold both), where
-    the attempt never succeeded, and where the command exited nonzero -- which
-    was never a redemption at all under the meaning this version fixes.
+    workflow revision, the same node, the same node execution, the same request
+    hash and the same executor identity, and the attempt's own receipt hash
+    naming the very receipt found. Those last three are not extra caution --
+    they are exactly what V38's own success trigger required before an attempt
+    could reach SUCCEEDED, so a store where they disagree is one that reached
+    that state without passing through it. Beside that, a row is refused where
+    two claim one attempt (the new key cannot hold both), where the attempt
+    never succeeded, and where the command exited nonzero -- which was never a
+    redemption at all under the meaning this version fixes.
 
     The check reads and refuses. Nothing is repaired, because every one of these
     is a store this product did not write, and guessing which half of a
@@ -4524,6 +4528,9 @@ def _refuse_redemptions_that_cannot_be_re_owned(
         " AND receipt.workflow_revision_hash = redemption.workflow_revision_hash "
         " AND receipt.node_id = redemption.node_id "
         " AND receipt.receipt_hash = attempt.receipt_hash "
+        " AND receipt.request_hash = attempt.request_hash "
+        " AND receipt.executor_operational_identity "
+        "     = attempt.executor_operational_identity "
         "WHERE receipt.node_execution_id IS NULL"
     ).fetchall()
     if orphaned:
