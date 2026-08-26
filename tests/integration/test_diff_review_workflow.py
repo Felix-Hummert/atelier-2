@@ -53,6 +53,13 @@ from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.schemas_v3 import (
+    InstanceAccepted,
+    InstanceRefused,
+    SchemaAccepted,
+    read_instance_document,
+    read_schema_document,
+)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -100,6 +107,30 @@ REFUSED_FINDINGS = {
         "Befund 1: workflows/diff-review.yaml adds one guard clause.\nVerdict: maybe"
     ),
 }
+
+
+def test_the_finding_schema_avoids_unsupported_regex_tokens_and_refuses_befund_10() -> (
+    None
+):
+    """The provider's response-format regex engine rejects word boundaries."""
+    schema = json.loads(FINDING_SCHEMA.document)
+    pattern = schema["pattern"]
+    schema_verdict = read_schema_document(FINDING_SCHEMA.document)
+
+    assert all(
+        token not in pattern for token in (r"\b", r"\B", "(?=", "(?!", "(?<=", "(?<!")
+    )
+    assert isinstance(schema_verdict, SchemaAccepted), schema_verdict
+
+    accepted = read_instance_document(
+        json.dumps("Befund 1: keine.\nVerdict: accepted").encode(), schema_verdict
+    )
+    refused = read_instance_document(
+        json.dumps("Befund 10: keine.\nVerdict: accepted").encode(), schema_verdict
+    )
+
+    assert isinstance(accepted, InstanceAccepted)
+    assert isinstance(refused, InstanceRefused)
 
 
 def runtime_over(root: Path, provider: RecordingAgentExecutorFactoryV2) -> DbosRuntime:

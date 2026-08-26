@@ -23,12 +23,14 @@ import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
  * node panel's ordinary rendering of a non-sink node's own answer is proven
  * at the component level in `tests/app/readableResultDisplay.test.ts`.
  *
- * Named `zz-` on purpose: `/__e2e/seed-conductor` mutates the one shared
- * harness server's state for the rest of the run, and `workbench-conductor.spec.ts`
- * asserts the *pre*-seed "no conductor" state as its own first act. Playwright
- * runs this suite's files in one worker, in listing order, so this file's
- * name has to sort after `workbench-conductor.spec.ts` or that test's own
- * precondition would already be gone by the time it runs.
+ * `/__e2e/seed-conductor` durably mutates the one shared harness server's
+ * state for the rest of the run, so this used to need a `zz-` name sorting it
+ * after `workbench-conductor.spec.ts`, whose own first act asserted the
+ * *pre*-seed "no conductor" state (#742). That file now resets the server to
+ * its own cold-boot baseline itself instead of depending on file order, so
+ * this spec no longer needs to sort after it -- it seeds and confirms its
+ * own conductor connection either way (below), regardless of what any other
+ * spec already did to the shared server.
  */
 const CONDUCTOR_FAKE_ANSWER =
   "Nothing started: the workbench probe only asked for an answer.";
@@ -62,9 +64,10 @@ async function completedConductorRun(page: Page): Promise<string> {
   expect((await page.request.post("/__e2e/seed-conductor")).ok()).toBeTruthy();
   await page.goto("/atelier/chat");
   // The precondition this journey needs is a *connected* conductor, not
-  // merely a successful seed call: this spec runs late in a shared-server
-  // suite (#742), so it proves the connection itself rather than assuming
-  // the seed above was the only thing that could have changed it.
+  // merely a successful seed call: this suite's server is shared across
+  // spec files that run in no particular order (#742), so it proves the
+  // connection itself rather than assuming the seed above was the only
+  // thing that could have changed it.
   await expect(page.getByText(conductorChatCopy.composerHint)).toBeVisible({ timeout: 15_000 });
   await page.getByLabel(workbenchPageCopy.composerLabel).fill("Starte nichts, antworte nur kurz.");
   await page.getByRole("button", { name: workbenchPageCopy.send }).click();
