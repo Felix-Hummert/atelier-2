@@ -24,15 +24,14 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 
-from atelier2.adapters.dbos import advancer
+from atelier2.adapters.dbos import agent_effect_grants
 from atelier2.adapters.dbos.advancer import (
-    AgentEffectRedemptionPending,
     _effect_shaped_capability_to_open_pr,
     redeem_agent_open_pr,
 )
 from atelier2.adapters.dbos.effect_store import receipt_from_record
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import effect_receipts
+from atelier2.adapters.dbos.schema import effect_intents, effect_receipts, runs
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
 from atelier2.adapters.github.marker import body_carries_request_hash
@@ -176,7 +175,7 @@ def test_an_effect_shaped_capability_that_is_not_open_pr_is_refused_by_name(
     preparation must refuse an effect-shaped capability it does not perform by
     name rather than drop it as an unprepared intent."""
     monkeypatch.setattr(
-        advancer, "redeems_as_platform_effect", lambda _capability: True
+        agent_effect_grants, "redeems_as_platform_effect", lambda _capability: True
     )
     unredeemed = ToolGrantCapability.RUN_PROJECT_VERIFICATION
 
@@ -250,23 +249,36 @@ def test_a_redemption_after_the_pull_request_exists_finds_it_rather_than_a_twin(
     assert len(github.recorded_pull_requests()) == 1
 
 
-def test_an_unknown_readback_is_refused_loud_and_writes_no_receipt(
+def test_an_unknown_readback_waits_for_reconciliation_and_writes_no_receipt(
     prepared: tuple[DbosRuntime, GitHubEffectAdapterFactory, EffectIntent],
 ) -> None:
     """No source can decide, so nothing is opened and nothing is confirmed."""
     runtime, _github, intent = prepared
     adapter = _ScriptedAdapter(EffectUnknownOutcome(intent.reference))
 
-    with (
-        pytest.raises(AgentEffectRedemptionPending),
-        canonical_write_transaction(runtime.engine) as connection,
-    ):
-        redeem_agent_open_pr(
+    with canonical_write_transaction(runtime.engine) as connection:
+        state = redeem_agent_open_pr(
             connection,
             adapter,
             intent.binding.logical_key.value,
             intent.binding.workflow_revision_hash.value,
         )
 
+    assert state == "WAITING_RECONCILIATION"
     assert adapter.execute_calls == 0
     assert _receipts(runtime) == []
+    with runtime.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                sa.select(effect_intents.c.state).where(
+                    effect_intents.c.logical_key == intent.binding.logical_key.value
+                )
+            )
+            == "WAITING_RECONCILIATION"
+        )
+        assert (
+            connection.scalar(
+                sa.select(runs.c.state).where(runs.c.run_id == RUN_ID.value)
+            )
+            == "WAITING_RECONCILIATION"
+        )

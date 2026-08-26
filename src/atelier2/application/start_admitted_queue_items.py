@@ -43,7 +43,6 @@ from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.application.start_published_run import (
     AgentConfigurationRevisionMissing,
     AgentExecutorBindingUnavailable,
-    AgentPlatformEffectUnreconcilable,
     BindingConstraintRefused,
     InvalidAgentBindings,
     RevisionMissing,
@@ -127,7 +126,6 @@ type StartRefusalReason = (
     | BindingConstraintRefused
     | AgentConfigurationRevisionMissing
     | AgentExecutorBindingUnavailable
-    | AgentPlatformEffectUnreconcilable
     | WriteUnavailable
     | DurableStateCorrupt
 )
@@ -203,7 +201,6 @@ def _start_one(
             | BindingConstraintRefused()
             | AgentConfigurationRevisionMissing()
             | AgentExecutorBindingUnavailable()
-            | AgentPlatformEffectUnreconcilable()
             | WriteUnavailable()
             | DurableStateCorrupt()
         ) as refusal:

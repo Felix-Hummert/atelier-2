@@ -35,7 +35,6 @@ from atelier2.ports.durable_runs import (
     DurableAgentConfigurationRevisionMissing,
     DurableAgentExecutorBindingUnavailable,
     DurableAgentExecutorCapabilityUnavailable,
-    DurableAgentPlatformEffectUnreconcilable,
     DurableBindingConstraintRefused,
     DurableInvalidAgentBindings,
     DurablePublishedRunStarter,
@@ -119,18 +118,6 @@ class RunInputRefused:
     violation: InstanceSchemaViolation | None = None
 
 
-@dataclass(frozen=True)
-class AgentPlatformEffectUnreconcilable:
-    """This deployment cannot safely redeem the named agent node's `open-pr` grant.
-
-    The composed effect adapter cannot prove absence, and an agent-authored
-    platform effect has no Action-only `WAITING_RECONCILIATION` resting place, so
-    the run is refused before it advances (`#430`/`#431`).
-    """
-
-    node: str
-
-
 type StartPublishedRunResult = (
     RunCreated
     | RunExisting
@@ -143,7 +130,6 @@ type StartPublishedRunResult = (
     | BindingConstraintRefused
     | RunInputRefused
     | WorkItemOrderUnreadable
-    | AgentPlatformEffectUnreconcilable
     | WriteUnavailable
     | DurableStateCorrupt
 )
@@ -249,8 +235,6 @@ def start_published_run(
             return AgentExecutorBindingUnavailable()
         case DurableBindingConstraintRefused(node, distinct_from):
             return BindingConstraintRefused(node, distinct_from)
-        case DurableAgentPlatformEffectUnreconcilable(node):
-            return AgentPlatformEffectUnreconcilable(node)
         case DurableV3StartInputRefused(name, refusal, detail, violation):
             return RunInputRefused(name, refusal, detail, violation)
         case DurableWorkItemOrderUnread():

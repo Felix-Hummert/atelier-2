@@ -663,9 +663,10 @@ file, the auth method (`personal-access-token`) and the connecting actor;
 serve then composes the live `open-pr` adapter from that record whenever it
 serves the connected project, with no GitHub flag on the serve line. A serve
 started with the old flags is refused by argparse as unrecognized arguments.
-The live composition still requires a loopback bind, still refuses an
-agent-authored `open-pr` grant at admission, and still refuses to start while
-an earlier run owes an agent `open-pr` redemption.
+The live composition still requires a loopback bind. An agent-authored
+`open-pr` grant now uses the same durable reconciliation path as an Action:
+an unknown GitHub readback pauses at the agent node for an operator decision,
+rather than refusing admission or reporting completion before a receipt exists.
 
 ## Pin an executor toolchain
 

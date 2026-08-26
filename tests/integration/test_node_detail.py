@@ -209,7 +209,6 @@ def publish_and_start(runtime: DbosRuntime) -> None:
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     assert isinstance(created, DurableRunCreated), created
 
@@ -405,7 +404,6 @@ def publish_and_start_wait_chain(runtime: DbosRuntime) -> WorkflowRevision:
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     assert isinstance(created, DurableRunCreated), created
     return workflow

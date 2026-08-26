@@ -82,7 +82,7 @@ from atelier2.host import _claude_subscription_settings, main
 from atelier2.host.address import DEFAULT_HOST
 from atelier2.host.serving import (
     HostSettings,
-    LiveGitHubOpenPrRunPending,
+    LegacyAgentOpenPrCompletionWithoutReceipt,
     api_limits,
     compose_application,
     event_poll_backoff,
@@ -747,8 +747,8 @@ def test_a_connected_project_composes_the_live_open_pr_adapter_from_the_record(
 ) -> None:
     # A token file must exist because the adapter reads it by reference when it
     # opens; a valid one lets the live factory bind without any network call.
-    # The non-proving answer is what makes admission refuse an agent-authored
-    # `open-pr` grant on this composed path (`#430`/`#431`).
+    # The adapter carries the credential reference but does no network work at
+    # composition; an unmatched readback later enters reconciliation.
     _app, runtime = compose_application(
         _github_connected_settings(tmp_path, "gho_a_test_scenario_token")
     )
@@ -757,7 +757,6 @@ def test_a_connected_project_composes_the_live_open_pr_adapter_from_the_record(
             runtime.effect_adapter_binding.operational_identity.value
             == "FlexOr2/atelier-2"
         )
-        assert runtime.effect_adapter_proves_absence is False
     finally:
         runtime.close()
 
@@ -843,15 +842,13 @@ def test_a_record_composed_live_github_serve_binds_loopback_only(
         compose_application(replace(settings, host=bind))
 
 
-def test_a_record_composed_start_refuses_a_run_still_owing_an_agent_open_pr(
+def test_a_record_composed_start_refuses_a_legacy_agent_completion_without_receipt(
     tmp_path: Path,
 ) -> None:
-    # The cross-restart edge (`#430`/`#431`) on the record path: a run admitted
-    # under the absence-proving loopback adapter committed COMPLETED but crashed
-    # before its sink node's workflow redeemed the agent `open-pr` grant. The
-    # operator then connects the project to live GitHub and serves the same
-    # store, so the record-composed start must refuse by name rather than
-    # recover that redemption against an adapter that cannot prove absence.
+    # This is the old checkpoint: the agent had already advanced the sink run
+    # to COMPLETED, but its still-recoverable node workflow had not redeemed
+    # the grant. Current runs settle that redemption before either advance, so
+    # the live-GitHub host refuses this persisted shape before recovery launches.
     settings = _github_connected_settings(tmp_path, "gho_a_test_scenario_token")
     run = RunId("v3/agent-open-pr-owing")
     seeded = DbosRuntime(
@@ -875,7 +872,6 @@ def test_a_record_composed_start_refuses_a_run_still_owing_an_agent_open_pr(
             seeded.engine,
             seeded.settings,
             seeded.agent_executor_registry,
-            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(run, workflow.revision_hash, bindings)
         )
@@ -886,7 +882,7 @@ def test_a_record_composed_start_refuses_a_run_still_owing_an_agent_open_pr(
     finally:
         seeded.close()
 
-    with pytest.raises(LiveGitHubOpenPrRunPending, match=run.value):
+    with pytest.raises(LegacyAgentOpenPrCompletionWithoutReceipt, match=run.value):
         compose_application(settings)
 
 
@@ -1046,7 +1042,6 @@ def test_an_unstartable_claude_executor_leaves_the_house_serving(
             runtime.engine,
             runtime.settings,
             runtime.agent_executor_registry,
-            effect_adapter_proves_absence=True,
         )
         refused = starter.start_published(
             StartPublishedRunRequestV2(
