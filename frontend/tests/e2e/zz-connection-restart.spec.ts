@@ -57,7 +57,10 @@ test("shows the calm restart line on the open workbench, and clears it on its ow
 
   // An in-app navigation (no reload) whose own mount read now fails for
   // real: the one round trip that discovers the outage.
-  await page.getByRole("link", { name: "Catalog" }).click();
+  await page
+    .getByRole("navigation", { name: "Workshop" })
+    .getByRole("link", { name: "Catalog", exact: true })
+    .click();
 
   // `status` computes its accessible name from an explicit label only, never
   // from its own content (ARIA's nameFrom:author for this role) -- the same
