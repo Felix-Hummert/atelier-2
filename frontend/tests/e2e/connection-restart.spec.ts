@@ -14,8 +14,9 @@ const widths = [
  * `/__e2e/recompose` is the harness's own stand-in for the host process kill
  * a redeploy performs (`tests/e2e/serve_cockpit.py`): it stops the live
  * server and brings a fresh one up behind the same port, the same shape as a
- * production restart. Runs last (the `zz-` prefix, `fullyParallel: false`,
- * one worker) so no earlier test shares the server it restarts.
+ * production restart -- plain (no `?reset=true`), because this proof is
+ * about the restart itself, not about the server's seeded state (#742: this
+ * suite's server is shared across spec files that may run in any order).
  *
  * The proof stays off any page holding an open durable-event stream (a run
  * cockpit): the harness's graceful shutdown only disables
@@ -27,11 +28,13 @@ const widths = [
  * Which composer hint the Workbench starts on depends on whether an earlier
  * test in this run seeded a conductor -- not this test's question, and not
  * something it may assume either way (the suite runs one shared server, one
- * worker). What this test does own is that the hint returns to that exact
- * same honest sentence once the connection recovers, not merely to
- * *something other than* the restart line -- a composer stuck naming a read
- * that "could not be read" would still pass a weaker check (the live bug
- * this test now pins).
+ * worker, in no particular file order). What this test does own is that the
+ * hint returns to that exact same honest sentence once the connection
+ * recovers, not merely to *something other than* the restart line -- a
+ * composer stuck naming a read that "could not be read" would still pass a
+ * weaker check (the live bug this test now pins). A full-app restart proven
+ * recoverable here leaves the server equally healthy for whatever spec runs
+ * next, in whatever order that is.
  */
 test("shows the calm restart line on the open workbench, and clears it on its own with no reload", async ({ page }) => {
   test.setTimeout(120_000);

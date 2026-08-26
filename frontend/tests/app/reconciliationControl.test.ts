@@ -120,8 +120,13 @@ describe("reconciliation control", () => {
     expect(await journal.get(first.mutation_id)).not.toBeNull();
     feed.handlers?.event(JSON.stringify(reconciliationResolved(3, "command-found", "OPERATOR_FOUND")));
 
-    await waitFor(async () => expect(await journal.get(first.mutation_id)).toBeNull());
-    expect(screen.queryByRole("heading", { name: /Decision/ })).toBeNull();
+    // The event handler's own journal write is the observable completion this
+    // waits on -- the "Decision" heading closing -- not a poll of the journal
+    // itself, which would re-run its hash validation on every poll tick. The
+    // journal's own clearing is then a single, un-polled follow-up read: the
+    // resolve() that closed the heading already finished by the time it did.
+    await waitFor(() => expect(screen.queryByRole("heading", { name: /Decision/ })).toBeNull());
+    expect(await journal.get(first.mutation_id)).toBeNull();
     expect(screen.getByRole("article", { name: "action — Working" })).toBeTruthy();
   });
 
@@ -129,9 +134,19 @@ describe("reconciliation control", () => {
     const journal = new MutationJournal(sessionStorage);
     const feed = new FakeRunEventFeed();
     let acceptDecision!: (result: { status: number; value: Run }) => void;
-    const reconcile = vi.fn(
-      () => new Promise<{ status: number; value: Run }>((resolve) => { acceptDecision = resolve; })
-    );
+    // Resolves the instant `reconcile` is actually invoked -- not when its own
+    // promise later settles -- so the test can await that exact moment instead
+    // of polling `toHaveBeenCalledTimes`.
+    let reconcileCalled!: () => void;
+    const reconcileCalledPromise = new Promise<void>((resolve) => {
+      reconcileCalled = resolve;
+    });
+    const reconcile = vi.fn(() => {
+      reconcileCalled();
+      return new Promise<{ status: number; value: Run }>((resolve) => {
+        acceptDecision = resolve;
+      });
+    });
     const getRun = vi
       .fn()
       .mockResolvedValueOnce(reconciliationRun())
@@ -150,13 +165,20 @@ describe("reconciliation control", () => {
     await fireEvent.input(screen.getByLabelText("Effect ID"), { target: { value: "effect-empty" } });
     await fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
     expect(await screen.findByRole("heading", { name: "Sending decision" })).toBeTruthy();
-    await waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1));
+    await reconcileCalledPromise;
+    expect(reconcile).toHaveBeenCalledTimes(1);
 
     feed.handlers?.event(JSON.stringify(agentCompleted(1)));
     feed.handlers?.event(JSON.stringify(reconciliationRequired(2, { request_hash: requestHash })));
     feed.handlers?.event(JSON.stringify(reconciliationResolved(3, "command-race", "OPERATOR_FOUND")));
     acceptDecision({ status: 202, value: reconciliationRun() });
 
+    // The durable event's own resolve and the late 202 response's own
+    // handling are two independent, unawaited chains (the page's event queue
+    // runs each event's own reconciliation follow-up fire-and-forget, so nothing
+    // here can await "both settled" directly): the journal reaching empty is
+    // the one true convergence point this test owns -- that the late response
+    // never re-adds what the durable event already resolved.
     await waitFor(async () => expect(await journal.entries()).toEqual([]));
     expect(screen.queryByRole("heading", { name: /Decision/ })).toBeNull();
     expect(screen.getByRole("article", { name: "action — Working" })).toBeTruthy();
@@ -165,11 +187,20 @@ describe("reconciliation control", () => {
   it("reconcile_absent_requires_execute_confirmation", async () => {
     const journal = new MutationJournal(sessionStorage);
     let rejectFirst!: (reason: unknown) => void;
+    // Resolves the instant `reconcile` is actually invoked, so the test can
+    // await that exact moment instead of polling `toHaveBeenCalledTimes`.
+    let reconcileCalled!: () => void;
+    const reconcileCalledPromise = new Promise<void>((resolve) => {
+      reconcileCalled = resolve;
+    });
     const reconcile = vi
       .fn()
-      .mockImplementationOnce(
-        () => new Promise((_resolve, reject) => { rejectFirst = reject; })
-      )
+      .mockImplementationOnce(() => {
+        reconcileCalled();
+        return new Promise((_resolve, reject) => {
+          rejectFirst = reject;
+        });
+      })
       .mockResolvedValueOnce({ status: 202, value: reconciliationRun(pendingAbsentCommand()) });
 
     render(App, {
@@ -203,7 +234,8 @@ describe("reconciliation control", () => {
 
     const sending = await screen.findByRole("heading", { name: "Sending decision" });
     expect(document.activeElement).toBe(sending);
-    await waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1));
+    await reconcileCalledPromise;
+    expect(reconcile).toHaveBeenCalledTimes(1);
     rejectFirst(new CockpitRequestError("The response was lost."));
     expect(await screen.findByRole("heading", { name: "Decision uncertain" })).toBeTruthy();
     expect(reconcile).toHaveBeenCalledTimes(1);

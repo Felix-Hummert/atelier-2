@@ -35,6 +35,18 @@ async function photograph(page: Page, name: string): Promise<void> {
 test("a message meets the honest refusal without a conductor, and becomes one episode with one", async ({ page }) => {
   test.setTimeout(120_000);
 
+  // This suite shares one server across every spec file (#742): a conductor
+  // another file already seeded would still answer here. This test's own
+  // first act resets the server to its cold-boot baseline -- guaranteed
+  // unseeded -- instead of depending on running before `workbench-conductor`
+  // in the file listing.
+  const reset = await page.request.post("/__e2e/recompose?reset=true");
+  expect(reset.status()).toBe(202);
+  const expectedGeneration = await reset.text();
+  await expect(async () => {
+    expect(await (await page.request.get("/__e2e/generation")).text()).toBe(expectedGeneration);
+  }).toPass({ timeout: 20_000 });
+
   // Before any conductor exists: the composer says so, and a sent message
   // gets the standing honest answer -- nothing pretends to listen.
   await page.goto("/atelier/chat");

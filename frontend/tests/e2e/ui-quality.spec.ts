@@ -219,6 +219,23 @@ function workbenchRuns() {
 }
 
 /**
+ * This suite shares one server across every spec file (#742): durable state
+ * an earlier spec left behind (a completed run, a seeded conductor) can still
+ * reach a mocked Workbench frame through a channel its route mocks don't
+ * cover. Each mocked frame therefore resets the server to its cold-boot
+ * baseline before it stages anything, instead of depending on running before
+ * every other spec in the file listing.
+ */
+async function resetToKnownStore(page: Page): Promise<void> {
+  const reset = await page.request.post("/__e2e/recompose?reset=true");
+  expect(reset.status()).toBe(202);
+  const expectedGeneration = await reset.text();
+  await expect(async () => {
+    expect(await (await page.request.get("/__e2e/generation")).text()).toBe(expectedGeneration);
+  }).toPass({ timeout: 20_000 });
+}
+
+/**
  * A still room: the Workbench holds the attention stream, so a room whose list
  * reads are staged still absorbs whatever the live workshop nudges it about --
  * the fixture host's own seeded runs walked into these frames and made them
@@ -242,6 +259,7 @@ async function stageQuietAttention(page: Page): Promise<void> {
 }
 
 async function routeWorkbenchReads(page: Page, read: () => WorkbenchReadReply): Promise<void> {
+  await resetToKnownStore(page);
   await stageQuietAttention(page);
   await page.route("**/atelier/api/v1/runs*", async (route: Route) => {
     if (read() === "unavailable") {
@@ -402,6 +420,7 @@ test("core surfaces render owned display strings under a pseudo-locale", async (
  * took.
  */
 async function stageWorkbenchWithWork(page: Page): Promise<void> {
+  await resetToKnownStore(page);
   await stageQuietAttention(page);
   await page.route("**/atelier/api/v1/runs*", (route) => {
     const state = new URL(route.request().url()).searchParams.get("state");

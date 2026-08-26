@@ -23,7 +23,9 @@ jobs:
     name: "Cockpit: types, lint, tests, e2e"
     runs-on: ubuntu-latest
     # ~3min üblich, gemessen 18.08. (10 grüne main-Runs; mean 157s, max 255s)
-    timeout-minutes: 8
+    # vor #742's zweitem (reversed) e2e-Durchlauf; Budget verdoppelt, bis ein
+    # neuer main-Mittelwert mit beiden Durchläufen gemessen ist.
+    timeout-minutes: 16
     defaults:
       run:
         working-directory: frontend
@@ -101,37 +103,49 @@ jobs:
       - name: Test the production cockpit in Chromium
         run: |
           set -euo pipefail
-          unit="atelier2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-frontend"
+          unit=""
           cleanup() {
             status="$1"
             trap - EXIT INT TERM
-            sudo systemctl stop "${unit}.service" >/dev/null 2>&1 || true
-            sudo systemctl reset-failed "${unit}.service" >/dev/null 2>&1 || true
+            if [ -n "${unit}" ]; then
+              sudo systemctl stop "${unit}.service" >/dev/null 2>&1 || true
+              sudo systemctl reset-failed "${unit}.service" >/dev/null 2>&1 || true
+            fi
             exit "${status}"
           }
           trap 'cleanup "$?"' EXIT
           trap 'cleanup 130' INT
           trap 'cleanup 143' TERM
           npm_path="$(command -v npm)"
-          sudo systemd-run --quiet --wait --collect --pipe \
-            --unit="${unit}" \
-            --uid="$(id -u)" \
-            --gid="$(id -g)" \
-            --property=Type=exec \
-            --property=Delegate=yes \
-            --property=DelegateSubgroup=workload \
-            --property=KillMode=control-group \
-            --property=TimeoutStopSec=15s \
-            --working-directory="${GITHUB_WORKSPACE}/frontend" \
-            --setenv=HOME="${HOME}" \
-            --setenv=PATH="${PATH}" \
-            --setenv=CI="${CI:-true}" \
-            --setenv=GITHUB_ACTIONS="${GITHUB_ACTIONS:-true}" \
-            --setenv=GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
-            --setenv=UV_PYTHON="${UV_PYTHON}" \
-            --setenv=UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR}" \
-            --setenv=UV_CACHE_DIR="${UV_CACHE_DIR}" \
-            "${npm_path}" run e2e
+          run_e2e() {
+            script="$1"
+            suffix="$2"
+            unit="atelier2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-frontend-${suffix}"
+            sudo systemd-run --quiet --wait --collect --pipe \
+              --unit="${unit}" \
+              --uid="$(id -u)" \
+              --gid="$(id -g)" \
+              --property=Type=exec \
+              --property=Delegate=yes \
+              --property=DelegateSubgroup=workload \
+              --property=KillMode=control-group \
+              --property=TimeoutStopSec=15s \
+              --working-directory="${GITHUB_WORKSPACE}/frontend" \
+              --setenv=HOME="${HOME}" \
+              --setenv=PATH="${PATH}" \
+              --setenv=CI="${CI:-true}" \
+              --setenv=GITHUB_ACTIONS="${GITHUB_ACTIONS:-true}" \
+              --setenv=GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+              --setenv=UV_PYTHON="${UV_PYTHON}" \
+              --setenv=UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR}" \
+              --setenv=UV_CACHE_DIR="${UV_CACHE_DIR}" \
+              "${npm_path}" run "${script}"
+          }
+          # The shared-server suite proves its own order-independence (#742)
+          # by running the identical spec set twice, in its default and its
+          # reversed order -- each its own fresh webServer boot.
+          run_e2e e2e forward
+          run_e2e e2e:reversed reversed
 
       - name: Upload the cockpit run reports
         if: ${{ !cancelled() }}

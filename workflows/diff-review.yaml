@@ -38,4 +38,4 @@ nodes:
       - name: finding
         schema:
           ref: diff_review_finding
-          revision: "3a191b1cefa39b13237366cb7b3ab0839a4614aca1ceaa00c087a3efdc1d5e36"
+          revision: "e8b4fb7fd4f427526870ad3d6bb5b98d4af04e666bd8cb119a21cbe1432727e0"
