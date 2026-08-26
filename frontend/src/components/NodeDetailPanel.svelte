@@ -170,6 +170,15 @@
    */
   $: answerText = detail.answer === null ? null : decodeUtf8Base64(detail.answer.value_base64);
   $: jobText = detail.job_base64 === null ? null : decodeUtf8Base64(detail.job_base64);
+  /**
+   * `refusal_output` is optional on the wire (#664), the same way `started_at`
+   * / `ended_at` above already are: an older fixture or a server build before
+   * this field existed omits the key rather than sending `null`, and that
+   * reads as the same absence here, never a crash on `undefined`.
+   */
+  $: refusalOutput = detail.refusal_output ?? null;
+  $: refusalOutputText =
+    refusalOutput === null ? null : decodeUtf8Base64(refusalOutput.value_base64);
 
   /**
    * A scrollable exact-bytes box takes a tab stop the same way
@@ -218,6 +227,18 @@
           <strong>Stopped here:</strong>
           {detail.refusal}
         </p>
+        {#if refusalOutput !== null}
+          {#if refusalOutputText === null}
+            <p class="muted">{wrapDisplayCopy(runResultCopy.unreadable)}</p>
+          {:else}
+            <pre
+              class="exact"
+              role="region"
+              use:keyboardScrollableRegion
+              aria-label={wrapDisplayCopy(runPageCopy.refusedOutput)}
+            >{refusalOutputText}</pre>
+          {/if}
+        {/if}
       {:else if situation === "waiting"}
         <p class="waiting" role="status">
           Waiting for the work before it. Nothing has been refused.
@@ -320,6 +341,14 @@
             label={wrapDisplayCopy(runPageCopy.outputHash)}
             seals={runPageCopy.sealsOutput}
             value={detail.answer.value_hash}
+            sealsPrefix={false}
+          />
+        {/if}
+        {#if refusalOutput !== null}
+          <ProofAnchor
+            label={wrapDisplayCopy(runPageCopy.refusedOutputHash)}
+            seals={runPageCopy.sealsRefusedOutput}
+            value={refusalOutput.value_hash}
             sealsPrefix={false}
           />
         {/if}

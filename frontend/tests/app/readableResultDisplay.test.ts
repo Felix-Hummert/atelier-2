@@ -57,8 +57,18 @@ function nodeDetail(overrides: Partial<NodeDetail> = {}): NodeDetail {
     answer: null,
     provenance: null,
     refusal: null,
+    refusal_output: null,
     ...overrides
   };
+}
+
+/** A node whose own output a schema refused, with the exact bytes it refused (#664). */
+function withRefusalOutput(raw: string, refusal: string): NodeDetail {
+  return nodeDetail({
+    state: "failed",
+    refusal,
+    refusal_output: { value_base64: btoa(raw), value_hash: "a".repeat(64) }
+  });
 }
 
 /** An agent's own receipt (#716's outcome banner only ever names an agent's report). */
@@ -308,6 +318,63 @@ describe("the node panel's Result tab renders the same readable form (#716)", ()
     expect(screen.queryByText(runResultCopy.exactText, { selector: "summary" })).toBeNull();
     const link = screen.getByRole("link", { name: runResultCopy.shownAbove });
     expect(link.getAttribute("href")).toBe("#run-outcome");
+  });
+});
+
+describe("the node panel shows a schema-refused answer's raw bytes and hash (#664)", () => {
+  const runEvidence = {
+    runId: "v3/conductor-episode",
+    workflowRevisionHash: digest,
+    runConfigurationRevisionHash: "c".repeat(64),
+    terminalHash: null
+  };
+  const REFUSAL = "output-schema-refused: instance-not-json: Expecting value";
+  const REFUSED_PROSE =
+    "Sure! Here is what I would do: first look at the board, then start a run.";
+
+  it("proves(a-refused-episode-shows-its-raw-output-and-hash-in-the-node-panel): shows the exact refused bytes under the stopped-here sentence on the Result tab", () => {
+    render(NodeDetailPanel, {
+      props: {
+        detail: withRefusalOutput(REFUSED_PROSE, REFUSAL),
+        onClose: () => {},
+        runEvidence
+      }
+    });
+
+    expect(screen.getByText("Stopped here:").isConnected).toBe(true);
+    expect(screen.getByText(REFUSED_PROSE).isConnected).toBe(true);
+  });
+
+  it("lists the refused output's hash as a proof anchor on the Evidence tab", async () => {
+    render(NodeDetailPanel, {
+      props: {
+        detail: withRefusalOutput(REFUSED_PROSE, REFUSAL),
+        onClose: () => {},
+        runEvidence
+      }
+    });
+
+    await fireEvent.click(screen.getByRole("tab", { name: runPageCopy.tabEvidence }));
+
+    expect(screen.getByRole("group", { name: runPageCopy.refusedOutputHash }).isConnected).toBe(
+      true
+    );
+  });
+
+  it("shows no refused-output block or proof anchor when a refusal names nothing to resolve", async () => {
+    render(NodeDetailPanel, {
+      props: {
+        detail: nodeDetail({ state: "failed", refusal: REFUSAL }),
+        onClose: () => {},
+        runEvidence
+      }
+    });
+
+    expect(screen.queryByRole("region", { name: runPageCopy.refusedOutput })).toBeNull();
+
+    await fireEvent.click(screen.getByRole("tab", { name: runPageCopy.tabEvidence }));
+
+    expect(screen.queryByRole("group", { name: runPageCopy.refusedOutputHash })).toBeNull();
   });
 });
 

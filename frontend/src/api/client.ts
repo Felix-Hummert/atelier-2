@@ -802,10 +802,18 @@ const runV3Schema = z
 /**
  * One node of a run, as `GET /runs/{ref}/nodes/{node_id}` answers it.
  *
- * Four answers, each allowed to be absent, because the absence is the answer: a
+ * Five answers, each allowed to be absent, because the absence is the answer: a
  * node that has not run yet was asked nothing this reader can prove, wrote
  * nothing and has no receipt, and a refusal exists only where something really
  * refuses. The panel renders exactly that and invents no placeholder.
+ *
+ * `refusal_output` is deliberately not `answer`: it is the exact bytes a
+ * schema owner judged and refused, never the value the run accepted (#664),
+ * and it is present only where that judgment happened and the store still
+ * holds what it judged. Optional, like `started_at` / `ended_at` above --
+ * an older test fixture or a caller of a build before #664 omits the key
+ * entirely, and that reads exactly as the absence it is (`?? null` at every
+ * reader), never a parse failure.
  *
  * Usage is not here because no receipt holds it. Duration sits beside the
  * attempt as started_at / ended_at, not on the receipt.
@@ -840,6 +848,7 @@ export const nodeDetailSchema = z
     answer: nodeAnswerSchema.nullable(),
     provenance: nodeProvenanceSchema.nullable(),
     refusal: z.string().nullable(),
+    refusal_output: nodeAnswerSchema.nullable().optional(),
     started_at: z.string().nullable().optional(),
     ended_at: z.string().nullable().optional()
   })

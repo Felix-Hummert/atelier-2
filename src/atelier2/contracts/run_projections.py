@@ -205,6 +205,16 @@ class NodeDetail:
     Each of the three may be absent, and the absence is the answer: a node that
     has not run yet was asked nothing this reader can prove, wrote nothing, and
     has no receipt. A refusal exists only where something really refuses.
+
+    `refusal_output` is deliberately its own field, not `answer`: `answer` is
+    the value the run accepted, and a schema-refused value never was that. It
+    carries the exact bytes a schema owner judged and refused, read back from
+    the content-addressed artifact the failure transaction kept under the
+    receipt's own value hash (#664) -- present only where a node's own output
+    was judged and something to keep survived that judgment: a run from before
+    that write existed, a refusal with no receipt at all (an unavailable
+    executor, a predecessor that has not written), or judged bytes that were
+    themselves empty all carry this field as honestly absent, never a guess.
     """
 
     run_id: RunId
@@ -215,5 +225,6 @@ class NodeDetail:
     answer: NodeAnswer | None
     provenance: NodeProvenance | None
     refusal: str | None
+    refusal_output: NodeAnswer | None = None
     started_at: RecordedAt | None = None
     ended_at: RecordedAt | None = None

@@ -1,0 +1,28 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/664"
+
+# THE READ SIDE OF #664's SECOND SLICE. PR #683 kept the bytes a schema
+# refuses instead of throwing them away: the failure transaction now holds
+# them as an artifact under exactly the value hash its own `failed`
+# `node-receipt/v3` already named. That closed the write side; the operator
+# still could not see them, because nothing between the store and the panel
+# resolved that hash back into bytes.
+#
+# This slice is that resolution, end to end: `queries.py` reads the artifact
+# behind a judged refusal and hands it to `NodeDetail` as its own field --
+# never `answer`, because `answer` is the value a run accepted and a
+# schema-refused value never was that. The wire (`NodeDetailResource`) and the
+# client (`frontend/src/api/client.ts`, a strict Zod mirror) carry the same
+# field under the same name, and the node panel's Result tab shows the exact
+# bytes under its existing "Stopped here" sentence, with the hash listed
+# beside the run's other proof anchors on the Evidence tab.
+#
+# NAMED OPEN, deliberately not written by this slice: usage, the
+# provider-resolved model and `session_id` for a FAILED attempt (#664's third
+# slice, sequenced after its own schema hop) and the `docs/PRODUCT.md`
+# refusal paragraph's own sentence about this being readable now, which
+# belongs to `docs/PRODUCT.md`'s current claimed lane rather than this one.
+
+[[sentence]]
+id = "a-refused-episode-shows-its-raw-output-and-hash-in-the-node-panel"
+text = "A node whose own output a schema refused answers node detail with the exact refused bytes and their value hash, resolved from the artifact the failure transaction kept under that same address, as a field of its own -- never the accepted-answer field, which a schema-refused value never satisfied -- carried unchanged onto the wire and the client's strict schema; the node panel's Result tab shows those bytes under the sentence that already names where the run stopped, and the Evidence tab lists the hash beside the run's other proof anchors. A refusal with nothing to resolve -- no receipt at all, an unjudged process death, or a run written before this write existed -- answers with no such field, never a placeholder."

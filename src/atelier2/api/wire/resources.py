@@ -1062,7 +1062,7 @@ class NodeProvenanceResource(ApiModel):
 class NodeDetailResource(ApiModel):
     """One node of a run, answered the way an operator asks about it.
 
-    Four answers, each allowed to be absent, because absence is itself the
+    Five answers, each allowed to be absent, because absence is itself the
     answer. `job` is what the run really handed this node's provider, recomposed
     through the one owner that composed it; `job_hash` is the hash of exactly
     those bytes and nothing more. It is **not** the receipt's `request_hash`,
@@ -1078,6 +1078,14 @@ class NodeDetailResource(ApiModel):
     mean the store disagrees with itself -- a payload that no longer matches its
     hash, a pinned schema revision that is gone -- is not softened into a
     refusal here; it leaves as durable corruption, loudly.
+
+    `refusal_output` is deliberately not `answer`: `answer` is the value the run
+    accepted, and a schema-refused value never was that (#664). It carries the
+    exact bytes a schema owner judged and refused, read back from the
+    content-addressed artifact the failure transaction kept -- present only
+    where such a judgment happened and something to keep survived it; every
+    other refusal, including one this receipt family predates, answers with no
+    such field rather than a guess.
     """
 
     run_id: str = Field(min_length=1)
@@ -1089,6 +1097,7 @@ class NodeDetailResource(ApiModel):
     answer: NodeAnswerResource | None
     provenance: NodeProvenanceResource | None
     refusal: str | None
+    refusal_output: NodeAnswerResource | None = None
     started_at: str | None = None
     ended_at: str | None = None
 

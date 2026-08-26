@@ -625,6 +625,10 @@ def test_the_node_that_stops_the_run_names_the_refusal_that_stops_it(
     assert "implement" in detail.refusal
     assert detail.job is None
     assert detail.answer is None
+    # `review` never armed its own attempt -- the composer refused while
+    # reading `implement`'s stored draft, so `review` has no `node-receipt/v3`
+    # row at all and #664's raw-output field has nothing to resolve from.
+    assert detail.refusal_output is None
 
 
 @pytest.mark.proves("a-click-into-a-node-answers-what-it-was-asked-and-wrote")
@@ -699,3 +703,74 @@ def test_a_stored_value_that_no_longer_matches_its_hash_is_reported_as_corruptio
     found = durable_queries(runtime.engine).get_node_detail(RUN, "review")
 
     assert isinstance(found, QueryDurableStateCorrupt), found
+
+
+NOT_EVEN_JSON = (
+    b"Sure! Here is what I would do: first look at the board, then start a run."
+)
+"""A live episode's own words (#664's head comment) -- prose, not JSON at all."""
+
+
+@pytest.fixture
+def own_schema_refused_runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
+    """The `runtime` fixture's own shape, with a provider `implement`'s own
+    pinned schema refuses at the success write.
+
+    Unlike `plant_the_value_a_build_without_the_guard_wrote`, nothing is
+    planted here: the real production write path (`complete_success`) is what
+    ends this attempt, so the `failed` `node-receipt/v3` and the refused bytes
+    it keeps as an artifact (#664 slice one) are written exactly the way a
+    live episode writes them.
+    """
+    started = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "node-detail-refusal-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
+        LoopbackEffectAdapterFactory(
+            tmp_path / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+        ExactOutputAgentExecutorFactory(),
+        (
+            RecordingAgentExecutorFactoryV2(
+                "exact", "exact/v1", "exact-op", NOT_EVEN_JSON
+            ),
+        ),
+    )
+    started.initialize_storage()
+    try:
+        yield started
+    finally:
+        started.close()
+
+
+@pytest.mark.proves("a-refused-episode-shows-its-raw-output-and-hash-in-the-node-panel")
+def test_a_schema_refused_answer_reads_back_its_exact_bytes_and_hash(
+    own_schema_refused_runtime: DbosRuntime,
+) -> None:
+    """The live gap of #664, closed from the reader's side.
+
+    `implement` answers bytes its own pinned schema refuses -- not, as the
+    tests above, a downstream node's composition read -- so this is the case
+    that really has a `failed` `node-receipt/v3` and a kept artifact behind
+    it. The node detail this file's read owns has to resolve that hash back
+    into the exact bytes, not merely report that a value once existed.
+    """
+    runtime = own_schema_refused_runtime
+    publish_and_start(runtime)
+    runtime.launch()
+    wait_for_run_state(runtime, RUN, RunState.FAILED)
+
+    found = durable_queries(runtime.engine).get_node_detail(RUN, "implement")
+
+    assert isinstance(found, NodeDetailFound), found
+    detail = found.detail
+    assert detail.state is NodeState.FAILED
+    assert detail.refusal is not None
+    assert "instance-not-json" in detail.refusal
+    assert detail.refusal_output is not None
+    assert detail.refusal_output.value == NOT_EVEN_JSON
+    assert detail.refusal_output.value_hash == Sha256Hash.of(NOT_EVEN_JSON)
