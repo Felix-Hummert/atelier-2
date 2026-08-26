@@ -278,7 +278,9 @@ def test_the_provider_starts_in_the_pinned_tree_of_its_own_lease(
             DbosAgentAttemptStore(runtime.engine),
             runtime.agent_process_supervisor,
             runtime_workspace_owner(runtime),
-            declared_project(tmp_path / "project").pinned(pin, None),
+            declared_project(
+                tmp_path / "project", runtime.settings.database_path
+            ).pinned(pin, None),
         )
 
         assert isinstance(outcome, AgentAttemptSucceeded)
@@ -357,7 +359,9 @@ def test_a_binding_pinning_a_source_and_no_grant_works_in_that_tree_and_redeems_
     )
 
     assert isinstance(binding, AgentNodeBindingV2)
-    project = pinned_project(binding, declared_project(root))
+    project = pinned_project(
+        binding, declared_project(root, tmp_path / "atelier.sqlite")
+    )
 
     assert project is not None
     assert (project.pin, project.grant) == (pin, None)

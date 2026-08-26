@@ -87,7 +87,11 @@ from tests.scenarios.agents import (
     leased_directory_identity,
     prepared_agent_attempt,
 )
-from tests.scenarios.projects import declaring_verification, git_project
+from tests.scenarios.projects import (
+    CandidatesKeptInMemory,
+    declaring_verification,
+    git_project,
+)
 
 THE_GRANT = DeclaredToolGrant(
     PublishedRevisionHash("c3" * 32), ToolGrantCapability.RUN_PROJECT_VERIFICATION
@@ -273,7 +277,11 @@ def test_a_declared_capability_dispatches_to_its_own_redeemer(tmp_path: Path) ->
     pin = git_project(root, declaring_verification(["/bin/true"]))
     verifications = _RunOnceVerifications()
     project = PinnedProjectSource(
-        LocalGitProjectSource(root), verifications, pin, THE_GRANT
+        LocalGitProjectSource(root),
+        verifications,
+        CandidatesKeptInMemory(),
+        pin,
+        THE_GRANT,
     )
 
     store, supervisor, workspaces = _drive(project, tmp_path)
@@ -293,7 +301,11 @@ def test_a_capability_no_redeemer_performs_is_refused_by_name(tmp_path: Path) ->
     verifications = _NeverRedeemedVerifications()
     grant = _grant_naming_a_capability_no_redeemer_performs()
     project = PinnedProjectSource(
-        LocalGitProjectSource(root), verifications, pin, grant
+        LocalGitProjectSource(root),
+        verifications,
+        CandidatesKeptInMemory(),
+        pin,
+        grant,
     )
     store = _ClaimingStore()
     supervisor = _RecordingSupervisor()

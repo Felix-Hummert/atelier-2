@@ -27,6 +27,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
     AgentProcessRunner,
 )
+from atelier2.ports.candidate_store import CandidateNotKept
 from atelier2.ports.project_verification import (
     PinnedProjectSource,
     ProjectVerificationOutcome,
@@ -67,6 +68,16 @@ def execute_agent_attempt(
     verification that does not answer within its declared deadline after the
     claim ends the attempt `FAILED` under `PROJECT_VERIFICATION_FAILED` rather
     than leaving it `LAUNCH_ARMED`.
+
+    What the attempt made is kept last of all, after any granted check has run
+    and before the attempt is completed. Last, because the candidate must be the
+    state the verification passed on rather than the state before it; before,
+    because the lease is released once this attempt is terminal and nothing can
+    recover the work afterwards. The two writes cannot share a transaction --
+    the candidate is a git object and the attempt a durable row -- so the order
+    is what carries the invariant: no attempt is ever `SUCCEEDED` without its
+    work kept, and a capture that fails ends it `FAILED` under
+    `CANDIDATE_CAPTURE_FAILED` instead.
     """
 
     store.prepare(execution)
@@ -131,7 +142,36 @@ def execute_agent_attempt(
                     result.transcript,
                 )
             else:
-                outcome = store.complete_success(execution, result, redemption)
+                # A check that said no has already decided this attempt, so
+                # nothing is captured and nothing else may rename the ending.
+                # Capturing first would keep work the project rejected and, worse,
+                # let the loss of that work overwrite the verdict: the attempt
+                # would read CANDIDATE_CAPTURE_FAILED and carry a redemption
+                # saying the check failed. The store owns what a nonzero
+                # redemption means; this only refuses to reach past it.
+                #
+                # Past that, the redemption below is a value this branch is
+                # *known* to have and known to be a pass, so its evidence travels
+                # into whichever ending follows.
+                if redemption is not None and not redemption.satisfied_the_project:
+                    outcome = store.complete_success(execution, result, redemption)
+                else:
+                    try:
+                        _keep_what_the_attempt_made(lease, project)
+                    except CandidateNotKept as refusal:
+                        # Same reason as the branch above, for the other loss:
+                        # letting this escape would leave the attempt
+                        # LAUNCH_ARMED. The work is gone either way, but a named
+                        # failure is a fact an operator can act on, while an
+                        # armed attempt is one nobody can resolve. What the
+                        # granted check proved before the loss is kept with it --
+                        # the check passed, and that stays true however the
+                        # keeping ended.
+                        outcome = store.complete_candidate_capture_failure(
+                            execution, str(refusal), result.transcript, redemption
+                        )
+                    else:
+                        outcome = store.complete_success(execution, result, redemption)
             if isinstance(outcome, AgentAttemptFailed):
                 failure = outcome.attempt.failure_code
                 match failure:
@@ -149,6 +189,12 @@ def execute_agent_attempt(
                         detail = (
                             "project verification ended unsuccessfully; "
                             "the failure is durably named."
+                        )
+                    case AgentAttemptFailureCode.CANDIDATE_CAPTURE_FAILED:
+                        event = "agent_attempt_candidate_capture_failed"
+                        detail = (
+                            "did the work and none of it could be kept; "
+                            "the loss is durably named."
                         )
                     case _:
                         raise ValueError("attempt ended under an unnamed failure")
@@ -170,6 +216,25 @@ def execute_agent_attempt(
     finally:
         executor.release_credential_channel(command)
     return outcome
+
+
+def _keep_what_the_attempt_made(
+    lease: AgentAttemptWorkspaceLease, project: PinnedProjectSource | None
+) -> None:
+    """Anchor what this attempt made, where a reader can still find it later.
+
+    Nothing comes back. The candidate is anchored under the attempt's own
+    identity, so whoever holds the attempt can ask the store for it; carrying
+    the tree's address into the durable row as well would be a second record of
+    one fact, and two records of one fact can disagree.
+
+    A runtime pointed at no project keeps nothing, because there is no store
+    that could own the result and no pin the work would be a change to.
+    """
+
+    if project is None:
+        return
+    project.candidates.capture(project.pin, lease)
 
 
 def _verification_unavailable_verdict(error: ProjectVerificationUnavailable) -> str:

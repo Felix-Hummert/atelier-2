@@ -356,3 +356,46 @@ def test_restart_only_releases_after_attestation_precedes_witness_gc(
         )
         == before
     )
+
+
+def test_a_candidate_kept_before_the_crash_outlives_the_attempt_that_never_ended(
+    tmp_path: Path,
+) -> None:
+    """The order is the invariant, so the crash between the two writes is the proof.
+
+    The candidate ref and the terminal attempt cannot be written together -- one
+    is a git object, the other a durable row -- so what stops a run from
+    claiming work it cannot show is that the ref goes first. A process dying in
+    exactly that gap must therefore leave the work readable and the attempt not
+    succeeded, which is the safe half of the two.
+    """
+
+    root = tmp_path / "kept"
+    child(root, "crash-once-the-candidate-is-kept", CRASHED)
+
+    assert rows(root, "SELECT state FROM agent_attempts") == (("LAUNCH_ARMED",),)
+    child(root, "read-candidate")
+    assert (root / "kept-tree").read_text(encoding="utf-8") == (
+        root / "pinned-tree"
+    ).read_text(encoding="utf-8")
+
+
+def test_the_attempt_whose_candidate_survived_still_reports_it_possibly_ran(
+    tmp_path: Path,
+) -> None:
+    """Kept work does not settle an armed attempt; only its own store can.
+
+    A candidate standing in the store says the work exists, never that the
+    attempt finished. Reading it as an ending would turn every crash after a
+    capture into a silent success, so the recovery answers exactly what it did
+    before this slice: this attempt possibly ran, and a human decides.
+    """
+
+    root = tmp_path / "kept-then-recovered"
+    child(root, "crash-once-the-candidate-is-kept", CRASHED)
+
+    child(root, "recover")
+
+    assert (root / "projected-attempt-state").read_text(encoding="utf-8") == (
+        "POSSIBLY_RAN"
+    )

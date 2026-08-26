@@ -26,11 +26,22 @@ from atelier2.contracts.project_sources import CandidateTree, ProjectSourcePin
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
 
 
-class CandidateStoreUnavailable(Exception):
+class CandidateNotKept(Exception):
+    """This capture ended with no candidate, whatever the reason was.
+
+    The caller of a capture has exactly one decision to make about every way it
+    can fail -- the attempt must not be allowed to succeed -- so the ways share a
+    name it can catch. Without it that caller would list the reasons it happens
+    to know today, and the next reason added here would escape it silently,
+    leaving the attempt armed and its replay reporting that it possibly ran.
+    """
+
+
+class CandidateStoreUnavailable(CandidateNotKept):
     """The store could not answer, so nothing is claimed about the work."""
 
 
-class CandidateCaptureConflict(Exception):
+class CandidateCaptureConflict(CandidateNotKept):
     """This attempt is already anchored at other work than the work offered.
 
     One attempt is one piece of work. Two different trees under one attempt would
@@ -39,7 +50,7 @@ class CandidateCaptureConflict(Exception):
     """
 
 
-class CandidateTreeUnrepresentable(Exception):
+class CandidateTreeUnrepresentable(CandidateNotKept):
     """The workspace holds something no tree of this store can carry.
 
     A nested repository is the case that exists: it would be recorded as a link

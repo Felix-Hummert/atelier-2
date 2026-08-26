@@ -202,8 +202,17 @@ Removal never follows a symbolic link out and never touches the root itself. Thi
 is a directory holding pinned material, not an operating-system sandbox: the
 process still runs as the serving user and can name other paths.
 
-P2a candidate store (`.atelier2-candidates.git`, ADR 0011 decision 2) is built
-and deliberately unwired until P2b.
+What an attempt made now outlives the directory it was made in. Its finished
+work is captured into the project's own candidate store
+(`.atelier2-candidates.git`, ADR 0011 decision 2) after any granted check has
+run and before the attempt is completed, anchored under the attempt that made
+it. The two writes share no transaction -- one is a git ref, the other a durable
+row -- so the order carries the promise: no attempt is ever read as succeeded
+without its work kept, and a capture that fails ends the attempt `FAILED` under
+`CANDIDATE_CAPTURE_FAILED` rather than letting a run claim work it cannot show.
+A crash between the two leaves the work readable beside an attempt that reports
+it possibly ran. Nothing deletes a candidate yet: the store grows until the
+project root is destroyed.
 
 An attempt now leaves behind what it did, not only what it answered. The
 executor decodes its provider's own structured stream into one neutral shape --
@@ -1037,11 +1046,16 @@ such a node runs, the command the project's own manifest declares under
 `[tool.atelier2.verification]` is run in that attempt's own leased directory --
 the project decides what verifies it, never the agent and never the atelier.
 A command that exits zero leaves durable proof of exactly which command ran,
-how it ended and the hash of what it wrote, beside the agent receipt whose
-provider bytes stay its own. A command that exits nonzero ends the attempt
-`FAILED` under `PROJECT_VERIFICATION_FAILED`, names how it ended on the
+how it ended and the hash of what it wrote. That proof belongs to the attempt
+that redeemed the grant, not to the attempt's success: it is kept whenever the
+check passed, including where the attempt then failed for a reason of its own --
+an answer the schema refused, a declared refusal, or work that could not be kept
+-- so a run that verified clean is never indistinguishable from one whose check
+was never satisfied. Only a passing check is ever recorded: the stored exit code
+is fixed at zero, so a redemption cannot say a command failed. A command that exits nonzero ends the
+attempt `FAILED` under `PROJECT_VERIFICATION_FAILED`, names how it ended on the
 `failed` `node-receipt/v3`, and writes no agent receipt, no `AGENT_COMPLETED`,
-and no `tool_redemptions` row. A granted verification that exceeds its
+and no `tool_redemptions` row -- there is nothing it redeemed. A granted verification that exceeds its
 declared `timeout_seconds` after the claim ends the same way: the attempt is
 `FAILED` under `PROJECT_VERIFICATION_FAILED`, the `failed` `node-receipt/v3`
 reason names the timeout, and the attempt is not left `LAUNCH_ARMED`. The

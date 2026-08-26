@@ -98,6 +98,13 @@ class AgentAttemptFailureCode(StrEnum):
     # would write that a form refused what no form saw. A timeout has no exit
     # code, so it must not invent one.
     PROJECT_VERIFICATION_FAILED = "PROJECT_VERIFICATION_FAILED"
+    # Everything went right up to the end: the process answered, the schema
+    # admitted the bytes, any granted check passed -- and the work itself could
+    # not be kept past the directory it was made in. Every other code here would
+    # be a durable lie about that: nothing died, no form refused anything, and no
+    # verification failed. What is lost is the work, not the answer, and only a
+    # word of its own can say so to whoever reads this attempt later.
+    CANDIDATE_CAPTURE_FAILED = "CANDIDATE_CAPTURE_FAILED"
 
 
 MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES = 2_048

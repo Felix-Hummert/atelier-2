@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from atelier2.adapters.bounded_processes import bounded_process_answer
+from atelier2.adapters.candidate_store import GitCandidateTreeStore
 from atelier2.adapters.project_source import LocalGitProjectSource
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.project_sources import ProjectSourcePin
@@ -76,11 +77,36 @@ class DeclaredVerification:
     timeout_seconds: float
 
 
-def declared_project(project_root: Path) -> DeclaredProject:
-    """The project one root declares: its git source, and what that source verifies."""
+def declared_project(project_checkout: Path, database_path: Path) -> DeclaredProject:
+    """The project one checkout declares, and where this runtime keeps its work.
 
-    source = LocalGitProjectSource(project_root)
-    return DeclaredProject(source, LocalProjectVerificationRunner(source))
+    Two paths rather than one, because they answer different questions. The
+    checkout is what the project *is*: the repository whose commits its pins
+    name. The database says where this runtime's project root is, and the
+    candidate store is derived from it exactly as the agent-control root is --
+    so ADR 0011's placement rule holds by construction: what a project writes
+    goes under its own root, and the operator's checkout is only ever read.
+    """
+
+    source = LocalGitProjectSource(project_checkout)
+    return DeclaredProject(
+        source,
+        LocalProjectVerificationRunner(source),
+        GitCandidateTreeStore(project_checkout, database_path),
+    )
+
+
+def refuse_unusable_project_checkout(project_checkout: Path) -> None:
+    """Refuse a checkout that cannot be pinned, or that declares no verification.
+
+    The two questions an operator naming a root needs answered while he is still
+    reading, asked without composing a runtime. Neither depends on where this
+    installation would keep that project's candidates, so neither has to wait
+    for a database path that the process asking does not yet have.
+    """
+
+    source = LocalGitProjectSource(project_checkout)
+    LocalProjectVerificationRunner(source).preflight(source.head())
 
 
 class LocalProjectVerificationRunner:
