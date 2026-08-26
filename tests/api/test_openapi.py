@@ -337,10 +337,10 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head adds `WorkItemOrderResource` to the orders a V3 start accepts
-    and publishes the three project-source problems on that operation: a caller
-    names an item in the connected project's tracker, the start reads it, and
-    the ways that read can fail are answers this door can now give (#712).
+    it. This head publishes what a V3 agent node may say about the role it
+    declares: `difficulty` (`RoleDifficulty`), `kind` (`RoleKind`),
+    `family_differs_from` and an exact `model` pin, so an author reading the
+    description sees the whole grammar the parser accepts (#711).
     Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 
