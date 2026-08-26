@@ -19,8 +19,9 @@ from atelier2.contracts.work_items import (
     ObservedWorkItemRevision,
     WorkItemChangeMarker,
     WorkItemKind,
+    WorkItemOrderDocument,
+    read_work_item_order_document,
     work_item_order_document,
-    work_item_reference_in,
 )
 
 _ITEM = TrackerItemReference("gh:712")
@@ -122,24 +123,91 @@ def test_the_house_schema_admits_the_order_document_it_describes(body: bytes) ->
     assert isinstance(verdict, InstanceAccepted), verdict
 
 
-def test_a_stored_order_names_the_item_a_retry_compares_against() -> None:
-    """A second read of one item differs in bytes; the item it names does not."""
+def test_a_written_order_reads_back_as_the_document_it_was_written_from() -> None:
+    """A retry compares the item, so reading one back has to be exact."""
 
-    assert work_item_reference_in(work_item_order_document(revision())) == _ITEM.value
-    assert (
-        work_item_reference_in(work_item_order_document(revision(b"edited since")))
-        == _ITEM.value
+    document = read_work_item_order_document(work_item_order_document(revision()))
+
+    assert document == WorkItemOrderDocument(
+        body="work item body",
+        change_marker='W/"5f2a"',
+        digest=revision().digest.value,
+        kind=WorkItemKind.ISSUE,
+        observed_at=_OBSERVED_AT.value,
+        reference=_ITEM.value,
     )
+
+
+def test_two_reads_of_one_item_read_back_as_the_same_item() -> None:
+    edited = read_work_item_order_document(
+        work_item_order_document(revision(b"edited since"))
+    )
+
+    assert edited is not None
+    assert edited.reference == _ITEM.value
 
 
 @pytest.mark.parametrize(
     "document",
-    [b"not json", b"[]", b'{"body": "no reference"}', b'{"reference": ""}', b"\xff"],
-    ids=["not-json", "not-an-object", "no-reference", "empty-reference", "not-utf8"],
+    [
+        b"not json",
+        b"[]",
+        b'{"body": "no other field"}',
+        b"\xff",
+        json.dumps(
+            {
+                "body": "work item body",
+                "change_marker": 'W/"5f2a"',
+                "digest": "0" * 64,
+                "kind": "issue",
+                "observed_at": "2026-08-26T09:15:00Z",
+                "reference": "gh:712",
+            }
+        ).encode(),
+        json.dumps(
+            {
+                "body": "work item body",
+                "change_marker": 'W/"5f2a"',
+                "digest": revision().digest.value,
+                "kind": "merge_request",
+                "observed_at": "2026-08-26T09:15:00Z",
+                "reference": "gh:712",
+            }
+        ).encode(),
+        json.dumps(
+            {
+                "body": "work item body",
+                "change_marker": 'W/"5f2a"',
+                "digest": revision().digest.value,
+                "kind": "issue",
+                "observed_at": "yesterday",
+                "reference": "gh:712",
+            }
+        ).encode(),
+        json.dumps(
+            {
+                "body": "work item body",
+                "change_marker": 'W/"5f2a"',
+                "digest": revision().digest.value,
+                "extra": "field",
+                "kind": "issue",
+                "observed_at": "2026-08-26T09:15:00Z",
+                "reference": "gh:712",
+            }
+        ).encode(),
+    ],
+    ids=[
+        "not-json",
+        "not-an-object",
+        "incomplete",
+        "not-utf8",
+        "digest-that-is-not-the-body's",
+        "a-kind-no-tracker-answers",
+        "an-instant-that-is-not-one",
+        "a-field-the-writer-never-writes",
+    ],
 )
-def test_bytes_that_name_no_item_answer_nothing_rather_than_raising(
-    document: bytes,
-) -> None:
-    """Material nobody read from a tracker is identified by its bytes instead."""
+def test_bytes_this_module_never_wrote_are_not_that_document(document: bytes) -> None:
+    """Complete is the point: a partial match would let a value mean a read."""
 
-    assert work_item_reference_in(document) is None
+    assert read_work_item_order_document(document) is None

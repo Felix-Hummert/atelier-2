@@ -185,8 +185,18 @@ there is nothing to answer from does the start read the item and ask again. So a
 retry neither re-reads a moving object nor turns an unreachable tracker into a
 failed retry — and because the identity of a work-item order is the item it
 names rather than the bytes of one read, a race between two starts of the same
-run resolves to one run rather than to a conflict. The reading stays outside the
-store's transaction, which is the other reason it cannot be a single ask.
+run resolves to one run rather than to a conflict. Material beside it is
+answered the same way without a read: an artifact resolves inside the store.
+The reading stays outside the store's transaction, which is the other reason it
+cannot be a single ask.
+
+**That identity is only as honest as the row it is read from**, so a stored
+value under this schema is verified before it decides anything: it must hash to
+the hash stored beside it and be the complete document the one writer of that
+row produces — the same completeness the start demands before writing one.
+Neither can fail for a row this product wrote, so a failure is durable state
+that lies, and the start stops on it rather than deciding "same run" from bytes
+nobody can vouch for.
 
 And a run's material is what the platform said *at that moment*: two starts
 naming the same item across an edit are two runs with two different values,
@@ -868,9 +878,14 @@ this record borrows that owner rather than opening a second vocabulary.
   refused by that bound, again with nothing written.
 - **(2026-08-26 amendment, #712)** A retry of a run that already exists answers
   from what that run pinned without reading the tracker at all — proven with an
-  edited item, an unreachable platform and a deleted item — while a retry naming
-  a different item is a conflict rather than that run; and a read whose write
-  failed leaves nothing behind, so the next start reads again.
+  edited item, an unreachable platform, a deleted item, and a start that names
+  an artifact beside the item — while a retry naming a different item is a
+  conflict rather than that run; and a read whose write failed leaves nothing
+  behind, so the next start reads again.
+- **(2026-08-26 amendment, #712)** A stored order under the work-item schema
+  that does not hash to the hash beside it, or is not the complete document its
+  writer produces, stops the next start as corrupt durable state rather than
+  being read as an identity.
 - **(2026-08-25 amendment, #642-Journal)** A durable projection, event, receipt,
   and log all show no credential or secret material for a `push-atelier-commit`
   run under whichever credential handoff it is specified for — the PAT file

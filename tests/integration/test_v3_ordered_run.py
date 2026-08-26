@@ -30,8 +30,10 @@ from typing import Any, Never
 import pytest
 import sqlalchemy as sa
 import uvicorn
+from dbos import DBOSClient
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
@@ -1723,38 +1725,245 @@ def test_a_retry_naming_another_item_is_a_conflict_rather_than_the_same_run(
     assert counting.reads == 0
 
 
-def test_a_read_whose_write_failed_leaves_nothing_and_the_retry_starts_the_run(
+MATERIAL_NAME = "material"
+
+
+def work_item_and_material_document(
+    work_item_hash: PublishedRevisionHash, material_hash: PublishedRevisionHash
+) -> bytes:
+    """One agent that reads a work item and material published beside it."""
+
+    return (
+        f"""format_version: 3
+name: Cook to order
+graph_inputs:
+  - name: {ORDER_NAME}
+    schema:
+      ref: work-item-schema
+      revision: {work_item_hash.value}
+  - name: {MATERIAL_NAME}
+    schema:
+      ref: any-json
+      revision: {material_hash.value}
+nodes:
+  - id: cook
+    type: agent
+    role: cook
+    mode: headless
+    instruction: Cook exactly what the order says.
+    inputs:
+      - name: {ORDER_NAME}
+        from:
+          graph_input: {ORDER_NAME}
+      - name: {MATERIAL_NAME}
+        from:
+          graph_input: {MATERIAL_NAME}
+""".encode()
+        + declared_output()
+    )
+
+
+def start_with_work_item_and_artifact(
+    client: TestClient,
+    workflow: WorkflowRevision,
+    bindings: AgentBindingSet,
+    run_id: str,
+    artifact_hash: str,
+) -> Any:
+    binding = bindings.bindings[0]
+    return client.post(
+        API_PREFIX + "/runs",
+        json={
+            "workflow_format_version": 3,
+            "run_id": run_id,
+            "workflow_revision_hash": workflow.revision_hash.value,
+            "agent_bindings": [
+                {
+                    "role": binding.role.value,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash.value
+                    ),
+                }
+            ],
+            "orders": [
+                {"name": ORDER_NAME, "work_item": ASKED_ITEM.value},
+                {"name": MATERIAL_NAME, "artifact_hash": artifact_hash},
+            ],
+        },
+    )
+
+
+def test_a_retry_mixing_a_work_item_with_an_artifact_is_the_same_run(
     runtime: DbosRuntime,
 ) -> None:
-    """The read is not a commitment: a failed write leaves no run and no order.
+    """An artifact is a read of this store, so it costs the tracker nothing.
 
-    The store is made to refuse the write by handing the start a workflow
-    revision it does not carry, which is the same shape a write failure has
-    from the caller's side: an answer, and nothing durable behind it.
+    A start that named both would otherwise have to re-read the item just to
+    find out that the run it already started is the one it asked for.
+    """
+
+    publish(runtime, WORK_ITEM_SCHEMA, ANY_JSON_SCHEMA)
+    workflow = WorkflowRevision(
+        work_item_and_material_document(
+            WORK_ITEM_SCHEMA.revision_hash, ANY_JSON_SCHEMA.revision_hash
+        )
+    )
+    DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
+    bindings = bind_cook(runtime)
+    published = DbosArtifactStore(runtime.engine).publish_artifact(
+        Artifact(b'{"portions": 2}')
+    )
+    assert isinstance(published, (ArtifactCreated, ArtifactExisting)), published
+    address = published.artifact.artifact_hash.value
+
+    started = start_with_work_item_and_artifact(
+        work_item_client(runtime, WorkItemRevisionObserved(observed_item())),
+        workflow,
+        bindings,
+        "v3/work-item-and-artifact",
+        address,
+    )
+    assert started.status_code == 201, started.text
+
+    counting = _CountingTracker(WorkItemRevisionObserved(observed_item()))
+    retried = start_with_work_item_and_artifact(
+        durable_api_client(
+            runtime, served_project_id=SERVED_PROJECT, tracker_item_source=counting
+        ),
+        workflow,
+        bindings,
+        "v3/work-item-and-artifact",
+        address,
+    )
+
+    assert retried.status_code == 200
+    assert counting.reads == 0
+
+
+def fabricate_run_with_order(
+    runtime: DbosRuntime, source_run_id: str, run_id: str, **corrupt: object
+) -> None:
+    """A second run whose stored order is what the corruption says it is.
+
+    `run_inputs_v3` refuses updates and deletes -- the store means it when it
+    says an order is immutable -- so a row that lies is built by insertion,
+    copying a real start and bending only what the case is about.
+    """
+
+    with runtime.engine.begin() as connection:
+        run = dict(
+            connection.execute(sa.select(runs).where(runs.c.run_id == source_run_id))
+            .mappings()
+            .one()
+        )
+        order = dict(
+            connection.execute(
+                sa.select(run_inputs_v3).where(run_inputs_v3.c.run_id == source_run_id)
+            )
+            .mappings()
+            .one()
+        )
+        connection.execute(
+            runs.insert().values(
+                **{
+                    **run,
+                    "run_id": run_id,
+                    "bootstrap_workflow_id": f"{run['bootstrap_workflow_id']}-second",
+                }
+            )
+        )
+        connection.execute(
+            run_inputs_v3.insert().values(**{**order, "run_id": run_id, **corrupt})
+        )
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        {"value": b'{"reference": "gh:712"}'},
+        {"value_hash": "b" * 64},
+        {"value": b"not a document at all"},
+    ],
+    ids=["incomplete-document", "hash-that-is-not-its-value", "not-json"],
+)
+def test_a_stored_order_that_contradicts_itself_stops_the_next_start(
+    runtime: DbosRuntime, corrupt: dict[str, object]
+) -> None:
+    """A retry decides `same run` from the stored row, so the row must be honest.
+
+    Under the work-item schema only this product writes that value, and it
+    writes the whole document with the hash beside it. A row that is anything
+    else is durable state that lies, and the start stops on it rather than
+    answering an identity read off bytes nobody can vouch for.
     """
 
     workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
-    unpublished = WorkflowRevision(
-        ordered_document(WORK_ITEM_SCHEMA.revision_hash) + b"\n# not published\n"
+    started = start_with_work_item(
+        work_item_client(runtime, WorkItemRevisionObserved(observed_item())),
+        workflow,
+        bindings,
+        "v3/honest-order",
+    )
+    assert started.status_code == 201
+    fabricate_run_with_order(runtime, "v3/honest-order", "v3/corrupt-order", **corrupt)
+
+    stopped = start_with_work_item(
+        work_item_client(runtime, WorkItemRevisionObserved(observed_item())),
+        workflow,
+        bindings,
+        "v3/corrupt-order",
     )
 
-    refused = start_with_work_item(
-        work_item_client(runtime, WorkItemRevisionObserved(observed_item())),
-        unpublished,
+    assert stopped.status_code == 500
+    assert stopped.json()["type"].endswith("durable-state-corrupt")
+
+
+def test_a_read_whose_write_failed_leaves_nothing_and_the_retry_starts_the_run(
+    runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The read is not a commitment: a failed write leaves no run and no order.
+
+    The failure is injected where the write is already complete but not yet
+    committed -- the enqueue at the end of the start's own transaction -- so
+    the item really was read, the whole start really rolled back, and the retry
+    is a first start rather than a repeat.
+    """
+
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+    enqueued = DBOSClient.enqueue_in_transaction
+
+    def refuse_to_commit(*arguments: object, **keywords: object) -> None:
+        raise OperationalError("enqueue", {}, Exception("the disk is full"))
+
+    monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", refuse_to_commit)
+    counting = _CountingTracker(WorkItemRevisionObserved(observed_item()))
+
+    failed = start_with_work_item(
+        durable_api_client(
+            runtime, served_project_id=SERVED_PROJECT, tracker_item_source=counting
+        ),
+        workflow,
         bindings,
         "v3/unwritten",
     )
-    assert refused.status_code == 404
+
+    assert failed.status_code == 503
+    assert counting.reads == 1
     assert_no_run(runtime, "v3/unwritten")
 
+    monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", enqueued)
+    retried = _CountingTracker(WorkItemRevisionObserved(observed_item()))
     started = start_with_work_item(
-        work_item_client(runtime, WorkItemRevisionObserved(observed_item())),
+        durable_api_client(
+            runtime, served_project_id=SERVED_PROJECT, tracker_item_source=retried
+        ),
         workflow,
         bindings,
         "v3/unwritten",
     )
 
     assert started.status_code == 201
+    assert retried.reads == 1
     assert stored_order(runtime, "v3/unwritten")[0] == work_item_order_document(
         observed_item()
     )

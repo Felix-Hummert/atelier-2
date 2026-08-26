@@ -24,6 +24,7 @@ inside an order value (ADR 0010 decision 1, 2026-08-26 amendment).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
@@ -36,6 +37,8 @@ from atelier2.contracts.queue_projection import (
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.schemas_v3 import SUPPORTED_DIALECT
 from atelier2.contracts.when import RECORDED_AT_PATTERN, RecordedAt
+
+_RECORDED_AT_INSTANT: Final = re.compile(RECORDED_AT_PATTERN)
 
 MAXIMUM_WORK_ITEM_CHANGE_MARKER_CHARACTERS = 1_024
 
@@ -198,24 +201,58 @@ two can never drift apart.
 """
 
 
-def work_item_reference_in(document: bytes) -> str | None:
-    """Which item a stored work-item order names, or nothing if it names none.
+_WORK_ITEM_ORDER_FIELDS: Final = frozenset(
+    _WORK_ITEM_ORDER_SCHEMA["required"]  # type: ignore[arg-type]
+)
 
-    Two starts of one run are the same start when they name the same item; the
-    bytes cannot answer that, because a second read of a moving object differs
-    from the first by design. The reference inside the value is what survives
-    that, and it is already there.
 
-    A value that is not a work-item document at all answers `None` rather than
-    raising: the caller then identifies it by its bytes, which is the right
-    answer for material nobody read from a tracker.
+@dataclass(frozen=True)
+class WorkItemOrderDocument:
+    """One work-item order value, read back as the fields this module writes."""
+
+    body: str
+    change_marker: str
+    digest: str
+    kind: WorkItemKind
+    observed_at: str
+    reference: str
+
+
+def read_work_item_order_document(document: bytes) -> WorkItemOrderDocument | None:
+    """These bytes as the complete document `work_item_order_document` writes.
+
+    Complete is the point, not merely parseable: every field this module writes
+    is present, no other is, and the digest is the one those body bytes have.
+    A reader that accepted less would let a value under the work-item schema
+    mean something no read produced -- which is exactly what a stored order
+    under that schema is not allowed to be.
+
+    `None` says these bytes are not that document. Whether that is a caller's
+    material or durable state that lies is the caller's judgement, and the two
+    answers differ: one refuses a start, the other says the store is corrupt.
     """
 
     try:
         value = json.loads(document)
     except (json.JSONDecodeError, UnicodeDecodeError):
         return None
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or set(value) != _WORK_ITEM_ORDER_FIELDS:
         return None
-    reference = value.get("reference")
-    return reference if isinstance(reference, str) and reference else None
+    if not all(isinstance(field_value, str) for field_value in value.values()):
+        return None
+    if value["kind"] not in tuple(kind.value for kind in WorkItemKind):
+        return None
+    if not value["reference"] or not value["change_marker"]:
+        return None
+    if _RECORDED_AT_INSTANT.fullmatch(value["observed_at"]) is None:
+        return None
+    if value["digest"] != Sha256Hash.of(value["body"].encode("utf-8")).value:
+        return None
+    return WorkItemOrderDocument(
+        value["body"],
+        value["change_marker"],
+        value["digest"],
+        WorkItemKind(value["kind"]),
+        value["observed_at"],
+        value["reference"],
+    )
