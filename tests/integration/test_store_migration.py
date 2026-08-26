@@ -34,7 +34,7 @@ from atelier2.adapters.dbos.run_transitions import event_from_record
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
     _AGENT_ATTEMPTS_TRIGGERS,
-    _EFFECT_INTENTS_ABANDONMENT_TRIGGER,
+    _EFFECT_INTENTS_ABANDONMENT_TRIGGERS,
     _EFFECT_INTENTS_TRIGGERS,
     _PREDECESSOR_ATTEMPTS_BEFORE_THE_TRANSCRIPT,
     _PREDECESSOR_INTENTS_BEFORE_ABANDONMENT,
@@ -4030,13 +4030,14 @@ _PARKED_CURRENT_INTENTS_V38 = "effect_intents_after_abandonment"
 def _revert_the_abandoned_intent_state(connection: sqlite3.Connection) -> None:
     """Restore the intent table as every schema up to V37 published it.
 
-    The #705 hop widened one CHECK and added the trigger guarding the word it
-    admits; no earlier hop moved this table at all, so one published record is
-    the record for every version before V38, and each fixture's own pinned
+    The #705 hop widened one CHECK and added the two triggers guarding the word
+    it admits; no earlier hop moved this table at all, so one published record
+    is the record for every version before V38, and each fixture's own pinned
     fingerprint refuses it the moment anything else about it drifted.
     """
 
-    connection.execute(f"DROP TRIGGER {_EFFECT_INTENTS_ABANDONMENT_TRIGGER}")
+    for trigger in _EFFECT_INTENTS_ABANDONMENT_TRIGGERS:
+        connection.execute(f"DROP TRIGGER {trigger}")
     _rebuild_product_table(
         connection,
         effect_intents,
@@ -4050,7 +4051,7 @@ def _revert_the_abandoned_intent_state(connection: sqlite3.Connection) -> None:
 def _create_exact_v37_store(database_path: Path) -> None:
     """A current store with no word for an abandoned intent: the V37 shape.
 
-    V37 differs from the current schema in one CHECK and one trigger -- no
+    V37 differs from the current schema in one CHECK and two triggers -- no
     column, no key, no other table -- and the pinned V37 fingerprint refuses
     the fixture the moment anything else about it drifts.
     """
@@ -4072,9 +4073,12 @@ _DRIVERLESS_RUN = RunId("live/wirken-ohne-antwort")
 _DRIVERLESS_ACTION_NODE = "wirken"
 _DRIVERLESS_INTENT_KEY = LogicalEffectKey("wirken/ohne-antwort")
 _DRIVERLESS_REQUEST = b"wirken/anfrage-ohne-antwort"
+_DRIVERLESS_REVISION = WorkflowRevision(b"name: wirkstatt\n")
+"""The one document the run below is bound to, so a test asking what the
+hop carried names the same revision the fixture wrote."""
 
 
-def _prepared_intent_values(revision_hash: WorkflowRevisionHash) -> dict[str, object]:
+def _prepared_intent_values() -> dict[str, object]:
     """One intent prepared and never resolved, with every column that fills.
 
     Written from the contracts rather than driven through the store: what a hop
@@ -4087,7 +4091,7 @@ def _prepared_intent_values(revision_hash: WorkflowRevisionHash) -> dict[str, ob
         "run_id": _DRIVERLESS_RUN.value,
         "canonical_request": _DRIVERLESS_REQUEST,
         "request_hash": Sha256Hash.of(_DRIVERLESS_REQUEST).value,
-        "workflow_revision_hash": revision_hash.value,
+        "workflow_revision_hash": _DRIVERLESS_REVISION.revision_hash.value,
         "adapter_revision": "loopback-v1",
         "destination_identity": "loopback-test",
         "adapter_operational_identity": "operational/loopback",
@@ -4107,8 +4111,8 @@ def _create_populated_v37_store(database_path: Path) -> None:
     engine = create_canonical_engine(database_path)
     initialize_schema(engine)
     engine.dispose()
-    revision = WorkflowRevision(b"name: wirkstatt\n")
-    values = _prepared_intent_values(revision.revision_hash)
+    revision = _DRIVERLESS_REVISION
+    values = _prepared_intent_values()
     with sqlite3.connect(database_path) as connection:
         _revert_the_abandoned_intent_state(connection)
         connection.execute("PRAGMA foreign_keys=ON")
@@ -4192,7 +4196,7 @@ def test_every_v37_intent_column_crosses_the_v38_rebuild_unchanged(
 
     database_path = tmp_path / "atelier.sqlite"
     _create_populated_v37_store(database_path)
-    columns = tuple(_prepared_intent_values(WorkflowRevision(b"x").revision_hash))
+    columns = tuple(_prepared_intent_values())
     projected = ", ".join(columns)
     with sqlite3.connect(database_path) as connection:
         predecessor_row = connection.execute(
@@ -4297,6 +4301,57 @@ def test_a_v38_intent_reaches_abandoned_only_from_prepared_and_never_leaves(
             sqlite3.IntegrityError, match="invalid effect intent abandonment"
         ):
             connection.execute(_ABANDON_THE_PREPARED_INTENT, attempted)
+
+
+def test_a_v38_intent_is_never_written_abandoned_in_the_first_place(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The transition trigger guards one door; an insert is the other.
+
+    ABANDONED means "the run this intent was prepared on ended without
+    resolving it", and every word in that sentence is about a row that already
+    existed. A freshly written one has no run behind it that ended and no
+    prepared request anyone ever meant to send, so an intent born abandoned
+    would be an ending the store could not account for -- and the transition
+    trigger, which only ever sees an UPDATE, would never notice.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v37_store(database_path)
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+    values = _prepared_intent_values() | {
+        "logical_key": "wirken/nie-vorbereitet",
+        "state": EffectIntentState.ABANDONED.value,
+        "state_version": EFFECT_INTENT_VERSION_ABANDONED.value,
+    }
+
+    statement = (
+        f"INSERT INTO effect_intents ({', '.join(values)}) "
+        f"VALUES ({', '.join('?' for _ in values)})"
+    )
+
+    with (
+        sqlite3.connect(database_path) as connection,
+        pytest.raises(
+            sqlite3.IntegrityError, match="effect intents are not born abandoned"
+        ),
+    ):
+        connection.execute(statement, tuple(values.values()))
+
+    # The same row, born the one way an intent is born, still lands: what the
+    # trigger refuses is the word, not the write.
+    born = values | {
+        "state": EffectIntentState.PREPARED.value,
+        "state_version": EFFECT_INTENT_VERSION_INITIAL.value,
+    }
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(statement, tuple(born.values()))
+        connection.commit()
+        assert connection.execute(
+            "SELECT state FROM effect_intents WHERE logical_key = ?",
+            (born["logical_key"],),
+        ).fetchone() == (EffectIntentState.PREPARED.value,)
 
 
 def test_the_intent_ledger_is_guarded_again_after_the_v38_rebuild(

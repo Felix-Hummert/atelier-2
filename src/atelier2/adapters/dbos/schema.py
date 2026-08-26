@@ -214,9 +214,10 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # from PREPARED, never left, claiming neither a receipt nor an absence, keeping
 # the prepared request bytes readable. `effect_intents_abandonment` admits
 # exactly that one transition and refuses every other write touching the word, so
-# no confirmed intent can be overwritten by it and no abandoned one revived. Only
-# the vocabulary widens; every stored row keeps its bytes, its key and its
-# meaning.
+# no confirmed intent can be overwritten by it and no abandoned one revived, and
+# `effect_intents_no_abandoned_insert` closes the other door: a row born
+# ABANDONED would be an ending no run ever reached. Only the vocabulary widens;
+# every stored row keeps its bytes, its key and its meaning.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -251,7 +252,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     35: "29df9a195316ce94527be2c906e4dc4104e00b2cb16caa9bfada17fecb5a21d5",
     36: "c9f4b5d99a9ff8e33796e36151b66f00175eceaa797e30461bf6e01264266ce8",
     37: "e41cf318212e0a79d6605413b5818ef68d6245baaf05a53b888b8aac40131a13",
-    38: "98fa78e3f120816e098ae987a05c45ebe1dd43c00095f10a7d3c3a3398dd8756",
+    38: "aebd8b6bad8a719864f0c02828db643dd3dcbe7c89198beb6a8c1c4c30100824",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -1952,6 +1953,13 @@ _PRODUCT_TRIGGERS = {
                    AND NEW.reconciliation_owner_command_id IS NULL)
         BEGIN
           SELECT RAISE(ABORT, 'invalid effect intent abandonment');
+        END
+    """,
+    "effect_intents_no_abandoned_insert": """
+        CREATE TRIGGER effect_intents_no_abandoned_insert
+        BEFORE INSERT ON effect_intents
+        WHEN NEW.state = 'ABANDONED' BEGIN
+          SELECT RAISE(ABORT, 'effect intents are not born abandoned');
         END
     """,
     "effect_receipts_no_update": """
@@ -4324,7 +4332,14 @@ _EFFECT_INTENTS_TRIGGERS = (
     "effect_intents_binding_no_update",
     "effect_intents_no_delete",
 )
-_EFFECT_INTENTS_ABANDONMENT_TRIGGER = "effect_intents_abandonment"
+_EFFECT_INTENTS_ABANDONMENT_TRIGGERS = (
+    "effect_intents_abandonment",
+    "effect_intents_no_abandoned_insert",
+)
+"""Both doors onto the word this hop admits: the transition that may reach it,
+and the insert that may not. A CHECK admits a vocabulary; only these say which
+writes are allowed to use it, and an ending that could be written straight into
+a fresh row would be an abandonment no run ever ended."""
 _PREDECESSOR_INTENTS_BEFORE_ABANDONMENT = "effect_intents_before_abandonment"
 
 
@@ -4334,8 +4349,8 @@ def _apply_v37_to_v38(connection: sqlite3.Connection) -> None:
     Every stored intent is PREPARED, waiting, reconciling or CONFIRMED, which
     the widened CHECK still admits, so nothing is reinterpreted: a prepared
     intent this store already holds keeps standing prepared until the sweep that
-    owns the word decides about it. The abandonment trigger is installed after
-    the rebuild rather than carried through it, because it does not exist at the
+    owns the word decides about it. The abandonment triggers are installed after
+    the rebuild rather than carried through it, because they do not exist at the
     predecessor and the rebuild drops the triggers it is given before it parks
     the table.
     """
@@ -4348,7 +4363,8 @@ def _apply_v37_to_v38(connection: sqlite3.Connection) -> None:
         _VERSION_THIRTY_SEVEN,
         _VERSION_THIRTY_EIGHT,
     )
-    connection.execute(_PRODUCT_TRIGGERS[_EFFECT_INTENTS_ABANDONMENT_TRIGGER])
+    for trigger in _EFFECT_INTENTS_ABANDONMENT_TRIGGERS:
+        connection.execute(_PRODUCT_TRIGGERS[trigger])
     _raise_declared_version(connection, _VERSION_THIRTY_SEVEN, _VERSION_THIRTY_EIGHT)
 
 
