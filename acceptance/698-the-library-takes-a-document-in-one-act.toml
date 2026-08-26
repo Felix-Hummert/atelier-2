@@ -55,7 +55,7 @@ text = "A changed revision of a workflow whose authored name the catalog already
 [[sentence]]
 id = "a-refused-addition-publishes-nothing"
 requirement = "REQ-KATALOG-05"
-text = "When the library refuses the addition -- because the document is unrecognised, because its kind is not held, because its bytes author no usable name, or because the lineage that holds the name is retired -- the refusal names its own reason and no workflow revision, published revision or catalog row is left behind."
+text = "When the library refuses the addition -- because the document is unrecognised, because two markers claim it, because its kind is not held, because its bytes author no usable name, because this build will not store the workflow they describe, because the envelope is oversized, or because the lineage that holds the name is retired -- the refusal names its own reason and no workflow revision, published revision or catalog row is left behind."
 
 [[sentence]]
 id = "an-authored-agent-file-becomes-a-library-entry-in-the-same-call"

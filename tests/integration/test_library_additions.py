@@ -37,7 +37,7 @@ from atelier2.contracts.catalog_v3 import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
-from tests.scenarios.api import durable_api_client
+from tests.scenarios.api import api_limits, durable_api_client
 from tests.scenarios.runtime import exact_output_runtime
 
 ACTOR = "operator"
@@ -55,6 +55,16 @@ nodes:
 LATER_DOCUMENT = DOCUMENT.replace(
     b"Review one bounded diff.", b"Review one bounded diff, twice."
 )
+TWO_NODE_DOCUMENT = (
+    DOCUMENT
+    + b"""  - id: report
+    type: agent
+    role: reviewer
+    mode: headless
+    instruction: Say what the review found.
+"""
+)
+"""A recognised, properly named workflow that only a node bound turns away."""
 AGENT_DOCUMENT = (
     b"---\n"
     b"name: stage-name-witness\n"
@@ -200,6 +210,28 @@ def test_an_addition_a_retired_name_refuses_leaves_no_revision_behind(
 
     assert refused.status_code == 410, refused.text
     assert str(refused.json()["type"]).endswith("catalog-lineage-retired")
+    assert catalog_snapshot(runtime) == before
+
+
+@pytest.mark.proves("a-refused-addition-publishes-nothing")
+def test_a_workflow_this_build_will_not_store_leaves_every_table_untouched(
+    runtime: DbosRuntime,
+) -> None:
+    """The refusal that gets furthest: recognised, named, and still not storable.
+
+    Every other refusal is decided before the document is a candidate for the
+    store at all. This one is turned away by the same bound the publication door
+    enforces, after the kind and the name were already read, so it is where a
+    door that published first and admitted second would leave the revision
+    behind.
+    """
+    api = durable_api_client(runtime, api_limits(maximum_workflow_nodes=1))
+    before = catalog_snapshot(runtime)
+
+    refused = add(api, TWO_NODE_DOCUMENT)
+
+    assert refused.status_code == 422, refused.text
+    assert str(refused.json()["type"]).endswith("invalid-workflow-document")
     assert catalog_snapshot(runtime) == before
 
 
