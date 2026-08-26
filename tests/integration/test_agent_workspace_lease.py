@@ -555,14 +555,20 @@ def test_attesting_a_scratch_root_does_not_create_git_markers_on_its_ancestors(
 
     scratch = agent_scratch_root(tmp_path / "nested")
     before = tuple(
-        (ancestor, (ancestor / ".git").exists())
+        (
+            ancestor,
+            (ancestor / ".git").exists(),
+            (ancestor / ".git").is_symlink(),
+        )
         for ancestor in (scratch, *scratch.parents)
     )
 
     LocalAgentAttemptWorkspaceOwner(scratch).close()
 
-    for ancestor, existed in before:
-        assert (ancestor / ".git").exists() is existed
+    for ancestor, existed, linked in before:
+        marker = ancestor / ".git"
+        assert marker.exists() is existed
+        assert marker.is_symlink() is linked
 
 
 @pytest.mark.proves("an-unusable-scratch-root-is-refused-before-the-server-exists")
