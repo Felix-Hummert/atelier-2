@@ -695,7 +695,7 @@ def _grok_transcript(values: Sequence[object]) -> AttemptTranscript | None:
 
 
 def _unreadable_grok_transcript(standard_output: bytes) -> AttemptTranscript | None:
-    """Keep an unreadable frame as evidence instead of silently dropping it."""
+    """Keep an unreadable raw frame as bounded, redacted evidence."""
 
     if not standard_output:
         return None
@@ -789,24 +789,27 @@ class GrokSubscriptionExecutor:
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
+        if len(completion.standard_output) > GROK_SUBSCRIPTION_FRAME_BYTES:
+            return _unusable_provider_answer(
+                _unreadable_grok_transcript(completion.standard_output)
+            )
         values = _json_values(completion.standard_output)
         if values is None:
             return _unusable_provider_answer(
                 _unreadable_grok_transcript(completion.standard_output)
             )
-        if (
-            completion.return_code != 0
-            or len(completion.standard_output) > GROK_SUBSCRIPTION_FRAME_BYTES
-        ):
+        if completion.return_code != 0:
             return _unusable_provider_answer(_grok_transcript(values))
         if not values:
             return GrokProviderEndedWithoutFinalMessage()
         envelope = values[-1]
         if not isinstance(envelope, dict):
             return GrokProviderEndedWithoutFinalMessage(_grok_transcript(values))
-        # The last JSON value alone can be the final envelope. Measured on grok
-        # 1.0.4 / grok-4.6 (#392), values before it are progress messages;
-        # `text` is the final answer and `thought` is narration. `--json-schema`
+        # Last value wins: only the final JSON value can be the envelope. Measured
+        # on grok 1.0.4 / grok-4.6 (#392), values before it are progress messages;
+        # a progress value after an envelope is therefore
+        # GrokProviderEndedWithoutFinalMessage. `text` is the final answer and
+        # `thought` is narration. `--json-schema`
         # adds `structuredOutput` as the parsed form of `text`, not a later
         # assistant message. An empty or missing `text` is a named refusal —
         # passing narration, the parsed value, or the raw frame would hand the
