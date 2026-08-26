@@ -32,6 +32,7 @@ from atelier2.api.references import (
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
+    MAXIMUM_RUN_ORDERS,
 )
 from atelier2.api.wire import events, library, requests, resources
 from atelier2.contracts.agent_attempts import REPLACEMENT_AGENT_ATTEMPT_ORDINAL
@@ -141,6 +142,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "RunResourceV2.agent_attempts": REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     "RunResourceV2.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "RunResourceV3.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
+    "RunResourceV3.orders": MAXIMUM_RUN_ORDERS,
     # A document declares no more roles than a run can bind: one role is one
     # binding, so the two carry the same limit for the same reason.
     "WorkflowGraphResourceV3.agent_roles": MAXIMUM_RUN_AGENT_BINDINGS,

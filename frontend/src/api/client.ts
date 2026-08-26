@@ -757,6 +757,26 @@ const runCancellabilitySchema = z
     }
   });
 
+/**
+ * One order a V3 run was started with, told safely -- never its own bytes.
+ *
+ * An order's material can be a secret a caller pasted by mistake, or an
+ * artifact up to the server's own artifact size bound, and this resource is
+ * served on every listed run -- so it never echoes the order's bytes at all.
+ * `bytes` is how large the order's material is; `schema_revision_hash` is
+ * the schema it satisfies. No text preview travels here yet: that needs a
+ * redaction owner the server does not carry until #666 lands.
+ */
+const runOrderSchema = z
+  .object({
+    name: z.string().min(1),
+    bytes: nonnegativeSafeInteger,
+    schema_revision_hash: sha256
+  })
+  .strict();
+
+export type RunOrder = z.infer<typeof runOrderSchema>;
+
 const runV3Schema = z
   .object({
     workflow_format_version: z.literal(3),
@@ -766,6 +786,7 @@ const runV3Schema = z
     agent_binding_set_hash: sha256,
     run_configuration_revision_hash: sha256,
     agent_bindings: z.array(agentBindingV2Schema).max(100),
+    orders: z.array(runOrderSchema),
     state_version: nonnegativeSafeInteger,
     state: z.enum(RUN_STATES_V3),
     current_node_id: z.string().min(1),
