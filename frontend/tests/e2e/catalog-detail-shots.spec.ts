@@ -153,7 +153,7 @@ test("captures the Catalog list, detail, and start sheet at both requested width
   }
 });
 
-test("starts an admitted catalog workflow with its observed work item and an interim role configuration", async ({ page }) => {
+test("proves(a-v3-workflow-is-started-from-the-picker): starts an admitted Catalog workflow with its observed work item and an interim role configuration", async ({ page }) => {
   const workflowName = "start-sheet-work-item-e2e";
   const workItemSchema = await page.request.post("/atelier/api/v1/schema-revisions", {
     headers: { "content-type": "application/json" },

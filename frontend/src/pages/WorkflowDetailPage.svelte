@@ -3,6 +3,7 @@
 
   import type { CockpitApi, WorkflowRevisionDetail } from "../api/client";
   import BackLink from "../components/BackLink.svelte";
+  import ProofAnchor from "../components/ProofAnchor.svelte";
   import ReadState from "../components/ReadState.svelte";
   import WorkflowGraphDrawing from "../components/WorkflowGraphDrawing.svelte";
   import WorkflowNodePreviewPanel from "../components/WorkflowNodePreviewPanel.svelte";
@@ -20,6 +21,7 @@
   } from "../lib/readResource";
   import { readEveryRevision } from "../lib/runPages";
   import { groupSavedWorkflows } from "../lib/savedWorkflows";
+  import { summarizeOrderSchema, typeLabel, type OrderSchemaSummary } from "../lib/orderSchema";
   import { WORKSHOP_DESTINATION } from "../lib/workshop";
   import { catalogPageCopy, catalogStateNote, workflowDetailCopy } from "../lib/catalogPageCopy";
 
@@ -42,8 +44,19 @@
    * rather than a transport failure.
    */
   type DetailOutcome =
-    | { kind: "found"; detail: WorkflowRevisionDetail; catalogState: CatalogNameState }
+    | {
+        kind: "found";
+        detail: WorkflowRevisionDetail;
+        catalogState: CatalogNameState;
+        orders: readonly DeclaredOrderSummary[];
+      }
     | { kind: "not-found" };
+
+  type DeclaredOrderSummary = {
+    readonly name: string;
+    readonly schemaRef: string;
+    readonly summary: OrderSchemaSummary | null;
+  };
 
   let detail: RetainedRead<DetailOutcome, ReadFailure> = retainedRead<DetailOutcome, ReadFailure>();
   let failureMessage: string | null = null;
@@ -52,6 +65,8 @@
 
   $: found = detail.confirmed?.kind === "found" ? detail.confirmed : null;
   $: graph = found?.detail.graph ?? null;
+  $: orders = found?.orders ?? [];
+  $: revisionHash = found?.detail.workflow_revision_hash ?? "";
   $: retired = found?.catalogState.kind === "retired";
   $: catalogNote = catalogStateNote(found?.catalogState);
   /**
@@ -106,7 +121,8 @@
         return;
       }
       const full = await cockpitApi.getWorkflowRevision(head.workflow_revision_hash);
-      detail = confirmRead(detail, begun.generation, { kind: "found", detail: full, catalogState });
+      const orders = await declaredOrderSummaries(full);
+      detail = confirmRead(detail, begun.generation, { kind: "found", detail: full, catalogState, orders });
     } catch (error) {
       failureMessage = humanErrorMessage(error, workflowDetailCopy.detailUnavailable);
       detail = failRead(detail, begun.generation, {
@@ -122,6 +138,25 @@
 
   function closePanel(): void {
     selectedNodeId = null;
+  }
+
+  async function declaredOrderSummaries(
+    revision: WorkflowRevisionDetail
+  ): Promise<readonly DeclaredOrderSummary[]> {
+    if (revision.graph.workflow_format_version !== 3) return [];
+    return Promise.all(
+      revision.graph.orders.map(async (order) => {
+        try {
+          return {
+            name: order.name,
+            schemaRef: order.schema.ref,
+            summary: summarizeOrderSchema(await cockpitApi.getSchemaRevision(order.schema.revision))
+          };
+        } catch {
+          return { name: order.name, schemaRef: order.schema.ref, summary: null };
+        }
+      })
+    );
   }
 
   /** Opens the catalog's one start sheet for this exact revision. */
@@ -161,11 +196,44 @@
       <p class="failure" role="alert">{cannotBeStarted(graph.not_executable_reason)}</p>
     {/if}
 
+    <div class="detail-provenance">
+      <ProofAnchor
+        label={workflowDetailCopy.workflowRevision}
+        seals={workflowDetailCopy.sealsWorkflowRevision}
+        value={revisionHash}
+      />
+    </div>
+
     {#if previews !== null}
       <WorkflowGraphDrawing {previews} {loops} onSelect={selectNode} {selectedNodeId} />
     {:else}
       <p class="muted">{wrapDisplayCopy(workflowDetailCopy.graphUnavailable)}</p>
     {/if}
+
+    <section class="declared-orders" aria-labelledby="workflow-orders-title">
+      <h2 id="workflow-orders-title">{wrapDisplayCopy(workflowDetailCopy.orders)}</h2>
+      {#if orders.length === 0}
+        <p class="muted">{wrapDisplayCopy(workflowDetailCopy.noOrders)}</p>
+      {:else}
+        {#each orders as order (order.name)}
+          <article class="declared-order">
+            <h3>{order.name}</h3>
+            <p class="order-schema">{wrapDisplayCopy(workflowDetailCopy.schema)} · {order.schemaRef}</p>
+            {#if order.summary === null}
+              <p class="muted">{wrapDisplayCopy(workflowDetailCopy.schemaUnavailable)}</p>
+            {:else if order.summary.fields.length === 0}
+              <p class="muted">{wrapDisplayCopy(workflowDetailCopy.schemaAcceptsAny)}</p>
+            {:else}
+              <ul>
+                {#each order.summary.fields as field (field.name)}
+                  <li>{field.name} · {typeLabel(field.types)}{field.required ? ` · ${workflowDetailCopy.required}` : ""}</li>
+                {/each}
+              </ul>
+            {/if}
+          </article>
+        {/each}
+      {/if}
+    </section>
 
     {#if selectedPreview !== null}
       <WorkflowNodePreviewPanel preview={selectedPreview} onClose={closePanel} />
@@ -225,5 +293,38 @@
     color: var(--ink-dim);
     border-color: var(--line);
     cursor: not-allowed;
+  }
+
+  .detail-provenance {
+    margin: 0 0 var(--space-5);
+    padding: var(--space-3);
+    border-left: var(--edge-mark) solid var(--ink-dim);
+    background: color-mix(in srgb, currentColor 4%, transparent);
+  }
+
+  .declared-orders {
+    display: grid;
+    gap: var(--space-3);
+    margin-top: var(--space-5);
+  }
+
+  .declared-orders h2,
+  .declared-order h3,
+  .declared-order p,
+  .declared-order ul {
+    margin: 0;
+  }
+
+  .declared-order {
+    display: grid;
+    gap: var(--space-1);
+    padding: var(--space-3);
+    border: var(--edge) solid var(--line);
+    border-radius: var(--r);
+  }
+
+  .order-schema {
+    color: var(--ink-dim);
+    font-size: var(--text-xs);
   }
 </style>

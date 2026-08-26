@@ -9,7 +9,8 @@ import {
   type Problem,
   type WorkflowRevisionSummary
 } from "../../src/api/client";
-import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
+import { catalogPageCopy, workflowDetailCopy } from "../../src/lib/catalogPageCopy";
+import { shortFingerprint } from "../../src/lib/fingerprint";
 import {
   reportConnectionLost,
   reportConnectionRestored,
@@ -23,6 +24,7 @@ const SIBLING_HASH = "f".repeat(64);
 const AGENT_HASH = "d".repeat(64);
 const LINEAGE_ID = "e".repeat(64);
 const WORKFLOW_NAME = "iterate-code";
+const SECOND_WORKFLOW_NAME = "review-code";
 const EXACT_YAML = "format_version: 3\nname: iterate-code\n";
 const EXACT_AGENT = "---\nname: scribe\ndescription: Writes.\n---\n\nYou write.\n";
 
@@ -185,6 +187,46 @@ describe("the catalog room", () => {
     ).toBe(true);
   });
 
+  it("proves(a-details-panel-shows-the-published-substance) proves(a-revision-hash-is-a-proof-anchor): names the published revision as proof and summarizes each declared order", async () => {
+    const orderSchemaHash = "c".repeat(64);
+    openCatalog({
+      ...listing([workflowSummary()]),
+      ...admittedName(),
+      getWorkflowRevision: vi.fn(async () => ({
+        workflow_revision_hash: WORKFLOW_HASH,
+        document_base64: "YQ==",
+        graph: {
+          workflow_format_version: 3 as const,
+          executable: true,
+          not_executable_reason: null,
+          node_count: 1,
+          agent_roles: [],
+          orders: [{ name: "portions", schema: { ref: "portions-schema", revision: orderSchemaHash } }],
+          wait_answer_schemas: [],
+          node_previews: [],
+          loops: [],
+          name: WORKFLOW_NAME,
+          description: null
+        }
+      })),
+      getSchemaRevision: vi.fn(async () => ({
+        type: "object",
+        properties: { portions: { type: "integer" } },
+        required: ["portions"]
+      }))
+    });
+
+    await screen.findByText(catalogPageCopy.startable);
+    await fireEvent.click(screen.getByRole("link", { name: catalogPageCopy.details }));
+
+    const revision = await screen.findByRole("group", { name: workflowDetailCopy.workflowRevision });
+    expect(revision.textContent).toContain(shortFingerprint(WORKFLOW_HASH));
+    expect(revision.textContent).toContain(workflowDetailCopy.sealsWorkflowRevision);
+    expect((await screen.findByRole("heading", { name: workflowDetailCopy.orders })).isConnected).toBe(true);
+    expect(screen.getByText(/portions-schema/).isConnected).toBe(true);
+    expect(screen.getByText(/portions · integer · required/).isConnected).toBe(true);
+  });
+
   it("opens the selected workflow's start sheet instead of leaving the catalog detail", async () => {
     openCatalog({
       ...listing([workflowSummary()]),
@@ -241,7 +283,7 @@ describe("the catalog room", () => {
     expect(screen.queryByRole("link", { name: catalogPageCopy.details })).toBeNull();
   });
 
-  it("offers admission for a published workflow the catalog does not hold yet", async () => {
+  it("proves(an-unadmitted-or-uncatalogable-published-name-is-named-in-the-picker): offers admission for a published workflow the catalog does not hold yet", async () => {
     openCatalog({ ...listing([workflowSummary()]), ...unlistedName() });
 
     expect((await screen.findByText(catalogPageCopy.notAdmitted)).isConnected).toBe(true);
@@ -324,7 +366,7 @@ describe("the catalog room", () => {
     expect(screen.queryByText(catalogPageCopy.startable)).toBeNull();
   });
 
-  it("names why a published workflow cannot run instead of offering admission", async () => {
+  it("proves(a-revision-no-run-can-start-says-so-before-the-operator-tries) proves(a-revision-no-run-can-start-says-so-where-it-was-published): names why a published workflow cannot run instead of offering admission", async () => {
     openCatalog({
       ...listing([
         workflowSummary({
@@ -342,6 +384,32 @@ describe("the catalog room", () => {
       (await screen.findByText(/declares no output/)).isConnected
     ).toBe(true);
     expect(screen.queryByRole("button", { name: catalogPageCopy.admit })).toBeNull();
+  });
+
+  it("proves(the-picker-offers-every-saved-workflow-not-only-its-first-page): lists a workflow that arrives only after the first page", async () => {
+    openCatalog({
+      listWorkflowRevisions: vi.fn(async (after?: string) =>
+        after === undefined
+          ? { items: [workflowSummary()], next_after_revision_hash: WORKFLOW_HASH }
+          : {
+              items: [
+                workflowSummary({
+                  workflow_revision_hash: SIBLING_HASH,
+                  name: SECOND_WORKFLOW_NAME
+                })
+              ],
+              next_after_revision_hash: null
+            }
+      ),
+      getRevisionByName: vi.fn(async (name: string) => ({
+        display_name: name,
+        lineage_id: LINEAGE_ID,
+        workflow_revision_hash: name === WORKFLOW_NAME ? WORKFLOW_HASH : SIBLING_HASH,
+        revision_number: 1
+      }))
+    });
+
+    expect((await screen.findByText(SECOND_WORKFLOW_NAME)).isConnected).toBe(true);
   });
 
   it("shows a published agent by name and says no executor runs it yet", async () => {

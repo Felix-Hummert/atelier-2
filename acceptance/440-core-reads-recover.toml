@@ -10,23 +10,3 @@ story = "https://github.com/FlexOr2/atelier-2/issues/440"
 id = "the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read"
 requirement = "REQ-UIQ-10"
 text = "The Workbench names an incomplete or unavailable three-list read without exposing transport trivia, preserves confirmed run truth, and offers one accessible Retry that repeats only that logical read until newly confirmed truth replaces the failure."
-
-[[sentence]]
-id = "the-project-preserves-confirmed-truth-and-retries-only-its-failed-read"
-requirement = "REQ-UIQ-10"
-text = "Project names an incomplete or unavailable joint read of its complete run list and published workflow names without exposing transport trivia, preserves its last jointly confirmed rows and names, and offers one accessible Retry that repeats only that logical read until newly confirmed truth replaces the failure."
-
-[[sentence]]
-id = "new-run-preserves-workflow-truth-and-retries-only-the-workflow-read"
-requirement = "REQ-UIQ-10"
-text = "New Run confirms its complete saved-workflow list and every distinct authored name's catalog state only when each admitted catalog head is present under that name in the same listing; otherwise it names the read incomplete or unavailable without exposing transport trivia, preserves its last jointly confirmed picker rows, newest-head ordering, and catalog forms, and offers one accessible Retry that repeats only that logical GET set until newly confirmed truth replaces the failure."
-
-[[sentence]]
-id = "new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-read"
-requirement = "REQ-UIQ-10"
-text = "New Run confirms every published-agent page together or none, distinguishes an unavailable read from a confirmed empty list, preserves its last complete agent list and every current draft and expert value through refresh failure, and offers one accessible Retry that repeats only that agent-list GET set until newly confirmed truth replaces the failure."
-
-[[sentence]]
-id = "new-run-confirms-workflow-detail-before-committing-selection-and-draft"
-requirement = "REQ-UIQ-10"
-text = "New Run commits a saved workflow revision to its picker and draft only after the exact immutable revision-hash detail confirms, retains prior confirmed selection and draft across unavailable, mismatched, or stale responses, and offers one accessible Retry that repeats only the failed exact-detail GET; Details, Edit, and selection share that per-hash truth without refreshing a confirmed detail."
