@@ -1,10 +1,15 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/440"
+# Room names revised on 26.08.2026 (#773, refs #698, #704), in the same act
+# that carried this file's rule identifiers to their successors: ADR 0019
+# retired the Board and the Workflows room, and the surfaces these sentences
+# measure moved with them. Every sentence identifier stands unchanged -- the
+# discipline #521 already used -- so no proof and no claim is renamed.
 
 [[sentence]]
 id = "the-studio-preserves-confirmed-truth-and-retries-only-its-failed-read"
 requirement = "REQ-UIQ-10"
-text = "Studio names an incomplete or unavailable three-list read without exposing transport trivia, preserves confirmed run truth, and offers one accessible Retry that repeats only that logical read until newly confirmed truth replaces the failure."
+text = "The Workbench names an incomplete or unavailable three-list read without exposing transport trivia, preserves confirmed run truth, and offers one accessible Retry that repeats only that logical read until newly confirmed truth replaces the failure."
 
 [[sentence]]
 id = "the-project-preserves-confirmed-truth-and-retries-only-its-failed-read"

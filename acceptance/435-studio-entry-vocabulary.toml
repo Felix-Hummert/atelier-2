@@ -1,7 +1,12 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/435"
+# Room names revised on 26.08.2026 (#773, refs #698, #704), in the same act
+# that carried this file's rule identifiers to their successors: ADR 0019
+# retired the Board and the Workflows room, and the surfaces these sentences
+# measure moved with them. Every sentence identifier stands unchanged -- the
+# discipline #521 already used -- so no proof and no claim is renamed.
 
 [[sentence]]
 id = "studio-entry-copy-is-owned-and-survives-pseudo-locale"
 requirement = "REQ-UIQ-12"
-text = "Studio takes its header and empty-state display vocabulary from one Studio owner and keeps both visible under the longer pseudo-locale form at desktop and 390px."
+text = "The Workbench takes its header and empty-state display vocabulary from one Workbench owner and keeps both visible under the longer pseudo-locale form at desktop and 390px."

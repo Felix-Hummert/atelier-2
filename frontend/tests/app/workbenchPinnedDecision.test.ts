@@ -137,7 +137,7 @@ describe("the Workbench pins open decisions (#580)", () => {
     });
     openWorkbench([waitingRun()], { answer });
 
-    const needsYou = await screen.findByRole("region", { name: workbenchPageCopy.needsYouTitle });
+    const needsYou = await screen.findByRole("region", { name: question });
     expect((await within(needsYou).findByRole("heading", { name: question })).isConnected).toBe(true);
     await within(needsYou).findByRole("button", { name: runPageCopy.answerYes });
 
@@ -151,21 +151,21 @@ describe("the Workbench pins open decisions (#580)", () => {
     expect(within(conversation).queryByRole("heading", { name: question })).toBeNull();
     expect(within(needsYou).getByRole("heading", { name: question }).isConnected).toBe(true);
 
-    // Leaving for the Board and coming back is not answering: the pin is read
-    // again and stands.
+    // Leaving for another room and coming back is not answering: the pin is
+    // read again and stands.
     const rail = screen.getByRole("navigation", { name: "Workshop" });
-    await fireEvent.click(within(rail).getByRole("link", { name: "Board" }));
-    await screen.findByRole("heading", { level: 1, name: "Board" });
+    await fireEvent.click(within(rail).getByRole("link", { name: "Catalog" }));
+    await screen.findByRole("heading", { level: 1, name: "Catalog" });
     await fireEvent.click(
       within(screen.getByRole("navigation", { name: "Workshop" })).getByRole("link", {
-        name: workbenchPageCopy.title
+        name: new RegExp(workbenchPageCopy.title)
       })
     );
-    const returned = await screen.findByRole("region", { name: workbenchPageCopy.needsYouTitle });
+    const returned = await screen.findByRole("region", { name: question });
     await within(returned).findByRole("button", { name: runPageCopy.answerYes });
 
     // Answering sends the exact JSON the click decides, through the one audited
-    // POST -- the same body the Board card and the run page send.
+    // POST -- the same body the run page sends.
     await fireEvent.click(within(returned).getByRole("button", { name: runPageCopy.answerYes }));
     await waitFor(() => expect(answer).toHaveBeenCalledTimes(1));
     const body = JSON.parse(globalThis.atob((answer.mock.calls[0]?.[0] as { body_base64: string }).body_base64));
@@ -175,28 +175,24 @@ describe("the Workbench pins open decisions (#580)", () => {
       answer_base64: btoa("true")
     });
 
-    // Answered, the pin is retired -- the region says nothing needs the
-    // operator now rather than keeping a question the run no longer asks.
-    expect((await screen.findByText(workbenchPageCopy.needsYouNone)).isConnected).toBe(true);
-    expect(
-      within(screen.getByRole("region", { name: workbenchPageCopy.needsYouTitle })).queryByRole(
-        "heading",
-        { name: question }
-      )
-    ).toBeNull();
+    // Answered, the pin is retired -- the room shows the question no longer,
+    // rather than keeping one the run no longer asks.
+    await waitFor(() => expect(screen.queryByRole("heading", { name: question })).toBeNull());
   });
 
   it("greets an empty workshop instead of pinning a decision that is not there", async () => {
     openWorkbench([]);
 
     await screen.findByRole("heading", { level: 1, name: workbenchPageCopy.title });
-    expect((await screen.findByText(workbenchPageCopy.needsYouNone)).isConnected).toBe(true);
+    // Nothing waits, so nothing is said about it: the absence is the shape of
+    // the room, not a sentence (ADR 0019 §3).
+    expect(screen.queryByRole("heading", { name: question })).toBeNull();
   });
 
   it("leads a written decision to the run page rather than offering buttons the pin cannot answer here", async () => {
     openWorkbench([waitingRun()], { getWorkflowRevision: vi.fn(async () => revision("free")) });
 
-    const needsYou = await screen.findByRole("region", { name: workbenchPageCopy.needsYouTitle });
+    const needsYou = await screen.findByRole("region", { name: question });
     await within(needsYou).findByRole("heading", { name: question });
     expect(within(needsYou).queryByRole("button", { name: runPageCopy.answerYes })).toBeNull();
     const open = within(needsYou).getByRole("link", { name: `${workbenchPageCopy.openTheRun} →` });

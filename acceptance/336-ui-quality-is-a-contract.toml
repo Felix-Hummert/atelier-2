@@ -5,13 +5,18 @@ story = "https://github.com/FlexOr2/atelier-2/issues/336"
 # first two machine checkers run in CI. The other seven criteria stay
 # UNGEBUNDEN — they name a review ritual, a click budget, a later measurement,
 # or the operator's last word, none of which this landing claims to have.
+# Room names revised on 26.08.2026 (#773, refs #698, #704), in the same act
+# that carried this file's rule identifiers to their successors: ADR 0019
+# retired the Board and the Workflows room, and the surfaces these sentences
+# measure moved with them. Every sentence identifier stands unchanged -- the
+# discipline #521 already used -- so no proof and no claim is renamed.
 
 [[sentence]]
 id = "core-surfaces-render-owned-display-strings-under-a-pseudo-locale"
 requirement = "REQ-UIQ-12"
-text = "Studio, New Run, and the Run page render the display strings their existing vocabulary owner holds even when those strings are wrapped in a pseudo-locale, so a second hardcoded copy of an owned string cannot hide on those surfaces."
+text = "The Workbench, New Run, and the Run page render the display strings their existing vocabulary owner holds even when those strings are wrapped in a pseudo-locale, so a second hardcoded copy of an owned string cannot hide on those surfaces."
 
 [[sentence]]
 id = "core-surfaces-have-no-unnamed-axe-violations"
 requirement = "REQ-UIQ-05"
-text = "axe-core, run to WCAG 2.2 AA over Studio, New Run, and the Run page, reports no violation that is not named in the checked-in baseline with an owning work item."
+text = "axe-core, run to WCAG 2.2 AA over the Workbench, New Run, and the Run page, reports no violation that is not named in the checked-in baseline with an owning work item."

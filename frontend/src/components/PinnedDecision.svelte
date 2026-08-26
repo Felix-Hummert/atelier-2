@@ -14,6 +14,7 @@
   } from "../lib/waitAnswerDelivery";
   import { confirmedDecisionLabel, decisionLabel } from "../lib/waitDecision";
   import { workbenchPageCopy } from "../lib/workbenchPageCopy";
+  import { workbenchQuestionAttribute, workbenchQuestions } from "../lib/workbenchQuestions";
 
   /**
    * One open decision, pinned so it cannot scroll away in the Workbench stream
@@ -23,8 +24,7 @@
    * door leads to the whole run.
    *
    * The answer travels the one audited path `waitAnswerDelivery.ts` owns -- the
-   * same path the run page's composer and the Board's inline card use, this the
-   * third surface to consume it, so a decision made here carries the identical
+   * same path the run page's composer uses, so a decision made here carries the identical
    * durable pending/uncertain/retry journal and conflict handling rather than a
    * second implementation. A boolean or enum wait is answered by a click whose
    * exact JSON the click decides; every other shape (a free/written answer)
@@ -62,7 +62,7 @@
       : confirmedDecisionLabel(graph.kind, pendingAnswer, runPageCopy.answerYes, runPageCopy.answerNo);
 
   // One load per waiting node, guarded by node identity the same way the run
-  // page and the Board guard theirs: a run update that leaves this node
+  // page guards its own: a run update that leaves this node
   // unchanged never re-reads, and a move to another node reloads honestly.
   let loadedNodeKey = "";
   $: void loadForNode(run.public_run_reference, run.workflow_revision_hash, run.current_node_id);
@@ -207,7 +207,7 @@
     waitFailureMessage = outcome.message;
     // A refusal the journal could not keep uncertain (the run already moved on)
     // must show that truth next, not keep offering an answer the run no longer
-    // waits for -- the same no-lie rule the Board card holds to (#572).
+    // waits for.
     if (outcome.pending === null) await refreshCanonicalRun();
   }
 
@@ -253,8 +253,17 @@
     >
     {#if !waitAccepted && !waitBusy}
       <div class="pinned-actions">
-        <button type="button" onclick={() => { void retry(); }}>Retry</button>
-        <button type="button" class="quiet" onclick={() => { void discard(); }}>Discard</button>
+        <button
+          type="button"
+          {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }}
+          onclick={() => { void retry(); }}
+        >Retry</button>
+        <button
+          type="button"
+          class="quiet"
+          {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }}
+          onclick={() => { void discard(); }}
+        >Discard</button>
       </div>
     {/if}
   {:else}
@@ -272,13 +281,13 @@
       <p class="pinned-status" role="status">{wrapDisplayCopy(runPageCopy.questionLooking)}</p>
     {:else if graph.state === "ready" && graph.kind === "boolean"}
       <div class="pinned-buttons" role="group" aria-label={wrapDisplayCopy(runPageCopy.answerLabel)}>
-        <button class="primary" type="button" disabled={waitBusy} onclick={() => { void decide("true"); }}>{wrapDisplayCopy(runPageCopy.answerYes)}</button>
-        <button class="primary" type="button" disabled={waitBusy} onclick={() => { void decide("false"); }}>{wrapDisplayCopy(runPageCopy.answerNo)}</button>
+        <button class="primary" type="button" disabled={waitBusy} {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }} onclick={() => { void decide("true"); }}>{wrapDisplayCopy(runPageCopy.answerYes)}</button>
+        <button class="primary" type="button" disabled={waitBusy} {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }} onclick={() => { void decide("false"); }}>{wrapDisplayCopy(runPageCopy.answerNo)}</button>
       </div>
     {:else if graph.state === "ready" && graph.kind === "enum"}
       <div class="pinned-buttons" role="group" aria-label={wrapDisplayCopy(runPageCopy.answerLabel)}>
         {#each graph.values as value (value)}
-          <button class="primary" type="button" disabled={waitBusy} onclick={() => { void decide(value); }}>{decisionLabel(value)}</button>
+          <button class="primary" type="button" disabled={waitBusy} {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }} onclick={() => { void decide(value); }}>{decisionLabel(value)}</button>
         {/each}
       </div>
     {/if}

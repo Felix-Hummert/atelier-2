@@ -19,11 +19,9 @@ const SAMPLE_WORKFLOW_NAME = "iterate-code";
  * dies on a reload -- the defect this file exists for, one edge further out.
  */
 const REACHED_COLD: Record<CockpitRoute["page"], boolean> = {
-  chat: true,
-  studio: true,
-  project: true,
+  workbench: true,
+  settings: true,
   new: true,
-  workflows: true,
   workflow: true,
   catalog: true,
   history: true,
@@ -69,24 +67,33 @@ describe("the paths the server is asked to serve", () => {
    * a 404 on the server, so the level the workshop makes its primary answer
    * survived a click and died on a reload.
    */
-  it("opens the project level on the canonical project path", () => {
+  it("opens the Settings room on the project path it grew from", () => {
     expect(SERVED_PATHS).toContain("/atelier/project");
-    expect(cockpitRoute("/atelier/project")).toEqual({ page: "project" });
+    expect(cockpitRoute("/atelier/project")).toEqual({ page: "settings" });
+  });
+
+  it("opens the Workbench on the workshop root, where the Board used to stand", () => {
+    expect(SERVED_PATHS).toContain("/atelier");
+    expect(cockpitRoute("/atelier")).toEqual({ page: "workbench" });
+    expect(cockpitRoute("/atelier/chat")).toEqual({ page: "workbench" });
   });
 
   it("still answers an unknown path with not-found", () => {
     expect(cockpitRoute("/atelier/nowhere").page).toBe("not-found");
   });
 
-  it("opens the workflows catalog on its canonical path", () => {
+  // The Workflows room folded into the Catalog (ADR 0019 §1). Its address
+  // keeps working rather than turning a living bookmark into a not-found page.
+  it("opens the Catalog on its own path and on the address the Workflows room left behind", () => {
     expect(SERVED_PATHS).toContain("/atelier/workflows");
-    expect(cockpitRoute("/atelier/workflows")).toEqual({ page: "workflows" });
+    expect(cockpitRoute("/atelier/catalog")).toEqual({ page: "catalog" });
+    expect(cockpitRoute("/atelier/workflows")).toEqual({ page: "catalog" });
   });
 
   it("opens History on its own path, separate from the old project level", () => {
     expect(SERVED_PATHS).toContain("/atelier/history");
     expect(cockpitRoute("/atelier/history")).toEqual({ page: "history" });
-    expect(cockpitRoute("/atelier/project")).toEqual({ page: "project" });
+    expect(cockpitRoute("/atelier/project")).toEqual({ page: "settings" });
   });
 
   it("round-trips a workflow name a person actually publishes, spaces included", () => {
@@ -100,28 +107,20 @@ describe("the paths the server is asked to serve", () => {
   });
 });
 
-describe("where a run was opened from (#654)", () => {
-  it("carries the chat origin from the link the Workbench builds, reload included", () => {
-    expect(cockpitRoute(runPath(SAMPLE_PUBLIC_REFERENCE, "chat"))).toEqual({
-      page: "run",
-      publicReference: SAMPLE_PUBLIC_REFERENCE,
-      origin: "chat"
-    });
-  });
-
-  it("keeps the Board as the trail's home for a run link that names no origin", () => {
+describe("a run's own address", () => {
+  it("opens the run page from the link every room builds", () => {
     expect(cockpitRoute(runPath(SAMPLE_PUBLIC_REFERENCE))).toEqual({
       page: "run",
-      publicReference: SAMPLE_PUBLIC_REFERENCE,
-      origin: null
+      publicReference: SAMPLE_PUBLIC_REFERENCE
     });
   });
 
-  it("treats an origin it does not know as none rather than a broken page", () => {
-    expect(cockpitRoute(`/atelier/runs/${SAMPLE_PUBLIC_REFERENCE}?from=somewhere`)).toEqual({
+  // Links carrying the old "?from=chat" marker are still in browser histories;
+  // they open the same run rather than a broken page.
+  it("ignores a query a bookmarked link still carries", () => {
+    expect(cockpitRoute(`/atelier/runs/${SAMPLE_PUBLIC_REFERENCE}?from=chat`)).toEqual({
       page: "run",
-      publicReference: SAMPLE_PUBLIC_REFERENCE,
-      origin: null
+      publicReference: SAMPLE_PUBLIC_REFERENCE
     });
   });
 });

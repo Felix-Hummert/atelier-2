@@ -12,7 +12,7 @@ import {
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
-import { projectPageCopy } from "../../src/lib/projectPageCopy";
+import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
 import { standingMarks, standingWords } from "../../src/lib/runState";
 import { cockpitApiStub } from "../support/cockpitApi";
 import {
@@ -99,11 +99,11 @@ describe("the project answers what is happening here", () => {
   });
 
   /**
-   * The project no longer lists runs (#536). The Board owns the live rows and
-   * History owns the landed ones; a third copy of the same list at this level
-   * said nothing neither of them already said. What is left here is what only
-   * this level can answer: how much work this project holds, where it is read,
-   * and who the house reaches for by default.
+   * Settings does not list runs (#536). The Workbench owns the live rows and
+   * History owns the landed ones; a third copy of the same list here said
+   * nothing neither of them already said. What is left is what only this room
+   * can answer: how much work this project holds, and who the house reaches
+   * for by default.
    */
   it("counts the work by what each run is doing, and omits a standing nothing is in", async () => {
     openProject([
@@ -112,7 +112,7 @@ describe("the project answers what is happening here", () => {
       startedRun({ public_run_reference: "run1.Yw", run_id: "gamma" })
     ]);
 
-    const work = await screen.findByRole("region", { name: projectPageCopy.workTitle });
+    const work = await screen.findByRole("region", { name: settingsPageCopy.workTitle });
     await within(work).findAllByRole("listitem");
     const counts = within(work)
       .getAllByRole("listitem")
@@ -125,45 +125,46 @@ describe("the project answers what is happening here", () => {
     expect(within(work).queryByText(standingWords.done)).toBeNull();
   });
 
-  it("carries no run rows of its own, so the Board and History stay the one place each is read", async () => {
+  it("carries no run rows of its own, so the Workbench and History stay the one place each is read", async () => {
     openProject([startedRun({ run_id: "alpha" })]);
 
-    const work = await screen.findByRole("region", { name: projectPageCopy.workTitle });
+    const work = await screen.findByRole("region", { name: settingsPageCopy.workTitle });
     await within(work).findAllByRole("listitem");
 
     expect(screen.queryByRole("link", { name: /alpha/ })).toBeNull();
     expect(within(work).queryByRole("link")).toBeNull();
   });
 
-  it("leads to the three places this project's work is read", async () => {
+  // The rail is the one door between rooms (ADR 0019, Consequences): the cards
+  // that led from here into the Board, History and Workflows were a second door
+  // to a room the rail already opens, so they are gone with the rooms two of
+  // them named.
+  it("offers no second door into a room the rail already opens", async () => {
     openProject([startedRun()]);
 
-    const references = await screen.findByRole("region", {
-      name: projectPageCopy.referencesTitle
-    });
+    await screen.findByRole("region", { name: settingsPageCopy.workTitle });
 
-    expect(
-      within(references)
-        .getAllByRole("link")
-        .map((link) => link.getAttribute("href"))
-    ).toEqual(["/atelier", "/atelier/history", "/atelier/workflows"]);
+    const room = screen.getByRole("region", { name: settingsPageCopy.workTitle });
+    expect(within(room).queryByRole("link")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Board" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Workflows" })).toBeNull();
   });
 
   it("teaches where a first run comes from when this project holds none", async () => {
     openProject([]);
 
-    const work = await screen.findByRole("region", { name: projectPageCopy.workTitle });
+    const work = await screen.findByRole("region", { name: settingsPageCopy.workTitle });
 
-    expect((await within(work).findByText(projectPageCopy.noRuns)).isConnected).toBe(true);
+    expect((await within(work).findByText(settingsPageCopy.noRuns)).isConnected).toBe(true);
     expect(
-      within(work).getByRole("link", { name: projectPageCopy.noRunsNext }).getAttribute("href")
-    ).toBe("/atelier/workflows");
+      within(work).getByRole("link", { name: settingsPageCopy.noRunsNext }).getAttribute("href")
+    ).toBe("/atelier/catalog");
   });
 
   it("offers no manual refresh once the Project read is confirmed", async () => {
     openProject([startedRun()]);
 
-    await screen.findByRole("region", { name: projectPageCopy.workTitle });
+    await screen.findByRole("region", { name: settingsPageCopy.workTitle });
 
     expect(screen.queryByRole("button", { name: /project runs/ })).toBeNull();
   });
@@ -172,7 +173,7 @@ describe("the project answers what is happening here", () => {
     openProject([], { listRuns: vi.fn(() => new Promise<never>(() => undefined)) });
 
     expect((await screen.findByText("Looking…")).isConnected).toBe(true);
-    expect(screen.queryByText(projectPageCopy.noRuns)).toBeNull();
+    expect(screen.queryByText(settingsPageCopy.noRuns)).toBeNull();
   });
 
   it("repeats the same unavailable Project read until success", async () => {
@@ -183,7 +184,7 @@ describe("the project answers what is happening here", () => {
       .mockResolvedValueOnce({ items: [startedRun()], next_after: null });
     openProject([], { listRuns });
 
-    await screen.findByText(projectPageCopy.runsUnavailable);
+    await screen.findByText(settingsPageCopy.runsUnavailable);
     // A fresh query per click, never a held reference: Retry mounts its own
     // control each failed round (ReadState.svelte's pattern for #514), so the
     // operator clicks whatever Retry is on screen right now.
@@ -215,7 +216,7 @@ describe("the project answers what is happening here", () => {
       .mockResolvedValueOnce({ items: [complete], next_after: null });
     openProject([], { listRuns });
 
-    await screen.findByText(projectPageCopy.runsIncomplete);
+    await screen.findByText(settingsPageCopy.runsIncomplete);
     expect(screen.queryByText(standingWords.running)).toBeNull();
     expect(screen.queryByText(/private later-page detail/)).toBeNull();
     expect(listRuns).toHaveBeenNthCalledWith(2, "more");
@@ -223,7 +224,7 @@ describe("the project answers what is happening here", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Retry project runs" }));
 
     expect((await screen.findByText(standingWords.running)).isConnected).toBe(true);
-    expect(screen.queryByText(projectPageCopy.runsIncomplete)).toBeNull();
+    expect(screen.queryByText(settingsPageCopy.runsIncomplete)).toBeNull();
   });
 });
 
@@ -813,24 +814,17 @@ describe("project occupancy editor", () => {
 
 /**
  * `every-level-names-the-way-back-up` said the way leads run → project →
- * studio. It no longer does: the project is the context above the four rail
- * destinations, not a level between them, and a run leads back to the Board it
- * came from. That sentence served the superseded REQ-UI-01 and was retired with
+ * studio. It no longer does: Settings is the context above the three rooms,
+ * reached from the rail's foot in every one of them, so it carries no trail of
+ * its own. That sentence served the superseded REQ-UI-01 and was retired with
  * it in `acceptance/131-the-workshop-has-three-levels.toml` (#552), so this
  * test carries no claim.
  */
-describe("the project names the way back up", () => {
-  it("walks from the project into the Board", async () => {
+describe("Settings is reached from the rail, not from a trail", () => {
+  it("carries no way back of its own", async () => {
     openProject([startedRun()]);
     await screen.findByRole("heading", { name: THE_ONE_PROJECT });
 
-    await fireEvent.click(
-      within(screen.getByRole("navigation", { name: "Where you are" })).getByRole("link", {
-        name: "Board"
-      })
-    );
-
-    expect((await screen.findByRole("heading", { name: "Board" })).isConnected).toBe(true);
-    expect(window.location.pathname).toBe("/atelier");
+    expect(screen.queryByRole("navigation", { name: "Where you are" })).toBeNull();
   });
 });
