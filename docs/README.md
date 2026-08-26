@@ -25,7 +25,7 @@ string.
 | How is it used? | Journeys | [journeys/README.md](journeys/README.md) |
 | What does the machine count as done? | Acceptance | [requirements/README.md](requirements/README.md) |
 | Why was it built this way? | Decisions | Records indexed by [decisions/README.md](decisions/README.md). |
-| What exists today? | Product | [PRODUCT.md](PRODUCT.md). Implementation status. |
+| What exists today? | Product | [PRODUCT.md](PRODUCT.md), the implementation-status index. |
 | How is this installation started? | Operations | [OPERATIONS.md](OPERATIONS.md). The operator runbook for the packaged serve. |
 | How is an executor toolchain pinned? | Operations | [OPERATIONS.md](OPERATIONS.md). An atelier-owned copy; not the operator's daily `~/.local/bin` CLI. |
 
@@ -39,5 +39,6 @@ acceptance trace format.
 
 ## What this map does not do
 
-It does not list every file. It does not restate [PRODUCT.md](PRODUCT.md) or
+It does not list every file. It does not restate the status sections indexed by
+[PRODUCT.md](PRODUCT.md) or
 any requirement. It does not treat a planned layer as present.

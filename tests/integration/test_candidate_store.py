@@ -33,7 +33,6 @@ from atelier2.adapters.candidate_store import (
     PINNED_TREE_REF_PREFIX,
     GitCandidateTreeStore,
 )
-from atelier2.adapters.leased_directory import LeasedDirectoryChanged
 from atelier2.adapters.project_source import (
     LocalGitProjectSource,
     isolated_git_environment,
@@ -43,6 +42,7 @@ from atelier2.contracts.project_sources import CandidateTree, GitObjectFormat
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
 from atelier2.ports.candidate_store import (
     CandidateCaptureConflict,
+    CandidateNotKept,
     CandidateStoreUnavailable,
     CandidateTreeUnrepresentable,
 )
@@ -544,7 +544,13 @@ def test_a_nested_repository_is_refused_before_any_candidate_is_written(
 def test_a_directory_swapped_under_its_lease_is_never_captured_from(
     tmp_path: Path,
 ) -> None:
-    """Capturing happens in the same window the lease identity exists to close."""
+    """Capturing happens in the same window the lease identity exists to close.
+
+    The swap is refused as a candidate that was not kept, not as the raw lease
+    error underneath it: this store is asked between an attempt's last work and
+    its completion, and every way it can fail has to reach that caller in the
+    one shape it catches, or the attempt is left armed.
+    """
 
     project = Project(tmp_path, {"tool.py": COMMITTED})
     lease = project.workspace(AN_ATTEMPT)
@@ -553,7 +559,7 @@ def test_a_directory_swapped_under_its_lease_is_never_captured_from(
     shutil.rmtree(lease.working_directory)
     impostor.rename(lease.working_directory)
 
-    with pytest.raises(LeasedDirectoryChanged):
+    with pytest.raises(CandidateNotKept):
         project.store.capture(project.pin, lease)
 
     assert project.store.read(AN_ATTEMPT) is None

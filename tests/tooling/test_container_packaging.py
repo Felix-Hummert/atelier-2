@@ -24,7 +24,7 @@ CONTAINER_UP = PROJECT_ROOT / "scripts" / "container_up.sh"
 CONTAINER_SNAPSHOT = PROJECT_ROOT / "scripts" / "container_snapshot.sh"
 CONTAINER_SERVE = PROJECT_ROOT / "scripts" / "container_serve.sh"
 OPERATIONS = PROJECT_ROOT / "docs" / "OPERATIONS.md"
-PRODUCT = PROJECT_ROOT / "docs" / "PRODUCT.md"
+PRODUCT_OPERATIONS = PROJECT_ROOT / "docs" / "product" / "operations.md"
 PYPROJECT = PROJECT_ROOT / "pyproject.toml"
 LOCK = PROJECT_ROOT / "uv.lock"
 CI = PROJECT_ROOT / ".github" / "workflows" / "ci.yml"
@@ -1172,7 +1172,7 @@ def test_clean_tree_refusal_bites_when_its_preflight_is_removed(tmp_path: Path) 
 
 def test_docs_state_the_candidate_boundary() -> None:
     operations = OPERATIONS.read_text(encoding="utf-8")
-    product = PRODUCT.read_text(encoding="utf-8")
+    product = PRODUCT_OPERATIONS.read_text(encoding="utf-8")
     for text in (operations, product):
         assert "provider-free" in text
         assert "Runner" in text

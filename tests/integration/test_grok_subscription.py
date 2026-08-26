@@ -7,8 +7,9 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,7 @@ from atelier2.adapters.grok_subscription import (
     WORKSPACE_TOOLS,
     GrokContainmentUnattested,
     GrokExecutableUnsupported,
+    GrokProviderEndedWithoutFinalMessage,
     GrokSubscriptionAuthModeUnsupported,
     GrokSubscriptionExecutorFactory,
     GrokSubscriptionProcessCommand,
@@ -46,6 +48,11 @@ from atelier2.adapters.grok_subscription import (
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
+from atelier2.contracts.agent_transcripts import (
+    AssistantTurn,
+    AttemptTranscript,
+    UnrecognisedProviderOutput,
+)
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -66,6 +73,13 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
+from atelier2.contracts.schemas_v3 import (
+    InstanceAccepted,
+    InstanceRefused,
+    SchemaAccepted,
+    read_instance_document,
+    read_schema_document,
+)
 from atelier2.host import _grok_subscription_settings
 from atelier2.host.serving import HostSettings, compose_application
 from atelier2.ports.agent_attempts import AgentAttemptSucceeded
@@ -87,12 +101,21 @@ from atelier2.ports.durable_runs import (
 )
 from tests.scenarios.agents import (
     agent_attempt_execution,
-    agent_scratch_root,
     leased_directory_identity,
     runtime_workspace_owner,
 )
 
 MEASURED_GROK_VERSION = "1.0.4"
+
+
+@pytest.fixture
+def scratch_root_outside_a_worktree() -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(
+        prefix="atelier2-grok-scratch-", dir="/var/tmp"
+    ) as directory:
+        yield Path(directory)
+
+
 HOST_DOCUMENT = b"""format_version: 2
 start: build
 nodes:
@@ -276,6 +299,12 @@ def measured_headless_json_envelope(
     return json.dumps(envelope).encode()
 
 
+def recorded_grok_json_values(*values: object) -> bytes:
+    """The JSON values grok 1.0.4 concatenated without a record separator."""
+
+    return b"".join(json.dumps(value, ensure_ascii=False).encode() for value in values)
+
+
 def launched(command: AgentProcessCommand, workspace: Path) -> AgentProcessCompletion:
     """Run one prepared command exactly where the attempt leased its ground."""
 
@@ -387,16 +416,32 @@ def test_a_bare_string_schema_does_not_travel_as_json_schema(
     executor.release_credential_channel(command)
 
 
-def test_a_bare_string_schema_answer_is_serialized_as_a_json_string(
+@pytest.mark.parametrize(
+    ("prose", "expected_verdict"),
+    (
+        (
+            "Befund 1: der Diff nennt die apt-Lock-Heilung.\nVerdict: revise",
+            InstanceAccepted,
+        ),
+        ("Befund 1: der Diff nennt die apt-Lock-Heilung.", InstanceRefused),
+    ),
+)
+def test_a_bare_string_schema_answer_is_judged_by_its_declared_schema(
     tmp_path: Path,
+    prose: str,
+    expected_verdict: type[InstanceAccepted | InstanceRefused],
 ) -> None:
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
     executor = GrokSubscriptionExecutorFactory(settings).open()
-    request = subscription_request(declared_output_schema=b'{"type":"string"}')
+    declared_schema = (
+        b'{"$schema":"https://json-schema.org/draft/2020-12/schema",'
+        b'"type":"string",'
+        b'"pattern":"^Befund 1[^0-9][\\\\s\\\\S]*\\\\nVerdict: '
+        b'(accepted|revise)$"}'
+    )
+    request = subscription_request(declared_output_schema=declared_schema)
     command = executor.prepare_process(request)
     invocation = leased(command, leased_workspace(tmp_path))
-    prose = "Befund 1: der Diff nennt die apt-Lock-Heilung."
-
     result = executor.decode_process_completion(
         invocation,
         AgentProcessCompletion(
@@ -410,9 +455,46 @@ def test_a_bare_string_schema_answer_is_serialized_as_a_json_string(
     )
 
     assert isinstance(result, AgentExecutionResult)
-    assert result == AgentExecutionResult(
-        json.dumps(prose, ensure_ascii=False).encode()
+    assert "--json-schema" not in command.arguments
+    assert json.loads(result.output_bytes) == prose
+    schema = read_schema_document(declared_schema)
+    assert isinstance(schema, SchemaAccepted), schema
+    assert isinstance(
+        read_instance_document(result.output_bytes, schema), expected_verdict
     )
+    executor.release_credential_channel(command)
+
+
+@pytest.mark.parametrize(
+    "prose",
+    (
+        "Befund 1: der Diff nennt die apt-Lock-Heilung.\nVerdict: revise",
+        'Befund: "C:\\\\atelier\\\\report.json"',
+    ),
+)
+def test_a_bare_string_schema_answer_is_serialized_as_a_json_string(
+    tmp_path: Path,
+    prose: str,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    request = subscription_request(declared_output_schema=b'{"type":"string"}')
+    command = executor.prepare_process(request)
+    invocation = leased(command, leased_workspace(tmp_path))
+    result = executor.decode_process_completion(
+        invocation,
+        AgentProcessCompletion(
+            0,
+            measured_headless_json_envelope(
+                text=prose,
+                thought="Ich prüfe zuerst die Regeln.",
+            ),
+            b"",
+        ),
+    )
+
+    assert isinstance(result, AgentExecutionResult)
+    assert "--json-schema" not in command.arguments
     assert json.loads(result.output_bytes) == prose
     executor.release_credential_channel(command)
 
@@ -531,6 +613,200 @@ def test_a_non_subscription_profile_is_refused_before_any_invocation(
         executor.prepare_process(request)
 
 
+def test_concatenated_grok_progress_values_stay_in_the_transcript(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    invocation = leased(
+        AgentProcessCommand(
+            ("grok",),
+            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+        ),
+        tmp_path,
+    )
+    first_finding = f"{'Befund'} {1}"
+    progress = (
+        (
+            f'"{first_finding}" is the required first token; I am gathering '
+            "the surrounding contract, callers, and tests."
+        ),
+        (
+            f'"{first_finding}" stays first in the final reply; I am comparing '
+            "the empty-file gate with its host-init twin."
+        ),
+    )
+    answer = '{"verdict":"pass"}'
+    final_envelope = json.loads(
+        measured_headless_json_envelope(
+            text=answer,
+            thought="I have enough evidence to answer now.",
+        )
+    )
+
+    result = executor.decode_process_completion(
+        invocation,
+        AgentProcessCompletion(
+            0,
+            recorded_grok_json_values(*progress, final_envelope),
+            b"",
+        ),
+    )
+
+    assert result == AgentExecutionResult(
+        answer.encode(),
+        AttemptTranscript.of([AssistantTurn(message) for message in progress]),
+    )
+
+
+@pytest.mark.parametrize(
+    "standard_output",
+    [
+        pytest.param(
+            b'{"text":"complete"}{"text":',
+            id="a partial trailing JSON value",
+        ),
+        pytest.param(
+            b"1" + (b"0" * 4_300),
+            id="an integer beyond the JSON decoder limit",
+        ),
+        pytest.param(
+            b'{"text":"complete"}\xff',
+            id="invalid UTF-8 after a JSON value",
+        ),
+    ],
+)
+def test_unreadable_concatenated_grok_values_are_typed_failures(
+    tmp_path: Path, standard_output: bytes
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    invocation = leased(
+        AgentProcessCommand(
+            ("grok",),
+            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+        ),
+        tmp_path,
+    )
+
+    result = executor.decode_process_completion(
+        invocation, AgentProcessCompletion(0, standard_output, b"")
+    )
+
+    assert isinstance(result, AgentExecutionFailure)
+    assert result.code == AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
+    assert result.transcript is not None
+
+
+@pytest.mark.parametrize(
+    ("standard_output", "expected"),
+    [
+        pytest.param(
+            recorded_grok_json_values(7, {"text": '{"verdict":"pass"}'}),
+            AgentExecutionResult(
+                b'{"verdict":"pass"}',
+                AttemptTranscript.of([UnrecognisedProviderOutput("7")]),
+            ),
+            id="a scalar before the envelope",
+        ),
+        pytest.param(
+            recorded_grok_json_values(
+                ["collecting evidence"], {"text": '{"verdict":"pass"}'}
+            ),
+            AgentExecutionResult(
+                b'{"verdict":"pass"}',
+                AttemptTranscript.of(
+                    [UnrecognisedProviderOutput('["collecting evidence"]')]
+                ),
+            ),
+            id="an array before the envelope",
+        ),
+        pytest.param(
+            recorded_grok_json_values(
+                {"text": '{"verdict":"pass"}'}, "still collecting evidence"
+            ),
+            GrokProviderEndedWithoutFinalMessage(
+                AttemptTranscript.of(
+                    [
+                        UnrecognisedProviderOutput(
+                            '{"text":"{\\"verdict\\":\\"pass\\"}"}'
+                        ),
+                        AssistantTurn("still collecting evidence"),
+                    ]
+                )
+            ),
+            id="progress after an envelope means the last value wins",
+        ),
+    ],
+)
+def test_concatenated_grok_values_use_only_the_last_value_as_the_envelope(
+    tmp_path: Path,
+    standard_output: bytes,
+    expected: AgentExecutionResult | GrokProviderEndedWithoutFinalMessage,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    invocation = leased(
+        AgentProcessCommand(
+            ("grok",),
+            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+        ),
+        tmp_path,
+    )
+
+    assert (
+        executor.decode_process_completion(
+            invocation, AgentProcessCompletion(0, standard_output, b"")
+        )
+        == expected
+    )
+
+
+def test_grok_ending_after_concatenated_progress_has_no_final_message(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    invocation = leased(
+        GrokSubscriptionProcessCommand(
+            ("grok",),
+            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+            serialize_free_text_as_json_string=True,
+        ),
+        tmp_path,
+    )
+    progress = (
+        (
+            "Befund 1 is the required first token; I will inspect the "
+            "surrounding owner, callers, and tests for "
+            "`_project_source_connection` before writing it."
+        ),
+        (
+            "Befund 1 still has to name a real defect; next I'll check how "
+            "empty stores are treated at the connect command and in tests."
+        ),
+    )
+    recorded_output = (
+        b'"Befund 1 is the required first token; I will inspect the '
+        b"surrounding owner, callers, and tests for "
+        b'`_project_source_connection` before writing it."'
+        b"\"Befund 1 still has to name a real defect; next I'll check how "
+        b'empty stores are treated at the connect command and in tests."'
+    )
+
+    assert len(recorded_output) == 273
+    assert recorded_output == recorded_grok_json_values(*progress)
+
+    result = executor.decode_process_completion(
+        invocation,
+        AgentProcessCompletion(0, recorded_output, b""),
+    )
+
+    assert result == GrokProviderEndedWithoutFinalMessage(
+        AttemptTranscript.of([AssistantTurn(message) for message in progress])
+    )
+
+
 def test_the_final_answer_reaches_the_output_seam_not_the_turn_narration(
     tmp_path: Path,
 ) -> None:
@@ -606,62 +882,47 @@ def test_an_unusable_envelope_is_a_typed_process_failure(tmp_path: Path) -> None
     )
     narration = "Ich prüfe zuerst die Dateien und die Werkzeuge."
 
-    assert (
-        executor.decode_process_completion(
-            invocation, AgentProcessCompletion(1, b'{"text":"no"}', b"")
-        )
-        == refusal
+    failed_with_output = executor.decode_process_completion(
+        invocation, AgentProcessCompletion(1, b'{"text":"no"}', b"")
     )
-    assert (
-        executor.decode_process_completion(
-            invocation, AgentProcessCompletion(0, b"not-json", b"")
-        )
-        == refusal
+    assert isinstance(failed_with_output, AgentExecutionFailure)
+    assert failed_with_output.code == refusal.code
+    assert failed_with_output.transcript is not None
+    not_json = executor.decode_process_completion(
+        invocation, AgentProcessCompletion(0, b"not-json", b"")
     )
-    assert (
-        executor.decode_process_completion(
-            invocation, AgentProcessCompletion(0, b'{"result":"wrong field"}', b"")
-        )
-        == refusal
+    assert isinstance(not_json, AgentExecutionFailure)
+    assert not_json.code == refusal.code
+    wrong_field = executor.decode_process_completion(
+        invocation, AgentProcessCompletion(0, b'{"result":"wrong field"}', b"")
     )
+    assert isinstance(wrong_field, AgentExecutionFailure)
+    assert wrong_field.code == refusal.code
     assert (
         executor.decode_process_completion(
             invocation, AgentProcessCompletion(0, b"", b"")
         )
-        == refusal
+        == GrokProviderEndedWithoutFinalMessage()
     )
-    assert (
-        executor.decode_process_completion(
-            invocation, AgentProcessCompletion(0, b"{}", b"")
-        )
-        == refusal
-    )
-    assert (
-        executor.decode_process_completion(
-            invocation,
-            AgentProcessCompletion(
-                0,
-                measured_headless_json_envelope(text="", thought=narration),
-                b"",
+    for completion in (
+        AgentProcessCompletion(0, b"{}", b""),
+        AgentProcessCompletion(
+            0,
+            measured_headless_json_envelope(text="", thought=narration),
+            b"",
+        ),
+        AgentProcessCompletion(
+            0,
+            measured_headless_json_envelope(
+                text="",
+                thought=narration,
+                structured_output="pass-token",
             ),
-        )
-        == refusal
-    )
-    assert (
-        executor.decode_process_completion(
-            invocation,
-            AgentProcessCompletion(
-                0,
-                measured_headless_json_envelope(
-                    text="",
-                    thought=narration,
-                    structured_output="pass-token",
-                ),
-                b"",
-            ),
-        )
-        == refusal
-    )
+            b"",
+        ),
+    ):
+        result = executor.decode_process_completion(invocation, completion)
+        assert isinstance(result, GrokProviderEndedWithoutFinalMessage)
 
 
 def test_only_the_measured_grok_release_is_admitted(tmp_path: Path) -> None:
@@ -836,7 +1097,9 @@ def test_any_enabled_external_compatibility_cell_refuses_the_exact_launch(
 
 
 def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scratch_root_outside_a_worktree: Path,
 ) -> None:
     deployment = tmp_path / "deployment"
     deployment.mkdir()
@@ -867,7 +1130,7 @@ def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
         "source_commit": "proof",
         "source_tree": "proof",
         "frontend_dist": frontend,
-        "agent_scratch_root": agent_scratch_root(tmp_path),
+        "agent_scratch_root": scratch_root_outside_a_worktree,
         "grok_subscription": declared.settings,
     }
     with pytest.raises(ValueError, match="loopback"):
@@ -1134,6 +1397,7 @@ json.dump({{"text": json.dumps({{"wrote": written, "read_back": read_back}})}}, 
 def grok_subscription_runtime(
     root: Path,
     settings: GrokSubscriptionSettings,
+    scratch_root: Path,
     *,
     workspace_tools: bool = False,
 ) -> DbosRuntime:
@@ -1143,7 +1407,7 @@ def grok_subscription_runtime(
         DbosRuntimeSettings(
             root / "atelier.sqlite",
             "grok-subscription-test",
-            agent_scratch_root=agent_scratch_root(root),
+            agent_scratch_root=scratch_root,
         ),
         LoopbackEffectAdapterFactory(
             root / "effects.sqlite",
@@ -1278,6 +1542,10 @@ def test_the_workspace_tool_factory_offers_its_own_identity_and_only_its_capabil
     tool_free = GrokSubscriptionExecutorFactory(settings)
 
     assert factory.key == GROK_WORKSPACE_TOOLS_EXECUTOR_KEY
+    assert tool_free.key == GROK_SUBSCRIPTION_EXECUTOR_KEY
+    assert tool_free.operational_identity == AgentExecutorOperationalIdentity(
+        "headless-print-json/v2"
+    )
     assert factory.key.provider_id == tool_free.key.provider_id
     assert factory.key.executor_revision != tool_free.key.executor_revision
     assert factory.operational_identity != tool_free.operational_identity
@@ -1418,13 +1686,19 @@ def test_a_non_subscription_profile_reaches_no_tool_bearing_process(
 def test_a_binding_asking_a_grok_executor_for_a_capability_it_never_declared_is_refused(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    scratch_root_outside_a_worktree: Path,
     executor_revision: AgentExecutorRevision,
     requested_capability: AgentExecutionCapability,
 ) -> None:
     """Neither executor answers the other's ask, and the refusal is the starter's."""
 
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    runtime = grok_subscription_runtime(tmp_path, settings, workspace_tools=True)
+    runtime = grok_subscription_runtime(
+        tmp_path,
+        settings,
+        scratch_root_outside_a_worktree,
+        workspace_tools=True,
+    )
     runtime.initialize_storage()
 
     def unexpected_enqueue(*_args: object, **_kwargs: object) -> object:
@@ -1451,10 +1725,15 @@ def test_a_binding_asking_a_grok_executor_for_a_capability_it_never_declared_is_
 
 
 def test_a_node_requesting_grok_tools_starts_through_the_production_starter(
-    tmp_path: Path,
+    tmp_path: Path, scratch_root_outside_a_worktree: Path
 ) -> None:
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    runtime = grok_subscription_runtime(tmp_path, settings, workspace_tools=True)
+    runtime = grok_subscription_runtime(
+        tmp_path,
+        settings,
+        scratch_root_outside_a_worktree,
+        workspace_tools=True,
+    )
     runtime.initialize_storage()
     try:
         started, _workflow = grok_subscription_start(
@@ -1474,13 +1753,55 @@ def test_a_node_requesting_grok_tools_starts_through_the_production_starter(
     assert started_runs == 1
 
 
+def test_a_tool_free_grok_attempt_persists_the_v2_operational_identity(
+    tmp_path: Path, scratch_root_outside_a_worktree: Path
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    runtime = grok_subscription_runtime(
+        tmp_path, settings, scratch_root_outside_a_worktree
+    )
+    runtime.initialize_storage()
+    try:
+        execution = grok_subscription_attempt(
+            runtime,
+            "grok/tool-free-identity",
+            requested_capability=AgentExecutionCapability.HEADLESS,
+            executor_revision=GROK_SUBSCRIPTION_EXECUTOR_KEY.executor_revision,
+            operational_identity=GROK_SUBSCRIPTION_OPERATIONAL_IDENTITY,
+        )
+        workspaces = runtime_workspace_owner(runtime)
+        outcome = execute_agent_attempt(
+            execution,
+            GrokSubscriptionExecutorFactory(settings).open(),
+            DbosAgentAttemptStore(runtime.engine),
+            runtime.agent_process_supervisor,
+            workspaces,
+        )
+        with runtime.engine.connect() as connection:
+            receipts = connection.execute(sa.select(agent_receipts_v2)).mappings().all()
+    finally:
+        runtime.close()
+
+    assert isinstance(outcome, AgentAttemptSucceeded)
+    assert len(receipts) == 1
+    assert receipts[0]["executor_revision"] == (
+        GROK_SUBSCRIPTION_EXECUTOR_KEY.executor_revision.value
+    )
+    assert receipts[0]["executor_operational_identity"] == "headless-print-json/v2"
+
+
 def test_a_tool_bearing_grok_attempt_writes_in_its_lease_and_answers_what_it_wrote(
-    tmp_path: Path,
+    tmp_path: Path, scratch_root_outside_a_worktree: Path
 ) -> None:
     """The vertical the capability exists for, through the production path."""
 
     settings = grok_subscription_deployment(tmp_path, TOOL_USING_GROK)
-    runtime = grok_subscription_runtime(tmp_path, settings, workspace_tools=True)
+    runtime = grok_subscription_runtime(
+        tmp_path,
+        settings,
+        scratch_root_outside_a_worktree,
+        workspace_tools=True,
+    )
     runtime.initialize_storage()
     try:
         execution = grok_subscription_attempt(
