@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 from atelier2.contracts.artifacts import ArtifactHash
 from atelier2.contracts.queue_projection import TrackerItemReference
+from atelier2.contracts.work_items import ObservedWorkItemRevision
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,8 +62,30 @@ class WorkItemOrderValue:
             )
 
 
-type AuthoredOrderValue = InlineOrderValue | ArtifactOrderValue
-"""What a durable start carries: bytes, or the published address of bytes."""
+@dataclass(frozen=True, slots=True)
+class ObservedWorkItemOrderValue:
+    """The item this order named, as the start read it.
+
+    It stays a work item all the way to the durable write rather than becoming
+    anonymous bytes, because two things downstream depend on knowing what it
+    is: the start refuses to store it under a schema other than the one the
+    house owns, and a retry compares the item it names instead of bytes a
+    second read could never reproduce.
+    """
+
+    revision: ObservedWorkItemRevision
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.revision, ObservedWorkItemRevision):
+            raise TypeError(
+                "an observed work item order carries its revision through the contract"
+            )
+
+
+type AuthoredOrderValue = (
+    InlineOrderValue | ArtifactOrderValue | ObservedWorkItemOrderValue
+)
+"""What a durable start carries: bytes, a published address, or an item it read."""
 
 type StartOrderValue = AuthoredOrderValue | WorkItemOrderValue
 """What a start door accepts, before the reading a work item still needs."""

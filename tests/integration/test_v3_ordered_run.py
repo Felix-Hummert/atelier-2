@@ -1365,6 +1365,31 @@ SERVED_PROJECT = ProjectId("studio")
 ASKED_ITEM = TrackerItemReference("gh:712")
 
 
+PERMISSIVE_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "object"}')
+
+
+def assert_no_run(runtime: DbosRuntime, run_id: str) -> None:
+    """No run row and no order row: a refused start leaves nothing to clean up."""
+
+    with runtime.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(runs)
+                .where(runs.c.run_id == run_id)
+            )
+            == 0
+        )
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(run_inputs_v3)
+                .where(run_inputs_v3.c.run_id == run_id)
+            )
+            == 0
+        )
+
+
 def observed_item(
     body: bytes = b"Cook exactly seven portions.",
     change_marker: str = 'W/"3f1a9c"',
@@ -1377,6 +1402,23 @@ def observed_item(
         WorkItemChangeMarker(change_marker),
         RecordedAt("2026-08-26T09:15:00Z"),
     )
+
+
+@dataclass
+class _CountingTracker:
+    """A tracker that says how often the start reached for it."""
+
+    answer: ObserveWorkItemRevisionResult
+    reads: int = 0
+
+    def open_items(self) -> Never:
+        raise AssertionError("a start never lists the open items")
+
+    def snapshot(
+        self, reference: TrackerItemReference
+    ) -> ObserveWorkItemRevisionResult:
+        self.reads += 1
+        return self.answer
 
 
 @dataclass
@@ -1555,3 +1597,164 @@ def test_an_instance_with_no_connected_tracker_refuses_a_work_item_order(
 
     assert refused.status_code == 409
     assert refused.json()["type"].endswith("project-source-not-connected")
+
+
+def test_a_work_item_order_is_refused_under_a_schema_other_than_the_house_one(
+    runtime: DbosRuntime,
+) -> None:
+    """A permissive foreign schema would admit anything and check nothing.
+
+    The value's shape is not the caller's to choose: a document that declares a
+    work-item order declares the schema the house owns for it, or the start
+    refuses rather than storing a "work item" whose only guarantee is that some
+    schema said yes.
+    """
+
+    workflow, bindings = publish_ordered_workflow(runtime, PERMISSIVE_SCHEMA)
+
+    refused = start_with_work_item(
+        work_item_client(runtime, WorkItemRevisionObserved(observed_item())),
+        workflow,
+        bindings,
+        "v3/foreign-schema",
+    )
+
+    assert refused.status_code == 422
+    assert "work item schema" in refused.json()["detail"]
+    assert_no_run(runtime, "v3/foreign-schema")
+
+
+def test_an_item_body_past_the_inline_bound_refuses_the_start_before_any_row(
+    runtime: DbosRuntime,
+) -> None:
+    """A tracker item can be larger than an order may carry, and that is refused.
+
+    The artifact path is a named deferral, so the honest answer today is the
+    inline bound's own refusal -- with nothing left behind, because a run whose
+    material never landed is not a run to clean up.
+    """
+
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+    oversized = observed_item(b"x" * (MAXIMUM_INSTANCE_DOCUMENT_BYTES + 1))
+
+    refused = start_with_work_item(
+        work_item_client(runtime, WorkItemRevisionObserved(oversized)),
+        workflow,
+        bindings,
+        "v3/oversized-item",
+    )
+
+    assert refused.status_code == 422
+    assert refused.json()["type"].endswith("run-input-refused")
+    assert_no_run(runtime, "v3/oversized-item")
+
+
+def test_a_retry_answers_from_what_the_run_pinned_without_reading_the_item_again(
+    runtime: DbosRuntime,
+) -> None:
+    """The promise of pinning: the second start neither re-reads nor conflicts.
+
+    The tracker answers something different the second time -- an edited item,
+    then an unreachable platform, then a deleted item. All three are retries of
+    a run that already exists, so all three answer the run rather than the
+    tracker, and the stored value stays the first read.
+    """
+
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+    first = observed_item(b"Cook two portions.")
+    started = start_with_work_item(
+        work_item_client(runtime, WorkItemRevisionObserved(first)),
+        workflow,
+        bindings,
+        "v3/pinned-retry",
+    )
+    assert started.status_code == 201
+    pinned = stored_order(runtime, "v3/pinned-retry")
+
+    for answer in (
+        WorkItemRevisionObserved(observed_item(b"Cook seven portions instead.")),
+        TrackerSourceUnavailable("GitHub answered 503"),
+        TrackerItemUnknown(ASKED_ITEM),
+    ):
+        counting = _CountingTracker(answer)
+        retried = start_with_work_item(
+            durable_api_client(
+                runtime,
+                served_project_id=SERVED_PROJECT,
+                tracker_item_source=counting,
+            ),
+            workflow,
+            bindings,
+            "v3/pinned-retry",
+        )
+
+        assert retried.status_code == 200, answer
+        assert counting.reads == 0, answer
+        assert stored_order(runtime, "v3/pinned-retry") == pinned
+
+
+def test_a_retry_naming_another_item_is_a_conflict_rather_than_the_same_run(
+    runtime: DbosRuntime,
+) -> None:
+    """Answering from the run must not answer for an item nobody asked about."""
+
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+    started = start_with_work_item(
+        work_item_client(runtime, WorkItemRevisionObserved(observed_item())),
+        workflow,
+        bindings,
+        "v3/other-item-retry",
+    )
+    assert started.status_code == 201
+
+    counting = _CountingTracker(WorkItemRevisionObserved(observed_item()))
+    conflicting = start_with_work_item(
+        durable_api_client(
+            runtime, served_project_id=SERVED_PROJECT, tracker_item_source=counting
+        ),
+        workflow,
+        bindings,
+        "v3/other-item-retry",
+        work_item="gh:999",
+    )
+
+    assert conflicting.status_code == 409
+    assert conflicting.json()["type"].endswith("run-identity-conflict")
+    assert counting.reads == 0
+
+
+def test_a_read_whose_write_failed_leaves_nothing_and_the_retry_starts_the_run(
+    runtime: DbosRuntime,
+) -> None:
+    """The read is not a commitment: a failed write leaves no run and no order.
+
+    The store is made to refuse the write by handing the start a workflow
+    revision it does not carry, which is the same shape a write failure has
+    from the caller's side: an answer, and nothing durable behind it.
+    """
+
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+    unpublished = WorkflowRevision(
+        ordered_document(WORK_ITEM_SCHEMA.revision_hash) + b"\n# not published\n"
+    )
+
+    refused = start_with_work_item(
+        work_item_client(runtime, WorkItemRevisionObserved(observed_item())),
+        unpublished,
+        bindings,
+        "v3/unwritten",
+    )
+    assert refused.status_code == 404
+    assert_no_run(runtime, "v3/unwritten")
+
+    started = start_with_work_item(
+        work_item_client(runtime, WorkItemRevisionObserved(observed_item())),
+        workflow,
+        bindings,
+        "v3/unwritten",
+    )
+
+    assert started.status_code == 201
+    assert stored_order(runtime, "v3/unwritten")[0] == work_item_order_document(
+        observed_item()
+    )

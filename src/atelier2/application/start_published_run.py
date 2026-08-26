@@ -23,14 +23,13 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.orders import (
-    InlineOrderValue,
+    ObservedWorkItemOrderValue,
     StartOrderValue,
     WorkItemOrderValue,
 )
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.contracts.schemas_v3 import InstanceSchemaViolation
-from atelier2.contracts.work_items import work_item_order_document
 from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
     DurableAgentConfigurationRevisionMissing,
@@ -46,6 +45,7 @@ from atelier2.ports.durable_runs import (
     DurableRunIdentityConflict,
     DurableRunRevisionMissing,
     DurableV3StartInputRefused,
+    DurableWorkItemOrderUnread,
     DurableWriteUnavailable,
     StartPublishedRunRequest,
     StartPublishedRunRequestV2,
@@ -208,14 +208,26 @@ def start_published_run(
     connected tracker, and becomes the exact observed revision the run pins
     (ADR 0010 §5) -- before any durable row exists, so a start that cannot read
     the item writes nothing.
+
+    **The durable answer comes first, and the reading only if there is none.**
+    A start naming a work item asks the store first, carrying the item's name
+    rather than its bytes: an existing run answers from what it already pinned,
+    so a retry of a run started yesterday neither re-reads a moving object nor
+    turns an unreachable tracker into a failed retry. Only when no run of that
+    identity exists does this read the item and start again with what it read.
     """
-    read = _orders_with_work_items_read(orders, project, tracker)
-    if isinstance(read, WorkItemOrderUnreadable):
-        return read
-    request = _durable_request(run_id, revision_hash, bindings, read)
+    request = _durable_request(run_id, revision_hash, bindings, _named(orders))
     if request is None:
         return InvalidAgentBindings()
     result = starter.start_published(request)
+    if isinstance(result, DurableWorkItemOrderUnread):
+        read = _orders_with_work_items_read(orders, project, tracker)
+        if isinstance(read, WorkItemOrderUnreadable):
+            return read
+        request = _durable_request(run_id, revision_hash, bindings, read)
+        if request is None:
+            return InvalidAgentBindings()
+        result = starter.start_published(request)
     match result:
         case DurableRunCreated(run):
             return RunCreated(run)
@@ -241,12 +253,22 @@ def start_published_run(
             return AgentPlatformEffectUnreconcilable(node)
         case DurableV3StartInputRefused(name, refusal, detail, violation):
             return RunInputRefused(name, refusal, detail, violation)
+        case DurableWorkItemOrderUnread():
+            raise RuntimeError(
+                "a start that read its work items was asked to read again"
+            )
         case DurableWriteUnavailable():
             return WriteUnavailable()
         case PortDurableStateCorrupt():
             return DurableStateCorrupt()
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _named(orders: tuple[AuthoredOrder, ...]) -> tuple[PortAuthoredOrder, ...]:
+    """The same orders, with a work item still named rather than read."""
+
+    return tuple(PortAuthoredOrder(order.name, order.value) for order in orders)
 
 
 def _orders_with_work_items_read(
@@ -263,11 +285,11 @@ def _orders_with_work_items_read(
             continue
         match read_work_item_snapshot(project, tracker, order.value.reference):
             case WorkItemSnapshotRead(revision=revision):
+                # Still typed as a work item all the way to the durable write:
+                # the store refuses to keep one under a schema other than the
+                # house's, and a retry compares the item it names.
                 read.append(
-                    PortAuthoredOrder(
-                        order.name,
-                        InlineOrderValue(work_item_order_document(revision)),
-                    )
+                    PortAuthoredOrder(order.name, ObservedWorkItemOrderValue(revision))
                 )
             case (
                 ProjectSourceNotConnected()

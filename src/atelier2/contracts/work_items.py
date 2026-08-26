@@ -33,6 +33,7 @@ from atelier2.contracts.queue_projection import (
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
     TrackerItemReference,
 )
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.schemas_v3 import SUPPORTED_DIALECT
 from atelier2.contracts.when import RECORDED_AT_PATTERN, RecordedAt
 
@@ -184,3 +185,37 @@ this document's published revision and get the neutral kinds, the digest and
 the change marker with it. Restricting a workflow to one kind is that author's
 own schema built on this one, not a second grammar in the document.
 """
+
+WORK_ITEM_ORDER_SCHEMA_REVISION: Final = PublishedRevisionHash.of(
+    WORK_ITEM_ORDER_SCHEMA_DOCUMENT
+)
+"""The published identity of that document, which a graph input must pin.
+
+A start refuses to store a work item under any other schema: without this pin a
+document could declare a permissive shape and a run would carry a "work item"
+nothing checked. It is derived from the bytes rather than written down, so the
+two can never drift apart.
+"""
+
+
+def work_item_reference_in(document: bytes) -> str | None:
+    """Which item a stored work-item order names, or nothing if it names none.
+
+    Two starts of one run are the same start when they name the same item; the
+    bytes cannot answer that, because a second read of a moving object differs
+    from the first by design. The reference inside the value is what survives
+    that, and it is already there.
+
+    A value that is not a work-item document at all answers `None` rather than
+    raising: the caller then identifies it by its bytes, which is the right
+    answer for material nobody read from a tracker.
+    """
+
+    try:
+        value = json.loads(document)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    reference = value.get("reference")
+    return reference if isinstance(reference, str) and reference else None

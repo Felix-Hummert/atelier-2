@@ -1208,15 +1208,21 @@ connected tracker before any durable row exists. What the run stores is the
 observed revision of ADR 0010 §5 -- the exact served body bytes, their
 SHA-256, the neutral kind (`issue` or `change_request`, so a GitHub pull
 request carries no GitHub noun into the core), the read's entity tag and its
-read time -- serialized under the house schema `contracts.work_items` owns, so
-a workflow declares a work item by pinning that schema revision rather than by
-naming a platform. The value is pinned, not re-read: the same item started
-across an edit is two runs with two different values. A start that cannot read
-the item answers which of the four ways it failed -- no connected project, no
-such item in the tracker, an unreachable platform, a payload its adapter
-refused -- and writes nothing. Publishing the house schema is still the
-operator's own act, an item body past the inline order bound is refused by that
-bound rather than published as an artifact, and no picker offers the items in a
+read time -- serialized under the house schema `contracts.work_items` owns. A
+workflow declares a work item by pinning that schema's published revision and
+no other: a graph input pinning a different, in particular a permissive, schema
+for a work-item order refuses the start rather than storing a value nothing
+checked. The value is pinned, not re-read: the same item started across an edit
+is two runs with two different values, and a retry of a run that already exists
+is answered from what that run pinned without reaching the tracker at all --
+the store is asked before the item is read, and only a start with nothing to
+answer from reads. A start that cannot read the item answers which of the four
+ways it failed -- no connected project, no such item in the tracker, an
+unreachable platform, a payload its adapter refused -- and writes nothing;
+those three connection answers are published on the start door's own OpenAPI
+operation. Publishing the house schema is still the operator's own act, an item
+whose read is larger than the inline order bound is refused by that bound
+rather than published as an artifact, and no picker offers the items in a
 surface yet.
 
 On 2026-08-19 at `ed6376b` this landing measured how many concurrent

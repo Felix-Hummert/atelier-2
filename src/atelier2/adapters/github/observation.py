@@ -28,6 +28,7 @@ A durable cursor, conditional reads, and a poll loop are named deferrals of
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -74,6 +75,29 @@ def github_tracker_reference(issue_number: int) -> TrackerItemReference:
     """The `gh:<n>` spelling this adapter owns for one GitHub issue."""
 
     return TrackerItemReference(f"{GITHUB_TRACKER_REFERENCE_PREFIX}{issue_number}")
+
+
+@dataclass(frozen=True)
+class _DecodedPayload:
+    """What one platform answer decoded to, when it decoded at all."""
+
+    value: Any
+
+
+def _decoded_payload(
+    response: httpx.Response,
+) -> _DecodedPayload | TrackerPayloadMalformed:
+    """The JSON one answer carries, or the typed refusal of an answer that is none.
+
+    A provider answer is external input all the way down to its encoding: bytes
+    that are not UTF-8 and text that is not JSON are shapes this source refuses,
+    not exceptions for a caller of a typed port to discover.
+    """
+
+    try:
+        return _DecodedPayload(response.json())
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        return TrackerPayloadMalformed(f"the platform answer is not JSON: {error}")
 
 
 def _issue_number(reference: TrackerItemReference) -> int | None:
@@ -136,7 +160,10 @@ class LiveGitHubIssueSource:
                     "GitHub could not be reached listing open issues of "
                     f"{self.repository.owner}/{self.repository.name}: {error}"
                 )
-            payload = response.raw_response.json()
+            decoded = _decoded_payload(response.raw_response)
+            if isinstance(decoded, TrackerPayloadMalformed):
+                return decoded
+            payload = decoded.value
             malformed = self._collect_issue_references(payload, references)
             if malformed is not None:
                 return malformed
@@ -176,11 +203,11 @@ class LiveGitHubIssueSource:
                 f"{self.repository.owner}/{self.repository.name} item "
                 f"{number}: {error}"
             )
+        payload = _decoded_payload(response.raw_response)
+        if isinstance(payload, TrackerPayloadMalformed):
+            return payload
         return self._observed_revision(
-            reference,
-            number,
-            response.raw_response.json(),
-            response.raw_response.headers,
+            reference, number, payload.value, response.raw_response.headers
         )
 
     def _observed_revision(
@@ -194,8 +221,11 @@ class LiveGitHubIssueSource:
             return TrackerPayloadMalformed("the item read was not an item object")
         # An answer about another item would pin one item's bytes under another
         # item's reference, so the identity the platform states is read rather
-        # than assumed from the request.
-        if payload.get("number") != number:
+        # than assumed from the request. `type(...) is int` rather than
+        # `isinstance`, because `True == 1` and `1.0 == 1` in Python and
+        # neither is an item number GitHub served.
+        answered = payload.get("number")
+        if type(answered) is not int or answered != number:
             return TrackerPayloadMalformed(
                 f"the item read answered for another item than {number}"
             )

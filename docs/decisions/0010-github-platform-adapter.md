@@ -165,16 +165,32 @@ and answers the neutral kind.
 **The caller of `snapshot()` is the start, and it pins what it read.** A start
 door accepts an order that names an item instead of carrying bytes; the start
 reads that item once and stores the observed revision as the order's own value,
-which is why the reading is here rather than in a workflow node. Three
-consequences are decided with it. The value is a **house-known schema
-revision** — one document Atelier owns, describing the neutral kind, the bytes,
-the digest, the change marker and the read time — so a workflow declares a work
-item without inventing a shape and without naming a platform. The read happens
-**before any durable row exists**, so a start that cannot read the item writes
-nothing and answers why. And a run's material is what the platform said *at that
-moment*: two starts naming the same item across an edit are two runs with two
-different values, which is the reproducibility the reference alone could never
-give.
+which is why the reading is here rather than in a workflow node. Four
+consequences are decided with it.
+
+The value's schema is **not the author's choice**: a graph input carrying a work
+item pins the exact published revision of the one document Atelier owns for it —
+the neutral kind, the bytes, the digest, the change marker, the read time — and a
+document pinning anything else, a permissive shape above all, refuses the start.
+Without that rule a "work item" would mean whatever some schema happened to
+admit.
+
+The read happens **before any durable row exists**, so a start that cannot read
+the item writes nothing and answers why.
+
+**The durable answer comes before the read.** A start naming a work item asks
+the store first, carrying the item's name rather than its bytes: a run of that
+identity that already exists is answered from what it pinned, and only when
+there is nothing to answer from does the start read the item and ask again. So a
+retry neither re-reads a moving object nor turns an unreachable tracker into a
+failed retry — and because the identity of a work-item order is the item it
+names rather than the bytes of one read, a race between two starts of the same
+run resolves to one run rather than to a conflict. The reading stays outside the
+store's transaction, which is the other reason it cannot be a single ask.
+
+And a run's material is what the platform said *at that moment*: two starts
+naming the same item across an edit are two runs with two different values,
+which is the reproducibility the reference alone could never give.
 
 **What this amendment leaves undecided, deliberately.** `capabilities()` and
 `reference_grammar()` stay unruled until a caller lands — this record still
@@ -844,10 +860,17 @@ this record borrows that owner rather than opening a second vocabulary.
   again above it.
 - **(2026-08-26 amendment, #712)** A start naming a work-item order stores the
   observed revision the start read, under the house schema the workflow pinned;
-  the same item read across an edit yields two different stored values, and a
-  start that cannot read the item — no connection, no such item, an unreachable
-  platform, a refused payload — writes no run row and answers which of the four
-  it was.
+  a document pinning any other schema for that order refuses the start with
+  nothing written. The same item read across an edit yields two different stored
+  values, and a start that cannot read the item — no connection, no such item,
+  an unreachable platform, a refused payload — writes no run row and answers
+  which of the four it was. An item whose read exceeds the inline order bound is
+  refused by that bound, again with nothing written.
+- **(2026-08-26 amendment, #712)** A retry of a run that already exists answers
+  from what that run pinned without reading the tracker at all — proven with an
+  edited item, an unreachable platform and a deleted item — while a retry naming
+  a different item is a conflict rather than that run; and a read whose write
+  failed leaves nothing behind, so the next start reads again.
 - **(2026-08-25 amendment, #642-Journal)** A durable projection, event, receipt,
   and log all show no credential or secret material for a `push-atelier-commit`
   run under whichever credential handoff it is specified for — the PAT file

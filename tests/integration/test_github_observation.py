@@ -384,6 +384,47 @@ def test_an_answer_about_another_item_is_refused_rather_than_pinned(
     assert isinstance(answer, TrackerPayloadMalformed)
 
 
+@pytest.mark.parametrize(
+    ("content", "why"),
+    [
+        (b'{"number": 712, "body": "unclosed', "truncated JSON"),
+        (b"\xff\xfe not even text", "bytes that are not UTF-8"),
+        (b"", "an empty answer"),
+    ],
+    ids=["truncated-json", "undecodable-bytes", "empty-answer"],
+)
+def test_an_answer_that_does_not_decode_is_refused_rather_than_raised(
+    source: LiveGitHubIssueSource,
+    github: _FakeGitHubIssues,
+    content: bytes,
+    why: str,
+) -> None:
+    """A typed port promises a typed refusal, including for the encoding itself."""
+
+    github.override_content = content
+
+    answer = source.snapshot(TrackerItemReference("gh:712"))
+
+    assert isinstance(answer, TrackerPayloadMalformed), why
+
+
+@pytest.mark.parametrize(
+    "number",
+    [True, 712.0, "712", None],
+    ids=["boolean-that-equals-one", "integral-float", "text", "absent"],
+)
+def test_an_item_number_that_is_not_an_integer_is_refused(
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues, number: Any
+) -> None:
+    """`True == 1` and `1.0 == 1` in Python; neither is an item GitHub served."""
+
+    github.override_payload = {"number": number, "body": "text"}
+
+    answer = source.snapshot(TrackerItemReference("gh:1"))
+
+    assert isinstance(answer, TrackerPayloadMalformed)
+
+
 def test_a_body_that_is_not_encodable_as_utf8_is_refused_by_name(
     source: LiveGitHubIssueSource, github: _FakeGitHubIssues
 ) -> None:

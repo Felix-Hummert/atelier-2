@@ -20,6 +20,7 @@ from atelier2.contracts.work_items import (
     WorkItemChangeMarker,
     WorkItemKind,
     work_item_order_document,
+    work_item_reference_in,
 )
 
 _ITEM = TrackerItemReference("gh:712")
@@ -119,3 +120,26 @@ def test_the_house_schema_admits_the_order_document_it_describes(body: bytes) ->
     verdict = read_instance_document(work_item_order_document(revision(body)), schema)
 
     assert isinstance(verdict, InstanceAccepted), verdict
+
+
+def test_a_stored_order_names_the_item_a_retry_compares_against() -> None:
+    """A second read of one item differs in bytes; the item it names does not."""
+
+    assert work_item_reference_in(work_item_order_document(revision())) == _ITEM.value
+    assert (
+        work_item_reference_in(work_item_order_document(revision(b"edited since")))
+        == _ITEM.value
+    )
+
+
+@pytest.mark.parametrize(
+    "document",
+    [b"not json", b"[]", b'{"body": "no reference"}', b'{"reference": ""}', b"\xff"],
+    ids=["not-json", "not-an-object", "no-reference", "empty-reference", "not-utf8"],
+)
+def test_bytes_that_name_no_item_answer_nothing_rather_than_raising(
+    document: bytes,
+) -> None:
+    """Material nobody read from a tracker is identified by its bytes instead."""
+
+    assert work_item_reference_in(document) is None
