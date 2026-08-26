@@ -8,7 +8,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint .",
     "test": "vitest run",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "e2e:reversed": "E2E_ORDER=reversed playwright test"
   },
   "dependencies": {
     "svelte": "5.56.8",

@@ -29,18 +29,6 @@ import {
 const requestHash = "1f58b9145b24d108d7ac38887338b3ea3229833b9c1e418250343f907bfd1047";
 const emptyResultHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
-/**
- * Every wait below converges on real, finite async work this suite performs
- * -- WebCrypto SHA-256 hashing inside the mutation journal, and the DOM
- * updates it drives -- not on an external or unbounded resource. Under full
- * test-suite CPU contention that work can outrun Testing Library's 1000 ms
- * default, so these waits carry generous, still-bounded headroom instead
- * (#747): eventually true either way, never a longer sleep standing in for a
- * stuck assertion.
- */
-const UNDER_LOAD_WAIT_TIMEOUT_MS = 5_000;
-const UNDER_LOAD_TEST_TIMEOUT_MS = 10_000;
-
 beforeEach(() => {
   Object.defineProperties(HTMLDialogElement.prototype, {
     showModal: {
@@ -132,20 +120,33 @@ describe("reconciliation control", () => {
     expect(await journal.get(first.mutation_id)).not.toBeNull();
     feed.handlers?.event(JSON.stringify(reconciliationResolved(3, "command-found", "OPERATOR_FOUND")));
 
-    await waitFor(async () => expect(await journal.get(first.mutation_id)).toBeNull(), {
-      timeout: UNDER_LOAD_WAIT_TIMEOUT_MS
-    });
-    expect(screen.queryByRole("heading", { name: /Decision/ })).toBeNull();
+    // The event handler's own journal write is the observable completion this
+    // waits on -- the "Decision" heading closing -- not a poll of the journal
+    // itself, which would re-run its hash validation on every poll tick. The
+    // journal's own clearing is then a single, un-polled follow-up read: the
+    // resolve() that closed the heading already finished by the time it did.
+    await waitFor(() => expect(screen.queryByRole("heading", { name: /Decision/ })).toBeNull());
+    expect(await journal.get(first.mutation_id)).toBeNull();
     expect(screen.getByRole("article", { name: "action — Working" })).toBeTruthy();
-  }, UNDER_LOAD_TEST_TIMEOUT_MS);
+  });
 
   it("keeps a durable reconciliation authoritative when its event arrives before the 202 response", async () => {
     const journal = new MutationJournal(sessionStorage);
     const feed = new FakeRunEventFeed();
     let acceptDecision!: (result: { status: number; value: Run }) => void;
-    const reconcile = vi.fn(
-      () => new Promise<{ status: number; value: Run }>((resolve) => { acceptDecision = resolve; })
-    );
+    // Resolves the instant `reconcile` is actually invoked -- not when its own
+    // promise later settles -- so the test can await that exact moment instead
+    // of polling `toHaveBeenCalledTimes`.
+    let reconcileCalled!: () => void;
+    const reconcileCalledPromise = new Promise<void>((resolve) => {
+      reconcileCalled = resolve;
+    });
+    const reconcile = vi.fn(() => {
+      reconcileCalled();
+      return new Promise<{ status: number; value: Run }>((resolve) => {
+        acceptDecision = resolve;
+      });
+    });
     const getRun = vi
       .fn()
       .mockResolvedValueOnce(reconciliationRun())
@@ -164,30 +165,42 @@ describe("reconciliation control", () => {
     await fireEvent.input(screen.getByLabelText("Effect ID"), { target: { value: "effect-empty" } });
     await fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
     expect(await screen.findByRole("heading", { name: "Sending decision" })).toBeTruthy();
-    await waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1), {
-      timeout: UNDER_LOAD_WAIT_TIMEOUT_MS
-    });
+    await reconcileCalledPromise;
+    expect(reconcile).toHaveBeenCalledTimes(1);
 
     feed.handlers?.event(JSON.stringify(agentCompleted(1)));
     feed.handlers?.event(JSON.stringify(reconciliationRequired(2, { request_hash: requestHash })));
     feed.handlers?.event(JSON.stringify(reconciliationResolved(3, "command-race", "OPERATOR_FOUND")));
     acceptDecision({ status: 202, value: reconciliationRun() });
 
-    await waitFor(async () => expect(await journal.entries()).toEqual([]), {
-      timeout: UNDER_LOAD_WAIT_TIMEOUT_MS
-    });
+    // The durable event's own resolve and the late 202 response's own
+    // handling are two independent, unawaited chains (the page's event queue
+    // runs each event's own reconciliation follow-up fire-and-forget, so nothing
+    // here can await "both settled" directly): the journal reaching empty is
+    // the one true convergence point this test owns -- that the late response
+    // never re-adds what the durable event already resolved.
+    await waitFor(async () => expect(await journal.entries()).toEqual([]));
     expect(screen.queryByRole("heading", { name: /Decision/ })).toBeNull();
     expect(screen.getByRole("article", { name: "action — Working" })).toBeTruthy();
-  }, UNDER_LOAD_TEST_TIMEOUT_MS);
+  });
 
   it("reconcile_absent_requires_execute_confirmation", async () => {
     const journal = new MutationJournal(sessionStorage);
     let rejectFirst!: (reason: unknown) => void;
+    // Resolves the instant `reconcile` is actually invoked, so the test can
+    // await that exact moment instead of polling `toHaveBeenCalledTimes`.
+    let reconcileCalled!: () => void;
+    const reconcileCalledPromise = new Promise<void>((resolve) => {
+      reconcileCalled = resolve;
+    });
     const reconcile = vi
       .fn()
-      .mockImplementationOnce(
-        () => new Promise((_resolve, reject) => { rejectFirst = reject; })
-      )
+      .mockImplementationOnce(() => {
+        reconcileCalled();
+        return new Promise((_resolve, reject) => {
+          rejectFirst = reject;
+        });
+      })
       .mockResolvedValueOnce({ status: 202, value: reconciliationRun(pendingAbsentCommand()) });
 
     render(App, {
@@ -212,9 +225,7 @@ describe("reconciliation control", () => {
     expect(dialog).toBeInstanceOf(HTMLDialogElement);
     expect(screen.getByText(`${PRODUCT_NAME} will execute the exact request once.`)).toBeTruthy();
     await fireEvent(dialog, new Event("cancel", { cancelable: true }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), {
-      timeout: UNDER_LOAD_WAIT_TIMEOUT_MS
-    });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(document.activeElement).toBe(review);
     expect(reconcile).not.toHaveBeenCalled();
 
@@ -223,9 +234,8 @@ describe("reconciliation control", () => {
 
     const sending = await screen.findByRole("heading", { name: "Sending decision" });
     expect(document.activeElement).toBe(sending);
-    await waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1), {
-      timeout: UNDER_LOAD_WAIT_TIMEOUT_MS
-    });
+    await reconcileCalledPromise;
+    expect(reconcile).toHaveBeenCalledTimes(1);
     rejectFirst(new CockpitRequestError("The response was lost."));
     expect(await screen.findByRole("heading", { name: "Decision uncertain" })).toBeTruthy();
     expect(reconcile).toHaveBeenCalledTimes(1);
@@ -242,7 +252,7 @@ describe("reconciliation control", () => {
     expect(reconcile.mock.calls[1]?.[0]).toMatchObject(first);
     expect(reconcile.mock.calls[1]?.[0].body_base64).toBe(first.body_base64);
     expect(await screen.findByRole("heading", { name: "Decision pending" })).toBeTruthy();
-  }, UNDER_LOAD_TEST_TIMEOUT_MS);
+  });
 
   it("shows reconciliation only for its exact durable state and projects server-owned pending as Working", async () => {
     const first = render(App, {

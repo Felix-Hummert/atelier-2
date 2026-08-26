@@ -571,6 +571,24 @@ def seed_boot_baseline(database: Path, effects: Path, application_version: str) 
         prepare.close()
 
 
+def reset_to_boot_baseline(
+    database: Path, effects: Path, application_version: str
+) -> None:
+    """Wipes both durable files (and their WAL/SHM sidecars) and reseeds them
+    back to the exact cold-boot baseline (#742). A module-level function, not
+    a closure inside `main()`, so it is independently callable and testable --
+    `tests/e2e/test_serve_cockpit.py` drives it directly against a live,
+    already-mutated harness rather than only through a real process restart.
+    """
+    for sqlite_path in (database, effects):
+        sqlite_path.unlink(missing_ok=True)
+        for sidecar_suffix in ("-wal", "-shm"):
+            sqlite_path.with_name(sqlite_path.name + sidecar_suffix).unlink(
+                missing_ok=True
+            )
+    seed_boot_baseline(database, effects, application_version)
+
+
 def main() -> None:
     root = Path(os.environ["ATELIER2_E2E_ROOT"]).resolve()
     if root.name != ".playwright-runtime":
@@ -582,15 +600,6 @@ def main() -> None:
     effects = root / "effects.sqlite"
     application_version = "r3-phase5-e2e"
     seed_boot_baseline(database, effects, application_version)
-
-    def reset_to_boot_baseline() -> None:
-        for sqlite_path in (database, effects):
-            sqlite_path.unlink(missing_ok=True)
-            for sidecar_suffix in ("-wal", "-shm"):
-                sqlite_path.with_name(sqlite_path.name + sidecar_suffix).unlink(
-                    missing_ok=True
-                )
-        seed_boot_baseline(database, effects, application_version)
 
     factory = BlockingAgentExecutorFactory(
         "e2e",
@@ -682,7 +691,12 @@ def main() -> None:
         app, live_runtime = compose()
         runtime_to_close = live_runtime
         harness = BrowserProofHarness(
-            app, live_runtime, factory, compose, request_restart, reset_to_boot_baseline
+            app,
+            live_runtime,
+            factory,
+            compose,
+            request_restart,
+            lambda: reset_to_boot_baseline(database, effects, application_version),
         )
         runtime_to_close = harness
         while True:
@@ -703,7 +717,9 @@ def main() -> None:
         close_runtime_and_scratch_root(runtime_to_close, scratch_root)
 
 
-def wait_for_reconciliation(runtime: DbosRuntime) -> None:
+def wait_for_reconciliation(
+    runtime: DbosRuntime, run_ids: tuple[str, ...] = RUN_IDS
+) -> None:
     deadline = time.monotonic() + TIMEOUT_SECONDS
     observed: dict[str, str] = {}
     while time.monotonic() < deadline:
@@ -712,9 +728,10 @@ def wait_for_reconciliation(runtime: DbosRuntime) -> None:
                 str(row.run_id): str(row.state)
                 for row in connection.execute(sa.select(runs.c.run_id, runs.c.state))
             }
-        if observed == {
-            run_id: RunState.WAITING_RECONCILIATION.value for run_id in RUN_IDS
-        }:
+        if all(
+            observed.get(run_id) == RunState.WAITING_RECONCILIATION.value
+            for run_id in run_ids
+        ):
             return
         time.sleep(0.025)
     raise RuntimeError(f"e2e runs did not reach reconciliation: {observed!r}")
