@@ -1,6 +1,0 @@
-schema_version = 1
-story = "https://github.com/FlexOr2/atelier-2/issues/474"
-
-[[sentence]]
-id = "project-occupancy-editor-confirms-complete-project-truth"
-text = "The Project occupancy editor confirms a complete workflow, catalog, agent, detail, and occupancy snapshot before it exposes editable role choices; it preserves foreign roles and unavailable or unknown bindings unless the operator explicitly changes an authored role, offers explicit None, freezes one exact write payload across uncertain retry, treats conflict as a reload instead of a blind overwrite, fences late lineage, draft, read, write, and reload results, and after a Serve restart lets New Run resolve every untouched role as Project before Remembered before empty."

@@ -53,10 +53,6 @@ requirement = "REQ-UI-24"
 text = "An area with nothing in it names the one next action that is possible today, instead of staying blank or hinting at a capability that does not exist."
 
 [[sentence]]
-id = "the-workshop-reads-every-page-or-says-it-could-not"
-text = "The workshop reads the durable run list to its end instead of stopping at the first page, and when a page cannot be read it says that what is shown is incomplete rather than presenting a part as the whole."
-
-[[sentence]]
 id = "a-level-opens-from-a-pasted-link-and-survives-a-reload"
 requirement = "REQ-UI-20"
 text = "A level of the workshop opens from a pasted link and survives a reload: it is an address, not only something to click."

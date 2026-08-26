@@ -11,6 +11,7 @@ import {
   executableGraph,
   isRunV3,
   occupancyRevisionSchema,
+  projectSourceConnectionRevisionSchema,
   problemDefinitions,
   type Problem
 } from "../../src/api/client";
@@ -1278,6 +1279,58 @@ describe("the project listing the picker will consume", () => {
     );
     await expect(createCockpitApi(fetcher).listProjects()).rejects.toThrow(
       "durable wire contract"
+    );
+  });
+});
+
+describe("the project source connection Settings will read", () => {
+  const projectReference = "project1.dGVhbS9yZWQ";
+  const connection = {
+    public_project_reference: projectReference,
+    revision_number: 3,
+    source_kind: "github",
+    source_address: "FlexOr2/atelier-2",
+    auth_method: "personal-access-token" as const,
+    project_source_connection_revision_hash: "a".repeat(64)
+  };
+
+  it("asks the source-connection door and decodes only its declared resource", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(connection), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const read = await createCockpitApi(fetcher).getProjectSourceConnection(projectReference);
+
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      `/atelier/api/v1/projects/${projectReference}/source-connection`
+    );
+    expect(read).toEqual(projectSourceConnectionRevisionSchema.parse(connection));
+  });
+
+  it("refuses extra fields and a response for another project", async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ...connection, credential_directory: "/operator/credentials" }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ ...connection, public_project_reference: "project1.b3RoZXI" }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+      );
+    const client = createCockpitApi(fetcher);
+
+    await expect(client.getProjectSourceConnection(projectReference)).rejects.toThrow(
+      "durable wire contract"
+    );
+    await expect(client.getProjectSourceConnection(projectReference)).rejects.toThrow(
+      /another project/
     );
   });
 });
