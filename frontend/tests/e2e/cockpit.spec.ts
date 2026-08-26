@@ -2998,6 +2998,68 @@ test("two revisions of one lineage are one picker row; the older choice changes 
   });
 });
 
+/**
+ * The room is alive while the operator stands in it: the Workbench holds the
+ * attention stream the Board used to hold, so a wait that opens after the page
+ * was read appears where it belongs -- with no navigation and no reload, which
+ * is exactly what this test refuses to perform.
+ */
+test("a wait that opens while the operator stands in the room appears without a reload", async ({
+  page
+}) => {
+  const api = "/atelier/api/v1";
+  const schemaHash = await anyJsonSchema(page);
+  const workflowName = "Opened while you watched";
+  const runId = "workbench/opened-while-watching";
+  const question = "Ship it, or hold it back?";
+
+  await page.goto("/atelier");
+  await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
+  const openedUrl = page.url();
+  await expect(page.locator("section.pinned-decision").filter({ hasText: question })).toHaveCount(0);
+
+  const published = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: [
+      "format_version: 3",
+      `name: ${workflowName}`,
+      "nodes:",
+      "  - id: ask",
+      "    type: wait",
+      `    prompt: ${question}`,
+      ...declaredOutput(schemaHash, "verdict"),
+      ""
+    ].join("\n")
+  });
+  expect(published.status()).toBe(201);
+  const started = await page.request.post(`${api}/runs`, {
+    data: {
+      workflow_format_version: 3,
+      run_id: runId,
+      workflow_revision_hash: (await published.json()).workflow_revision_hash as string,
+      agent_bindings: [],
+      orders: []
+    }
+  });
+  expect(started.status()).toBe(201);
+
+  // No goto, no reload: the stream nudges, the canonical read answers, and the
+  // stage stands where the decision belongs.
+  const pin = page.locator("section.pinned-decision").filter({ hasText: question });
+  await expect(pin).toBeVisible({ timeout: 20_000 });
+  await expect(pin.getByRole("heading", { name: question })).toBeVisible();
+  // The catalog read that names a run happened before this workflow existed,
+  // so the sender line falls back to the run's own id rather than inventing a
+  // name -- the honesty `resolveWorkflowName` holds to. Re-reading the names
+  // on a nudge is a named gap, not this slice.
+  await expect(pin).toContainText(runId);
+  await expect(pin).not.toContainText(workflowName);
+  await expect(
+    page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: /Workbench/ })
+  ).toContainText(/[1-9]/);
+  expect(page.url()).toBe(openedUrl);
+});
+
 test("the Workbench pins a run that is waiting for a person, by its catalog name", async ({ page }) => {
   const api = "/atelier/api/v1";
   const schemaHash = await anyJsonSchema(page);

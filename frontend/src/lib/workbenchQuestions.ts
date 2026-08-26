@@ -16,6 +16,10 @@ export const workbenchQuestions = {
     question: "Can I read the workbench runs again?",
     readLabel: "workbench runs"
   },
+  retryProjection: {
+    id: "retry-projection",
+    question: "Can I read what changed, after that read failed?"
+  },
   saySomething: {
     id: "say-something",
     question: "Can I tell the workshop what I want?"

@@ -27,6 +27,14 @@ export const workbenchPageCopy = {
   openTheRunForStory: "Open the run for the whole story",
 
   runsIncomplete: "Workbench runs incomplete",
+  /**
+   * What the room says when the live hold itself fails. The word for the
+   * stream's own state is not owned here: `connectionLabels` in
+   * `streamStatus.ts` owns it for every surface that holds a stream.
+   */
+  streamUnstartable: "The live hold on this workshop could not start.",
+  eventUnapplied: "What changed could not be read.",
+  retryEvent: "Retry",
   runsUnavailable: "Workbench runs unavailable",
   workflowNamesUnavailable: "Workflow names unavailable — showing run ids.",
 

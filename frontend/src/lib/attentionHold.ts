@@ -7,8 +7,8 @@ import {
 import type { ConnectionState, ProtocolProblem } from "./runProjection";
 
 /**
- * The studio's hold of `GET /events`. Connection states are the same words as
- * a per-run stream; sequence and identity stay on the server's resume.
+ * The workbench's hold of `GET /events`. Connection states are the same words
+ * as a per-run stream; sequence and identity stay on the server's resume.
  */
 export type AttentionConnection = Exclude<ConnectionState, "complete">;
 
@@ -46,8 +46,19 @@ export function attentionStopped(hold: AttentionHold): boolean {
   return hold.protocol_problem !== null || hold.connection === "failed";
 }
 
+/**
+ * The kinds this feed carries, as the door itself declares them
+ * (`ATTENTION_EVENT_KINDS` in `adapters/dbos/attention_events.py`). A shorter
+ * list here is not caution: a kind the door sends and this list omits is read
+ * as a broken contract, which stops the hold on the first reconciliation the
+ * workshop raises.
+ */
 export function isAttentionEvent(event: RunEvent): boolean {
-  return event.event === "WAITING_INPUT" || event.event === "AGENT_FAILED";
+  return (
+    event.event === "WAITING_INPUT" ||
+    event.event === "AGENT_FAILED" ||
+    event.event === "ACTION_RECONCILIATION_REQUIRED"
+  );
 }
 
 export function applyAttentionFrame(

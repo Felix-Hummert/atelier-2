@@ -12,9 +12,10 @@ import {
   workbenchStageSelector,
   unansweredWorkbenchControls
 } from "../../src/lib/workbenchQuestions";
-import { PAGE_CURSORS } from "../support/cockpitApi";
+import { FakeRunEventFeed, PAGE_CURSORS } from "../support/cockpitApi";
 import {
   startedRun,
+  waitingInput,
   waitingInputRun,
   waitingReconciliationRun
 } from "../support/workflowV1";
@@ -356,6 +357,56 @@ describe("the workbench is the room the workshop opens on", () => {
 
     expect(await screen.findAllByRole("link", { name: /moving run/ })).toHaveLength(1);
     expect(screen.getByText(/Answer →/).isConnected).toBe(true);
+  });
+
+  /**
+   * The room holds the attention stream the Board used to hold, so a decision
+   * that opens while the operator is sitting here arrives where it belongs.
+   * The frame is only a nudge: what the room shows is the canonical read.
+   */
+  it("shows a decision that opens while the operator is looking, without a reload", async () => {
+    const feed = new FakeRunEventFeed();
+    const opened = waitingInputRun({ public_run_reference: "run1.YQ", run_id: "opened while here" });
+    const getRun = vi.fn(async () => opened);
+    openRoom([], { openAttentionEvents: feed.openAttention, getRun });
+    const { screen } = testingLibrary;
+    await screen.findByRole("heading", { name: "Workbench" });
+    feed.handlers?.opened();
+
+    feed.handlers?.event(
+      JSON.stringify(waitingInput(1, { public_run_reference: "run1.YQ", cursor: "event1.YQ.1" }))
+    );
+
+    expect((await screen.findByText(/opened while here/)).isConnected).toBe(true);
+    expect(getRun).toHaveBeenCalledWith("run1.YQ");
+    // The rail's number counts the same truth, from the same read.
+    expect((await screen.findByLabelText(`1 ${railCopy.needsYouCountSuffix}`)).isConnected).toBe(
+      true
+    );
+    expect(window.location.pathname).toBe("/atelier");
+  });
+
+  it("says plainly when the run behind an event could not be read, and offers one move", async () => {
+    const feed = new FakeRunEventFeed();
+    const getRun = vi.fn().mockRejectedValueOnce(new Error("run missing"));
+    openRoom([], { openAttentionEvents: feed.openAttention, getRun });
+    const { fireEvent, screen } = testingLibrary;
+    await screen.findByRole("heading", { name: "Workbench" });
+    feed.handlers?.opened();
+
+    feed.handlers?.event(
+      JSON.stringify(waitingInput(1, { public_run_reference: "run1.YQ", cursor: "event1.YQ.1" }))
+    );
+    expect((await screen.findByText("run missing")).isConnected).toBe(true);
+
+    // The one move repeats exactly the read that failed, and nothing else.
+    getRun.mockResolvedValueOnce(
+      waitingInputRun({ public_run_reference: "run1.YQ", run_id: "read on the second ask" })
+    );
+    await fireEvent.click(screen.getByRole("button", { name: workbenchPageCopy.retryEvent }));
+
+    expect((await screen.findByText(/read on the second ask/)).isConnected).toBe(true);
+    expect(screen.queryByText("run missing")).toBeNull();
   });
 
   it("names a row by the catalog's workflow name, and falls back to the run id when the catalog names nothing", async () => {

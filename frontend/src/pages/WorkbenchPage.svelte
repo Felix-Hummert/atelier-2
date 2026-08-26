@@ -1,9 +1,25 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
 
-  import { isRunV3, type AnyRun, type CockpitApi, type RunV3 } from "../api/client";
+  import {
+    isRunV3,
+    type AnyRun,
+    type CockpitApi,
+    type RunEvent,
+    type RunEventSubscription,
+    type RunV3
+  } from "../api/client";
   import PinnedDecision from "../components/PinnedDecision.svelte";
+  import ProblemNotice from "../components/ProblemNotice.svelte";
   import ReadState from "../components/ReadState.svelte";
+  import {
+    applyAttentionFrame,
+    attentionStopped,
+    markAttentionConnecting,
+    markAttentionLive,
+    startAttentionHold,
+    type AttentionHold
+  } from "../lib/attentionHold";
   import {
     currentChatTranscript,
     sendChatTurn,
@@ -18,6 +34,7 @@
   } from "../lib/conductorEpisode";
   import { connectionState, onConnectionRecovered, restartNoticeCopy } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
+  import { humanErrorMessage } from "../lib/humanRefusal";
   import type { MutationJournal } from "../lib/mutationJournal";
   import {
     beginRead,
@@ -31,6 +48,12 @@
   import { newestReadOfEachRun, resolveWorkflowName } from "../lib/runList";
   import { readEveryRevision, readEveryRun } from "../lib/runPages";
   import { humanMove, runStanding, standingMarks } from "../lib/runState";
+  import {
+    connectionLabel,
+    protocolDetail,
+    protocolTitle,
+    streamStopped
+  } from "../lib/streamStatus";
   import { workbenchPageCopy } from "../lib/workbenchPageCopy";
   import { workbenchQuestionAttribute, workbenchQuestions } from "../lib/workbenchQuestions";
   import { WORKSHOP_DESTINATION, runsWaitingForYou } from "../lib/workshop";
@@ -44,6 +67,13 @@
    * got lost in the growing stream. Beneath it lies the living shelf: the runs
    * that are moving, each one click from its graph. The Board that used to hold
    * those runs is gone, and nothing shows them twice.
+   *
+   * The room is alive: it holds the attention stream the Board used to hold, so
+   * a decision that opens while the operator is sitting here appears where it
+   * belongs instead of waiting for the next visit. An event is only a nudge --
+   * every one of them is projected through the canonical `getRun` read, so what
+   * this room shows is always a run the API confirmed, never a frame's own
+   * story.
    */
   export let cockpitApi: CockpitApi;
   export let mutationJournal: MutationJournal;
@@ -72,6 +102,13 @@
     | { kind: "connected"; connection: ConductorConnection };
 
   let live: RetainedRead<WorkbenchRuns, ReadFailure> = retainedRead<WorkbenchRuns, ReadFailure>();
+  let hold: AttentionHold = startAttentionHold();
+  let stream: RunEventSubscription | null = null;
+  let streamFailureMessage: string | null = null;
+  let projectionFailure: string | null = null;
+  let disposed = false;
+  let eventQueue: Promise<void> = Promise.resolve();
+  const pendingEvents: RunEvent[] = [];
   let transcript: readonly ChatMessage[] = currentChatTranscript();
   let typed = "";
   let composer: { focus(): void };
@@ -86,6 +123,7 @@
 
   onMount(() => {
     void load();
+    holdAttention();
     void resolveConductor();
     const unsubscribe = subscribeChatTranscript((next) => {
       const settledALine =
@@ -103,6 +141,9 @@
       void resolveConductor();
     });
     return () => {
+      disposed = true;
+      stream?.close();
+      stream = null;
       unsubscribe();
       unsubscribeConnection();
     };
@@ -170,7 +211,95 @@
   function confirm(generation: number, confirmed: WorkbenchRuns): void {
     const before = live;
     live = confirmRead(live, generation, confirmed);
-    if (live !== before) publishCount(confirmed.runs);
+    if (live === before) return;
+    publishCount(confirmed.runs);
+    // An event that arrived while this read was in flight has truth to be
+    // absorbed into now.
+    if (pendingEvents.length > 0) queueDrain();
+  }
+
+  /**
+   * The hold of the attention stream: the one door through which this room
+   * learns that something changed while the operator is looking at it.
+   */
+  function holdAttention(): void {
+    if (stream !== null || attentionStopped(hold)) return;
+    try {
+      stream = cockpitApi.openAttentionEvents({
+        opened: () => {
+          hold = markAttentionLive(hold);
+        },
+        event: applyEvent,
+        disconnected: () => {
+          hold = markAttentionConnecting(hold, true);
+        }
+      });
+    } catch (error) {
+      hold = markAttentionConnecting(hold, true);
+      streamFailureMessage = humanErrorMessage(
+        error,
+        wrapDisplayCopy(workbenchPageCopy.streamUnstartable)
+      );
+    }
+  }
+
+  function applyEvent(rawData: string): void {
+    const applied = applyAttentionFrame(hold, rawData);
+    hold = applied.hold;
+    if (applied.event === null) {
+      if (attentionStopped(hold)) {
+        stream?.close();
+        stream = null;
+      }
+      return;
+    }
+    pendingEvents.push(applied.event);
+    queueDrain();
+  }
+
+  function retryProjection(): void {
+    if (disposed) return;
+    projectionFailure = null;
+    queueDrain();
+  }
+
+  function queueDrain(): void {
+    eventQueue = eventQueue.then(drainAttention).catch((error: unknown) => {
+      if (disposed) return;
+      projectionFailure = humanErrorMessage(
+        error,
+        wrapDisplayCopy(workbenchPageCopy.eventUnapplied)
+      );
+    });
+  }
+
+  /**
+   * Each nudged run, read canonically and absorbed in the order the events
+   * arrived. A read that fails keeps its event at the head of the queue: the
+   * room says so and offers one move rather than skipping a run and pretending
+   * it is up to date.
+   */
+  async function drainAttention(): Promise<void> {
+    if (disposed || projectionFailure !== null) return;
+    while (!disposed && pendingEvents.length > 0 && projectionFailure === null) {
+      const event = pendingEvents[0];
+      if (event === undefined) break;
+      try {
+        const run = await cockpitApi.getRun(event.public_run_reference);
+        if (disposed) return;
+        // Nothing to absorb it into yet: the event waits for the first
+        // confirmed read rather than being dropped or inventing a room.
+        if (!absorbRun(run)) return;
+        pendingEvents.shift();
+      } catch (error) {
+        if (disposed) return;
+        projectionFailure = humanErrorMessage(
+          error,
+          wrapDisplayCopy(workbenchPageCopy.eventUnapplied)
+        );
+        return;
+      }
+    }
   }
 
   /** The rail's ochre count: the last confirmed read, and no earlier. */
@@ -179,20 +308,30 @@
   }
 
   /**
-   * A decision answered on its pinned card carries its run on: still waiting
-   * (an accepted-but-uncertain answer) keeps the pin with the fresher run;
-   * anything else has moved past this gate, so the run leaves this room for
-   * History. The pin never lingers as a question the run no longer asks.
+   * One canonically read run, taken into what this room shows -- whether it
+   * came from an answered decision or from the attention stream.
+   *
+   * A run that still moves or waits stands here with its fresher truth; one
+   * that has ended leaves for History the moment it does, so a pin never
+   * lingers as a question the run no longer asks and the shelf never keeps a
+   * finished row.
+   *
+   * Nothing is absorbed while this room holds no confirmed truth of its own --
+   * inventing a one-run list out of a stream would dress a pending or failed
+   * read up as a room. The caller keeps the event instead, so it lands the
+   * moment a read confirms.
    */
-  function onRunRead(read: AnyRun): void {
+  // Returns whether the read could be taken in; see the note above.
+  function absorbRun(read: AnyRun): boolean {
     const confirmed = live.confirmed;
-    if (confirmed === null) return;
+    if (confirmed === null) return false;
     const others = confirmed.runs.filter(
       (run) => run.public_run_reference !== read.public_run_reference
     );
     const runs = runHasMoved(read) ? others : [...others, read];
     live = updateConfirmed(live, { ...confirmed, runs });
     publishCount(runs);
+    return true;
   }
 
   function runHasMoved(run: AnyRun): boolean {
@@ -234,6 +373,7 @@
     void send(event);
   }
 
+  $: streamTitle = protocolTitle(hold);
   $: snapshot = live.confirmed;
   $: pins = (snapshot?.runs ?? [])
     .filter((run): run is RunV3 => isRunV3(run) && run.state === "WAITING_INPUT")
@@ -261,6 +401,34 @@
     <h1 id="workbench-title">{wrapDisplayCopy(workbenchPageCopy.title)}</h1>
   </header>
 
+  <!-- A healthy stream says nothing: a permanent "live" badge is chrome and a
+       first connect is ordinary loading. A stream merely reconnecting is the
+       generic reachability loss the central connection store already names once
+       above every room (#700); this line speaks only for what is specific to
+       this stream -- a real protocol or terminal failure. -->
+  {#if streamStopped(hold)}
+    <p class="stream-stopped" role="status">
+      <span aria-hidden="true">◇</span>
+      {wrapDisplayCopy(connectionLabel(hold))}
+    </p>
+  {/if}
+  {#if hold.stream_failure !== null}
+    <ProblemNotice problem={hold.stream_failure} />
+  {:else if streamTitle !== null}
+    <ProblemNotice title={wrapDisplayCopy(streamTitle)} message={protocolDetail(hold) ?? ""} />
+  {/if}
+  {#if streamFailureMessage !== null}
+    <ProblemNotice message={streamFailureMessage} />
+  {/if}
+  {#if projectionFailure !== null}
+    <ProblemNotice message={projectionFailure} />
+    <button
+      type="button"
+      {...{ [workbenchQuestionAttribute]: workbenchQuestions.retryProjection.id }}
+      onclick={retryProjection}
+    >{wrapDisplayCopy(workbenchPageCopy.retryEvent)}</button>
+  {/if}
+
   <ReadState
     read={live}
     label={workbenchQuestions.reloadWorkbenchRuns.readLabel}
@@ -280,7 +448,7 @@
               workflowName={pin.workflowName}
               {cockpitApi}
               {mutationJournal}
-              {onRunRead}
+              onRunRead={(read) => { absorbRun(read); }}
               {navigate}
             />
           </li>
@@ -420,6 +588,11 @@
     margin: 0;
     color: var(--ink-dim);
     font-size: var(--text-xs);
+  }
+
+  .stream-stopped {
+    margin: 0;
+    color: var(--signal-failure);
   }
 
   .living-shelf {
