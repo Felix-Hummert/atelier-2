@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["findings", "verdict"],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "line", "severity", "text"],
+        "properties": {
+          "file": {"type": "string"},
+          "line": {"type": "integer"},
+          "severity": {
+            "enum": ["high", "medium", "low"]
+          },
+          "text": {"type": "string"}
+        }
+      }
+    },
+    "verdict": {
+      "enum": ["approve", "revise"]
+    }
+  }
+}
