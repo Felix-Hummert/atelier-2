@@ -1,8 +1,10 @@
+import type { CatalogNameState } from "./catalogName";
+
 /**
  * Copy the Catalog room renders: what this atelier can run, and where it came
  * from.
  *
- * One owner per screen, the convention `workflowsPageCopy` and `railCopy`
+ * One owner per room, the convention `workbenchPageCopy` and `railCopy`
  * already hold to, so `?pseudo-locale=1` (`wrapDisplayCopy`) proves every
  * string on this surface has a source.
  *
@@ -11,9 +13,9 @@
  */
 export const catalogPageCopy = {
   title: "Catalog",
-  // The literal room sentence (operator ruling #684): the catalog is the
-  // library, everything published, seen with its provenance -- never the
-  // door that starts a run, which is Workflows' sentence, not this room's.
+  // The room sentence (ADR 0019 §1): the catalog is the library and the one
+  // door that starts a piece by hand -- what the house can do, from where, and
+  // how to get more. There is no second room that starts a run.
   lead: "What the workshop has — every published workflow, agent, and skill, each with its provenance.",
 
   workflowsTitle: "Available workflows",
@@ -61,8 +63,9 @@ export const catalogPageCopy = {
   admitting: "Admitting…",
   admitFailed: "This workflow could not be admitted.",
   admitted: "Admitted — you can start it by name now.",
-  // A workflow entry links into the start room, never the reverse (operator
-  // ruling #684): this room shows what is published, Workflows starts it.
+  // Starting lives in this room (ADR 0019 §1): the entry leads straight to the
+  // start door, with no second room in between. Moving that door into the
+  // entry's own detail page is the successor phase's work.
   start: "Start",
   // The one door into the workflow detail page (#695): a named revision's
   // node-graph preview and per-node facts, which this entry itself does not
@@ -88,3 +91,42 @@ export const catalogPageCopy = {
   emptyDocument: "There is nothing to import yet — choose a file or paste a document.",
   fileUnreadable: "That file could not be read."
 } as const;
+
+/**
+ * The detail behind one catalog entry: its still graph, the node panel, and
+ * what the room says when the name is gone. Same owner as the list, because
+ * the detail is this room's own page (ADR 0019 §1), not a room of its own.
+ */
+export const workflowDetailCopy = {
+  detailUnavailable: "Workflow detail unavailable",
+  notFoundTitle: "Workflow not found",
+  notFoundDescription: "No published workflow carries this name.",
+  graphUnavailable: "This revision's graph cannot be drawn here.",
+  panelTitle: "Node",
+  panelRole: "Role",
+  panelPromptStart: "Prompt template",
+  panelNoRole: "This node declares no role.",
+  panelNoPromptStart: "No prompt excerpt is published for this node.",
+  panelClose: "Close node detail",
+  notAdmittedNote: "Not admitted to the catalog.",
+  retiredNote: "Retired",
+  retiredNotice: "This workflow's catalog lineage was retired. Starting it is not offered here."
+} as const;
+
+/**
+ * The short state a card or detail header wears beside a name that is not
+ * the catalog's current head for it -- `null` for the ordinary case, an
+ * admitted head, which wears no note at all.
+ *
+ * Read-only browsing shows every published name it can identify rather than
+ * hiding one, unlike the project occupancy editor's picker (a write
+ * precondition: it must bind to a live catalog member, so it drops what
+ * cannot be bound). This surface only answers "what can the house do", so an
+ * honest note beats disappearing content -- the same choice the saved-workflow
+ * picker on the start door already makes for the same three states.
+ */
+export function catalogStateNote(state: CatalogNameState | undefined): string | null {
+  if (state === undefined || state.kind === "admitted") return null;
+  if (state.kind === "retired") return workflowDetailCopy.retiredNote;
+  return workflowDetailCopy.notAdmittedNote;
+}

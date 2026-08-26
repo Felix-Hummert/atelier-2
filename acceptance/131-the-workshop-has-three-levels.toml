@@ -31,16 +31,21 @@ story = "https://github.com/FlexOr2/atelier-2/issues/131"
 # were taken up only because they
 # meet the document's own admission criterion: they remove work rather than add
 # a feature.
+# Room names revised on 26.08.2026 (#773, refs #698, #704), in the same act
+# that carried this file's rule identifiers to their successors: ADR 0019
+# retired the Board and the Workflows room, and the surfaces these sentences
+# measure moved with them. Every sentence identifier stands unchanged -- the
+# discipline #521 already used -- so no proof and no claim is renamed.
 
 [[sentence]]
 id = "the-workshop-opens-in-the-studio"
 requirement = "REQ-UI-20"
-text = "The atelier opens in the Studio — the level that shows what is happening across the whole workshop — and not in a list of runs."
+text = "The atelier opens in the Workbench — the room that shows what needs a person now and what is moving — and not in a list of runs."
 
 [[sentence]]
 id = "the-inbox-names-every-run-that-waits-for-a-human"
 requirement = "REQ-UI-20"
-text = "The inbox row names, across everything, every run that waits for a human — the durable states WAITING_INPUT and WAITING_RECONCILIATION — and leads there with one click."
+text = "The Workbench names, across everything, every run that waits for a human — the durable states WAITING_INPUT and WAITING_RECONCILIATION — and leads to each with one click."
 
 [[sentence]]
 id = "an-empty-area-names-the-one-next-action"

@@ -16,7 +16,7 @@ import {
   type WorkflowRevisionDetail
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
-import { projectPageCopy } from "../../src/lib/projectPageCopy";
+import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
 import { standingMarks, standingWords } from "../../src/lib/runState";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import { base64Bytes, bytesBase64 } from "../support/exactBytes";
@@ -44,8 +44,8 @@ describe("mobile run entry", () => {
     });
     render(App, { props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) } });
 
-    // The project counts the work; the rows themselves are the Board's (#536).
-    const work = await screen.findByRole("region", { name: projectPageCopy.workTitle });
+    // Settings counts the work; the rows themselves are the Workbench's (#536).
+    const work = await screen.findByRole("region", { name: settingsPageCopy.workTitle });
     await within(work).findAllByRole("listitem");
     expect(
       within(work)
@@ -71,10 +71,10 @@ describe("mobile run entry", () => {
       props: { cockpitApi: api({ listRuns }), mutationJournal: new MutationJournal(sessionStorage) }
     });
 
-    expect((await screen.findByText(projectPageCopy.noRuns)).isConnected).toBe(true);
+    expect((await screen.findByText(settingsPageCopy.noRuns)).isConnected).toBe(true);
     expect(
-      screen.getByRole("link", { name: projectPageCopy.noRunsNext }).getAttribute("href")
-    ).toBe("/atelier/workflows");
+      screen.getByRole("link", { name: settingsPageCopy.noRunsNext }).getAttribute("href")
+    ).toBe("/atelier/catalog");
     expect(screen.queryByRole("status")).toBeNull();
   });
 

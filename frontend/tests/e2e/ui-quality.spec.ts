@@ -5,15 +5,29 @@ import { resolve } from "node:path";
 
 import { runPageSchema } from "../../src/api/client";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
-import { projectPageCopy } from "../../src/lib/projectPageCopy";
-import { standingMarks, standingWords } from "../../src/lib/runState";
-import { studioPageCopy } from "../../src/lib/studioPageCopy";
+import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
+import { humanMove, standingMarks, standingWords } from "../../src/lib/runState";
+import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
+import {
+  describeWorkbenchControlFacts,
+  questionForWorkbenchControlFacts,
+  workbenchInteractiveSelector,
+  workbenchQuestionAttribute,
+  workbenchQuestions,
+  workbenchStageSelector,
+  type WorkbenchControlFacts
+} from "../../src/lib/workbenchQuestions";
 import {
   unnamedAxeViolations,
   type AxeBaselineEntry,
   type CoreSurface
 } from "../support/axeBaseline";
-import { completedRun, startedRun, waitingInputRun } from "../support/workflowV1";
+import {
+  completedRun,
+  startedRun,
+  waitingInputRun,
+  waitingReconciliationRun
+} from "../support/workflowV1";
 
 const foundReference = "run1.Zm91bmQtcnVu";
 /** The workflow the e2e fixture publishes, and the detail surface it opens. */
@@ -108,14 +122,18 @@ const surfaces: readonly {
       }
     },
     {
-      surface: "studio",
-      path: "/atelier",
+      surface: "catalog",
+      path: "/atelier/catalog",
+      prepare: stageNamedWorkflow,
       ready: async (page) => {
-        await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
+        await expect(page.getByRole("heading", { level: 1, name: "Catalog" })).toBeVisible();
+      },
+      pseudoReady: async (page) => {
+        await expect(page.getByRole("heading", { level: 1, name: "[[[ Catalog ]]]" })).toBeVisible();
       }
     },
     {
-      surface: "project",
+      surface: "settings",
       path: "/atelier/project",
       ready: async (page) => {
         await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
@@ -137,15 +155,6 @@ const surfaces: readonly {
       ready: async (page) => {
         await expect(page.getByRole("navigation", { name: "Where you are" })).toBeVisible();
         await expect(page.getByRole("heading", { name: "Unnamed workflow" })).toBeVisible();
-      }
-    },
-    {
-      surface: "workflows",
-      path: "/atelier/workflows",
-      prepare: stageNamedWorkflow,
-      ready: async (page) => {
-        await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-        await expect(page.getByRole("button", { name: seededWorkflowName })).toBeVisible();
       }
     },
     {
@@ -174,10 +183,89 @@ async function scanSurface(page: Page) {
   return scan.violations;
 }
 
-const studioViewports = [
+const workbenchViewports = [
   { width: 1280, height: 900 },
   { width: 390, height: 844 }
 ] as const;
+
+type WorkbenchReadReply = "populated" | "unavailable" | "empty";
+
+function requiredMove(state: Parameters<typeof humanMove>[0]): string {
+  const move = humanMove(state);
+  if (move === null) {
+    throw new Error(`${state} must name a human move`);
+  }
+  return move;
+}
+
+/** One run in every standing this room can hold, terminal fixtures included. */
+function workbenchRuns() {
+  const reconciliation = waitingReconciliationRun();
+  if (reconciliation.waiting.type !== "WAITING_RECONCILIATION") {
+    throw new Error("waiting reconciliation fixture must wait for reconciliation");
+  }
+  return [
+    startedRun({ run_id: "run-a", public_run_reference: "run1.cnVuLWE" }),
+    waitingInputRun({ run_id: "wait-a", public_run_reference: "run1.d2FpdC1h", latest_event_cursor: null }),
+    waitingReconciliationRun({
+      run_id: "wait-b",
+      public_run_reference: "run1.d2FpdC1i",
+      latest_event_cursor: null,
+      waiting: { ...reconciliation.waiting, node_id: reconciliation.current_node.node_id }
+    }),
+    startedRun({ run_id: "fail-a", public_run_reference: "run1.ZmFpbC1h", state: "FAILED" }),
+    completedRun({ run_id: "done-a", public_run_reference: "run1.ZG9uZS1h" })
+  ];
+}
+
+async function routeWorkbenchReads(page: Page, read: () => WorkbenchReadReply): Promise<void> {
+  await page.route("**/atelier/api/v1/runs*", async (route: Route) => {
+    if (read() === "unavailable") {
+      // A real HTTP answer the server gave, not a round trip that never
+      // happened -- the page-local "unavailable" this test wants, never the
+      // central, cross-page reachability signal #700 owns.
+      await route.fulfill({
+        status: 503,
+        json: {
+          type: "urn:atelier2:problem:v1:temporarily-unavailable",
+          title: "Temporarily unavailable",
+          status: 503,
+          detail: "the durable run store is unreachable"
+        }
+      });
+      return;
+    }
+    const state = new URL(route.request().url()).searchParams.get("state");
+    const source = read() === "empty" ? [] : workbenchRuns();
+    await route.fulfill({
+      json: { items: source.filter((run) => state === null || run.state === state), next_after: null }
+    });
+  });
+}
+
+async function expectWorkbenchControlsAnswerNamedQuestions(
+  page: Page,
+  expected: readonly string[]
+): Promise<void> {
+  const facts = (await page.locator(workbenchStageSelector).evaluate(
+    (root, [selector, attribute]) =>
+      [...root.querySelectorAll(selector as string)].map((element) => ({
+        questionId: element.getAttribute(attribute as string),
+        href: element.getAttribute("href"),
+        ariaLabel: element.getAttribute("aria-label"),
+        tag: element.tagName.toLowerCase()
+      })),
+    [workbenchInteractiveSelector, workbenchQuestionAttribute]
+  )) as WorkbenchControlFacts[];
+  const unanswered = facts.filter((item) => questionForWorkbenchControlFacts(item) === null);
+  expect(
+    unanswered.map(describeWorkbenchControlFacts),
+    unanswered.map(describeWorkbenchControlFacts).join("; ")
+  ).toEqual([]);
+  expect(new Set(facts.map((item) => questionForWorkbenchControlFacts(item)?.id))).toEqual(
+    new Set(expected)
+  );
+}
 
 const projectViewports = [
   { width: 1280, height: 900 },
@@ -227,13 +315,13 @@ async function routeProjectReads(page: Page, read: () => ProjectRunReply, loadin
   await page.route("**/atelier/api/v1/agent-configuration-revisions*", (route) => route.fulfill({ json: { items: [], next_after_agent_configuration_revision_hash: null } }));
 }
 
-async function expectStudioCopyFits(page: Page, desktop: boolean): Promise<void> {
-  const heading = page.getByRole("heading", { name: "[[[ Board ]]]" });
-  const board = page.locator(".board-page");
+async function expectWorkbenchCopyFits(page: Page, desktop: boolean): Promise<void> {
+  const heading = page.getByRole("heading", { name: "[[[ Workbench ]]]" });
+  const room = page.locator(workbenchStageSelector);
   expect(await heading.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-  expect(await board.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  expect(await room.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
   if (desktop) {
-    expect(await board.evaluate((element) => {
+    expect(await room.evaluate((element) => {
       const parent = element.parentElement!;
       const style = getComputedStyle(parent); return element.clientWidth === parent.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
     })).toBe(true);
@@ -262,9 +350,7 @@ test("core surfaces render owned display strings under a pseudo-locale", async (
     await prepare?.(page);
     const separator = path.includes("?") ? "&" : "?";
     await page.goto(`${path}${separator}pseudo-locale=1`);
-    if (path === "/atelier") {
-      await expect(page.getByRole("heading", { name: "[[[ Board ]]]" })).toBeVisible();
-    } else if (pseudoReady !== undefined) {
+    if (pseudoReady !== undefined) {
       await pseudoReady(page);
     } else {
       await ready(page);
@@ -272,26 +358,26 @@ test("core surfaces render owned display strings under a pseudo-locale", async (
     const rail = page.getByRole("navigation", { name: "Workshop" });
     await expect(rail.getByText("[[[ atelier ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ Workbench ]]]", { exact: true })).toBeVisible();
-    await expect(rail.getByText("[[[ Board ]]]", { exact: true })).toBeVisible();
-    await expect(rail.getByText("[[[ Workflows ]]]", { exact: true })).toBeVisible();
+    await expect(rail.getByText("[[[ Catalog ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ History ]]]", { exact: true })).toBeVisible();
-    // Only Settings and Profile are still marked later; every rail destination
-    // opens a page, so none of them wears the marker any more.
-    await expect(rail.getByText("[[[ Not built yet ]]]", { exact: true })).toHaveCount(1);
-    await expect(rail.getByText("[[[ switch project ]]]", { exact: true })).toBeVisible();
     await expect(rail.getByText("[[[ Settings ]]]", { exact: true })).toBeVisible();
-    await expect(rail.getByText("[[[ Profile ]]]", { exact: true })).toBeVisible();
+    // The rooms the picture retired leave no entry behind, and the rail holds
+    // no slot that cannot be clicked (ADR 0019 §4).
+    await expect(rail.getByText("[[[ Board ]]]", { exact: true })).toHaveCount(0);
+    await expect(rail.getByText("[[[ Workflows ]]]", { exact: true })).toHaveCount(0);
+    await expect(rail.getByText("[[[ Not built yet ]]]", { exact: true })).toHaveCount(0);
+    await expect(rail.getByText("[[[ Profile ]]]", { exact: true })).toHaveCount(0);
     await expect(rail.getByText(THE_ONE_PROJECT, { exact: true })).toBeVisible();
   }
 });
 
 /**
- * The Board with work on it is staged, not inherited: the runs earlier specs
- * start finish on their own clock, so a Board read straight from the fixture
+ * The Workbench with work on it is staged, not inherited: the runs earlier
+ * specs start finish on their own clock, so a read straight from the fixture
  * host is populated or empty depending on how long the spec before this one
  * took.
  */
-async function stageBoardWithWork(page: Page): Promise<void> {
+async function stageWorkbenchWithWork(page: Page): Promise<void> {
   await page.route("**/atelier/api/v1/runs*", (route) => {
     const state = new URL(route.request().url()).searchParams.get("state");
     const items = runsOfEveryStanding().filter((run) => run.state === state);
@@ -299,37 +385,129 @@ async function stageBoardWithWork(page: Page): Promise<void> {
   });
 }
 
-test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio keeps header and confirmed empty copy visible at desktop and 390px", async ({ page }) => {
-  await page.addInitScript(() => Object.defineProperty(window, "EventSource", { value: class extends EventTarget { constructor() { super(); queueMicrotask(() => this.dispatchEvent(new Event("open"))); } close() {} } }));
-  await stageBoardWithWork(page);
-  for (const viewport of studioViewports) {
+// The identifier stays "studio-…" (acceptance/435): the room it measures is
+// the Workbench since ADR 0019 retired the Board.
+test("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): the Workbench keeps header and confirmed empty copy visible at desktop and 390px", async ({ page }) => {
+  await stageWorkbenchWithWork(page);
+  for (const viewport of workbenchViewports) {
     await page.setViewportSize(viewport);
     await page.goto("/atelier?pseudo-locale=1");
     await page.evaluate(() => window.scrollTo(0, 0));
-    await expect(page.getByRole("heading", { name: "[[[ Board ]]]" })).toBeVisible();
-    // Starting a workflow lives in Workflows, not the Board head (#532): no
-    // Start control of any kind sits beside the live indicator.
+    await expect(page.getByRole("heading", { name: "[[[ Workbench ]]]" })).toBeVisible();
+    // Starting a workflow lives in the Catalog, not the Workbench head: no
+    // Start control of any kind sits in this room.
     await expect(page.getByRole("link", { name: /Start/ })).toHaveCount(0);
-    await expectStudioCopyFits(page, viewport.width === 1280);
-    await page.screenshot({ path: `test-results/studio-common-${viewport.width}.png`, fullPage: true });
+    await expectWorkbenchCopyFits(page, viewport.width === 1280);
+    await page.screenshot({
+      path: `test-results/workbench-common-${viewport.width}.png`,
+      fullPage: true
+    });
   }
 
   await page.unroute("**/atelier/api/v1/runs*");
-  await page.route("**/atelier/api/v1/runs*", (route) => route.fulfill({ json: { items: [], next_after: null } }));
+  await page.route("**/atelier/api/v1/runs*", (route) =>
+    route.fulfill({ json: { items: [], next_after: null } })
+  );
 
-  for (const viewport of studioViewports) {
+  for (const viewport of workbenchViewports) {
     await page.setViewportSize(viewport);
     await page.goto("/atelier?pseudo-locale=1");
     await page.evaluate(() => window.scrollTo(0, 0));
 
-    await expect(page.getByRole("heading", { name: "[[[ Board ]]]" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: `[[[ ${studioPageCopy.emptyTitle} ]]]` })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "[[[ Workbench ]]]" })).toBeVisible();
     await expect(
-      page.getByText(wrapped(studioPageCopy.emptyDescription), { exact: true })
+      page.getByRole("heading", { name: `[[[ ${workbenchPageCopy.emptyTitle} ]]]` })
     ).toBeVisible();
-    await expect(page.getByRole("link", { name: wrapped(studioPageCopy.emptyStart) })).toBeVisible();
-    await expectStudioCopyFits(page, viewport.width === 1280);
-    await page.screenshot({ path: `test-results/studio-empty-${viewport.width}.png`, fullPage: true });
+    await expect(
+      page.getByText(wrapped(workbenchPageCopy.emptyDescription), { exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: wrapped(workbenchPageCopy.emptyStart) })
+    ).toBeVisible();
+    await expectWorkbenchCopyFits(page, viewport.width === 1280);
+    await page.screenshot({
+      path: `test-results/workbench-empty-${viewport.width}.png`,
+      fullPage: true
+    });
+  }
+});
+
+test("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): the Workbench keeps populated and unavailable copy visible at desktop and 390px", async ({ page }) => {
+  let reply: WorkbenchReadReply = "populated";
+  await routeWorkbenchReads(page, () => reply);
+
+  for (const viewport of workbenchViewports) {
+    await page.setViewportSize(viewport);
+    reply = "populated";
+    await page.goto("/atelier?pseudo-locale=1");
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await expect(page.getByRole("heading", { name: "[[[ Workbench ]]]" })).toBeVisible();
+    await expect(page.getByText(`${wrapped(requiredMove("WAITING_INPUT"))} →`).first()).toBeVisible();
+    await expect(
+      page.getByText(`${wrapped(requiredMove("WAITING_RECONCILIATION"))} →`)
+    ).toBeVisible();
+    // The fail-a and done-a fixtures in this same set are terminal: this room
+    // never asks for their state at all, so nothing of theirs is here for
+    // History to duplicate (#667).
+    await expect(page.getByText(wrapped(standingWords.failed))).toHaveCount(0);
+    await expect(page.getByText(wrapped(standingWords.done))).toHaveCount(0);
+    await expectWorkbenchCopyFits(page, viewport.width === 1280);
+    await page.screenshot({
+      path: `test-results/workbench-populated-${viewport.width}.png`,
+      fullPage: true
+    });
+  }
+
+  for (const viewport of workbenchViewports) {
+    await page.setViewportSize(viewport);
+    reply = "unavailable";
+    await page.goto("/atelier?pseudo-locale=1");
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await expect(page.getByRole("heading", { name: "[[[ Workbench ]]]" })).toBeVisible();
+    await expect(page.getByText(wrapped(workbenchPageCopy.runsUnavailable))).toBeVisible();
+    await expectWorkbenchCopyFits(page, viewport.width === 1280);
+    await page.screenshot({
+      path: `test-results/workbench-unavailable-${viewport.width}.png`,
+      fullPage: true
+    });
+  }
+});
+
+test("proves(studio-elements-answer-named-questions): every interactive Workbench control answers one named user question, populated and empty", async ({ page }) => {
+  let reply: WorkbenchReadReply = "populated";
+  await routeWorkbenchReads(page, () => reply);
+
+  for (const viewport of workbenchViewports) {
+    await page.setViewportSize(viewport);
+    reply = "populated";
+    await page.goto("/atelier");
+    await expect(page.getByRole("heading", { name: workbenchPageCopy.title })).toBeVisible();
+    await expect(page.getByText(`${requiredMove("WAITING_INPUT")} →`).first()).toBeVisible();
+    // Once the read confirms, ReadState.svelte mounts no control at all (#532).
+    await expect(
+      page.getByRole("button", { name: /workbench runs/ })
+    ).toHaveCount(0);
+    await expectWorkbenchControlsAnswerNamedQuestions(page, [
+      workbenchQuestions.openRun.id,
+      workbenchQuestions.saySomething.id,
+      workbenchQuestions.emptyStart.id
+    ]);
+  }
+
+  for (const viewport of workbenchViewports) {
+    await page.setViewportSize(viewport);
+    reply = "empty";
+    await page.goto("/atelier");
+    await expect(
+      page.getByRole("heading", { name: workbenchPageCopy.emptyTitle })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: workbenchPageCopy.emptyStart })
+    ).toBeVisible();
+    await expectWorkbenchControlsAnswerNamedQuestions(page, [
+      workbenchQuestions.saySomething.id,
+      workbenchQuestions.emptyStart.id
+    ]);
   }
 });
 
@@ -347,10 +525,10 @@ test("Project keeps work, absence, loading, and retained failure readable", asyn
       reply = "common";
       await page.goto(`/atelier/project${suffix}`);
       await expect(
-        page.getByText(pseudoLocale ? wrapped(projectPageCopy.runsUnavailable) : projectPageCopy.runsUnavailable)
+        page.getByText(pseudoLocale ? wrapped(settingsPageCopy.runsUnavailable) : settingsPageCopy.runsUnavailable)
       ).toHaveCount(0);
       const work = page.getByRole("region", {
-        name: pseudoLocale ? wrapped(projectPageCopy.workTitle) : projectPageCopy.workTitle
+        name: pseudoLocale ? wrapped(settingsPageCopy.workTitle) : settingsPageCopy.workTitle
       });
       for (const standing of ["running", "waiting", "done"] as const) {
         const word = pseudoLocale ? wrapped(standingWords[standing]) : standingWords[standing];
@@ -361,7 +539,7 @@ test("Project keeps work, absence, loading, and retained failure readable", asyn
       reply = "empty";
       await page.goto(`/atelier/project${suffix}`);
       await expect(
-        page.getByText(pseudoLocale ? wrapped(projectPageCopy.noRuns) : projectPageCopy.noRuns)
+        page.getByText(pseudoLocale ? wrapped(settingsPageCopy.noRuns) : settingsPageCopy.noRuns)
       ).toBeVisible();
       await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-empty.png`, fullPage: true });
 
@@ -381,7 +559,7 @@ test("Project keeps work, absence, loading, and retained failure readable", asyn
       loading.retainedReads = 1;
       await page.goto(`/atelier/project${suffix}`);
       await expect(
-        page.getByText(pseudoLocale ? wrapped(projectPageCopy.runsUnavailable) : projectPageCopy.runsUnavailable)
+        page.getByText(pseudoLocale ? wrapped(settingsPageCopy.runsUnavailable) : settingsPageCopy.runsUnavailable)
       ).toBeVisible();
       const retry = page.getByRole("button", { name: "Retry project runs" });
       await expect(retry).toBeVisible();

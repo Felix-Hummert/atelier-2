@@ -1,43 +1,42 @@
 import { describe, expect, it } from "vitest";
 
-import { WORKSHOP_DESTINATIONS, activeWorkshopDestination } from "../../src/lib/workshop";
+import {
+  WORKSHOP_DESTINATION,
+  WORKSHOP_ROOMS,
+  activeWorkshopDestination
+} from "../../src/lib/workshop";
 
 describe("the workshop rail names its destinations", () => {
-  it("opens a page for every destination it names, so no rail item is a dead click", () => {
-    expect(
-      WORKSHOP_DESTINATIONS.map((destination) => [destination.label, destination.path])
-    ).toEqual([
-      ["Workbench", "/atelier/chat"],
-      ["Board", "/atelier"],
-      ["Workflows", "/atelier/workflows"],
-      ["Catalog", "/atelier/catalog"],
-      ["History", "/atelier/history"]
+  it("names three rooms in the order the picture draws them, each with its own glyph and page", () => {
+    expect(WORKSHOP_ROOMS.map((room) => [room.label, room.glyph, room.path])).toEqual([
+      ["Workbench", "⌂", "/atelier/chat"],
+      ["Catalog", "▤", "/atelier/catalog"],
+      ["History", "◷", "/atelier/history"]
     ]);
   });
 
-  it("marks the rail item the current page sits under", () => {
-    expect(activeWorkshopDestination({ page: "chat" })).toBe("chat");
-    expect(activeWorkshopDestination({ page: "studio" })).toBe("board");
-    expect(activeWorkshopDestination({ page: "workflows" })).toBe("workflows");
-    expect(activeWorkshopDestination({ page: "workflow", name: "Preview door" })).toBe(
-      "workflows"
+  it("keeps Settings out of the rooms, as the context standing at the rail's foot", () => {
+    expect(WORKSHOP_ROOMS.map((room) => room.id)).not.toContain("settings");
+    expect([
+      WORKSHOP_DESTINATION.settings.label,
+      WORKSHOP_DESTINATION.settings.glyph,
+      WORKSHOP_DESTINATION.settings.path
+    ]).toEqual(["Settings", "⚙", "/atelier/project"]);
+  });
+
+  it("marks the rail entry the current page sits under", () => {
+    expect(activeWorkshopDestination({ page: "workbench" })).toBe("workbench");
+    // A run that is watched sits under the Workbench, where living work lives.
+    expect(activeWorkshopDestination({ page: "run", publicReference: "run1.cnVu" })).toBe(
+      "workbench"
     );
-    // Starting a run is a Workflows-owned action (reachable from Board and
-    // from a workflow's own detail page), not a History concern.
-    expect(activeWorkshopDestination({ page: "new" })).toBe("workflows");
+    // The catalog is the one room a workflow is found and started from, so its
+    // detail and the start door sit under it -- never under History.
     expect(activeWorkshopDestination({ page: "catalog" })).toBe("catalog");
+    expect(activeWorkshopDestination({ page: "workflow", name: "Preview door" })).toBe("catalog");
+    expect(activeWorkshopDestination({ page: "new" })).toBe("catalog");
     expect(activeWorkshopDestination({ page: "history" })).toBe("history");
-    // A run being watched sits under the room it was opened from (#654): the
-    // Board for a Board row, the Workbench for a chat episode -- never under
-    // History, which holds only what has finished.
-    expect(
-      activeWorkshopDestination({ page: "run", publicReference: "run1.cnVu", origin: null })
-    ).toBe("board");
-    expect(
-      activeWorkshopDestination({ page: "run", publicReference: "run1.cnVu", origin: "chat" })
-    ).toBe("chat");
-    // The project is the context above the destinations, not one of them.
-    expect(activeWorkshopDestination({ page: "project" })).toBeNull();
+    expect(activeWorkshopDestination({ page: "settings" })).toBe("settings");
     expect(activeWorkshopDestination({ page: "not-found" })).toBeNull();
   });
 });

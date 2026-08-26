@@ -43,7 +43,6 @@
     retainedRead,
     type RetainedRead
   } from "../lib/readResource";
-  import type { RunOrigin } from "../lib/route";
   import { runPageCopy } from "../lib/runPageCopy";
   import { runHeaderCopy, runHeaderTitle } from "../lib/runPages";
   import { WORKSHOP_DESTINATION } from "../lib/workshop";
@@ -67,12 +66,15 @@
   export let cockpitApi: CockpitApi;
   export let mutationJournal: MutationJournal;
   export let publicReference: string;
-  /** The room the operator opened this run from; its trail leads back there. */
-  export let origin: RunOrigin | null = null;
   export let navigate: (path: string) => void;
   export let createReconcileCommandId: () => string;
 
-  $: cameFrom = WORKSHOP_DESTINATION[origin ?? "board"];
+  /**
+   * The trail leads to the Workbench: living work lives there now that the
+   * Board is gone. Deriving it from the run's own state -- alive to the
+   * Workbench, ended to History (ADR 0019 §1) -- is a successor gap.
+   */
+  const cameFrom = WORKSHOP_DESTINATION.workbench;
 
   interface RunSnapshot {
     run: Run;

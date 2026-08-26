@@ -9,6 +9,11 @@ import servedPaths from "./servedPaths.json";
  * crossing exists because `/atelier/project` shipped reachable only by click:
  * the server's list was a copy, and a copy can only carry the paths someone
  * already thought of.
+ *
+ * A room that closes keeps its address rather than turning a living bookmark
+ * into a not-found page: `/atelier` and `/atelier/workflows` name the rooms
+ * that took their content over (ADR 0019 §1), the way `/atelier/runs` has
+ * named the project level ever since that level appeared above it.
  */
 export const SERVED_PATHS: readonly string[] = servedPaths;
 
@@ -18,52 +23,44 @@ export const PUBLIC_REFERENCE_PLACEHOLDER = "{public_ref}";
 /** Where a workflow's name stands in a served path. */
 export const WORKFLOW_NAME_PLACEHOLDER = "{workflow_name}";
 
-/**
- * Where the operator opened a run from, when it was not the Board.
- *
- * The run page's trail leads back to the room the operator actually left
- * (#654: coming from the chat, "← Board" was a lie). The origin travels as a
- * query parameter so it survives a reload, and a link without one keeps the
- * Board as the trail's home.
- */
-export type RunOrigin = "chat";
-
-const RUN_ORIGIN_PARAMETER = "from";
-
 export type CockpitRoute =
-  | { page: "chat" }
-  | { page: "studio" }
-  | { page: "project" }
+  | { page: "workbench" }
+  | { page: "settings" }
   | { page: "new" }
-  | { page: "workflows" }
   | { page: "catalog" }
   | { page: "workflow"; name: string }
   | { page: "history" }
-  | { page: "run"; publicReference: string; origin: RunOrigin | null }
+  | { page: "run"; publicReference: string }
   | { page: "not-found" };
 
 export function cockpitRoute(path: string): CockpitRoute {
-  const [pathname = "", query = ""] = path.split("?", 2);
-  if (pathname === "/atelier" || pathname === "/atelier/") {
-    return { page: "studio" };
+  const [pathname = ""] = path.split("?", 2);
+  // The workshop opens on the Workbench: what needs you now, what is moving,
+  // what was said. `/atelier/chat` is the address that surface grew from.
+  if (
+    pathname === "/atelier" ||
+    pathname === "/atelier/" ||
+    pathname === "/atelier/chat" ||
+    pathname === "/atelier/chat/"
+  ) {
+    return { page: "workbench" };
   }
   // /atelier/runs is where this installation's runs lived before the project
   // level existed; it names the same set, so old history entries keep landing
   // on it rather than on a not-found page. #133 owns its fate once a project
   // has a backend identity and "every run" and "this project" can differ.
   if (pathname === "/atelier/project" || pathname === "/atelier/runs") {
-    return { page: "project" };
-  }
-  if (pathname === "/atelier/chat" || pathname === "/atelier/chat/") {
-    return { page: "chat" };
+    return { page: "settings" };
   }
   if (pathname === "/atelier/new") {
     return { page: "new" };
   }
-  if (pathname === "/atelier/workflows" || pathname === "/atelier/workflows/") {
-    return { page: "workflows" };
-  }
-  if (pathname === "/atelier/catalog" || pathname === "/atelier/catalog/") {
+  if (
+    pathname === "/atelier/catalog" ||
+    pathname === "/atelier/catalog/" ||
+    pathname === "/atelier/workflows" ||
+    pathname === "/atelier/workflows/"
+  ) {
     return { page: "catalog" };
   }
   if (pathname === "/atelier/history" || pathname === "/atelier/history/") {
@@ -86,21 +83,15 @@ export function cockpitRoute(path: string): CockpitRoute {
       return { page: "not-found" };
     }
     if (decodePublicRunReference(publicReference) !== null) {
-      return { page: "run", publicReference, origin: runOrigin(query) };
+      return { page: "run", publicReference };
     }
   }
   return { page: "not-found" };
 }
 
-function runOrigin(query: string): RunOrigin | null {
-  const named = new URLSearchParams(query).get(RUN_ORIGIN_PARAMETER);
-  return named === "chat" ? named : null;
-}
-
 /** The one place the path of a run is built. */
-export function runPath(publicReference: string, origin?: RunOrigin): string {
-  const path = `/atelier/runs/${publicReference}`;
-  return origin === undefined ? path : `${path}?${RUN_ORIGIN_PARAMETER}=${origin}`;
+export function runPath(publicReference: string): string {
+  return `/atelier/runs/${publicReference}`;
 }
 
 /** The one place the path of a workflow's catalog page is built. */

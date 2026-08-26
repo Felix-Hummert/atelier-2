@@ -1,6 +1,6 @@
 <script lang="ts">
   import { wrapDisplayCopy } from "../lib/displayCopy";
-  import { workflowsPageCopy } from "../lib/workflowsPageCopy";
+  import { workflowDetailCopy } from "../lib/catalogPageCopy";
 
   /**
    * What a click on the still graph opens: the authored template a run of
@@ -27,28 +27,28 @@
 <aside class="node-preview-panel" aria-labelledby="node-preview-title">
   <header>
     <div>
-      <p class="eyebrow">{wrapDisplayCopy(workflowsPageCopy.panelTitle)}</p>
+      <p class="eyebrow">{wrapDisplayCopy(workflowDetailCopy.panelTitle)}</p>
       <h2 id="node-preview-title">{preview.id}</h2>
       <span class="node-kind">{preview.kind}</span>
     </div>
-    <button type="button" class="close" on:click={onClose} aria-label={workflowsPageCopy.panelClose}>
+    <button type="button" class="close" on:click={onClose} aria-label={workflowDetailCopy.panelClose}>
       ×
     </button>
   </header>
 
   <section aria-labelledby="node-preview-role">
-    <h3 id="node-preview-role">{wrapDisplayCopy(workflowsPageCopy.panelRole)}</h3>
+    <h3 id="node-preview-role">{wrapDisplayCopy(workflowDetailCopy.panelRole)}</h3>
     {#if preview.role === null}
-      <p class="muted">{wrapDisplayCopy(workflowsPageCopy.panelNoRole)}</p>
+      <p class="muted">{wrapDisplayCopy(workflowDetailCopy.panelNoRole)}</p>
     {:else}
       <p>{preview.role}</p>
     {/if}
   </section>
 
   <section aria-labelledby="node-preview-prompt">
-    <h3 id="node-preview-prompt">{wrapDisplayCopy(workflowsPageCopy.panelPromptStart)}</h3>
+    <h3 id="node-preview-prompt">{wrapDisplayCopy(workflowDetailCopy.panelPromptStart)}</h3>
     {#if preview.instruction_start === null}
-      <p class="muted">{wrapDisplayCopy(workflowsPageCopy.panelNoPromptStart)}</p>
+      <p class="muted">{wrapDisplayCopy(workflowDetailCopy.panelNoPromptStart)}</p>
     {:else}
       <p class="exact">{preview.instruction_start}</p>
     {/if}

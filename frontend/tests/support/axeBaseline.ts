@@ -4,22 +4,21 @@
  * A violation that is not in this list fails CI. A row without an owning
  * GitHub issue is not a baseline entry — it is a swallowed finding.
  *
- * Every surface the rail can reach, plus the two a rail destination leads
- * into (a workflow's detail and a run), is scanned under wcag2a / wcag2aa /
- * wcag22aa. The Workbench (grown from Chat) and the workflow detail joined in #516: a surface that is
- * not on this list is a surface whose accessibility nothing checks, which is
- * how the Workflows catalog once shipped unscanned (#526).
+ * Every room the rail can reach, plus Settings and the two surfaces a room
+ * leads into (a workflow's detail and a run), is scanned under wcag2a /
+ * wcag2aa / wcag22aa. A surface that is not on this list is a surface whose
+ * accessibility nothing checks, which is how the catalog once shipped
+ * unscanned (#526).
  */
 
 export const CORE_SURFACES = [
   "workbench",
-  "studio",
-  "project",
+  "catalog",
+  "history",
+  "settings",
   "new-run",
   "run",
-  "workflows",
-  "workflow-detail",
-  "history"
+  "workflow-detail"
 ] as const;
 
 export type CoreSurface = (typeof CORE_SURFACES)[number];
