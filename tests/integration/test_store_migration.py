@@ -34,7 +34,10 @@ from atelier2.adapters.dbos.run_transitions import event_from_record
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
     _AGENT_ATTEMPTS_TRIGGERS,
+    _EFFECT_INTENTS_ABANDONMENT_TRIGGERS,
+    _EFFECT_INTENTS_TRIGGERS,
     _PREDECESSOR_ATTEMPTS_BEFORE_THE_TRANSCRIPT,
+    _PREDECESSOR_INTENTS_BEFORE_ABANDONMENT,
     _PREDECESSOR_WAIT_ANSWERS,
     _PREDECESSOR_WAIT_UNCANCELLABLE_RUN_EVENTS,
     _PRODUCT_TRIGGERS,
@@ -65,6 +68,7 @@ from atelier2.adapters.dbos.schema import (
     V34_SCHEMA_HANDOFF,
     V35_SCHEMA_HANDOFF,
     V36_SCHEMA_HANDOFF,
+    V37_SCHEMA_HANDOFF,
     MigrationRequired,
     _rebuild_product_table,
     _require_product_shape,
@@ -78,6 +82,7 @@ from atelier2.adapters.dbos.schema import (
     catalog_lineage_members,
     catalog_lineages,
     context_packages_v3,
+    effect_intents,
     event_instants,
     host_occupancy_bindings,
     host_occupancy_revisions,
@@ -123,6 +128,10 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.catalog_v3 import CatalogLineage
 from atelier2.contracts.effects import (
+    EFFECT_INTENT_VERSION_ABANDONED,
+    EFFECT_INTENT_VERSION_CONFIRMED_INITIAL,
+    EFFECT_INTENT_VERSION_INITIAL,
+    EFFECT_INTENT_VERSION_WAITING,
     ConfirmationSource,
     EffectIntentState,
     LogicalEffectKey,
@@ -617,6 +626,7 @@ def _create_populated_v13_store(database_path: Path) -> None:
         _drop_webhook_delivery_cursor_table(predecessor)
         _drop_project_source_connection_table(predecessor)
         _revert_wait_answers_execution_key(predecessor)
+        _revert_the_abandoned_intent_state(predecessor)
     published = PublishedRevision(RevisionKind.WORKFLOW, b"name: lasagne\n")
     lineage = CatalogLineage(published.kind, published.revision_hash)
     configuration = "44" * 32
@@ -1216,6 +1226,7 @@ def _create_exact_v21_store(database_path: Path) -> None:
             connection.execute(f"DROP TRIGGER {trigger}")
         for table in (run_instants.name, attempt_instants.name, event_instants.name):
             connection.execute(f"DROP TABLE {table}")
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V21_SCHEMA_HANDOFF.version,),
@@ -1241,6 +1252,7 @@ def _create_exact_v22_store(database_path: Path) -> None:
         _revert_agent_refused_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V22_SCHEMA_HANDOFF.version,),
@@ -1266,6 +1278,7 @@ def _create_exact_v23_store(database_path: Path) -> None:
         _revert_project_verification_failed_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V23_SCHEMA_HANDOFF.version,),
@@ -1291,6 +1304,7 @@ def _create_exact_v24_store(database_path: Path) -> None:
         _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
         _drop_host_project_root_channel(connection)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V24_SCHEMA_HANDOFF.version,),
@@ -1315,6 +1329,7 @@ def _create_exact_v25_store(database_path: Path) -> None:
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
         _drop_occupancy_channel(connection)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V25_SCHEMA_HANDOFF.version,),
@@ -1338,6 +1353,7 @@ def _create_exact_v26_store(database_path: Path) -> None:
         _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V26_SCHEMA_HANDOFF.version,),
@@ -1392,6 +1408,7 @@ def _create_exact_v27_store(database_path: Path, *, access: bool = False) -> Non
         _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_attempts_trigger_to_v27(connection)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V27_SCHEMA_HANDOFF.version,),
@@ -1416,6 +1433,7 @@ def _create_exact_v28_store(database_path: Path) -> None:
         _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_attempts_trigger_to_v27(connection)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V28_SCHEMA_HANDOFF.version,),
@@ -1442,6 +1460,7 @@ def _create_exact_v29_store(database_path: Path) -> None:
         _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_agent_attempts_trigger_to_v27(connection)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V29_SCHEMA_HANDOFF.version,),
@@ -1814,6 +1833,7 @@ def test_v26_attempt_bytes_cross_v27_and_v28_unchanged_with_none_evidence(
         _revert_wait_answers_execution_key(connection)
         _revert_cancelled_run_state(connection)
         _revert_runner_evidence_attempts(connection)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V26_SCHEMA_HANDOFF.version,),
@@ -2247,6 +2267,7 @@ def _create_exact_v31_store(database_path: Path) -> None:
         _revert_wait_answers_execution_key(connection)
         connection.execute("DROP TRIGGER agent_attempts_state_transition")
         connection.execute(_V27_AGENT_ATTEMPT_STATE_TRANSITION)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V31_SCHEMA_HANDOFF.version,),
@@ -2325,6 +2346,7 @@ def test_a_populated_v31_runner_attempt_survives_the_v32_trigger_swap(
         _revert_wait_answers_execution_key(connection)
         connection.execute("DROP TRIGGER agent_attempts_state_transition")
         connection.execute(_V27_AGENT_ATTEMPT_STATE_TRANSITION)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V31_SCHEMA_HANDOFF.version,),
@@ -2372,6 +2394,7 @@ def _create_exact_v32_store(database_path: Path) -> None:
         _drop_project_source_connection_table(connection)
         _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V32_SCHEMA_HANDOFF.version,),
@@ -2529,6 +2552,7 @@ def _create_exact_v33_store(database_path: Path) -> None:
         _revert_the_attempt_transcript_pointer(connection)
         _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V33_SCHEMA_HANDOFF.version,),
@@ -2791,6 +2815,7 @@ def _downgrade_a_driven_store_to_v33(database_path: Path) -> None:
         _revert_the_attempt_transcript_pointer(connection)
         _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V33_SCHEMA_HANDOFF.version,),
@@ -2911,6 +2936,7 @@ def _create_exact_v34_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _revert_the_attempt_transcript_pointer(connection)
         _revert_wait_cancelled_event_kind(connection)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V34_SCHEMA_HANDOFF.version,),
@@ -3331,6 +3357,7 @@ def _create_exact_v35_store(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         _revert_the_attempt_transcript_pointer(connection)
         _revert_the_round_scoped_event_key(connection)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V35_SCHEMA_HANDOFF.version,),
@@ -3566,6 +3593,7 @@ def _create_exact_v36_store(database_path: Path) -> None:
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
         _revert_the_attempt_transcript_pointer(connection)
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V36_SCHEMA_HANDOFF.version,),
@@ -3643,6 +3671,7 @@ def _populate_v36_attempt(database_path: Path) -> None:
             f"VALUES ({', '.join('?' for _ in values)})",
             tuple(values.values()),
         )
+        _revert_the_abandoned_intent_state(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V36_SCHEMA_HANDOFF.version,),
@@ -3993,3 +4022,394 @@ def test_a_v37_attempt_still_running_may_not_name_a_transcript_yet(
         )
         with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
             connection.execute(statement, row)
+
+
+_PARKED_CURRENT_INTENTS_V38 = "effect_intents_after_abandonment"
+
+
+def _revert_the_abandoned_intent_state(connection: sqlite3.Connection) -> None:
+    """Restore the intent table as every schema up to V37 published it.
+
+    The #705 hop widened one CHECK and added the two triggers guarding the word
+    it admits; no earlier hop moved this table at all, so one published record
+    is the record for every version before V38, and each fixture's own pinned
+    fingerprint refuses it the moment anything else about it drifted.
+    """
+
+    for trigger in _EFFECT_INTENTS_ABANDONMENT_TRIGGERS:
+        connection.execute(f"DROP TRIGGER {trigger}")
+    _rebuild_product_table(
+        connection,
+        effect_intents,
+        _PARKED_CURRENT_INTENTS_V38,
+        _EFFECT_INTENTS_TRIGGERS,
+        SCHEMA_VERSION,
+        V37_SCHEMA_HANDOFF.version,
+    )
+
+
+def _create_exact_v37_store(database_path: Path) -> None:
+    """A current store with no word for an abandoned intent: the V37 shape.
+
+    V37 differs from the current schema in one CHECK and two triggers -- no
+    column, no key, no other table -- and the pinned V37 fingerprint refuses
+    the fixture the moment anything else about it drifts.
+    """
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _revert_the_abandoned_intent_state(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V37_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V37_SCHEMA_HANDOFF.version)
+
+
+_DRIVERLESS_RUN = RunId("live/wirken-ohne-antwort")
+_DRIVERLESS_ACTION_NODE = "wirken"
+_DRIVERLESS_INTENT_KEY = LogicalEffectKey("wirken/ohne-antwort")
+_DRIVERLESS_REQUEST = b"wirken/anfrage-ohne-antwort"
+_DRIVERLESS_REVISION = WorkflowRevision(b"name: wirkstatt\n")
+"""The one document the run below is bound to, so a test asking what the
+hop carried names the same revision the fixture wrote."""
+
+
+def _prepared_intent_values() -> dict[str, object]:
+    """One intent prepared and never resolved, with every column that fills.
+
+    Written from the contracts rather than driven through the store: what a hop
+    carries is proved by what the table holds afterwards, not by which writer
+    put it there.
+    """
+
+    return {
+        "logical_key": _DRIVERLESS_INTENT_KEY.value,
+        "run_id": _DRIVERLESS_RUN.value,
+        "canonical_request": _DRIVERLESS_REQUEST,
+        "request_hash": Sha256Hash.of(_DRIVERLESS_REQUEST).value,
+        "workflow_revision_hash": _DRIVERLESS_REVISION.revision_hash.value,
+        "adapter_revision": "loopback-v1",
+        "destination_identity": "loopback-test",
+        "adapter_operational_identity": "operational/loopback",
+        "state": EffectIntentState.PREPARED.value,
+        "state_version": EFFECT_INTENT_VERSION_INITIAL.value,
+    }
+
+
+def _create_populated_v37_store(database_path: Path) -> None:
+    """A published V37 store holding one prepared intent on an ended run.
+
+    The run stands FAILED at the Action node its intent was prepared on, which
+    is exactly the shape #705 found no word for: nothing will resolve the
+    intent, and nothing can lift the run to the operator's door either.
+    """
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    revision = _DRIVERLESS_REVISION
+    values = _prepared_intent_values()
+    with sqlite3.connect(database_path) as connection:
+        _revert_the_abandoned_intent_state(connection)
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            "INSERT INTO workflow_revisions (revision_hash, document) VALUES (?, ?)",
+            (revision.revision_hash.value, revision.document),
+        )
+        connection.execute(
+            "INSERT INTO runs (run_id, bootstrap_workflow_id, revision_hash, "
+            "workflow_format_version, current_node_id, current_round_ordinal, "
+            "state, state_version, last_event_sequence, terminal_hash) "
+            "VALUES (?, ?, ?, 1, ?, ?, ?, 2, 1, ?)",
+            (
+                _DRIVERLESS_RUN.value,
+                f"bootstrap-{_DRIVERLESS_RUN.value}",
+                revision.revision_hash.value,
+                _DRIVERLESS_ACTION_NODE,
+                FIRST_ROUND_ORDINAL,
+                RunState.FAILED.value,
+                Sha256Hash.of(b"terminal/wirkstatt").value,
+            ),
+        )
+        connection.execute(
+            f"INSERT INTO effect_intents ({', '.join(values)}) "
+            f"VALUES ({', '.join('?' for _ in values)})",
+            tuple(values.values()),
+        )
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V37_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V37_SCHEMA_HANDOFF.version)
+
+
+_ABANDON_THE_PREPARED_INTENT = (
+    "UPDATE effect_intents SET state = ?, state_version = ? WHERE logical_key = ?"
+)
+_ABANDONED_ROW = (
+    EffectIntentState.ABANDONED.value,
+    EFFECT_INTENT_VERSION_ABANDONED.value,
+    _DRIVERLESS_INTENT_KEY.value,
+)
+
+
+def test_an_exact_v37_store_migrates_to_v38_by_admitting_an_abandoned_intent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v37_store(database_path)
+
+    engine = create_canonical_engine(database_path)
+    with pytest.raises(MigrationRequired, match="schema version 37"):
+        initialize_schema(engine)
+    engine.dispose()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    shown = capsys.readouterr()
+    assert "37" in shown.out and "38" in shown.out
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 in shown.out
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(sa.select(atelier_schema_versions.c.version))
+            == SCHEMA_VERSION
+        )
+    engine.dispose()
+
+
+def test_every_v37_intent_column_crosses_the_v38_rebuild_unchanged(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The hop widens a vocabulary; it reinterprets no stored intent.
+
+    A prepared intent this store already holds is still prepared afterwards.
+    Deciding that one is abandoned is the serve-start sweep's word, taken on
+    evidence about its driver, and never something a hop may say for it.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v37_store(database_path)
+    columns = tuple(_prepared_intent_values())
+    projected = ", ".join(columns)
+    with sqlite3.connect(database_path) as connection:
+        predecessor_row = connection.execute(
+            f"SELECT {projected} FROM effect_intents"
+        ).fetchone()
+    assert predecessor_row is not None
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            connection.execute(f"SELECT {projected} FROM effect_intents").fetchone()
+            == predecessor_row
+        )
+
+
+def test_a_v38_intent_admits_the_abandonment_its_predecessor_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The one sentence the hop exists for, asked of both sides of it."""
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v37_store(database_path)
+
+    with (
+        sqlite3.connect(database_path) as connection,
+        pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"),
+    ):
+        connection.execute(_ABANDON_THE_PREPARED_INTENT, _ABANDONED_ROW)
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(_ABANDON_THE_PREPARED_INTENT, _ABANDONED_ROW)
+        connection.commit()
+        assert connection.execute(
+            "SELECT state, state_version FROM effect_intents"
+        ).fetchone() == (
+            EffectIntentState.ABANDONED.value,
+            EFFECT_INTENT_VERSION_ABANDONED.value,
+        )
+
+
+@pytest.mark.parametrize(
+    ("prior", "attempted"),
+    [
+        pytest.param(
+            None,
+            (
+                EffectIntentState.ABANDONED.value,
+                EFFECT_INTENT_VERSION_WAITING.value + 1,
+                _DRIVERLESS_INTENT_KEY.value,
+            ),
+            id="abandonment-at-a-version-no-prepared-intent-advances-to",
+        ),
+        pytest.param(
+            (
+                EffectIntentState.CONFIRMED.value,
+                EFFECT_INTENT_VERSION_CONFIRMED_INITIAL.value,
+                _DRIVERLESS_INTENT_KEY.value,
+            ),
+            _ABANDONED_ROW,
+            id="abandonment-of-an-intent-that-already-has-its-receipt",
+        ),
+        pytest.param(
+            _ABANDONED_ROW,
+            (
+                EffectIntentState.PREPARED.value,
+                EFFECT_INTENT_VERSION_INITIAL.value,
+                _DRIVERLESS_INTENT_KEY.value,
+            ),
+            id="revival-of-an-intent-its-run-already-ended-without",
+        ),
+    ],
+)
+def test_a_v38_intent_reaches_abandoned_only_from_prepared_and_never_leaves(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    prior: tuple[str, int, str] | None,
+    attempted: tuple[str, int, str],
+) -> None:
+    """The word is terminal, and it means one thing: this run ended without it.
+
+    The CHECK admits the vocabulary; only the trigger says which writes may
+    use it. Without it an abandonment could be written over a confirmed
+    receipt, or taken back the next time something touched the row -- both of
+    them a durable lie about an effect the destination may well have performed.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v37_store(database_path)
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        if prior is not None:
+            connection.execute(_ABANDON_THE_PREPARED_INTENT, prior)
+            connection.commit()
+        with pytest.raises(
+            sqlite3.IntegrityError, match="invalid effect intent abandonment"
+        ):
+            connection.execute(_ABANDON_THE_PREPARED_INTENT, attempted)
+
+
+def test_a_v38_intent_is_never_written_abandoned_in_the_first_place(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The transition trigger guards one door; an insert is the other.
+
+    ABANDONED means "the run this intent was prepared on ended without
+    resolving it", and every word in that sentence is about a row that already
+    existed. A freshly written one has no run behind it that ended and no
+    prepared request anyone ever meant to send, so an intent born abandoned
+    would be an ending the store could not account for -- and the transition
+    trigger, which only ever sees an UPDATE, would never notice.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v37_store(database_path)
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+    values = _prepared_intent_values() | {
+        "logical_key": "wirken/nie-vorbereitet",
+        "state": EffectIntentState.ABANDONED.value,
+        "state_version": EFFECT_INTENT_VERSION_ABANDONED.value,
+    }
+
+    statement = (
+        f"INSERT INTO effect_intents ({', '.join(values)}) "
+        f"VALUES ({', '.join('?' for _ in values)})"
+    )
+
+    with (
+        sqlite3.connect(database_path) as connection,
+        pytest.raises(
+            sqlite3.IntegrityError, match="effect intents are not born abandoned"
+        ),
+    ):
+        connection.execute(statement, tuple(values.values()))
+
+    # The same row, born the one way an intent is born, still lands: what the
+    # trigger refuses is the word, not the write.
+    born = values | {
+        "state": EffectIntentState.PREPARED.value,
+        "state_version": EFFECT_INTENT_VERSION_INITIAL.value,
+    }
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(statement, tuple(born.values()))
+        connection.commit()
+        assert connection.execute(
+            "SELECT state FROM effect_intents WHERE logical_key = ?",
+            (born["logical_key"],),
+        ).fetchone() == (EffectIntentState.PREPARED.value,)
+
+
+def test_the_intent_ledger_is_guarded_again_after_the_v38_rebuild(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The rebuild puts both predecessor triggers back, not only the table.
+
+    An intent row that could be deleted, or could have the request bytes it
+    was prepared with rewritten, would be no ledger at all -- for the length of
+    the hop and afterwards.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v37_store(database_path)
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("DELETE FROM effect_intents")
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE effect_intents SET canonical_request = ?", (b"etwas anderes",)
+            )
+
+
+@pytest.mark.parametrize(
+    "collision_sql",
+    [
+        pytest.param(
+            f"CREATE TABLE {_PREDECESSOR_INTENTS_BEFORE_ABANDONMENT}(wrong TEXT)",
+            id="table",
+        ),
+        pytest.param(
+            f"CREATE VIEW {_PREDECESSOR_INTENTS_BEFORE_ABANDONMENT} "
+            "AS SELECT 1 AS wrong",
+            id="view",
+        ),
+    ],
+)
+def test_a_refused_abandonment_hop_leaves_the_v37_store_untouched(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], collision_sql: str
+) -> None:
+    """A foreign object under the parking name refuses before the first statement."""
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_exact_v37_store(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(collision_sql)
+        connection.commit()
+    before = _logical_dump(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 1
+
+    shown = capsys.readouterr()
+    assert "will not alter" in shown.err
+    assert _logical_dump(database_path) == before
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (37,)
