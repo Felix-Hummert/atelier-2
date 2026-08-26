@@ -2,7 +2,7 @@
 
 Same harness idea as `test_github_open_pr_live`: no test reaches the real
 network; an injected `httpx.MockTransport` stands in for GitHub's issue
-listing, so these are integration tests of this source's contract with
+endpoints, so these are integration tests of this source's contract with
 `githubkit`, not of GitHub itself.
 """
 
@@ -29,20 +29,30 @@ from atelier2.contracts.host_configuration import (
     SourceKind,
 )
 from atelier2.contracts.queue_projection import TrackerItemReference
+from atelier2.contracts.when import RecordedAt
+from atelier2.contracts.work_items import (
+    ObservedWorkItemRevision,
+    WorkItemChangeMarker,
+    WorkItemKind,
+)
 from atelier2.ports.issue_observation import (
+    ObserveWorkItemRevisionResult,
     OpenTrackerItemsObserved,
+    TrackerItemUnknown,
     TrackerPayloadMalformed,
     TrackerSourceUnavailable,
+    WorkItemRevisionObserved,
 )
 
 OWNER = "atelier2-operator"
 REPO = "atelier2-target"
 CANARY_TOKEN = "gho_atelier2_canary_token_must_not_appear"
+READ_AT = RecordedAt("2026-08-26T09:15:00Z")
 
 
 @dataclass
-class _FakeGitHubIssueListing:
-    """The one endpoint this source calls: the paged open-issue listing."""
+class _FakeGitHubIssues:
+    """The two endpoints this source calls: the paged open listing, and one issue."""
 
     owner: str
     repo: str
@@ -50,31 +60,48 @@ class _FakeGitHubIssueListing:
     status: int = 200
     override_payload: Any = None
     raise_transport_error: bool = False
+    entity_tag: str | None = 'W/"3f1a9c"'
+    requested_paths: list[str] = field(default_factory=list)
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         if self.raise_transport_error:
             raise httpx.ConnectError("the network is down", request=request)
         path = request.url.path
-        if (
-            request.method == "GET"
-            and path == f"/repos/{self.owner}/{self.repo}/issues"
-        ):
-            if self.status != 200:
-                return httpx.Response(self.status, json={"message": "refused"})
-            if self.override_payload is not None:
-                return httpx.Response(200, json=self.override_payload)
-            per_page = int(request.url.params.get("per_page", "30"))
-            page = int(request.url.params.get("page", "1"))
-            start = (page - 1) * per_page
-            return httpx.Response(200, json=self.issues[start : start + per_page])
+        self.requested_paths.append(path)
+        collection = f"/repos/{self.owner}/{self.repo}/issues"
+        if request.method == "GET" and path == collection:
+            return self._listing(request)
+        if request.method == "GET" and path.startswith(f"{collection}/"):
+            return self._one_issue(path.removeprefix(f"{collection}/"))
         return httpx.Response(
             404, json={"message": f"unhandled {request.method} {path}"}
         )
 
+    def _listing(self, request: httpx.Request) -> httpx.Response:
+        if self.status != 200:
+            return httpx.Response(self.status, json={"message": "refused"})
+        if self.override_payload is not None:
+            return httpx.Response(200, json=self.override_payload)
+        per_page = int(request.url.params.get("per_page", "30"))
+        page = int(request.url.params.get("page", "1"))
+        start = (page - 1) * per_page
+        return httpx.Response(200, json=self.issues[start : start + per_page])
+
+    def _one_issue(self, number: str) -> httpx.Response:
+        if self.status != 200:
+            return httpx.Response(self.status, json={"message": "refused"})
+        headers = {} if self.entity_tag is None else {"ETag": self.entity_tag}
+        if self.override_payload is not None:
+            return httpx.Response(200, json=self.override_payload, headers=headers)
+        for issue in self.issues:
+            if str(issue["number"]) == number:
+                return httpx.Response(200, json=issue, headers=headers)
+        return httpx.Response(404, json={"message": "Not Found"})
+
 
 @pytest.fixture
-def listing() -> _FakeGitHubIssueListing:
-    return _FakeGitHubIssueListing(OWNER, REPO)
+def github() -> _FakeGitHubIssues:
+    return _FakeGitHubIssues(OWNER, REPO)
 
 
 def connection_revision(
@@ -93,20 +120,24 @@ def connection_revision(
 
 
 @pytest.fixture
-def source(tmp_path: Path, listing: _FakeGitHubIssueListing) -> LiveGitHubIssueSource:
+def source(tmp_path: Path, github: _FakeGitHubIssues) -> LiveGitHubIssueSource:
     """The source exactly as serve composes it: from the connection record."""
 
     credential_directory = tmp_path / "github-credential"
     credential_directory.mkdir()
     (credential_directory / "token").write_text(CANARY_TOKEN, encoding="utf-8")
     composed = live_github_issue_source(connection_revision(credential_directory))
-    return replace(composed, transport=httpx.MockTransport(listing.handle))
+    return replace(
+        composed,
+        transport=httpx.MockTransport(github.handle),
+        clock=lambda: READ_AT,
+    )
 
 
 def test_open_issues_become_gh_prefixed_tracker_references(
-    source: LiveGitHubIssueSource, listing: _FakeGitHubIssueListing
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
 ) -> None:
-    listing.issues = [{"number": 79}, {"number": 652}]
+    github.issues = [{"number": 79}, {"number": 652}]
 
     observed = source.open_items()
 
@@ -116,9 +147,9 @@ def test_open_issues_become_gh_prefixed_tracker_references(
 
 
 def test_pull_requests_in_the_issue_listing_are_not_work_items(
-    source: LiveGitHubIssueSource, listing: _FakeGitHubIssueListing
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
 ) -> None:
-    listing.issues = [
+    github.issues = [
         {"number": 1},
         {"number": 2, "pull_request": {"url": "https://api.github.com/x"}},
         {"number": 3},
@@ -132,9 +163,9 @@ def test_pull_requests_in_the_issue_listing_are_not_work_items(
 
 
 def test_observation_walks_every_page_of_a_large_listing(
-    source: LiveGitHubIssueSource, listing: _FakeGitHubIssueListing
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
 ) -> None:
-    listing.issues = [{"number": number} for number in range(1, 251)]
+    github.issues = [{"number": number} for number in range(1, 251)]
 
     observed = source.open_items()
 
@@ -157,10 +188,10 @@ def test_observation_walks_every_page_of_a_large_listing(
 )
 def test_a_payload_shape_this_source_refuses_is_a_typed_malformed_answer(
     source: LiveGitHubIssueSource,
-    listing: _FakeGitHubIssueListing,
+    github: _FakeGitHubIssues,
     payload: Any,
 ) -> None:
-    listing.override_payload = payload
+    github.override_payload = payload
 
     observed = source.open_items()
 
@@ -168,9 +199,9 @@ def test_a_payload_shape_this_source_refuses_is_a_typed_malformed_answer(
 
 
 def test_a_refusing_platform_answer_is_unavailable_naming_the_status(
-    source: LiveGitHubIssueSource, listing: _FakeGitHubIssueListing
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
 ) -> None:
-    listing.status = 403
+    github.status = 403
 
     observed = source.open_items()
 
@@ -179,9 +210,9 @@ def test_a_refusing_platform_answer_is_unavailable_naming_the_status(
 
 
 def test_an_unreachable_platform_is_unavailable_not_an_exception(
-    source: LiveGitHubIssueSource, listing: _FakeGitHubIssueListing
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
 ) -> None:
-    listing.raise_transport_error = True
+    github.raise_transport_error = True
 
     observed = source.open_items()
 
@@ -189,12 +220,12 @@ def test_an_unreachable_platform_is_unavailable_not_an_exception(
 
 
 def test_a_missing_credential_is_unavailable_and_leaks_no_token(
-    tmp_path: Path, listing: _FakeGitHubIssueListing
+    tmp_path: Path, github: _FakeGitHubIssues
 ) -> None:
     empty_directory = tmp_path / "github-credential"
     empty_directory.mkdir()
     composed = live_github_issue_source(connection_revision(empty_directory))
-    source = replace(composed, transport=httpx.MockTransport(listing.handle))
+    source = replace(composed, transport=httpx.MockTransport(github.handle))
 
     observed = source.open_items()
 
@@ -203,9 +234,9 @@ def test_a_missing_credential_is_unavailable_and_leaks_no_token(
 
 
 def test_no_token_appears_in_any_observation_output(
-    source: LiveGitHubIssueSource, listing: _FakeGitHubIssueListing
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
 ) -> None:
-    listing.issues = [{"number": 79}]
+    github.issues = [{"number": 79}]
 
     observed = source.open_items()
 
@@ -218,3 +249,166 @@ def test_a_foreign_source_kind_does_not_compose_the_issue_source(
 ) -> None:
     with pytest.raises(GitHubConnectionUncomposable, match="source kind"):
         live_github_issue_source(connection_revision(tmp_path, source_kind="gitlab"))
+
+
+def observed_revision(
+    answer: ObserveWorkItemRevisionResult,
+) -> ObservedWorkItemRevision:
+    assert isinstance(answer, WorkItemRevisionObserved), answer
+    return answer.revision
+
+
+def test_a_snapshot_carries_the_served_body_bytes_untouched(
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
+) -> None:
+    """The bytes GitHub served, exactly: no normalization, nothing appended.
+
+    A body with a carriage return, a non-ASCII character and no trailing
+    newline is the shape a normalizing read would quietly change, which is what
+    ADR 0010 §5's canonical rule forbids.
+    """
+
+    body = "Erste Zeile\r\n\r\nZweite Zeile — ohne Schlusszeilenumbruch"
+    github.issues = [{"number": 712, "body": body}]
+
+    revision = observed_revision(source.snapshot(TrackerItemReference("gh:712")))
+
+    assert revision.body == body.encode("utf-8")
+
+
+def test_a_snapshot_names_its_item_its_kind_and_the_reads_provenance(
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
+) -> None:
+    github.issues = [{"number": 712, "body": "text"}]
+    github.entity_tag = 'W/"c0ffee"'
+
+    revision = observed_revision(source.snapshot(TrackerItemReference("gh:712")))
+
+    assert revision.item == TrackerItemReference("gh:712")
+    assert revision.kind is WorkItemKind.ISSUE
+    assert revision.change_marker == WorkItemChangeMarker('W/"c0ffee"')
+    assert revision.observed_at == READ_AT
+
+
+def test_a_pull_request_is_read_as_a_change_request(
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
+) -> None:
+    """The one platform mapping this slice proves: GitHub PR reads as neutral kind.
+
+    The listing refuses pull requests because the queue observes work items;
+    reading one by name is a different question, and the answer carries no
+    GitHub word into the core.
+    """
+
+    github.issues = [
+        {
+            "number": 761,
+            "body": "the change",
+            "pull_request": {"url": "https://api.github.com/x"},
+        }
+    ]
+
+    revision = observed_revision(source.snapshot(TrackerItemReference("gh:761")))
+
+    assert revision.kind is WorkItemKind.CHANGE_REQUEST
+    assert "pull" not in repr(revision)
+
+
+def test_an_item_without_a_body_is_read_as_empty_bytes(
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
+) -> None:
+    github.issues = [{"number": 712, "body": None}]
+
+    revision = observed_revision(source.snapshot(TrackerItemReference("gh:712")))
+
+    assert revision.body == b""
+
+
+def test_an_item_the_tracker_does_not_hold_is_unknown(
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
+) -> None:
+    github.issues = [{"number": 712, "body": "text"}]
+
+    answer = source.snapshot(TrackerItemReference("gh:99999"))
+
+    assert answer == TrackerItemUnknown(TrackerItemReference("gh:99999"))
+
+
+@pytest.mark.parametrize("reference", ["gl:!12", "gh:", "gh:zero", "gh:0", "712"])
+def test_a_reference_this_source_cannot_address_is_unknown_without_a_request(
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues, reference: str
+) -> None:
+    answer = source.snapshot(TrackerItemReference(reference))
+
+    assert answer == TrackerItemUnknown(TrackerItemReference(reference))
+    assert github.requested_paths == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ["not an object", {"number": 712}, {"number": 712, "body": 3}],
+)
+def test_a_snapshot_payload_shape_this_source_refuses_is_typed_malformed(
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues, payload: Any
+) -> None:
+    github.override_payload = payload
+
+    answer = source.snapshot(TrackerItemReference("gh:712"))
+
+    assert isinstance(answer, TrackerPayloadMalformed)
+
+
+def test_a_read_without_a_change_marker_is_refused_rather_than_invented(
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
+) -> None:
+    github.issues = [{"number": 712, "body": "text"}]
+    github.entity_tag = None
+
+    answer = source.snapshot(TrackerItemReference("gh:712"))
+
+    assert isinstance(answer, TrackerPayloadMalformed)
+
+
+def test_a_refusing_platform_answer_to_a_snapshot_names_its_status(
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
+) -> None:
+    github.status = 403
+
+    answer = source.snapshot(TrackerItemReference("gh:712"))
+
+    assert isinstance(answer, TrackerSourceUnavailable)
+    assert "403" in answer.detail
+
+
+def test_an_unreachable_platform_leaves_a_snapshot_unavailable(
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
+) -> None:
+    github.raise_transport_error = True
+
+    answer = source.snapshot(TrackerItemReference("gh:712"))
+
+    assert isinstance(answer, TrackerSourceUnavailable)
+
+
+def test_a_missing_credential_leaves_a_snapshot_unavailable_and_leaks_no_token(
+    tmp_path: Path, github: _FakeGitHubIssues
+) -> None:
+    empty_directory = tmp_path / "github-credential"
+    empty_directory.mkdir()
+    composed = live_github_issue_source(connection_revision(empty_directory))
+    source = replace(composed, transport=httpx.MockTransport(github.handle))
+
+    answer = source.snapshot(TrackerItemReference("gh:712"))
+
+    assert isinstance(answer, TrackerSourceUnavailable)
+    assert "platform-credential-unresolvable" in answer.detail
+
+
+def test_no_token_appears_in_a_snapshot_answer(
+    source: LiveGitHubIssueSource, github: _FakeGitHubIssues
+) -> None:
+    github.issues = [{"number": 712, "body": "text"}]
+
+    answer = source.snapshot(TrackerItemReference("gh:712"))
+
+    assert CANARY_TOKEN not in repr(answer)

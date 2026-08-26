@@ -5,7 +5,9 @@
   `githubkit`, measured against the `open-pr` operation and recorded in §7;
   decisions 1 and 5 amended 2026-08-25 (`push-atelier-commit`, operator ruling
   on issue #642, gated REVISE then folded per that review) — decision only,
-  unimplemented
+  unimplemented; decision 1 amended 2026-08-26 (`snapshot()` joins the
+  observation port, head ruling on issue #732) — **built with its amendment**,
+  in the change that adds this record's second reading operation (issue #712)
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   story 4, whose "GitHub landet einen nativen Flow" and provider/secret rules this
@@ -129,6 +131,46 @@ not build it, and it does not decide
 capability surface behind one port — but #728 remains its own open question,
 and this record neither adopts nor rules on its `capabilities()`/`snapshot()`
 shape.
+
+**2026-08-26 amendment (Head-Ruling, #732-Journal): the observation port grows
+`snapshot()`, and grows nothing else.**
+[#728](https://github.com/FlexOr2/atelier-2/issues/728) proposed widening this
+record's one port in a single step into a five-operation `PlatformAdapter` —
+`capabilities()`, `snapshot()` and `reference_grammar()` beside the two reads.
+That is refused as a shape decided ahead of the callers that would prove it.
+The rule this amendment sets instead, and the only general thing it decides:
+**a read operation joins this port together with the first caller that needs
+it, in the same change as the amendment naming it.** Under that rule the port
+holds two reads and no catalogue — `open_items()`, which answers which items
+the tracker holds, and `snapshot()`, which answers what one named item said.
+
+**A snapshot is decision 5's observed revision, generalised — not a second
+snapshot idea beside it.** Decision 5 already rules how a platform object
+becomes reproducible material: the exact served UTF-8 bytes, hashed as they are
+with nothing appended, carrying the object identity and the read's change
+marker as provenance. That rule was written for the requirement issue and
+nothing in it is specific to one kind of item, so `snapshot()` answers exactly
+that revision for whatever work item the connected tracker holds. The core
+keeps holding orchestration state by reference (REQ-QUEUE-14) and gains the one
+thing a reference cannot carry: the bytes a run actually read, pinned, so a
+later read of a moving object is never mistaken for them.
+
+**Two kinds, and no platform noun in either.** A work item is an `issue` or a
+`change_request`; a GitHub pull request and a GitLab merge request are the same
+kind, and the mapping is the adapter's, exactly as the reference spelling
+already is. The listing keeps refusing pull requests, because which items the
+queue observes is #79's question; reading one by name is a different question
+and answers the neutral kind.
+
+**What this amendment leaves undecided, deliberately.** `capabilities()` and
+`reference_grammar()` stay unruled until a caller lands — this record still
+neither adopts nor refuses them as a design. A snapshot carries no title, no
+item state and no linked items, because none of them has a caller yet, and no
+discussion and no diff, because those are unbounded and belong in an artifact
+addressed by hash rather than in a second byte budget inside an order value.
+And a reference that is not in the composed adapter's own grammar earns no
+outcome of its own here: it addresses no item in the connected tracker, which
+is what the caller is told.
 
 ### 2. Auth: the operator chooses the method when a project is connected
 
@@ -768,6 +810,17 @@ this record borrows that owner rather than opening a second vocabulary.
   code with the loss named in its receipt, its workspace released rather than
   retained, with no `AgentAttemptPossiblyRan` report on replay, and a retry
   re-runs the attempt from scratch.
+- **(2026-08-26 amendment, #712)** A snapshot answers the exact bytes the
+  platform served as the item's body and a digest a reader recomputes from them
+  alone: a body carrying a carriage return, a non-ASCII character and no
+  trailing newline is neither normalized nor re-encoded, and appending a
+  newline is a different revision. A read whose change marker is missing is
+  refused rather than answered with an invented one, and an item the tracker
+  does not hold — or a reference in another adapter's grammar — is answered as
+  unknown rather than as a read that may yet succeed.
+- **(2026-08-26 amendment, #712)** A pull request read by name answers the
+  neutral `change_request` kind, and no GitHub noun travels with it past the
+  adapter boundary.
 - **(2026-08-25 amendment, #642-Journal)** A durable projection, event, receipt,
   and log all show no credential or secret material for a `push-atelier-commit`
   run under whichever credential handoff it is specified for — the PAT file
@@ -811,7 +864,10 @@ secret value in a workflow, prompt, context package, event, receipt, log or API
 resource; a create without a prior readback; a GitHub identifier outside the
 adapter; an agent shell publishing through `gh` instead of an Action node; a
 webhook accepted as truth without a readback; a poll interval hardcoded instead of
-configured; or a label name minted here.
+configured; a label name minted here; a reading operation added to the
+observation port ahead of the caller that needs it (2026-08-26 amendment,
+#732-Journal); or a snapshot that carries a platform's own noun for an item
+instead of the neutral kind.
 
 ## Supersedes
 

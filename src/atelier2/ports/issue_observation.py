@@ -1,11 +1,19 @@
-"""Which open work items the connected tracker holds, as references and no more.
+"""What the connected tracker holds: which items are open, and what one says.
 
 The queue keys orchestration state by a reference into whichever tracker holds
 the item (REQ-QUEUE-14); this port is how those references enter. A source
 answers with the tracker's open items in the reference grammar its own adapter
-owns (`gh:<n>` for GitHub, ADR 0010) -- never titles, bodies, or labels, which
-stay the tracker's. What becomes durable from an answer is the caller's
-decision; this port only observes.
+owns (`gh:<n>` for GitHub, ADR 0010) -- never titles, labels, or the item's own
+lifecycle, which stay the tracker's. What becomes durable from an answer is the
+caller's decision; this port only observes.
+
+Reading one named item is this port's second operation, and no more than that
+(ADR 0010 decision 1, 2026-08-26 amendment): a snapshot is the observed
+revision ADR 0010 §5 already defines -- the served bytes, their digest, the
+item's identity and the read's change marker -- so a run pins the material it
+read instead of re-reading a moving object. Nothing here enumerates what a
+platform is capable of, or how its references are spelled; those grow their own
+contract when a caller needs them.
 
 Provider output is external input: a source validates the payload it was given
 and answers `TrackerPayloadMalformed` for a shape it refuses, rather than
@@ -18,6 +26,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from atelier2.contracts.queue_projection import TrackerItemReference
+from atelier2.contracts.work_items import ObservedWorkItemRevision
 
 
 @dataclass(frozen=True)
@@ -50,7 +59,39 @@ type ObserveOpenTrackerItemsResult = (
 )
 
 
+@dataclass(frozen=True)
+class WorkItemRevisionObserved:
+    """The item stood at these bytes when this source read it."""
+
+    revision: ObservedWorkItemRevision
+
+
+@dataclass(frozen=True)
+class TrackerItemUnknown:
+    """This source addresses no item at that reference, and a retry changes nothing.
+
+    Either the tracker answered that the item is not there, or the reference is
+    not in this source's own grammar at all -- from the caller's side both say
+    the same thing about the connected tracker, and neither is a read that may
+    yet succeed.
+    """
+
+    reference: TrackerItemReference
+
+
+type ObserveWorkItemRevisionResult = (
+    WorkItemRevisionObserved
+    | TrackerItemUnknown
+    | TrackerSourceUnavailable
+    | TrackerPayloadMalformed
+)
+
+
 class TrackerItemSource(Protocol):
-    """One connected tracker, observed for the open items it currently holds."""
+    """One connected tracker: the open items it holds, and what one of them says."""
 
     def open_items(self) -> ObserveOpenTrackerItemsResult: ...
+
+    def snapshot(
+        self, reference: TrackerItemReference
+    ) -> ObserveWorkItemRevisionResult: ...
