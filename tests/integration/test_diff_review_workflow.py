@@ -97,8 +97,7 @@ REFUSED_FINDINGS = {
         "Befund 1: workflows/diff-review.yaml adds one guard clause."
     ),
     "a finding whose verdict is not one of the two product owns": (
-        "Befund 1: workflows/diff-review.yaml adds one guard clause.\n"
-        "Verdict: maybe"
+        "Befund 1: workflows/diff-review.yaml adds one guard clause.\nVerdict: maybe"
     ),
 }
 
