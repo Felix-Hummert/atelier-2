@@ -34,6 +34,9 @@ jobs:
           tree="$(git show --no-patch --format=%T "$commit")"
           test -n "$tree"
 
+          # The parentless object predates the status partition. Its one
+          # PRODUCT.md owner remains part of that historical proof; CI owns
+          # validation of the current index and its independently claimed sections.
           expected_paths="$(printf '%s\n' \
             '.github/pull_request_template.md' \
             '.github/workflows/foundation.yml' \

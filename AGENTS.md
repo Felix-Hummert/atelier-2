@@ -2,7 +2,7 @@ This file is reusable AI policy. Keep project facts, provider glue, architecture
 state, tool commands, and plans outside it.
 
 Entry points (pointers only; the facts live there): `docs/README.md` maps the
-documentation layers; `docs/PRODUCT.md` owns implementation status;
+documentation layers; `docs/PRODUCT.md` indexes implementation-status sections;
 `docs/requirements/README.md` owns the requirement and trace contract;
 `docs/decisions/README.md` owns technical decision records;
 `.github/workflows/foundation.yml` owns parentless foundation-object proof;
