@@ -112,7 +112,7 @@ describe("History shows only what has finished", () => {
     // An empty surface is never a dead end: it names the next step and leads
     // there (operator ruling 23.08.).
     const next = within(page).getByRole("link", { name: historyPageCopy.emptyNext });
-    expect(next.getAttribute("href")).toBe("/atelier/workflows");
+    expect(next.getAttribute("href")).toBe("/atelier/catalog");
   });
 
   it("says it is still looking instead of showing an empty table before the read confirms", async () => {
@@ -281,7 +281,7 @@ describe("History shows only what has finished", () => {
 });
 
 describe("the rail leads to History rather than the old project level", () => {
-  it("opens History from the Board's rail and reads it as an ordinary page reload would", async () => {
+  it("opens History from the Workbench's rail and reads it as an ordinary page reload would", async () => {
     window.history.replaceState(null, "", "/atelier");
     render(App, {
       props: {
@@ -289,7 +289,7 @@ describe("the rail leads to History rather than the old project level", () => {
         mutationJournal: new MutationJournal(sessionStorage)
       }
     });
-    await screen.findByRole("heading", { name: "Board" });
+    await screen.findByRole("heading", { name: "Workbench" });
 
     const rail = screen.getByRole("navigation", { name: "Workshop" });
     await fireEvent.click(within(rail).getByRole("link", { name: "History" }));

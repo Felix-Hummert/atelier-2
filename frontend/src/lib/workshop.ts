@@ -3,95 +3,80 @@ import { writable, type Writable } from "svelte/store";
 import type { CockpitRoute } from "./route";
 
 /**
- * The destinations the target-UI rail names: Workbench, Board, Workflows,
- * Catalog, History. Each one opens a page this cockpit serves — the rail holds
- * no disabled item, because a rail entry that cannot be clicked is a promise
- * the house does not keep. What a page cannot do yet, that page says in its own
- * words.
+ * The rail of the target picture (ADR 0019 §1): three rooms — Workbench,
+ * Catalog, History — and at its foot, set apart by a line, Settings, the
+ * context above the three, with the project name small beneath it.
  *
- * The Workbench keeps the `/atelier/chat` address it grew from (issue #580):
- * the surface became the composer plus its pinned decisions, but its served
- * path is a durable bookmark this rename leaves untouched.
+ * Each room answers one question. The Workbench holds what wants you now and
+ * what is moving; the Catalog holds what the house can do, where it came from
+ * and the door to start one by hand; History holds what is over. There is no
+ * Board and no Workflows room: a Board would repeat the workbench and the
+ * history, and starting lives in the catalog.
  *
- * Workflows and Catalog are two rooms, one vocabulary (operator ruling #684):
- * Workflows is the start room -- only what the catalog has admitted, and
- * every card there leads to starting it. Catalog is the library -- every
- * published workflow, agent, and skill, with its provenance, its admission
- * state, and the door to import or admit one. A workflow entry in the
- * library links "Start" into the start room; the start room never repeats
- * the library's browsing. #660's Git link is the next thing the library
- * gains, not a second room to build.
+ * The Workbench keeps the `/atelier/chat` address it grew from (issue #580)
+ * and Settings the `/atelier/project` one: a served path is a durable
+ * bookmark, and moving it belongs to the phase that also changes the
+ * served-path declaration and the server that mirrors it.
  */
+export type WorkshopRoomId = "workbench" | "catalog" | "history";
+
 export type WorkshopDestination = {
-  id: "chat" | "board" | "workflows" | "catalog" | "history";
+  id: WorkshopRoomId | "settings";
   label: string;
-  path:
-    | "/atelier/chat"
-    | "/atelier"
-    | "/atelier/workflows"
-    | "/atelier/catalog"
-    | "/atelier/history";
+  /** The one glyph this destination wears; §01 of the picture explains the vocabulary. */
+  glyph: string;
+  path: "/atelier/chat" | "/atelier/catalog" | "/atelier/history" | "/atelier/project";
 };
 
 /** Each destination by name, for the trail that leads back to one of them. */
 export const WORKSHOP_DESTINATION: Record<WorkshopDestination["id"], WorkshopDestination> = {
-  chat: { id: "chat", label: "Workbench", path: "/atelier/chat" },
-  board: { id: "board", label: "Board", path: "/atelier" },
-  workflows: { id: "workflows", label: "Workflows", path: "/atelier/workflows" },
-  catalog: { id: "catalog", label: "Catalog", path: "/atelier/catalog" },
-  history: { id: "history", label: "History", path: "/atelier/history" }
+  workbench: { id: "workbench", label: "Workbench", glyph: "⌂", path: "/atelier/chat" },
+  catalog: { id: "catalog", label: "Catalog", glyph: "▤", path: "/atelier/catalog" },
+  history: { id: "history", label: "History", glyph: "◷", path: "/atelier/history" },
+  settings: { id: "settings", label: "Settings", glyph: "⚙", path: "/atelier/project" }
 };
 
-export const WORKSHOP_DESTINATIONS: readonly WorkshopDestination[] = [
-  WORKSHOP_DESTINATION.chat,
-  WORKSHOP_DESTINATION.board,
-  WORKSHOP_DESTINATION.workflows,
+/** The three rooms, in the order the rail shows them; Settings stands apart at its foot. */
+export const WORKSHOP_ROOMS: readonly WorkshopDestination[] = [
+  WORKSHOP_DESTINATION.workbench,
   WORKSHOP_DESTINATION.catalog,
   WORKSHOP_DESTINATION.history
 ];
 
 /**
- * Which rail item the current page sits under. A missing page sits under none.
+ * Which rail entry the current page sits under. A missing page sits under none.
  *
- * `new` marks Workflows (Operator ruling 22.08.): starting a run is a
- * Workflows-owned action reachable from Board and from a workflow's own detail
- * page, not a History concern. `run` marks the room it was opened from — the
- * Workbench for a chat episode, otherwise the Board, whose row a watched run
- * is — and the run page's trail leads back to the same room. `project` marks
- * nothing — the project is the context above the four destinations, not a
- * fifth one.
+ * The workflow detail and the start door sit under the Catalog: it is the one
+ * room a workflow is found and started from. A run sits under the Workbench,
+ * where living work lives now that the Board is gone, and the run page's trail
+ * leads back to the same entry. Deriving that trail from the run's own state —
+ * alive to the Workbench, ended to History (ADR 0019 §1) — is a successor gap.
  */
 export function activeWorkshopDestination(route: CockpitRoute): WorkshopDestination["id"] | null {
-  if (route.page === "chat") {
-    return "chat";
+  if (route.page === "workbench" || route.page === "run") {
+    return "workbench";
   }
-  if (route.page === "run") {
-    return route.origin ?? "board";
-  }
-  if (route.page === "studio") {
-    return "board";
-  }
-  if (route.page === "workflows" || route.page === "workflow" || route.page === "new") {
-    return "workflows";
-  }
-  if (route.page === "catalog") {
+  if (route.page === "catalog" || route.page === "workflow" || route.page === "new") {
     return "catalog";
   }
   if (route.page === "history") {
     return "history";
   }
+  if (route.page === "settings") {
+    return "settings";
+  }
   return null;
 }
 
-export type BoardBadgeCounts = { needsYou: number; running: number };
-
 /**
- * The rail's Board badges, as the Board page's own reads last confirmed them.
+ * How many runs wait for a person, as the Workbench's own read last confirmed
+ * them — the ochre count in the rail, and the only number the rail carries
+ * (ADR 0019 §1: the count in the rail is the notification).
  *
- * The rail is mounted for every page, but only the Board page reads runs. A
- * page that is not Board still shows the badges from the Board's last
- * confirmed read rather than nothing -- but never a number this shell cannot
- * trace to that read. Before the Board has read once, this is `null` and the
- * rail shows no badge, honestly, instead of a fabricated zero.
+ * The rail is mounted for every page, but only the Workbench reads runs. A
+ * page that is not the Workbench still shows the count from its last confirmed
+ * read rather than nothing — but never a number this shell cannot trace to
+ * that read. Before the Workbench has read once this is `null` and the rail
+ * shows no count, honestly, instead of a fabricated zero.
  */
-export const boardBadgeCounts: Writable<BoardBadgeCounts | null> = writable(null);
+export const runsWaitingForYou: Writable<number | null> = writable(null);

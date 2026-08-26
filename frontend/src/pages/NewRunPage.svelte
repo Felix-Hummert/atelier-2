@@ -14,6 +14,7 @@
     type WorkflowRevisionSummary
   } from "../api/client";
   import BackLink from "../components/BackLink.svelte";
+  import { WORKSHOP_DESTINATION } from "../lib/workshop";
   import InfoHint from "../components/InfoHint.svelte";
   import OrderEditor from "../components/OrderEditor.svelte";
   import ProblemNotice from "../components/ProblemNotice.svelte";
@@ -77,6 +78,9 @@
   export let mutationJournal: MutationJournal;
   export let navigate: (path: string) => void;
   export let createRunId: () => string = makeRunId;
+
+  /** Starting is the Catalog's own act now that the Workflows room is gone. */
+  const catalogRoom = WORKSHOP_DESTINATION.catalog;
 
   type BindingSource = "looking" | "project" | "remembered" | "choose" | "unavailable";
 
@@ -1149,7 +1153,7 @@
 <svelte:window onkeydown={handleEscape} />
 
 <section aria-labelledby="new-title">
-  <BackLink label="Workflows" path="/atelier/workflows" {navigate} />
+  <BackLink label={catalogRoom.label} path={catalogRoom.path} {navigate} />
   <h1 id="new-title">Choose a workflow</h1>
 
   {#if failureMessage !== null}<ProblemNotice message={failureMessage} />{/if}

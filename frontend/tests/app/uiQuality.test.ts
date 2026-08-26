@@ -7,9 +7,9 @@ import { wrapDisplayCopy } from "../../src/lib/displayCopy";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { humanMove } from "../../src/lib/runState";
-import { projectPageCopy } from "../../src/lib/projectPageCopy";
+import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
 import { standingWords } from "../../src/lib/runState";
-import { studioPageCopy } from "../../src/lib/studioPageCopy";
+import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import {
   completedRun,
@@ -33,10 +33,9 @@ afterEach(() => {
 
 const OWNED_RAIL = [
   "[[[ Workbench ]]]",
-  "[[[ Board ]]]",
-  "[[[ Workflows ]]]",
   "[[[ Catalog ]]]",
-  "[[[ History ]]]"
+  "[[[ History ]]]",
+  "[[[ Settings ]]]"
 ];
 
 function open(pathname: string) {
@@ -71,7 +70,7 @@ function listedRun(runId: string, factory: (changes?: Partial<RunV1>) => RunV1, 
   });
 }
 
-function populatedStudioRuns(): RunV1[] {
+function populatedWorkbenchRuns(): RunV1[] {
   const reconciliation = waitingReconciliationRun();
   if (reconciliation.waiting.type !== "WAITING_RECONCILIATION") {
     throw new Error("waiting reconciliation fixture must wait for reconciliation");
@@ -88,34 +87,14 @@ function populatedStudioRuns(): RunV1[] {
   ];
 }
 
-function openStudioPseudoLocale(listRuns: ReturnType<typeof vi.fn>) {
+function openWorkbenchPseudoLocale(listRuns: ReturnType<typeof vi.fn>) {
   window.history.replaceState(null, "", "/atelier?pseudo-locale=1");
-  const feed = new FakeRunEventFeed();
   render(App, {
     props: {
-      cockpitApi: cockpitApiStub({
-        listRuns,
-        openAttentionEvents: feed.openAttention
-      }),
+      cockpitApi: cockpitApiStub({ listRuns }),
       mutationJournal: new MutationJournal(sessionStorage)
     }
   });
-  return feed;
-}
-
-function openEmptyStudio() {
-  window.history.replaceState(null, "", "/atelier?pseudo-locale=1");
-  const feed = new FakeRunEventFeed();
-  render(App, {
-    props: {
-      cockpitApi: cockpitApiStub({
-        listRuns: vi.fn(async () => ({ items: [], next_after: null })),
-        openAttentionEvents: feed.openAttention
-      }),
-      mutationJournal: new MutationJournal(sessionStorage)
-    }
-  });
-  return feed;
 }
 
 function openProjectPseudoLocale() {
@@ -131,10 +110,10 @@ function openProjectPseudoLocale() {
   });
 }
 
-// The one project's real name (#133 seam) and the "·" punctuation between the
-// Settings and Profile chips are the only rail text a pseudo-locale wrap does
-// not own — everything else the rail renders must come from a copy owner.
-const RAIL_TEXT_EXCEPTIONS = new Set([THE_ONE_PROJECT, "·"]);
+// The one project's real name (#133 seam) is the only rail text a
+// pseudo-locale wrap does not own — everything else the rail renders must come
+// from a copy owner.
+const RAIL_TEXT_EXCEPTIONS = new Set([THE_ONE_PROJECT]);
 
 function isPseudoLocaleWrapped(text: string): boolean {
   return text.startsWith("[[[") && text.endsWith("]]]");
@@ -156,7 +135,7 @@ async function railShowsOwnedPseudoLocale(): Promise<void> {
   const unowned: string[] = [];
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
     const text = node.textContent?.trim() ?? "";
-    // A bare digit string (the Board badge counts) is data, not copy: a count
+    // A bare digit string (the rail's ochre count) is data, not copy: a count
     // needs no translation wrap, the same way a run id or count elsewhere on
     // the workshop never does.
     if (
@@ -177,44 +156,47 @@ async function railShowsOwnedPseudoLocale(): Promise<void> {
 }
 
 describe("core surfaces read owned display strings", () => {
-  it("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): Studio renders its header and confirmed empty copy through the display transform", async () => {
-    const feed = openEmptyStudio();
+  // The identifiers stay "studio-…" (acceptance/435): the room they measure is
+  // the Workbench since ADR 0019 retired the Board.
+  it("proves(studio-entry-copy-is-owned-and-survives-pseudo-locale): the Workbench renders its header and confirmed empty copy through the display transform", async () => {
+    openWorkbenchPseudoLocale(vi.fn(async () => ({ items: [], next_after: null })));
 
-    await screen.findByRole("heading", { name: "[[[ Board ]]]" });
-    feed.handlers?.opened();
-    await screen.findByRole("heading", { name: `[[[ ${studioPageCopy.emptyTitle} ]]]` });
+    await screen.findByRole("heading", { name: "[[[ Workbench ]]]" });
+    await screen.findByRole("heading", { name: `[[[ ${workbenchPageCopy.emptyTitle} ]]]` });
 
-    expect(screen.getByText(wrapDisplayCopy(studioPageCopy.emptyDescription)).isConnected).toBe(true);
+    expect(screen.getByText(wrapDisplayCopy(workbenchPageCopy.emptyDescription)).isConnected).toBe(
+      true
+    );
     expect(
-      screen.getByRole("link", { name: wrapDisplayCopy(studioPageCopy.emptyStart) }).isConnected
+      screen.getByRole("link", { name: wrapDisplayCopy(workbenchPageCopy.emptyStart) }).isConnected
     ).toBe(true);
   });
 
-  it("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Board renders group titles and row sentences through the display transform, and never lists a terminal run (#667)", async () => {
-    openStudioPseudoLocale(listRunsByState(populatedStudioRuns()));
+  it("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): the Workbench renders its row moves through the display transform, and never lists a terminal run (#667)", async () => {
+    openWorkbenchPseudoLocale(listRunsByState(populatedWorkbenchRuns()));
 
-    const needsYou = await screen.findByRole("region", { name: `${wrapDisplayCopy(studioPageCopy.needsYou)} · 2` });
     const answer = humanMove("WAITING_INPUT");
     const reconcile = humanMove("WAITING_RECONCILIATION");
     expect(answer).not.toBeNull();
     expect(reconcile).not.toBeNull();
-    expect(within(needsYou).getByText(`${wrapDisplayCopy(answer ?? "")} →`).isConnected).toBe(true);
-    expect(within(needsYou).getByText(`${wrapDisplayCopy(reconcile ?? "")} →`).isConnected).toBe(true);
+    expect((await screen.findByText(`${wrapDisplayCopy(answer ?? "")} →`)).isConnected).toBe(true);
+    expect(screen.getByText(`${wrapDisplayCopy(reconcile ?? "")} →`).isConnected).toBe(true);
 
-    await screen.findByRole("region", { name: `${wrapDisplayCopy(studioPageCopy.running)} · 2` });
     // The fail-a and done-a fixtures in this same set are terminal: the
-    // Board never lists their state at all, so they leave nothing behind
+    // Workbench never lists their state at all, so they leave nothing behind
     // here for History to duplicate (#667).
     expect(screen.queryByText(wrapDisplayCopy(standingWords.failed))).toBeNull();
     expect(screen.queryByText(wrapDisplayCopy(standingWords.done))).toBeNull();
   });
 
-  it("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): Studio renders both failed-read titles through the display transform", async () => {
-    openStudioPseudoLocale(vi.fn().mockRejectedValue(new Error("wire detail")));
-    expect((await screen.findByText(wrapDisplayCopy(studioPageCopy.runsUnavailable))).isConnected).toBe(true);
+  it("proves(studio-populated-copy-is-owned-and-survives-pseudo-locale): the Workbench renders both failed-read titles through the display transform", async () => {
+    openWorkbenchPseudoLocale(vi.fn().mockRejectedValue(new Error("wire detail")));
+    expect(
+      (await screen.findByText(wrapDisplayCopy(workbenchPageCopy.runsUnavailable))).isConnected
+    ).toBe(true);
 
     cleanup();
-    openStudioPseudoLocale(
+    openWorkbenchPseudoLocale(
       vi.fn(async (after?: string, state?: string) => {
         if (state === "STARTED" && after === undefined) {
           return { items: [startedRun()], next_after: "run1.bmV4dA" };
@@ -223,13 +205,15 @@ describe("core surfaces read owned display strings", () => {
         return { items: [], next_after: null };
       })
     );
-    expect((await screen.findByText(wrapDisplayCopy(studioPageCopy.runsIncomplete))).isConnected).toBe(true);
+    expect(
+      (await screen.findByText(wrapDisplayCopy(workbenchPageCopy.runsIncomplete))).isConnected
+    ).toBe(true);
     expect(screen.queryByText(/later page detail/)).toBeNull();
   });
 
-  it("proves(core-surfaces-render-owned-display-strings-under-a-pseudo-locale): Board rail uses the owner, not a hardcoded copy", async () => {
+  it("proves(core-surfaces-render-owned-display-strings-under-a-pseudo-locale): the Workbench rail uses the owner, not a hardcoded copy", async () => {
     open("/atelier?pseudo-locale=1");
-    await screen.findByRole("heading", { name: "[[[ Board ]]]" });
+    await screen.findByRole("heading", { name: "[[[ Workbench ]]]" });
     await railShowsOwnedPseudoLocale();
   });
 
@@ -245,22 +229,16 @@ describe("core surfaces read owned display strings", () => {
     await railShowsOwnedPseudoLocale();
   });
 
-  it("Project renders its own copy — counts and references — through the display transform", async () => {
+  it("Settings renders its own copy through the display transform", async () => {
     openProjectPseudoLocale();
 
     await screen.findByRole("heading", { name: THE_ONE_PROJECT });
     expect(
-      screen.getByRole("heading", { name: wrapDisplayCopy(projectPageCopy.workTitle) }).isConnected
+      screen.getByRole("heading", { name: wrapDisplayCopy(settingsPageCopy.workTitle) }).isConnected
     ).toBe(true);
     expect(
-      screen.getByRole("heading", { name: wrapDisplayCopy(projectPageCopy.referencesTitle) })
+      screen.getByRole("heading", { name: wrapDisplayCopy(settingsPageCopy.occupancyTitle) })
         .isConnected
     ).toBe(true);
-    expect(
-      screen
-        .getByText(wrapDisplayCopy(projectPageCopy.historyDescription))
-        .closest("a")
-        ?.getAttribute("href")
-    ).toBe("/atelier/history");
   });
 });

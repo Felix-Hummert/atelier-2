@@ -10,15 +10,14 @@
   } from "./lib/mutationJournal";
   import { PRODUCT_NAME } from "./lib/productName";
   import { cockpitRoute } from "./lib/route";
+  import { WORKSHOP_DESTINATION } from "./lib/workshop";
   import ConnectionNotice from "./components/ConnectionNotice.svelte";
   import WorkshopShell from "./components/WorkshopShell.svelte";
   import WorkbenchPage from "./pages/WorkbenchPage.svelte";
   import NewRunPage from "./pages/NewRunPage.svelte";
   import RunCockpitPage from "./pages/RunCockpitPage.svelte";
-  import ProjectPage from "./pages/ProjectPage.svelte";
-  import StudioPage from "./pages/StudioPage.svelte";
+  import SettingsPage from "./pages/SettingsPage.svelte";
   import WorkflowDetailPage from "./pages/WorkflowDetailPage.svelte";
-  import WorkflowsPage from "./pages/WorkflowsPage.svelte";
   import CatalogPage from "./pages/CatalogPage.svelte";
   import HistoryPage from "./pages/HistoryPage.svelte";
 
@@ -54,24 +53,20 @@
 
 <svelte:head><meta name="theme-color" content="#f2efe7" /><title>{PRODUCT_NAME}</title></svelte:head>
 
-<!-- The Workbench already speaks its own connection state through its
-     composer -- "the ear" (HEART) always names its state in one sentence of
-     its own. A second banner above it would be the same fact said twice, so
-     only every other room, which holds no such ear, shows this line (#700). -->
-{#if route.page !== "chat"}
+<!-- The Workbench already speaks its own connection state through its ear
+     (HEART): the ear always names its state in one sentence of its own. A
+     second banner above it would be the same fact said twice, so only every
+     other room, which holds no such ear, shows this line (#700). -->
+{#if route.page !== "workbench"}
   <ConnectionNotice />
 {/if}
 <WorkshopShell bind:this={workshopShell} {route} {navigate}>
-  {#if route.page === "chat"}
+  {#if route.page === "workbench"}
     <WorkbenchPage {cockpitApi} {mutationJournal} {navigate} />
-  {:else if route.page === "studio"}
-    <StudioPage {cockpitApi} {mutationJournal} {navigate} />
-  {:else if route.page === "project"}
-    <ProjectPage {cockpitApi} {navigate} />
+  {:else if route.page === "settings"}
+    <SettingsPage {cockpitApi} {navigate} />
   {:else if route.page === "new"}
     <NewRunPage {cockpitApi} {mutationJournal} {navigate} {createRunId} />
-  {:else if route.page === "workflows"}
-    <WorkflowsPage {cockpitApi} {navigate} />
   {:else if route.page === "catalog"}
     <CatalogPage {cockpitApi} {navigate} />
   {:else if route.page === "workflow"}
@@ -83,7 +78,6 @@
       {cockpitApi}
       {mutationJournal}
       publicReference={route.publicReference}
-      origin={route.origin}
       {navigate}
       {createReconcileCommandId}
     />
@@ -91,9 +85,13 @@
     <section class="surface">
       <header class="surface-head">
         <h1>Page not found</h1>
-        <p>No page lives at this address. The Board holds what is running.</p>
+        <p>No page lives at this address. The Workbench holds what is running.</p>
       </header>
-      <a class="button primary" href="/atelier" onclick={(event) => { event.preventDefault(); navigate("/atelier"); }}>Board</a>
+      <a
+        class="button primary"
+        href={WORKSHOP_DESTINATION.workbench.path}
+        onclick={(event) => { event.preventDefault(); navigate(WORKSHOP_DESTINATION.workbench.path); }}
+      >{WORKSHOP_DESTINATION.workbench.label}</a>
     </section>
   {/if}
 </WorkshopShell>

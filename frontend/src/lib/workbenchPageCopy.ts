@@ -1,59 +1,70 @@
 import { PRODUCT_NAME } from "./productName";
 
 /**
- * Copy the Workbench surface renders: the pinned decisions that need the
- * operator, the conversation typed into the composer, and the one honest thing
- * the house can say while no conductor reads those words yet.
+ * Copy the Workbench renders: the decisions that need the operator, the runs
+ * that are moving, the conversation typed into the ear, and the one honest
+ * thing the house can say while no conductor reads those words yet.
  *
- * The Workbench is the chat surface grown into a workshop (issue #580): a
- * composer and a fixed "Needs you" region that pins every open decision until
- * it is answered, so a request can never scroll away in a growing stream (the
- * failure mode that ruling names). The conductor that would read a message and
- * start work is not built yet; the composer is real all the same, and says so
- * in one honest sentence rather than a button that duplicates a door.
+ * The Workbench owns what wants you now and what is moving (ADR 0019 §1). A
+ * decision is pinned until it is answered, so a request can never scroll away
+ * in a growing stream (issue #580); a run that is moving lies on the living
+ * shelf beneath, one click from its graph.
  *
  * Which vision or issue owns the conductor gap is repository bookkeeping, not
- * operator-facing copy (Adressaten-Regel, operator ruling 23.08.) — no board or
- * issue number appears in any string below.
+ * operator-facing copy (Adressaten-Regel, operator ruling 23.08.) — no issue
+ * number appears in any string below.
  *
- * One owner for this screen's strings, the same convention `studioPageCopy` and
- * `runPageCopy` already hold to, so `?pseudo-locale=1` (`wrapDisplayCopy`) can
- * prove every string here has a source instead of a second hardcoded copy
- * inline in the page.
+ * What a run's *state* is called is deliberately not owned here: `standingWords`
+ * in `runState.ts` owns that one word, and every room reads it, so a run cannot
+ * be "Done" on one surface and "Completed" on another (operator ruling 23.08.).
  */
 export const workbenchPageCopy = {
   title: "Workbench",
 
-  /** The pinned "Needs you" region: the decisions that must not scroll away. */
-  needsYouTitle: "Needs you",
-  needsYouNone: "Nothing needs you right now.",
   /** Names who is asking, so a pinned decision is never a question from nowhere. */
   waitingFrom: "is waiting for you",
   openTheRun: "Open the run",
   openTheRunForStory: "Open the run for the whole story",
 
+  runsIncomplete: "Workbench runs incomplete",
+  /**
+   * What the room says when the live hold itself fails. The word for the
+   * stream's own state is not owned here: `connectionLabels` in
+   * `streamStatus.ts` owns it for every surface that holds a stream.
+   */
+  streamUnstartable: "The live hold on this workshop could not start.",
+  eventUnapplied: "What changed could not be read.",
+  retryEvent: "Retry",
+  runsUnavailable: "Workbench runs unavailable",
+  workflowNamesUnavailable: "Workflow names unavailable — showing run ids.",
+
   transcriptLabel: "Conversation",
   emptyTitle: "Nothing said yet",
+  /**
+   * The empty room teaches the one next move (REQ-UI-24) instead of staying
+   * blank: today that move is the Catalog, the one room a run is started from
+   * by hand.
+   */
   emptyDescription:
-    "The conductor that turns what you say into runs is not built yet. Until then, start work from Workflows in the rail.",
+    "The conductor that turns what you say into runs is not built yet. Until then, start work from the Catalog.",
+  emptyStart: "Open the Catalog",
   youLabel: "You",
   houseLabel: PRODUCT_NAME,
   composerLabel: "Message",
   send: "Send",
   /**
-   * The one honest sentence the composer carries while no conductor is
-   * connected (HEART, "The ear"): it says plainly that words are not yet turned
-   * into runs, without a second button that duplicates a door.
+   * The one honest sentence the ear carries while no conductor is connected
+   * (HEART, "The ear"): it says plainly that words are not yet turned into
+   * runs, without a second button that duplicates a door.
    */
   composerHint: "No conductor is connected yet, so your words are kept here but start nothing.",
   /**
    * The reply every sent message gets while no conductor is connected. The
-   * standing composer hint already carries "no conductor is connected yet"
-   * (HEART, "The ear"), so the reply drops that duplicated lead and keeps only
-   * its two unique truths: nothing was started, and the message was not thrown
-   * away. "Until you reload" is the conversation's real boundary: it survives
-   * in-app rail navigation (the module that owns it outlives the page
-   * component) but not a reload.
+   * standing hint already carries "no conductor is connected yet", so the reply
+   * drops that duplicated lead and keeps only its two unique truths: nothing
+   * was started, and the message was not thrown away. "Until you reload" is the
+   * conversation's real boundary: it survives in-app rail navigation (the
+   * module that owns it outlives the page component) but not a reload.
    */
   conductorAbsent:
     "Nothing was started. Your message is kept in this conversation until you reload the page."
