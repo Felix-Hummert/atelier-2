@@ -20,6 +20,7 @@ from atelier2.api.references import (
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
     MAXIMUM_RUN_ORDERS,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
@@ -1035,6 +1036,39 @@ class NodeAnswerResource(ApiModel):
     value_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
+class NodeRefusalOutputResource(ApiModel):
+    """The redacted presentation of a schema-refused V3 agent node's own output.
+
+    Not `NodeAnswerResource`, on purpose, and not just for the field name
+    `answer` already carries: `answer` is served for every answer-bearing node
+    kind (#238) -- Agent, Wait, Action, Subworkflow -- whose payloads have no
+    one shared byte bound, so `NodeAnswerResource.value_base64` stays
+    unbounded. `refusal_output` is served for exactly one narrower case: a V3
+    agent node's own execution, judged and refused (#664). Every executor
+    adapter already refuses to hand the domain more than
+    `MAXIMUM_AGENT_OUTPUT_BYTES_V2` bytes before that judgment runs, so this
+    field's own bound (`MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS`) rests on
+    that already-held cap rather than inventing a new one.
+
+    `value_base64` is also not the exact judged bytes: `contracts.secret_redaction`
+    runs over them before this resource is built, and any credential-shaped span
+    is replaced (#664). Replacing a short credential with the longer
+    `REDACTION_MARKER` can make the text longer than what was judged, never
+    shorter than the cap alone would suggest -- so `MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS`
+    is derived through the same redaction owner's own `maximum_redacted_length`,
+    not from the agent output cap directly, and a value at the cap with the
+    shortest credential shape redacted out of it still fits. `value_hash`, by
+    contrast, is untouched -- it is the receipt's own hash of the original,
+    unredacted bytes, so it still proves what the schema owner judged even
+    though the text shown beside it is a presentation of that judgment, not a
+    preimage of the hash. A reader who rehashes `value_base64` to check it
+    against `value_hash` is comparing two different things on purpose.
+    """
+
+    value_base64: str = Field(max_length=MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS)
+    value_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
 class NodeProvenanceResource(ApiModel):
     """Which agent produced a node's answer, as its receipt recorded it.
 
@@ -1062,7 +1096,7 @@ class NodeProvenanceResource(ApiModel):
 class NodeDetailResource(ApiModel):
     """One node of a run, answered the way an operator asks about it.
 
-    Four answers, each allowed to be absent, because absence is itself the
+    Five answers, each allowed to be absent, because absence is itself the
     answer. `job` is what the run really handed this node's provider, recomposed
     through the one owner that composed it; `job_hash` is the hash of exactly
     those bytes and nothing more. It is **not** the receipt's `request_hash`,
@@ -1078,6 +1112,16 @@ class NodeDetailResource(ApiModel):
     mean the store disagrees with itself -- a payload that no longer matches its
     hash, a pinned schema revision that is gone -- is not softened into a
     refusal here; it leaves as durable corruption, loudly.
+
+    `refusal_output` is deliberately not `answer`: `answer` is the value the run
+    accepted, and a schema-refused value never was that (#664). It carries a
+    redacted presentation of the bytes a schema owner judged and refused, read
+    back from the content-addressed artifact the failure transaction kept, its
+    credential shapes replaced before this resource is built -- present only
+    where such a judgment happened and something to keep survived it; every
+    other refusal, including one this receipt family predates, answers with no
+    such field rather than a guess. Its own type, `NodeRefusalOutputResource`,
+    names the redaction and the bound this field alone carries.
     """
 
     run_id: str = Field(min_length=1)
@@ -1089,6 +1133,7 @@ class NodeDetailResource(ApiModel):
     answer: NodeAnswerResource | None
     provenance: NodeProvenanceResource | None
     refusal: str | None
+    refusal_output: NodeRefusalOutputResource | None = None
     started_at: str | None = None
     ended_at: str | None = None
 

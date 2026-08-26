@@ -802,10 +802,18 @@ const runV3Schema = z
 /**
  * One node of a run, as `GET /runs/{ref}/nodes/{node_id}` answers it.
  *
- * Four answers, each allowed to be absent, because the absence is the answer: a
+ * Five answers, each allowed to be absent, because the absence is the answer: a
  * node that has not run yet was asked nothing this reader can prove, wrote
  * nothing and has no receipt, and a refusal exists only where something really
  * refuses. The panel renders exactly that and invents no placeholder.
+ *
+ * `refusal_output` is deliberately not `answer`: it is a redacted presentation
+ * of the bytes a schema owner judged and refused, never the value the run
+ * accepted (#664), and it is present only where that judgment happened and
+ * the store still held something safe to show. Optional, like `started_at` /
+ * `ended_at` above -- an older test fixture or a caller of a build before
+ * #664 omits the key entirely, and that reads exactly as the absence it is
+ * (`?? null` at every reader), never a parse failure.
  *
  * Usage is not here because no receipt holds it. Duration sits beside the
  * attempt as started_at / ended_at, not on the receipt.
@@ -829,6 +837,28 @@ const nodeAnswerSchema = z
   .object({ value_base64: z.string(), value_hash: sha256 })
   .strict();
 
+/**
+ * `base64_characters_for(maximum_redacted_length(MAXIMUM_AGENT_OUTPUT_BYTES_V2))`
+ * (`api/references.py`), mirrored here as a plain number the way every other
+ * server-owned wire bound already is on this side (see `.max(64)` above).
+ * Only a V3 agent node's own schema-refused output ever reaches
+ * `refusal_output`, and every executor adapter already refuses the domain
+ * more than 49,152 bytes before that judgment runs -- but the server redacts
+ * credential shapes out of that text before it is served (#664), and
+ * replacing a short credential with the longer `[redacted]` marker can grow
+ * it. `maximum_redacted_length` is the redaction owner's own declared
+ * worst case for that growth, so this bound rests on the agent output cap
+ * *and* that owner's own number, not a third one invented on this side.
+ */
+export const MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS = 81_920;
+
+const nodeRefusalOutputSchema = z
+  .object({
+    value_base64: z.string().max(MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS),
+    value_hash: sha256
+  })
+  .strict();
+
 export const nodeDetailSchema = z
   .object({
     run_id: z.string().min(1),
@@ -840,6 +870,7 @@ export const nodeDetailSchema = z
     answer: nodeAnswerSchema.nullable(),
     provenance: nodeProvenanceSchema.nullable(),
     refusal: z.string().nullable(),
+    refusal_output: nodeRefusalOutputSchema.nullable().optional(),
     started_at: z.string().nullable().optional(),
     ended_at: z.string().nullable().optional()
   })
