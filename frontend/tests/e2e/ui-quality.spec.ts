@@ -218,7 +218,31 @@ function workbenchRuns() {
   ];
 }
 
+/**
+ * A still room: the Workbench holds the attention stream, so a room whose list
+ * reads are staged still absorbs whatever the live workshop nudges it about --
+ * the fixture host's own seeded runs walked into these frames and made them
+ * measure a room half staged and half live. The hold opens and stays quiet, so
+ * a vocabulary or named-question gate measures exactly the room it staged.
+ * That the hold really carries a new decision is proven where it belongs:
+ * against the real server, in `cockpit.spec.ts`.
+ */
+async function stageQuietAttention(page: Page): Promise<void> {
+  await page.addInitScript(() =>
+    Object.defineProperty(window, "EventSource", {
+      value: class extends EventTarget {
+        constructor() {
+          super();
+          queueMicrotask(() => this.dispatchEvent(new Event("open")));
+        }
+        close() {}
+      }
+    })
+  );
+}
+
 async function routeWorkbenchReads(page: Page, read: () => WorkbenchReadReply): Promise<void> {
+  await stageQuietAttention(page);
   await page.route("**/atelier/api/v1/runs*", async (route: Route) => {
     if (read() === "unavailable") {
       // A real HTTP answer the server gave, not a round trip that never
@@ -378,6 +402,7 @@ test("core surfaces render owned display strings under a pseudo-locale", async (
  * took.
  */
 async function stageWorkbenchWithWork(page: Page): Promise<void> {
+  await stageQuietAttention(page);
   await page.route("**/atelier/api/v1/runs*", (route) => {
     const state = new URL(route.request().url()).searchParams.get("state");
     const items = runsOfEveryStanding().filter((run) => run.state === state);

@@ -16,12 +16,14 @@ see why. That run is the shape this file reproduces.
 
 from __future__ import annotations
 
+import base64
 import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from pydantic import ValidationError
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
@@ -35,8 +37,12 @@ from atelier2.adapters.dbos.starter import (
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.projection.runs import node_detail_resource
+from atelier2.api.references import MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS
+from atelier2.api.wire.resources import NodeRefusalOutputResource
 from atelier2.application.answer_wait import AnswerAcceptedPending, answer_wait_result
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
@@ -63,6 +69,7 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.secret_redaction import REDACTION_MARKER
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -625,6 +632,10 @@ def test_the_node_that_stops_the_run_names_the_refusal_that_stops_it(
     assert "implement" in detail.refusal
     assert detail.job is None
     assert detail.answer is None
+    # `review` never armed its own attempt -- the composer refused while
+    # reading `implement`'s stored draft, so `review` has no `node-receipt/v3`
+    # row at all and #664's raw-output field has nothing to resolve from.
+    assert detail.refusal_output is None
 
 
 @pytest.mark.proves("a-click-into-a-node-answers-what-it-was-asked-and-wrote")
@@ -699,3 +710,197 @@ def test_a_stored_value_that_no_longer_matches_its_hash_is_reported_as_corruptio
     found = durable_queries(runtime.engine).get_node_detail(RUN, "review")
 
     assert isinstance(found, QueryDurableStateCorrupt), found
+
+
+NOT_EVEN_JSON = (
+    b"Sure! Here is what I would do: first look at the board, then start a run."
+)
+"""A live episode's own words (#664's head comment) -- prose, not JSON at all."""
+
+
+def _own_schema_refused_runtime(tmp_path: Path, answer: bytes) -> DbosRuntime:
+    """The `runtime` fixture's own shape, with a provider `implement`'s own
+    pinned schema refuses at the success write.
+
+    Unlike `plant_the_value_a_build_without_the_guard_wrote`, nothing is
+    planted here: the real production write path (`complete_success`) is what
+    ends this attempt, so the `failed` `node-receipt/v3` and the refused bytes
+    it keeps as an artifact (#664 slice one) are written exactly the way a
+    live episode writes them.
+    """
+    started = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "node-detail-refusal-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
+        LoopbackEffectAdapterFactory(
+            tmp_path / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+        ExactOutputAgentExecutorFactory(),
+        (RecordingAgentExecutorFactoryV2("exact", "exact/v1", "exact-op", answer),),
+    )
+    started.initialize_storage()
+    return started
+
+
+@pytest.fixture
+def own_schema_refused_runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
+    started = _own_schema_refused_runtime(tmp_path, NOT_EVEN_JSON)
+    try:
+        yield started
+    finally:
+        started.close()
+
+
+@pytest.mark.proves("a-refused-episode-shows-its-raw-output-and-hash-in-the-node-panel")
+def test_a_schema_refused_answer_reads_back_its_exact_bytes_and_hash(
+    own_schema_refused_runtime: DbosRuntime,
+) -> None:
+    """The live gap of #664, closed from the reader's side.
+
+    `implement` answers bytes its own pinned schema refuses -- not, as the
+    tests above, a downstream node's composition read -- so this is the case
+    that really has a `failed` `node-receipt/v3` and a kept artifact behind
+    it. The node detail this file's read owns has to resolve that hash back
+    into bytes, not merely report that a value once existed. `NOT_EVEN_JSON`
+    carries no credential shape, so redaction is a no-op here and the value
+    read back is unchanged -- the credential-shaped case, where it is not, is
+    `test_a_credential_shaped_refusal_is_redacted_from_the_store_through_the_api`
+    below.
+    """
+    runtime = own_schema_refused_runtime
+    publish_and_start(runtime)
+    runtime.launch()
+    wait_for_run_state(runtime, RUN, RunState.FAILED)
+
+    found = durable_queries(runtime.engine).get_node_detail(RUN, "implement")
+
+    assert isinstance(found, NodeDetailFound), found
+    detail = found.detail
+    assert detail.state is NodeState.FAILED
+    assert detail.refusal is not None
+    assert "instance-not-json" in detail.refusal
+    assert detail.refusal_output is not None
+    assert detail.refusal_output.value == NOT_EVEN_JSON
+    assert detail.refusal_output.value_hash == Sha256Hash.of(NOT_EVEN_JSON)
+
+
+def assembled(*parts: str) -> str:
+    """One credential-shaped value, assembled here instead of spelled out.
+
+    This repository's own history is secret-scanned, so a test that needs the
+    shape of a credential builds it from parts rather than writing a
+    credential-shaped literal into the history that scan reads.
+    """
+    return "".join(parts)
+
+
+@pytest.mark.proves("a-refused-episode-shows-its-raw-output-and-hash-in-the-node-panel")
+def test_a_credential_shaped_refusal_is_redacted_from_the_store_through_the_api(
+    tmp_path: Path,
+) -> None:
+    """The review finding this closes: a refused episode must never echo a secret.
+
+    A schema refusal is exactly the shape of episode where a provider might
+    hand back a credential it was given -- prose no schema ever validated --
+    so the exact bytes an operator could once read here are wrong to serve
+    unredacted. This drives a real refused attempt whose answer carries a
+    credential shape assembled at runtime, through the real production write
+    path, and proves the redaction runs before either the domain projection
+    or the wire resource is built from it -- not somewhere a caller could
+    forget to call it.
+    """
+    canary_token = assembled("ghp", "_", "notarealtoken1234567890")
+    canary_answer = f"Sure, here is the token you asked for: {canary_token}".encode()
+    runtime = _own_schema_refused_runtime(tmp_path, canary_answer)
+    try:
+        publish_and_start(runtime)
+        runtime.launch()
+        wait_for_run_state(runtime, RUN, RunState.FAILED)
+        found = durable_queries(runtime.engine).get_node_detail(RUN, "implement")
+    finally:
+        runtime.close()
+
+    assert isinstance(found, NodeDetailFound), found
+    detail = found.detail
+    assert detail.refusal_output is not None
+    redacted_text = detail.refusal_output.value.decode("utf-8")
+    assert canary_token not in redacted_text
+    assert REDACTION_MARKER in redacted_text
+    # The hash still proves what the schema judged -- the original, unredacted
+    # bytes -- even though the value beside it is a presentation of that
+    # judgment, never its exact preimage.
+    assert detail.refusal_output.value_hash == Sha256Hash.of(canary_answer)
+
+    resource = node_detail_resource(detail)
+    assert isinstance(resource.refusal_output, NodeRefusalOutputResource)
+    wire_text = base64.b64decode(resource.refusal_output.value_base64).decode("utf-8")
+    assert canary_token not in wire_text
+    assert REDACTION_MARKER in wire_text
+    assert resource.refusal_output.value_hash == Sha256Hash.of(canary_answer).value
+
+
+def test_the_refusal_output_field_is_bounded_to_the_agent_output_cap() -> None:
+    """The review finding this closes: the wire must not serve this field unbounded.
+
+    Only a V3 agent node's own schema-refused output ever reaches
+    `refusal_output`, and every executor adapter already refuses the domain
+    more than the agent output cap before that judgment runs -- so the wire
+    resource restates that bound, in its own encoding
+    (`MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS`), rather than serving the
+    field unbounded the way the general `answer` field must stay: that field
+    also carries Action and Subworkflow payloads with no shared byte bound.
+    """
+    at_bound = "a" * MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS
+    NodeRefusalOutputResource(value_base64=at_bound, value_hash="a" * 64)
+
+    with pytest.raises(ValidationError):
+        NodeRefusalOutputResource(value_base64=at_bound + "a", value_hash="a" * 64)
+
+
+@pytest.mark.proves("a-refused-episode-shows-its-raw-output-and-hash-in-the-node-panel")
+def test_a_refusal_at_the_byte_cap_with_one_short_credential_still_validates_on_the_wire(
+    tmp_path: Path,
+) -> None:
+    """The re-review's residual: redaction can grow the text past a naive bound.
+
+    `MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS` used to be
+    `base64_characters_for(MAXIMUM_AGENT_OUTPUT_BYTES_V2)` -- the agent output
+    cap's own encoding, unaware that replacing a short credential with the
+    longer `REDACTION_MARKER` can make the redacted text longer than what was
+    judged. One minimal `Authorization: Basic` header (the shape's own
+    declared 8-character minimum) at the byte cap already overflowed that
+    bound by four base64 characters; the fix derives the bound from
+    `secret_redaction.maximum_redacted_length` instead of the byte cap alone,
+    and this is the smallest input that actually needed it -- not a
+    contrived worst case, the one the old bound would have refused wrongly.
+    """
+    credential = b"Authorization: Basic xxxxxxxx"
+    answer = b"." * (MAXIMUM_AGENT_OUTPUT_BYTES_V2 - len(credential)) + credential
+    assert len(answer) == MAXIMUM_AGENT_OUTPUT_BYTES_V2
+
+    runtime = _own_schema_refused_runtime(tmp_path, answer)
+    try:
+        publish_and_start(runtime)
+        runtime.launch()
+        wait_for_run_state(runtime, RUN, RunState.FAILED)
+        found = durable_queries(runtime.engine).get_node_detail(RUN, "implement")
+    finally:
+        runtime.close()
+
+    assert isinstance(found, NodeDetailFound), found
+    detail = found.detail
+    assert detail.refusal_output is not None
+    redacted_text = detail.refusal_output.value.decode("utf-8")
+    assert REDACTION_MARKER in redacted_text
+    # The growth this whole fix exists for actually happened, not merely
+    # something the arithmetic allows for.
+    assert len(redacted_text) > len(answer)
+
+    # Must not raise: this is exactly the case the old, byte-cap-only bound
+    # would have rejected.
+    resource = node_detail_resource(detail)
+    assert isinstance(resource.refusal_output, NodeRefusalOutputResource)

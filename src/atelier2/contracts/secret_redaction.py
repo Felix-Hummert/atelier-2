@@ -41,10 +41,23 @@ _MAXIMUM_SPAN = 8_192
 
 @dataclass(frozen=True, slots=True)
 class CredentialShape:
-    """One recognisable way a credential appears in text a provider produced."""
+    """One recognisable way a credential appears in text a provider produced.
+
+    `minimum_replaced_characters` is the shortest span this shape's own
+    pattern can ever hand to `_replacement` for replacement: the `value`
+    group's own minimum where the pattern names one (only that group is
+    replaced), or the whole match's own minimum otherwise (the whole match is
+    replaced). It is hand-verified against the pattern beside it, the same way
+    every other quantifier here is a literal count rather than a derived one --
+    introspecting an arbitrary compiled regex for its true minimum span is not
+    reliable enough to build a safety bound on. A value declared smaller than
+    the pattern's true minimum only makes `maximum_redacted_length` more
+    conservative, never unsafe; a value declared larger would not.
+    """
 
     name: str
     pattern: re.Pattern[str]
+    minimum_replaced_characters: int
 
 
 CREDENTIAL_SHAPES = (
@@ -58,11 +71,14 @@ CREDENTIAL_SHAPES = (
             r"-----END [A-Z ]{0,32}PRIVATE KEY-----",
             re.DOTALL,
         ),
+        # "-----BEGIN " + "PRIVATE KEY-----" + "-----END " + "PRIVATE KEY-----"
+        minimum_replaced_characters=11 + 16 + 9 + 16,
     ),
     CredentialShape(
         # AWS's own published key-id form: a fixed prefix and a fixed width.
         "aws-access-key-id",
         re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+        minimum_replaced_characters=len("AKIA") + 16,
     ),
     CredentialShape(
         # Issuer-prefixed tokens: the prefix is the issuer's own declaration
@@ -72,12 +88,15 @@ CREDENTIAL_SHAPES = (
             r"\b(?:sk-ant|sk|ghp|gho|ghu|ghs|ghr|github_pat|glpat|xox[abopsr])"
             r"[-_][A-Za-z0-9_-]{16,}"
         ),
+        # The shortest issuer prefix is "sk", one separator, 16 value characters.
+        minimum_replaced_characters=len("sk") + 1 + 16,
     ),
     CredentialShape(
         # A JSON Web Token: three base64url segments, the first of which is a
         # JSON header and therefore always begins `eyJ`.
         "json-web-token",
         re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+        minimum_replaced_characters=len("eyJ") + 8 + 1 + 8 + 1 + 8,
     ),
     CredentialShape(
         # The credential in transit, named by the header carrying it.
@@ -86,6 +105,8 @@ CREDENTIAL_SHAPES = (
             r"(?i:authorization)\s*:\s*(?i:bearer|basic|token)\s+"
             rf"(?P<{_MATCHED_VALUE_GROUP}>[A-Za-z0-9._~+/=-]{{8,}})"
         ),
+        # Only the `value` group is replaced; its own minimum is 8.
+        minimum_replaced_characters=8,
     ),
     CredentialShape(
         # The credential at rest, named by the field it was assigned to. The
@@ -110,6 +131,8 @@ CREDENTIAL_SHAPES = (
             r"\s*[:=]\s*[\"']?"
             rf"(?P<{_MATCHED_VALUE_GROUP}>[A-Za-z0-9._~+/=-]{{12,}})"
         ),
+        # Only the `value` group is replaced; its own minimum is 12.
+        minimum_replaced_characters=12,
     ),
 )
 
@@ -138,3 +161,46 @@ def redact_credentials(text: str) -> RedactedText:
     for shape in CREDENTIAL_SHAPES:
         redacted = shape.pattern.sub(_replacement, redacted)
     return RedactedText(redacted, redacted != text)
+
+
+def maximum_redacted_length(original_length: int) -> int:
+    """The longest `redact_credentials(text).text` can ever be, for `len(text) <= original_length`.
+
+    A shape only grows the text where its own `minimum_replaced_characters`
+    is shorter than `REDACTION_MARKER`: replacing fewer characters with more
+    makes the string longer, by exactly that difference, once per match. A
+    match can never recur more often than once per its own
+    `minimum_replaced_characters` original characters -- the true minimum
+    full match is always at least that many, prefix and suffix included, so
+    dividing by the replaced span alone is a safe over-count of how densely
+    matches could ever pack a real string, never an undercount. Two different
+    shapes cannot both grow the same span of text (each byte is replaced by
+    at most one shape's match across the whole pass), so the bound is the
+    single worst shape's growth over the whole length, not the sum of every
+    shape's growth -- summing would double-count text no real input has
+    twice over.
+
+    Callers that hand this the original UTF-8 *byte* count, not the decoded
+    text's character count, still get a safe bound on the redacted text's own
+    re-encoded byte count -- exactly what a caller bounding an encoded wire
+    field wants, and without decoding first to find out. Every shape here
+    matches only ASCII, so a matched span's own character count and its own
+    byte count are the same number on both sides of a redaction, and those
+    bytes are a genuine subset of the original total; unmatched text is
+    carried through unchanged, so it contributes exactly the same bytes to
+    the result that it already spent from that same total. The growth this
+    function counts therefore is the growth in bytes, and the same original
+    total already bounds how many matches of any one shape's minimum span
+    could ever have been carved out of it -- decoding first could only ever
+    shrink that count, by turning some of those original bytes into fewer,
+    wider characters, never more of them.
+    """
+
+    return original_length + max(
+        (
+            max(0, len(REDACTION_MARKER) - shape.minimum_replaced_characters)
+            * (original_length // shape.minimum_replaced_characters)
+            for shape in CREDENTIAL_SHAPES
+        ),
+        default=0,
+    )

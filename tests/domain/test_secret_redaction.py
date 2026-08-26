@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from atelier2.contracts.secret_redaction import REDACTION_MARKER, redact_credentials
+from atelier2.contracts.secret_redaction import (
+    REDACTION_MARKER,
+    maximum_redacted_length,
+    redact_credentials,
+)
 
 
 def assembled(*parts: str) -> str:
@@ -103,3 +107,43 @@ def test_text_carrying_no_credential_is_kept_exactly_and_says_so(prose: str) -> 
 
     assert redacted.text == prose
     assert not redacted.redacted
+
+
+def test_maximum_redacted_length_never_understates_the_input_itself() -> None:
+    """The bound this feeds a wire field must never claim a value the input already exceeds."""
+    for length in (0, 1, 8, 12, 100, 49_152):
+        assert maximum_redacted_length(length) >= length
+
+
+def test_a_minimal_authorization_header_grows_by_marker_minus_value_length() -> None:
+    """The one shape that ever grows text (#664's re-review): the shortest case, worked by hand.
+
+    `REDACTION_MARKER` is ten characters; the shape's own declared minimum
+    `value` is eight, so replacing the shortest possible header value grows
+    the text by exactly two characters -- and the declared bound has to be at
+    least that much, for the shortest input that could ever produce it.
+    """
+    header = "Authorization: Basic xxxxxxxx"
+
+    redacted = redact_credentials(header)
+
+    assert len(redacted.text) - len(header) == len(REDACTION_MARKER) - 8
+    assert maximum_redacted_length(len(header)) >= len(redacted.text)
+
+
+def test_maximum_redacted_length_bounds_a_worst_case_credential_pack() -> None:
+    """The wire's own use of this bound (#664) needs it to hold for real input, not one match.
+
+    A text packed edge to edge with the shortest growing shape is the closest
+    a real string can come to the theoretical worst case this function
+    computes -- so this is the case that would have caught a bound loose in
+    the unsafe direction.
+    """
+    unit = "Authorization: Basic xxxxxxxx "
+    text = unit * 2_000
+
+    redacted = redact_credentials(text)
+
+    assert redacted.redacted
+    assert len(redacted.text) > len(text)
+    assert len(redacted.text) <= maximum_redacted_length(len(text))
