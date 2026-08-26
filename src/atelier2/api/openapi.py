@@ -101,6 +101,7 @@ QUEUE_ITEMS_PATH = API_PREFIX + "/queue-items"
 OBSERVED_QUEUE_ITEMS_PATH = API_PREFIX + "/observed-queue-items"
 PROJECT_SOURCE_IMPORT_PATH = API_PREFIX + "/project-sources/import"
 LIBRARY_RECOGNITIONS_PATH = API_PREFIX + "/library/recognitions"
+LIBRARY_ADDITIONS_PATH = API_PREFIX + "/library/additions"
 
 EVENT_MODELS = (
     AgentCompletedEventResource,
@@ -252,6 +253,22 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "invalid-request",
         "unsupported-media-type",
         "temporarily-unavailable",
+        "internal-error",
+    ),
+    (LIBRARY_ADDITIONS_PATH, "post"): (
+        *AGENT_DEFINITION_DOCUMENT_PROBLEM_CODES,
+        "library-document-unrecognized",
+        "library-document-ambiguous",
+        "library-kind-not-held",
+        "library-name-unusable",
+        "invalid-workflow-document",
+        "agent-definition-revision-collision",
+        "catalog-revision-owned",
+        "catalog-lineage-retired",
+        "invalid-request",
+        "unsupported-media-type",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
         "internal-error",
     ),
     (API_PREFIX + "/workflow-revisions", "post"): (
@@ -534,7 +551,7 @@ def install_custom_openapi(app: FastAPI, limits: ApiLimits) -> None:
         _install_problem_responses(schema)
         _install_workflow_document_grammar(schema)
         _install_publication_request_body(schema)
-        _install_recognition_limits(schema, limits)
+        _install_opaque_document_limits(schema, limits)
         _install_event_components(schema)
         _install_parameter_contracts(schema)
         _install_versioned_run_unions(schema)
@@ -630,39 +647,41 @@ def _install_publication_request_body(schema: dict[str, Any]) -> None:
     }
 
 
-def _install_recognition_limits(schema: dict[str, Any], limits: ApiLimits) -> None:
-    """Publish the two bounds the recognition door enforces, from the limits it reads.
+def _install_opaque_document_limits(schema: dict[str, Any], limits: ApiLimits) -> None:
+    """Publish the bounds each opaque-document door enforces, from the limits it reads.
 
     The body is opaque bytes, so `maxLength` there counts bytes -- the same
-    number the body middleware refuses above -- and the file name is one field
-    under the field bound every other query string meets.
+    number the body middleware refuses above -- and every string that travels
+    beside it is one field under the bound every other query string meets.
     """
 
-    operation = schema["paths"][LIBRARY_RECOGNITIONS_PATH]["post"]
-    operation["requestBody"] = {
-        "required": True,
-        "content": {
-            "application/octet-stream": {
-                "schema": {
-                    "type": "string",
-                    "format": "binary",
-                    "maxLength": limits.maximum_request_body_bytes,
+    for path in (LIBRARY_RECOGNITIONS_PATH, LIBRARY_ADDITIONS_PATH):
+        operation = schema["paths"][path]["post"]
+        operation["requestBody"] = {
+            "required": True,
+            "content": {
+                "application/octet-stream": {
+                    "schema": {
+                        "type": "string",
+                        "format": "binary",
+                        "maxLength": limits.maximum_request_body_bytes,
+                    }
                 }
-            }
-        },
-    }
-    (file_name,) = (
-        parameter
-        for parameter in operation["parameters"]
-        if parameter["name"] == "file_name"
-    )
-    file_name["schema"] = {
-        "anyOf": [
-            {"type": "string", "maxLength": limits.maximum_field_characters},
-            {"type": "null"},
-        ],
-        "title": "File Name",
-    }
+            },
+        }
+        for parameter in operation["parameters"]:
+            parameter["schema"] = _bounded_field_schema(
+                parameter["schema"], limits.maximum_field_characters
+            )
+
+
+def _bounded_field_schema(generated: dict[str, Any], maximum: int) -> dict[str, Any]:
+    """One query string's schema, bounded, keeping whether it may be omitted."""
+
+    bounded = {"type": "string", "maxLength": maximum}
+    if "anyOf" in generated:
+        return {"anyOf": [bounded, {"type": "null"}], "title": generated["title"]}
+    return {**bounded, "title": generated["title"]}
 
 
 def _remove_32_sse_fields(value: object) -> None:
