@@ -48,6 +48,7 @@ from atelier2.contracts.agent_attempts import (
     ProcessExitSignature,
     RunnerCancellation,
     RunnerCancellationObservation,
+    RunnerEvidenceCannotCarryTranscript,
     RunnerGenerationBinding,
     RunnerInvocationId,
     RunnerProviderFailure,
@@ -635,6 +636,20 @@ def run_candidate_session(
                     outcome = executor.decode_process_completion(
                         AgentProcessInvocation(command, lease), completion
                     )
+                    # A failing outcome's steps would be dropped here rather than
+                    # by the evidence record, because this evidence carries only
+                    # how the child exited. The success door refuses one in
+                    # `RunnerProviderResult`; this is the same refusal at the
+                    # other door, so neither ending can silently record a
+                    # Runner-carried attempt as having decoded nothing.
+                    if (
+                        isinstance(outcome, AgentExecutionFailure)
+                        and outcome.transcript is not None
+                    ):
+                        raise RunnerEvidenceCannotCarryTranscript(
+                            "runner terminal evidence does not carry an attempt "
+                            "transcript yet"
+                        )
                     evidence: RunnerProviderResult | RunnerProviderFailure = (
                         RunnerProviderFailure(
                             ProcessExitSignature(

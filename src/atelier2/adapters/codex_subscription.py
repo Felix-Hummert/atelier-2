@@ -47,7 +47,6 @@ from atelier2.adapters.bounded_processes import bounded_process_answer
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
-    MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
     AgentExecutionCapability,
     AgentExecutionRequestV2,
     AgentExecutionResult,
@@ -71,11 +70,14 @@ CODEX_SUBSCRIPTION_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
     "headless-exec-last-message/v1"
 )
 
-# The same portable ceiling as the process port. `codex exec` writes progress
-# to standard output while the durable answer goes to the last-message file, so
-# this executor frames the stream it does not read rather than inventing a
-# tighter allowance for an envelope it was not permitted to measure.
-CODEX_SUBSCRIPTION_FRAME_BYTES = MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES
+# `codex exec` writes progress to standard output while the durable answer goes
+# to the last-message file, so this executor frames the stream it does not read
+# rather than inventing a tighter allowance for an envelope it was not permitted
+# to measure. Eight times the durable answer bound is the allowance it has
+# always had, now stated as this executor's own number instead of borrowed from
+# the port's ceiling: a frame another provider measures must not widen what this
+# process may write.
+CODEX_SUBSCRIPTION_FRAME_BYTES = 8 * MAXIMUM_AGENT_OUTPUT_BYTES_V2
 
 CONFORMANT_CODEX_VERSIONS = frozenset({(0, 147, 0)})
 
