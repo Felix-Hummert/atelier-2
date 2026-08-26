@@ -30,7 +30,12 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.runner.identity_receiver import load_published_identity
-from atelier2.runner.session import CandidateScenario, run_candidate_session
+from atelier2.runner.session import (
+    REAL_TIME,
+    CandidateScenario,
+    SessionClock,
+    run_candidate_session,
+)
 
 
 def _binding(bootstrap: dict[str, str]) -> RunnerGenerationBinding:
@@ -139,6 +144,38 @@ def _load_verified_client_identity(
         os.close(descriptor)
 
 
+def dial_within_budget(
+    address: tuple[str, int],
+    context: ssl.SSLContext,
+    server_hostname: str,
+    seconds: float,
+    clock: SessionClock,
+) -> ssl.SSLSocket:
+    """Reach an authenticated Core inside one budget, not one budget per step.
+
+    The TCP connect and the TLS handshake wait on the same socket timeout, so
+    giving each of them the whole remaining budget would let the pair take
+    twice it -- and the pair is what the invocation's span actually pays for
+    while a provider child is held. The budget becomes one deadline here, and
+    the handshake is given only what the connect left of it.
+
+    A connect that spent the budget outright fails as the timeout it is, so
+    the caller's own reconnect bound sees a dial that did not land rather than
+    a handshake nothing budgeted for.
+    """
+    deadline = clock.monotonic() + seconds
+    raw = socket.create_connection(address, seconds)
+    try:
+        remaining = deadline - clock.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("connecting to Core spent this dial's whole budget")
+        raw.settimeout(remaining)
+        return context.wrap_socket(raw, server_hostname=server_hostname)
+    except BaseException:
+        raw.close()
+        raise
+
+
 def _run_candidate_session(
     handoff: Path, identity: Path, journal_directory: Path, invocation_offer: Path
 ) -> int:
@@ -191,23 +228,23 @@ def _run_candidate_session(
         """One authenticated channel to Core, freshly fenced against its leaf.
 
         `timeout_seconds` is what the invocation's own span still allows, and
-        it bounds the connect and the TLS handshake together, because the
-        handshake runs on this very socket: neither may outlive the attempt
-        span while the session is holding a paid child. It is cleared again
-        before the channel is handed over, so the session's own per-frame
-        bounds are then the only ones that apply.
+        `dial_within_budget` spends it on the connect and the handshake
+        together. The bound is cleared again before the channel is handed
+        over, so the session's own per-frame bounds are then the only ones
+        that apply.
 
         The session asks for this again whenever the connection it had died,
         so every fence below is re-run per connection rather than trusted from
         the last one: a Core that comes back is only the Core this bootstrap
         pinned if the leaf it presents still says so.
         """
-        raw = socket.create_connection((CORE_DNS_NAME, document.port), timeout_seconds)
-        try:
-            connection = context.wrap_socket(raw, server_hostname=CORE_DNS_NAME)
-        except BaseException:
-            raw.close()
-            raise
+        connection = dial_within_budget(
+            (CORE_DNS_NAME, document.port),
+            context,
+            CORE_DNS_NAME,
+            timeout_seconds,
+            REAL_TIME,
+        )
         try:
             presented = connection.getpeercert(binary_form=True)
             if presented is None:
