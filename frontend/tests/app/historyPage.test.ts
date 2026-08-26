@@ -195,29 +195,36 @@ describe("History shows only what has finished", () => {
     expect(getNodeDetail).not.toHaveBeenCalled();
   });
 
-  it("names the run's purpose from its own orders, the workflow small beneath, without a per-row node read", async () => {
+  it("names the run's purpose from its own orders, with the workflow named beneath it", async () => {
     const run = v3Run({
       orders: [{ name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) }]
     });
-    const getNodeDetail = vi.fn();
     openHistory({ completed: [run] }, {
-      getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line")),
-      getNodeDetail
+      getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line"))
     });
 
     const row = await screen.findByRole("link", { name: /diff/ });
     expect(within(row).getByText("diff").isConnected).toBe(true);
     expect(within(row).getByText("Two agents in a line").isConnected).toBe(true);
-    expect(getNodeDetail).not.toHaveBeenCalled();
   });
 
-  it("names only the workflow, with no small line repeating it, for a run started with no orders", async () => {
+  it("names only the workflow, once, for a run started with no orders -- nothing repeats it", async () => {
     openHistory({ completed: [v3Run({ orders: [] })] }, {
       getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line"))
     });
 
     const row = await screen.findByRole("link", { name: /Two agents in a line/ });
-    expect(within(row).queryByText("Two agents in a line", { selector: "small" })).toBeNull();
+    expect(within(row).getAllByText("Two agents in a line")).toHaveLength(1);
+  });
+
+  it("shows the honest placeholder in the Work item column, deriving nothing", async () => {
+    openHistory({ completed: [v3Run()] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line"))
+    });
+
+    const row = await screen.findByRole("link", { name: /Two agents in a line/ });
+    const label = within(row).getByText("Work item:", { exact: false });
+    expect(label.closest(".row-work-item")?.textContent).toContain("—");
   });
 
   it("names a failed run's node, without reading it, and shows no duration when no V3 stamp exists", async () => {
