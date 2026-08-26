@@ -7,9 +7,17 @@ operator's checkout happens to hold at the time.
 
 What is unpacked into a lease is the tree alone. No `.git` travels with it, so the
 directory is material rather than a repository, and a provider that wants history
-has none. Nothing here is isolation: the unpacking runs as this process's own user,
-into the blank directory the attempt leased, and that directory's own sentence
-about not being a sandbox is left standing.
+has none. It is the *whole* tree, and it is the tree as the pin holds it: the
+material is checked out of a temporary index rather than exported, because an
+export honours `export-ignore` and would hand the attempt a directory that is
+quietly missing paths the pin carries -- paths whose absence a later reader could
+only read as the attempt having deleted them. The checkout runs inside a
+repository this boundary makes for it, so no `filter` the operator's own
+repository declares can rewrite a byte on the way in.
+
+Nothing here is isolation: the unpacking runs as this process's own user, into the
+blank directory the attempt leased, and that directory's own sentence about not
+being a sandbox is left standing.
 
 The tree is entered through the identity the lease attested rather than through the
 path it was named by, because unpacking happens after the lease is taken and before
@@ -19,13 +27,16 @@ its own directory into that path.
 
 from __future__ import annotations
 
+import os
 import subprocess
-import tarfile
 import tempfile
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import IO
 
 from atelier2.adapters.leased_directory import entered_leased_directory
-from atelier2.contracts.project_sources import ProjectSourcePin
+from atelier2.contracts.project_sources import GitObjectFormat, ProjectSourcePin
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
 from atelier2.ports.project_source import ProjectSourceUnavailable
 
@@ -35,7 +46,201 @@ _GIT_EXECUTABLE_NAME = "git"
 _HEAD_REVISION = "HEAD"
 """What git calls the commit a checkout currently stands on."""
 
-_STAGED_ARCHIVE_NAME = "project-source.tar"
+_MATERIALIZED_INDEX_NAME = "materialize.index"
+_PLUMBING_REPOSITORY_NAME = "materialize.git"
+
+_ALTERNATE_OBJECTS_FILE = ("objects", "info", "alternates")
+"""Where git is told the other object database a repository may read through."""
+
+NO_GIT_TEMPLATE = "--template="
+"""What keeps a repository this product creates free of anybody else's files.
+
+`git init` copies a template directory into every repository it makes, and the
+default one on a machine can be replaced -- with hooks, or with an
+`info/attributes` naming a filter. An empty name copies nothing at all.
+"""
+
+_INHERITED_ENVIRONMENT_NAMES = ("PATH", "LANG", "LC_ALL", "TZ")
+"""The only names a git child keeps from this process: where git is, and who reads it.
+
+An allowlist rather than a scrub list, because the environment of a serving
+process is not a fixed set: a variable nobody here named is a variable nobody
+here reasoned about, and the list of ways git reads one only grows. What that
+keeps out is not hypothetical -- `GIT_OBJECT_DIRECTORY` redirects where a
+candidate's objects land, `GIT_INDEX_FILE` and `GIT_COMMON_DIR` replace the state
+a capture stages into, `GIT_NAMESPACE` moves the refs out from under the store,
+`GIT_TEMPLATE_DIR` installs hooks into a repository this product creates,
+`GIT_ASKPASS` and the credential variables hand a secret to a program of
+somebody else's choosing, and `GIT_TRACE*` writes this boundary's traffic to a
+file nobody asked for. A provider token in any variable at all has no business
+in a subprocess that writes a project's content.
+
+The locale is kept because a refusal at this boundary is read by the operator,
+and their own git speaks their language.
+"""
+
+_DECLARED_GIT_ENVIRONMENT = {
+    "HOME": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_ATTR_NOSYSTEM": "1",
+    "GIT_CONFIG_COUNT": "0",
+    "GIT_TERMINAL_PROMPT": "0",
+}
+"""What every git child is told instead, whatever the host would have said.
+
+The machine's own git configuration is not part of any project: it can declare a
+`clean` filter, a git-lfs smudge, an author identity or a credential helper, and
+each would change what this boundary reads or writes for reasons no run ever
+declared. So there is no system, no global and no inherited parameter
+configuration left to read, no system attributes file, and no home directory
+under which either could be found -- `/dev/null` is not a directory, so nothing
+resolves beneath it. A call that would have asked a human for a credential fails
+instead of hanging on a terminal nobody is watching.
+"""
+
+_HOOK_FREE_ARGUMENTS = ("-c", f"core.hooksPath={os.devnull}")
+"""What is prepended to every git call here, so no repository's scripts run.
+
+Hooks are the one host opinion configuration cannot switch off: they live in the
+repository rather than in a file this boundary can redirect. A `pre-push` in the
+operator's checkout can rewrite what a candidate carries, a `reference-transaction`
+in the store can veto one outright, and both would run as this process's user for
+reasons no run declared. Pointed at a path that is not a directory, git finds
+none. Command-line configuration outranks every file, so no repository can undo it.
+"""
+
+
+class GitRefused(Exception):
+    """A git call did not answer, so its caller says what that means for it.
+
+    Deliberately not a port failure: the same call is a source being unavailable
+    to one owner and a candidate not being captured to another, and only the
+    caller knows which sentence its own users were promised.
+    """
+
+
+def isolated_git_environment(**declared: str) -> dict[str, str]:
+    """The whole environment a git child gets, built rather than inherited."""
+
+    return {
+        **{
+            name: os.environ[name]
+            for name in _INHERITED_ENVIRONMENT_NAMES
+            if name in os.environ
+        },
+        **_DECLARED_GIT_ENVIRONMENT,
+        **declared,
+    }
+
+
+def answered_git(
+    arguments: Sequence[str],
+    *,
+    working_directory: str,
+    environment: Mapping[str, str],
+    passed_descriptors: tuple[int, ...] = (),
+    standard_input: int | IO[bytes] = subprocess.DEVNULL,
+) -> bytes:
+    """Run one git command where it was told to, and answer with what it wrote.
+
+    The working directory is entered by the child rather than named to git with
+    `-C`, so a caller holding an open descriptor can pass `/proc/self/fd/<n>`
+    together with that descriptor and have the child land in the very directory
+    its owner checked.
+
+    What a caller feeds in is an open file rather than bytes, because one of the
+    things fed to git here is a pack of a whole project tree, and holding that in
+    this process's memory buys nothing.
+    """
+
+    argv = (_GIT_EXECUTABLE_NAME, *_HOOK_FREE_ARGUMENTS, *arguments)
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd=working_directory,
+            env=dict(environment),
+            pass_fds=passed_descriptors,
+            stdin=standard_input,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as error:
+        raise GitRefused(
+            f"git {' '.join(arguments)} could not be started in "
+            f"{working_directory}: {error}"
+        ) from error
+    if completed.returncode != 0:
+        # The whole argument list is named, not just the subcommand: what a
+        # refusal is about is the revision or path that was asked for.
+        raise GitRefused(
+            f"git {' '.join(arguments)} answered {completed.returncode} in "
+            f"{working_directory}: "
+            f"{completed.stderr.decode('utf-8', 'replace').strip()}"
+        )
+    return completed.stdout
+
+
+@dataclass(frozen=True, slots=True)
+class LeasedIndex:
+    """A lease entered by its attested identity, and the index staged inside it.
+
+    The three travel together because none of them means anything alone: the
+    descriptor is what makes the entered path an identity rather than a name, and
+    the index is what keeps one lease's staging out of every other one's.
+    """
+
+    entered: str
+    descriptor: int
+    index: Path
+
+
+def answered_in_lease(
+    arguments: Sequence[str], *, leased: LeasedIndex, git_directory: str
+) -> bytes:
+    """Run one git command inside a lease, against the repository that owns it.
+
+    The index is always the lease's own temporary one, never the repository's:
+    reading a tree into the index an operator works with would throw away
+    whatever they had staged there.
+    """
+
+    return answered_git(
+        arguments,
+        working_directory=leased.entered,
+        environment=isolated_git_environment(
+            GIT_DIR=git_directory,
+            GIT_WORK_TREE=".",
+            GIT_INDEX_FILE=str(leased.index),
+        ),
+        passed_descriptors=(leased.descriptor,),
+    )
+
+
+def object_format_of(repository: str) -> GitObjectFormat:
+    """How this repository names its objects, in git's own words.
+
+    Asked rather than assumed, because two repositories of different formats
+    cannot hold each other's objects at all: the name of a tree *is* its hash.
+    """
+
+    named = (
+        answered_git(
+            ("rev-parse", "--show-object-format"),
+            working_directory=repository,
+            environment=isolated_git_environment(),
+        )
+        .decode("utf-8", "replace")
+        .strip()
+    )
+    try:
+        return GitObjectFormat(named)
+    except ValueError as error:
+        raise GitRefused(
+            f"the repository at {repository} names its objects as {named!r}, "
+            "which is no format this product can keep work in"
+        ) from error
 
 
 def _tree_of(revision: str) -> str:
@@ -88,31 +293,90 @@ class LocalGitProjectSource:
     def materialize(
         self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
     ) -> None:
+        """Check the pinned tree out into the leased directory, whole and unfiltered.
+
+        A checkout rather than an export: `git archive` drops every path a
+        `.gitattributes` marks `export-ignore`, so the attempt would work on less
+        than it was pinned to -- and whoever compared its work against the pin
+        afterwards could only read those missing paths as the attempt having
+        deleted them.
+
+        And out of a repository this boundary made rather than out of the
+        operator's own, because a checkout carries its own `.git/config` too. That
+        configuration can declare a `filter` driver that the project's own
+        `.gitattributes` points paths at, and the driver's smudge would write
+        content into the lease that the pinned tree does not carry. What comes
+        back is captured under no filter at all, so that content would come home
+        as work the attempt never did.
+        """
+
         with tempfile.TemporaryDirectory() as staging:
-            archive = Path(staging) / _STAGED_ARCHIVE_NAME
-            self._answered(
-                ("archive", "--format=tar", f"--output={archive}", pin.commit)
-            )
+            unfiltered = self._plumbing_repository(Path(staging))
+            index = Path(staging) / _MATERIALIZED_INDEX_NAME
             with entered_leased_directory(
                 lease.working_directory, lease.device, lease.inode
-            ) as (entered, _descriptor):
-                self._unpack(archive, entered, pin, lease)
+            ) as (entered, descriptor):
+                self._checked_out(
+                    LeasedIndex(entered, descriptor, index),
+                    str(unfiltered),
+                    pin,
+                    lease,
+                )
 
-    def _unpack(
+    def _plumbing_repository(self, staging: Path) -> Path:
+        """A bare repository of this boundary's own making, borrowing the source's
+        objects.
+
+        It declares no filter and copies no template, so the only thing a
+        `.gitattributes` in the pinned tree can name is a driver that does not
+        exist -- which git skips. The pinned objects are read through an alternate
+        rather than copied, so nothing is duplicated to gain that.
+        """
+
+        borrowed = self._line(
+            ("rev-parse", "--path-format=absolute", "--git-path", "objects")
+        )
+        made = staging / _PLUMBING_REPOSITORY_NAME
+        try:
+            answered_git(
+                (
+                    "init",
+                    "--bare",
+                    "--quiet",
+                    NO_GIT_TEMPLATE,
+                    f"--object-format={object_format_of(str(self._project_root)).value}",
+                    str(made),
+                ),
+                working_directory=str(staging),
+                environment=isolated_git_environment(),
+            )
+            made.joinpath(*_ALTERNATE_OBJECTS_FILE).write_text(
+                f"{borrowed}\n", encoding="utf-8"
+            )
+        except (GitRefused, OSError) as error:
+            raise ProjectSourceUnavailable(
+                f"no filter-free repository could be made to check "
+                f"{self._project_root} out of: {error}"
+            ) from error
+        return made
+
+    def _checked_out(
         self,
-        archive: Path,
-        entered: str,
+        leased: LeasedIndex,
+        git_directory: str,
         pin: ProjectSourcePin,
         lease: AgentAttemptWorkspaceLease,
     ) -> None:
         try:
-            with tarfile.open(archive) as unpacked:
-                unpacked.extractall(entered, filter="data")
-        except (OSError, tarfile.TarError) as error:
+            for arguments in (
+                ("read-tree", pin.tree),
+                ("checkout-index", "--all", "--force"),
+            ):
+                answered_in_lease(arguments, leased=leased, git_directory=git_directory)
+        except GitRefused as error:
             raise ProjectSourceUnavailable(
-                f"the tree of commit {pin.commit} from {self._project_root} could "
-                f"not be unpacked into the workspace of attempt "
-                f"{lease.attempt_id.value}: {error}"
+                f"the tree {pin.tree} of {self._project_root} could not be checked "
+                f"out into the workspace of attempt {lease.attempt_id.value}: {error}"
             ) from error
 
     def _object_name(self, revision: str) -> str:
@@ -123,23 +387,12 @@ class LocalGitProjectSource:
 
     def _answered(self, arguments: tuple[str, ...]) -> bytes:
         try:
-            completed = subprocess.run(
-                (_GIT_EXECUTABLE_NAME, "-C", str(self._project_root), *arguments),
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                check=False,
+            return answered_git(
+                arguments,
+                working_directory=str(self._project_root),
+                environment=isolated_git_environment(),
             )
-        except OSError as error:
+        except GitRefused as error:
             raise ProjectSourceUnavailable(
-                f"git could not be started to read the project source at "
-                f"{self._project_root}: {error}"
+                f"the project source at {self._project_root} could not be read: {error}"
             ) from error
-        if completed.returncode != 0:
-            # The whole argument list is named, not just the subcommand: what a
-            # refusal is about is the revision or path that was asked for.
-            raise ProjectSourceUnavailable(
-                f"git {' '.join(arguments)} answered {completed.returncode} for "
-                f"the project source at {self._project_root}: "
-                f"{completed.stderr.decode('utf-8', 'replace').strip()}"
-            )
-        return completed.stdout

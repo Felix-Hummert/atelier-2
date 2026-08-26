@@ -337,9 +337,10 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head adds `answer-in-flight` to the closed set of reasons a V3 run
-    cannot be cancelled: a pause still holding an accepted answer refuses the
-    command rather than dropping that message (#668).
+    it. This head adds `WorkItemOrderResource` to the orders a V3 start accepts
+    and publishes the three project-source problems on that operation: a caller
+    names an item in the connected project's tracker, the start reads it, and
+    the ways that read can fail are answers this door can now give (#712).
     Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 
@@ -506,6 +507,33 @@ def test_project_paths_publish_one_opaque_resource_without_pagination() -> None:
         "durable-state-corrupt",
         "internal-error",
     }
+
+
+def test_the_start_door_publishes_the_tracker_problems_a_work_item_order_earns() -> (
+    None
+):
+    """A start whose order names a work item reads the project's own tracker.
+
+    A caller writing against the document has to see the three answers that
+    read can give, or it learns them from a 503 nobody described.
+    """
+
+    schema = served_app().openapi()
+    responses = schema["paths"][API_PREFIX + "/runs"]["post"]["responses"]
+
+    assert {
+        "project-source-not-connected",
+        "project-source-unavailable",
+        "project-source-payload-malformed",
+    } <= set(openapi_module.OPERATION_PROBLEMS[(API_PREFIX + "/runs", "post")])
+    for status, problem in (
+        ("409", "ProblemProjectSourceNotConnected"),
+        ("503", "ProblemProjectSourceUnavailable"),
+        ("502", "ProblemProjectSourcePayloadMalformed"),
+    ):
+        assert {"$ref": f"#/components/schemas/{problem}"} in responses[status][
+            "content"
+        ]["application/problem+json"]["schema"]["oneOf"]
 
 
 def test_every_declared_error_response_is_problem_json_one_of() -> None:

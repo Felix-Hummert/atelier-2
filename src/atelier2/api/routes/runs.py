@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from http import HTTPStatus
-from typing import assert_never
+from typing import NoReturn, assert_never
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
@@ -44,6 +44,7 @@ from atelier2.api.wire.requests import (
     ReconcileRunRequestResource,
     StartRunRequestResourceV2,
     StartRunRequestResourceV3,
+    WorkItemOrderResource,
 )
 from atelier2.api.wire.resources import (
     AnyRunPageResource,
@@ -92,6 +93,7 @@ from atelier2.application.read_runs import (
     RunReceiptsRead,
     RunsListed,
 )
+from atelier2.application.read_work_item_snapshot import WorkItemNotInTracker
 from atelier2.application.reconcile_effect import (
     ReconciliationAcceptedPending,
     ReconciliationCommandConflict,
@@ -106,7 +108,9 @@ from atelier2.application.reconcile_run import ReconcileRunRequest
 from atelier2.application.refusals import (
     DurableStateCorrupt,
     ProjectionTooLarge,
+    ProjectSourceNotConnected,
     ReadUnavailable,
+    SourcePayloadMalformed,
     WriteUnavailable,
 )
 from atelier2.application.start_published_run import (
@@ -122,6 +126,7 @@ from atelier2.application.start_published_run import (
     RunFormatNotExecutable,
     RunIdentityConflict,
     RunInputRefused,
+    WorkItemOrderUnreadable,
 )
 from atelier2.application.start_published_run import (
     AgentExecutorBindingUnavailable as StartAgentExecutorBindingUnavailable,
@@ -142,11 +147,55 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
 )
 from atelier2.contracts.executions import NodeExecutionId
-from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
+from atelier2.contracts.orders import (
+    ArtifactOrderValue,
+    InlineOrderValue,
+    WorkItemOrderValue,
+)
+from atelier2.contracts.queue_projection import TrackerItemReference
 from atelier2.contracts.run_cancellations import is_operator_run_cancel
 from atelier2.contracts.runs import RunId, RunState
 
 router = APIRouter()
+
+
+def _refuse_work_item_order(
+    name: str,
+    reason: (
+        ProjectSourceNotConnected
+        | WorkItemNotInTracker
+        | SourcePayloadMalformed
+        | ReadUnavailable
+    ),
+) -> NoReturn:
+    """Answer why the start could not read the item one order named.
+
+    The reasons are the connected project's own, so they answer in the same
+    problems the import door already publishes for them; only the item that
+    was not there is about this order, and it is the order the caller fixes.
+    """
+
+    named = f"order {name!r}"
+    match reason:
+        case ProjectSourceNotConnected():
+            raise ApiProblem("project-source-not-connected")
+        case WorkItemNotInTracker(item_reference):
+            raise ApiProblem(
+                "run-input-refused",
+                detail=(
+                    f"{named} names {item_reference.tracker_item.value!r}, "
+                    "which the connected tracker does not hold"
+                ),
+            )
+        case SourcePayloadMalformed(detail):
+            raise ApiProblem("project-source-payload-malformed", f"{named}: {detail}")
+        case ReadUnavailable(detail):
+            raise ApiProblem(
+                "project-source-unavailable",
+                named if detail is None else f"{named}: {detail}",
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _authored_order(order: AnyStartRunOrderResource) -> AuthoredOrder:
@@ -156,6 +205,10 @@ def _authored_order(order: AnyStartRunOrderResource) -> AuthoredOrder:
             return AuthoredOrder(name, InlineOrderValue(value.encode()))
         case ArtifactOrderResource(name=name, artifact_hash=artifact_hash):
             return AuthoredOrder(name, ArtifactOrderValue(ArtifactHash(artifact_hash)))
+        case WorkItemOrderResource(name=name, work_item=work_item):
+            return AuthoredOrder(
+                name, WorkItemOrderValue(TrackerItemReference(work_item))
+            )
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -220,6 +273,8 @@ async def start_run_route(
             raise ApiProblem(
                 "run-input-refused", detail=sentence, invalid_fields=invalid_fields
             )
+        case WorkItemOrderUnreadable(name, reason):
+            _refuse_work_item_order(name, reason)
         case InvalidAgentBindings():
             raise ApiProblem("invalid-agent-bindings")
         case BindingConstraintRefused(node, distinct_from):

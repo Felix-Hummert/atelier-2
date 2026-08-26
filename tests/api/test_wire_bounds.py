@@ -153,6 +153,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "StartRunRequestResourceV2.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "StartRunRequestResourceV3.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "InlineOrderResource.value": MAXIMUM_INSTANCE_DOCUMENT_BYTES,
+    "WorkItemOrderResource.work_item": MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
     "StartRunAgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "OccupancyBindingResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "ProjectResource.public_project_reference": (
