@@ -632,6 +632,24 @@ def _kept_verdict(
     return read_verdict(load_kept_value(session, request.node_execution_id))
 
 
+def _proof_of_a_passed_check(
+    redemption: ToolRedemptionReceipt | None,
+) -> ToolRedemptionReceipt | None:
+    """This redemption where the project's check passed, and nothing where not.
+
+    Every ending that keeps proof beside a failure asks here rather than reading
+    the receipt itself, so no branch can persist a row saying the check did not
+    pass. A nonzero exit is not a weaker proof of the same thing: it is the
+    verdict that ends the attempt under `PROJECT_VERIFICATION_FAILED`, and a
+    stored redemption is by definition the record of a command that was
+    satisfied.
+    """
+
+    if redemption is None or not redemption.satisfied_the_project:
+        return None
+    return redemption
+
+
 def _keep_tool_redemption(
     connection: Any,
     execution: AgentAttemptExecution,
@@ -650,6 +668,10 @@ def _keep_tool_redemption(
     """
     if redemption is None:
         return
+    if not redemption.satisfied_the_project:
+        raise ToolRedemptionConflict(
+            "a stored tool redemption is the record of a check that passed"
+        )
     if (
         redemption.node_execution_id != execution.request.node_execution_id
         or redemption.attempt_id != execution.attempt_id
@@ -1658,6 +1680,7 @@ class DbosAgentAttemptStore:
                         result.output_bytes,
                         runner_evidence_hash,
                         result.transcript,
+                        _proof_of_a_passed_check(redemption),
                     )
                     return failed
             refusal = why_a_value_its_declared_schema_refuses(
@@ -1676,6 +1699,7 @@ class DbosAgentAttemptStore:
                     result.output_bytes,
                     runner_evidence_hash,
                     result.transcript,
+                    _proof_of_a_passed_check(redemption),
                 )
                 return failed
         if redemption is not None and redemption.exit_code != 0:
@@ -2161,7 +2185,7 @@ class DbosAgentAttemptStore:
             NodeReceiptReason.CANDIDATE_CAPTURE_FAILED,
             verdict,
             transcript,
-            redemption,
+            _proof_of_a_passed_check(redemption),
         )
 
     def _judged_armed_failure(

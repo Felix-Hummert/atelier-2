@@ -1047,9 +1047,11 @@ the project decides what verifies it, never the agent and never the atelier.
 A command that exits zero leaves durable proof of exactly which command ran,
 how it ended and the hash of what it wrote. That proof belongs to the attempt
 that redeemed the grant, not to the attempt's success: it is kept whenever the
-check passed, including where the attempt then failed because the work it made
-could not be kept, so a run that verified clean is never indistinguishable from
-one whose check was never satisfied. A command that exits nonzero ends the
+check passed, including where the attempt then failed for a reason of its own --
+an answer the schema refused, a declared refusal, or work that could not be kept
+-- so a run that verified clean is never indistinguishable from one whose check
+was never satisfied. Only a passing check is ever recorded: the stored exit code
+is fixed at zero, so a redemption cannot say a command failed. A command that exits nonzero ends the
 attempt `FAILED` under `PROJECT_VERIFICATION_FAILED`, names how it ended on the
 `failed` `node-receipt/v3`, and writes no agent receipt, no `AGENT_COMPLETED`,
 and no `tool_redemptions` row -- there is nothing it redeemed. A granted verification that exceeds its

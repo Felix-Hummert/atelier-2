@@ -142,25 +142,36 @@ def execute_agent_attempt(
                     result.transcript,
                 )
             else:
-                # Nested rather than a second `except` beside the one above, so
-                # that the redemption below is a value this branch is *known* to
-                # have: the capture is only reached once the check has answered,
-                # and its evidence must travel into either ending.
-                try:
-                    _keep_what_the_attempt_made(lease, project)
-                except CandidateNotKept as refusal:
-                    # Same reason as the branch above, for the other loss:
-                    # letting this escape would leave the attempt LAUNCH_ARMED.
-                    # The work is gone either way, but a named failure is a fact
-                    # an operator can act on, while an armed attempt is one
-                    # nobody can resolve. What the granted check proved before
-                    # the loss is kept with it -- the check passed, and that
-                    # stays true however the keeping ended.
-                    outcome = store.complete_candidate_capture_failure(
-                        execution, str(refusal), result.transcript, redemption
-                    )
-                else:
+                # A check that said no has already decided this attempt, so
+                # nothing is captured and nothing else may rename the ending.
+                # Capturing first would keep work the project rejected and, worse,
+                # let the loss of that work overwrite the verdict: the attempt
+                # would read CANDIDATE_CAPTURE_FAILED and carry a redemption
+                # saying the check failed. The store owns what a nonzero
+                # redemption means; this only refuses to reach past it.
+                #
+                # Past that, the redemption below is a value this branch is
+                # *known* to have and known to be a pass, so its evidence travels
+                # into whichever ending follows.
+                if redemption is not None and not redemption.satisfied_the_project:
                     outcome = store.complete_success(execution, result, redemption)
+                else:
+                    try:
+                        _keep_what_the_attempt_made(lease, project)
+                    except CandidateNotKept as refusal:
+                        # Same reason as the branch above, for the other loss:
+                        # letting this escape would leave the attempt
+                        # LAUNCH_ARMED. The work is gone either way, but a named
+                        # failure is a fact an operator can act on, while an
+                        # armed attempt is one nobody can resolve. What the
+                        # granted check proved before the loss is kept with it --
+                        # the check passed, and that stays true however the
+                        # keeping ended.
+                        outcome = store.complete_candidate_capture_failure(
+                            execution, str(refusal), result.transcript, redemption
+                        )
+                    else:
+                        outcome = store.complete_success(execution, result, redemption)
             if isinstance(outcome, AgentAttemptFailed):
                 failure = outcome.attempt.failure_code
                 match failure:

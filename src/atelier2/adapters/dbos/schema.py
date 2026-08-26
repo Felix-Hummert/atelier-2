@@ -269,7 +269,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     36: "c9f4b5d99a9ff8e33796e36151b66f00175eceaa797e30461bf6e01264266ce8",
     37: "e41cf318212e0a79d6605413b5818ef68d6245baaf05a53b888b8aac40131a13",
     38: "aebd8b6bad8a719864f0c02828db643dd3dcbe7c89198beb6a8c1c4c30100824",
-    39: "b9de4bca92f18303982968efa1afeb3a15393cb95d346bc9d522e62851c5f45c",
+    39: "3c0cc05dd977fd61d2c88d78ba7566fdc0146e2d7af27df61aea636a4ac2c4be",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -976,9 +976,14 @@ tool_redemptions = sa.Table(
     # the record's own bound, not a second one spelled here: what a store may
     # hold and what a receipt may carry would be two numbers for one limit.
     sa.CheckConstraint("length(command) > 0"),
-    sa.CheckConstraint(
-        f"exit_code BETWEEN {-MAXIMUM_SIGNED_INT64 - 1} AND {MAXIMUM_SIGNED_INT64}"
-    ),
+    # A stored redemption is the record of a command that was *satisfied* (V39,
+    # #642). A nonzero exit is the opposite fact -- it ends the attempt under
+    # PROJECT_VERIFICATION_FAILED and redeems nothing -- so the column is not
+    # bounded here but fixed: with the row now able to outlive its attempt's
+    # success, "exit code any integer" would have made "the check passed" a
+    # thing a reader had to re-derive from every row instead of a thing this
+    # table means.
+    sa.CheckConstraint("exit_code = 0"),
     sa.CheckConstraint(
         "length(standard_output_hash) = 64 "
         "AND standard_output_hash NOT GLOB '*[^0-9a-f]*'"
@@ -4449,6 +4454,70 @@ _TOOL_REDEMPTIONS_TRIGGERS = (
 )
 
 
+def _refuse_redemptions_that_cannot_be_re_owned(
+    connection: sqlite3.Connection,
+) -> None:
+    """Read every V38 redemption against the attempt it will be keyed by.
+
+    Five ways a stored row cannot honestly become an attempt's own record, each
+    named where an operator can act on it: two rows claiming one attempt would
+    collide on the new key; a row naming no stored attempt, or one that never
+    succeeded, would give proof to an execution that never ran the check; a row
+    whose attempt describes a different node execution than the row does would
+    move that proof somewhere else entirely; and a nonzero exit was never a
+    redemption at all under the meaning this version fixes.
+
+    The check reads and refuses. Nothing is repaired, because every one of these
+    is a store this product did not write, and guessing which half of a
+    contradiction to keep is how evidence gets quietly rewritten.
+    """
+
+    unsatisfied = connection.execute(
+        "SELECT attempt_id FROM tool_redemptions WHERE exit_code <> 0"
+    ).fetchall()
+    if unsatisfied:
+        raise StoreMigrationRefused(
+            f"{len(unsatisfied)} tool redemptions record a command that exited "
+            "nonzero, which this version does not admit as a redemption; this "
+            "command will not alter it"
+        )
+
+    duplicated = connection.execute(
+        "SELECT attempt_id FROM tool_redemptions "
+        "GROUP BY attempt_id HAVING count(*) > 1"
+    ).fetchall()
+    if duplicated:
+        raise StoreMigrationRefused(
+            f"{len(duplicated)} attempts each hold more than one tool redemption, "
+            "which the attempt-owned shape cannot represent; this command will "
+            "not alter it"
+        )
+    unowned = connection.execute(
+        "SELECT redemption.attempt_id FROM tool_redemptions AS redemption "
+        "LEFT JOIN agent_attempts AS attempt "
+        "  ON attempt.attempt_id = redemption.attempt_id "
+        "WHERE attempt.attempt_id IS NULL "
+        "   OR attempt.state <> 'SUCCEEDED' "
+        "   OR attempt.node_execution_id <> redemption.node_execution_id"
+    ).fetchall()
+    if unowned:
+        raise StoreMigrationRefused(
+            f"{len(unowned)} tool redemptions do not belong to a succeeded attempt "
+            "of their own node execution; this command will not alter it"
+        )
+    orphaned = connection.execute(
+        "SELECT redemption.attempt_id FROM tool_redemptions AS redemption "
+        "LEFT JOIN agent_receipts_v2 AS receipt "
+        "  ON receipt.node_execution_id = redemption.node_execution_id "
+        "WHERE receipt.node_execution_id IS NULL"
+    ).fetchall()
+    if orphaned:
+        raise StoreMigrationRefused(
+            f"{len(orphaned)} tool redemptions hang from no agent receipt; "
+            "this command will not alter it"
+        )
+
+
 def _apply_v38_to_v39(connection: sqlite3.Connection) -> None:
     """Admit CANDIDATE_CAPTURE_FAILED, and re-own a redemption to its attempt.
 
@@ -4463,12 +4532,20 @@ def _apply_v38_to_v39(connection: sqlite3.Connection) -> None:
     beside an attempt that failed, so a check that really passed would be thrown
     away with the loss of the work. Its key moves to the attempt for the same
     reason a replacement attempt is its own attempt -- two attempts of one node
-    redeem two grants. Every stored row already carries the attempt it belongs
-    to, so each one crosses by name with nothing derived or invented; and every
-    row that exists at V38 hangs from an agent receipt, which is one succeeded
-    attempt, so no two of them can collide on the key they are carried to.
+    redeem two grants.
+
+    What every stored row must be for that carry to be honest is *checked*, not
+    assumed. V38's two foreign keys point at different tables and constrain each
+    other not at all: nothing there forbids two rows naming one attempt, an
+    attempt that never succeeded, or a receipt and an attempt describing
+    different executions. Those stores are not ones this product wrote, but a
+    hop that silently collided their rows -- or moved one project's proof onto
+    another attempt -- would corrupt the evidence it exists to preserve. So each
+    row is read against the attempt it names and the receipt it hangs from
+    first, and a store that fails is refused whole and left exactly as it was.
     """
 
+    _refuse_redemptions_that_cannot_be_re_owned(connection)
     _rebuild_product_table(
         connection,
         agent_attempts,

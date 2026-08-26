@@ -16,8 +16,9 @@ drifts.
 
 from __future__ import annotations
 
+import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import pytest
@@ -73,7 +74,9 @@ from atelier2.adapters.dbos.schema import (
     V37_SCHEMA_HANDOFF,
     V38_SCHEMA_HANDOFF,
     MigrationRequired,
+    StoreMigrationRefused,
     _rebuild_product_table,
+    _refuse_redemptions_that_cannot_be_re_owned,
     _require_product_shape,
     agent_attempts,
     agent_configuration_revisions,
@@ -126,6 +129,7 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
     AgentExecutionRequestHash,
+    AgentExecutionResult,
     AgentReceiptHash,
 )
 from atelier2.contracts.artifacts import Artifact
@@ -158,6 +162,7 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
 from atelier2.host import main
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.integration.test_runner_terminal_evidence_store import _bound
@@ -4703,3 +4708,266 @@ def test_every_failed_transition_admits_the_lost_candidate_only_after_the_v39_ho
             "FAILED",
             AgentAttemptFailureCode.CANDIDATE_CAPTURE_FAILED.value,
         )
+
+
+_REDEEMED_COMMAND = json.dumps(["/bin/sh", "-c", "exit 0"])
+_REDEEMED_OUTPUT_HASH = Sha256Hash.of(b"all green").value
+_A_GRANT_REVISION = Sha256Hash.of(b"grant/run-project-verification").value
+
+
+def _redeem_against_a_real_success(
+    database_path: Path, *, redemptions: int = 1
+) -> dict[str, str]:
+    """A really succeeded attempt of this store, and the redemption beside it.
+
+    The attempt and its agent receipt are written by the store itself rather
+    than by hand: a receipt names rows across the whole catalog, and a fixture
+    inventing those would be testing a store no runtime could have produced.
+    Only the redemption is placed directly, because what is under test is a hop
+    reading rows a *foreign* V38 store might hold -- including the shapes V38's
+    two independent foreign keys never forbade. `redemptions` is how many rows
+    claim the one attempt.
+    """
+
+    runtime = attempt_runtime(database_path.parent)
+    try:
+        runtime.initialize_storage()
+        request = attempt_request(runtime, "migration/redeemed")
+        execution = agent_attempt_execution(request)
+        store = DbosAgentAttemptStore(runtime.engine)
+        store.prepare(execution)
+        store.claim(execution)
+        store.complete_success(execution, AgentExecutionResult(b'"done"'))
+    finally:
+        runtime.close()
+    with sqlite3.connect(database_path) as connection:
+        for ordinal in range(redemptions):
+            connection.execute(
+                "INSERT INTO tool_redemptions (node_execution_id, run_id, "
+                "workflow_revision_hash, node_id, attempt_id, tool_revision_hash, "
+                "capability, command, exit_code, standard_output_hash, "
+                "receipt_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    request.node_execution_id.value,
+                    request.run_id.value,
+                    request.workflow_revision_hash.value,
+                    request.node_id,
+                    execution.attempt_id.value,
+                    _A_GRANT_REVISION,
+                    ToolGrantCapability.RUN_PROJECT_VERIFICATION.value,
+                    _REDEEMED_COMMAND,
+                    0,
+                    _REDEEMED_OUTPUT_HASH,
+                    Sha256Hash.of(f"redemption/{ordinal}".encode()).value,
+                ),
+            )
+        connection.commit()
+    return {
+        "attempt_id": execution.attempt_id.value,
+        "node_execution_id": request.node_execution_id.value,
+    }
+
+
+def _create_v38_store_from_a_real_redemption(database_path: Path) -> dict[str, str]:
+    """A published V38 store whose redemption this product really wrote.
+
+    The attempt and its agent receipt come from the store itself, because a
+    receipt names rows across the whole catalog and a fixture inventing those
+    would be proving a hop against a store no runtime could produce. Only the
+    two tables this hop moves are then put back to what V38 published.
+    """
+
+    written = _redeem_against_a_real_success(database_path)
+    with sqlite3.connect(database_path) as connection:
+        _revert_the_candidate_capture_code(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V38_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V38_SCHEMA_HANDOFF.version)
+    return written
+
+
+def _write_a_redemption(
+    connection: sqlite3.Connection,
+    *,
+    attempt_id: str,
+    node_execution_id: str,
+    ordinal: int = 0,
+    exit_code: int = 0,
+) -> None:
+    """One redemption row, placed directly, naming whatever it is told to name."""
+
+    connection.execute(
+        "INSERT INTO tool_redemptions (node_execution_id, run_id, "
+        "workflow_revision_hash, node_id, attempt_id, tool_revision_hash, "
+        "capability, command, exit_code, standard_output_hash, receipt_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            node_execution_id,
+            _ARMED_RUN.value,
+            WorkflowRevision(b"name: bauhuette\n").revision_hash.value,
+            _ARMED_NODE,
+            attempt_id,
+            _A_GRANT_REVISION,
+            ToolGrantCapability.RUN_PROJECT_VERIFICATION.value,
+            _REDEEMED_COMMAND,
+            exit_code,
+            _REDEEMED_OUTPUT_HASH,
+            Sha256Hash.of(f"redemption/{ordinal}".encode()).value,
+        ),
+    )
+
+
+def _create_v38_store_that_cannot_be_re_owned(
+    database_path: Path, write: Callable[[sqlite3.Connection, dict[str, str]], None]
+) -> None:
+    """A published V38 store holding a redemption V39 has to refuse.
+
+    Each of these rows is one a *foreign* V38 store could hold and this
+    product's own never would: its two foreign keys point at different tables
+    and constrain each other not at all. They are written directly for exactly
+    that reason -- driving them through this product is impossible, which is the
+    whole reason the hop cannot assume them away.
+    """
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _revert_the_candidate_capture_code(connection)
+        _write_armed_attempt(connection)
+        attempt = _armed_attempt_values(
+            WorkflowRevision(b"name: bauhuette\n").revision_hash
+        )
+        write(
+            connection,
+            {
+                "attempt_id": str(attempt["attempt_id"]),
+                "node_execution_id": str(attempt["node_execution_id"]),
+            },
+        )
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V38_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V38_SCHEMA_HANDOFF.version)
+
+
+def test_a_v38_redemption_crosses_the_v39_hop_owned_by_its_own_attempt(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The proof a check left is carried to its attempt, unchanged and entire."""
+
+    database_path = tmp_path / "atelier.sqlite"
+    written = _create_v38_store_from_a_real_redemption(database_path)
+    columns = (
+        "attempt_id, node_execution_id, run_id, workflow_revision_hash, node_id, "
+        "tool_revision_hash, capability, command, exit_code, "
+        "standard_output_hash, receipt_hash"
+    )
+    with sqlite3.connect(database_path) as connection:
+        predecessor_row = connection.execute(
+            f"SELECT {columns} FROM tool_redemptions"
+        ).fetchone()
+    assert predecessor_row is not None
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            connection.execute(f"SELECT {columns} FROM tool_redemptions").fetchone()
+            == predecessor_row
+        )
+        key = connection.execute(
+            "SELECT name FROM pragma_table_info('tool_redemptions') WHERE pk = 1"
+        ).fetchone()
+    assert key == ("attempt_id",)
+    assert predecessor_row[0] == written["attempt_id"]
+
+
+@pytest.mark.parametrize(
+    ("write", "refusal"),
+    [
+        pytest.param(
+            lambda connection, attempt: [
+                _write_a_redemption(connection, **attempt),
+                # A second row for the same attempt under a different execution:
+                # V38 keys this table by the node execution, so this is what a
+                # duplicate attempt owner actually looks like there.
+                _write_a_redemption(
+                    connection,
+                    attempt_id=attempt["attempt_id"],
+                    node_execution_id="d4" * 32,
+                    ordinal=1,
+                ),
+            ],
+            "more than one tool redemption",
+            id="two-redemptions-claiming-one-attempt",
+        ),
+        pytest.param(
+            lambda connection, attempt: _write_a_redemption(
+                connection,
+                attempt_id="f0" * 32,
+                node_execution_id=attempt["node_execution_id"],
+            ),
+            "do not belong to a succeeded attempt",
+            id="a-redemption-naming-no-stored-attempt",
+        ),
+        pytest.param(
+            lambda connection, attempt: _write_a_redemption(connection, **attempt),
+            "do not belong to a succeeded attempt",
+            id="a-redemption-whose-attempt-never-succeeded",
+        ),
+        pytest.param(
+            lambda connection, attempt: _write_a_redemption(
+                connection,
+                attempt_id=attempt["attempt_id"],
+                node_execution_id="e1" * 32,
+            ),
+            "do not belong to a succeeded attempt",
+            id="a-redemption-describing-another-execution-than-its-attempt",
+        ),
+        pytest.param(
+            lambda connection, attempt: _write_a_redemption(
+                connection, exit_code=1, **attempt
+            ),
+            "exited",
+            id="a-redemption-of-a-command-that-failed",
+        ),
+    ],
+)
+def test_a_redemption_the_v39_hop_cannot_re_own_refuses_the_store_unaltered(
+    tmp_path: Path,
+    write: Callable[[sqlite3.Connection, dict[str, str]], None],
+    refusal: str,
+) -> None:
+    """V38's two foreign keys never made these impossible, so the hop reads first.
+
+    Each would end with the proof of a check somewhere it does not belong --
+    collided onto one key, or moved onto an attempt that never ran the command.
+    None of them is a store this product wrote, which is exactly why the hop
+    cannot assume them away. It refuses the whole store rather than repairing
+    it, and leaves every byte where it was: guessing which half of a
+    contradiction to keep is how evidence gets quietly rewritten.
+    """
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_v38_store_that_cannot_be_re_owned(database_path, write)
+    before = database_path.read_bytes()
+
+    with (
+        sqlite3.connect(database_path) as connection,
+        pytest.raises(StoreMigrationRefused, match=refusal),
+    ):
+        _refuse_redemptions_that_cannot_be_re_owned(connection)
+
+    assert main(["migrate", "--database", str(database_path)]) == 1
+    assert database_path.read_bytes() == before
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (V38_SCHEMA_HANDOFF.version,)

@@ -88,6 +88,7 @@ RUN = RunId("v3/redeems-its-grant")
 FAILED_RUN = RunId("v3/red-verify-fails")
 TIMEOUT_RUN = RunId("v3/verify-timeout")
 UNKEPT_RUN = RunId("v3/candidate-unkeepable")
+BOTH_LOST_RUN = RunId("v3/red-verify-and-unkeepable")
 PROVIDER_OUTPUT = b'"the exact provider bytes"'
 VERIFICATION_OUTPUT = b"all green"
 VERIFICATION_EXIT_CODE = 0
@@ -208,6 +209,23 @@ def runtime(tmp_path: Path) -> Iterator[tuple[DbosRuntime, Path, Path]]:
 def failing_verification_runtime(
     tmp_path: Path,
 ) -> Iterator[tuple[DbosRuntime, Path, Path]]:
+    yield from granted_runtime(tmp_path, FAILED_VERIFICATION_EXIT_CODE)
+
+
+@pytest.fixture
+def unkeepable_candidate_and_failing_verification_runtime(
+    tmp_path: Path,
+) -> Iterator[tuple[DbosRuntime, Path, Path]]:
+    """A project whose check says no, and whose candidates could not be kept.
+
+    Both losses at once, because the question is which of them decides the
+    ending: a check that exited nonzero has already refused this work, and no
+    later failure to keep it may rename that verdict or leave a redemption
+    behind claiming a command that failed.
+    """
+
+    blocked = tmp_path / CANDIDATE_STORE_DIRECTORY_NAME
+    blocked.symlink_to(tmp_path / "somewhere-else", target_is_directory=True)
     yield from granted_runtime(tmp_path, FAILED_VERIFICATION_EXIT_CODE)
 
 
@@ -706,3 +724,79 @@ def test_an_attempt_that_could_not_keep_its_work_says_so_in_its_node_receipt(
         == Sha256Hash.of(VERIFICATION_OUTPUT).value
     )
     assert receipt_count == 0
+
+
+def test_a_check_that_said_no_decides_the_ending_even_when_the_work_is_lost(
+    unkeepable_candidate_and_failing_verification_runtime: tuple[
+        DbosRuntime, Path, Path
+    ],
+) -> None:
+    """Two losses at once, and the first one owns the verdict.
+
+    The project's command exited nonzero, so this attempt was already refused;
+    the candidate store then could not have kept the work either. Reading that
+    second loss as the ending would tell an operator to go and look at a store
+    when what actually happened is that their tests failed -- and it would leave
+    a `tool_redemptions` row recording a command that did not pass, which
+    `docs/PRODUCT.md` says is never written and which V39's own CHECK refuses.
+    """
+    started_runtime, _scratch_root, _cwd_record = (
+        unkeepable_candidate_and_failing_verification_runtime
+    )
+    workflow, bindings, _grant_revision = publish_granted_node(started_runtime)
+
+    started = DbosDurableRunStarter(
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
+    ).start_published(
+        StartPublishedRunRequestV2(BOTH_LOST_RUN, workflow.revision_hash, bindings)
+    )
+    assert isinstance(started, DurableRunCreated)
+
+    started_runtime.launch()
+    deadline = time.monotonic() + 20
+    observed = ""
+    while time.monotonic() < deadline:
+        with started_runtime.engine.connect() as connection:
+            observed = str(
+                connection.scalar(
+                    sa.select(runs.c.state).where(runs.c.run_id == BOTH_LOST_RUN.value)
+                )
+            )
+        if observed in {RunState.FAILED.value, RunState.COMPLETED.value}:
+            break
+        time.sleep(0.025)
+    assert observed == RunState.FAILED.value, f"run ended {observed!r}"
+
+    with started_runtime.engine.connect() as connection:
+        attempt = (
+            connection.execute(
+                sa.select(agent_attempts).where(
+                    agent_attempts.c.run_id == BOTH_LOST_RUN.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        stored_reason = connection.scalar(
+            sa.select(node_receipts_v3.c.reason).where(
+                node_receipts_v3.c.node_execution_id == attempt["node_execution_id"]
+            )
+        )
+        redemption_count = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(tool_redemptions)
+            .where(tool_redemptions.c.run_id == BOTH_LOST_RUN.value)
+        )
+
+    assert attempt["failure_code"] == (
+        AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED.value
+    )
+    words, _schema_revision, _value_hash = read_stored_node_receipt_reason(
+        str(stored_reason)
+    )
+    assert words.startswith(NodeReceiptReason.PROJECT_VERIFICATION_FAILED.value)
+    assert f"exit {FAILED_VERIFICATION_EXIT_CODE}" in words
+    assert redemption_count == 0
