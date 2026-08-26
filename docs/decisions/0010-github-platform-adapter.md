@@ -5,7 +5,9 @@
   `githubkit`, measured against the `open-pr` operation and recorded in §7;
   decisions 1 and 5 amended 2026-08-25 (`push-atelier-commit`, operator ruling
   on issue #642, gated REVISE then folded per that review) — decision only,
-  unimplemented
+  unimplemented; decision 1 amended 2026-08-26 (`snapshot()` joins the
+  observation port, head ruling on issue #732) — **built with its amendment**,
+  in the change that adds this record's second reading operation (issue #712)
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1),
   story 4, whose "GitHub landet einen nativen Flow" and provider/secret rules this
@@ -129,6 +131,91 @@ not build it, and it does not decide
 capability surface behind one port — but #728 remains its own open question,
 and this record neither adopts nor rules on its `capabilities()`/`snapshot()`
 shape.
+
+**2026-08-26 amendment (Head-Ruling, #732-Journal): the observation port grows
+`snapshot()`, and grows nothing else.**
+[#728](https://github.com/FlexOr2/atelier-2/issues/728) proposed widening this
+record's one port in a single step into a five-operation `PlatformAdapter` —
+`capabilities()`, `snapshot()` and `reference_grammar()` beside the two reads.
+That is refused as a shape decided ahead of the callers that would prove it.
+The rule this amendment sets instead, and the only general thing it decides:
+**a read operation joins this port together with the first caller that needs
+it, in the same change as the amendment naming it.** Under that rule the port
+holds two reads and no catalogue — `open_items()`, which answers which items
+the tracker holds, and `snapshot()`, which answers what one named item said.
+
+**A snapshot is decision 5's observed revision, generalised — not a second
+snapshot idea beside it.** Decision 5 already rules how a platform object
+becomes reproducible material: the exact served UTF-8 bytes, hashed as they are
+with nothing appended, carrying the object identity and the read's change
+marker as provenance. That rule was written for the requirement issue and
+nothing in it is specific to one kind of item, so `snapshot()` answers exactly
+that revision for whatever work item the connected tracker holds. The core
+keeps holding orchestration state by reference (REQ-QUEUE-14) and gains the one
+thing a reference cannot carry: the bytes a run actually read, pinned, so a
+later read of a moving object is never mistaken for them.
+
+**Two kinds, and no platform noun in either.** A work item is an `issue` or a
+`change_request`; a GitHub pull request and a GitLab merge request are the same
+kind, and the mapping is the adapter's, exactly as the reference spelling
+already is. The listing keeps refusing pull requests, because which items the
+queue observes is #79's question; reading one by name is a different question
+and answers the neutral kind.
+
+**The caller of `snapshot()` is the start, and it pins what it read.** A start
+door accepts an order that names an item instead of carrying bytes; the start
+reads that item once and stores the observed revision as the order's own value,
+which is why the reading is here rather than in a workflow node. Four
+consequences are decided with it.
+
+The value's schema is **not the author's choice**: a graph input carrying a work
+item pins the exact published revision of the one document Atelier owns for it —
+the neutral kind, the bytes, the digest, the change marker, the read time — and a
+document pinning anything else, a permissive shape above all, refuses the start.
+Without that rule a "work item" would mean whatever some schema happened to
+admit.
+
+The read happens **before any durable row exists**, so a start that cannot read
+the item writes nothing and answers why.
+
+**The durable answer comes before the read.** A start naming a work item asks
+the store first, carrying the item's name rather than its bytes: a run of that
+identity that already exists is answered from what it pinned, and only when
+there is nothing to answer from does the start read the item and ask again. So a
+retry neither re-reads a moving object nor turns an unreachable tracker into a
+failed retry — and because the identity of a work-item order is the item it
+names rather than the bytes of one read, a race between two starts of the same
+run resolves to one run rather than to a conflict. Material beside it is
+answered the same way without a read: an artifact resolves inside the store.
+The reading stays outside the store's transaction, which is the other reason it
+cannot be a single ask.
+
+**That identity is only as honest as the row it is read from**, so a stored
+value under this schema is verified before it decides anything: it must hash to
+the hash stored beside it and be the complete document the one writer of that
+row produces — the same completeness the start demands before writing one.
+Neither can fail for a row this product wrote, so a failure is durable state
+that lies, and the start stops on it rather than deciding "same run" from bytes
+nobody can vouch for.
+
+And a run's material is what the platform said *at that moment*: two starts
+naming the same item across an edit are two runs with two different values,
+which is the reproducibility the reference alone could never give.
+
+**What this amendment leaves undecided, deliberately.** `capabilities()` and
+`reference_grammar()` stay unruled until a caller lands — this record still
+neither adopts nor refuses them as a design. A snapshot carries no title, no
+item state and no linked items, because none of them has a caller yet, and no
+discussion and no diff, because those are unbounded and belong in an artifact
+addressed by hash rather than in a second byte budget inside an order value.
+An item whose body exceeds the inline order bound is refused by that bound like
+any other oversized value; the artifact path is what a later slice gives it.
+A reference that is not in the composed adapter's own grammar earns no outcome
+of its own here: it addresses no item in the connected tracker, which is what
+the caller is told. And nothing here publishes the house schema for an
+operator: a project that wants work-item orders publishes that document as a
+schema revision like any other, and seeding it at serve time is a later
+decision with its own owner.
 
 ### 2. Auth: the operator chooses the method when a project is connected
 
@@ -768,6 +855,37 @@ this record borrows that owner rather than opening a second vocabulary.
   code with the loss named in its receipt, its workspace released rather than
   retained, with no `AgentAttemptPossiblyRan` report on replay, and a retry
   re-runs the attempt from scratch.
+- **(2026-08-26 amendment, #712)** A snapshot answers the exact bytes the
+  platform served as the item's body and a digest a reader recomputes from them
+  alone: a body carrying a carriage return, a non-ASCII character and no
+  trailing newline is neither normalized nor re-encoded, and appending a
+  newline is a different revision. A read whose change marker is missing is
+  refused rather than answered with an invented one, and an item the tracker
+  does not hold — or a reference in another adapter's grammar — is answered as
+  unknown rather than as a read that may yet succeed.
+- **(2026-08-26 amendment, #712)** A pull request read by name answers the
+  neutral `change_request` kind, and no GitHub noun travels with it past the
+  adapter boundary. A read answering about a different item than the one asked
+  for is refused rather than pinned under the asked-for name, at the adapter and
+  again above it.
+- **(2026-08-26 amendment, #712)** A start naming a work-item order stores the
+  observed revision the start read, under the house schema the workflow pinned;
+  a document pinning any other schema for that order refuses the start with
+  nothing written. The same item read across an edit yields two different stored
+  values, and a start that cannot read the item — no connection, no such item,
+  an unreachable platform, a refused payload — writes no run row and answers
+  which of the four it was. An item whose read exceeds the inline order bound is
+  refused by that bound, again with nothing written.
+- **(2026-08-26 amendment, #712)** A retry of a run that already exists answers
+  from what that run pinned without reading the tracker at all — proven with an
+  edited item, an unreachable platform, a deleted item, and a start that names
+  an artifact beside the item — while a retry naming a different item is a
+  conflict rather than that run; and a read whose write failed leaves nothing
+  behind, so the next start reads again.
+- **(2026-08-26 amendment, #712)** A stored order under the work-item schema
+  that does not hash to the hash beside it, or is not the complete document its
+  writer produces, stops the next start as corrupt durable state rather than
+  being read as an identity.
 - **(2026-08-25 amendment, #642-Journal)** A durable projection, event, receipt,
   and log all show no credential or secret material for a `push-atelier-commit`
   run under whichever credential handoff it is specified for — the PAT file
@@ -811,7 +929,10 @@ secret value in a workflow, prompt, context package, event, receipt, log or API
 resource; a create without a prior readback; a GitHub identifier outside the
 adapter; an agent shell publishing through `gh` instead of an Action node; a
 webhook accepted as truth without a readback; a poll interval hardcoded instead of
-configured; or a label name minted here.
+configured; a label name minted here; a reading operation added to the
+observation port ahead of the caller that needs it (2026-08-26 amendment,
+#732-Journal); or a snapshot that carries a platform's own noun for an item
+instead of the neutral kind.
 
 ## Supersedes
 

@@ -371,6 +371,11 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "run-identity-conflict",
         "workflow-format-not-executable",
         "run-input-refused",
+        # A start whose order names a work item reads the connected project's
+        # tracker, so this door answers that connection's own problems too.
+        "project-source-not-connected",
+        "project-source-unavailable",
+        "project-source-payload-malformed",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",

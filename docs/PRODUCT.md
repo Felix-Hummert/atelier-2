@@ -1003,10 +1003,12 @@ longer among what is missing either: `--name` runs the revision a catalog name
 holds, asked of the service before anything is written and at the lineage member
 `--position` names, so an operator starts named work without translating a name
 into a hash by hand. `--input NAME=VALUE` and `--input-file NAME=PATH` fill the
-`graph_inputs` that workflow declared: the command publishes nothing for them
-and hands the exact JSON bytes to `POST /runs` inline. Ordering an artifact from
-the command line, and any surface that lists or reads stored artifacts back, are
-not built. A name the document never
+`graph_inputs` that workflow declared: the command publishes every one of them
+as a content-addressed artifact first, so `POST /runs` names the address the
+artifact door answered instead of carrying bytes, and a ten-byte order takes
+the same door as a hundred-kilobyte diff. Publishing the same bytes twice is
+the same artifact, so a repeated command pays for nothing new. A surface that
+lists or reads stored artifacts back is not built. A name the document never
 declared, a declared name that is missing, and a value that is not valid JSON
 for the schema the document pinned are each refused by name; a typed 422 from
 the service is handed on in the service's own words. An output contract that
@@ -1211,6 +1213,31 @@ named deferrals of the import's first slice. No dependency edge, no
 readiness, and no priority exist for this projection yet, and nothing in it
 holds a tracker item's title, description, or comments -- REQ-QUEUE-14 keeps
 those with the tracker.
+
+A run reads one of those items as its own material through the start door: a V3
+start order may name a work item (`{"name": ..., "work_item": "gh:<n>"}` on
+`POST /atelier/api/v1/runs` and on the MCP `start_run` tool) instead of
+carrying bytes, and the start reads that item from the served project's
+connected tracker before any durable row exists. What the run stores is the
+observed revision of ADR 0010 §5 -- the exact served body bytes, their
+SHA-256, the neutral kind (`issue` or `change_request`, so a GitHub pull
+request carries no GitHub noun into the core), the read's entity tag and its
+read time -- serialized under the house schema `contracts.work_items` owns. A
+workflow declares a work item by pinning that schema's published revision and
+no other: a graph input pinning a different, in particular a permissive, schema
+for a work-item order refuses the start rather than storing a value nothing
+checked. The value is pinned, not re-read: the same item started across an edit
+is two runs with two different values, and a retry of a run that already exists
+is answered from what that run pinned without reaching the tracker at all --
+the store is asked before the item is read, and only a start with nothing to
+answer from reads. A start that cannot read the item answers which of the four
+ways it failed -- no connected project, no such item in the tracker, an
+unreachable platform, a payload its adapter refused -- and writes nothing;
+those three connection answers are published on the start door's own OpenAPI
+operation. Publishing the house schema is still the operator's own act, an item
+whose read is larger than the inline order bound is refused by that bound
+rather than published as an artifact, and no picker offers the items in a
+surface yet.
 
 On 2026-08-19 at `ed6376b` this landing measured how many concurrent
 fake-executor runs one SQLite instance carries. The harness is in-process ASGI on one event loop,

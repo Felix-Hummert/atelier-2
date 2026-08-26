@@ -22,13 +22,18 @@ import socket
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Thread
+from typing import Any, Never
 
 import pytest
 import sqlalchemy as sa
 import uvicorn
+from dbos import DBOSClient
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
@@ -68,8 +73,11 @@ from atelier2.contracts.artifacts import (
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
+from atelier2.contracts.queue_projection import TrackerItemReference
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
@@ -82,6 +90,14 @@ from atelier2.contracts.runs import (
     WorkflowRevisionHash,
 )
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
+from atelier2.contracts.when import RecordedAt
+from atelier2.contracts.work_items import (
+    WORK_ITEM_ORDER_SCHEMA_DOCUMENT,
+    ObservedWorkItemRevision,
+    WorkItemChangeMarker,
+    WorkItemKind,
+    work_item_order_document,
+)
 from atelier2.host.run_command import (
     AgentBindingSource,
     RunOrder,
@@ -102,6 +118,13 @@ from atelier2.ports.durable_runs import (
     DurableV3StartInputRefused,
     StartPublishedRunRequestV3,
     V3InputRefusal,
+)
+from atelier2.ports.issue_observation import (
+    ObserveWorkItemRevisionResult,
+    TrackerItemUnknown,
+    TrackerPayloadMalformed,
+    TrackerSourceUnavailable,
+    WorkItemRevisionObserved,
 )
 from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
@@ -1336,3 +1359,633 @@ def test_the_same_cli_command_twice_reports_one_run(runtime: DbosRuntime) -> Non
             )
             == 1
         )
+
+
+WORK_ITEM_SCHEMA = PublishedRevision(
+    RevisionKind.SCHEMA, WORK_ITEM_ORDER_SCHEMA_DOCUMENT
+)
+SERVED_PROJECT = ProjectId("studio")
+ASKED_ITEM = TrackerItemReference("gh:712")
+
+
+PERMISSIVE_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "object"}')
+
+
+def assert_no_run(runtime: DbosRuntime, run_id: str) -> None:
+    """No run row and no order row: a refused start leaves nothing to clean up."""
+
+    with runtime.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(runs)
+                .where(runs.c.run_id == run_id)
+            )
+            == 0
+        )
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(run_inputs_v3)
+                .where(run_inputs_v3.c.run_id == run_id)
+            )
+            == 0
+        )
+
+
+def observed_item(
+    body: bytes = b"Cook exactly seven portions.",
+    change_marker: str = 'W/"3f1a9c"',
+    item: TrackerItemReference = ASKED_ITEM,
+) -> ObservedWorkItemRevision:
+    return ObservedWorkItemRevision(
+        item,
+        WorkItemKind.ISSUE,
+        body,
+        WorkItemChangeMarker(change_marker),
+        RecordedAt("2026-08-26T09:15:00Z"),
+    )
+
+
+@dataclass
+class _CountingTracker:
+    """A tracker that says how often the start reached for it."""
+
+    answer: ObserveWorkItemRevisionResult
+    reads: int = 0
+
+    def open_items(self) -> Never:
+        raise AssertionError("a start never lists the open items")
+
+    def snapshot(
+        self, reference: TrackerItemReference
+    ) -> ObserveWorkItemRevisionResult:
+        self.reads += 1
+        return self.answer
+
+
+@dataclass
+class _TrackerAnswering:
+    """The connected tracker, as the composed server reaches it."""
+
+    answer: ObserveWorkItemRevisionResult
+
+    def open_items(self) -> Never:
+        raise AssertionError("a start never lists the open items")
+
+    def snapshot(
+        self, reference: TrackerItemReference
+    ) -> ObserveWorkItemRevisionResult:
+        return self.answer
+
+
+def work_item_client(
+    runtime: DbosRuntime, answer: ObserveWorkItemRevisionResult
+) -> TestClient:
+    return durable_api_client(
+        runtime,
+        served_project_id=SERVED_PROJECT,
+        tracker_item_source=_TrackerAnswering(answer),
+    )
+
+
+def start_with_work_item(
+    client: TestClient,
+    workflow: WorkflowRevision,
+    bindings: AgentBindingSet,
+    run_id: str,
+    work_item: str = ASKED_ITEM.value,
+) -> Any:
+    binding = bindings.bindings[0]
+    return client.post(
+        API_PREFIX + "/runs",
+        json={
+            "workflow_format_version": 3,
+            "run_id": run_id,
+            "workflow_revision_hash": workflow.revision_hash.value,
+            "agent_bindings": [
+                {
+                    "role": binding.role.value,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash.value
+                    ),
+                }
+            ],
+            "orders": [{"name": ORDER_NAME, "work_item": work_item}],
+        },
+    )
+
+
+def stored_order(runtime: DbosRuntime, run_id: str) -> tuple[bytes, str]:
+    with runtime.engine.connect() as connection:
+        row = connection.execute(
+            sa.select(
+                run_inputs_v3.c.value, run_inputs_v3.c.schema_revision_hash
+            ).where(run_inputs_v3.c.run_id == run_id)
+        ).one()
+    return bytes(row.value), str(row.schema_revision_hash)
+
+
+def test_a_work_item_order_pins_the_revision_the_start_read(
+    runtime: DbosRuntime,
+) -> None:
+    """The caller names an item; what the run stores is what the platform said.
+
+    This is the whole point of reading at the start rather than passing a
+    reference through: the run carries the bytes, their digest and the change
+    marker of the read, so what the agent works from is reproducible without
+    asking the tracker again.
+    """
+
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+    revision = observed_item()
+
+    started = start_with_work_item(
+        work_item_client(runtime, WorkItemRevisionObserved(revision)),
+        workflow,
+        bindings,
+        "v3/work-item-order",
+    )
+
+    assert started.status_code == 201
+    value, schema_revision_hash = stored_order(runtime, "v3/work-item-order")
+    assert value == work_item_order_document(revision)
+    assert schema_revision_hash == WORK_ITEM_SCHEMA.revision_hash.value
+
+
+def test_the_pinned_work_item_value_satisfies_the_schema_the_house_publishes(
+    runtime: DbosRuntime,
+) -> None:
+    """The start would refuse the value otherwise, so the two are one contract."""
+
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+    text = "Kommentar mit Umlaut, CRLF\r\nund keinem Schlusszeilenumbruch"
+
+    started = start_with_work_item(
+        work_item_client(
+            runtime,
+            WorkItemRevisionObserved(observed_item(text.encode("utf-8"))),
+        ),
+        workflow,
+        bindings,
+        "v3/work-item-utf8",
+    )
+
+    assert started.status_code == 201
+    value, _ = stored_order(runtime, "v3/work-item-utf8")
+    assert json.loads(value)["body"] == text
+
+
+def test_the_same_item_read_across_an_edit_pins_two_different_values(
+    runtime: DbosRuntime,
+) -> None:
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+    before = observed_item(b"Cook two portions.", change_marker='W/"one"')
+    after = observed_item(b"Cook seven portions.", change_marker='W/"two"')
+
+    for run_id, revision in (("v3/item-before", before), ("v3/item-after", after)):
+        started = start_with_work_item(
+            work_item_client(runtime, WorkItemRevisionObserved(revision)),
+            workflow,
+            bindings,
+            run_id,
+        )
+        assert started.status_code == 201
+
+    assert stored_order(runtime, "v3/item-before") != stored_order(
+        runtime, "v3/item-after"
+    )
+
+
+@pytest.mark.parametrize(
+    ("answer", "status"),
+    [
+        (TrackerItemUnknown(ASKED_ITEM), 422),
+        (TrackerSourceUnavailable("GitHub answered 503"), 503),
+        (TrackerPayloadMalformed("the item read carried no body field"), 502),
+    ],
+    ids=["unknown-item", "unreachable-platform", "malformed-payload"],
+)
+def test_an_unreadable_work_item_refuses_the_start_before_any_row(
+    runtime: DbosRuntime, answer: ObserveWorkItemRevisionResult, status: int
+) -> None:
+    """Each way the read can fail answers differently, and none starts a run."""
+
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+
+    refused = start_with_work_item(
+        work_item_client(runtime, answer), workflow, bindings, "v3/unreadable-item"
+    )
+
+    assert refused.status_code == status
+    with runtime.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(runs)
+                .where(runs.c.run_id == "v3/unreadable-item")
+            )
+            == 0
+        )
+
+
+def test_an_instance_with_no_connected_tracker_refuses_a_work_item_order(
+    runtime: DbosRuntime,
+) -> None:
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+
+    refused = start_with_work_item(
+        durable_api_client(runtime), workflow, bindings, "v3/no-connection"
+    )
+
+    assert refused.status_code == 409
+    assert refused.json()["type"].endswith("project-source-not-connected")
+
+
+def test_a_work_item_order_is_refused_under_a_schema_other_than_the_house_one(
+    runtime: DbosRuntime,
+) -> None:
+    """A permissive foreign schema would admit anything and check nothing.
+
+    The value's shape is not the caller's to choose: a document that declares a
+    work-item order declares the schema the house owns for it, or the start
+    refuses rather than storing a "work item" whose only guarantee is that some
+    schema said yes.
+    """
+
+    workflow, bindings = publish_ordered_workflow(runtime, PERMISSIVE_SCHEMA)
+
+    refused = start_with_work_item(
+        work_item_client(runtime, WorkItemRevisionObserved(observed_item())),
+        workflow,
+        bindings,
+        "v3/foreign-schema",
+    )
+
+    assert refused.status_code == 422
+    assert "work item schema" in refused.json()["detail"]
+    assert_no_run(runtime, "v3/foreign-schema")
+
+
+def test_an_item_body_past_the_inline_bound_refuses_the_start_before_any_row(
+    runtime: DbosRuntime,
+) -> None:
+    """A tracker item can be larger than an order may carry, and that is refused.
+
+    The artifact path is a named deferral, so the honest answer today is the
+    inline bound's own refusal -- with nothing left behind, because a run whose
+    material never landed is not a run to clean up.
+    """
+
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+    oversized = observed_item(b"x" * (MAXIMUM_INSTANCE_DOCUMENT_BYTES + 1))
+
+    refused = start_with_work_item(
+        work_item_client(runtime, WorkItemRevisionObserved(oversized)),
+        workflow,
+        bindings,
+        "v3/oversized-item",
+    )
+
+    assert refused.status_code == 422
+    assert refused.json()["type"].endswith("run-input-refused")
+    assert_no_run(runtime, "v3/oversized-item")
+
+
+def test_a_retry_answers_from_what_the_run_pinned_without_reading_the_item_again(
+    runtime: DbosRuntime,
+) -> None:
+    """The promise of pinning: the second start neither re-reads nor conflicts.
+
+    The tracker answers something different the second time -- an edited item,
+    then an unreachable platform, then a deleted item. All three are retries of
+    a run that already exists, so all three answer the run rather than the
+    tracker, and the stored value stays the first read.
+    """
+
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+    first = observed_item(b"Cook two portions.")
+    started = start_with_work_item(
+        work_item_client(runtime, WorkItemRevisionObserved(first)),
+        workflow,
+        bindings,
+        "v3/pinned-retry",
+    )
+    assert started.status_code == 201
+    pinned = stored_order(runtime, "v3/pinned-retry")
+
+    for answer in (
+        WorkItemRevisionObserved(observed_item(b"Cook seven portions instead.")),
+        TrackerSourceUnavailable("GitHub answered 503"),
+        TrackerItemUnknown(ASKED_ITEM),
+    ):
+        counting = _CountingTracker(answer)
+        retried = start_with_work_item(
+            durable_api_client(
+                runtime,
+                served_project_id=SERVED_PROJECT,
+                tracker_item_source=counting,
+            ),
+            workflow,
+            bindings,
+            "v3/pinned-retry",
+        )
+
+        assert retried.status_code == 200, answer
+        assert counting.reads == 0, answer
+        assert stored_order(runtime, "v3/pinned-retry") == pinned
+
+
+def test_a_retry_naming_another_item_is_a_conflict_rather_than_the_same_run(
+    runtime: DbosRuntime,
+) -> None:
+    """Answering from the run must not answer for an item nobody asked about."""
+
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+    started = start_with_work_item(
+        work_item_client(runtime, WorkItemRevisionObserved(observed_item())),
+        workflow,
+        bindings,
+        "v3/other-item-retry",
+    )
+    assert started.status_code == 201
+
+    counting = _CountingTracker(WorkItemRevisionObserved(observed_item()))
+    conflicting = start_with_work_item(
+        durable_api_client(
+            runtime, served_project_id=SERVED_PROJECT, tracker_item_source=counting
+        ),
+        workflow,
+        bindings,
+        "v3/other-item-retry",
+        work_item="gh:999",
+    )
+
+    assert conflicting.status_code == 409
+    assert conflicting.json()["type"].endswith("run-identity-conflict")
+    assert counting.reads == 0
+
+
+MATERIAL_NAME = "material"
+
+
+def work_item_and_material_document(
+    work_item_hash: PublishedRevisionHash, material_hash: PublishedRevisionHash
+) -> bytes:
+    """One agent that reads a work item and material published beside it."""
+
+    return (
+        f"""format_version: 3
+name: Cook to order
+graph_inputs:
+  - name: {ORDER_NAME}
+    schema:
+      ref: work-item-schema
+      revision: {work_item_hash.value}
+  - name: {MATERIAL_NAME}
+    schema:
+      ref: any-json
+      revision: {material_hash.value}
+nodes:
+  - id: cook
+    type: agent
+    role: cook
+    mode: headless
+    instruction: Cook exactly what the order says.
+    inputs:
+      - name: {ORDER_NAME}
+        from:
+          graph_input: {ORDER_NAME}
+      - name: {MATERIAL_NAME}
+        from:
+          graph_input: {MATERIAL_NAME}
+""".encode()
+        + declared_output()
+    )
+
+
+def start_with_work_item_and_artifact(
+    client: TestClient,
+    workflow: WorkflowRevision,
+    bindings: AgentBindingSet,
+    run_id: str,
+    artifact_hash: str,
+) -> Any:
+    binding = bindings.bindings[0]
+    return client.post(
+        API_PREFIX + "/runs",
+        json={
+            "workflow_format_version": 3,
+            "run_id": run_id,
+            "workflow_revision_hash": workflow.revision_hash.value,
+            "agent_bindings": [
+                {
+                    "role": binding.role.value,
+                    "agent_configuration_revision_hash": (
+                        binding.agent_configuration_revision_hash.value
+                    ),
+                }
+            ],
+            "orders": [
+                {"name": ORDER_NAME, "work_item": ASKED_ITEM.value},
+                {"name": MATERIAL_NAME, "artifact_hash": artifact_hash},
+            ],
+        },
+    )
+
+
+def test_a_retry_mixing_a_work_item_with_an_artifact_is_the_same_run(
+    runtime: DbosRuntime,
+) -> None:
+    """An artifact is a read of this store, so it costs the tracker nothing.
+
+    A start that named both would otherwise have to re-read the item just to
+    find out that the run it already started is the one it asked for.
+    """
+
+    publish(runtime, WORK_ITEM_SCHEMA, ANY_JSON_SCHEMA)
+    workflow = WorkflowRevision(
+        work_item_and_material_document(
+            WORK_ITEM_SCHEMA.revision_hash, ANY_JSON_SCHEMA.revision_hash
+        )
+    )
+    DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
+    bindings = bind_cook(runtime)
+    published = DbosArtifactStore(runtime.engine).publish_artifact(
+        Artifact(b'{"portions": 2}')
+    )
+    assert isinstance(published, (ArtifactCreated, ArtifactExisting)), published
+    address = published.artifact.artifact_hash.value
+
+    started = start_with_work_item_and_artifact(
+        work_item_client(runtime, WorkItemRevisionObserved(observed_item())),
+        workflow,
+        bindings,
+        "v3/work-item-and-artifact",
+        address,
+    )
+    assert started.status_code == 201, started.text
+
+    counting = _CountingTracker(WorkItemRevisionObserved(observed_item()))
+    retried = start_with_work_item_and_artifact(
+        durable_api_client(
+            runtime, served_project_id=SERVED_PROJECT, tracker_item_source=counting
+        ),
+        workflow,
+        bindings,
+        "v3/work-item-and-artifact",
+        address,
+    )
+
+    assert retried.status_code == 200
+    assert counting.reads == 0
+
+
+def bent_work_item_order(**fields: str) -> bytes:
+    """The document a read writes, with exactly the named fields bent."""
+
+    return json.dumps(
+        {**json.loads(work_item_order_document(observed_item())), **fields}
+    ).encode("utf-8")
+
+
+def fabricate_run_with_order(
+    runtime: DbosRuntime, source_run_id: str, run_id: str, **corrupt: object
+) -> None:
+    """A second run whose stored order is what the corruption says it is.
+
+    `run_inputs_v3` refuses updates and deletes -- the store means it when it
+    says an order is immutable -- so a row that lies is built by insertion,
+    copying a real start and bending only what the case is about.
+    """
+
+    with runtime.engine.begin() as connection:
+        run = dict(
+            connection.execute(sa.select(runs).where(runs.c.run_id == source_run_id))
+            .mappings()
+            .one()
+        )
+        order = dict(
+            connection.execute(
+                sa.select(run_inputs_v3).where(run_inputs_v3.c.run_id == source_run_id)
+            )
+            .mappings()
+            .one()
+        )
+        connection.execute(
+            runs.insert().values(
+                **{
+                    **run,
+                    "run_id": run_id,
+                    "bootstrap_workflow_id": f"{run['bootstrap_workflow_id']}-second",
+                }
+            )
+        )
+        bent = corrupt.get("value")
+        if isinstance(bent, bytes):
+            # The hash follows the value it is stored beside, so a bent value
+            # exercises the document check rather than the hash check.
+            corrupt = {**corrupt, "value_hash": Sha256Hash.of(bent).value}
+        connection.execute(
+            run_inputs_v3.insert().values(**{**order, "run_id": run_id, **corrupt})
+        )
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        {"value": b'{"reference": "gh:712"}'},
+        {"value_hash": "b" * 64},
+        {"value": b"not a document at all"},
+        {"value": bent_work_item_order(reference="g" * 1_025)},
+        {"value": bent_work_item_order(observed_at="2026-02-31T09:15:00Z")},
+    ],
+    ids=[
+        "incomplete-document",
+        "hash-that-is-not-its-value",
+        "not-json",
+        "a-reference-longer-than-one-can-be",
+        "an-instant-no-calendar-has",
+    ],
+)
+def test_a_stored_order_that_contradicts_itself_stops_the_next_start(
+    runtime: DbosRuntime, corrupt: dict[str, object]
+) -> None:
+    """A retry decides `same run` from the stored row, so the row must be honest.
+
+    Under the work-item schema only this product writes that value, and it
+    writes the whole document with the hash beside it. A row that is anything
+    else is durable state that lies, and the start stops on it rather than
+    answering an identity read off bytes nobody can vouch for.
+    """
+
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+    started = start_with_work_item(
+        work_item_client(runtime, WorkItemRevisionObserved(observed_item())),
+        workflow,
+        bindings,
+        "v3/honest-order",
+    )
+    assert started.status_code == 201
+    fabricate_run_with_order(runtime, "v3/honest-order", "v3/corrupt-order", **corrupt)
+
+    stopped = start_with_work_item(
+        work_item_client(runtime, WorkItemRevisionObserved(observed_item())),
+        workflow,
+        bindings,
+        "v3/corrupt-order",
+    )
+
+    assert stopped.status_code == 500
+    assert stopped.json()["type"].endswith("durable-state-corrupt")
+
+
+def test_a_read_whose_write_failed_leaves_nothing_and_the_retry_starts_the_run(
+    runtime: DbosRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The read is not a commitment: a failed write leaves no run and no order.
+
+    The failure is injected where the write is already complete but not yet
+    committed -- the enqueue at the end of the start's own transaction -- so
+    the item really was read, the whole start really rolled back, and the retry
+    is a first start rather than a repeat.
+    """
+
+    workflow, bindings = publish_ordered_workflow(runtime, WORK_ITEM_SCHEMA)
+    enqueued = DBOSClient.enqueue_in_transaction
+
+    def refuse_to_commit(*arguments: object, **keywords: object) -> None:
+        raise OperationalError("enqueue", {}, Exception("the disk is full"))
+
+    monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", refuse_to_commit)
+    counting = _CountingTracker(WorkItemRevisionObserved(observed_item()))
+
+    failed = start_with_work_item(
+        durable_api_client(
+            runtime, served_project_id=SERVED_PROJECT, tracker_item_source=counting
+        ),
+        workflow,
+        bindings,
+        "v3/unwritten",
+    )
+
+    assert failed.status_code == 503
+    assert counting.reads == 1
+    assert_no_run(runtime, "v3/unwritten")
+
+    monkeypatch.setattr(DBOSClient, "enqueue_in_transaction", enqueued)
+    retried = _CountingTracker(WorkItemRevisionObserved(observed_item()))
+    started = start_with_work_item(
+        durable_api_client(
+            runtime, served_project_id=SERVED_PROJECT, tracker_item_source=retried
+        ),
+        workflow,
+        bindings,
+        "v3/unwritten",
+    )
+
+    assert started.status_code == 201
+    assert retried.reads == 1
+    assert stored_order(runtime, "v3/unwritten")[0] == work_item_order_document(
+        observed_item()
+    )
