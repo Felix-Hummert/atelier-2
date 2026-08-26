@@ -283,7 +283,6 @@ def test_a_compliant_vision_result_round_trips_through_the_headless_agent(
     assert detail.detail.answer.value == COMPLIANT_ANSWER
 
 
-@pytest.mark.proves("schema-refused-vision-results-never-become-successes")
 @pytest.mark.parametrize(
     "provider",
     [
