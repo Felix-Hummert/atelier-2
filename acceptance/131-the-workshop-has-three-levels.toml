@@ -34,17 +34,17 @@ story = "https://github.com/FlexOr2/atelier-2/issues/131"
 
 [[sentence]]
 id = "the-workshop-opens-in-the-studio"
-requirement = "REQ-UI-01"
+requirement = "REQ-UI-20"
 text = "The atelier opens in the Studio — the level that shows what is happening across the whole workshop — and not in a list of runs."
 
 [[sentence]]
 id = "the-inbox-names-every-run-that-waits-for-a-human"
-requirement = "REQ-UI-01"
+requirement = "REQ-UI-20"
 text = "The inbox row names, across everything, every run that waits for a human — the durable states WAITING_INPUT and WAITING_RECONCILIATION — and leads there with one click."
 
 [[sentence]]
 id = "an-empty-area-names-the-one-next-action"
-requirement = "REQ-UI-16"
+requirement = "REQ-UI-24"
 text = "An area with nothing in it names the one next action that is possible today, instead of staying blank or hinting at a capability that does not exist."
 
 [[sentence]]
@@ -53,5 +53,5 @@ text = "The workshop reads the durable run list to its end instead of stopping a
 
 [[sentence]]
 id = "a-level-opens-from-a-pasted-link-and-survives-a-reload"
-requirement = "REQ-UI-01"
+requirement = "REQ-UI-20"
 text = "A level of the workshop opens from a pasted link and survives a reload: it is an address, not only something to click."
