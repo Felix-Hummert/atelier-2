@@ -234,7 +234,6 @@ def test_a_v3_agent_document_of_the_admitted_shape_starts(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
 
     assert isinstance(result, DurableRunCreated)
@@ -258,7 +257,6 @@ def test_a_started_v3_run_reads_back_as_its_own_shape(runtime: DbosRuntime) -> N
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
 
     with runtime.engine.connect() as connection:
@@ -285,7 +283,6 @@ def test_a_bound_v3_run_refuses_before_an_attempt_when_its_executor_is_unavailab
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     assert isinstance(started, DurableRunCreated)
     settings = runtime.settings
@@ -360,7 +357,6 @@ def test_the_durable_step_refuses_a_node_its_run_does_not_stand_on(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
 
     with pytest.raises(RunBindingConflict, match="does not own current STARTED node"):
@@ -377,7 +373,6 @@ def test_the_v3_agent_node_binds_with_the_exact_role_and_configuration(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
 
     encoded = _node_binding(
@@ -424,7 +419,6 @@ def test_the_binding_carries_the_turn_bound_the_published_budget_named(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     assert isinstance(started, DurableRunCreated)
 
@@ -451,7 +445,6 @@ def test_the_binding_of_a_node_pins_the_project_source_it_will_work_in(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     root = tmp_path / "project"
     pinned = git_project(root, {"pyproject.toml": "[project]\nname = 'pinned'\n"})
@@ -549,7 +542,6 @@ def test_a_started_v3_run_reads_back_through_the_durable_query(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
 
     found = durable_queries(runtime.engine).get_run(RUN)
@@ -571,7 +563,6 @@ def test_the_first_start_and_its_retry_answer_the_same_run_shape(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     )
     request = StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
 
@@ -607,7 +598,6 @@ def test_a_v3_start_binds_the_exact_run_configuration(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     expected = RunConfigurationRevision(
         WorkflowRevisionHash(workflow.revision_hash.value),

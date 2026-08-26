@@ -86,6 +86,11 @@ OPEN_PR_OPERATION = PublishedRevision(
 )
 """The one operation a V3 Action node may name; the loopback adapter performs
 whatever request the node's Agent predecessor handed it."""
+OPEN_PR_GRANT = PublishedRevision(
+    RevisionKind.TOOL,
+    json.dumps({"capability": "open-pr"}).encode("utf-8"),
+)
+"""The one declared agent grant the crash harness publishes for its effect path."""
 V3_PROVIDER_OUTPUT = b'"the exact provider bytes"'
 _COUNTING_PROVIDER = (
     "from pathlib import Path; import os,sys; "
@@ -222,7 +227,7 @@ def seed_v3(
             lease.engine, ProviderId("exact"), (configuration,)
         )
         catalog_store = DbosCatalogStore(lease.engine)
-        for revision in (ANY_JSON_SCHEMA, OPEN_PR_OPERATION):
+        for revision in (ANY_JSON_SCHEMA, OPEN_PR_OPERATION, OPEN_PR_GRANT):
             published = catalog_store.publish_revision(revision)
             assert isinstance(
                 published, (PublishedRevisionCreated, PublishedRevisionExisting)
@@ -233,7 +238,6 @@ def seed_v3(
             lease.engine,
             lease.settings,
             lease.agent_executor_registry,
-            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(
                 RunId(run_id),

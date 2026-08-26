@@ -98,7 +98,7 @@ function openWorkbenchPseudoLocale(listRuns: ReturnType<typeof vi.fn>) {
 }
 
 function openProjectPseudoLocale() {
-  window.history.replaceState(null, "", "/atelier/project?pseudo-locale=1");
+  window.history.replaceState(null, "", "/atelier/settings?pseudo-locale=1");
   return render(App, {
     props: {
       cockpitApi: cockpitApiStub({
@@ -229,12 +229,6 @@ describe("core surfaces read owned display strings", () => {
   it("proves(core-surfaces-render-owned-display-strings-under-a-pseudo-locale): the Workbench rail uses the owner, not a hardcoded copy", async () => {
     open("/atelier?pseudo-locale=1");
     await screen.findByRole("heading", { name: "[[[ Workbench ]]]" });
-    await railShowsOwnedPseudoLocale();
-  });
-
-  it("proves(core-surfaces-render-owned-display-strings-under-a-pseudo-locale): New Run rail uses the owner, not a hardcoded copy", async () => {
-    open("/atelier/new?pseudo-locale=1");
-    await screen.findByRole("heading", { name: "Choose a workflow" });
     await railShowsOwnedPseudoLocale();
   });
 

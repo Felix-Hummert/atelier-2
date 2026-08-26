@@ -71,6 +71,7 @@ from atelier2.adapters.grok_subscription import (
     GrokSubscriptionSettings,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.projection.events import bounded_event_summary
 from atelier2.contracts.agent_attempts import (
     MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES,
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
@@ -85,6 +86,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerEvidenceAcceptancePhase,
 )
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_FIELD_CHARACTERS,
     AgentBinding,
     AgentBindingSet,
     AgentConfigurationRevision,
@@ -117,6 +119,7 @@ from atelier2.contracts.node_records_v3 import (
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_bindings import RunV3
+from atelier2.contracts.run_events import RunEventPage
 from atelier2.contracts.runs import (
     RunId,
     RunState,
@@ -240,11 +243,13 @@ def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
 
 
 def armed_attempt(
-    runtime: DbosRuntime, document: bytes | None = None
+    runtime: DbosRuntime,
+    document: bytes | None = None,
+    schema: PublishedRevision = PLAN_SCHEMA,
 ) -> AgentAttemptExecution:
     """One started run of a planning document, armed at its first agent node."""
-    document = planning_document(PLAN_SCHEMA) if document is None else document
-    published = DbosCatalogStore(runtime.engine).publish_revision(PLAN_SCHEMA)
+    document = planning_document(schema) if document is None else document
+    published = DbosCatalogStore(runtime.engine).publish_revision(schema)
     assert isinstance(
         published, (PublishedRevisionCreated, PublishedRevisionExisting)
     ), published
@@ -278,7 +283,6 @@ def armed_attempt(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     assert isinstance(created, DurableRunCreated), created
 
@@ -337,26 +341,42 @@ def durable_answer(runtime: DbosRuntime) -> tuple[int, int, str, str]:
 @pytest.mark.proves("bytes-their-own-schema-refuses-never-become-a-success")
 @pytest.mark.proves("a-refused-output-ends-its-attempt-durably-named")
 @pytest.mark.parametrize(
-    ("answered", "named"),
+    ("answered", "expected_reason"),
     [
         pytest.param(
             b"Sure! I would plan this in three steps.",
-            "instance-not-json",
+            "output-schema-refused: instance-not-json: Expecting value",
             id="prose where JSON was declared",
         ),
-        pytest.param(b'{"steps": 0}', "schema-violated", id="a value out of bounds"),
-        pytest.param(b'{"stps": 3}', "schema-violated", id="a misspelled field"),
-        pytest.param(b'["one", "two"]', "schema-violated", id="the wrong JSON shape"),
-        pytest.param(b'{"steps": 3}\xff', "instance-not-utf8", id="broken UTF-8"),
+        pytest.param(
+            b'{"steps": 0}',
+            "output-schema-refused: schema-violated: /steps: is less than the minimum of 1",
+            id="a value out of bounds",
+        ),
+        pytest.param(
+            b'{"stps": 3}',
+            "output-schema-refused: schema-violated: the value itself: 'steps' is a required property",
+            id="a misspelled field",
+        ),
+        pytest.param(
+            b'["one", "two"]',
+            "output-schema-refused: schema-violated: the value itself: is not of type 'object'",
+            id="the wrong JSON shape",
+        ),
+        pytest.param(
+            b'{"steps": 3}\xff',
+            "output-schema-refused: instance-not-utf8: invalid start byte",
+            id="broken UTF-8",
+        ),
         pytest.param(
             b'{"steps": 1, "steps": 2}',
-            "duplicate-object-key",
+            "output-schema-refused: duplicate-object-key: steps",
             id="one field answered twice",
         ),
     ],
 )
 def test_an_answer_its_own_schema_refuses_never_becomes_a_success(
-    runtime: DbosRuntime, answered: bytes, named: str
+    runtime: DbosRuntime, answered: bytes, expected_reason: str
 ) -> None:
     """The belegte case and its neighbours: refused by name, and durably so.
 
@@ -429,13 +449,119 @@ def test_an_answer_its_own_schema_refuses_never_becomes_a_success(
     reason, schema_revision, value_hash = read_stored_node_receipt_reason(
         str(receipt["reason"])
     )
-    assert reason.startswith(f"{NodeReceiptReason.OUTPUT_SCHEMA_REFUSED.value}: ")
-    assert named in reason
+    assert reason == expected_reason
+    assert answered.decode("utf-8", errors="replace") not in reason
+    assert len(reason) <= MAXIMUM_AGENT_FIELD_CHARACTERS
     assert schema_revision == PLAN_SCHEMA.revision_hash
     assert value_hash == Sha256Hash.of(answered)
     assert receipt["request_hash"] == request["request_hash"]
     assert receipt["context_package_hash"] == request["context_package_hash"]
     assert (int(artifacts or 0), int(outputs or 0)) == (0, 0)
+
+
+@pytest.mark.proves("a-refused-output-ends-its-attempt-durably-named")
+def test_a_large_schema_refusal_has_a_compact_reason_and_exact_detail_output(
+    runtime: DbosRuntime,
+) -> None:
+    """The receipt names the refusal; node detail holds the refused bytes.
+
+    JSON Schema includes the rejected value in this diagnostic, which used to
+    make the durable reason exceed the event field limit. A new refusal keeps
+    the stable schema judgment instead, while the receipt identity still points
+    node detail at the exact bytes the schema read.
+    """
+    rejected = b'{"steps":"' + b"not an integer " * 400 + b'"}'
+    assert len(rejected) > MAXIMUM_AGENT_FIELD_CHARACTERS
+    execution = armed_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    outcome = store.complete_success(execution, AgentExecutionResult(rejected))
+
+    assert isinstance(outcome, AgentAttemptFailed), outcome
+    with runtime.engine.connect() as connection:
+        receipt = (
+            connection.execute(
+                sa.select(node_receipts_v3.c.reason).where(
+                    node_receipts_v3.c.node_execution_id
+                    == execution.request.node_execution_id.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+    reason, schema_revision, value_hash = read_stored_node_receipt_reason(
+        str(receipt["reason"])
+    )
+    assert reason.startswith("output-schema-refused: schema-violated: /steps: ")
+    assert "is not of type 'integer'" in reason
+    assert rejected.decode("utf-8") not in reason
+    assert len(reason) <= MAXIMUM_AGENT_FIELD_CHARACTERS
+    assert schema_revision == PLAN_SCHEMA.revision_hash
+    assert value_hash == Sha256Hash.of(rejected)
+
+    queries = durable_queries(runtime.engine)
+    page = queries.read_run_event_page(RUN, 0, 5)
+    assert isinstance(page, RunEventPage)
+    persisted = page.events[0]
+    assert persisted.node_receipt_reason == reason
+    assert bounded_event_summary(persisted) is persisted
+
+    found = queries.get_node_detail(RUN, NODE)
+    assert isinstance(found, NodeDetailFound), found
+    assert found.detail.refusal == reason
+    assert found.detail.refusal_output is not None
+    assert found.detail.refusal_output.value == rejected
+    assert found.detail.refusal_output.value_hash == Sha256Hash.of(rejected)
+
+
+@pytest.mark.proves("a-refused-output-ends-its-attempt-durably-named")
+@pytest.mark.parametrize(
+    ("schema", "answered", "expected_rule", "rejected_value_repr"),
+    [
+        pytest.param(
+            PublishedRevision(RevisionKind.SCHEMA, b"false"),
+            b'"private"',
+            "False schema does not allow",
+            "'private'",
+            id="false-schema rule ends with the rejected string",
+        ),
+        pytest.param(
+            PublishedRevision(RevisionKind.SCHEMA, b'{"type": "integer"}'),
+            b'"as is okay"',
+            "is not of type 'integer'",
+            "'as is okay'",
+            id="string repr contains a rule separator",
+        ),
+    ],
+)
+def test_a_schema_refusal_elides_its_exact_value_repr_from_the_stored_reason(
+    runtime: DbosRuntime,
+    schema: PublishedRevision,
+    answered: bytes,
+    expected_rule: str,
+    rejected_value_repr: str,
+) -> None:
+    """The durable diagnosis retains the rule, never JSON Schema's value repr."""
+    execution = armed_attempt(runtime, schema=schema)
+
+    outcome = DbosAgentAttemptStore(
+        runtime.engine, runtime.settings.application_version
+    ).complete_success(execution, AgentExecutionResult(answered))
+
+    assert isinstance(outcome, AgentAttemptFailed), outcome
+    with runtime.engine.connect() as connection:
+        stored = connection.scalar(
+            sa.select(node_receipts_v3.c.reason).where(
+                node_receipts_v3.c.node_execution_id
+                == execution.request.node_execution_id.value
+            )
+        )
+    reason, schema_revision, value_hash = read_stored_node_receipt_reason(str(stored))
+    assert reason.startswith("output-schema-refused: schema-violated: ")
+    assert expected_rule in reason
+    assert rejected_value_repr not in reason
+    assert schema_revision == schema.revision_hash
+    assert value_hash == Sha256Hash.of(answered)
 
 
 @pytest.mark.parametrize(

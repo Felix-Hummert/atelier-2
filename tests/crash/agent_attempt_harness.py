@@ -201,7 +201,6 @@ def request(lease: DbosRuntime) -> AgentExecutionRequestV2:
         lease.engine,
         lease.settings,
         lease.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(run_id, workflow.revision_hash, binding_set)
     )

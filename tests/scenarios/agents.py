@@ -398,7 +398,6 @@ def claude_subscription_start(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(
             RunId(run_name),

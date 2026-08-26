@@ -168,8 +168,8 @@ def _run_not_cancellable_reason(
     forever. Every other standing is a named reason, never a silent no.
 
     A pause is still the operator's move, so `WAITING_FOR_YOU` keeps naming the
-    reconciliation a person has to resolve: that one has an Action's live intent
-    behind it, and ending the run there would abandon it.
+    reconciliation a person has to resolve: that one has a live platform-effect
+    intent behind it, and ending the run there would abandon it.
     """
     if run.state in {RunState.COMPLETED, RunState.FAILED, RunState.CANCELLED}:
         return RunCancellationRefusal.ALREADY_ENDED

@@ -208,9 +208,10 @@ transaction -- an order the run carries binds into that package as a material
 member under its content hash -- and the terminal write ends the execution in
 the same transaction as the agent receipt. A refused answer ends its attempt
 `FAILED` under `OUTPUT_SCHEMA_REFUSED` with an `AGENT_FAILED` event, and the
-`failed` `node-receipt/v3` carries the schema owner's own words as its reason
-(`output-schema-refused: ...`) and, on that same family, the schema revision
-and the hash of the exact decoded bytes the judgment used; the run itself ends
+`failed` `node-receipt/v3` carries a compact, bounded schema-refusal diagnosis as its reason:
+it still names the violated place and rule, but never embeds the rejected
+bytes. On that same family, it keeps the schema revision and the hash of the
+exact decoded bytes the judgment used; the run itself ends
 `FAILED` under that same reason — the node's ending lifted one level, so the
 studio no longer lists it as Running. A success additionally keeps the exact
 produced bytes as `node-artifact/v3` beside its `succeeded` receipt, and that

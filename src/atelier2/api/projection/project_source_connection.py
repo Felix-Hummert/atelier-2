@@ -1,5 +1,7 @@
 """Project-source projection without the credential-directory reference."""
 
+from __future__ import annotations
+
 from atelier2.api.references import encode_public_project_reference
 from atelier2.api.wire.resources import ProjectSourceConnectionRevisionResource
 from atelier2.contracts.host_configuration import ProjectSourceConnectionRevision

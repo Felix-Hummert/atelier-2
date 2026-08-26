@@ -72,7 +72,7 @@ const difficultyThree = {
 
 beforeEach(() => {
   sessionStorage.clear();
-  window.history.replaceState(null, "", "/atelier/project");
+  window.history.replaceState(null, "", "/atelier/settings");
 });
 
 afterEach(() => {
@@ -358,7 +358,7 @@ describe("Settings owns project sources, models, and defaults", () => {
     expect(screen.queryByText("private")).toBeNull();
   });
 
-  it("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-read): retries the failed Settings snapshot as one read", async () => {
+  it("proves(settings-preserves-confirmed-truth-and-retries-only-its-failed-read): retries the failed Settings snapshot as one read", async () => {
     const listProjects = vi
       .fn()
       .mockRejectedValueOnce(new Error("private"))
@@ -372,7 +372,7 @@ describe("Settings owns project sources, models, and defaults", () => {
     expect(screen.queryByText("private")).toBeNull();
   });
 
-  it("proves(the-workshop-reads-every-page-or-says-it-could-not): reads model configurations through the final page", async () => {
+  it("proves(settings-reads-every-model-configuration-page-or-says-it-could-not): reads model configurations through the final page", async () => {
     const next = "f".repeat(64);
     const listAgentConfigurationRevisions = vi
       .fn()

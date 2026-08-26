@@ -428,7 +428,6 @@ def prepared_free_runner_attempt(
         runtime.engine,
         runtime.settings,
         runner_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(
             run_id,

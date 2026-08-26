@@ -143,7 +143,6 @@ def _v3_prepared(
         root_runtime.engine,
         root_runtime.settings,
         root_runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
     )

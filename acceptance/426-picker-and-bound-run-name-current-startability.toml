@@ -3,7 +3,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/426"
 
 [[sentence]]
 id = "a-listed-agent-configuration-names-current-startability"
-text = "The published agent-configuration list names each configuration's current startability without exposing host diagnostics; New Run keeps a known unavailable project-default or workflow-pin binding selected, marks it Unavailable, and lets the operator choose a healthy start override without rewriting project model defaults."
+text = "The published agent-configuration list names each configuration's current startability without exposing host diagnostics; the Catalog detail start sheet keeps a known unavailable project-default or workflow-pin binding selected, marks it Unavailable, and lets the operator choose a healthy start override without rewriting project model defaults."
 
 [[sentence]]
 id = "a-bound-unstarted-run-refuses-when-its-executor-is-unavailable"

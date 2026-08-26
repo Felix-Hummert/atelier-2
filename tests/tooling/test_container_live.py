@@ -8,10 +8,11 @@ import shutil
 import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
+
+from tests.tooling.container_test_support import wait_for_exit, wait_until_exists
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONTAINER_LIVE = PROJECT_ROOT / "scripts" / "container_live.sh"
@@ -498,13 +499,6 @@ def stopped_repository(tmp_path: Path) -> tuple[Path, bytes]:
     return repository, record
 
 
-def wait_until_exists(path: Path) -> None:
-    deadline = time.monotonic() + 5
-    while not path.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert path.exists(), f"stub did not reach {path.name}"
-
-
 def docker_mutations(invocations: list[list[str]]) -> list[list[str]]:
     return [
         arguments
@@ -870,14 +864,23 @@ def test_lifecycle_signal_cleans_only_the_exact_owned_runtime(
         start_new_session=True,
     )
     ready = tmp_path / f"{phase}-ready"
-    wait_until_exists(ready)
+    wait_until_exists(ready, process, f"stub did not reach {ready.name}")
     os.killpg(process.pid, interruption)
     if repeated:
-        wait_until_exists(tmp_path / "start-cleanup-ready")
+        wait_until_exists(
+            tmp_path / "start-cleanup-ready",
+            process,
+            "stub did not reach start-cleanup-ready",
+        )
         os.killpg(process.pid, signal.SIGTERM)
         (tmp_path / "start-cleanup-release").touch()
 
-    assert process.wait(timeout=5) == status
+    assert (
+        wait_for_exit(
+            process, tmp_path, "lifecycle process did not exit after the signal"
+        )
+        == status
+    )
     mutations = docker_mutations(docker_invocations(tmp_path))
     if command == "start":
         assert mutations == RECORDED_START_STOP

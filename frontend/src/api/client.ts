@@ -586,6 +586,20 @@ export const agentConfigurationRevisionPageSchema = z
   })
   .strict();
 
+/** An item a connected tracker has observed for the served project. */
+export const observedQueueItemSchema = z
+  .object({
+    project_id: z.string().min(1),
+    tracker_item_reference: z.string().min(1),
+    item_id: sha256,
+    revision: nonnegativeSafeInteger
+  })
+  .strict();
+
+export const observedQueueItemPageSchema = z
+  .object({ items: z.array(observedQueueItemSchema), next_after: sha256.nullable() })
+  .strict();
+
 /**
  * One published agent definition as its author named it, and no more.
  *
@@ -1511,10 +1525,6 @@ export const problemDefinitions = {
     status: 422,
     title: "Binding constraint refused",
   },
-  "agent-platform-effect-unreconcilable": {
-    status: 409,
-    title: "Agent platform effect cannot be reconciled here",
-  },
   "invalid-agent-attempt-id": {
     status: 400,
     title: "Invalid agent attempt id",
@@ -1925,10 +1935,6 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant(
     "binding-constraint-refused",
     problemDefinitions["binding-constraint-refused"],
-  ),
-  problemVariant(
-    "agent-platform-effect-unreconcilable",
-    problemDefinitions["agent-platform-effect-unreconcilable"],
   ),
   problemVariant(
     "invalid-agent-attempt-id",
@@ -2516,6 +2522,8 @@ export type AgentDefinitionRevisionPage = z.infer<
 export type AgentConfigurationRevisionPage = z.infer<
   typeof agentConfigurationRevisionPageSchema
 >;
+export type ObservedQueueItem = z.infer<typeof observedQueueItemSchema>;
+export type ObservedQueueItemPage = z.infer<typeof observedQueueItemPageSchema>;
 
 export interface HttpResult<T> {
   status: number;
@@ -2565,6 +2573,7 @@ export interface CockpitApi {
   publishAgentDefinition(
     document: string,
   ): Promise<HttpResult<AgentDefinitionRevision>>;
+  listObservedQueueItems(after?: string): Promise<ObservedQueueItemPage>;
   getRevisionByName(name: string): Promise<CatalogNameResolution>;
   foundCatalogLineage(
     input: CatalogAdmissionInput,
@@ -2853,6 +2862,16 @@ export function createCockpitApi(
         {},
         [200],
         authProfileRevisionPageSchema,
+      ),
+    listObservedQueueItems: (after?: string) =>
+      requestJson(
+        fetcher,
+        after === undefined
+          ? "/atelier/api/v1/observed-queue-items?limit=50"
+          : `/atelier/api/v1/observed-queue-items?limit=50&after=${encodeURIComponent(after)}`,
+        {},
+        [200],
+        observedQueueItemPageSchema
       ),
     listAgentDefinitionRevisions: (after?: string) =>
       requestJson(

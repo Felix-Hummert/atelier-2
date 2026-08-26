@@ -116,7 +116,6 @@ from atelier2.application.refusals import (
 )
 from atelier2.application.start_published_run import (
     AgentConfigurationRevisionMissing,
-    AgentPlatformEffectUnreconcilable,
     AuthoredAgentBinding,
     AuthoredOrder,
     BindingConstraintRefused,
@@ -297,17 +296,6 @@ async def start_run_route(
                 detail=(
                     f"node {node!r} declares distinct_from {distinct_from!r} "
                     "and both resolved to the same binding"
-                ),
-            )
-        case AgentPlatformEffectUnreconcilable(node):
-            raise ApiProblem(
-                "agent-platform-effect-unreconcilable",
-                detail=(
-                    f"agent node {node!r} carries an open-pr grant, but this "
-                    "deployment's effect adapter cannot prove absence, so the "
-                    "grant has no reconciliation path (WAITING_RECONCILIATION is "
-                    "Action-only). Compose an absence-proving "
-                    "effect adapter or move the open-pr to an Action node."
                 ),
             )
         case AgentConfigurationRevisionMissing():

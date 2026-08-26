@@ -66,11 +66,9 @@ class EffectAdapterFactory(Protocol):
     def proves_absence(self) -> bool:
         """Whether a not-found readback from this adapter is an authoritative absence.
 
-        Admission refuses an agent-authored `open-pr` grant against a destination
-        that cannot prove absence, because its redemption has no safe reconciliation
-        path (`#430`/`#431`). Making this a protocol member forces every composition
-        to carry the answer to the run starter, so no start path can silently assume
-        it.
+        A false answer means the effect lifecycle records UNKNOWN and waits for
+        operator reconciliation before execution. Adapters retain this capability
+        because the effect contract, rather than run admission, owns that distinction.
         """
         ...
 

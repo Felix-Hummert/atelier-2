@@ -584,7 +584,6 @@ def test_start_refuses_unattested_capability_before_enqueue_or_provider_process(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(
             RunId("capability/refused"), workflow.revision_hash, bindings
@@ -638,7 +637,6 @@ def test_v2_start_against_an_empty_registry_creates_no_durable_run_or_attempt(
             runtime.engine,
             runtime.settings,
             runtime.agent_executor_registry,
-            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(
                 RunId("empty-registry/refused"), workflow.revision_hash, bindings
@@ -680,7 +678,6 @@ def test_nonterminal_v2_restart_with_an_empty_registry_refuses_before_cgroup_acc
         seeded.engine,
         seeded.settings,
         seeded.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(
             RunId("empty-registry/restart"), workflow.revision_hash, bindings
@@ -733,7 +730,6 @@ nodes:
             seeded.engine,
             seeded.settings,
             seeded.agent_executor_registry,
-            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
         )
@@ -800,7 +796,6 @@ def test_restart_refuses_unattested_nonterminal_capability_before_factory_open(
         seeded.engine,
         seeded.settings,
         seeded.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(
             RunId("capability/restart"), workflow.revision_hash, bindings
@@ -1013,7 +1008,6 @@ def test_bound_unstarted_v2_run_fails_without_an_attempt_when_executor_is_unavai
             seeded.engine,
             seeded.settings,
             seeded.agent_executor_registry,
-            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
         )
@@ -1120,7 +1114,6 @@ nodes:
                 seeded.engine,
                 seeded.settings,
                 seeded.agent_executor_registry,
-                effect_adapter_proves_absence=True,
             ).start_published(
                 StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
             ),
@@ -1186,7 +1179,6 @@ def test_prepared_v2_attempt_is_cleaned_before_unavailable_executor_refusal(
             seeded.engine,
             seeded.settings,
             seeded.agent_executor_registry,
-            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
         )
@@ -1295,7 +1287,6 @@ def test_prepared_v2_attempt_is_cleaned_through_durable_node_when_executor_is_un
             seeded.engine,
             seeded.settings,
             seeded.agent_executor_registry,
-            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
         )
@@ -1512,7 +1503,6 @@ def test_completed_v2_history_reopens_without_process_supervision(
             first.engine,
             first.settings,
             first.agent_executor_registry,
-            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
         )
@@ -1561,7 +1551,6 @@ def test_two_provider_configs_survive_restart_and_drive_their_exact_executors(
         first.engine,
         first.settings,
         first.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
     )
@@ -1658,7 +1647,6 @@ nodes:
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
     )
@@ -2202,7 +2190,6 @@ def test_v2_output_bound_is_checked_before_atomic_receipt_event_and_run_cas(
             runtime.engine,
             runtime.settings,
             runtime.agent_executor_registry,
-            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
         )

@@ -51,7 +51,7 @@ describe("cockpit navigation", () => {
   });
 
   it("returns to the previously shown page when the operator presses Back", async () => {
-    openAt("/atelier/project");
+    openAt("/atelier/settings");
     await screen.findByRole("heading", { name: THE_ONE_PROJECT });
 
     await fireEvent.click(screen.getByRole("link", { name: "Catalog" }));
@@ -60,7 +60,7 @@ describe("cockpit navigation", () => {
 
     window.history.back();
 
-    await waitFor(() => expect(window.location.pathname).toBe("/atelier/project"));
+    await waitFor(() => expect(window.location.pathname).toBe("/atelier/settings"));
     expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
     expect(screen.queryByRole("heading", { name: "Catalog" })).toBeNull();
   });
@@ -71,7 +71,7 @@ describe("cockpit navigation", () => {
 
     const settings = within(rail()).getByRole("link", { name: new RegExp("Settings") });
     expect(within(settings).getByText(THE_ONE_PROJECT).isConnected).toBe(true);
-    expect(settings.getAttribute("href")).toBe("/atelier/project");
+    expect(settings.getAttribute("href")).toBe("/atelier/settings");
   });
 
   it("walks the three rooms and Settings, none of them a dead click", async () => {
@@ -101,7 +101,7 @@ describe("cockpit navigation", () => {
 
     await fireEvent.click(within(rail()).getByRole("link", { name: new RegExp("Settings") }));
     expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
-    expect(window.location.pathname).toBe("/atelier/project");
+    expect(window.location.pathname).toBe("/atelier/settings");
 
     await fireEvent.click(within(rail()).getByRole("link", { name: "Workbench" }));
     expect((await screen.findByRole("heading", { name: "Workbench" })).isConnected).toBe(true);
@@ -109,8 +109,8 @@ describe("cockpit navigation", () => {
   });
 
   it("marks the rail entry a page belongs to, so the operator is never lost", async () => {
-    openAt("/atelier/new");
-    await screen.findByRole("heading", { name: "Choose a workflow" });
+    openAt("/atelier/catalog");
+    await screen.findByRole("heading", { name: "Catalog" });
 
     // Starting a run belongs to the Catalog: it is the one room a workflow is
     // found and started from (ADR 0019 §1).

@@ -86,10 +86,9 @@ export function startMutationV2(
   };
 }
 
-export interface StartOrder {
-  name: string;
-  value: string;
-}
+export type StartOrder =
+  | { name: string; value: string }
+  | { name: string; work_item: string };
 
 export function startMutationV3(
   runId: string,
@@ -676,18 +675,20 @@ function requireStartOrders(value: unknown): StartOrder[] {
   const orders: StartOrder[] = [];
   for (const entry of value) {
     if (!isRecord(entry)) throw new Error("invalid start mutation order");
-    requireExactKeys(entry, ["name", "value"]);
+    const isWorkItem = "work_item" in entry;
+    requireExactKeys(entry, isWorkItem ? ["name", "work_item"] : ["name", "value"]);
     if (
       typeof entry.name !== "string" ||
       entry.name.length === 0 ||
       names.has(entry.name) ||
-      typeof entry.value !== "string" ||
-      entry.value.length === 0
+      (isWorkItem
+        ? typeof entry.work_item !== "string" || entry.work_item.length === 0
+        : typeof entry.value !== "string" || entry.value.length === 0)
     ) {
       throw new Error("invalid start mutation order");
     }
     names.add(entry.name);
-    orders.push({ name: entry.name, value: entry.value });
+    orders.push(isWorkItem ? { name: entry.name, work_item: entry.work_item as string } : { name: entry.name, value: entry.value as string });
   }
   return orders;
 }

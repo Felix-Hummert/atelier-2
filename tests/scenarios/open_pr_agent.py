@@ -89,8 +89,8 @@ def open_pr_agent_executor_factory(output: bytes) -> RecordingAgentExecutorFacto
     )
 
 
-def _grant_document(tools_line: str) -> bytes:
-    return (
+def _grant_document(tools_line: str, loop_maximum_rounds: int | None = None) -> bytes:
+    document = (
         b"""format_version: 3
 name: One agent that opens its own pull request
 nodes:
@@ -103,6 +103,16 @@ nodes:
         + tools_line.encode("ascii")
         + declared_output()
     )
+    if loop_maximum_rounds is None:
+        return document
+    return (
+        document
+        + f"""loops:
+  - id: implement-again
+    body: [implement]
+    maximum_rounds: {loop_maximum_rounds}
+""".encode()
+    )
 
 
 def _granted_tools_line() -> str:
@@ -111,7 +121,7 @@ def _granted_tools_line() -> str:
 
 
 def publish_open_pr_agent_run(
-    runtime: DbosRuntime, *, granted: bool
+    runtime: DbosRuntime, *, granted: bool, loop_maximum_rounds: int | None = None
 ) -> tuple[WorkflowRevision, AgentBindingSet]:
     """Publish the schema, grant, auth, configuration, and workflow for one run.
 
@@ -148,7 +158,7 @@ def publish_open_pr_agent_run(
         runtime.engine, ProviderId(PROVIDER), (configuration,)
     )
     workflow = WorkflowRevision(
-        _grant_document(_granted_tools_line() if granted else "")
+        _grant_document(_granted_tools_line() if granted else "", loop_maximum_rounds)
     )
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     return workflow, AgentBindingSet(
@@ -167,7 +177,6 @@ def create_open_pr_agent_run(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(run, workflow.revision_hash, bindings))
     assert isinstance(started, DurableRunCreated), started
 

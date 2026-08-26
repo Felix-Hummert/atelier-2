@@ -365,7 +365,6 @@ def durable_ports(
             engine,
             settings,
             agent_executor_registry,
-            effect_adapter_proves_absence=True,
         ),
         "wait_answerer": DbosWaitAnswerer(engine, settings.application_version),
         "reconcile_commander": DbosEffectReconcileCommander(engine, settings),

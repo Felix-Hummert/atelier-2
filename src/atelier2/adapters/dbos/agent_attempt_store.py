@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator, Mapping
+from decimal import Decimal
 from typing import Any, assert_never
 
 import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
 
+from atelier2.adapters.dbos.agent_effect_grants import (
+    agent_node_redeems_platform_effect,
+)
 from atelier2.adapters.dbos.artifact_store import keep_artifact
+from atelier2.adapters.dbos.effect_store import (
+    intent_snapshot_from_record,
+    receipt_from_record,
+)
 from atelier2.adapters.dbos.instants import record_attempt_ended, record_attempt_started
 from atelier2.adapters.dbos.names import (
     CANCELLATION_WORKFLOW_NAME,
@@ -24,8 +33,8 @@ from atelier2.adapters.dbos.run_store import (
     _tool_redemption_values,
     load_kept_value,
     load_node_outputs,
+    load_published_schema_document,
     load_run_inputs,
-    why_a_value_its_declared_schema_refuses,
 )
 from atelier2.adapters.dbos.run_transitions import (
     RunTransitionConflict,
@@ -39,6 +48,8 @@ from atelier2.adapters.dbos.run_transitions import (
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
     agent_receipts_v2,
+    effect_intents,
+    effect_receipts,
     run_events,
     runs,
     tool_redemptions,
@@ -90,6 +101,7 @@ from atelier2.contracts.agent_refusals import (
 )
 from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_FIELD_CHARACTERS,
     AgentExecutionRequestHash,
     AgentExecutionRequestV2,
     AgentExecutionResult,
@@ -98,6 +110,7 @@ from atelier2.contracts.agents import (
     AgentReceiptV2,
 )
 from atelier2.contracts.artifacts import Artifact, ArtifactHash
+from atelier2.contracts.effects import EffectIntentState
 from atelier2.contracts.executions import (
     AgentAttemptExecution,
     AgentExecutionRefusal,
@@ -107,6 +120,7 @@ from atelier2.contracts.executions import (
     RunEventCancellationBinding,
     RunEventKind,
     WaitAnswerState,
+    logical_effect_key_for_node,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
@@ -130,6 +144,12 @@ from atelier2.contracts.runs import (
     RunState,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.schemas_v3 import (
+    InstanceRefused,
+    SchemaRefused,
+    read_instance_document,
+    read_schema_document,
+)
 from atelier2.contracts.tool_grants_v3 import ToolRedemptionReceipt
 from atelier2.contracts.verdicts import Verdict, read_verdict
 from atelier2.contracts.workflows import (
@@ -142,6 +162,7 @@ from atelier2.contracts.workflows import (
 )
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
+    NodeOutput,
     WorkflowGraphV3,
     verdict_condition_of,
 )
@@ -367,6 +388,16 @@ def _load_attempt(session: Any, attempt_id: AgentAttemptId) -> AgentAttempt:
     return attempt_from_record(record)
 
 
+def _agent_node_for_attempt(
+    graph: WorkflowGraphV2 | WorkflowGraphV3, node_id: str
+) -> AgentNodeV2 | AgentNodeV3:
+    """Return the declared Agent node an attempt is allowed to name."""
+    node = graph.node(node_id)
+    if not isinstance(node, (AgentNodeV2, AgentNodeV3)):
+        raise RunTransitionConflict("agent attempt request differs from durable graph")
+    return node
+
+
 def _validate_request(
     session: Any, request: AgentExecutionRequestV2
 ) -> tuple[RunV2 | RunV3, WorkflowGraphV2 | WorkflowGraphV3]:
@@ -389,9 +420,7 @@ def _validate_request(
         raise RunTransitionConflict("agent attempt requires a bound run")
     if run.revision_hash != request.workflow_revision_hash:
         raise RunTransitionConflict("agent attempt request names another revision")
-    node = graph.node(request.node_id)
-    if not isinstance(node, (AgentNodeV2, AgentNodeV3)):
-        raise RunTransitionConflict("agent attempt request differs from durable graph")
+    node = _agent_node_for_attempt(graph, request.node_id)
     # Recomputed from durable truth rather than trusted: what the node's author
     # wrote, plus the orders this run was started with, through the one owner
     # that decides what an agent is handed. A second spelling here would let a
@@ -451,10 +480,21 @@ def _require_attempt_binding(
 
 
 def _require_completed_attempt_head(
+    connection: Any,
     run: RunV2 | RunV3,
     request: AgentExecutionRequestV2,
     completion: NodeCompletion,
+    completion_is_deferred: bool,
 ) -> None:
+    if completion_is_deferred:
+        if (
+            run.state is not RunState.STARTED
+            or run.current_node_id != request.node_id
+            or run.current_round_ordinal != request.round_ordinal
+        ):
+            _require_confirmed_effect_receipt_for_completed_attempt(connection, request)
+        else:
+            return
     match completion:
         case RunContinues(node_id, round_ordinal):
             if (
@@ -475,6 +515,81 @@ def _require_completed_attempt_head(
                 )
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _require_confirmed_effect_receipt_for_completed_attempt(
+    connection: Any, request: AgentExecutionRequestV2
+) -> None:
+    """Prove that this exact effect grant settled before accepting its replay.
+
+    An attempt whose effect continuation already moved the run is safe to replay
+    only when the intent for this execution reached CONFIRMED and its receipt is
+    present. The intent also has to carry this attempt's durable output, otherwise
+    an unrelated confirmed effect could make a torn head look like a continuation.
+    """
+    logical_key = logical_effect_key_for_node(
+        request.run_id,
+        request.workflow_revision_hash,
+        request.node_id,
+        request.round_ordinal,
+    )
+    intent_record = (
+        connection.execute(
+            sa.select(effect_intents).where(
+                effect_intents.c.logical_key == logical_key.value
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    receipt_record = (
+        connection.execute(
+            sa.select(effect_receipts).where(
+                effect_receipts.c.logical_key == logical_key.value
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    output = connection.execute(
+        sa.select(
+            agent_receipts_v2.c.output_bytes, agent_receipts_v2.c.output_hash
+        ).where(
+            agent_receipts_v2.c.node_execution_id == request.node_execution_id.value
+        )
+    ).one_or_none()
+    if intent_record is None or receipt_record is None or output is None:
+        raise RunTransitionConflict(
+            "successful effect-grant attempt has no exact confirmed effect receipt"
+        )
+    intent_snapshot = intent_snapshot_from_record(intent_record)
+    receipt = receipt_from_record(receipt_record)
+    if (
+        intent_snapshot.state is not EffectIntentState.CONFIRMED
+        or receipt.intent != intent_snapshot.intent
+        or bytes(intent_snapshot.intent.request.payload) != bytes(output.output_bytes)
+        or str(intent_snapshot.intent.request.request_hash.value)
+        != str(output.output_hash)
+    ):
+        raise RunTransitionConflict(
+            "successful effect-grant attempt has no exact confirmed effect receipt"
+        )
+
+
+def _agent_platform_effect_completion_is_deferred(
+    connection: Any, node: AgentNodeV2 | AgentNodeV3
+) -> bool:
+    """Whether this node's kept output must wait for platform-effect settlement.
+
+    An effect grant redeems only after the agent output has become durable, but
+    the run may not leave the node until that redemption has a receipt. The
+    grant document is the same pinned revision the node binding already read;
+    a missing or invalid document is therefore durable corruption, not an
+    absence that could make a completed run honest.
+    """
+    return isinstance(node, AgentNodeV3) and agent_node_redeems_platform_effect(
+        connection, node
+    )
 
 
 def _kept_transcript_values(
@@ -516,11 +631,12 @@ def _fail_current_attempt(
     reason lifted one level, not a second vocabulary. Nothing remains that can
     continue this line: a replacement is a later, conscious reopen, not a
     STARTED row that still reads as "Running". `receipt_reason` is the words of
-    whoever judged this ending -- the schema owner where an answer was refused,
-    the supervision where a process died -- and every way through here carries
-    one, because a failure whose reason is nowhere is the silent death this
-    seam exists to end. A schema judgment also keeps the identity it judged; a
-    process that died judged nothing, so those fields stay honestly empty.
+    whoever judged this ending -- a compact schema-refusal diagnosis where an
+    answer was refused, the supervision where a process died -- and every way
+    through here carries one, because a failure whose reason is nowhere is the
+    silent death this seam exists to end. A schema judgment also keeps the
+    identity it judged; a process that died judged nothing, so those fields stay
+    honestly empty.
 
     `judged_value` is the exact bytes that judgment read, and it arrives as
     bytes rather than as a hash because the seam that records the verdict is the
@@ -612,6 +728,71 @@ def _fail_current_attempt(
         target_round_ordinal=request.round_ordinal,
     )
     return AgentAttemptFailed(durable_failure)
+
+
+def _declared_output_schema_refusal(
+    session: Any, node_id: str, declared: NodeOutput, payload: bytes
+) -> InstanceRefused | None:
+    """Read one declared output against its pinned schema without losing its shape."""
+    document = load_published_schema_document(
+        session, declared.schema_reference.revision
+    )
+    if document is None:
+        raise RunTransitionConflict(
+            f"the schema node {node_id!r} pinned for output "
+            f"{declared.name!r} is absent from the store"
+        )
+    schema = read_schema_document(document)
+    if isinstance(schema, SchemaRefused):
+        raise RunTransitionConflict(
+            f"the schema node {node_id!r} pinned for output "
+            f"{declared.name!r} is not one: {schema}"
+        )
+    verdict = read_instance_document(payload, schema)
+    return verdict if isinstance(verdict, InstanceRefused) else None
+
+
+def _value_at_schema_violation(payload: bytes, pointer: str | None) -> object:
+    """Read the one JSON value whose repr JSON Schema put in its diagnostic."""
+    value: object = json.loads(payload.decode("utf-8"), parse_float=Decimal)
+    if pointer is None:
+        return value
+    for escaped_part in pointer.removeprefix("/").split("/"):
+        part = escaped_part.replace("~1", "/").replace("~0", "~")
+        if isinstance(value, list):
+            value = value[int(part)]
+        elif isinstance(value, dict):
+            value = value[part]
+        else:
+            raise TypeError(
+                f"schema violation pointer {pointer!r} does not address its value"
+            )
+    return value
+
+
+def _schema_rule_without_rejected_value(reason: str, rejected_value: object) -> str:
+    """Remove exactly JSON Schema's repr of the rejected value from its rule."""
+    rendered_value = repr(rejected_value)
+    return reason.replace(rendered_value, "", 1).strip()
+
+
+def _compact_schema_refusal(refusal: InstanceRefused, payload: bytes) -> str:
+    """Name the schema's place and rule without embedding rejected output."""
+    violation = refusal.violation
+    if violation is None:
+        words = str(refusal)
+    else:
+        place = "the value itself" if violation.pointer is None else violation.pointer
+        words = (
+            f"{refusal.refusal.value}: {place}: "
+            f"{_schema_rule_without_rejected_value(violation.reason, _value_at_schema_violation(payload, violation.pointer))}"
+        )
+    maximum_words = (
+        MAXIMUM_AGENT_FIELD_CHARACTERS
+        - len(NodeReceiptReason.OUTPUT_SCHEMA_REFUSED.value)
+        - len(": ")
+    )
+    return words[:maximum_words]
 
 
 def _kept_verdict(
@@ -1359,7 +1540,15 @@ class DbosAgentAttemptStore:
                     request.round_ordinal,
                     _kept_verdict(connection, graph, request),
                 )
-                _require_completed_attempt_head(run, request, completion)
+                _require_completed_attempt_head(
+                    connection,
+                    run,
+                    request,
+                    completion,
+                    _agent_platform_effect_completion_is_deferred(
+                        connection, _agent_node_for_attempt(graph, request.node_id)
+                    ),
+                )
                 return AgentAttemptSucceeded(durable, completion)
             raise AssertionError("closed agent attempt state was not exhaustive")
 
@@ -1664,7 +1853,7 @@ class DbosAgentAttemptStore:
         runner_evidence_hash: RunnerTerminalEvidenceHash | None = None,
     ) -> AgentAttemptSucceeded | AgentAttemptFailed:
         request = execution.request
-        node = graph.node(request.node_id)
+        node = _agent_node_for_attempt(graph, request.node_id)
         if isinstance(node, AgentNodeV3):
             declared = node.outputs[0]
             if declared.refusal is not None:
@@ -1683,7 +1872,7 @@ class DbosAgentAttemptStore:
                         _proof_of_a_passed_check(redemption),
                     )
                     return failed
-            refusal = why_a_value_its_declared_schema_refuses(
+            refusal = _declared_output_schema_refusal(
                 connection, node.id, declared, result.output_bytes
             )
             if refusal is not None:
@@ -1693,7 +1882,8 @@ class DbosAgentAttemptStore:
                     durable,
                     AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED,
                     node_receipt_reason(
-                        NodeReceiptReason.OUTPUT_SCHEMA_REFUSED, refusal
+                        NodeReceiptReason.OUTPUT_SCHEMA_REFUSED,
+                        _compact_schema_refusal(refusal, result.output_bytes),
                     ),
                     PublishedRevisionHash(declared.schema_reference.revision),
                     result.output_bytes,
@@ -1794,19 +1984,25 @@ class DbosAgentAttemptStore:
             if verdict_condition_of(graph, request.node_id) is None
             else read_verdict(result.output_bytes),
         )
-        match completion:
-            case RunContinues(node_id, target_round):
-                target_state = RunState.STARTED
-                target_node_id = node_id
-                target_round_ordinal = target_round
-                terminal = False
-            case RunCompletes():
-                target_state = RunState.COMPLETED
-                target_node_id = request.node_id
-                target_round_ordinal = request.round_ordinal
-                terminal = True
-            case _ as unreachable:
-                assert_never(unreachable)
+        if _agent_platform_effect_completion_is_deferred(connection, node):
+            target_state = RunState.STARTED
+            target_node_id = request.node_id
+            target_round_ordinal = request.round_ordinal
+            terminal = False
+        else:
+            match completion:
+                case RunContinues(node_id, target_round):
+                    target_state = RunState.STARTED
+                    target_node_id = node_id
+                    target_round_ordinal = target_round
+                    terminal = False
+                case RunCompletes():
+                    target_state = RunState.COMPLETED
+                    target_node_id = request.node_id
+                    target_round_ordinal = request.round_ordinal
+                    terminal = True
+                case _ as unreachable:
+                    assert_never(unreachable)
         _commit_event(
             connection,
             request.run_id,
@@ -2047,9 +2243,10 @@ class DbosAgentAttemptStore:
         `AGENT_COMPLETED` event and no advanced run -- a success nobody may take
         back must not be written for an answer this product cannot honour. What
         the refusal leaves instead is its durable name: a `failed`
-        `node-receipt/v3` carrying the schema owner's words, and the attempt on
-        the same failure seam `PROCESS_EXITED_UNSUCCESSFULLY` runs on today, so
-        the driver ends named instead of dying on an exception nobody stored.
+        `node-receipt/v3` carrying a compact schema-refusal diagnosis, and the
+        attempt on the same failure seam `PROCESS_EXITED_UNSUCCESSFULLY` runs
+        on today, so the driver ends named instead of dying on an exception
+        nobody stored.
         A granted verification that exits nonzero is the same named seam under
         `PROJECT_VERIFICATION_FAILED`, with how the command ended in the reason
         and without a `tool_redemptions` row.

@@ -10,7 +10,7 @@ from fastapi.sse import ServerSentEvent
 
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits
 from atelier2.api.problems import PROJECTION_LIMIT_DETAIL, problem_resource
-from atelier2.api.projection.events import run_event_resource
+from atelier2.api.projection.events import bounded_event_summary, run_event_resource
 from atelier2.api.projection.runs import node_rail_resources
 from atelier2.api.wire.resources import StreamFailureResource
 from atelier2.application.project_node_rail import (
@@ -234,6 +234,7 @@ async def stream_server_events(
                 assert_never(unreachable)
         try:
             for persisted in page.events:
+                persisted = bounded_event_summary(persisted)
                 limits.require_event_projection(persisted)
         except ApiLimitExceeded:
             yield _stream_failure("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
@@ -244,6 +245,7 @@ async def stream_server_events(
         if page.events:
             next_poll_delay = poll_backoff.initial_delay_seconds
         for persisted in page.events:
+            persisted = bounded_event_summary(persisted)
             streamed.append(persisted)
             try:
                 resource = run_event_resource(
@@ -344,7 +346,7 @@ async def stream_attention_events(
                 assert_never(unreachable)
         try:
             for item in page.events:
-                limits.require_event_projection(item.event)
+                limits.require_event_projection(bounded_event_summary(item.event))
         except ApiLimitExceeded:
             yield _stream_failure("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
             return
@@ -354,7 +356,7 @@ async def stream_attention_events(
         if page.events:
             next_poll_delay = poll_backoff.initial_delay_seconds
         for item in page.events:
-            persisted = item.event
+            persisted = bounded_event_summary(item.event)
             try:
                 run_result = await runner.run(
                     lambda current_run_id=persisted.event.run_id: get_run(

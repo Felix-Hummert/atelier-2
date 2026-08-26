@@ -10,6 +10,7 @@ import {
   decodeWorkflowRevisionDetail,
   executableGraph,
   isRunV3,
+  projectSourceConnectionRevisionSchema,
   problemDefinitions,
   type Problem
 } from "../../src/api/client";
@@ -1051,6 +1052,30 @@ describe("the published agent-configuration listing", () => {
   });
 });
 
+describe("the observed queue a start-sheet work-item picker reads", () => {
+  it("asks the served observed queue page and decodes its cursor", async () => {
+    const item = {
+      project_id: "atelier",
+      tracker_item_reference: "gh:450",
+      item_id: digest,
+      revision: 0
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ items: [item], next_after: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const page = await createCockpitApi(fetcher).listObservedQueueItems();
+
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      "/atelier/api/v1/observed-queue-items?limit=50"
+    );
+    expect(page.items).toEqual([item]);
+  });
+});
+
 describe("the published agent definitions the catalog reads", () => {
   const digest = "a".repeat(64);
 
@@ -1280,6 +1305,58 @@ describe("the project listing the picker will consume", () => {
     );
     await expect(createCockpitApi(fetcher).listProjects()).rejects.toThrow(
       "durable wire contract"
+    );
+  });
+});
+
+describe("the project source connection Settings will read", () => {
+  const projectReference = "project1.dGVhbS9yZWQ";
+  const connection = {
+    public_project_reference: projectReference,
+    revision_number: 3,
+    source_kind: "github",
+    source_address: "FlexOr2/atelier-2",
+    auth_method: "personal-access-token" as const,
+    project_source_connection_revision_hash: "a".repeat(64)
+  };
+
+  it("asks the source-connection door and decodes only its declared resource", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(connection), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const read = await createCockpitApi(fetcher).getProjectSourceConnection(projectReference);
+
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      `/atelier/api/v1/projects/${projectReference}/source-connection`
+    );
+    expect(read).toEqual(projectSourceConnectionRevisionSchema.parse(connection));
+  });
+
+  it("refuses extra fields and a response for another project", async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ...connection, credential_directory: "/operator/credentials" }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ ...connection, public_project_reference: "project1.b3RoZXI" }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+      );
+    const client = createCockpitApi(fetcher);
+
+    await expect(client.getProjectSourceConnection(projectReference)).rejects.toThrow(
+      "durable wire contract"
+    );
+    await expect(client.getProjectSourceConnection(projectReference)).rejects.toThrow(
+      /another project/
     );
   });
 });

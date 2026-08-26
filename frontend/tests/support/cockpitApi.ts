@@ -31,6 +31,7 @@ export function cockpitApiStub(overrides: Partial<CockpitApi> = {}): CockpitApi 
       items: [],
       next_after_revision_hash: null
     })),
+    listObservedQueueItems: vi.fn(async () => ({ items: [], next_after: null })),
     listAgentDefinitionRevisions: vi.fn(async () => ({
       items: [],
       next_after_revision_hash: null

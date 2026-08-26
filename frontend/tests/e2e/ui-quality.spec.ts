@@ -3,10 +3,8 @@ import { expect, test, type Page, type Route } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { runPageSchema } from "../../src/api/client";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
-import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
-import { humanMove, standingMarks, standingWords } from "../../src/lib/runState";
+import { humanMove, standingWords } from "../../src/lib/runState";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import {
   describeWorkbenchControlFacts,
@@ -134,21 +132,12 @@ const surfaces: readonly {
     },
     {
       surface: "settings",
-      path: "/atelier/project",
+      path: "/atelier/settings",
       ready: async (page) => {
         await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
       },
       pseudoReady: async (page) => {
-        await expect(
-          page.getByText(wrapped(settingsPageCopy.modelsTitle), { exact: true })
-        ).toBeVisible();
-      }
-    },
-    {
-      surface: "new-run",
-      path: "/atelier/new",
-      ready: async (page) => {
-        await expect(page.getByRole("heading", { name: "Choose a workflow" })).toBeVisible();
+        await expect(page.getByText("[[[ Sources ]]]", { exact: true })).toBeVisible();
       }
     },
     {
@@ -161,7 +150,7 @@ const surfaces: readonly {
     },
     {
       surface: "workflow-detail",
-      path: `/atelier/workflows/${encodeURIComponent(seededWorkflowName)}`,
+      path: `/atelier/catalog/${encodeURIComponent(seededWorkflowName)}`,
       prepare: stageNamedWorkflow,
       ready: async (page) => {
         await expect(
@@ -311,13 +300,6 @@ async function expectWorkbenchControlsAnswerNamedQuestions(
   );
 }
 
-const projectViewports = [
-  { width: 1280, height: 900 },
-  { width: 390, height: 844 }
-] as const;
-
-type ProjectRunReply = "common" | "empty" | "loading" | "retained-error";
-
 /** One run in each standing a surface groups by. */
 function runsOfEveryStanding() {
   return [
@@ -325,38 +307,6 @@ function runsOfEveryStanding() {
     waitingInputRun({ run_id: "waiting project", public_run_reference: "run1.d2FpdGluZyBwcm9qZWN0", latest_event_cursor: null }),
     completedRun({ run_id: "done project", public_run_reference: "run1.ZG9uZSBwcm9qZWN0" })
   ];
-}
-
-async function routeProjectReads(page: Page, read: () => ProjectRunReply, loading: { release: () => void; retainedReads: number }): Promise<void> {
-  await page.route("**/atelier/api/v1/runs*", async (route: Route) => {
-    const reply = read();
-    if (reply === "loading") {
-      await new Promise<void>((resolve) => { loading.release = resolve; });
-      await route.fulfill({ json: { items: runsOfEveryStanding(), next_after: null } });
-      return;
-    }
-    if (reply === "retained-error" && loading.retainedReads++ > 0) {
-      // A real HTTP answer the server gave, not a round trip that never
-      // happened -- the page-local "unavailable" this test wants, never
-      // #700's own central, cross-page reachability signal (which
-      // `route.abort` would trip, since that models an outage, not one
-      // read's own failure).
-      await route.fulfill({
-        status: 503,
-        json: {
-          type: "urn:atelier2:problem:v1:temporarily-unavailable",
-          title: "Temporarily unavailable",
-          status: 503,
-          detail: "the durable run store is unreachable"
-        }
-      });
-      return;
-    }
-    await route.fulfill({ json: { items: reply === "empty" ? [] : runsOfEveryStanding(), next_after: null } });
-  });
-  await page.route("**/atelier/api/v1/projects", (route) => route.fulfill({ json: { items: [{ public_project_reference: "project1.dGVzdA" }] } }));
-  await page.route("**/atelier/api/v1/workflow-revisions*", (route) => route.fulfill({ json: { items: [], next_after_revision_hash: null } }));
-  await page.route("**/atelier/api/v1/agent-configuration-revisions*", (route) => route.fulfill({ json: { items: [], next_after_agent_configuration_revision_hash: null } }));
 }
 
 async function expectWorkbenchCopyFits(page: Page, desktop: boolean): Promise<void> {
@@ -554,69 +504,5 @@ test("proves(studio-elements-answer-named-questions): every interactive Workbenc
       workbenchQuestions.saySomething.id,
       workbenchQuestions.emptyStart.id
     ]);
-  }
-});
-
-test.skip("obsolete run-count Settings states", async ({ page }) => {
-  expect(runPageSchema.safeParse({ items: runsOfEveryStanding(), next_after: null }).success).toBe(true);
-  let reply: ProjectRunReply = "common";
-  const loading = { release: () => {}, retainedReads: 0 };
-  await routeProjectReads(page, () => reply, loading);
-
-  for (const pseudoLocale of [false, true]) {
-    const locale = pseudoLocale ? "pseudo" : "normal";
-    const suffix = pseudoLocale ? "?pseudo-locale=1" : "";
-    for (const viewport of projectViewports) {
-      await page.setViewportSize(viewport);
-      reply = "common";
-      await page.goto(`/atelier/project${suffix}`);
-      await expect(
-        page.getByText(pseudoLocale ? wrapped(settingsPageCopy.unavailable) : settingsPageCopy.unavailable)
-      ).toHaveCount(0);
-      const work = page.getByRole("region", {
-        name: pseudoLocale ? wrapped(settingsPageCopy.modelsTitle) : settingsPageCopy.modelsTitle
-      });
-      for (const standing of ["running", "waiting", "done"] as const) {
-        const word = pseudoLocale ? wrapped(standingWords[standing]) : standingWords[standing];
-        await expect(work).toContainText(`${standingMarks[standing]} 1 ${word}`);
-      }
-      await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-common.png`, fullPage: true });
-
-      reply = "empty";
-      await page.goto(`/atelier/project${suffix}`);
-      await expect(
-        page.getByText(pseudoLocale ? wrapped(settingsPageCopy.modelsEmpty) : settingsPageCopy.modelsEmpty)
-      ).toBeVisible();
-      await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-empty.png`, fullPage: true });
-
-      reply = "loading";
-      await page.goto(`/atelier/project${suffix}`, { waitUntil: "domcontentloaded" });
-      await expect(page.getByText("Looking…")).toBeVisible();
-      await page.locator("main.workshop-stage").evaluate((stage) => { stage.scrollTop = 0; });
-      await expect(page.getByRole("heading", { level: 1, name: THE_ONE_PROJECT })).toBeVisible();
-      await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-loading.png`, fullPage: true });
-      loading.release();
-      await expect(work).toBeVisible();
-
-      // No manual refresh exists once a read is confirmed (#532): the only
-      // reachable failure a fresh navigation can show is its own read
-      // failing outright, recovered by the one accessible Retry.
-      reply = "retained-error";
-      loading.retainedReads = 1;
-      await page.goto(`/atelier/project${suffix}`);
-      await expect(
-        page.getByText(pseudoLocale ? wrapped(settingsPageCopy.unavailable) : settingsPageCopy.unavailable)
-      ).toBeVisible();
-      const retry = page.getByRole("button", { name: "Retry project runs" });
-      await expect(retry).toBeVisible();
-      await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-unavailable.png`, fullPage: true });
-
-      reply = "common";
-      await retry.click();
-      await expect(work).toContainText(
-        pseudoLocale ? wrapped(standingWords.running) : standingWords.running
-      );
-      await expect(page.getByRole("button", { name: /project runs/ })).toHaveCount(0);
-    }
   }
 });

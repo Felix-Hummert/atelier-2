@@ -158,7 +158,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     const writes = await routeSettings(page, "unknown-at-provider");
 
     await page.setViewportSize(viewport);
-    await page.goto("/atelier/project");
+    await page.goto("/atelier/settings");
     for (const difficulty of [3, 2, 1]) {
       await expect(page.getByRole("combobox", { name: `Difficulty ${difficulty}` })).toBeVisible();
     }
@@ -191,7 +191,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     const writes = await routeSettings(page, "checked", true);
 
     await page.setViewportSize(viewport);
-    await page.goto("/atelier/project");
+    await page.goto("/atelier/settings");
     await page.getByRole("combobox", { name: "Difficulty 3" }).selectOption("");
     await expect(page.getByText("Change not saved")).toBeVisible();
     await page.getByRole("button", { name: "Retry" }).click();
@@ -205,7 +205,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     const writes = await routeSettings(page);
 
     await page.setViewportSize(viewport);
-    await page.goto("/atelier/project");
+    await page.goto("/atelier/settings");
     await expect(page.getByRole("heading", { name: "Sources" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Model defaults" })).toBeVisible();
@@ -270,7 +270,7 @@ test("Settings tells the truth while reads load, fail, and recover at desktop an
     await page.setViewportSize(viewport);
     reply = "delayed";
     delayedRead = delayedReadGate();
-    const navigation = page.goto(`/atelier/project?state=loading-${viewport.width}`);
+    const navigation = page.goto(`/atelier/settings?state=loading-${viewport.width}`);
     await expect(page.getByText("Looking…")).toBeVisible();
     delayedRead.release();
     await navigation;

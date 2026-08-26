@@ -429,7 +429,6 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "invalid-agent-bindings",
         "uncast-agent-roles",
         "binding-constraint-refused",
-        "agent-platform-effect-unreconcilable",
         "agent-configuration-revision-not-found",
         "agent-executor-binding-unavailable",
         "run-identity-conflict",

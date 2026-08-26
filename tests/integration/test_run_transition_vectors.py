@@ -111,12 +111,12 @@ VECTORS: tuple[
         None,
     ),
     (
-        "no node but an action begins reconciling",
+        "no node but an effect-owning node begins reconciling",
         "agent",
         RunState.STARTED,
         require_reconciliation,
         None,
-        "WAITING_RECONCILIATION target is not an Action",
+        "WAITING_RECONCILIATION target is not an effect-owning node",
     ),
     (
         "a run that is not reconciling has no resolution to take",
@@ -143,12 +143,12 @@ VECTORS: tuple[
         "WAITING_INPUT must name a Wait node",
     ),
     (
-        "a reconciling state standing on no action is a run that disagrees with itself",
+        "a reconciling state standing on no effect-owning node disagrees with itself",
         "waiting",
         RunState.WAITING_RECONCILIATION,
         resolve_reconciliation,
         None,
-        "WAITING_RECONCILIATION must name an Action node",
+        "WAITING_RECONCILIATION must name an effect-owning node",
     ),
     (
         "a run standing on a node its graph does not carry transitions nowhere",

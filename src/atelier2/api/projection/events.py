@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Literal, cast
+from urllib.parse import quote
 
 from atelier2.api.projection.workflows import receipt_resource
 from atelier2.api.references import (
@@ -48,6 +50,7 @@ from atelier2.api.wire.events import (
 )
 from atelier2.api.wire.resources import CancellationDispositionName, NodeRailResource
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
+from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
 from atelier2.contracts.executions import (
     KINDS_NO_V1_RUN_CARRIES,
     AgentExecutionRefusal,
@@ -57,6 +60,39 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.run_events import PersistedRunEvent
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
+
+_RECEIPT_REASON_OMITTED = "Receipt reason omitted because it exceeds the event limit."
+_NODE_DETAIL_FALLBACK = (
+    " Its node-detail resource is identified by this event's public_run_reference and "
+    "node_id fields."
+)
+
+
+def _omitted_receipt_reason_summary(projection: PersistedRunEvent) -> str:
+    """Name the exact detail door when its identifiers fit the event field."""
+
+    event = projection.event
+    public_run_reference = encode_public_run_reference(event.run_id)
+    encoded_node_id = quote(event.node_id, safe="-_.!~*'()")
+    summary = (
+        f"{_RECEIPT_REASON_OMITTED} Read the node-detail resource at GET "
+        f"/atelier/api/v1/runs/{public_run_reference}/nodes/{encoded_node_id} for the "
+        "full reason and refusal output."
+    )
+    if len(summary) <= MAXIMUM_AGENT_FIELD_CHARACTERS:
+        return summary
+    return _RECEIPT_REASON_OMITTED + _NODE_DETAIL_FALLBACK
+
+
+def bounded_event_summary(projection: PersistedRunEvent) -> PersistedRunEvent:
+    """Keep an event readable when its durable receipt reason is over the wire bound."""
+
+    reason = projection.node_receipt_reason
+    if reason is None or len(reason) <= MAXIMUM_AGENT_FIELD_CHARACTERS:
+        return projection
+    return replace(
+        projection, node_receipt_reason=_omitted_receipt_reason_summary(projection)
+    )
 
 
 def run_event_resource(
@@ -68,6 +104,7 @@ def run_event_resource(
     a V1 reader keeps deriving and the rail passed here is dropped.
     """
 
+    projection = bounded_event_summary(projection)
     if projection.workflow_format_version is WorkflowFormatVersion.V2:
         return _run_event_resource_v2(projection, node_rail)
     if projection.workflow_format_version is WorkflowFormatVersion.V3:
@@ -108,7 +145,7 @@ def run_event_resource(
         )
     if event.event_kind is RunEventKind.ACTION_COMPLETED:
         if projection.receipt is None:
-            raise ValueError("completed Action event has no receipt")
+            raise ValueError("completed effect event has no receipt")
         return ActionCompletedEventResource(
             event=event.event_kind.value,
             receipt=receipt_resource(projection.receipt),
@@ -264,7 +301,7 @@ def _run_event_resource_v2(
         )
     if event.event_kind is RunEventKind.ACTION_COMPLETED:
         if projection.receipt is None:
-            raise ValueError("completed V2 Action event has no receipt")
+            raise ValueError("completed V2 effect event has no receipt")
         return ActionCompletedEventResourceV2(
             event=event.event_kind.value,
             receipt=receipt_resource(projection.receipt),
@@ -421,7 +458,7 @@ def _run_event_resource_v3(
         )
     if event.event_kind is RunEventKind.ACTION_COMPLETED:
         if projection.receipt is None:
-            raise ValueError("completed V3 Action event has no receipt")
+            raise ValueError("completed V3 effect event has no receipt")
         return ActionCompletedEventResourceV3(
             event=event.event_kind.value,
             receipt=receipt_resource(projection.receipt),

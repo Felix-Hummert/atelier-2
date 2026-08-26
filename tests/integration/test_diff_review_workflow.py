@@ -236,7 +236,6 @@ def start(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV3(
             run_id,

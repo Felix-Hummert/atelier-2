@@ -33,7 +33,7 @@ from atelier2.adapters.codex_subscription import (
     CodexSubscriptionSettings,
 )
 from atelier2.adapters.dbos.advancer import (
-    agent_open_pr_runs_pending_live_redemption,
+    legacy_agent_open_pr_runs_without_receipt,
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
@@ -1002,41 +1002,19 @@ def _log_unstartable_executors(settings: HostSettings) -> None:
             logger.warning(refusal)
 
 
-class LiveGitHubOpenPrRunPending(RuntimeError):
-    """A V3 run could still redeem an agent `open-pr` grant against live GitHub.
-
-    Admission refuses a new agent-authored `open-pr` run against an adapter that
-    cannot prove absence (`#430`/`#431`), but that door only guards the runs a
-    live-GitHub instance itself admits. A run admitted earlier under the
-    absence-proving loopback adapter can still owe its redemption when the
-    operator restarts the same database with the live adapter; DBOS recovery
-    would then resume its durable redemption node against live GitHub, whose
-    not-found readback is `EffectUnknownOutcome`, and the run would end ERROR
-    after it had already committed COMPLETED. The run may be non-terminal, or it
-    may have committed COMPLETED and crashed before the sink node's own workflow
-    finished the redemption -- either way the redemption is still owed. Composing
-    the live adapter therefore refuses to start while any such run remains, so the
-    operator lets it finish or cancels it before serving live GitHub.
-    """
+class LegacyAgentOpenPrCompletionWithoutReceipt(RuntimeError):
+    """A pre-reconciliation agent effect advanced its run without a receipt."""
 
 
-def _refuse_pending_agent_open_pr_runs(runtime: DbosRuntime) -> None:
-    """Fail the live-GitHub start while any V3 run still owes an agent open-pr PR.
-
-    The dbos adapter owns the scan; this only turns a nonempty answer into the
-    loud startup refusal, naming the runs the operator must let finish or cancel.
-    """
-
-    blocking = agent_open_pr_runs_pending_live_redemption(
-        runtime.engine, runtime.settings.application_version
-    )
+def _refuse_legacy_agent_open_pr_runs_without_receipt(runtime: DbosRuntime) -> None:
+    blocking = legacy_agent_open_pr_runs_without_receipt(runtime.engine)
     if blocking:
-        named = ", ".join(sorted(run.value for run in blocking))
-        raise LiveGitHubOpenPrRunPending(
-            "refusing to serve live GitHub open-pr while these runs still carry an "
-            f"agent-authored open-pr grant and have not finished: {named}. Let them "
-            "finish or cancel them before serving the project whose `atelier2 "
-            "connect` record composes live GitHub."
+        named = ", ".join(run.value for run in blocking)
+        raise LegacyAgentOpenPrCompletionWithoutReceipt(
+            "refusing to serve live GitHub open-pr while these pre-reconciliation "
+            "agent grants have advanced without an effect receipt: "
+            f"{named}. Migrate or repair those runs before serving the connected "
+            "project."
         )
 
 
@@ -1092,9 +1070,9 @@ def _effect_adapter_factory(
     live adapter opens it, is read from the record's credential directory by
     reference and never returns here (ADR 0009 §6).
 
-    Whether the composed adapter proves absence is read back from the runtime that
-    binds it (`runtime.effect_adapter_proves_absence`), so the runtime is the one
-    owner of that answer rather than a second reading here that must agree.
+    A live adapter's non-authoritative not-found readback enters the durable
+    reconciliation path. Only the pre-reconciliation completion shape remains
+    a startup refusal until an explicit compatibility transition owns it.
     """
 
     adapter_revision = AdapterRevision(settings.effect_adapter_revision)
@@ -1129,19 +1107,9 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
         ExactOutputAgentExecutorFactory(),
         subscription_executors,
     )
-    # A destination that cannot prove absence (live GitHub) makes an agent-authored
-    # `open-pr` grant unreconcilable, so admission refuses it (`#430`/`#431`). The
-    # runtime composed the adapter, so it owns this answer for every start path.
-    effect_adapter_proves_absence = runtime.effect_adapter_proves_absence
     try:
-        # Before the launch that recovers durable nodes: a live adapter cannot
-        # prove absence, so a non-terminal V3 run whose agent node opens its own
-        # pull request must not be resumed against it (`#430`/`#431`). Admission
-        # already refuses such a run at start, but a cross-restart adapter swap can
-        # leave one admitted earlier under loopback, so this refuses the whole
-        # start rather than recovering it into a COMPLETED-lie.
-        if not effect_adapter_proves_absence:
-            _refuse_pending_agent_open_pr_runs(runtime)
+        if source_connection is not None:
+            _refuse_legacy_agent_open_pr_runs_without_receipt(runtime)
         # One expression feeds both the reader's bound and the API's own, so the
         # promise that they cannot describe different numbers holds by
         # construction rather than by two readings agreeing today.
@@ -1176,7 +1144,6 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
                     runtime.engine,
                     runtime.settings,
                     runtime.agent_executor_registry,
-                    effect_adapter_proves_absence,
                 ),
                 wait_answerer=DbosWaitAnswerer(
                     runtime.engine, runtime.settings.application_version

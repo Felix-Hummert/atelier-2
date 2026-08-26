@@ -240,7 +240,6 @@ def start_and_launch(runtime: DbosRuntime, document: bytes) -> WorkflowRevision:
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(
             RUN,

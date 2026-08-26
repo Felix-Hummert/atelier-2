@@ -651,7 +651,7 @@ def _tool_redemption_from_record(record: Mapping[Any, Any]) -> ToolRedemptionRec
         ) from error
 
 
-def commit_action_completed(
+def commit_confirmed_effect(
     session: Any, logical_key: LogicalEffectKey, revision_hash: WorkflowRevisionHash
 ) -> TransitionSnapshot:
     intent_record = (
@@ -673,35 +673,42 @@ def commit_action_completed(
         .one_or_none()
     )
     if intent_record is None or receipt_record is None:
-        raise RunTransitionConflict("confirmed Action requires its intent and receipt")
+        raise RunTransitionConflict("confirmed effect requires its intent and receipt")
     intent = intent_snapshot_from_record(intent_record).intent
     receipt = receipt_from_record(receipt_record)
     run_id = intent.binding.run_id
     graph = load_graph(session, revision_hash)
-    actions = [node for node in graph.nodes if isinstance(node, ANY_ACTION_NODE_KINDS)]
-    if len(actions) != 1:
-        raise RunTransitionConflict("confirmed intent graph has no single Action")
-    action = actions[0]
-    round_ordinal = session.execute(
-        sa.select(runs.c.current_round_ordinal).where(runs.c.run_id == run_id.value)
-    ).scalar_one_or_none()
+    run_record = (
+        session.execute(sa.select(runs).where(runs.c.run_id == run_id.value))
+        .mappings()
+        .one_or_none()
+    )
+    if run_record is None:
+        raise RunTransitionConflict("confirmed effect has no durable run")
+    run = run_from_record_with_bindings(session, run_record)
+    node = graph.node(run.current_node_id)
     if (
-        round_ordinal is None
-        or not isinstance(action, ANY_ACTION_NODE_KINDS)
+        run.revision_hash != revision_hash
+        or run.state is not RunState.STARTED
+        or not isinstance(node, (*ANY_ACTION_NODE_KINDS, AgentNodeV3))
         or logical_key
-        != logical_effect_key_for_node(run_id, revision_hash, action.id, round_ordinal)
+        != logical_effect_key_for_node(
+            run_id, revision_hash, node.id, run.current_round_ordinal
+        )
         or intent.binding.workflow_revision_hash != revision_hash
         or receipt.intent != intent
     ):
-        raise RunTransitionConflict("logical effect key does not own current Action")
-    match completion_after_node(graph, action.id):
-        case RunContinues(successor):
+        raise RunTransitionConflict("logical effect key does not own current effect")
+    match completion_after_node(graph, node.id, run.current_round_ordinal):
+        case RunContinues(successor, successor_round):
             target_state = RunState.STARTED
             target_node_id = successor
+            target_round_ordinal = successor_round
             terminal = False
         case RunCompletes():
             target_state = RunState.COMPLETED
-            target_node_id = action.id
+            target_node_id = node.id
+            target_round_ordinal = run.current_round_ordinal
             terminal = True
         case _ as unreachable:
             assert_never(unreachable)
@@ -709,7 +716,7 @@ def commit_action_completed(
         session,
         run_id,
         revision_hash,
-        action.id,
+        node.id,
         RunEventKind.ACTION_COMPLETED,
         receipt.result.payload,
         RunState.STARTED,
@@ -718,14 +725,16 @@ def commit_action_completed(
         logical_key,
         receipt.result.payload_hash,
         terminal=terminal,
-        # The source round is the one this check just proved the key belongs
-        # to. The Action's successor's own round is left at the default: no
-        # published document can place an Action inside a declared loop
-        # (`_unrepeatable_loop_forms`), so `round_of` would answer round one
-        # for any successor today regardless -- computing it for real is a
-        # named gap that waits on Action nodes becoming loop-repeatable (#751).
-        round_ordinal=round_ordinal,
+        round_ordinal=run.current_round_ordinal,
+        target_round_ordinal=target_round_ordinal,
     )
+
+
+def commit_action_completed(
+    session: Any, logical_key: LogicalEffectKey, revision_hash: WorkflowRevisionHash
+) -> TransitionSnapshot:
+    """Commit a confirmed Action effect through the shared continuation."""
+    return commit_confirmed_effect(session, logical_key, revision_hash)
 
 
 def commit_wait_answered(session: Any, answer: WaitAnswer) -> TransitionSnapshot:

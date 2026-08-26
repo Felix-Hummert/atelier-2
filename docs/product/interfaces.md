@@ -159,11 +159,11 @@ saved-workflow picker reuses the same drawing without run state. A chosen V3 rev
 orders shows one material field per order — the name and the schema the
 author pinned — and sends the typed text as `orders` on the start; a revision
 that declares none shows no field. Role
-bindings on `/new` offer eligible registered configurations by provider, exact
-model id, and readable Account; the raw publication form stays as a collapsed
-expert fallback. There is no remembered role choice. For an admitted V3
-workflow, the picker reads the same model-resolution door as every other start
-sheet. Each role is resolved by the fixed order: a run-local override, an
+bindings on the Catalog detail's start sheet offer eligible registered
+configurations by provider, exact model id, and readable Account. There is no
+remembered role choice. For an admitted V3 workflow, that sheet reads the same
+model-resolution door as every other start path. Each role is resolved by the
+fixed order: a run-local override, an
 exact workflow pin, the configured model default for its declared difficulty,
 then a configured higher difficulty.
 Missing or ambiguous pins and unknown overrides are terminal; they never fall

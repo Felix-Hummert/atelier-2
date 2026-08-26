@@ -289,7 +289,6 @@ def armed_attempt(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(run_id, workflow.revision_hash, bindings)
     )
@@ -512,7 +511,6 @@ def unprepared_first_node(runtime: DbosRuntime, run_id: RunId) -> NodeExecutionI
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(run_id, workflow.revision_hash, _bindings(runtime))
     )

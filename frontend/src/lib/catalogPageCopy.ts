@@ -62,10 +62,8 @@ export const catalogPageCopy = {
   admit: "Admit into catalog",
   admitting: "Admitting…",
   admitFailed: "This workflow could not be admitted.",
-  admitted: "Admitted — you can start it by name now.",
-  // Starting lives in this room (ADR 0019 §1): the entry leads straight to the
-  // start door, with no second room in between. Moving that door into the
-  // entry's own detail page is the successor phase's work.
+  admitted: "Admitted — you can open it by name now.",
+  // The catalog detail owns the only manual start door (ADR 0019 §1).
   start: "Start",
   // The one door into the workflow detail page (#695): a named revision's
   // node-graph preview and per-node facts, which this entry itself does not
@@ -102,6 +100,14 @@ export const workflowDetailCopy = {
   notFoundTitle: "Workflow not found",
   notFoundDescription: "No published workflow carries this name.",
   graphUnavailable: "This revision's graph cannot be drawn here.",
+  workflowRevision: "Workflow revision",
+  sealsWorkflowRevision: "the published workflow revision",
+  orders: "Orders",
+  noOrders: "No orders declared.",
+  schema: "Schema",
+  schemaUnavailable: "Schema summary unavailable.",
+  schemaAcceptsAny: "Any JSON value.",
+  required: "required",
   panelTitle: "Node",
   panelRole: "Role",
   panelPromptStart: "Prompt template",
@@ -111,6 +117,39 @@ export const workflowDetailCopy = {
   notAdmittedNote: "Not admitted to the catalog.",
   retiredNote: "Retired",
   retiredNotice: "This workflow's catalog lineage was retired. Starting it is not offered here."
+} as const;
+
+/** Copy owned by the catalog detail's one manual-start sheet. */
+export const workflowStartCopy = {
+  preparing: "Preparing…",
+  sheetUnavailable: "The start sheet could not be prepared.",
+  noConfiguration: "No executable configuration is available.",
+  workItem: "Work item",
+  noSource: "No source",
+  settings: "Settings",
+  unknownSource: "Other source",
+  orderUnavailable: "This order shape cannot be started here.",
+  roles: "Roles",
+  info: "Info",
+  choose: "Choose",
+  chosenNow: "Chosen now",
+  pinnedInWorkflow: "pinned in workflow",
+  nextHigher: "next higher",
+  unavailable: "Unavailable",
+  missingRoleResolution: "Model resolution did not name this role.",
+  overrideNotRegistered: "The chosen configuration is not registered.",
+  workflowModelNotRegistered: "The model pinned in the workflow is not registered.",
+  workflowModelAmbiguous: "The model pinned in the workflow names more than one configuration.",
+  noProjectDefault: "No project default answers this difficulty or a higher one.",
+  familyDifferenceUnavailable: "No registered configuration satisfies the workflow's family rule.",
+  familyDifferenceFrom: "No registered configuration differs in family from",
+  trueLabel: "True",
+  falseLabel: "False",
+  startRun: "Start run",
+  tryAgain: "Try again",
+  cancel: "Cancel",
+  retry: "Retry",
+  startUnavailable: "The run could not be started."
 } as const;
 
 /**

@@ -87,7 +87,6 @@ from atelier2.host.run_command import (
 )
 from atelier2.host.serving import (
     HostSettings,
-    LiveGitHubOpenPrRunPending,
     # `serving` owns how the doors vector is composed -- door tools, server
     # name, this instance's own loopback address -- so the command line borrows
     # that composition for its attest instead of re-spelling the vector, which
@@ -330,11 +329,6 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
         # The live-GitHub token is read once by reference when the effect adapter
         # opens at startup; a missing, empty, or unreadable file fails the whole
         # start rather than serving open-pr silently disabled (`#430`).
-        parser.error(str(refusal))
-    except LiveGitHubOpenPrRunPending as refusal:
-        # A non-terminal V3 run admitted earlier under loopback would be resumed
-        # against live GitHub, which cannot prove absence; startup refuses rather
-        # than recovering it into a COMPLETED-lie (`#430`/`#431`).
         parser.error(str(refusal))
     except (
         ProjectUnknown,
