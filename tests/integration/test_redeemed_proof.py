@@ -15,6 +15,11 @@ clean, which is the more dangerous of the two mistakes.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+
 import pytest
 import sqlalchemy as sa
 from sqlalchemy import RowMapping
@@ -24,10 +29,13 @@ from atelier2.adapters.dbos.agent_attempt_store import (
     _keep_tool_redemption,
 )
 from atelier2.adapters.dbos.run_store import ToolRedemptionConflict
-from atelier2.adapters.dbos.runtime import DbosRuntime
+from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import agent_attempts, tool_redemptions
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
+from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
 from atelier2.contracts.agents import AgentExecutionResult
+from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
@@ -42,11 +50,62 @@ from tests.integration.test_v3_output_enforcement import (
     THE_ANSWER_THE_SCHEMA_REFUSES,
     armed_attempt,
 )
-from tests.integration.test_v3_output_enforcement import (
-    runtime as output_contract_runtime,
+from tests.scenarios.agents import (
+    agent_scratch_root,
+    failing_agent_executor_factory,
 )
 
-runtime = output_contract_runtime
+
+@pytest.fixture
+def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
+    """A runtime with no provider that can answer: these tests drive the store.
+
+    Built here rather than borrowed from another file so that the handler
+    isolation below wraps the construction. A command-line entry point elsewhere
+    in the suite installs a logging handler bound to the standard error pytest
+    captured for *that* test, and building a durable runtime flushes every
+    handler -- a stream closed long ago then fails a test that never touched it.
+    """
+
+    with logging_of_its_own():
+        started = DbosRuntime(
+            DbosRuntimeSettings(
+                tmp_path / "atelier.sqlite",
+                "redeemed-proof-test",
+                agent_scratch_root=agent_scratch_root(tmp_path),
+            ),
+            LoopbackEffectAdapterFactory(
+                tmp_path / "external.sqlite",
+                AdapterRevision("loopback-v1"),
+                EffectDestination("loopback-test"),
+            ),
+            ExactOutputAgentExecutorFactory(),
+            (failing_agent_executor_factory("exact", []),),
+        )
+        started.initialize_storage()
+    try:
+        yield started
+    finally:
+        started.close()
+
+
+@contextmanager
+def logging_of_its_own() -> Iterator[None]:
+    """Run with the handlers this process installs, not ones left behind.
+
+    Narrow on purpose: it neither silences nor reconfigures anything, it only
+    keeps a handler bound to another test's closed capture from being flushed
+    by code that legitimately flushes all of them.
+    """
+
+    root = logging.getLogger()
+    inherited = root.handlers[:]
+    root.handlers = []
+    try:
+        yield
+    finally:
+        root.handlers = inherited
+
 
 THE_GRANT = DeclaredToolGrant(
     PublishedRevisionHash("c3" * 32), ToolGrantCapability.RUN_PROJECT_VERIFICATION

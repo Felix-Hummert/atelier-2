@@ -4459,13 +4459,19 @@ def _refuse_redemptions_that_cannot_be_re_owned(
 ) -> None:
     """Read every V38 redemption against the attempt it will be keyed by.
 
-    Five ways a stored row cannot honestly become an attempt's own record, each
-    named where an operator can act on it: two rows claiming one attempt would
-    collide on the new key; a row naming no stored attempt, or one that never
-    succeeded, would give proof to an execution that never ran the check; a row
-    whose attempt describes a different node execution than the row does would
-    move that proof somewhere else entirely; and a nonzero exit was never a
-    redemption at all under the meaning this version fixes.
+    A redemption, the attempt it names and the receipt it hangs from are three
+    rows that must describe *one* execution. V38 never made them: its two
+    foreign keys point at different tables and constrain each other not at all,
+    so all three can name different work and still pass `foreign_key_check`.
+    Carrying such a row would move the proof of a check onto an execution that
+    never ran it -- quietly, and past every guard the store has.
+
+    So the three are read against each other in full: the same run, the same
+    workflow revision, the same node, the same node execution, and the attempt's
+    own receipt hash naming the very receipt found. Beside that, a row is
+    refused where two claim one attempt (the new key cannot hold both), where
+    the attempt never succeeded, and where the command exited nonzero -- which
+    was never a redemption at all under the meaning this version fixes.
 
     The check reads and refuses. Nothing is repaired, because every one of these
     is a store this product did not write, and guessing which half of a
@@ -4498,23 +4504,32 @@ def _refuse_redemptions_that_cannot_be_re_owned(
         "  ON attempt.attempt_id = redemption.attempt_id "
         "WHERE attempt.attempt_id IS NULL "
         "   OR attempt.state <> 'SUCCEEDED' "
-        "   OR attempt.node_execution_id <> redemption.node_execution_id"
+        "   OR attempt.node_execution_id <> redemption.node_execution_id "
+        "   OR attempt.run_id <> redemption.run_id "
+        "   OR attempt.workflow_revision_hash <> redemption.workflow_revision_hash "
+        "   OR attempt.node_id <> redemption.node_id"
     ).fetchall()
     if unowned:
         raise StoreMigrationRefused(
             f"{len(unowned)} tool redemptions do not belong to a succeeded attempt "
-            "of their own node execution; this command will not alter it"
+            "of their own execution; this command will not alter it"
         )
     orphaned = connection.execute(
         "SELECT redemption.attempt_id FROM tool_redemptions AS redemption "
+        "JOIN agent_attempts AS attempt "
+        "  ON attempt.attempt_id = redemption.attempt_id "
         "LEFT JOIN agent_receipts_v2 AS receipt "
         "  ON receipt.node_execution_id = redemption.node_execution_id "
+        " AND receipt.run_id = redemption.run_id "
+        " AND receipt.workflow_revision_hash = redemption.workflow_revision_hash "
+        " AND receipt.node_id = redemption.node_id "
+        " AND receipt.receipt_hash = attempt.receipt_hash "
         "WHERE receipt.node_execution_id IS NULL"
     ).fetchall()
     if orphaned:
         raise StoreMigrationRefused(
-            f"{len(orphaned)} tool redemptions hang from no agent receipt; "
-            "this command will not alter it"
+            f"{len(orphaned)} tool redemptions hang from no agent receipt of "
+            "their own attempt's execution; this command will not alter it"
         )
 
 
