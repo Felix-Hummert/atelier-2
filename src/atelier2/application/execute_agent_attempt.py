@@ -47,12 +47,13 @@ def execute_agent_attempt(
 ) -> AgentAttemptExecutionOutcome:
     """Invoke only after this live call durably wins the launch boundary.
 
-    Preparing the provider command and attesting the scratch root are pure, so
-    a call that loses the claim leaves no workspace behind: the directory is
-    created only once this call's own compare-and-set has won. It is removed
-    only once both facts that make removal safe are in hand -- the completion
-    proving no process or descendant of this attempt is left, and the durable
-    terminal attempt.
+    Preparing the provider command and attesting the scratch root happen before
+    the claim, so a call that loses it leaves no workspace behind: the directory
+    is created only once this call's own compare-and-set has won. A prepared
+    command's private channel is released on every path, including a failed
+    preflight. The workspace is removed only once both facts that make removal
+    safe are in hand -- the completion proving no process or descendant of this
+    attempt is left, and the durable terminal attempt.
 
     `project` is absent where this runtime was pointed at no project. Where one
     is pinned, the tree that commit names is unpacked into the leased directory
@@ -82,12 +83,12 @@ def execute_agent_attempt(
 
     store.prepare(execution)
     command = executor.prepare_process(execution.request)
-    workspaces.preflight()
-    if project is not None:
-        project.source.attest(project.pin)
-        if project.grant is not None:
-            project.verifications.preflight(project.pin)
     try:
+        workspaces.preflight()
+        if project is not None:
+            project.source.attest(project.pin)
+            if project.grant is not None:
+                project.verifications.preflight(project.pin)
         supervisor.prepare(execution)
         claim = store.claim(execution)
         if not isinstance(claim, AgentAttemptClaimedByThisCall):

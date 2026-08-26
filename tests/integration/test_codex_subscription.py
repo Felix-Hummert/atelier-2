@@ -18,6 +18,7 @@ from atelier2.adapters.codex_subscription import (
     CodexSandboxMode,
     CodexSubscriptionAuthModeUnsupported,
     CodexSubscriptionExecutorFactory,
+    CodexSubscriptionProcessCommand,
     CodexSubscriptionSettings,
     attest_codex_containment,
     verify_codex_capability,
@@ -158,6 +159,7 @@ def subscription_request(
     model: str = "gpt-5.3-codex",
     auth_mode: AuthMode = AuthMode.SUBSCRIPTION,
     job: bytes = b"Reply with the single word pong",
+    declared_output_schema: bytes | None = None,
 ) -> AgentExecutionRequestV2:
     auth = AuthProfileRevision("codex-primary", 1, ProviderId("openai"), auth_mode)
     configuration = AgentConfigurationRevision(
@@ -177,6 +179,7 @@ def subscription_request(
         ResolvedAgentBinding(AgentRole("reviewer"), configuration, auth),
         CODEX_SUBSCRIPTION_OPERATIONAL_IDENTITY,
         job,
+        declared_output_schema,
     )
 
 
@@ -255,6 +258,48 @@ def test_a_headless_run_carries_the_bound_model_and_sandbox_with_the_job_off_arg
     assert observed["environment"]["CODEX_HOME"] == str(settings.credential_directory)
     assert observed["environment"]["HOME"] == str(settings.credential_directory)
     assert "OPENAI_API_KEY" not in observed["environment"]
+
+
+def test_a_declared_schema_reaches_codex_as_exact_private_file_bytes(
+    tmp_path: Path,
+) -> None:
+    settings = codex_subscription_deployment(tmp_path)
+    executor = CodexSubscriptionExecutorFactory(settings).open()
+    declared_schema = b'{"type": "object", "additionalProperties": false}'
+    command = executor.prepare_process(
+        subscription_request(declared_output_schema=declared_schema)
+    )
+
+    assert isinstance(command, CodexSubscriptionProcessCommand)
+    assert command.output_schema_path is not None
+    assert command.output_schema_path.read_bytes() == declared_schema
+    assert stat.S_IMODE(command.output_schema_path.stat().st_mode) == 0o600
+    assert command.arguments[command.arguments.index("--output-schema") + 1] == str(
+        command.output_schema_path
+    )
+
+    executor.release_credential_channel(command)
+
+    assert not command.output_schema_path.exists()
+
+
+def test_executor_close_removes_an_unreleased_output_schema_file(
+    tmp_path: Path,
+) -> None:
+    executor = CodexSubscriptionExecutorFactory(
+        codex_subscription_deployment(tmp_path)
+    ).open()
+    command = executor.prepare_process(
+        subscription_request(declared_output_schema=b'{"type":"object"}')
+    )
+
+    assert isinstance(command, CodexSubscriptionProcessCommand)
+    assert command.output_schema_path is not None
+    assert command.output_schema_path.exists()
+
+    executor.close()
+
+    assert not command.output_schema_path.exists()
 
 
 def test_a_non_subscription_profile_is_refused_before_any_invocation(
