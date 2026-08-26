@@ -73,6 +73,13 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
 from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
+from atelier2.contracts.schemas_v3 import (
+    InstanceAccepted,
+    InstanceRefused,
+    SchemaAccepted,
+    read_instance_document,
+    read_schema_document,
+)
 from atelier2.host import _grok_subscription_settings
 from atelier2.host.serving import HostSettings, compose_application
 from atelier2.ports.agent_attempts import AgentAttemptSucceeded
@@ -410,6 +417,55 @@ def test_a_bare_string_schema_does_not_travel_as_json_schema(
 
 
 @pytest.mark.parametrize(
+    ("prose", "expected_verdict"),
+    (
+        (
+            "Befund 1: der Diff nennt die apt-Lock-Heilung.\nVerdict: revise",
+            InstanceAccepted,
+        ),
+        ("Befund 1: der Diff nennt die apt-Lock-Heilung.", InstanceRefused),
+    ),
+)
+def test_a_bare_string_schema_answer_is_judged_by_its_declared_schema(
+    tmp_path: Path,
+    prose: str,
+    expected_verdict: type[InstanceAccepted | InstanceRefused],
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    declared_schema = (
+        b'{"$schema":"https://json-schema.org/draft/2020-12/schema",'
+        b'"type":"string",'
+        b'"pattern":"^Befund 1[^0-9][\\\\s\\\\S]*\\\\nVerdict: '
+        b'(accepted|revise)$"}'
+    )
+    request = subscription_request(declared_output_schema=declared_schema)
+    command = executor.prepare_process(request)
+    invocation = leased(command, leased_workspace(tmp_path))
+    result = executor.decode_process_completion(
+        invocation,
+        AgentProcessCompletion(
+            0,
+            measured_headless_json_envelope(
+                text=prose,
+                thought="Ich prüfe zuerst die Regeln.",
+            ),
+            b"",
+        ),
+    )
+
+    assert isinstance(result, AgentExecutionResult)
+    assert "--json-schema" not in command.arguments
+    assert json.loads(result.output_bytes) == prose
+    schema = read_schema_document(declared_schema)
+    assert isinstance(schema, SchemaAccepted), schema
+    assert isinstance(
+        read_instance_document(result.output_bytes, schema), expected_verdict
+    )
+    executor.release_credential_channel(command)
+
+
+@pytest.mark.parametrize(
     "prose",
     (
         "Befund 1: der Diff nennt die apt-Lock-Heilung.\nVerdict: revise",
@@ -422,14 +478,7 @@ def test_a_bare_string_schema_answer_is_serialized_as_a_json_string(
 ) -> None:
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
     executor = GrokSubscriptionExecutorFactory(settings).open()
-    request = subscription_request(
-        declared_output_schema=(
-            b'{"$schema":"https://json-schema.org/draft/2020-12/schema",'
-            b'"type":"string",'
-            b'"pattern":"^Befund 1[^0-9][\\\\s\\\\S]*\\\\nVerdict: '
-            b'(accepted|revise)$"}'
-        )
-    )
+    request = subscription_request(declared_output_schema=b'{"type":"string"}')
     command = executor.prepare_process(request)
     invocation = leased(command, leased_workspace(tmp_path))
     result = executor.decode_process_completion(
