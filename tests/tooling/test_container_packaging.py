@@ -9,12 +9,13 @@ import shutil
 import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
+
+from tests.tooling.container_test_support import wait_for_exit, wait_until_exists
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = PROJECT_ROOT / "Dockerfile"
@@ -555,13 +556,6 @@ def assert_exact_candidate_teardown(tmp_path: Path) -> list[list[str]]:
     assert not snapshot_from(invocations[0]).exists()
     assert lifecycle_directories(tmp_path) == []
     return invocations
-
-
-def wait_until_exists(path: Path, message: str) -> None:
-    deadline = time.monotonic() + 5
-    while not path.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert path.exists(), message
 
 
 def test_recipe_is_provider_free_and_unprivileged() -> None:
@@ -1142,13 +1136,18 @@ def test_signals_preserve_first_status_and_teardown_exact_project(
         start_new_session=True,
     )
     ready = tmp_path / f"{phase}-ready"
-    wait_until_exists(ready, "Docker stub did not reach the launch boundary")
+    wait_until_exists(ready, process, "Docker stub did not reach the launch boundary")
     os.killpg(process.pid, first_signal)
     if second_signal is not None:
-        wait_until_exists(tmp_path / "down-ready", "Docker stub did not reach cleanup")
+        wait_until_exists(
+            tmp_path / "down-ready", process, "Docker stub did not reach cleanup"
+        )
         os.killpg(process.pid, second_signal)
         (tmp_path / "docker-down-release").touch()
-    assert process.wait(timeout=5) == status
+    assert (
+        wait_for_exit(process, tmp_path, "container up did not exit after the signal")
+        == status
+    )
     assert_exact_candidate_teardown(tmp_path)
 
 
