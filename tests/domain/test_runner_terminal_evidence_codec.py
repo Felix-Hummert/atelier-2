@@ -12,6 +12,7 @@ from atelier2.contracts.agent_attempts import (
     ProcessExitSignature,
     RunnerCancellation,
     RunnerCancellationObservation,
+    RunnerEvidenceCannotCarryTranscript,
     RunnerGenerationBinding,
     RunnerGenerationId,
     RunnerInvocationId,
@@ -28,6 +29,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceHash,
     RunnerTerminalEvidenceReadback,
 )
+from atelier2.contracts.agent_transcripts import AssistantTurn, AttemptTranscript
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     AgentExecutionRequestHash,
@@ -470,3 +472,39 @@ def test_runner_record_text_owners_refuse_non_utf8_encodable_values(
 ) -> None:
     with pytest.raises(ValueError, match="UTF-8"):
         construct("\ud800")
+
+
+def test_evidence_refuses_a_result_carrying_a_transcript_rather_than_losing_it() -> (
+    None
+):
+    """This record has no room for an attempt's steps, and will not pretend to.
+
+    It is bounded far below one transcript artifact and Core's acceptance chain
+    hashes it, so carrying one would mean re-deciding the bound and what the
+    hash covers. Dropping it instead would record a Runner-carried attempt as
+    having decoded nothing -- the exact silence a transcript exists to end, and
+    one nobody would ever learn about. The refusal is the honest third answer.
+    """
+
+    with pytest.raises(RunnerEvidenceCannotCarryTranscript, match="does not carry"):
+        RunnerProviderResult(
+            AgentExecutionResult(
+                b"answer",
+                AttemptTranscript.of([AssistantTurn("I read the file and stopped.")]),
+            )
+        )
+
+
+def test_a_result_with_no_transcript_still_round_trips_byte_for_byte() -> None:
+    """The refusal above narrows nothing that already crossed this boundary."""
+
+    envelope = _envelope(RunnerProviderResult(AgentExecutionResult(b"answer")))
+    record = encode_runner_terminal_evidence_record(envelope)
+
+    decoded = decode_runner_terminal_evidence_record(record)
+
+    assert decoded == envelope
+    assert isinstance(decoded, RunnerTerminalEvidenceEnvelope)
+    assert isinstance(decoded.evidence, RunnerProviderResult)
+    assert decoded.evidence.result.transcript is None
+    assert encode_runner_terminal_evidence_record(decoded) == record
