@@ -26,6 +26,12 @@ export interface OrderSchemaResource {
   readonly document: JsonSchemaDocument;
 }
 
+/** The start sheet's one honest rendering for a published V3 order schema. */
+export type StartOrderSchemaShape =
+  | { readonly kind: "work_item" }
+  | { readonly kind: "inline_object" }
+  | { readonly kind: "unsupported"; readonly reason: string };
+
 export interface OrderSchemaReadFailure {
   readonly kind: "unavailable";
   readonly title: string;
@@ -37,7 +43,15 @@ export type OrderValueVerdict =
       readonly kind: "invalid";
       readonly message: string;
       readonly fields: readonly InvalidField[];
-    };
+  };
+
+/**
+ * The backend only accepts an observed work item beneath this published
+ * revision. The workflow wire already carries that pin, so the start sheet
+ * mirrors the server's discriminator instead of inferring it from field names.
+ */
+export const WORK_ITEM_ORDER_SCHEMA_REVISION =
+  "e57e281851b809afc32527cdde2a2a76b033f4b6b4301ad592472147bc7c978a";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -62,6 +76,70 @@ function declaredRequired(document: Record<string, unknown>): readonly string[] 
   return Array.isArray(document.required)
     ? document.required.filter((entry): entry is string => typeof entry === "string")
     : [];
+}
+
+const WORK_ITEM_FIELDS = [
+  "body",
+  "change_marker",
+  "digest",
+  "kind",
+  "observed_at",
+  "reference"
+] as const;
+
+/**
+ * The tracker order's published schema has one closed, neutral shape. The
+ * browser checks the canonical shape as a second guard after its revision pin.
+ */
+function isWorkItemOrderSchema(document: Record<string, unknown>): boolean {
+  const properties = declaredProperties(document);
+  const required = declaredRequired(document);
+  return (
+    document.title === "work item" &&
+    fieldTypesAreExactly(declaredTypes(document), "object") &&
+    document.additionalProperties === false &&
+    required.length === WORK_ITEM_FIELDS.length &&
+    WORK_ITEM_FIELDS.every((field) => required.includes(field)) &&
+    Object.keys(properties).length === WORK_ITEM_FIELDS.length &&
+    WORK_ITEM_FIELDS.every((field) => field in properties)
+  );
+}
+
+/**
+ * A start never manufactures an object for a scalar or array schema. It can
+ * render the canonical tracker picker and ordinary object fields; anything
+ * else stays visibly unavailable until its own renderer exists.
+ */
+export function classifyStartOrderSchema(
+  document: JsonSchemaDocument,
+  schemaRevision: string
+): StartOrderSchemaShape {
+  if (!isRecord(document)) {
+    return { kind: "unsupported", reason: "This order shape is not supported by the start sheet." };
+  }
+  if (isWorkItemOrderSchema(document)) {
+    if (schemaRevision === WORK_ITEM_ORDER_SCHEMA_REVISION) return { kind: "work_item" };
+    return {
+      kind: "unsupported",
+      reason: "This work-item-shaped order does not use the canonical work-item schema."
+    };
+  }
+  if (!fieldTypesAreExactly(declaredTypes(document), "object")) {
+    return { kind: "unsupported", reason: "This order must be an object to start here." };
+  }
+  const properties = declaredProperties(document);
+  const required = declaredRequired(document);
+  const fieldNames = [...new Set([...Object.keys(properties), ...required])];
+  const supported = new Set(["boolean", "number", "integer", "string"]);
+  if (
+    fieldNames.some((name) => {
+      const types = declaredTypes(properties[name]);
+      return types === null || types.length !== 1 || !supported.has(types[0] ?? "");
+    })
+  ) {
+    return { kind: "unsupported", reason: "This order has a field the start sheet cannot encode." };
+  }
+  return { kind: "inline_object" };
 }
 
 /**

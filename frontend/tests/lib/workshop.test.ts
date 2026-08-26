@@ -21,7 +21,7 @@ describe("the workshop rail names its destinations", () => {
       WORKSHOP_DESTINATION.settings.label,
       WORKSHOP_DESTINATION.settings.glyph,
       WORKSHOP_DESTINATION.settings.path
-    ]).toEqual(["Settings", "⚙", "/atelier/project"]);
+    ]).toEqual(["Settings", "⚙", "/atelier/settings"]);
   });
 
   it("marks the rail entry the current page sits under", () => {
@@ -31,10 +31,9 @@ describe("the workshop rail names its destinations", () => {
       "workbench"
     );
     // The catalog is the one room a workflow is found and started from, so its
-    // detail and the start door sit under it -- never under History.
+    // detail sits under it -- never under History.
     expect(activeWorkshopDestination({ page: "catalog" })).toBe("catalog");
     expect(activeWorkshopDestination({ page: "workflow", name: "Preview door" })).toBe("catalog");
-    expect(activeWorkshopDestination({ page: "new" })).toBe("catalog");
     expect(activeWorkshopDestination({ page: "history" })).toBe("history");
     expect(activeWorkshopDestination({ page: "settings" })).toBe("settings");
     expect(activeWorkshopDestination({ page: "not-found" })).toBeNull();

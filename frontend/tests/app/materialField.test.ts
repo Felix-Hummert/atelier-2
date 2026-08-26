@@ -2,28 +2,22 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import { CockpitRequestError, decodeProblem, type CockpitApi, type RunV3 } from "../../src/api/client";
+import type { CockpitApi, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { WORK_ITEM_ORDER_SCHEMA_REVISION } from "../../src/lib/orderSchema";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { cancellableBlock } from "../support/runV3";
-import { utf8Base64 } from "../support/exactBytes";
 
 const revisionHash = "a".repeat(64);
-const otherHash = "b".repeat(64);
-const authHash = "c".repeat(64);
-const configurationHash = "d".repeat(64);
+const configurationHash = "b".repeat(64);
 const publicReference = "run1.cnVuLW9yZGVy";
+const workflowName = "Cook to order";
 
 const portionsOrder = {
   name: "portions",
-  schema: {
-    ref: "portions-schema",
-    revision: "schema-portions"
-  }
+  schema: { ref: "portions-schema", revision: "schema-portions" }
 };
 
-// A single required field, but not a bare string -- the JSON editor stays,
-// exactly the shape most declared orders carry today.
 const portionsSchema = {
   type: "object",
   required: ["portions"],
@@ -31,46 +25,43 @@ const portionsSchema = {
   properties: { portions: { type: "integer", minimum: 0 } }
 };
 
-function summary(hash: string, name: string) {
-  return {
-    workflow_revision_hash: hash,
-    workflow_format_version: 3 as const,
-    executable: true,
-    not_executable_reason: null,
-    name,
-    description: null
-  };
-}
+const workItemOrder = {
+  name: "work",
+  schema: { ref: "work-item-schema", revision: WORK_ITEM_ORDER_SCHEMA_REVISION }
+};
 
-function graph(orders: Array<typeof portionsOrder>, name: string) {
-  return {
-    workflow_format_version: 3 as const,
-    executable: true as const,
-    not_executable_reason: null,
-    node_count: 1,
-    agent_roles: ["cook"],
-    orders,
-    wait_answer_schemas: [],
-    node_previews: [
-      {
-        id: "cook",
-        kind: "agent" as const,
-        role: "cook",
-        instruction_start: "Cook exactly what the order says.",
-        depends_on: []
-      }
-    ],
-    loops: [],
-    name,
-    description: null
-  };
-}
+const workItemSchema = {
+  title: "work item",
+  type: "object",
+  additionalProperties: false,
+  required: ["body", "change_marker", "digest", "kind", "observed_at", "reference"],
+  properties: {
+    body: { type: "string" },
+    change_marker: { type: "string" },
+    digest: { type: "string" },
+    kind: { type: "string" },
+    observed_at: { type: "string" },
+    reference: { type: "string" }
+  }
+};
 
-function detail(hash: string, orders: Array<typeof portionsOrder>, name: string) {
+function detail(orders = [portionsOrder]): WorkflowRevisionDetail {
   return {
-    workflow_revision_hash: hash,
-    document_base64: utf8Base64("job: NEVER_PARSE_THIS\n"),
-    graph: graph(orders, name)
+    workflow_revision_hash: revisionHash,
+    document_base64: "YQ==",
+    graph: {
+      workflow_format_version: 3,
+      executable: true,
+      not_executable_reason: null,
+      node_count: 1,
+      agent_roles: ["cook"],
+      orders,
+      wait_answer_schemas: [],
+      node_previews: [],
+      loops: [],
+      name: workflowName,
+      description: null
+    }
   };
 }
 
@@ -80,21 +71,19 @@ function startedRun(): RunV3 {
     run_id: "run-order",
     public_run_reference: publicReference,
     workflow_revision_hash: revisionHash,
-    agent_binding_set_hash: "e".repeat(64),
-    run_configuration_revision_hash: "f".repeat(64),
-    agent_bindings: [
-      {
-        role: "cook",
-        agent_configuration_revision_hash: configurationHash,
-        auth_profile_revision_hash: authHash,
-        profile_id: "max",
-        revision_number: 1,
-        provider_id: "exact",
-        auth_mode: "subscription",
-        model: "cook-model",
-        executor_revision: "immediate/v1"
-      }
-    ],
+    agent_binding_set_hash: "c".repeat(64),
+    run_configuration_revision_hash: "d".repeat(64),
+    agent_bindings: [{
+      role: "cook",
+      agent_configuration_revision_hash: configurationHash,
+      auth_profile_revision_hash: "f".repeat(64),
+      profile_id: "test",
+      revision_number: 1,
+      provider_id: "test",
+      auth_mode: "subscription",
+      model: "cook-model",
+      executor_revision: "immediate/v1"
+    }],
     orders: [],
     state_version: 1,
     state: "STARTED",
@@ -106,41 +95,41 @@ function startedRun(): RunV3 {
   };
 }
 
-function publishedCookConfigurations() {
-  return {
-    items: [
-      {
-        model: "cook-model",
-        auth_profile_revision_hash: authHash,
-        executor_revision: "immediate/v1",
-        provider_id: "exact",
-        auth_mode: "subscription" as const,
-        requested_capability: "headless" as const,
-        agent_configuration_revision_hash: configurationHash,
-        startable: true,
-        not_startable_reason: null
-      }
-    ],
-    next_after_revision_hash: null
-  };
-}
-
 function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
   return cockpitApiStub({
     listWorkflowRevisions: vi.fn(async () => ({
-      items: [
-        summary(revisionHash, "Cook to order"),
-        summary(otherHash, "One agent")
-      ],
+      items: [{
+        workflow_revision_hash: revisionHash,
+        workflow_format_version: 3 as const,
+        executable: true,
+        not_executable_reason: null,
+        name: workflowName,
+        description: null
+      }],
       next_after_revision_hash: null
     })),
-    getWorkflowRevision: vi.fn(async (hash: string) =>
-      hash === otherHash
-        ? detail(otherHash, [], "One agent")
-        : detail(revisionHash, [portionsOrder], "Cook to order")
-    ),
+    getRevisionByName: vi.fn(async () => ({
+      display_name: workflowName,
+      lineage_id: "e".repeat(64),
+      workflow_revision_hash: revisionHash,
+      revision_number: 1
+    })),
+    getWorkflowRevision: vi.fn(async () => detail()),
     getSchemaRevision: vi.fn(async () => portionsSchema),
-    listAgentConfigurationRevisions: vi.fn(async () => publishedCookConfigurations()),
+    listAgentConfigurationRevisions: vi.fn(async () => ({
+      items: [{
+        agent_configuration_revision_hash: configurationHash,
+        provider_id: "test",
+        model: "cook-model",
+        auth_mode: "subscription" as const,
+        auth_profile_revision_hash: "f".repeat(64),
+        executor_revision: "immediate/v1",
+        requested_capability: "headless" as const,
+        startable: true,
+        not_startable_reason: null
+      }],
+      next_after_revision_hash: null
+    })),
     start: vi.fn(async () => ({ status: 201, value: startedRun() })),
     getRun: vi.fn(async () => startedRun()),
     ...overrides
@@ -148,6 +137,7 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
 }
 
 async function openStart(cockpitApi: CockpitApi): Promise<void> {
+  window.history.replaceState(null, "", `/atelier/catalog/${encodeURIComponent(workflowName)}`);
   render(App, {
     props: {
       cockpitApi,
@@ -155,248 +145,195 @@ async function openStart(cockpitApi: CockpitApi): Promise<void> {
       createRunId: () => "run-order"
     }
   });
+  await fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+  await screen.findByRole("dialog", { name: `Start ${workflowName}` });
+  await waitFor(() => expect(screen.queryByText("Preparing…")).toBeNull());
 }
 
-async function chooseCookToOrder(): Promise<void> {
-  await fireEvent.click(await screen.findByRole("radio", { name: /Cook to order/ }));
-  await screen.findByRole("article", { name: "Order portions" });
-}
-
-beforeEach(() => {
-  sessionStorage.clear();
-  window.history.replaceState(null, "", "/atelier/new");
-});
+beforeEach(() => sessionStorage.clear());
 
 afterEach(() => {
   vi.restoreAllMocks();
   cleanup();
 });
 
-describe("the material field on start", () => {
-  it("shows one field per declared order, its published schema summary, and none when the revision declares none", async () => {
+describe("the schema-generated fields on the catalog start sheet", () => {
+  it("shows every declared order's published summary and no order form when the revision declares none", async () => {
     const cockpitApi = api();
     await openStart(cockpitApi);
 
-    await chooseCookToOrder();
-    const field = await screen.findByRole("article", { name: "Order portions" });
-    expect(field.textContent).toContain("portions-schema@schema-portions");
-    expect(within(field).getByLabelText("Material portions")).toBeTruthy();
-    expect(within(field).queryByPlaceholderText(/.+/)).toBeNull();
-    const fields = await within(field).findByRole("region", { name: "Fields of portions" });
-    expect(fields.textContent).toContain("portions");
-    expect(fields.textContent).toContain("integer");
-    expect(fields.textContent).toContain("Required");
-    expect(screen.queryByText("Issue")).toBeNull();
-    expect(screen.queryByText("URL")).toBeNull();
+    const order = await screen.findByRole("group", { name: "Order portions" });
+    expect(order.textContent).toContain("portions-schema@schema-portions");
+    expect(within(order).getByLabelText("portions (integer) *")).toBeTruthy();
 
-    await fireEvent.click(screen.getByRole("button", { name: "Change" }));
-    await fireEvent.click(await screen.findByRole("radio", { name: /One agent/ }));
-    await waitFor(() => {
-      expect(screen.queryByRole("article", { name: /^Order / })).toBeNull();
-    });
-    expect(screen.queryByLabelText(/^Material /)).toBeNull();
-    expect(screen.queryByText(/no material/i)).toBeNull();
-    expect(vi.mocked(cockpitApi.getWorkflowRevision).mock.calls.map(([hash]) => hash)).toEqual([
-      revisionHash,
-      otherHash
-    ]);
+    cleanup();
+    const orderlessApi = api({ getWorkflowRevision: vi.fn(async () => detail([])) });
+    await openStart(orderlessApi);
+    expect(screen.queryByRole("group", { name: /^Order / })).toBeNull();
   });
 
-  it("refuses a missing order by name before anything is started", async () => {
+  it("keeps Start run unavailable until every required schema field and role is chosen", async () => {
     const cockpitApi = api();
     await openStart(cockpitApi);
 
-    await chooseCookToOrder();
-    await fireEvent.change(screen.getByLabelText("Agent for cook"), {
-      target: { value: configurationHash }
-    });
-    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
-
-    expect((await screen.findByRole("alert")).textContent).toContain(
-      "input 'portions' was refused: missing"
-    );
-    expect(cockpitApi.start).not.toHaveBeenCalled();
+    const start = screen.getByRole("button", { name: "Start run" });
+    expect((start as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.change(screen.getByLabelText("cook"), { target: { value: configurationHash } });
+    expect((start as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.input(screen.getByLabelText("portions (integer) *"), { target: { value: "7" } });
+    expect((start as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("refuses locally a value that plainly disagrees with the published schema, before any round trip", async () => {
+  it("starts the selected revision with its typed schema values as named orders", async () => {
     const cockpitApi = api();
     await openStart(cockpitApi);
 
-    await chooseCookToOrder();
-    const material = await screen.findByLabelText("Material portions");
-    await fireEvent.input(material, { target: { value: "not-json" } });
-    await fireEvent.change(screen.getByLabelText("Agent for cook"), {
-      target: { value: configurationHash }
-    });
-    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
-
-    expect((await screen.findByRole("alert")).textContent).toContain("This is not valid JSON.");
-    expect(cockpitApi.start).not.toHaveBeenCalled();
-  });
-
-  it("sends the typed material as the named order on the V3 start", async () => {
-    const cockpitApi = api();
-    await openStart(cockpitApi);
-
-    await chooseCookToOrder();
-    const material = await screen.findByLabelText("Material portions");
-    await fireEvent.input(material, { target: { value: '{"portions": 7}' } });
-    await fireEvent.change(screen.getByLabelText("Agent for cook"), {
-      target: { value: configurationHash }
-    });
-    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await fireEvent.input(screen.getByLabelText("portions (integer) *"), { target: { value: "7" } });
+    await fireEvent.change(screen.getByLabelText("cook"), { target: { value: configurationHash } });
+    await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
 
     await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
-    const body = JSON.parse(
-      globalThis.atob(vi.mocked(cockpitApi.start).mock.calls[0]?.[0].body_base64 ?? "")
-    );
-    expect(body.workflow_format_version).toBe(3);
-    expect(body.orders).toEqual([{ name: "portions", value: '{"portions": 7}' }]);
-    expect(body.agent_bindings).toEqual([
+    const mutation = vi.mocked(cockpitApi.start).mock.calls[0]?.[0];
+    const request = JSON.parse(globalThis.atob(mutation?.body_base64 ?? ""));
+    expect(request.orders).toEqual([{ name: "portions", value: '{"portions":7}' }]);
+    expect(request.agent_bindings).toEqual([
       { role: "cook", agent_configuration_revision_hash: configurationHash }
     ]);
+    await waitFor(() =>
+      expect(window.location.pathname).toBe(`/atelier/runs/${publicReference}`)
+    );
   });
 
-  it("shows the server's own refusal words for a violation the browser's shallow check cannot see, with the field beside the order", async () => {
+  it("groups observed work items by source and starts the selected item through its V3 wire shape", async () => {
     const cockpitApi = api({
-      start: vi.fn(async () => {
-        throw new CockpitRequestError(
-          "input 'portions' was refused: value-refused: /portions: -1 is less than the minimum of 0",
-          decodeProblem({
-            type: "urn:atelier2:problem:v1:run-input-refused",
-            title: "Run input refused",
-            status: 422,
-            detail: "input 'portions' was refused: value-refused: /portions: -1 is less than the minimum of 0",
-            invalid_fields: [{ path: "/portions", reason: "-1 is less than the minimum of 0" }]
-          }),
-          true
-        );
-      })
+      getWorkflowRevision: vi.fn(async () => detail([workItemOrder])),
+      getSchemaRevision: vi.fn(async () => workItemSchema),
+      listObservedQueueItems: vi.fn(async () => ({
+        items: [
+          { project_id: "atelier", tracker_item_reference: "gh:450", item_id: "1".repeat(64), revision: 0 },
+          { project_id: "infra", tracker_item_reference: "gl:12", item_id: "2".repeat(64), revision: 0 }
+        ],
+        next_after: null
+      }))
     });
     await openStart(cockpitApi);
 
-    await chooseCookToOrder();
-    // Shape-valid and type-correct, so the browser's own shallow check admits
-    // it; only the server's schema evaluation (`minimum: 0`) refuses it.
-    await fireEvent.input(await screen.findByLabelText("Material portions"), {
-      target: { value: '{"portions": -1}' }
-    });
-    await fireEvent.change(screen.getByLabelText("Agent for cook"), {
+    const picker = screen.getByLabelText("Work item for work");
+    const workItemOrderGroup = screen.getByRole("group", { name: "Work item" });
+    expect(workItemOrderGroup.textContent).not.toContain(`work-item-schema@${WORK_ITEM_ORDER_SCHEMA_REVISION}`);
+    expect([...picker.querySelectorAll("optgroup")].map((group) => group.label)).toEqual([
+      "GitHub",
+      "GitLab"
+    ]);
+    expect(picker.querySelector('option[value="gh:450"]')?.textContent).toBe("GitHub · gh:450");
+    expect(screen.queryByRole("note")).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Interim configuration" }));
+    expect(screen.getByRole("status").textContent).toContain("Settings › Model defaults exist");
+    expect(screen.getByText("Interim source · choose for this run")).toBeTruthy();
+
+    await fireEvent.change(picker, { target: { value: "gh:450" } });
+    expect((picker as HTMLSelectElement).selectedOptions[0]?.textContent).toBe("GitHub · gh:450");
+    await fireEvent.change(screen.getByLabelText("Configuration for cook"), {
       target: { value: configurationHash }
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
-
-    const field = await screen.findByRole("article", { name: "Order portions" });
-    await within(field).findByText(/is less than the minimum of 0/);
-    const fieldAlerts = within(field).getAllByRole("alert").map((node) => node.textContent);
-    expect(fieldAlerts.some((text) => text?.includes("/portions"))).toBe(true);
-    expect(fieldAlerts.some((text) => text?.includes("is less than the minimum of 0"))).toBe(true);
-    const topBanner = screen.getAllByRole("alert").find((node) => !field.contains(node));
-    expect(topBanner?.textContent).toContain("input 'portions' was refused: value-refused");
-  });
-});
-
-describe("a human editor for an order whose schema names exactly one required string field", () => {
-  const noteOrder = {
-    name: "note",
-    schema: { ref: "note-schema", revision: "schema-note" }
-  };
-  const noteSchema = {
-    type: "object",
-    required: ["message"],
-    properties: { message: { type: "string", minLength: 1 } }
-  };
-
-  function noteApi(overrides: Partial<CockpitApi> = {}): CockpitApi {
-    return cockpitApiStub({
-      listWorkflowRevisions: vi.fn(async () => ({
-        items: [summary(revisionHash, "Leave a note")],
-        next_after_revision_hash: null
-      })),
-      getWorkflowRevision: vi.fn(async () => detail(revisionHash, [noteOrder], "Leave a note")),
-      getSchemaRevision: vi.fn(async () => noteSchema),
-      listAgentConfigurationRevisions: vi.fn(async () => publishedCookConfigurations()),
-      start: vi.fn(async () => ({ status: 201, value: startedRun() })),
-      getRun: vi.fn(async () => startedRun()),
-      ...overrides
-    });
-  }
-
-  it("offers plain text and wraps it into the schema's own field on start", async () => {
-    const cockpitApi = noteApi();
-    await openStart(cockpitApi);
-
-    await fireEvent.click(await screen.findByRole("radio", { name: /Leave a note/ }));
-    const material = await screen.findByLabelText("Material note");
-    expect(material.tagName).toBe("INPUT");
-    await fireEvent.input(material, { target: { value: "remember the deploy window" } });
-    await fireEvent.change(screen.getByLabelText("Agent for cook"), {
-      target: { value: configurationHash }
-    });
-    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    expect((screen.getByLabelText("Configuration for cook") as HTMLSelectElement).value).toBe(
+      configurationHash
+    );
+    await waitFor(() =>
+      expect(screen.getByText("Interim source · chosen for this run, not saved")).toBeTruthy()
+    );
+    await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
 
     await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
-    const body = JSON.parse(
-      globalThis.atob(vi.mocked(cockpitApi.start).mock.calls[0]?.[0].body_base64 ?? "")
-    );
-    expect(body.orders).toEqual([
-      { name: "note", value: '{"message":"remember the deploy window"}' }
-    ]);
+    const mutation = vi.mocked(cockpitApi.start).mock.calls[0]?.[0];
+    const request = JSON.parse(globalThis.atob(mutation?.body_base64 ?? ""));
+    expect(request.orders).toEqual([{ name: "work", work_item: "gh:450" }]);
   });
-});
 
-describe("a multi-field order that stays JSON", () => {
-  const briefOrder = {
-    name: "brief",
-    schema: { ref: "conductor-brief", revision: "schema-brief" }
-  };
-  const briefSchema = {
-    type: "object",
-    required: ["message", "prior_transcript", "dropped_oldest_messages"],
-    additionalProperties: false,
-    properties: {
-      message: { type: "string", minLength: 1 },
-      prior_transcript: { type: "array" },
-      dropped_oldest_messages: { type: "integer", minimum: 0 }
-    }
-  };
-
-  function briefApi(): CockpitApi {
-    return cockpitApiStub({
-      listWorkflowRevisions: vi.fn(async () => ({
-        items: [summary(revisionHash, "Chat with conductor")],
-        next_after_revision_hash: null
-      })),
-      getWorkflowRevision: vi.fn(async () => detail(revisionHash, [briefOrder], "Chat with conductor")),
-      getSchemaRevision: vi.fn(async () => briefSchema),
-      listAgentConfigurationRevisions: vi.fn(async () => publishedCookConfigurations()),
-      start: vi.fn(),
-      getRun: vi.fn()
+  it("holds Start when a work-item order has no observed source and leads to Settings", async () => {
+    const cockpitApi = api({
+      getWorkflowRevision: vi.fn(async () => detail([workItemOrder])),
+      getSchemaRevision: vi.fn(async () => workItemSchema)
     });
-  }
-
-  it("keeps the JSON editor and names every missing field honestly, without inventing a default", async () => {
-    const cockpitApi = briefApi();
     await openStart(cockpitApi);
 
-    await fireEvent.click(await screen.findByRole("radio", { name: /Chat with conductor/ }));
-    const field = await screen.findByRole("article", { name: "Order brief" });
-    expect(within(field).getByLabelText("Material brief").tagName).toBe("TEXTAREA");
-    expect(field.textContent).toContain("more than one field");
-
-    await fireEvent.input(within(field).getByLabelText("Material brief"), {
-      target: { value: '{"message": "help"}' }
-    });
-    await fireEvent.change(screen.getByLabelText("Agent for cook"), {
+    expect(screen.getByText("No source")).toBeTruthy();
+    await fireEvent.change(screen.getByLabelText("Configuration for cook"), {
       target: { value: configurationHash }
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await waitFor(() => expect(window.location.pathname).toBe("/atelier/settings"));
+  });
 
-    const alerts = within(await screen.findByRole("article", { name: "Order brief" }))
-      .getAllByRole("alert")
-      .map((node) => node.textContent ?? "");
-    expect(alerts.some((text) => text.includes("/prior_transcript"))).toBe(true);
-    expect(alerts.some((text) => text.includes("/dropped_oldest_messages"))).toBe(true);
+  it("refuses a work-item lookalike before it can enable Start", async () => {
+    const cockpitApi = api({
+      getWorkflowRevision: vi.fn(async () =>
+        detail([{ ...workItemOrder, schema: { ...workItemOrder.schema, revision: "f".repeat(64) } }])
+      ),
+      getSchemaRevision: vi.fn(async () => workItemSchema)
+    });
+    await openStart(cockpitApi);
+
+    expect((await screen.findByRole("alert")).textContent).toContain("canonical work-item schema");
+    await fireEvent.change(screen.getByLabelText("Configuration for cook"), {
+      target: { value: configurationHash }
+    });
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
     expect(cockpitApi.start).not.toHaveBeenCalled();
+  });
+
+  it("refuses a scalar schema before it can send an invented object", async () => {
+    const cockpitApi = api({
+      getWorkflowRevision: vi.fn(async () =>
+        detail([{ name: "approved", schema: { ref: "flag", revision: "schema-flag" } }])
+      ),
+      getSchemaRevision: vi.fn(async () => ({ type: "boolean" }))
+    });
+    await openStart(cockpitApi);
+
+    expect((await screen.findByRole("alert")).textContent).toContain("must be an object");
+    await fireEvent.change(screen.getByLabelText("Configuration for cook"), {
+      target: { value: configurationHash }
+    });
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(cockpitApi.start).not.toHaveBeenCalled();
+  });
+
+  it("opens modally, contains keyboard focus, and returns it to Start on Escape", async () => {
+    const showModal = vi.fn(function (this: HTMLDialogElement) {
+      this.open = true;
+    });
+    Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
+      configurable: true,
+      value: showModal
+    });
+    const cockpitApi = api();
+    window.history.replaceState(null, "", `/atelier/catalog/${encodeURIComponent(workflowName)}`);
+    render(App, {
+      props: {
+        cockpitApi,
+        mutationJournal: new MutationJournal(sessionStorage),
+        createRunId: () => "run-order"
+      }
+    });
+    const start = await screen.findByRole("button", { name: "Start" });
+    start.focus();
+    await fireEvent.click(start);
+    const dialog = await screen.findByRole("dialog", { name: `Start ${workflowName}` });
+    await waitFor(() => expect(screen.queryByText("Preparing…")).toBeNull());
+    const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+    const portions = within(dialog).getByLabelText("portions (integer) *");
+    expect(showModal).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(cancel);
+    expect(within(dialog).getAllByRole("button", { name: "Cancel" })).toHaveLength(1);
+
+    await fireEvent.keyDown(cancel, { key: "Tab" });
+    expect(document.activeElement).toBe(portions);
+    await fireEvent.keyDown(portions, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(cancel);
+    await fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: `Start ${workflowName}` })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(start));
   });
 });

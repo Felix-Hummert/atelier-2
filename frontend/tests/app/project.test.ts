@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 function openSettings(overrides = {}) {
-  window.history.replaceState(null, "", "/atelier/project");
+  window.history.replaceState(null, "", "/atelier/settings");
   return render(App, {
     props: {
       cockpitApi: cockpitApiStub({
@@ -76,7 +76,7 @@ describe("Settings", () => {
   });
 
   it("renders Settings copy through the pseudo-locale transform", async () => {
-    window.history.replaceState(null, "", "/atelier/project?pseudo-locale=1");
+    window.history.replaceState(null, "", "/atelier/settings?pseudo-locale=1");
     render(App, {
       props: {
         cockpitApi: cockpitApiStub({

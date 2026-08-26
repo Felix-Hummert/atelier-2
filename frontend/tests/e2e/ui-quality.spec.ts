@@ -132,19 +132,12 @@ const surfaces: readonly {
     },
     {
       surface: "settings",
-      path: "/atelier/project",
+      path: "/atelier/settings",
       ready: async (page) => {
         await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
       },
       pseudoReady: async (page) => {
         await expect(page.getByText("[[[ Sources ]]]", { exact: true })).toBeVisible();
-      }
-    },
-    {
-      surface: "new-run",
-      path: "/atelier/new",
-      ready: async (page) => {
-        await expect(page.getByRole("heading", { name: "Choose a workflow" })).toBeVisible();
       }
     },
     {
@@ -157,7 +150,7 @@ const surfaces: readonly {
     },
     {
       surface: "workflow-detail",
-      path: `/atelier/workflows/${encodeURIComponent(seededWorkflowName)}`,
+      path: `/atelier/catalog/${encodeURIComponent(seededWorkflowName)}`,
       prepare: stageNamedWorkflow,
       ready: async (page) => {
         await expect(
