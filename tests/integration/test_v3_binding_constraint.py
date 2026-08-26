@@ -157,7 +157,6 @@ def starter_of(runtime: DbosRuntime) -> DbosDurableRunStarter:
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     )
 
 

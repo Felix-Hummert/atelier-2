@@ -375,6 +375,7 @@ def commit_resolution(
             intent.binding.workflow_revision_hash,
             current.current_node_id,
             intent.request.payload,
+            current.current_round_ordinal,
         )
         if intent_update.rowcount != 1:
             raise DurableEffectConflict("UNKNOWN must advance one prepared run")
@@ -476,6 +477,7 @@ def commit_resolution(
             intent.binding.logical_key,
             receipt.result.payload,
             receipt.result.payload_hash,
+            current.current_round_ordinal,
         )
     return RunState.STARTED
 

@@ -21,7 +21,17 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 
-from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
+from atelier2.adapters.dbos.advancer import prepared_effect_intent
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.effect_store import (
+    commit_resolution,
+    intent_snapshot_from_record,
+)
+from atelier2.adapters.dbos.run_transitions import (
+    RunTransitionConflict,
+    load_graph,
+    load_run,
+)
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     effect_intents,
@@ -30,27 +40,102 @@ from atelier2.adapters.dbos.schema import (
     runs,
     tool_redemptions,
 )
+from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
 from atelier2.adapters.github.marker import body_carries_request_hash
-from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.application.compose_node_job import node_job
+from atelier2.contracts.agents import (
+    AgentExecutionRequestV2,
+    AgentExecutorOperationalIdentity,
+)
+from atelier2.contracts.effects import (
+    AdapterOperationalIdentity,
+    AdapterRevision,
+    CanonicalRequest,
+    EffectAbsence,
+    EffectAdapterBinding,
+    EffectBinding,
+    EffectDestination,
+    EffectId,
+    EffectIntent,
+    EffectIntentStateVersion,
+    EffectOutcome,
+    EffectReadback,
+    EffectResult,
+    EffectUnknownOutcome,
+    OperatorAuthoritativeAbsence,
+    OperatorFoundEffect,
+    PerformedEffect,
+    ReconcileActor,
+    ReconcileCommand,
+    ReconcileCommandId,
+)
 from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEventKind,
     logical_effect_key_for,
+    logical_effect_key_for_node,
 )
-from atelier2.contracts.runs import RunId, RunState
-from tests.scenarios.agents import agent_scratch_root
+from atelier2.contracts.run_bindings import RunV3
+from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.workflows_v3 import AgentNodeV3
+from atelier2.ports.durable_runs import (
+    DurableRunFormatNotExecutable,
+    StartPublishedRunRequestV2,
+)
+from atelier2.ports.effects import EffectAdapter
+from tests.scenarios.agents import agent_attempt_execution, agent_scratch_root
 from tests.scenarios.open_pr_agent import (
+    OPERATIONAL_IDENTITY,
     PR_SPEC,
     create_open_pr_agent_run,
     open_pr_agent_executor_factory,
     publish_open_pr_agent_run,
 )
+from tests.scenarios.runs import submit_reconcile_command
 
 RUN = RunId("v3/agent-open-pr")
 UNGRANTED_RUN = RunId("v3/agent-no-grant")
+LOOPED_RUN = RunId("v3/agent-open-pr-loop")
 CANARY_TOKEN = "gho_atelier2_canary_token_must_not_appear"
+
+
+class _UnknownOpenPrAdapter:
+    def __init__(self) -> None:
+        self.execute_calls = 0
+        self.authoritative_absence = False
+
+    def readback(self, intent: EffectIntent) -> EffectReadback:
+        if self.authoritative_absence:
+            return EffectAbsence(intent.reference)
+        return EffectUnknownOutcome(intent.reference)
+
+    def execute(self, intent: EffectIntent) -> PerformedEffect:
+        del intent
+        self.execute_calls += 1
+        return PerformedEffect(EffectId("opened-after-absence"), EffectResult(PR_SPEC))
+
+    def close(self) -> None:
+        return None
+
+
+class _UnknownOpenPrAdapterFactory:
+    def __init__(self) -> None:
+        self.adapter = _UnknownOpenPrAdapter()
+        self.binding = EffectAdapterBinding(
+            AdapterRevision("live-shaped-open-pr-v1"),
+            EffectDestination("platform"),
+            AdapterOperationalIdentity("test-live-github"),
+        )
+
+    @property
+    def proves_absence(self) -> bool:
+        return False
+
+    def open(self) -> EffectAdapter:
+        return self.adapter
 
 
 @pytest.fixture
@@ -111,6 +196,103 @@ def _wait_for_receipt(runtime: DbosRuntime) -> None:
                 return
         time.sleep(0.025)
     raise AssertionError("no effect receipt was written")
+
+
+def _submit_reconciliation(
+    runtime: DbosRuntime,
+    intent: EffectIntent,
+    determination: OperatorFoundEffect | OperatorAuthoritativeAbsence,
+) -> None:
+    submit_reconcile_command(
+        runtime.engine,
+        runtime.settings,
+        ReconcileCommand(
+            ReconcileCommandId("agent-open-pr-reconcile"),
+            intent.reference,
+            EffectIntentStateVersion(1),
+            ReconcileActor("operator"),
+            "checked the declared pull-request destination",
+            determination,
+        ),
+    )
+
+
+def _persist_round_two_reconciliation(
+    runtime: DbosRuntime,
+    run: RunId,
+    workflow_revision_hash: WorkflowRevisionHash,
+    adapter_binding: EffectAdapterBinding,
+) -> EffectIntent:
+    """Seed the persisted legacy state a looped grant may leave behind.
+
+    New looped effect grants are refused before a run exists, but an older
+    database can already carry this exact round-two reconciliation door. The
+    reconciliation path must keep that execution's round rather than silently
+    returning it to the first.
+    """
+
+    logical_key = logical_effect_key_for_node(
+        run, workflow_revision_hash, "implement", 2
+    )
+    intent = EffectIntent(
+        EffectBinding(
+            logical_key,
+            run,
+            workflow_revision_hash,
+            adapter_binding.adapter_revision,
+            adapter_binding.destination,
+            adapter_binding.operational_identity,
+        ),
+        CanonicalRequest(PR_SPEC),
+    )
+    with canonical_write_transaction(runtime.engine) as connection:
+        connection.execute(
+            runs.update()
+            .where(runs.c.run_id == run.value)
+            .values(current_round_ordinal=2)
+        )
+        prepared_effect_intent(connection, intent)
+        commit_resolution(
+            connection,
+            logical_key.value,
+            workflow_revision_hash.value,
+            {"outcome": EffectOutcome.UNKNOWN.value},
+        )
+    return intent
+
+
+def _completed_agent_execution(runtime: DbosRuntime, run: RunId):
+    with runtime.engine.connect() as connection:
+        durable_run = load_run(connection, run)
+        graph = load_graph(connection, durable_run.revision_hash)
+    assert isinstance(durable_run, RunV3)
+    node = graph.node("implement")
+    assert isinstance(node, AgentNodeV3)
+    request = AgentExecutionRequestV2(
+        NodeExecutionId.for_node(run, durable_run.revision_hash, node.id),
+        run,
+        durable_run.revision_hash,
+        node.id,
+        durable_run.agent_bindings[0],
+        AgentExecutorOperationalIdentity(OPERATIONAL_IDENTITY),
+        node_job(node.instruction).encode("utf-8"),
+    )
+    return agent_attempt_execution(request)
+
+
+def _replace_receipt_adapter_revision(runtime: DbosRuntime) -> None:
+    with runtime.engine.begin() as connection:
+        trigger = connection.execute(
+            sa.text(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='trigger' AND name='effect_receipts_no_update'"
+            )
+        ).scalar_one()
+        connection.execute(sa.text("DROP TRIGGER effect_receipts_no_update"))
+        connection.execute(
+            effect_receipts.update().values(adapter_revision="mismatched-receipt")
+        )
+        connection.execute(sa.text(str(trigger)))
 
 
 def _durable_bytes_contain(database: Path, token: str) -> bool:
@@ -224,3 +406,130 @@ def test_an_agent_node_without_the_grant_opens_no_pull_request(
             connection.scalar(sa.select(sa.func.count()).select_from(effect_receipts))
             == 0
         )
+
+
+def test_a_completed_agent_replay_refuses_a_mismatched_receipt_intent(
+    runtime: tuple[DbosRuntime, GitHubEffectAdapterFactory, Path],
+) -> None:
+    started_runtime, _github, _atelier_sqlite = runtime
+
+    _start(started_runtime, RUN, granted=True)
+    _wait_for_state(started_runtime, RUN, RunState.COMPLETED)
+    _wait_for_receipt(started_runtime)
+    _replace_receipt_adapter_revision(started_runtime)
+
+    with pytest.raises(
+        RunTransitionConflict,
+        match="successful effect-grant attempt has no exact confirmed effect receipt",
+    ):
+        DbosAgentAttemptStore(started_runtime.engine).claim(
+            _completed_agent_execution(started_runtime, RUN)
+        )
+
+
+def test_a_looped_agent_effect_grant_is_refused_before_it_creates_a_run(
+    runtime: tuple[DbosRuntime, GitHubEffectAdapterFactory, Path],
+) -> None:
+    started_runtime, github, _atelier_sqlite = runtime
+    workflow, bindings = publish_open_pr_agent_run(
+        started_runtime, granted=True, loop_maximum_rounds=2
+    )
+    started = DbosDurableRunStarter(
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
+    ).start_published(
+        StartPublishedRunRequestV2(LOOPED_RUN, workflow.revision_hash, bindings)
+    )
+
+    assert isinstance(started, DurableRunFormatNotExecutable)
+    with started_runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+        assert (
+            connection.scalar(sa.select(sa.func.count()).select_from(effect_intents))
+            == 0
+        )
+    assert github.recorded_pull_requests() == ()
+
+
+@pytest.mark.parametrize("operator_found", (True, False))
+def test_a_persisted_round_two_agent_reconciliation_preserves_its_round(
+    tmp_path: Path,
+    operator_found: bool,
+) -> None:
+    adapter_factory = _UnknownOpenPrAdapterFactory()
+    runtime = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "unknown-agent-open-pr",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
+        adapter_factory,
+        ExactOutputAgentExecutorFactory(),
+        (open_pr_agent_executor_factory(PR_SPEC),),
+    )
+    runtime.initialize_storage()
+    try:
+        workflow, bindings = publish_open_pr_agent_run(
+            runtime, granted=False, loop_maximum_rounds=2
+        )
+        create_open_pr_agent_run(runtime, RUN, workflow, bindings)
+        intent = _persist_round_two_reconciliation(
+            runtime, RUN, workflow.revision_hash, adapter_factory.binding
+        )
+        with runtime.engine.connect() as connection:
+            state, node, round_ordinal = connection.execute(
+                sa.select(
+                    runs.c.state, runs.c.current_node_id, runs.c.current_round_ordinal
+                ).where(runs.c.run_id == RUN.value)
+            ).one()
+            receipts = connection.scalar(
+                sa.select(sa.func.count()).select_from(effect_receipts)
+            )
+        assert (state, node, round_ordinal) == (
+            RunState.WAITING_RECONCILIATION.value,
+            "implement",
+            2,
+        )
+        assert receipts == 0
+        assert adapter_factory.adapter.execute_calls == 0
+        assert not _durable_bytes_contain(tmp_path / "atelier.sqlite", CANARY_TOKEN)
+
+        if operator_found:
+            determination: OperatorFoundEffect | OperatorAuthoritativeAbsence = (
+                OperatorFoundEffect(
+                    EffectId("found-by-operator"), EffectResult(PR_SPEC)
+                )
+            )
+        else:
+            adapter_factory.adapter.authoritative_absence = True
+            determination = OperatorAuthoritativeAbsence()
+        runtime.launch()
+        _submit_reconciliation(runtime, intent, determination)
+        _wait_for_state(runtime, RUN, RunState.COMPLETED)
+        _wait_for_receipt(runtime)
+
+        with runtime.engine.connect() as connection:
+            receipt_count = connection.scalar(
+                sa.select(sa.func.count()).select_from(effect_receipts)
+            )
+            events = connection.execute(
+                sa.select(run_events.c.event_kind, run_events.c.round_ordinal)
+                .where(run_events.c.run_id == RUN.value)
+                .order_by(run_events.c.event_sequence)
+            ).all()
+            current_round = connection.scalar(
+                sa.select(runs.c.current_round_ordinal).where(
+                    runs.c.run_id == RUN.value
+                )
+            )
+        assert receipt_count == 1
+        assert adapter_factory.adapter.execute_calls == (0 if operator_found else 1)
+        assert events == [
+            (RunEventKind.ACTION_RECONCILIATION_REQUIRED.value, 2),
+            (RunEventKind.ACTION_RECONCILIATION_RESOLVED.value, 2),
+            (RunEventKind.ACTION_COMPLETED.value, 2),
+        ]
+        assert current_round == 2
+    finally:
+        runtime.close()

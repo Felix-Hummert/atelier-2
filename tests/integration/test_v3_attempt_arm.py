@@ -122,7 +122,6 @@ def started_v3_attempt(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     revision_hash = WorkflowRevisionHash(workflow.revision_hash.value)
     with runtime.engine.connect() as connection:
@@ -524,7 +523,6 @@ def test_a_succeeded_non_sink_leaves_the_run_standing_on_its_declared_heir(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
     revision_hash = WorkflowRevisionHash(workflow.revision_hash.value)
     store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)

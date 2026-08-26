@@ -15,8 +15,8 @@ from atelier2.adapters.dbos.advancer import (
     redeem_agent_open_pr,
 )
 from atelier2.adapters.dbos.continuation import (
-    checkpoint_confirmed_action,
-    schedule_confirmed_action_continuation,
+    checkpoint_confirmed_effect,
+    schedule_confirmed_effect_continuation,
 )
 from atelier2.adapters.dbos.effect_store import (
     EncodedEffectResolution,
@@ -671,7 +671,14 @@ def register_durable_run_workflow(
 
         if not isinstance(outcome, AgentAttemptSucceeded):
             return RunState.STARTED.value
-        redeem_agent_node_effect(run_id, revision_hash, node_id, round_ordinal)
+        redeemed_effect = redeem_agent_node_effect(
+            run_id, revision_hash, node_id, round_ordinal
+        )
+        if redeemed_effect is not None:
+            logical_key, state = redeemed_effect
+            if state is RunState.WAITING_RECONCILIATION:
+                return state.value
+            return continue_confirmed_effect(logical_key, revision_hash)
         match outcome.completion:
             case RunContinues(successor_id, successor_round):
                 start_node(run_id, revision_hash, successor_id, successor_round)
@@ -686,7 +693,7 @@ def register_durable_run_workflow(
         revision_hash: WorkflowRevisionHash,
         node_id: str,
         round_ordinal: int,
-    ) -> None:
+    ) -> tuple[LogicalEffectKey, RunState] | None:
         """Redeem the pull request this agent node's own grant opened, if any.
 
         Runs after the attempt has durably succeeded, so the request bytes are
@@ -709,16 +716,33 @@ def register_durable_run_workflow(
             ),
         )
         if logical_key is None:
-            return
-        datasource.run_tx_step(
-            {"name": AGENT_EFFECT_REDEEM_STEP_NAME},
-            lambda: redeem_agent_open_pr(
-                datasource.sql_session(),
-                adapter,
-                str(logical_key),
-                revision_hash.value,
-            ),
+            return None
+        state = RunState(
+            datasource.run_tx_step(
+                {"name": AGENT_EFFECT_REDEEM_STEP_NAME},
+                lambda: redeem_agent_open_pr(
+                    datasource.sql_session(),
+                    adapter,
+                    str(logical_key),
+                    revision_hash.value,
+                ),
+            )
         )
+        if state not in {RunState.STARTED, RunState.WAITING_RECONCILIATION}:
+            raise RunTransitionConflict(
+                "agent effect redemption returned invalid state"
+            )
+        return LogicalEffectKey(str(logical_key)), state
+
+    def continue_confirmed_effect(
+        logical_key: LogicalEffectKey, revision_hash: WorkflowRevisionHash
+    ) -> str:
+        run_id, head, round_ordinal, state = checkpoint_confirmed_effect(
+            datasource, logical_key, revision_hash
+        )
+        if RunState(state) is RunState.STARTED:
+            start_node(RunId(run_id), revision_hash, head, round_ordinal)
+        return state
 
     def start_node(
         run_id: RunId,
@@ -1040,7 +1064,7 @@ def register_durable_run_workflow(
             )
         )
         if state is RunState.STARTED:
-            schedule_confirmed_action_continuation(
+            schedule_confirmed_effect_continuation(
                 durable_action_continuation,
                 LogicalEffectKey(logical_key),
                 WorkflowRevisionHash(revision_hash),
@@ -1084,7 +1108,7 @@ def register_durable_run_workflow(
             )
         )
         if state is RunState.STARTED:
-            schedule_confirmed_action_continuation(
+            schedule_confirmed_effect_continuation(
                 durable_action_continuation,
                 LogicalEffectKey(logical_key),
                 WorkflowRevisionHash(revision_hash),
@@ -1095,11 +1119,11 @@ def register_durable_run_workflow(
     def durable_action_continuation(logical_key: str, revision_hash: str) -> str:
         typed_key = LogicalEffectKey(logical_key)
         typed_revision = WorkflowRevisionHash(revision_hash)
-        run_id, head, state = checkpoint_confirmed_action(
+        run_id, head, round_ordinal, state = checkpoint_confirmed_effect(
             datasource, typed_key, typed_revision
         )
         if RunState(state) is RunState.STARTED:
-            start_node(RunId(run_id), typed_revision, head)
+            start_node(RunId(run_id), typed_revision, head, round_ordinal)
         return state
 
     @DBOS.workflow(name=ANSWER_WORKFLOW_NAME, max_recovery_attempts=None)

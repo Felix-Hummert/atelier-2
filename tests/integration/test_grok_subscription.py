@@ -1179,7 +1179,6 @@ def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
             runtime.engine,
             runtime.settings,
             runtime.agent_executor_registry,
-            effect_adapter_proves_absence=True,
         )
         refused = starter.start_published(
             StartPublishedRunRequestV2(
@@ -1449,7 +1448,6 @@ def grok_subscription_start(
         runtime.engine,
         runtime.settings,
         runtime.agent_executor_registry,
-        effect_adapter_proves_absence=True,
     ).start_published(
         StartPublishedRunRequestV2(
             RunId(run_name),

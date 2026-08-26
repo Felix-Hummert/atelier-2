@@ -251,7 +251,7 @@ def test_dropping_the_v3_action_mapping_reds_the_open_pr_event(
         "    if event.event_kind is RunEventKind.ACTION_COMPLETED:\n"
         "        if projection.receipt is None:\n"
         "            raise ValueError("
-        '"completed V3 Action event has no receipt")\n'
+        '"completed V3 effect event has no receipt")\n'
         "        return ActionCompletedEventResourceV3(\n"
         "            event=event.event_kind.value,\n"
         "            receipt=receipt_resource(projection.receipt),\n"
