@@ -307,6 +307,7 @@ def api_ports(**overrides: object) -> ApiPorts:
         "published_revision_listing": unused,
         "artifact_publisher": unused,
         "host_configuration_channel": unused,
+        "project_source_connection_channel": unused,
         "queue_projection": unused,
     }
     ports.update(overrides)
@@ -358,6 +359,7 @@ def durable_ports(
         "published_revision_listing": catalog,
         "artifact_publisher": DbosArtifactStore(engine),
         "host_configuration_channel": DbosHostConfigurationChannel(engine),
+        "project_source_connection_channel": DbosHostConfigurationChannel(engine),
         "queue_projection": DbosQueueProjectionStore(engine),
     }
     ports.update(overrides)

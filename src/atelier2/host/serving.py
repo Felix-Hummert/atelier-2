@@ -769,6 +769,9 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
                 published_revision_listing=DbosCatalogStore(runtime.engine),
                 artifact_publisher=DbosArtifactStore(runtime.engine),
                 host_configuration_channel=DbosHostConfigurationChannel(runtime.engine),
+                project_source_connection_channel=DbosHostConfigurationChannel(
+                    runtime.engine
+                ),
                 queue_projection=DbosQueueProjectionStore(runtime.engine),
                 tracker_item_source=(
                     None

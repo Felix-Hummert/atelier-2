@@ -96,6 +96,7 @@ OCCUPANCY_PATH = (
 PROJECTS_PATH = API_PREFIX + "/projects"
 PROJECT_PATH = PROJECTS_PATH + "/{public_project_reference}"
 PROJECT_ROOT_PATH = PROJECT_PATH + "/root"
+PROJECT_SOURCE_CONNECTION_PATH = PROJECT_PATH + "/source-connection"
 QUEUE_ADMISSIONS_PATH = API_PREFIX + "/queue-admissions"
 QUEUE_ITEMS_PATH = API_PREFIX + "/queue-items"
 OBSERVED_QUEUE_ITEMS_PATH = API_PREFIX + "/observed-queue-items"
@@ -372,6 +373,14 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "project-unknown",
         "project-root-missing",
         "host-configuration-unreadable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (PROJECT_SOURCE_CONNECTION_PATH, "get"): (
+        "invalid-public-project-reference",
+        "project-unknown",
+        "project-source-not-connected",
+        "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
     ),

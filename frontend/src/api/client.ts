@@ -372,6 +372,17 @@ export const occupancyRevisionSchema = z
     }
   });
 
+export const projectSourceConnectionRevisionSchema = z
+  .object({
+    public_project_reference: publicProjectReference,
+    revision_number: positiveSafeInteger,
+    source_kind: z.string().min(1).max(64),
+    source_address: z.string().min(1).max(1024),
+    auth_method: z.literal("personal-access-token"),
+    project_source_connection_revision_hash: sha256
+  })
+  .strict();
+
 /**
  * What `GET /workflow-revisions/by-name/{name}` answers: which revision that
  * catalog name holds. The described listing does not carry lineage recency, so
@@ -1384,6 +1395,7 @@ export type CatalogAdmission = z.infer<typeof catalogAdmissionSchema>;
 export type ProjectResource = z.infer<typeof projectResourceSchema>;
 export type ProjectList = z.infer<typeof projectListSchema>;
 export type OccupancyRevision = z.infer<typeof occupancyRevisionSchema>;
+export type ProjectSourceConnectionRevision = z.infer<typeof projectSourceConnectionRevisionSchema>;
 
 export interface OccupancyRevisionInput {
   revision_number: number;
@@ -1455,6 +1467,9 @@ export interface CockpitApi {
   health(signal?: AbortSignal): Promise<HealthResource>;
   listRuns(after?: string, state?: AnyRun["state"]): Promise<RunPage>;
   listProjects(): Promise<ProjectList>;
+  getProjectSourceConnection(
+    publicProjectReference: string
+  ): Promise<ProjectSourceConnectionRevision>;
   getProjectOccupancy(
     publicProjectReference: string,
     lineageId: string
@@ -1553,6 +1568,19 @@ export function createCockpitApi(
         [200],
         projectListSchema
       ),
+    getProjectSourceConnection: async (publicProjectReference) => {
+      const connection = await requestJson(
+        fetcher,
+        `/atelier/api/v1/projects/${encodeURIComponent(publicProjectReference)}/source-connection`,
+        {},
+        [200],
+        projectSourceConnectionRevisionSchema
+      );
+      if (connection.public_project_reference !== publicProjectReference) {
+        throw new CockpitRequestError("The source connection named another project.");
+      }
+      return connection;
+    },
     getProjectOccupancy: async (publicProjectReference, lineageId) => {
       const occupancy = await requestJson(
         fetcher,
