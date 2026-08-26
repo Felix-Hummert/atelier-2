@@ -6,6 +6,14 @@ which layer answers which question.
 This file is a map. It owns no product fact. Each layer has its own owner;
 where this map and an owner disagree, the owner is right.
 
+The name has three layers ([#515](https://github.com/FlexOr2/atelier-2/issues/515),
+operator ruling 22.08.): the product is **atelier**, the GitHub repository
+stays `atelier-2` until the operator moves it, and technical identifiers —
+Python package, CLI, store/event/problem URNs, container labels — stay
+`atelier2` until each is renamed as its own migration.
+[`productName.ts`](../frontend/src/lib/productName.ts) owns the visible
+string.
+
 ## Which question lives where
 
 | Question | Layer | Owner today |

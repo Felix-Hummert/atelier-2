@@ -30,7 +30,12 @@ from atelier2.contracts.agent_attempts import (
 )
 from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.runner.identity_receiver import load_published_identity
-from atelier2.runner.session import CandidateScenario, run_candidate_session
+from atelier2.runner.session import (
+    REAL_TIME,
+    CandidateScenario,
+    SessionClock,
+    run_candidate_session,
+)
 
 
 def _binding(bootstrap: dict[str, str]) -> RunnerGenerationBinding:
@@ -139,6 +144,38 @@ def _load_verified_client_identity(
         os.close(descriptor)
 
 
+def dial_within_budget(
+    address: tuple[str, int],
+    context: ssl.SSLContext,
+    server_hostname: str,
+    seconds: float,
+    clock: SessionClock,
+) -> ssl.SSLSocket:
+    """Reach an authenticated Core inside one budget, not one budget per step.
+
+    The TCP connect and the TLS handshake wait on the same socket timeout, so
+    giving each of them the whole remaining budget would let the pair take
+    twice it -- and the pair is what the invocation's span actually pays for
+    while a provider child is held. The budget becomes one deadline here, and
+    the handshake is given only what the connect left of it.
+
+    A connect that spent the budget outright fails as the timeout it is, so
+    the caller's own reconnect bound sees a dial that did not land rather than
+    a handshake nothing budgeted for.
+    """
+    deadline = clock.monotonic() + seconds
+    raw = socket.create_connection(address, seconds)
+    try:
+        remaining = deadline - clock.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("connecting to Core spent this dial's whole budget")
+        raw.settimeout(remaining)
+        return context.wrap_socket(raw, server_hostname=server_hostname)
+    except BaseException:
+        raw.close()
+        raise
+
+
 def _run_candidate_session(
     handoff: Path, identity: Path, journal_directory: Path, invocation_offer: Path
 ) -> int:
@@ -186,23 +223,48 @@ def _run_candidate_session(
     # post-handshake fence below: validate_core_peer_leaf pins SAN DNS name,
     # SPKI-bound URI, EKU and fingerprint against the bootstrap document.
     context.check_hostname = False
-    with (
-        socket.create_connection((CORE_DNS_NAME, document.port), 5) as raw,
-        context.wrap_socket(raw, server_hostname=CORE_DNS_NAME) as connection,
-    ):
-        presented = connection.getpeercert(binary_form=True)
-        if presented is None:
-            raise RuntimeError("Core did not present an authenticated leaf")
-        validate_core_peer_leaf(presented, ca_certificate, document)
-        run_candidate_session(
-            connection,
-            binding,
-            invocation,
-            scenario,
-            handoff.joinpath("manifest"),
-            identity,
-            journal_directory,
+
+    def connect_to_core(timeout_seconds: float) -> ssl.SSLSocket:
+        """One authenticated channel to Core, freshly fenced against its leaf.
+
+        `timeout_seconds` is what the invocation's own span still allows, and
+        `dial_within_budget` spends it on the connect and the handshake
+        together. The bound is cleared again before the channel is handed
+        over, so the session's own per-frame bounds are then the only ones
+        that apply.
+
+        The session asks for this again whenever the connection it had died,
+        so every fence below is re-run per connection rather than trusted from
+        the last one: a Core that comes back is only the Core this bootstrap
+        pinned if the leaf it presents still says so.
+        """
+        connection = dial_within_budget(
+            (CORE_DNS_NAME, document.port),
+            context,
+            CORE_DNS_NAME,
+            timeout_seconds,
+            REAL_TIME,
         )
+        try:
+            presented = connection.getpeercert(binary_form=True)
+            if presented is None:
+                raise RuntimeError("Core did not present an authenticated leaf")
+            validate_core_peer_leaf(presented, ca_certificate, document)
+            connection.settimeout(None)
+        except BaseException:
+            connection.close()
+            raise
+        return connection
+
+    run_candidate_session(
+        connect_to_core,
+        binding,
+        invocation,
+        scenario,
+        handoff.joinpath("manifest"),
+        identity,
+        journal_directory,
+    )
     return 0
 
 
