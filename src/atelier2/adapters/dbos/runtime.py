@@ -43,7 +43,10 @@ from atelier2.adapters.dbos.schema import (
     run_agent_bindings,
     runs,
 )
-from atelier2.adapters.dbos.uncontinuable_runs import DbosUncontinuableRunStore
+from atelier2.adapters.dbos.uncontinuable_runs import (
+    DbosUncontinuableRunStore,
+    live_driver_workflow_ids,
+)
 from atelier2.adapters.dbos.workflow import (
     AgentExecutorMap,
     RunnerLeaseAttemptDriver,
@@ -533,21 +536,6 @@ class DbosRunnerLeaseAttemptDriver:
         )
 
 
-# DBOS owns this table and these tokens; this module only reads them, and only
-# to answer whether a workflow that owes a Runner-lease attempt its next move
-# is still going to run (`#540` C-3.6 D-8a) -- the same narrow read
-# `atelier2.adapters.dbos.uncontinuable_runs` and
-# `atelier2.adapters.dbos.agent_attempt_store` each already keep their own
-# copy of, rather than a shared owner neither of those files' scope invites
-# widening today.
-_dbos_workflow_status = sa.table(
-    "workflow_status",
-    sa.column("workflow_uuid"),
-    sa.column("status"),
-)
-_DRIVING_WORKFLOW_STATUSES = ("PENDING", "ENQUEUED", "DELAYED")
-
-
 def _withdraw_open_runner_leases(
     leases: FileRunnerLeasePublisher, open_directory: Path
 ) -> None:
@@ -614,19 +602,14 @@ def _driverless_runner_lease_attempts(
         return ()
     candidates = tuple(store.load(AgentAttemptId(value)) for value in candidate_ids)
     with engine.connect() as connection:
-        driving = set(
-            connection.scalars(
-                sa.select(_dbos_workflow_status.c.workflow_uuid).where(
-                    _dbos_workflow_status.c.workflow_uuid.in_(
-                        tuple(
-                            workflow_id
-                            for attempt in candidates
-                            for workflow_id in driving_workflow_ids(attempt)
-                        )
-                    ),
-                    _dbos_workflow_status.c.status.in_(_DRIVING_WORKFLOW_STATUSES),
-                )
-            )
+        driving = live_driver_workflow_ids(
+            connection,
+            (
+                workflow_id
+                for attempt in candidates
+                for workflow_id in driving_workflow_ids(attempt)
+            ),
+            application_version,
         )
     return tuple(
         attempt

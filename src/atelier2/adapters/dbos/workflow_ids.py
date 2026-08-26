@@ -146,21 +146,24 @@ def driving_workflow_ids(attempt: AgentAttempt) -> tuple[str, ...]:
     node workflow of its execution. Naming that here is what lets a restart ask
     whether anything is still driving an attempt at all.
 
-    One case the row cannot settle, and there this answers with both (#636): a
-    lease-carried Attempt is durably prepared before it binds its Runner
-    generation, and between those two commits nothing on the row says that the
-    slot's workflow -- rather than the node workflow that handed the Attempt over
-    and has long since succeeded -- is the one driving it. A single answer would
-    have to guess, and guessing the node workflow ends an Attempt whose Runner
-    may be running. Both is exact instead: an id no workflow was ever minted
-    under matches nothing, so the caller's own status read still decides.
+    The Runner slot's own workflow is named beside every one of those, because no
+    column ever rules it out (#636). A lease-carried Attempt is durably prepared
+    before it binds its generation, so between those two commits the row still
+    reads local-process while the slot drives it; and cancelling a lease whose
+    launcher already claimed it defers the ending to that same slot workflow
+    (`#584`) instead of finishing it there. Naming the slot only where a column
+    happens to prove it leaves both of those Attempts looking abandoned to a
+    sweep that is about to stop them.
+
+    A wrong name costs nothing: no workflow was ever minted under it, so it
+    matches no row and the caller's own status read still decides.
     """
 
-    if attempt.cancellation is not None:
-        return (cancellation_workflow_id_for(stop_command_for(attempt)),)
     runner_slot = runner_lease_workflow_id_for(
         attempt.node_execution_id, attempt.attempt_ordinal
     )
+    if attempt.cancellation is not None:
+        return (cancellation_workflow_id_for(stop_command_for(attempt)), runner_slot)
     if attempt.runner_manifest_id is not None:
         return (runner_slot,)
     if attempt.attempt_ordinal == REPLACEMENT_AGENT_ATTEMPT_ORDINAL:

@@ -104,6 +104,32 @@ def live_driver_workflow_ids(
     )
 
 
+def minted_workflow_ids(
+    connection: Connection, workflow_ids: Iterable[str]
+) -> frozenset[str]:
+    """The ids among `workflow_ids` a workflow was ever durably started under.
+
+    The other half of the question `live_driver_workflow_ids` answers, and the
+    reason a caller may name ids speculatively at all: a derived id no workflow
+    was ever minted under matches nothing here, so "this workflow existed" and
+    "this workflow is still going to run" stay two separate facts. A caller that
+    needs to tell a run nothing ever carried from one whose carrier is dead needs
+    the first, in any application version -- a workflow a retired version left
+    behind still proves the run got that far.
+    """
+
+    ids = tuple(workflow_ids)
+    if not ids:
+        return frozenset()
+    return frozenset(
+        connection.scalars(
+            sa.select(_dbos_workflow_status.c.workflow_uuid).where(
+                _dbos_workflow_status.c.workflow_uuid.in_(ids)
+            )
+        )
+    )
+
+
 class DbosUncontinuableRunStore:
     def __init__(self, engine: Engine, application_version: str) -> None:
         if not application_version.strip():
@@ -221,7 +247,7 @@ def _gap_family_run_ids(connection: Any, application_version: str) -> tuple[RunI
             runs.c.current_round_ordinal,
         ).where(*_gap_store_predicates())
     ).mappings():
-        if not _gap_has_recoverable_driver(connection, record, application_version):
+        if _no_workflow_will_move_this_run(connection, record, application_version):
             found.append(RunId(str(record["run_id"])))
     return tuple(found)
 
@@ -245,14 +271,6 @@ def _gap_store_predicates() -> tuple[Any, ...]:
             .where(
                 agent_attempts.c.run_id == runs.c.run_id,
                 agent_attempts.c.state.notin_(terminal_attempt),
-            )
-        ),
-        sa.exists(
-            sa.select(1)
-            .select_from(agent_attempts)
-            .where(
-                agent_attempts.c.run_id == runs.c.run_id,
-                agent_attempts.c.state == AgentAttemptState.SUCCEEDED.value,
             )
         ),
     )
@@ -331,14 +349,32 @@ def _current_node_is_a_dead_gap(
     )
     if still_a_gap is None:
         return False
-    return not _gap_has_recoverable_driver(connection, record, application_version)
+    return _no_workflow_will_move_this_run(connection, record, application_version)
 
 
-def _gap_has_recoverable_driver(
+def _no_workflow_will_move_this_run(
     connection: Any, record: Mapping[Any, Any], application_version: str
 ) -> bool:
+    """Whether nothing is ever going to move this run again.
+
+    Two questions, in order, over the same set of workflows. Was any of them ever
+    durably started -- did this run get anywhere at all? A run whose first
+    workflow has not been picked up yet is young, not dead, and every id derived
+    for it matches no row. And of the ones that were started, is any still one
+    recovery will resume? Only a run that got somewhere and has no live carrier
+    left is a dead gap.
+
+    Asking "was anything started" rather than "did an attempt succeed" is what
+    catches a carrier that died or was retired before it prepared its first
+    Attempt (#636): a Runner slot workflow left `ENQUEUED` by a version that will
+    never run again has no attempt to its name, and the run it holds would
+    otherwise stand `STARTED` for as long as the store exists.
+    """
+
     workflow_ids = _gap_workflow_ids(connection, record)
-    return bool(live_driver_workflow_ids(connection, workflow_ids, application_version))
+    if not minted_workflow_ids(connection, workflow_ids):
+        return False
+    return not live_driver_workflow_ids(connection, workflow_ids, application_version)
 
 
 def _gap_workflow_ids(connection: Any, record: Mapping[Any, Any]) -> tuple[str, ...]:
