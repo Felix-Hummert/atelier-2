@@ -1,8 +1,13 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
 import type { AnyRun, CockpitApi, RunV1, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
+import {
+  reportConnectionLost,
+  reportConnectionRestored,
+  restartNoticeCopy
+} from "../../src/lib/connectionState";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { standingWords } from "../../src/lib/runState";
@@ -38,6 +43,7 @@ function v3Run(changes: Partial<RunV3> = {}): RunV3 {
     agent_binding_set_hash: "b".repeat(64),
     run_configuration_revision_hash: "c".repeat(64),
     agent_bindings: [],
+    orders: [],
     state_version: 1,
     state: "COMPLETED",
     current_node_id: "final",
@@ -93,6 +99,7 @@ function openHistory(
 afterEach(() => {
   vi.restoreAllMocks();
   cleanup();
+  reportConnectionRestored();
 });
 
 describe("History shows only what has finished", () => {
@@ -147,6 +154,27 @@ describe("History shows only what has finished", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
+  it("names no local failure while the whole workshop reads unreachable, and reads itself again once the connection returns (#700)", async () => {
+    const listRuns = vi.fn().mockRejectedValue(new Error("Failed to fetch"));
+    openHistory({}, { listRuns });
+    await screen.findByRole("heading", { name: "History" });
+
+    reportConnectionLost();
+    await waitFor(() => {
+      expect(document.querySelector(".notice-banner")?.textContent).toContain(restartNoticeCopy);
+    });
+    // The shell's one line above already names the outage; this page adds
+    // no second, page-local echo of the same fact.
+    expect(screen.queryByText("History unavailable")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+
+    listRuns.mockResolvedValue({ items: [], next_after: null });
+    reportConnectionRestored();
+
+    expect((await screen.findByText("No finished runs yet")).isConnected).toBe(true);
+    expect(screen.queryByText("History unavailable")).toBeNull();
+  });
+
   it("names the resolved workflow, when it ran, and the real duration, without a per-row node read", async () => {
     const run = v3Run();
     const getNodeDetail = vi.fn();
@@ -165,6 +193,38 @@ describe("History shows only what has finished", () => {
     expect(row.textContent).toContain("38 min");
     // Never one node read per row -- the list is built from the run resources alone.
     expect(getNodeDetail).not.toHaveBeenCalled();
+  });
+
+  it("names the run's purpose from its own orders, with the workflow named beneath it", async () => {
+    const run = v3Run({
+      orders: [{ name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) }]
+    });
+    openHistory({ completed: [run] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line"))
+    });
+
+    const row = await screen.findByRole("link", { name: /diff/ });
+    expect(within(row).getByText("diff").isConnected).toBe(true);
+    expect(within(row).getByText("Two agents in a line").isConnected).toBe(true);
+  });
+
+  it("names only the workflow, once, for a run started with no orders -- nothing repeats it", async () => {
+    openHistory({ completed: [v3Run({ orders: [] })] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line"))
+    });
+
+    const row = await screen.findByRole("link", { name: /Two agents in a line/ });
+    expect(within(row).getAllByText("Two agents in a line")).toHaveLength(1);
+  });
+
+  it("shows the honest placeholder in the Work item column, deriving nothing", async () => {
+    openHistory({ completed: [v3Run()] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line"))
+    });
+
+    const row = await screen.findByRole("link", { name: /Two agents in a line/ });
+    const label = within(row).getByText("Work item:", { exact: false });
+    expect(label.closest(".row-work-item")?.textContent).toContain("—");
   });
 
   it("names a failed run's node, without reading it, and shows no duration when no V3 stamp exists", async () => {

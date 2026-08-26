@@ -209,6 +209,7 @@ def test_v2_tables_have_exact_secret_free_columns(tmp_path: Path) -> None:
             "runner_invocation_id",
             "runner_terminal_evidence_hash",
             "runner_evidence_acceptance_phase",
+            "transcript_artifact_hash",
         ),
     }
 

@@ -52,6 +52,7 @@ from atelier2.application.start_published_run import (
     RunFormatNotExecutable,
     RunIdentityConflict,
     RunInputRefused,
+    WorkItemOrderUnreadable,
     start_published_run,
 )
 from atelier2.contracts.catalog_v3 import CatalogLineageId
@@ -122,6 +123,7 @@ type StartRefusalReason = (
     | RunIdentityConflict
     | RunFormatNotExecutable
     | RunInputRefused
+    | WorkItemOrderUnreadable
     | BindingConstraintRefused
     | AgentConfigurationRevisionMissing
     | AgentExecutorBindingUnavailable
@@ -197,6 +199,7 @@ def _start_one(
             | RunIdentityConflict()
             | RunFormatNotExecutable()
             | RunInputRefused()
+            | WorkItemOrderUnreadable()
             | BindingConstraintRefused()
             | AgentConfigurationRevisionMissing()
             | AgentExecutorBindingUnavailable()

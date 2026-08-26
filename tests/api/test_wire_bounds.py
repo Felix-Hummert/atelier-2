@@ -32,9 +32,14 @@ from atelier2.api.references import (
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
+    MAXIMUM_RUN_ORDERS,
 )
 from atelier2.api.wire import events, library, requests, resources
 from atelier2.contracts.agent_attempts import REPLACEMENT_AGENT_ATTEMPT_ORDINAL
+from atelier2.contracts.agent_definitions import (
+    MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS,
+    MAXIMUM_AGENT_DEFINITION_TOOL_COUNT,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
@@ -62,6 +67,10 @@ WIRE_MODULES: tuple[ModuleType, ...] = (requests, resources, events, library)
 # owner caps how many roles one run binds.
 OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AgentAttemptCancellationResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "AgentDefinitionRevisionDetailResource.system_prompt": (
+        MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS
+    ),
+    "AgentDefinitionRevisionDetailResource.tools": MAXIMUM_AGENT_DEFINITION_TOOL_COUNT,
     "AgentBindingResourceV2.executor_revision": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentBindingResourceV2.model": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentBindingResourceV2.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
@@ -133,6 +142,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "RunResourceV2.agent_attempts": REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     "RunResourceV2.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "RunResourceV3.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
+    "RunResourceV3.orders": MAXIMUM_RUN_ORDERS,
     # A document declares no more roles than a run can bind: one role is one
     # binding, so the two carry the same limit for the same reason.
     "WorkflowGraphResourceV3.agent_roles": MAXIMUM_RUN_AGENT_BINDINGS,
@@ -143,6 +153,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "StartRunRequestResourceV2.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "StartRunRequestResourceV3.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "InlineOrderResource.value": MAXIMUM_INSTANCE_DOCUMENT_BYTES,
+    "WorkItemOrderResource.work_item": MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
     "StartRunAgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "OccupancyBindingResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "ProjectResource.public_project_reference": (

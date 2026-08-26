@@ -45,9 +45,10 @@ from atelier2.adapters.dbos.schema import (
     wait_answers,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
+from atelier2.adapters.dbos.uncontinuable_runs import live_driver_workflow_ids
 from atelier2.adapters.dbos.workflow_ids import (
     cancellation_workflow_id_for,
-    driving_workflow_id,
+    driving_workflow_ids,
     replacement_workflow_id_for,
 )
 from atelier2.application.compose_node_job import node_job
@@ -87,6 +88,7 @@ from atelier2.contracts.agent_refusals import (
     AGENT_REFUSAL_SCHEMA,
     agent_refusal_reason,
 )
+from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import (
     AgentExecutionRequestHash,
     AgentExecutionRequestV2,
@@ -95,7 +97,7 @@ from atelier2.contracts.agents import (
     AgentReceiptHash,
     AgentReceiptV2,
 )
-from atelier2.contracts.artifacts import Artifact
+from atelier2.contracts.artifacts import Artifact, ArtifactHash
 from atelier2.contracts.executions import (
     AgentAttemptExecution,
     AgentExecutionRefusal,
@@ -177,16 +179,6 @@ from atelier2.ports.agent_attempts import (
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt
 
-# DBOS owns this table and these tokens; the store only reads them, and only to
-# answer whether a workflow it enqueued itself is still going to run. Reaching
-# for the whole DBOS model to ask one question would bind far more of the
-# runtime's internals than the answer is worth.
-_dbos_workflow_status = sa.table(
-    "workflow_status", sa.column("workflow_uuid"), sa.column("status")
-)
-_DRIVING_WORKFLOW_STATUSES = ("PENDING", "ENQUEUED", "DELAYED")
-"""The DBOS statuses under which a workflow is still owed its next step."""
-
 
 def attempt_from_record(record: Mapping[Any, Any]) -> AgentAttempt:
     """Rebuild the typed attempt one `agent_attempts` row records.
@@ -206,6 +198,7 @@ def attempt_from_record(record: Mapping[Any, Any]) -> AgentAttempt:
         runner_generation = record["runner_generation_id"]
         runner_invocation = record["runner_invocation_id"]
         runner_evidence_hash = record["runner_terminal_evidence_hash"]
+        transcript = record["transcript_artifact_hash"]
         cancellation = (
             None
             if command_id is None
@@ -253,6 +246,7 @@ def attempt_from_record(record: Mapping[Any, Any]) -> AgentAttempt:
             RunnerEvidenceAcceptancePhase(
                 str(record["runner_evidence_acceptance_phase"])
             ),
+            None if transcript is None else ArtifactHash(str(transcript)),
         )
     except (TypeError, ValueError) as error:
         raise RunTransitionConflict(
@@ -333,6 +327,11 @@ def _attempt_values(attempt: AgentAttempt) -> dict[str, object]:
         ),
         "runner_evidence_acceptance_phase": (
             attempt.runner_evidence_acceptance_phase.value
+        ),
+        "transcript_artifact_hash": (
+            None
+            if attempt.transcript_artifact_hash is None
+            else attempt.transcript_artifact_hash.value
         ),
     }
 
@@ -478,6 +477,26 @@ def _require_completed_attempt_head(
             assert_never(unreachable)
 
 
+def _kept_transcript_values(
+    connection: Any, transcript: AttemptTranscript | None
+) -> dict[str, object]:
+    """The attempt column this transcript sets, its bytes kept under that address.
+
+    Keeping the material and naming it happen in the caller's own transaction,
+    so no attempt can point at a transcript this store never got. The bytes
+    arrive already bounded and redacted -- `AttemptTranscript` is the only way
+    to make one -- so nothing here judges them a second time.
+    """
+
+    if transcript is None:
+        return {}
+    artifact = Artifact(transcript.document)
+    keep_artifact(connection, artifact)
+    return {
+        agent_attempts.c.transcript_artifact_hash.name: artifact.artifact_hash.value
+    }
+
+
 def _fail_current_attempt(
     connection: Any,
     execution: AgentAttemptExecution,
@@ -487,6 +506,7 @@ def _fail_current_attempt(
     schema_revision: PublishedRevisionHash | None = None,
     judged_value: bytes | None = None,
     runner_evidence_hash: RunnerTerminalEvidenceHash | None = None,
+    transcript: AttemptTranscript | None = None,
 ) -> AgentAttemptFailed:
     """One durable failure seam for every way an armed attempt ends badly.
 
@@ -510,6 +530,11 @@ def _fail_current_attempt(
     hash nothing resolves, and the one thing an operator needs to read is gone
     for good. Empty bytes are the exception: there is nothing to keep, and the
     hash of nothing already says so.
+
+    `transcript` is what the executor decoded of the provider's own stream on
+    the way to this ending, and it is kept here for the same reason: the ending
+    an operator most needs to read is the one nobody can explain, and a failure
+    whose steps are nowhere is that silence again one level down (#733).
     """
     request = execution.request
     attempt_id = execution.attempt_id
@@ -528,6 +553,7 @@ def _fail_current_attempt(
         "state": AgentAttemptState.FAILED.value,
         "state_version": durable.state_version + 1,
         "failure_code": failure.value,
+        **_kept_transcript_values(connection, transcript),
     }
     if runner_evidence_hash is not None:
         values.update(
@@ -1350,9 +1376,17 @@ class DbosAgentAttemptStore:
 
         Before the launch, the workflow table this reads is either absent or
         still holds the statuses of the process that died, so every answer it
-        could give would be about a machine that is not running yet.
+        could give would be about a machine that is not running yet. Which is
+        also why the runtime's own application version is required rather than
+        optional: a `PENDING` row a retired version left behind is never going to
+        be recovered, and counting it as a live driver would hide this attempt
+        from the sweep forever.
         """
 
+        if self._application_version is None:
+            raise RunTransitionConflict(
+                "the driverless sweep requires the runtime application version"
+            )
         terminal_states = tuple(state.value for state in TERMINAL_AGENT_ATTEMPT_STATES)
         after: AgentAttemptId | None = None
         while True:
@@ -1374,23 +1408,20 @@ class DbosAgentAttemptStore:
                 if not candidates:
                     return
                 drivers = tuple(
-                    (attempt, driving_workflow_id(attempt)) for attempt in candidates
+                    (attempt, driving_workflow_ids(attempt)) for attempt in candidates
                 )
-                driving = set(
-                    connection.scalars(
-                        sa.select(_dbos_workflow_status.c.workflow_uuid).where(
-                            _dbos_workflow_status.c.workflow_uuid.in_(
-                                tuple(driver for _attempt, driver in drivers)
-                            ),
-                            _dbos_workflow_status.c.status.in_(
-                                _DRIVING_WORKFLOW_STATUSES
-                            ),
-                        )
-                    )
+                driving = live_driver_workflow_ids(
+                    connection,
+                    (
+                        workflow_id
+                        for _attempt, workflow_ids in drivers
+                        for workflow_id in workflow_ids
+                    ),
+                    self._application_version,
                 )
             after = candidates[-1].attempt_id
-            for attempt, driver in drivers:
-                if driver not in driving:
+            for attempt, workflow_ids in drivers:
+                if driving.isdisjoint(workflow_ids):
                     yield attempt
             if len(candidates) < page_limit.value:
                 return
@@ -1612,6 +1643,7 @@ class DbosAgentAttemptStore:
                         AGENT_REFUSAL_SCHEMA.revision_hash,
                         result.output_bytes,
                         runner_evidence_hash,
+                        result.transcript,
                     )
                     return failed
             refusal = why_a_value_its_declared_schema_refuses(
@@ -1629,6 +1661,7 @@ class DbosAgentAttemptStore:
                     PublishedRevisionHash(declared.schema_reference.revision),
                     result.output_bytes,
                     runner_evidence_hash,
+                    result.transcript,
                 )
                 return failed
         if redemption is not None and redemption.exit_code != 0:
@@ -1642,6 +1675,7 @@ class DbosAgentAttemptStore:
                     f"exit {redemption.exit_code}",
                 ),
                 runner_evidence_hash=runner_evidence_hash,
+                transcript=result.transcript,
             )
         receipt = AgentReceiptV2.for_execution(request, run.binding_set_hash, result)
         connection.execute(
@@ -1684,6 +1718,7 @@ class DbosAgentAttemptStore:
             "state": AgentAttemptState.SUCCEEDED.value,
             "state_version": durable.state_version + 1,
             "receipt_hash": receipt.receipt_hash.value,
+            **_kept_transcript_values(connection, result.transcript),
         }
         if runner_evidence_hash is not None:
             values.update(
@@ -2011,16 +2046,25 @@ class DbosAgentAttemptStore:
             )
 
     def complete_known_failure(
-        self, execution: AgentAttemptExecution, exit_signature: ProcessExitSignature
+        self,
+        execution: AgentAttemptExecution,
+        exit_signature: ProcessExitSignature,
+        transcript: AttemptTranscript | None = None,
     ) -> AgentAttemptFailed:
         """End the attempt whose process left no answer, and say what it left.
 
-        The exit signature is the only account of this ending anybody has: the
-        provider judged nothing, so the words come from the supervision that
-        watched it die. They reach the `failed` `node-receipt/v3` on the same
-        seam a refused answer uses, and no further -- the `AGENT_FAILED` event
-        keeps carrying the bare code, so the stream stays the bounded surface a
-        reader may subscribe to without reading a provider's own output.
+        The exit signature is what the supervision saw from outside: how the
+        child ended and the standard error it left. It reaches the `failed`
+        `node-receipt/v3` on the same seam a refused answer uses, and no further
+        -- the `AGENT_FAILED` event keeps carrying the bare code, so the stream
+        stays the bounded surface a reader may subscribe to without reading a
+        provider's own output.
+
+        `transcript` is what the executor could read of what the process itself
+        wrote, and it is kept beside that. An exit code and an empty standard
+        error was the whole account of a real failed run (#733), which is to say
+        no account at all; the steps the process got through, and whatever it
+        printed instead of a stream, are the only place the reason can be.
         """
         request = execution.request
         with canonical_write_transaction(self._engine) as connection:
@@ -2042,10 +2086,14 @@ class DbosAgentAttemptStore:
                     NodeReceiptReason.PROCESS_EXITED_UNSUCCESSFULLY,
                     exit_signature.named(),
                 ),
+                transcript=transcript,
             )
 
     def complete_project_verification_failure(
-        self, execution: AgentAttemptExecution, verdict: str
+        self,
+        execution: AgentAttemptExecution,
+        verdict: str,
+        transcript: AttemptTranscript | None = None,
     ) -> AgentAttemptFailed:
         """End the armed attempt whose granted verification never produced an exit.
 
@@ -2054,6 +2102,12 @@ class DbosAgentAttemptStore:
         `tool_redemptions` row. The attempt ends on the same
         `PROJECT_VERIFICATION_FAILED` seam a nonzero exit uses, with `verdict`
         naming why -- the declared timeout, not an invented code.
+
+        The provider had already answered when the check went silent, so its
+        steps are kept here too. Losing them on this one path would make the
+        transcript's absence mean two different things -- "no executor decoded
+        one" and "a verification timed out afterwards" -- and a reader could not
+        tell which.
         """
         if not verdict:
             raise ValueError(
@@ -2079,6 +2133,7 @@ class DbosAgentAttemptStore:
                     NodeReceiptReason.PROJECT_VERIFICATION_FAILED,
                     verdict,
                 ),
+                transcript=transcript,
             )
 
     def request_cancellation(

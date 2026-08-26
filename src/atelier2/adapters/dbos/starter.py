@@ -64,7 +64,12 @@ from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import OccupancyRevision
 from atelier2.contracts.node_records_v3 import RunInput
-from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
+from atelier2.contracts.orders import (
+    ArtifactOrderValue,
+    InlineOrderValue,
+    ObservedWorkItemOrderValue,
+    WorkItemOrderValue,
+)
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import RunV2, RunV3
 from atelier2.contracts.run_configuration_v3 import RunConfigurationRevision
@@ -81,6 +86,11 @@ from atelier2.contracts.schemas_v3 import (
     SchemaRefused,
     read_instance_document,
     read_schema_document,
+)
+from atelier2.contracts.work_items import (
+    WORK_ITEM_ORDER_SCHEMA_REVISION,
+    read_work_item_order_document,
+    work_item_order_document,
 )
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflows import (
@@ -105,6 +115,7 @@ from atelier2.ports.durable_runs import (
     DurableRunRevisionMissing,
     DurableStateCorrupt,
     DurableV3StartInputRefused,
+    DurableWorkItemOrderUnread,
     DurableWriteUnavailable,
     StartPublishedRunRequest,
     StartPublishedRunRequestV2,
@@ -169,7 +180,7 @@ def _pin_authored_orders(
                 V3InputRefusal.SCHEMA_MISMATCH,
                 "the document pinned nothing",
             )
-        value = _order_value_bytes(connection, order)
+        value = _order_value_bytes(connection, order, pinned)
         if isinstance(value, DurableV3StartInputRefused):
             return value
         pinned_orders.append(RunInput(order.name, pinned, value))
@@ -177,7 +188,7 @@ def _pin_authored_orders(
 
 
 def _order_value_bytes(
-    connection: Connection, order: AuthoredOrder
+    connection: Connection, order: AuthoredOrder, pinned: PublishedRevisionHash
 ) -> bytes | DurableV3StartInputRefused:
     """The exact bytes one authored order is, whichever way it was supplied.
 
@@ -185,6 +196,11 @@ def _order_value_bytes(
     it is a property of the route and not of the value: the same bytes are
     admitted when they arrive as an artifact somebody published, and the refusal
     an operator gets should say which door they were at.
+
+    A work item is the one value whose *kind* the document must have declared:
+    it is stored only under the schema the house owns, so a graph input pinning
+    anything else -- a permissive shape above all -- refuses the start rather
+    than letting a run carry a "work item" nothing checked.
     """
     match order.value:
         case InlineOrderValue(content):
@@ -206,6 +222,26 @@ def _order_value_bytes(
                     f"no artifact carries the address {artifact_hash.value}",
                 )
             return stored.content
+        case ObservedWorkItemOrderValue(revision):
+            if pinned != WORK_ITEM_ORDER_SCHEMA_REVISION:
+                return DurableV3StartInputRefused(
+                    order.name,
+                    V3InputRefusal.SCHEMA_MISMATCH,
+                    "this order is a work item, and the document pinned "
+                    f"{pinned.value} instead of the work item schema "
+                    f"{WORK_ITEM_ORDER_SCHEMA_REVISION.value}",
+                )
+            content = work_item_order_document(revision)
+            if len(content) > MAXIMUM_INSTANCE_DOCUMENT_BYTES:
+                return DurableV3StartInputRefused(
+                    order.name,
+                    V3InputRefusal.VALUE_REFUSED,
+                    f"the item {revision.item.value} reads as {len(content)} "
+                    f"inline bytes, which exceeds {MAXIMUM_INSTANCE_DOCUMENT_BYTES}",
+                )
+            return content
+        case WorkItemOrderValue():
+            raise RuntimeError("an unread work item order never reaches the pin")
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -255,6 +291,20 @@ def _refused_order(
                 V3InputRefusal.SCHEMA_MISMATCH,
                 f"the document pinned {'nothing' if pinned is None else pinned.value}",
             )
+        if (
+            order.schema_revision == WORK_ITEM_ORDER_SCHEMA_REVISION
+            and read_work_item_order_document(order.value) is None
+        ):
+            # The schema alone admits a shape; this door admits only the whole
+            # document a tracker read produces, digest and all. That is what
+            # makes every stored row under this schema one whose identity can
+            # be read back as the item it names.
+            return DurableV3StartInputRefused(
+                name,
+                V3InputRefusal.VALUE_REFUSED,
+                "this input is a work item, so its value is one the start read: "
+                "name the item instead of writing its bytes",
+            )
         document = connection.scalar(
             sa.select(published_revisions.c.document).where(
                 published_revisions.c.kind == RevisionKind.SCHEMA.value,
@@ -286,6 +336,87 @@ def _refused_order(
     return None
 
 
+def _requested_order_identity(
+    name: str, schema_hash: str, value: bytes
+) -> tuple[str, str, str]:
+    """What makes two starts of one run the same start, for one order a caller asks.
+
+    Bytes answer that for material a caller supplied. They cannot answer it for
+    a work item: its value is a read of a moving object, so a second start of
+    the same run legitimately reads different bytes for the same item. Under the
+    house work-item schema the identity is therefore the item the value names --
+    which is inside the value already, so nothing durable has to grow a column
+    to remember it.
+
+    Bytes under that schema that are not the complete document a read produces
+    are identified by their bytes here, which makes them differ from every
+    stored work item: `_refused_order` refuses them a moment later anyway, and
+    until then the honest answer to "is this the same start" is no.
+    """
+
+    if schema_hash == WORK_ITEM_ORDER_SCHEMA_REVISION.value:
+        document = read_work_item_order_document(value)
+        if document is not None:
+            return (name, schema_hash, document.reference.value)
+    return (name, schema_hash, Sha256Hash.of(value).value)
+
+
+def _unread_work_items(request: AnyStartPublishedRunRequest) -> bool:
+    """Whether this start still names a work item nobody has read."""
+
+    return any(
+        isinstance(order.value, WorkItemOrderValue)
+        for order in _authored_orders(request)
+    )
+
+
+def _unread_order_identities(
+    connection: Connection,
+    request: AnyStartPublishedRunRequest,
+    run_configuration: RunConfigurationRevision | None,
+) -> tuple[tuple[str, str, str], ...] | None:
+    """What this start's orders identify, before any work item has been read.
+
+    An unread work item identifies the item it names; everything beside it
+    identifies its bytes, exactly as `_requested_orders` reads them -- an
+    artifact included, because resolving one is a read of this store and not of
+    a tracker, so a start that mixes the two is still answerable without
+    reaching for the platform.
+
+    `None` says this start cannot be compared here at all -- a pin the document
+    does not carry, or an artifact this store never saw. The caller then lets
+    the ordinary path answer, which names the real refusal instead of guessing
+    a conflict.
+    """
+
+    if run_configuration is None:
+        return None
+    identities: list[tuple[str, str, str]] = []
+    for order in _authored_orders(request):
+        pinned = _resolved_graph_input_schema(run_configuration, order.name)
+        if pinned is None:
+            return None
+        match order.value:
+            case WorkItemOrderValue(reference):
+                identities.append((order.name, pinned.value, reference.value))
+            case ObservedWorkItemOrderValue(revision):
+                identities.append((order.name, pinned.value, revision.item.value))
+            case InlineOrderValue(content):
+                identities.append(
+                    _requested_order_identity(order.name, pinned.value, content)
+                )
+            case ArtifactOrderValue(artifact_hash):
+                stored = read_stored_artifact(connection, artifact_hash)
+                if stored is None:
+                    return None
+                identities.append(
+                    _requested_order_identity(order.name, pinned.value, stored.content)
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
+    return tuple(sorted(identities))
+
+
 def _requested_orders(orders: tuple[RunInput, ...]) -> tuple[tuple[str, str, str], ...]:
     """The named order set a start asks for, as durable identity reads it.
 
@@ -295,21 +426,67 @@ def _requested_orders(orders: tuple[RunInput, ...]) -> tuple[tuple[str, str, str
     """
     return tuple(
         sorted(
-            (order.name, order.schema_revision.value, order.value_hash.value)
+            _requested_order_identity(
+                order.name, order.schema_revision.value, order.value
+            )
             for order in orders
         )
     )
 
 
+class _DurableOrderCorrupt(ValueError):
+    """A stored order is not what the only writer of that row could have written.
+
+    Raised rather than answered, because the outer transaction turns a
+    `ValueError` into `DurableStateCorrupt`: a store that disagrees with itself
+    is not a start to refuse, it is a state to stop on.
+    """
+
+
+def _stored_order_identity(
+    name: str, schema_hash: str, value: bytes, value_hash: str
+) -> tuple[str, str, str]:
+    """One stored order's identity, refusing to read a row that contradicts itself.
+
+    Two things must hold for a row this product wrote: its value hashes to the
+    hash beside it, and a value under the work-item schema is the complete
+    document `_refused_order` is the only door for. Neither can fail honestly,
+    so a failure is durable state that lies -- and deciding "same run" from a
+    lie is worse than stopping.
+    """
+
+    if value_hash != Sha256Hash.of(value).value:
+        raise _DurableOrderCorrupt(
+            f"stored order {name!r} does not hash to the hash stored beside it"
+        )
+    if schema_hash == WORK_ITEM_ORDER_SCHEMA_REVISION.value:
+        document = read_work_item_order_document(value)
+        if document is None:
+            raise _DurableOrderCorrupt(
+                f"stored order {name!r} is not the work item document its schema owns"
+            )
+        return (name, schema_hash, document.reference.value)
+    return (name, schema_hash, Sha256Hash.of(value).value)
+
+
 def _stored_orders(
     connection: Connection, run_id: RunId
 ) -> tuple[tuple[str, str, str], ...]:
-    """The named order set this run already carries, read the same way."""
+    """The named order set this run already carries, read the same way.
+
+    A stored row is checked against itself first: the value must hash to the
+    hash beside it, and a value under the work-item schema must be the complete
+    document its only writer produces. Neither can fail for a row this product
+    wrote, so a failure is durable state that lies rather than a start to
+    refuse -- and answering an identity read off bytes nobody can vouch for
+    would decide "same run" from a lie.
+    """
     return tuple(
         sorted(
-            (
+            _stored_order_identity(
                 str(record["name"]),
                 str(record["schema_revision_hash"]),
+                bytes(record["value"]),
                 str(record["value_hash"]),
             )
             for record in connection.execute(
@@ -594,10 +771,34 @@ class DbosDurableRunStarter:
                         .mappings()
                         .one_or_none()
                     )
+                    unread = _unread_work_items(request)
+                    if unread and existing_record is None:
+                        # Nothing durable to answer from, so the caller reads
+                        # the items and starts again. Reading here instead
+                        # would hold this write transaction open across a
+                        # network call.
+                        return DurableWorkItemOrderUnread()
                     # Authored orders are not `run_inputs` yet. Comparing them
                     # here would treat every honest retry as a different order.
                     # Those starts fall through, pin, and use the compare below.
-                    if existing_record is not None and not _authored_orders(request):
+                    # A start still naming unread work items is the exception:
+                    # it is answered from what the run pinned, by the items it
+                    # names, so a retry never re-reads a moving object.
+                    if existing_record is not None and (
+                        unread or not _authored_orders(request)
+                    ):
+                        requested_orders = (
+                            _unread_order_identities(
+                                connection, request, run_configuration
+                            )
+                            if unread
+                            else _requested_orders(_supplied_orders(request))
+                        )
+                        if requested_orders is None:
+                            # Not comparable here, and a guess would answer
+                            # "conflict" for a start the ordinary path can
+                            # refuse by its own name.
+                            return DurableWorkItemOrderUnread()
                         if (
                             str(existing_record["revision_hash"])
                             != request.revision_hash.value
@@ -608,7 +809,7 @@ class DbosDurableRunStarter:
                             or str(existing_record["agent_binding_set_hash"])
                             != binding_set.binding_set_hash.value
                             or _stored_orders(connection, request.run_id)
-                            != _requested_orders(_supplied_orders(request))
+                            != requested_orders
                         ):
                             return DurableRunIdentityConflict()
                         return DurableRunExisting(

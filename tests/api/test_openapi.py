@@ -32,6 +32,7 @@ from atelier2.api.openapi import (
 from atelier2.api.references import (
     CATALOG_LINEAGE_ID_PATTERN,
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    MAXIMUM_RUN_ORDERS,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
 )
 from atelier2.api.wire import events as wire_events
@@ -93,6 +94,7 @@ EXPECTED_PATHS = {
     API_PREFIX + "/tool-grant-revisions",
     API_PREFIX + "/adapter-operation-revisions",
     API_PREFIX + "/agent-definition-revisions",
+    API_PREFIX + "/agent-definition-revisions/{agent_definition_revision_hash}",
     LIBRARY_RECOGNITIONS_PATH,
     API_PREFIX + "/workflow-revisions",
     API_PREFIX + "/workflow-revisions/by-name/{name}",
@@ -181,6 +183,11 @@ EXPECTED_ROUTE_SEQUENCE = (
         API_PREFIX + "/agent-definition-revisions",
         "list_agent_definition_revisions_route",
     ),
+    (
+        "GET",
+        API_PREFIX + "/agent-definition-revisions/{agent_definition_revision_hash}",
+        "get_agent_definition_revision_route",
+    ),
     ("POST", LIBRARY_RECOGNITIONS_PATH, "recognize_library_document_route"),
     ("POST", API_PREFIX + "/workflow-revisions", "publish_revision"),
     ("GET", API_PREFIX + "/workflow-revisions", "list_revisions"),
@@ -251,6 +258,10 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/tool-grant-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/adapter-operation-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/agent-definition-revisions", "post"): {"200", "201"},
+    (
+        API_PREFIX + "/agent-definition-revisions/{agent_definition_revision_hash}",
+        "get",
+    ): {"200"},
     (LIBRARY_RECOGNITIONS_PATH, "post"): {"200"},
     (API_PREFIX + "/workflow-revisions", "post"): {"200", "201"},
     (API_PREFIX + "/workflow-revisions", "get"): {"200"},
@@ -326,9 +337,10 @@ def test_served_document_is_byte_identical_to_the_frozen_artefact() -> None:
     """The published document is frozen; nothing below it may rewrite a byte.
 
     The artefact carries the declared wire changes of the heads that regenerated
-    it. This head adds `answer-in-flight` to the closed set of reasons a V3 run
-    cannot be cancelled: a pause still holding an accepted answer refuses the
-    command rather than dropping that message (#668).
+    it. This head adds `WorkItemOrderResource` to the orders a V3 start accepts
+    and publishes the three project-source problems on that operation: a caller
+    names an item in the connected project's tracker, the start reads it, and
+    the ways that read can fail are answers this door can now give (#712).
     Refreshing the artefact alongside a refactor is what this test still refuses.
     """
 
@@ -495,6 +507,33 @@ def test_project_paths_publish_one_opaque_resource_without_pagination() -> None:
         "durable-state-corrupt",
         "internal-error",
     }
+
+
+def test_the_start_door_publishes_the_tracker_problems_a_work_item_order_earns() -> (
+    None
+):
+    """A start whose order names a work item reads the project's own tracker.
+
+    A caller writing against the document has to see the three answers that
+    read can give, or it learns them from a 503 nobody described.
+    """
+
+    schema = served_app().openapi()
+    responses = schema["paths"][API_PREFIX + "/runs"]["post"]["responses"]
+
+    assert {
+        "project-source-not-connected",
+        "project-source-unavailable",
+        "project-source-payload-malformed",
+    } <= set(openapi_module.OPERATION_PROBLEMS[(API_PREFIX + "/runs", "post")])
+    for status, problem in (
+        ("409", "ProblemProjectSourceNotConnected"),
+        ("503", "ProblemProjectSourceUnavailable"),
+        ("502", "ProblemProjectSourcePayloadMalformed"),
+    ):
+        assert {"$ref": f"#/components/schemas/{problem}"} in responses[status][
+            "content"
+        ]["application/problem+json"]["schema"]["oneOf"]
 
 
 def test_every_declared_error_response_is_problem_json_one_of() -> None:
@@ -728,3 +767,18 @@ def test_served_agent_attempt_state_is_exactly_the_public_vocabulary() -> None:
         "title": "State",
         "type": "string",
     }
+
+
+def test_openapi_pins_the_run_order_bounds() -> None:
+    """A run resource never echoes an order's own bytes -- the served document
+    names the shape and the page bound that make that true, not only the
+    running server.
+    """
+    schema = served_app().openapi()
+    order = schema["components"]["schemas"]["RunOrderResource"]
+    run_v3 = schema["components"]["schemas"]["RunResourceV3"]
+
+    assert set(order["properties"]) == {"name", "bytes", "schema_revision_hash"}
+    assert "value_base64" not in order["properties"]
+    assert "preview" not in order["properties"]
+    assert run_v3["properties"]["orders"]["maxItems"] == MAXIMUM_RUN_ORDERS

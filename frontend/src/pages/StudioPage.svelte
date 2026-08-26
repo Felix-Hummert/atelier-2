@@ -20,6 +20,7 @@
     type AttentionHold
   } from "../lib/attentionHold";
   import { BOARD_GROUPS, projectBoardGroups, type BoardGroups } from "../lib/boardRows";
+  import { onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { humanErrorMessage } from "../lib/humanRefusal";
   import type { MutationJournal } from "../lib/mutationJournal";
@@ -76,10 +77,14 @@
   onMount(() => {
     void load();
     holdAttention();
+    // A read that failed while the connection was lost is worth asking again
+    // on its own once it returns, with no reload (#700).
+    const unsubscribeConnection = onConnectionRecovered(() => { void load(); });
     return () => {
       disposed = true;
       stream?.close();
       stream = null;
+      unsubscribeConnection();
     };
   });
 
@@ -263,15 +268,14 @@
   </header>
 
   <!-- A healthy stream says nothing: a permanent "live" badge is chrome and a
-       first connect is ordinary loading. Only a stream that dropped and has
-       not come back speaks (operator ruling 23.08.). -->
-  {#if streamStopped(hold) || hold.connection === "reconnecting"}
-    <p
-      class="connection connection-{hold.connection}"
-      class:connection-problem={streamStopped(hold)}
-      role="status"
-    >
-      <span aria-hidden="true">{streamStopped(hold) ? "◇" : "↻"}</span>
+       first connect is ordinary loading. A stream merely reconnecting is the
+       generic reachability loss the central connection store already names
+       once, above every room (#700); this line speaks only for what is
+       specific to this stream -- a real protocol or terminal failure
+       (operator ruling 23.08.). -->
+  {#if streamStopped(hold)}
+    <p class="connection connection-{hold.connection} connection-problem" role="status">
+      <span aria-hidden="true">◇</span>
       {wrapDisplayCopy(connectionLabel(hold))}
     </p>
   {/if}

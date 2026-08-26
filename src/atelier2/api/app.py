@@ -86,6 +86,7 @@ from atelier2.application.read_agent_configurations import (
     list_auth_profile_revisions,
 )
 from atelier2.application.read_agent_definition_revisions import (
+    get_agent_definition_revision,
     list_agent_definition_revisions,
 )
 from atelier2.application.read_attention_events import read_attention_events
@@ -244,6 +245,13 @@ def bound_use_cases(
                 ports.agent_definition_parser,
             )
         ),
+        get_agent_definition_revision=lambda revision_hash: (
+            get_agent_definition_revision(
+                revision_hash,
+                ports.published_revision_registry,
+                ports.agent_definition_parser,
+            )
+        ),
         publish_auth_profile_revision=(
             lambda profile_id, revision_number, provider_id, auth_mode: (
                 publish_auth_profile_revision(
@@ -284,7 +292,13 @@ def bound_use_cases(
         ),
         start_published_run=lambda run_id, revision_hash, bindings, orders=(): (
             start_published_run(
-                run_id, revision_hash, bindings, ports.published_run_starter, orders
+                run_id,
+                revision_hash,
+                bindings,
+                ports.published_run_starter,
+                orders,
+                served_project_id,
+                ports.tracker_item_source,
             )
         ),
         answer_wait=lambda run_id, revision_hash, node_id, answer_bytes: (

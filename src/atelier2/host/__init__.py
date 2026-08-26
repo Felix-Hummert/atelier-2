@@ -167,10 +167,12 @@ only at its head.
 
 --input NAME=VALUE and --input-file NAME=PATH fill the graph_inputs the
 workflow declared. VALUE and the file are exact JSON text; the command
-publishes nothing for them and hands the bytes to POST /runs. A name the
-document never declared, a declared name that is missing, and a value that
-is not valid JSON for the schema the document pinned are each refused by
-name. A typed 422 from the service is handed on in the service's own words.
+publishes each one as an artifact through POST /artifacts before the start,
+and the run names only the address that publication answered -- never the
+bytes themselves. A name the document never declared, a declared name that
+is missing, and a value that is not valid JSON for the schema the document
+pinned are each refused by name. A typed 422 from the service is handed on
+in the service's own words.
 
 Not supported yet, and refused rather than faked:
 
@@ -992,8 +994,8 @@ def _argument_parser() -> argparse.ArgumentParser:
         metavar="NAME=VALUE",
         help=(
             "one graph_input the workflow declared, as exact JSON text; "
-            "repeatable; the command publishes nothing for it and hands the "
-            "bytes to POST /runs"
+            "repeatable; the command publishes it as an artifact before the "
+            "run starts"
         ),
     )
     run_parser.add_argument(

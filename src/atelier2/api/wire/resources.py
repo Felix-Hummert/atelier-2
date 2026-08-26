@@ -21,6 +21,7 @@ from atelier2.api.references import (
     MAXIMUM_NODE_INSTRUCTION_PREVIEW_CHARACTERS,
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     MAXIMUM_RUN_AGENT_BINDINGS,
+    MAXIMUM_RUN_ORDERS,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
     PUBLIC_RUN_REFERENCE_PATTERN,
     REVISION_HASH_PATTERN,
@@ -30,10 +31,15 @@ from atelier2.contracts.agent_attempts import (
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     AgentAttemptCancellationDisposition,
 )
+from atelier2.contracts.agent_definitions import (
+    MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS,
+    MAXIMUM_AGENT_DEFINITION_TOOL_COUNT,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
 )
+from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.catalog_v3 import (
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
 )
@@ -147,6 +153,48 @@ class AgentDefinitionRevisionListItemResource(ApiModel):
 class AgentDefinitionRevisionPageResource(ApiModel):
     items: tuple[AgentDefinitionRevisionListItemResource, ...]
     next_after_revision_hash: str | None = Field(pattern=REVISION_HASH_PATTERN)
+
+
+class AgentDefinitionRevisionDetailResource(ApiModel):
+    """One published agent definition, parsed into every field its author wrote.
+
+    Where the list item stops at name and description
+    (`AgentDefinitionRevisionListItemResource`), a caller holding the hash asked
+    to read the revision itself, so this answers the whole authored file: the
+    provider mark the author proposed, the system prompt, and the declared
+    tools. `model` is absent exactly where the file proposed none -- the
+    deployment's own model decides then, not this door. `tools` is absent
+    exactly where the file declared none -- every tool the executor offers --
+    and the declared names otherwise.
+
+    `system_prompt` and each tool name are bounded by
+    `MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS`, the whole-document ceiling
+    the publish door already enforces (`parse_agent_definition`): neither can
+    outgrow the document it was parsed from. `tools` itself is bounded by
+    `MAXIMUM_AGENT_DEFINITION_TOOL_COUNT`, the same count `DeclaredTools`
+    refuses past.
+    """
+
+    agent_definition_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    model: str | None = Field(default=None, min_length=1)
+    system_prompt: str = Field(
+        min_length=1, max_length=MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS
+    )
+    tools: (
+        tuple[
+            Annotated[
+                str,
+                Field(
+                    min_length=1,
+                    max_length=MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS,
+                ),
+            ],
+            ...,
+        ]
+        | None
+    ) = Field(default=None, max_length=MAXIMUM_AGENT_DEFINITION_TOOL_COUNT)
 
 
 class AuthProfileRevisionResource(ApiModel):
@@ -1146,6 +1194,29 @@ class RunCancellabilityResource(ApiModel):
         return self
 
 
+class RunOrderResource(ApiModel):
+    """One order a V3 run was started with, told safely -- never its own bytes.
+
+    An order's material can be a secret a caller pasted by mistake, or an
+    artifact up to `MAXIMUM_ARTIFACT_BYTES`, and this resource is served on
+    every listed run -- so it never echoes the order's bytes at all.
+
+    `bytes` is how large the order's material is. `schema_revision_hash` is
+    the schema the order satisfies -- the workflow revision's own
+    `WorkflowDeclaredOrderResourceV3` already names the `ref` a caller reads,
+    so this is only the identity a caller compares it against.
+
+    No text preview travels here yet: a redacted glance at an order's material
+    needs the redaction owner #666 is building, and shipping a second one here
+    ahead of it would be a parallel copy of a decision that head has not made
+    yet. #738's own body carries that as its named next step.
+    """
+
+    name: str = Field(min_length=1)
+    bytes: int = Field(ge=0, le=MAXIMUM_ARTIFACT_BYTES)
+    schema_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
 class RunResourceV3(ApiModel):
     """One V3 run as it reads back: its own format, never a V2 one renumbered.
 
@@ -1182,6 +1253,17 @@ class RunResourceV3(ApiModel):
     agent_bindings: tuple[AgentBindingResourceV2, ...] = Field(
         max_length=MAXIMUM_RUN_AGENT_BINDINGS
     )
+    orders: tuple[RunOrderResource, ...] = Field(max_length=MAXIMUM_RUN_ORDERS)
+    """Every order this run was started with, in the order the store returns them.
+
+    A run's purpose is what these were, not a guess parsed back out of one
+    agent node's composed job text (PR #736 review, RESLICE): these come from
+    `run_inputs_v3` untouched by any node's job, so a reader learns why a run
+    started without reading a node, without parsing anything, and without the
+    order's own bytes ever reaching this resource (review 25.08.: RunResourceV3
+    is served on every listed run, and an order can be a secret or up to an
+    artifact's own size).
+    """
     state_version: int = Field(ge=0, le=MAX_SIGNED_INT64)
     state: Literal[
         "STARTED",

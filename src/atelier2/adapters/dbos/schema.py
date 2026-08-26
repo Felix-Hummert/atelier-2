@@ -58,12 +58,12 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head re-scopes the run-event key that said one event of a
-# kind per node per run to the round it belongs to (#658), so a Wait a loop
-# turns twice may pause twice and neither pause may be written twice.
-# Predecessor is the published schema that admitted `WAIT_CANCELLED` (#668).
+# Movable hop: this head gives an effect intent the word for a run that ended
+# without resolving it (#705), so a prepared effect no workflow will move again
+# stops standing PREPARED forever. Predecessor is the published schema that gave
+# an attempt the address of its transcript (#666).
 # Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 35
+_HOP_PREDECESSOR_VERSION = 37
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -93,6 +93,8 @@ _VERSION_THIRTY_THREE = 33
 _VERSION_THIRTY_FOUR = 34
 _VERSION_THIRTY_FIVE = 35
 _VERSION_THIRTY_SIX = 36
+_VERSION_THIRTY_SEVEN = 37
+_VERSION_THIRTY_EIGHT = 38
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -186,6 +188,36 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # round and expects at most one row. The hop is two DDL statements and the
 # version CAS -- SQLite moves an index without reading a row, so no row is
 # rewritten, no table is parked and the table text does not move.
+# V37 gives an attempt the address of its transcript (#666).
+# `transcript_artifact_hash` is one nullable content address: what the executor
+# decoded of the provider's own stream, bounded and redacted before it was
+# stored, kept as an artifact in the same write that ends the attempt. It is a
+# pointer rather than the bytes because `artifacts` already owns material read
+# whole, and it is a column on the attempt rather than a keyed row because one
+# attempt has one transcript and no other coordinate identifies it. Every
+# predecessor row carries NULL, which is the exact statement that no transcript
+# was decoded for that attempt -- never that the attempt took no steps.
+# Three guards make the pointer mean what it says rather than merely resemble
+# it. The reference onto `artifacts` refuses an address no bytes answer, because
+# a 64-hex column with nothing behind it points at evidence that may never have
+# existed. The CHECK admits it only on a terminal row, because a transcript is
+# what an attempt DID and a live attempt has not finished doing it. The
+# state-transition trigger lets it go from absent to present exactly once, so
+# the one column of a terminal row an update could still have swung at another
+# artifact cannot be swung at all.
+# V38 admits ABANDONED as an effect-intent ending (#705). A prepared intent moves
+# because a workflow moves it, and when none will move it again the restart
+# routes it to WAITING_RECONCILIATION -- a transition that lifts a STARTED run to
+# the operator's door. A run that has already ended has nothing left to lift, so
+# before this word such an intent stood PREPARED forever behind a door that
+# refused it. ABANDONED says the run's own ending on the intent: reached only
+# from PREPARED, never left, claiming neither a receipt nor an absence, keeping
+# the prepared request bytes readable. `effect_intents_abandonment` admits
+# exactly that one transition and refuses every other write touching the word, so
+# no confirmed intent can be overwritten by it and no abandoned one revived, and
+# `effect_intents_no_abandoned_insert` closes the other door: a row born
+# ABANDONED would be an ending no run ever reached. Only the vocabulary widens;
+# every stored row keeps its bytes, its key and its meaning.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -219,6 +251,8 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     34: "28dab0f4a152d7be66fa699d1123fdd130a94fe80ad705c19330f075e4fdd85a",
     35: "29df9a195316ce94527be2c906e4dc4104e00b2cb16caa9bfada17fecb5a21d5",
     36: "c9f4b5d99a9ff8e33796e36151b66f00175eceaa797e30461bf6e01264266ce8",
+    37: "e41cf318212e0a79d6605413b5818ef68d6245baaf05a53b888b8aac40131a13",
+    38: "aebd8b6bad8a719864f0c02828db643dd3dcbe7c89198beb6a8c1c4c30100824",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -327,6 +361,14 @@ V34_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V35_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_THIRTY_FIVE,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_FIVE],
+)
+V36_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_THIRTY_SIX,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_SIX],
+)
+V37_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_THIRTY_SEVEN,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_SEVEN],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -573,7 +615,8 @@ effect_intents = sa.Table(
     sa.CheckConstraint("length(destination_identity) > 0"),
     sa.CheckConstraint("length(adapter_operational_identity) > 0"),
     sa.CheckConstraint(
-        "state IN ('PREPARED', 'WAITING_RECONCILIATION', 'RECONCILING', 'CONFIRMED')"
+        "state IN ('PREPARED', 'WAITING_RECONCILIATION', 'RECONCILING', "
+        "'CONFIRMED', 'ABANDONED')"
     ),
     sa.CheckConstraint("state_version >= 0"),
     sa.CheckConstraint(
@@ -953,6 +996,18 @@ agent_attempts = sa.Table(
     sa.Column("runner_invocation_id", sa.Text, nullable=True),
     sa.Column("runner_terminal_evidence_hash", sa.Text, nullable=True),
     sa.Column("runner_evidence_acceptance_phase", sa.Text, nullable=False),
+    # The reference is declared, not assumed. The store writes the artifact and
+    # the pointer in one transaction, so a row can never precede its bytes --
+    # but "the writer is careful" is not a guarantee the store makes, and a
+    # 64-hex column with nothing behind it is a pointer at evidence that may
+    # never have existed. RESTRICT is what the receipt reference already says:
+    # material an attempt names is not removable while the attempt names it.
+    sa.Column(
+        "transcript_artifact_hash",
+        sa.Text,
+        sa.ForeignKey("artifacts.artifact_hash", ondelete="RESTRICT"),
+        nullable=True,
+    ),
     sa.UniqueConstraint("node_execution_id", "attempt_ordinal"),
     sa.ForeignKeyConstraint(
         ("run_id", "workflow_revision_hash"),
@@ -977,6 +1032,16 @@ agent_attempts = sa.Table(
         f"length(node_id) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"
     ),
     sa.CheckConstraint("attempt_ordinal IN (1, 2)"),
+    # A transcript is what an attempt DID, so it exists only once the attempt is
+    # over. Every writer sets it in the same statement that turns the row
+    # terminal; saying so here is what stops a live attempt from carrying a
+    # pointer whose bytes the run may still be adding to.
+    sa.CheckConstraint(
+        "transcript_artifact_hash IS NULL OR "
+        "(length(transcript_artifact_hash) = 64 "
+        "AND transcript_artifact_hash NOT GLOB '*[^0-9a-f]*' "
+        "AND state IN ('SUCCEEDED', 'FAILED'))"
+    ),
     sa.CheckConstraint(
         "process_phase IN ('NONE', 'WATCHDOG_READY', 'LAUNCH_AUTHORIZED', "
         "'PROCESS_OBSERVED', 'CLEANUP_ATTESTED')"
@@ -1879,6 +1944,24 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'effect intents are immutable');
         END
     """,
+    "effect_intents_abandonment": """
+        CREATE TRIGGER effect_intents_abandonment
+        BEFORE UPDATE OF state, state_version ON effect_intents
+        WHEN (NEW.state = 'ABANDONED' OR OLD.state = 'ABANDONED')
+          AND NOT (OLD.state = 'PREPARED' AND OLD.state_version = 0
+                   AND NEW.state = 'ABANDONED' AND NEW.state_version = 1
+                   AND NEW.reconciliation_owner_command_id IS NULL)
+        BEGIN
+          SELECT RAISE(ABORT, 'invalid effect intent abandonment');
+        END
+    """,
+    "effect_intents_no_abandoned_insert": """
+        CREATE TRIGGER effect_intents_no_abandoned_insert
+        BEFORE INSERT ON effect_intents
+        WHEN NEW.state = 'ABANDONED' BEGIN
+          SELECT RAISE(ABORT, 'effect intents are not born abandoned');
+        END
+    """,
     "effect_receipts_no_update": """
         CREATE TRIGGER effect_receipts_no_update
         BEFORE UPDATE ON effect_receipts BEGIN
@@ -1966,6 +2049,8 @@ _PRODUCT_TRIGGERS = {
           AND OLD.workflow_revision_hash = NEW.workflow_revision_hash
           AND OLD.node_id = NEW.node_id
           AND OLD.attempt_ordinal = NEW.attempt_ordinal
+          AND (OLD.transcript_artifact_hash IS NULL
+               OR NEW.transcript_artifact_hash = OLD.transcript_artifact_hash)
           AND NEW.state_version > OLD.state_version
           AND (
             (OLD.state = 'PREPARED' AND OLD.state_version = 0
@@ -2690,11 +2775,13 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    # V33 to V35 hold the same tables as the current version: the hops between
-    # them moved one table's key and columns, one table's kind vocabulary and
-    # one table's index, never the set of tables.
+    # V33 to V37 hold the same tables as the current version: the hops between
+    # them moved one table's key and columns, two tables' state vocabulary, one
+    # table's index and one table's column set, never the set of tables.
     if version in {
         SCHEMA_VERSION,
+        _VERSION_THIRTY_SEVEN,
+        _VERSION_THIRTY_SIX,
         _VERSION_THIRTY_FIVE,
         _VERSION_THIRTY_FOUR,
         _VERSION_THIRTY_THREE,
@@ -3522,6 +3609,270 @@ _V27_AGENT_ATTEMPT_TRIGGERS = {
 }
 
 
+# The attempt transition trigger every schema from V32 to V36 published,
+# recorded rather than derived for the reason `published_schema_shapes` gives
+# about table text: a hop must install the trigger of its OWN target, and a
+# record that followed the declaration would go on installing whatever the
+# newest hop last changed. The V37 hop added the transcript-pointer clause to
+# the live one, which names a column no V32 store has, so a V31 -> V32 step
+# reinstalling today's text could not even create the trigger.
+_V32_AGENT_ATTEMPT_STATE_TRANSITION = """
+        CREATE TRIGGER agent_attempts_state_transition
+        BEFORE UPDATE ON agent_attempts
+        WHEN NOT (
+          OLD.attempt_id = NEW.attempt_id
+          AND OLD.node_execution_id = NEW.node_execution_id
+          AND OLD.request_hash = NEW.request_hash
+          AND OLD.executor_operational_identity = NEW.executor_operational_identity
+          AND OLD.run_id = NEW.run_id
+          AND OLD.workflow_revision_hash = NEW.workflow_revision_hash
+          AND OLD.node_id = NEW.node_id
+          AND OLD.attempt_ordinal = NEW.attempt_ordinal
+          AND NEW.state_version > OLD.state_version
+          AND (
+            (OLD.state = 'PREPARED' AND OLD.state_version = 0
+             AND OLD.runner_manifest_id IS NULL
+             AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
+             AND NEW.state = 'PREPARED' AND NEW.state_version = 1
+             AND NEW.process_phase = 'WATCHDOG_READY'
+             AND NEW.runner_manifest_id IS NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state = 'PREPARED'
+             AND OLD.runner_manifest_id IS NULL
+             AND NEW.state = 'LAUNCH_ARMED'
+             AND NEW.process_phase IN ('NONE', 'LAUNCH_AUTHORIZED')
+             AND NEW.runner_manifest_id IS NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state = 'LAUNCH_ARMED'
+             AND OLD.runner_manifest_id IS NULL
+             AND OLD.process_phase = 'LAUNCH_AUTHORIZED'
+             AND NEW.state = 'LAUNCH_ARMED'
+             AND NEW.process_phase = 'PROCESS_OBSERVED'
+             AND NEW.runner_manifest_id IS NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state = 'LAUNCH_ARMED'
+             AND OLD.runner_manifest_id IS NULL
+             AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
+             AND NEW.state = 'SUCCEEDED'
+             AND NEW.runner_manifest_id IS NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NOT NULL
+             AND NEW.cancellation_command_id IS NULL
+             AND EXISTS (
+               SELECT 1 FROM agent_receipts_v2 AS receipt
+               WHERE receipt.receipt_hash = NEW.receipt_hash
+                 AND receipt.request_hash = NEW.request_hash
+                 AND receipt.executor_operational_identity = NEW.executor_operational_identity
+                 AND receipt.node_execution_id = NEW.node_execution_id
+                 AND receipt.run_id = NEW.run_id
+                 AND receipt.workflow_revision_hash = NEW.workflow_revision_hash
+                 AND receipt.node_id = NEW.node_id
+             ))
+            OR
+            (OLD.state = 'LAUNCH_ARMED'
+             AND OLD.runner_manifest_id IS NULL
+             AND OLD.failure_code IS NULL AND OLD.receipt_hash IS NULL
+             AND NEW.state = 'FAILED'
+             AND NEW.failure_code IN
+               ('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED',
+                'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED',
+                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED')
+             AND NEW.runner_manifest_id IS NULL
+             AND NEW.receipt_hash IS NULL
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state IN ('PREPARED', 'LAUNCH_ARMED')
+             AND OLD.cancellation_command_id IS NULL
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.state = 'CANCEL_REQUESTED'
+             AND NEW.cancellation_command_id IS NOT NULL
+             AND NEW.cancellation_expected_state_version = OLD.state_version
+             AND (OLD.runner_manifest_id IS NULL OR NEW.replacement = 'NONE')
+             AND OLD.runner_manifest_id IS NEW.runner_manifest_id
+             AND OLD.runner_generation_id IS NEW.runner_generation_id
+             AND OLD.runner_invocation_id IS NEW.runner_invocation_id
+             AND OLD.runner_terminal_evidence_hash IS NEW.runner_terminal_evidence_hash
+             AND OLD.runner_evidence_acceptance_phase = NEW.runner_evidence_acceptance_phase
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+            OR
+            (OLD.state = 'CANCEL_REQUESTED'
+             AND OLD.runner_manifest_id IS NULL
+             AND NEW.state = 'CANCEL_REQUESTED'
+             AND OLD.cancellation_command_id = NEW.cancellation_command_id
+             AND NEW.redrive_state = 'OWNER_NOT_LOCAL'
+             AND NEW.runner_manifest_id IS NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+            OR
+            (OLD.state = 'CANCEL_REQUESTED'
+             AND OLD.runner_manifest_id IS NULL
+             AND NEW.state IN ('CANCELLED', 'INTERRUPTED')
+             AND OLD.cancellation_command_id = NEW.cancellation_command_id
+             AND NEW.process_phase = 'CLEANUP_ATTESTED'
+             AND NEW.redrive_state = 'CLEANUP_ATTESTED'
+             AND NEW.cancellation_disposition IS NOT NULL
+             AND NEW.runner_manifest_id IS NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+            OR
+            (OLD.state = 'PREPARED' AND OLD.process_phase = 'NONE'
+             AND OLD.runner_manifest_id IS NULL
+             AND OLD.runner_generation_id IS NULL
+             AND OLD.runner_invocation_id IS NULL
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.state = 'PREPARED' AND NEW.process_phase = 'NONE'
+             AND NEW.runner_manifest_id IS NOT NULL
+             AND NEW.runner_generation_id IS NOT NULL
+             AND NEW.runner_invocation_id IS NULL
+             AND NEW.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state = 'PREPARED' AND OLD.process_phase = 'NONE'
+             AND OLD.runner_manifest_id = NEW.runner_manifest_id
+             AND OLD.runner_generation_id = NEW.runner_generation_id
+             AND OLD.runner_invocation_id IS NULL
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.state = 'LAUNCH_ARMED' AND NEW.process_phase = 'NONE'
+             AND NEW.runner_invocation_id IS NOT NULL
+             AND NEW.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state = 'PREPARED' AND OLD.process_phase = 'NONE'
+             AND OLD.runner_manifest_id = NEW.runner_manifest_id
+             AND OLD.runner_generation_id = NEW.runner_generation_id
+             AND OLD.runner_invocation_id IS NULL
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.state = 'PREPARED' AND NEW.process_phase = 'NONE'
+             AND NEW.runner_terminal_evidence_hash IS NOT NULL
+             AND NEW.runner_evidence_acceptance_phase = 'CORE_COMMITTED'
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state = 'LAUNCH_ARMED'
+             AND OLD.runner_manifest_id = NEW.runner_manifest_id
+             AND OLD.runner_generation_id = NEW.runner_generation_id
+             AND OLD.runner_invocation_id = NEW.runner_invocation_id
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.state = 'LAUNCH_ARMED'
+             AND NEW.runner_terminal_evidence_hash IS NOT NULL
+             AND NEW.runner_evidence_acceptance_phase = 'CORE_COMMITTED'
+             AND NEW.cancellation_command_id IS NULL)
+            OR
+            (OLD.state IN ('LAUNCH_ARMED', 'CANCEL_REQUESTED')
+             AND OLD.runner_manifest_id = NEW.runner_manifest_id
+             AND OLD.runner_generation_id = NEW.runner_generation_id
+             AND OLD.runner_invocation_id = NEW.runner_invocation_id
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND (OLD.state <> 'CANCEL_REQUESTED' OR OLD.replacement = 'NONE')
+             AND NEW.state = 'SUCCEEDED'
+             AND NEW.runner_terminal_evidence_hash IS NOT NULL
+             AND NEW.runner_evidence_acceptance_phase = 'CORE_COMMITTED'
+             AND NEW.cancellation_command_id IS NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NOT NULL
+             AND EXISTS (
+               SELECT 1 FROM agent_receipts_v2 AS receipt
+               WHERE receipt.receipt_hash = NEW.receipt_hash
+                 AND receipt.request_hash = NEW.request_hash
+                 AND receipt.executor_operational_identity = NEW.executor_operational_identity
+                 AND receipt.node_execution_id = NEW.node_execution_id
+                 AND receipt.run_id = NEW.run_id
+                 AND receipt.workflow_revision_hash = NEW.workflow_revision_hash
+                 AND receipt.node_id = NEW.node_id
+             ))
+            OR
+            (OLD.state IN ('LAUNCH_ARMED', 'CANCEL_REQUESTED')
+             AND OLD.runner_manifest_id = NEW.runner_manifest_id
+             AND OLD.runner_generation_id = NEW.runner_generation_id
+             AND OLD.runner_invocation_id = NEW.runner_invocation_id
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND (OLD.state <> 'CANCEL_REQUESTED' OR OLD.replacement = 'NONE')
+             AND NEW.state = 'FAILED'
+             AND NEW.runner_terminal_evidence_hash IS NOT NULL
+             AND NEW.runner_evidence_acceptance_phase = 'CORE_COMMITTED'
+             AND NEW.cancellation_command_id IS NULL
+             AND NEW.failure_code IN
+               ('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED',
+                'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED',
+                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED')
+             AND NEW.receipt_hash IS NULL)
+            OR
+            (OLD.state = 'CANCEL_REQUESTED'
+             AND OLD.runner_manifest_id = NEW.runner_manifest_id
+             AND OLD.runner_generation_id = NEW.runner_generation_id
+             AND OLD.runner_invocation_id = NEW.runner_invocation_id
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND OLD.replacement = 'NONE'
+             AND NEW.state = 'CANCELLED' AND NEW.process_phase = 'NONE'
+             AND OLD.cancellation_command_id = NEW.cancellation_command_id
+             AND NEW.redrive_state = 'CLEANUP_ATTESTED'
+             AND NEW.cancellation_disposition IN
+               ('EXITED_BEFORE_SIGNAL', 'REAPED_AFTER_TERM', 'REAPED_AFTER_KILL')
+             AND NEW.runner_terminal_evidence_hash IS NOT NULL
+             AND NEW.runner_evidence_acceptance_phase = 'CORE_COMMITTED'
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+            OR
+            (OLD.state = 'CANCEL_REQUESTED'
+             AND OLD.runner_manifest_id IS NOT NULL
+             AND OLD.runner_manifest_id = NEW.runner_manifest_id
+             AND OLD.runner_generation_id = NEW.runner_generation_id
+             AND OLD.runner_invocation_id IS NULL
+             AND NEW.runner_invocation_id IS NULL
+             AND OLD.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.runner_evidence_acceptance_phase = 'NONE'
+             AND OLD.runner_terminal_evidence_hash IS NULL
+             AND NEW.runner_terminal_evidence_hash IS NULL
+             AND OLD.replacement = 'NONE'
+             AND NEW.state = 'CANCELLED' AND NEW.process_phase = 'NONE'
+             AND OLD.cancellation_command_id = NEW.cancellation_command_id
+             AND NEW.redrive_state = 'CLEANUP_ATTESTED'
+             AND NEW.cancellation_disposition = 'NEVER_LAUNCHED'
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+            OR
+            (OLD.state = NEW.state
+             AND OLD.process_phase = NEW.process_phase
+             AND OLD.process_owner_id IS NEW.process_owner_id
+             AND OLD.watchdog_generation_id IS NEW.watchdog_generation_id
+             AND OLD.cancellation_command_id IS NEW.cancellation_command_id
+             AND OLD.cancellation_expected_state_version IS NEW.cancellation_expected_state_version
+             AND OLD.replacement IS NEW.replacement
+             AND OLD.redrive_state IS NEW.redrive_state
+             AND OLD.cancellation_disposition IS NEW.cancellation_disposition
+             AND OLD.cancellation_workflow_id IS NEW.cancellation_workflow_id
+             AND OLD.failure_code IS NEW.failure_code
+             AND OLD.receipt_hash IS NEW.receipt_hash
+             AND OLD.runner_manifest_id = NEW.runner_manifest_id
+             AND OLD.runner_generation_id = NEW.runner_generation_id
+             AND OLD.runner_invocation_id IS NEW.runner_invocation_id
+             AND OLD.runner_terminal_evidence_hash = NEW.runner_terminal_evidence_hash
+             AND OLD.runner_evidence_acceptance_phase = 'CORE_COMMITTED'
+             AND NEW.runner_evidence_acceptance_phase = 'ACKNOWLEDGED')
+            OR
+            (OLD.state = 'PREPARED' AND NEW.state = 'PREPARED'
+             AND OLD.process_phase = 'NONE' AND NEW.process_phase = 'NONE'
+             AND OLD.runner_manifest_id IS NOT NULL
+             AND OLD.runner_generation_id IS NOT NULL
+             AND OLD.runner_evidence_acceptance_phase = 'ACKNOWLEDGED'
+             AND NEW.runner_manifest_id IS NOT NULL
+             AND NEW.runner_generation_id IS NOT NULL
+             AND NEW.runner_generation_id <> OLD.runner_generation_id
+             AND NEW.runner_invocation_id IS NULL
+             AND NEW.runner_terminal_evidence_hash IS NULL
+             AND NEW.runner_evidence_acceptance_phase = 'NONE'
+             AND NEW.cancellation_command_id IS NULL
+             AND NEW.failure_code IS NULL AND NEW.receipt_hash IS NULL)
+          )
+        ) BEGIN
+          SELECT RAISE(ABORT, 'invalid agent attempt transition');
+        END
+"""
+_V32_AGENT_ATTEMPT_TRIGGERS = {
+    "agent_attempts_state_transition": _V32_AGENT_ATTEMPT_STATE_TRANSITION,
+    "agent_attempts_no_delete": _PRODUCT_TRIGGERS["agent_attempts_no_delete"],
+}
+
+
 def _apply_v16_to_v17(connection: sqlite3.Connection) -> None:
     """Admit the refusal's own failure code, and keep every stored row.
 
@@ -3848,14 +4199,19 @@ def _apply_v31_to_v32(connection: sqlite3.Connection) -> None:
 
     No table shape moves and no row is rewritten: the only change is one added
     branch on the `agent_attempts_state_transition` trigger, so the hop drops
-    that trigger and reinstalls the current declaration in its place. Every
-    stored attempt row is already legal under the unchanged CHECK constraints;
-    the fingerprint the migration runner takes after this step is what proves
-    the swapped trigger matches a freshly built v32 store, byte for byte.
+    that trigger and installs the text V32 itself published. That text is a
+    record, not the current declaration: the V37 hop added a clause naming a
+    column no V32 store has, so a step reinstalling today's trigger could not
+    create it at all. Every stored attempt row is already legal under the
+    unchanged CHECK constraints; the fingerprint the migration runner takes
+    after this step is what proves the swapped trigger matches a freshly built
+    v32 store, byte for byte.
     """
 
     connection.execute(f"DROP TRIGGER {_AGENT_ATTEMPTS_STATE_TRANSITION_TRIGGER}")
-    connection.execute(_PRODUCT_TRIGGERS[_AGENT_ATTEMPTS_STATE_TRANSITION_TRIGGER])
+    connection.execute(
+        _V32_AGENT_ATTEMPT_TRIGGERS[_AGENT_ATTEMPTS_STATE_TRANSITION_TRIGGER]
+    )
     _raise_declared_version(connection, _VERSION_THIRTY_ONE, _VERSION_THIRTY_TWO)
 
 
@@ -3940,6 +4296,76 @@ def _apply_v35_to_v36(connection: sqlite3.Connection) -> None:
     connection.execute(f"DROP INDEX {_ONCE_PER_NODE_EVENT_INDEX}")
     connection.execute(_declared_indexes(run_events)[_ROUND_SCOPED_EVENT_INDEX])
     _raise_declared_version(connection, _VERSION_THIRTY_FIVE, _VERSION_THIRTY_SIX)
+
+
+_PREDECESSOR_ATTEMPTS_BEFORE_THE_TRANSCRIPT = "agent_attempts_before_the_transcript"
+
+
+def _apply_v36_to_v37(connection: sqlite3.Connection) -> None:
+    """Give an attempt the address of its transcript, and keep every stored row.
+
+    Nothing already written is reinterpreted: a predecessor attempt carries
+    NULL, which is what "no transcript was decoded for this attempt" means, and
+    never an invented address. The column is nullable, so no carried row needs a
+    value declared for it.
+
+    SQLite changes no CHECK in place and would append an added column after this
+    table's own constraints, which is not where the declaration puts it, so this
+    hop is the same rebuild every shape hop is rather than an `ALTER TABLE ADD
+    COLUMN`. The attempt table's state-transition and no-delete triggers are
+    reinstalled by the rebuild, because an attempt row that could take an
+    unguarded transition for the length of one hop would be no ledger at all.
+    """
+
+    _rebuild_product_table(
+        connection,
+        agent_attempts,
+        _PREDECESSOR_ATTEMPTS_BEFORE_THE_TRANSCRIPT,
+        _AGENT_ATTEMPTS_TRIGGERS,
+        _VERSION_THIRTY_SIX,
+        _VERSION_THIRTY_SEVEN,
+    )
+    _raise_declared_version(connection, _VERSION_THIRTY_SIX, _VERSION_THIRTY_SEVEN)
+
+
+_EFFECT_INTENTS_TRIGGERS = (
+    "effect_intents_binding_no_update",
+    "effect_intents_no_delete",
+)
+_EFFECT_INTENTS_ABANDONMENT_TRIGGERS = (
+    "effect_intents_abandonment",
+    "effect_intents_no_abandoned_insert",
+)
+"""Both doors onto the word this hop admits: the transition that may reach it,
+and the insert that may not. A CHECK admits a vocabulary; only these say which
+writes are allowed to use it, and an ending that could be written straight into
+a fresh row would be an abandonment no run ever ended."""
+_PREDECESSOR_INTENTS_BEFORE_ABANDONMENT = "effect_intents_before_abandonment"
+
+
+def _apply_v37_to_v38(connection: sqlite3.Connection) -> None:
+    """Admit ABANDONED as an intent ending, and keep every stored row.
+
+    Every stored intent is PREPARED, waiting, reconciling or CONFIRMED, which
+    the widened CHECK still admits, so nothing is reinterpreted: a prepared
+    intent this store already holds keeps standing prepared until the sweep that
+    owns the word decides about it. The abandonment triggers are installed after
+    the rebuild rather than carried through it, because they do not exist at the
+    predecessor and the rebuild drops the triggers it is given before it parks
+    the table.
+    """
+
+    _rebuild_product_table(
+        connection,
+        effect_intents,
+        _PREDECESSOR_INTENTS_BEFORE_ABANDONMENT,
+        _EFFECT_INTENTS_TRIGGERS,
+        _VERSION_THIRTY_SEVEN,
+        _VERSION_THIRTY_EIGHT,
+    )
+    for trigger in _EFFECT_INTENTS_ABANDONMENT_TRIGGERS:
+        connection.execute(_PRODUCT_TRIGGERS[trigger])
+    _raise_declared_version(connection, _VERSION_THIRTY_SEVEN, _VERSION_THIRTY_EIGHT)
 
 
 @dataclass(frozen=True)
@@ -4064,6 +4490,16 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _VERSION_THIRTY_FIVE,
         _VERSION_THIRTY_SIX,
         _apply_v35_to_v36,
+    ),
+    _SchemaMigrationStep(
+        _VERSION_THIRTY_SIX,
+        _VERSION_THIRTY_SEVEN,
+        _apply_v36_to_v37,
+    ),
+    _SchemaMigrationStep(
+        _VERSION_THIRTY_SEVEN,
+        _VERSION_THIRTY_EIGHT,
+        _apply_v37_to_v38,
     ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {

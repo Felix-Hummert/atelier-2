@@ -41,6 +41,7 @@ from atelier2.api.wire.requests import (
     InlineOrderResource,
     RevisionListingView,
     StartRunAgentBindingResourceV2,
+    WorkItemOrderResource,
 )
 from atelier2.api.wire.resources import (
     AnyRunResource,
@@ -69,8 +70,10 @@ from atelier2.host.mcp_tools import (
     tool_definitions,
 )
 from atelier2.host.run_command import (
+    ARTIFACT_PATH,
     DEFAULT_CATALOG_POSITION,
     JSON_MEDIA_TYPE,
+    OCTET_STREAM_MEDIA_TYPE,
     REQUEST_TIMEOUT_SECONDS,
     RUN_PATH,
     WORKFLOW_REVISION_PATH,
@@ -81,6 +84,7 @@ from atelier2.host.run_command import (
     SuppliedArtifactOrder,
     SuppliedOrder,
     SuppliedStartOrder,
+    SuppliedWorkItemOrder,
     UnreadableServiceAnswer,
     UnusableRunOrder,
     resolve_published_name,
@@ -93,8 +97,6 @@ _described_page = TypeAdapter(VersionedWorkflowRevisionPageResource)
 _artifact_resource = TypeAdapter(ArtifactResource)
 _start_run_order = TypeAdapter(AnyStartRunOrderResource)
 
-ARTIFACT_PATH = "/artifacts"
-OCTET_STREAM_MEDIA_TYPE = "application/octet-stream"
 MAXIMUM_MESSAGE_BYTES = 1_048_576
 JSONRPC_PARSE_ERROR = -32700
 JSONRPC_INVALID_REQUEST = -32600
@@ -411,6 +413,8 @@ def _supplied_start_order(order: AnyStartRunOrderResource) -> SuppliedStartOrder
             return SuppliedOrder(name, value.encode())
         case ArtifactOrderResource(name=name, artifact_hash=artifact_hash):
             return SuppliedArtifactOrder(name, artifact_hash)
+        case WorkItemOrderResource(name=name, work_item=work_item):
+            return SuppliedWorkItemOrder(name, work_item)
         case _ as unreachable:
             assert_never(unreachable)
 

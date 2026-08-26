@@ -65,7 +65,7 @@ file: **in the workflow**, where a node declares a portable `role`, a
 workflow-generic instruction, what the occurrence gets and what it may do
 (ADR 0006; `docs/VISION.md`'s worker/occurrence sentence); and **in the
 casting**, where run start binds that role to one `AgentConfigurationRevision`
-naming provider, model, auth profile and executor (#557).
+naming provider, model, auth profile and executor (#711).
 
 An imported agent or plugin is therefore **provider-bound, and that is
 acceptable**: a Claude Markdown agent runs on Claude, a Codex agent on Codex.
@@ -101,6 +101,28 @@ sub-agents, skills and admitted MCP servers as it would at home, inside the
 containment vector. A plugin cast this way is **one casting unit**: its
 ingredients are not cast separately.
 
+**2026-08-25 amendment (Operator-Ruling, #711): what fills a role is one
+precedence, and the models are configuration.** A role in the workflow declares
+`difficulty: 1 | 2 | 3` (missing defaults to 2) and may declare
+`family_differs_from: <role>` (a review role kept off the build role's provider
+family). A workflow may separately declare a fixed model pin — the one named
+exception to this section's neutrality, since it binds that workflow to a
+provider; the role declaration itself stays neutral. Precedence per role:
+**start override** (for that run only) **> pin in the workflow** (an exact
+model id) **> model default per difficulty** (a project setting resolved to
+one exact model id for the role's difficulty) **> next higher difficulty**
+(#557; never silent, never a weaker model) **> uncast**. Which models exist is
+configuration, not code: a project configuration holds a list of exact model
+ids per connected provider — discovered through the pinned CLI where the
+provider lists its models, otherwise validated on entry, no rebuild —
+carrying no rating; a separate project setting maps difficulty 1/2/3 to one
+model id each, the operator's own choice. The receipt carries the requested
+and the provider-confirmed model id (#434).
+Occupancy per (project, workflow lineage) is **retired, not layered**: no
+per-role exception survives outside the pin and the start override above.
+This is decided; ADR 0018 is its owner, and the contract it describes is not
+yet built — build under #711.
+
 ### 2. The plugin is the intake unit, and its intake is atomic
 
 A **plugin** is a provider-bound package: agents, skills, MCP declaration and
@@ -125,7 +147,7 @@ catalog entry because something references, casts or blesses it individually:
 | Building block | Why it gets an entry |
 | --- | --- |
 | `workflow` | runs consume it; the only provider-neutral block, because the grammar is ours |
-| `agent_definition` | cast onto a role (#557); provider-bound, shown with its provider mark |
+| `agent_definition` | cast onto a role (#711); provider-bound, shown with its provider mark |
 | `mcp_server` | blessed individually, since starting a process is a trust boundary; its declaration form is de-facto shared, its execution provider-bound |
 | `skill` | referenced by agents, so a reference resolves and the revision is provable; `SKILL.md` is de-facto shared, but no portability is claimed until an executor loads one |
 

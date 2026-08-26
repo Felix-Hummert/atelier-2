@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { reportConnectionLost, reportConnectionRestored } from "../lib/connectionState";
 import type {
   CancelMutation,
   PublishMutation,
@@ -332,6 +333,17 @@ export const projectResourceSchema = z
 export const projectListSchema = z
   .object({ items: z.array(projectResourceSchema).max(1) })
   .strict();
+
+/** The wire shape `GET /health` answers -- reused as #700's own recovery
+ * probe, an existing cheap read rather than a purpose-built endpoint. */
+export const healthResourceSchema = z
+  .object({
+    status: z.literal("serving"),
+    source_commit: z.string(),
+    source_tree: z.string()
+  })
+  .strict();
+export type HealthResource = z.infer<typeof healthResourceSchema>;
 
 const occupancyBindingSchema = z
   .object({
@@ -745,6 +757,26 @@ const runCancellabilitySchema = z
     }
   });
 
+/**
+ * One order a V3 run was started with, told safely -- never its own bytes.
+ *
+ * An order's material can be a secret a caller pasted by mistake, or an
+ * artifact up to the server's own artifact size bound, and this resource is
+ * served on every listed run -- so it never echoes the order's bytes at all.
+ * `bytes` is how large the order's material is; `schema_revision_hash` is
+ * the schema it satisfies. No text preview travels here yet: that needs a
+ * redaction owner the server does not carry until #666 lands.
+ */
+const runOrderSchema = z
+  .object({
+    name: z.string().min(1),
+    bytes: nonnegativeSafeInteger,
+    schema_revision_hash: sha256
+  })
+  .strict();
+
+export type RunOrder = z.infer<typeof runOrderSchema>;
+
 const runV3Schema = z
   .object({
     workflow_format_version: z.literal(3),
@@ -754,6 +786,7 @@ const runV3Schema = z
     agent_binding_set_hash: sha256,
     run_configuration_revision_hash: sha256,
     agent_bindings: z.array(agentBindingV2Schema).max(100),
+    orders: z.array(runOrderSchema),
     state_version: nonnegativeSafeInteger,
     state: z.enum(RUN_STATES_V3),
     current_node_id: z.string().min(1),
@@ -1107,8 +1140,11 @@ export const problemDefinitions = {
   "agent-definition-field-type-unexpected": { status: 422, title: "Invalid agent definition document" },
   "agent-definition-field-empty": { status: 422, title: "Invalid agent definition document" },
   "agent-definition-tool-duplicated": { status: 422, title: "Invalid agent definition document" },
+  "agent-definition-too-many-tools": { status: 422, title: "Invalid agent definition document" },
   "agent-definition-system-prompt-missing": { status: 422, title: "Invalid agent definition document" },
+  "agent-definition-document-too-large": { status: 422, title: "Invalid agent definition document" },
   "agent-definition-revision-collision": { status: 409, title: "Agent definition revision collision" },
+  "agent-definition-revision-not-found": { status: 404, title: "Agent definition revision not found" },
   "library-document-ambiguous": { status: 422, title: "Document matches more than one library kind" },
   "unsupported-media-type": { status: 415, title: "Unsupported media type" },
   "not-acceptable": { status: 406, title: "Not acceptable" },
@@ -1233,8 +1269,11 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant("agent-definition-field-type-unexpected", problemDefinitions["agent-definition-field-type-unexpected"]),
   problemVariant("agent-definition-field-empty", problemDefinitions["agent-definition-field-empty"]),
   problemVariant("agent-definition-tool-duplicated", problemDefinitions["agent-definition-tool-duplicated"]),
+  problemVariant("agent-definition-too-many-tools", problemDefinitions["agent-definition-too-many-tools"]),
   problemVariant("agent-definition-system-prompt-missing", problemDefinitions["agent-definition-system-prompt-missing"]),
+  problemVariant("agent-definition-document-too-large", problemDefinitions["agent-definition-document-too-large"]),
   problemVariant("agent-definition-revision-collision", problemDefinitions["agent-definition-revision-collision"]),
+  problemVariant("agent-definition-revision-not-found", problemDefinitions["agent-definition-revision-not-found"]),
   problemVariant("library-document-ambiguous", problemDefinitions["library-document-ambiguous"]),
   problemVariant("unsupported-media-type", problemDefinitions["unsupported-media-type"]),
   problemVariant("not-acceptable", problemDefinitions["not-acceptable"]),
@@ -1377,6 +1416,8 @@ export interface HttpResult<T> {
 }
 
 export interface CockpitApi {
+  /** The cheap read #700's bounded recovery probe reuses -- no purpose-built endpoint. */
+  health(signal?: AbortSignal): Promise<HealthResource>;
   listRuns(after?: string, state?: AnyRun["state"]): Promise<RunPage>;
   listProjects(): Promise<ProjectList>;
   getProjectOccupancy(
@@ -1435,7 +1476,13 @@ export class CockpitRequestError extends Error {
   constructor(
     message: string,
     readonly problem: Problem | null = null,
-    readonly definitive_failure = false
+    readonly definitive_failure = false,
+    /** The round trip itself never happened -- not a 4xx/5xx the server
+     * answered with, and not a contract violation in what it did answer
+     * (#700). The one throw site that catches a failed `fetch` sets this;
+     * every other one names a specific violation whose own message stays
+     * worth reading. */
+    readonly transport_failure = false
   ) {
     super(message);
   }
@@ -1453,6 +1500,8 @@ export function createCockpitApi(
   eventSourceFactory: EventSourceFactory = (target) => new EventSource(target)
 ): CockpitApi {
   return {
+    health: (signal?: AbortSignal) =>
+      requestJson(fetcher, "/atelier/api/v1/health", { signal }, [200], healthResourceSchema),
     listRuns: (after?: string, state?: AnyRun["state"]) =>
       requestJson(
         fetcher,
@@ -1777,13 +1826,21 @@ function subscribeEventSource(
   source: EventSourcePort,
   handlers: RunEventHandlers
 ): RunEventSubscription {
-  source.addEventListener("open", () => handlers.opened());
+  source.addEventListener("open", () => {
+    reportConnectionRestored();
+    handlers.opened();
+  });
   source.addEventListener("message", (event) => {
     if (event instanceof MessageEvent && typeof event.data === "string") {
       handlers.event(event.data);
     }
   });
-  source.addEventListener("error", () => handlers.disconnected());
+  source.addEventListener("error", () => {
+    // The browser's own EventSource already retries; this only names the
+    // fact centrally (#700) so every surface reads it, not just this stream.
+    reportConnectionLost();
+    handlers.disconnected();
+  });
   return source;
 }
 
@@ -1832,8 +1889,13 @@ async function requestJsonResult<T>(
   try {
     response = await fetcher(target, { ...init, headers: { accept: "application/json", ...init.headers } });
   } catch (error) {
-    throw new CockpitRequestError(errorMessage(error));
+    // The round trip itself never happened -- a redeploy's outage (#700), not
+    // a 4xx/5xx the server actually answered with, so this is the one signal
+    // that means the workshop cannot be reached at all.
+    reportConnectionLost();
+    throw new CockpitRequestError(errorMessage(error), null, false, true);
   }
+  reportConnectionRestored();
   let value: unknown;
   try {
     value = await response.json();

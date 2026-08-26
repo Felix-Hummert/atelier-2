@@ -10,6 +10,11 @@ import {
   type RunV1,
   type RunV3
 } from "../../src/api/client";
+import {
+  reportConnectionLost,
+  reportConnectionRestored,
+  restartNoticeCopy
+} from "../../src/lib/connectionState";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { standingWords } from "../../src/lib/runState";
 import { studioPageCopy } from "../../src/lib/studioPageCopy";
@@ -42,6 +47,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   cleanup();
+  reportConnectionRestored();
 });
 
 function listRunsByState(runs: AnyRun[]) {
@@ -101,6 +107,7 @@ function listedV3Run(changes: Partial<RunV3> = {}): RunV3 {
     agent_binding_set_hash: "b".repeat(64),
     run_configuration_revision_hash: "c".repeat(64),
     agent_bindings: [],
+    orders: [],
     state_version: 1,
     state: "STARTED",
     current_node_id: "review",
@@ -414,6 +421,27 @@ describe("an empty board teaches the one next action", () => {
     expect(screen.queryByText(/raw transport failure|private adapter failure|Failed to fetch/))
       .toBeNull();
     expect(screen.getAllByRole("button", { name: "Retry board runs" })).toHaveLength(1);
+  });
+
+  it("names no local failure while the whole workshop reads unreachable, and reads itself again once the connection returns (#700)", async () => {
+    const listRuns = vi.fn().mockRejectedValue(new Error("Failed to fetch"));
+    openStudio([], { listRuns });
+    await screen.findByRole("heading", { name: "Board" });
+
+    reportConnectionLost();
+    await waitFor(() => {
+      expect(document.querySelector(".notice-banner")?.textContent).toContain(restartNoticeCopy);
+    });
+    // The shell's one line above already names the outage; this room adds no
+    // second, page-local echo of the same fact.
+    expect(screen.queryByText(studioPageCopy.runsUnavailable)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry board runs" })).toBeNull();
+
+    listRuns.mockImplementation(listRunsByState([startedRun()]));
+    reportConnectionRestored();
+
+    expect((await screen.findByRole("region", { name: "Running · 1" })).isConnected).toBe(true);
+    expect(screen.queryByText(studioPageCopy.runsUnavailable)).toBeNull();
   });
 
   it("repeats only the failed Board read until a successful retry replaces the error", async () => {

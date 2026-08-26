@@ -161,7 +161,8 @@ variables without validating them, so this carrier is reachable from the
 shipped container while an undeclared deployment stays runner-free — no
 runner value or identity file is baked into the image. At most one
 `RUNNER_LEASE` Attempt runs at a time per Serve process — its Core session listener binds one fixed port — and a second,
-concurrent one waits for the runner slot rather than failing. At every start
+concurrent one waits as a durable queue row, holding no worker, rather than
+failing. At every start
 Serve withdraws its own still-open leases and converges every `RUNNER_LEASE`
 Attempt no workflow still owes its next move: it reads the launcher's own
 retained terminal record back from the Attempt's handoff and commits it to the
@@ -201,10 +202,44 @@ Removal never follows a symbolic link out and never touches the root itself. Thi
 is a directory holding pinned material, not an operating-system sandbox: the
 process still runs as the serving user and can name other paths.
 
+P2a candidate store (`.atelier2-candidates.git`, ADR 0011 decision 2) is built
+and deliberately unwired until P2b.
+
+An attempt now leaves behind what it did, not only what it answered. The
+executor decodes its provider's own structured stream into one neutral shape --
+a tool call with its arguments, the result that came back, an assistant turn,
+and what the call spent -- and every step is scanned for credential shapes and
+cut to a readable width before anything durable sees it, so a token a tool
+happened to print is replaced and marked rather than dropped or kept whole. A
+line this vocabulary cannot read, including whatever a call that produced no
+stream printed instead, is kept as the provider's own output under its own
+name; a transcript with more steps than one artifact may hold loses its oldest
+and says how many. The whole is one content-addressed artifact, and the attempt
+names its address. Every ending keeps one — a success, a refusal, a nonzero
+exit, and a granted check that never answered — because an exit code beside an
+empty standard error was the entire account of a real failed run, which is no
+account at all, and because an absence meaning two different things could not be
+read at all. An attempt whose executor publishes no structured stream names
+nothing, which is the honest absence rather than an invented shape.
+
+Three guards make the address mean what it says: it must resolve to bytes this
+store holds, it may stand only on an ended attempt, and once written it can
+never be moved or cleared. Redaction is not a door a caller may walk past
+either — building a transcript at all is what makes its steps safe. What the
+boundary to a Runner cannot yet carry it refuses out loud instead of dropping:
+that record is bounded far below one transcript and its hash is part of Core's
+acceptance chain, so carrying one is its own decision rather than a silent
+truncation. No read surface serves the transcript yet — the API projection and
+the node panel's Log tab are the next slice.
+
 The first real provider now sits behind that durable contract. When the operator
 declares a Claude executable and a credential directory, the host composes one
 Claude subscription executor. It decides no working directory. It runs the bound
-model headless through the CLI's print-JSON envelope, hands the job to the
+model headless through the CLI's print stream, whose last line is the same
+answer envelope its predecessor read alone and whose earlier lines are the
+attempt's steps; that changed wire shape is a changed operation, so each of the
+three Claude vectors carries its own new operational identity rather than
+widening the one it had. It hands the job to the
 process over standard input rather than its command line, and grants it only
 the declared `CLAUDE_CONFIG_DIR` credential boundary and the serving host's
 executable search path; nothing else of the server's environment is inherited. A
@@ -217,7 +252,8 @@ CLI starts. It attests exactly one execution capability,
 demanding an interactive one is refused before that run exists at all. An
 unsuccessful exit, an unreadable envelope, an envelope declaring a provider
 error, and an answer larger than the durable output bound all fail the attempt
-instead of recording invented output. Undeclared, the host composes no V2
+instead of recording invented output — each of them keeping the transcript of
+what the call did write, so a refusal names more than its own code. Undeclared, the host composes no V2
 provider factory and behaves exactly as before. When the
 operator also declares a Grok executable, workspace, and credential directory,
 the host composes one Grok subscription executor beside Claude. It runs the
@@ -303,7 +339,11 @@ executor declares that bound on the invocation it prepares, since the frame is a
 property of its own wire format, and supervision holds the process to exactly
 that declaration: a frame past it is terminated and refused before the executor
 ever decodes it, so no answer is recorded. It is sized so no answer the durable
-contract accepts can be refused as a frame. The job those processes receive —
+contract accepts can be refused as a frame, and where the wire format carries
+the attempt's steps ahead of that answer it is sized for a whole transcript's
+worth of them too. Each provider states its own number; the port's ceiling is
+deliberately nobody's, so one operation's measurement never becomes another's
+allowance. The job those processes receive —
 stdin for Claude and Codex, a job file for Grok — is held to the process-input
 bound, a separate decision from the durable answer bound. After a chain the job
 can carry the instruction, the run's orders, and earlier results; a composition
@@ -661,9 +701,11 @@ one process later: it ends the effect or reconcile workflow in a terminal
 error status nothing replays, so a serve start routes every intent such a dead
 workflow still owed — a `PREPARED` one under the exact transition an in-band
 unknown takes, a `RECONCILING` one by closing its dead command and reopening
-the door — to `WAITING_RECONCILIATION`, never to an invented absence. Initial
-receipt creation commits atomically
-with intent confirmation. Reconciliation resolution separately commits its
+the door — to `WAITING_RECONCILIATION`, never to an invented absence. That door
+lifts a live run, so an intent whose run has already ended takes no door at all:
+it becomes `ABANDONED`, the run's own ending said on the intent, claiming
+neither a receipt nor an absence and keeping the prepared request bytes
+readable. Initial receipt creation commits atomically with intent confirmation. Reconciliation resolution separately commits its
 receipt, intent, command, run, and resolved event. The later `ACTION_COMPLETED`
 transition is another crash-safe transaction.
 [ADR 0001](decisions/0001-durable-runtime.md) owns the runtime and recovery
@@ -952,10 +994,12 @@ longer among what is missing either: `--name` runs the revision a catalog name
 holds, asked of the service before anything is written and at the lineage member
 `--position` names, so an operator starts named work without translating a name
 into a hash by hand. `--input NAME=VALUE` and `--input-file NAME=PATH` fill the
-`graph_inputs` that workflow declared: the command publishes nothing for them
-and hands the exact JSON bytes to `POST /runs` inline. Ordering an artifact from
-the command line, and any surface that lists or reads stored artifacts back, are
-not built. A name the document never
+`graph_inputs` that workflow declared: the command publishes every one of them
+as a content-addressed artifact first, so `POST /runs` names the address the
+artifact door answered instead of carrying bytes, and a ten-byte order takes
+the same door as a hundred-kilobyte diff. Publishing the same bytes twice is
+the same artifact, so a repeated command pays for nothing new. A surface that
+lists or reads stored artifacts back is not built. A name the document never
 declared, a declared name that is missing, and a value that is not valid JSON
 for the schema the document pinned are each refused by name; a typed 422 from
 the service is handed on in the service's own words. An output contract that
@@ -1160,6 +1204,31 @@ named deferrals of the import's first slice. No dependency edge, no
 readiness, and no priority exist for this projection yet, and nothing in it
 holds a tracker item's title, description, or comments -- REQ-QUEUE-14 keeps
 those with the tracker.
+
+A run reads one of those items as its own material through the start door: a V3
+start order may name a work item (`{"name": ..., "work_item": "gh:<n>"}` on
+`POST /atelier/api/v1/runs` and on the MCP `start_run` tool) instead of
+carrying bytes, and the start reads that item from the served project's
+connected tracker before any durable row exists. What the run stores is the
+observed revision of ADR 0010 §5 -- the exact served body bytes, their
+SHA-256, the neutral kind (`issue` or `change_request`, so a GitHub pull
+request carries no GitHub noun into the core), the read's entity tag and its
+read time -- serialized under the house schema `contracts.work_items` owns. A
+workflow declares a work item by pinning that schema's published revision and
+no other: a graph input pinning a different, in particular a permissive, schema
+for a work-item order refuses the start rather than storing a value nothing
+checked. The value is pinned, not re-read: the same item started across an edit
+is two runs with two different values, and a retry of a run that already exists
+is answered from what that run pinned without reaching the tracker at all --
+the store is asked before the item is read, and only a start with nothing to
+answer from reads. A start that cannot read the item answers which of the four
+ways it failed -- no connected project, no such item in the tracker, an
+unreachable platform, a payload its adapter refused -- and writes nothing;
+those three connection answers are published on the start door's own OpenAPI
+operation. Publishing the house schema is still the operator's own act, an item
+whose read is larger than the inline order bound is refused by that bound
+rather than published as an artifact, and no picker offers the items in a
+surface yet.
 
 On 2026-08-19 at `ed6376b` this landing measured how many concurrent
 fake-executor runs one SQLite instance carries. The harness is in-process ASGI on one event loop,

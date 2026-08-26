@@ -23,6 +23,7 @@ function v3Run(changes: Partial<RunV3> = {}): RunV3 {
     agent_binding_set_hash: "b".repeat(64),
     run_configuration_revision_hash: "c".repeat(64),
     agent_bindings: [],
+    orders: [],
     state_version: 1,
     state: "COMPLETED",
     current_node_id: "final",
@@ -62,17 +63,47 @@ describe("projecting History's finished-run rows", () => {
     expect(rows.map((row) => row.run.run_id)).toEqual(["newer", "older"]);
   });
 
-  it("names a run from the resolved catalog, falling back to its run id honestly", () => {
+  it("names a run's workflow from the resolved catalog, falling back to its run id honestly", () => {
     const named = v3Run({ run_id: "named-run" });
     const rows = projectHistoryRows(
       [named],
       new Map([[revisionHash, "Two agents in a line"]])
     );
 
-    expect(rows[0]?.name).toBe("Two agents in a line");
+    expect(rows[0]?.workflowName).toBe("Two agents in a line");
 
     const unresolved = projectHistoryRows([named], new Map());
-    expect(unresolved[0]?.name).toBe("named-run");
+    expect(unresolved[0]?.workflowName).toBe("named-run");
+  });
+
+  it("names a V3 run's purpose from its own orders, joined, without reading a node or parsing a job", () => {
+    const [row] = projectHistoryRows(
+      [v3Run({ orders: [{ name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) }] })],
+      null
+    );
+
+    expect(row?.purpose).toBe("diff");
+
+    const [multiOrderRow] = projectHistoryRows(
+      [
+        v3Run({
+          orders: [
+            { name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) },
+            { name: "target_file", bytes: 6, schema_revision_hash: "d".repeat(64) }
+          ]
+        })
+      ],
+      null
+    );
+    expect(multiOrderRow?.purpose).toBe("diff, target_file");
+  });
+
+  it("names no purpose for a run started with no orders, or a V1 run that carries none at all", () => {
+    const [v3NoOrders] = projectHistoryRows([v3Run({ orders: [] })], null);
+    expect(v3NoOrders?.purpose).toBeNull();
+
+    const [v1Row] = projectHistoryRows([completedRun()], null);
+    expect(v1Row?.purpose).toBeNull();
   });
 
   it("reads Completed for a completed run and the failed node for a failed one", () => {

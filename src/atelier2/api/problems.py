@@ -391,6 +391,11 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Agent definition revision collision",
         "Stop and inspect durable agent definition revision integrity.",
     ),
+    "agent-definition-revision-not-found": ProblemDefinition(
+        404,
+        "Agent definition revision not found",
+        "Publish the exact agent definition revision before reading its fields.",
+    ),
     "library-document-ambiguous": ProblemDefinition(
         422,
         "Document matches more than one library kind",
@@ -570,13 +575,12 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         409,
         "Project source not connected",
         "Serve a project whose source is connected with `atelier2 connect` "
-        "before importing its items.",
+        "before reading its items.",
     ),
     "project-source-unavailable": ProblemDefinition(
         503,
         "Project source unavailable",
-        "The connected platform did not answer; retry the import after it "
-        "becomes reachable.",
+        "The connected platform did not answer; retry after it becomes reachable.",
     ),
     "project-source-payload-malformed": ProblemDefinition(
         502,

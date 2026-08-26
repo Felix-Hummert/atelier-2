@@ -256,6 +256,40 @@ def wait_for_state(runtime: DbosRuntime, state: RunState) -> None:
     raise AssertionError(f"run stayed {observed!r}, expected {state.value!r}")
 
 
+_GATED_ENTRY_STALL_SECONDS = 5.0
+_GATED_ENTRY_CEILING_SECONDS = 60.0
+
+
+def wait_for_gated_entry(
+    runtime: DbosRuntime, run_id: RunId, entered: Event, message: str
+) -> None:
+    """Wait for a gated node to reach the provider boundary.
+
+    A single fixed ceiling races against full parallel test load: the run's
+    earlier, unblocked rounds are real DBOS workflow work whose scheduling
+    can slow down without the run ever stalling. So the wait renews itself
+    for as long as the run keeps writing new durable events, and only gives
+    up once the store stops advancing (or a generous absolute ceiling is
+    reached, as a backstop against a genuine deadlock).
+    """
+    ceiling = time.monotonic() + _GATED_ENTRY_CEILING_SECONDS
+    stall_deadline = time.monotonic() + _GATED_ENTRY_STALL_SECONDS
+    observed_event_count = -1
+    while not entered.wait(timeout=0.05):
+        now = time.monotonic()
+        if now >= ceiling or now >= stall_deadline:
+            raise AssertionError(message)
+        with runtime.engine.connect() as connection:
+            event_count = connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(run_events)
+                .where(run_events.c.run_id == run_id.value)
+            )
+        if event_count != observed_event_count:
+            observed_event_count = event_count
+            stall_deadline = time.monotonic() + _GATED_ENTRY_STALL_SECONDS
+
+
 def executions_of(workflow: WorkflowRevision) -> dict[str, tuple[str, int]]:
     """Every node execution this document declares, by its identity."""
     return {
@@ -278,7 +312,9 @@ def test_a_live_second_round_and_its_healthy_peer_remain_readable(
     workflow = start_loop(started_runtime)
     start_healthy_peer(started_runtime)
     started_runtime.launch()
-    assert entered.wait(timeout=10), "the loop never entered round two"
+    wait_for_gated_entry(
+        started_runtime, RUN, entered, "the loop never entered round two"
+    )
     queries = durable_queries(started_runtime.engine)
     execution = NodeExecutionId.for_node(RUN, workflow.revision_hash, "implement", 2)
 
@@ -331,7 +367,9 @@ def test_a_completed_three_round_loop_has_one_public_query_truth(
     recording.opened.command = command
     workflow = start_loop(started_runtime)
     started_runtime.launch()
-    assert entered.wait(timeout=10), "the loop never entered its final node"
+    wait_for_gated_entry(
+        started_runtime, RUN, entered, "the loop never entered its final node"
+    )
     finish_gated_node(RUN, workflow, "review", LOOPED_LINE_MAXIMUM_ROUNDS, release)
     queries = durable_queries(started_runtime.engine)
 
@@ -385,7 +423,9 @@ def test_a_later_round_failure_keeps_its_exact_public_refusal(
     recording.opened.command = command
     workflow = start_loop(started_runtime)
     started_runtime.launch()
-    assert entered.wait(timeout=10), "the loop never entered its failing round"
+    wait_for_gated_entry(
+        started_runtime, RUN, entered, "the loop never entered its failing round"
+    )
     finish_gated_node(RUN, workflow, "implement", 2, release)
     queries = durable_queries(started_runtime.engine)
     execution = NodeExecutionId.for_node(RUN, workflow.revision_hash, "implement", 2)

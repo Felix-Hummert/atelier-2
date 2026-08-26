@@ -1364,7 +1364,7 @@ def test_every_executor_adapter_refuses_a_schema_violation_on_the_same_seam(
 
     execution = armed_attempt(runtime)
     result = decode(tmp_path / "adapter", THE_ANSWER_THE_SCHEMA_REFUSES)
-    assert result == AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+    assert result.output_bytes == THE_ANSWER_THE_SCHEMA_REFUSES
 
     outcome = DbosAgentAttemptStore(
         runtime.engine, runtime.settings.application_version

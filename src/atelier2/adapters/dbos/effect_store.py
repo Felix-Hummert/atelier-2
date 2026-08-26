@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from enum import Enum, auto
 from typing import Any, assert_never
 
 import sqlalchemy as sa
@@ -28,6 +29,7 @@ from atelier2.adapters.dbos.workflow_ids import (
     reconcile_workflow_id_for,
 )
 from atelier2.contracts.effects import (
+    EFFECT_INTENT_VERSION_ABANDONED,
     EFFECT_INTENT_VERSION_CONFIRMED_INITIAL,
     EFFECT_INTENT_VERSION_CONFIRMED_RECONCILED,
     EFFECT_INTENT_VERSION_INITIAL,
@@ -62,7 +64,12 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.executions import NodeExecutionId, logical_effect_key_for_node
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.runs import (
+    TERMINAL_RUN_STATES,
+    RunId,
+    RunState,
+    WorkflowRevisionHash,
+)
 from atelier2.ports.effects import EffectAdapter
 
 type EncodedEffectResolution = dict[str, str | None]
@@ -502,7 +509,7 @@ _DRIVEN_INTENT_STATES = (
 def converge_driverless_effect_intents(
     engine: Engine, application_version: str
 ) -> tuple[LogicalEffectKey, ...]:
-    """Route every intent no workflow is going to move to the operator door.
+    """Give every intent no workflow is going to move its honest ending.
 
     A prepared effect moves because `durable_effect` drives it, and a
     reconciling one because the workflow of its owning command does. When the
@@ -514,27 +521,41 @@ def converge_driverless_effect_intents(
     terminally first, stands just as frozen and names no workflow at all
     (#646). A workflow left PENDING, ENQUEUED, or DELAYED under a retired
     `application_version` is frozen the same way: DBOS will never resume it
-    under a version this instance no longer runs (#707). This is the
-    restart's answer, the same one `converge_driverless_attempts` gives armed
-    attempts: each such intent goes to WAITING_RECONCILIATION, the state the
-    door accepts, and never to an invented absence -- routing to the operator
-    is exactly what an in-band UNKNOWN readback does (ADR 0010). Answers with
-    the intents routed here.
+    under a version this instance no longer runs (#707). This is the restart's
+    answer, the same one `converge_driverless_attempts` gives armed attempts:
+    each such intent goes to the operator door at WAITING_RECONCILIATION, and
+    never to an invented absence -- routing to the operator is exactly what an
+    in-band UNKNOWN readback does (ADR 0010). Where the run itself has already
+    ended there is no door left to open, and the intent is abandoned instead
+    (#705). Answers with the intents converged here.
     """
 
     return tuple(
         logical_key
         for logical_key in _driverless_effect_intents(engine, application_version)
-        if _route_to_reconciliation(engine, logical_key, application_version)
+        if _converge_intent(engine, logical_key, application_version)
     )
+
+
+class _DriverlessConvergence(Enum):
+    """The ending owed to one intent no durable workflow will move again."""
+
+    RECONCILIATION_DOOR = auto()
+    """A prepared intent on a live run: lift that run to the operator's door."""
+
+    ABANDONMENT = auto()
+    """A prepared intent on a run that ended without it: write that ending."""
+
+    REOPENED_DOOR = auto()
+    """A reconciling intent whose command died: put it back behind the door."""
 
 
 def _driverless_effect_intents(
     engine: Engine, application_version: str
 ) -> tuple[LogicalEffectKey, ...]:
-    """List candidates only; `_route_to_reconciliation` decides in its own
-    write transaction, so a workflow that resolved between the two reads costs
-    one extra read, never a wrong routing."""
+    """List candidates only; `_converge_intent` decides in its own write
+    transaction, so a workflow that resolved between the two reads costs one
+    extra read, never a wrong ending."""
 
     with engine.connect() as connection:
         candidates = (
@@ -549,11 +570,12 @@ def _driverless_effect_intents(
         return tuple(
             LogicalEffectKey(str(record["logical_key"]))
             for record in candidates
-            if _intent_is_driverless(connection, record, application_version)
+            if _driverless_convergence(connection, record, application_version)
+            is not None
         )
 
 
-def _route_to_reconciliation(
+def _converge_intent(
     engine: Engine, logical_key: LogicalEffectKey, application_version: str
 ) -> bool:
     with canonical_write_transaction(engine) as connection:
@@ -566,58 +588,64 @@ def _route_to_reconciliation(
             .mappings()
             .one_or_none()
         )
-        if record is None or not _intent_is_driverless(
-            connection, record, application_version
-        ):
+        if record is None:
             return False
-        state = EffectIntentState(str(record["state"]))
-        if state is EffectIntentState.PREPARED:
-            # The exact transition an in-band UNKNOWN readback commits: intent
-            # to WAITING_RECONCILIATION, run lifted under its
-            # ACTION_RECONCILIATION_REQUIRED event. An effect whose workflow
-            # raised, or was never enqueued at all, is an outcome nobody
-            # observed, so it routes to the operator and is never turned into
-            # an absence.
-            commit_resolution(
-                connection,
-                logical_key.value,
-                str(record["workflow_revision_hash"]),
-                {"outcome": EffectOutcome.UNKNOWN.value},
-            )
-            return True
-        _reopen_reconciliation(
-            connection, logical_key, str(record["reconciliation_owner_command_id"])
-        )
+        convergence = _driverless_convergence(connection, record, application_version)
+        match convergence:
+            case None:
+                return False
+            case _DriverlessConvergence.RECONCILIATION_DOOR:
+                # The exact transition an in-band UNKNOWN readback commits:
+                # intent to WAITING_RECONCILIATION, run lifted under its
+                # ACTION_RECONCILIATION_REQUIRED event. An effect whose
+                # workflow raised, or was never enqueued at all, is an outcome
+                # nobody observed, so it routes to the operator and is never
+                # turned into an absence.
+                commit_resolution(
+                    connection,
+                    logical_key.value,
+                    str(record["workflow_revision_hash"]),
+                    {"outcome": EffectOutcome.UNKNOWN.value},
+                )
+            case _DriverlessConvergence.ABANDONMENT:
+                _abandon_intent(connection, logical_key)
+            case _DriverlessConvergence.REOPENED_DOOR:
+                _reopen_reconciliation(
+                    connection,
+                    logical_key,
+                    str(record["reconciliation_owner_command_id"]),
+                )
         return True
 
 
-def _intent_is_driverless(
+def _driverless_convergence(
     connection: Connection, record: Mapping[Any, Any], application_version: str
-) -> bool:
-    """Whether no durable workflow is going to move this intent another step.
+) -> _DriverlessConvergence | None:
+    """What this intent is owed, or nothing while a workflow still owes it.
 
-    True only for a PREPARED or a RECONCILING intent, the two states a workflow
-    is responsible for: the door already holds a WAITING one, and a CONFIRMED
-    one has its word.
+    Only a PREPARED or a RECONCILING intent can be owed anything, because those
+    are the two states a workflow is responsible for: the door already holds a
+    WAITING one, a CONFIRMED one has its word, and an ABANDONED one has its
+    run's.
     """
 
     state = EffectIntentState(str(record["state"]))
     if state is EffectIntentState.PREPARED:
-        return _prepared_intent_is_driverless(connection, record, application_version)
-    if state is EffectIntentState.RECONCILING:
-        return _workflow_is_dead(
-            connection,
-            reconcile_workflow_id_for(
-                ReconcileCommandId(str(record["reconciliation_owner_command_id"]))
-            ),
-            application_version,
-        )
-    return False
+        return _prepared_intent_convergence(connection, record, application_version)
+    if state is EffectIntentState.RECONCILING and _workflow_is_dead(
+        connection,
+        reconcile_workflow_id_for(
+            ReconcileCommandId(str(record["reconciliation_owner_command_id"]))
+        ),
+        application_version,
+    ):
+        return _DriverlessConvergence.REOPENED_DOOR
+    return None
 
 
-def _prepared_intent_is_driverless(
+def _prepared_intent_convergence(
     connection: Connection, record: Mapping[Any, Any], application_version: str
-) -> bool:
+) -> _DriverlessConvergence | None:
     """A prepared intent has two possible drivers, one of them not written yet.
 
     `durable_effect` resolves it, so its raised or version-stranded ending is
@@ -628,15 +656,80 @@ def _prepared_intent_is_driverless(
     nobody owe this intent anything -- the window where it would stand
     PREPARED forever under no row the effect-workflow read could even name
     (#646).
+
+    What is owed then depends on the run: a live one is lifted to the operator
+    door, and one that has already ended is written onto the intent instead.
     """
 
     logical_key = LogicalEffectKey(str(record["logical_key"]))
     effect_workflow_id = effect_workflow_id_for(logical_key)
-    if _workflow_status(connection, effect_workflow_id) is not None:
-        return _workflow_is_dead(connection, effect_workflow_id, application_version)
-    return _enqueueing_node_workflow_is_dead(
-        connection, record, logical_key, application_version
+    driverless = (
+        _workflow_is_dead(connection, effect_workflow_id, application_version)
+        if _workflow_status(connection, effect_workflow_id) is not None
+        else _enqueueing_node_workflow_is_dead(
+            connection, record, logical_key, application_version
+        )
     )
+    if not driverless:
+        return None
+    return _convergence_the_run_admits(connection, RunId(str(record["run_id"])))
+
+
+def _convergence_the_run_admits(
+    connection: Connection, run_id: RunId
+) -> _DriverlessConvergence | None:
+    """Which ending this intent's own run still leaves open.
+
+    A STARTED run is what the in-band UNKNOWN transition lifts, so it takes the
+    door. A run that has ended cannot be lifted at all -- its terminal word and
+    hash are written -- and before ABANDONED existed that left the intent
+    standing PREPARED forever behind a door refusing it (#705). Any other state
+    is one a run holding a prepared effect cannot honestly stand in, because
+    the run rests on its Action node until that effect confirms; nothing is
+    converged for it rather than a word being guessed.
+    """
+
+    state = RunState(
+        str(
+            connection.execute(
+                sa.select(runs.c.state).where(runs.c.run_id == run_id.value)
+            )
+            .scalars()
+            .one()
+        )
+    )
+    if state is RunState.STARTED:
+        return _DriverlessConvergence.RECONCILIATION_DOOR
+    if state in TERMINAL_RUN_STATES:
+        return _DriverlessConvergence.ABANDONMENT
+    return None
+
+
+def _abandon_intent(connection: Connection, logical_key: LogicalEffectKey) -> None:
+    """Write the run's ending onto the intent nobody will ever move.
+
+    Only the intent row moves. No run event is appended: the run's terminal
+    event is already the last word its hash folds over, and an abandonment
+    observed nothing that could be attested. The CAS on PREPARED at its initial
+    version is what keeps this safe beside a driver that comes back to life --
+    a workflow resolving the intent after all loses its own update and raises,
+    rather than writing a receipt over an ending.
+    """
+
+    abandoned = connection.execute(
+        effect_intents.update()
+        .where(
+            effect_intents.c.logical_key == logical_key.value,
+            effect_intents.c.state == EffectIntentState.PREPARED.value,
+            effect_intents.c.state_version == EFFECT_INTENT_VERSION_INITIAL.value,
+        )
+        .values(
+            state=EffectIntentState.ABANDONED.value,
+            state_version=EFFECT_INTENT_VERSION_ABANDONED.value,
+        )
+    )
+    if abandoned.rowcount != 1:
+        raise DurableEffectConflict("abandonment requires one prepared intent")
 
 
 def _enqueueing_node_workflow_is_dead(
@@ -649,25 +742,23 @@ def _enqueueing_node_workflow_is_dead(
 
     An intent does not name its node workflow and does not have to: it is
     prepared on the node its run is standing on, and the run stands there until
-    the effect confirms. Deriving that node execution's own logical key and
-    requiring it to be exactly this intent's key is what makes the derived
-    workflow id this intent's driver rather than a neighbour's; when it is not,
-    nothing here can honestly name a driver, so the intent is left alone. A run
-    that no longer stands STARTED is left alone too -- its word is already
-    written, and the in-band UNKNOWN transition lifts a STARTED run only.
+    the effect confirms -- an ending lifts the run where it stands and moves it
+    no further, so a run that ended still names the node this intent belongs
+    to. Deriving that node execution's own logical key and requiring it to be
+    exactly this intent's key is what makes the derived workflow id this
+    intent's driver rather than a neighbour's; when it is not, nothing here can
+    honestly name a driver, so the intent is left alone.
     """
 
     run = (
         connection.execute(
-            sa.select(
-                runs.c.state, runs.c.current_node_id, runs.c.current_round_ordinal
-            ).where(runs.c.run_id == str(record["run_id"]))
+            sa.select(runs.c.current_node_id, runs.c.current_round_ordinal).where(
+                runs.c.run_id == str(record["run_id"])
+            )
         )
         .mappings()
         .one()
     )
-    if str(run["state"]) != RunState.STARTED.value:
-        return False
     run_id = RunId(str(record["run_id"]))
     revision_hash = WorkflowRevisionHash(str(record["workflow_revision_hash"]))
     node_id = str(run["current_node_id"])
