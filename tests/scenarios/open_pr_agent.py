@@ -22,7 +22,7 @@ from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
-from atelier2.adapters.dbos.workflow_ids import driving_workflow_id
+from atelier2.adapters.dbos.workflow_ids import driving_workflow_ids
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
     AgentAttemptId,
@@ -184,11 +184,12 @@ def complete_run(runtime: DbosRuntime, run: RunId) -> None:
 def seed_current_node_attempt(runtime: DbosRuntime, run: RunId, ordinal: int) -> str:
     """Seed the run's current node one attempt and return the workflow driving it.
 
-    The live-GitHub startup scan asks `driving_workflow_id` which workflow still
-    owes each attempt of the current node its next move, so a test that wants to
-    leave a redemption owed seeds the real attempt the scan reads and takes the
-    driving id from the same production owner. An ordinal-1 attempt is driven by
-    its node workflow, an ordinal-2 replacement by its replacement workflow.
+    The live-GitHub startup scan asks `driving_workflow_ids` which workflows can
+    still owe each attempt of the current node its next move, so a test that wants
+    to leave a redemption owed seeds the real attempt the scan reads and takes the
+    driving id from the same production owner. The seeded attempt is
+    local-process-carried, so the first of those ids is the one that will ever
+    hold a status: its node workflow, or its replacement workflow at ordinal two.
     """
     with runtime.engine.connect() as connection:
         row = (
@@ -241,21 +242,41 @@ def seed_current_node_attempt(runtime: DbosRuntime, run: RunId, ordinal: int) ->
                 ),
             )
         )
-    return driving_workflow_id(attempt)
+    return driving_workflow_ids(attempt)[0]
 
 
-def seed_workflow_status(runtime: DbosRuntime, workflow_id: str, status: str) -> None:
+def seed_workflow_status(
+    runtime: DbosRuntime,
+    workflow_id: str,
+    status: str,
+    *,
+    application_version: str | None = None,
+) -> None:
     """Leave a workflow in the durable status a crash or a finish leaves.
 
     The durable runtime owns this table; a test that wants to ask about a
     workflow left mid-flight by a crash cannot reach that status by running one.
+
+    The row carries the version that wrote it, because recovery does: DBOS
+    resumes only workflows of the version it is running, so a scan asking whether
+    anything still drives a run reads a retired row as dead. This seeds the
+    runtime's own version unless a scenario names that retired case.
     """
     with runtime.engine.begin() as connection:
         connection.execute(
             sa.text(
                 "INSERT INTO workflow_status "
-                "(workflow_uuid, status, created_at, updated_at, priority) "
-                "VALUES (:workflow_id, :status, 0, 0, 0)"
+                "(workflow_uuid, status, application_version, "
+                "created_at, updated_at, priority) "
+                "VALUES (:workflow_id, :status, :application_version, 0, 0, 0)"
             ),
-            {"workflow_id": workflow_id, "status": status},
+            {
+                "workflow_id": workflow_id,
+                "status": status,
+                "application_version": (
+                    runtime.settings.application_version
+                    if application_version is None
+                    else application_version
+                ),
+            },
         )

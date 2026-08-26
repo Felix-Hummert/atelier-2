@@ -21,7 +21,9 @@ from typing import assert_never
 
 from atelier2.application.refusals import (
     DurableStateCorrupt,
+    ProjectSourceNotConnected,
     ReadUnavailable,
+    SourcePayloadMalformed,
     WriteUnavailable,
 )
 from atelier2.contracts.host_configuration import ProjectId
@@ -52,18 +54,6 @@ class ProjectSourceIssuesImported:
 
     observed: int
     newly_observed: int
-
-
-@dataclass(frozen=True)
-class ProjectSourceNotConnected:
-    """The served instance binds no project with a source-connection record."""
-
-
-@dataclass(frozen=True)
-class SourcePayloadMalformed:
-    """The tracker answered with a shape its adapter refused to read items from."""
-
-    detail: str
 
 
 type ImportProjectSourceIssuesOutcome = (

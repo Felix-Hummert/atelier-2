@@ -19,9 +19,14 @@ hash start still happens. All three publications are idempotent: identical
 bytes answer with the same hash and change nothing. The run identity is derived
 from those hashes and from the orders `--input` / `--input-file` supplied, so
 repeating the same command reports the first run again instead of starting -
-and paying for - a second one. The command publishes nothing for an order: it
-hands the exact bytes to `POST /runs`, which is the door that already carries
-them.
+and paying for - a second one. Every order this command hands to a start is
+published first, as a content-addressed artifact: `--input NAME=VALUE` and
+`--input-file NAME=PATH` both reach `POST /artifacts` before `POST /runs` ever
+sees the order, and the start names only the address the artifact door
+answered. A ten-byte order and a hundred-kilobyte diff therefore take the same
+door — the wire form no longer depends on how large the material is, and
+publishing the same bytes twice is the same artifact, so a repeated command
+publishes nothing new either.
 """
 
 from __future__ import annotations
@@ -62,10 +67,12 @@ from atelier2.api.wire.requests import (
     StartRunRequestResource,
     StartRunRequestResourceV2,
     StartRunRequestResourceV3,
+    WorkItemOrderResource,
 )
 from atelier2.api.wire.resources import (
     AgentConfigurationRevisionResource,
     AnyRunResource,
+    ArtifactResource,
     AuthProfileRevisionResource,
     CatalogAdmissionResource,
     CatalogNameResolutionResource,
@@ -87,6 +94,7 @@ AGENT_CONFIGURATION_PATH = "/agent-configuration-revisions"
 WORKFLOW_REVISION_PATH = "/workflow-revisions"
 WORKFLOW_LINEAGE_PATH = "/workflow-lineages"
 RUN_PATH = "/runs"
+ARTIFACT_PATH = "/artifacts"
 DEFAULT_CATALOG_POSITION: Final = "head"
 COMMAND_CATALOG_ACTOR: Final = "atelier2-run"
 PROBLEM_TYPE_PREFIX: Final = "urn:atelier2:problem:v1:"
@@ -94,6 +102,7 @@ PROBLEM_TYPE_PREFIX: Final = "urn:atelier2:problem:v1:"
 JSON_MEDIA_TYPE = "application/json"
 YAML_MEDIA_TYPE = "application/yaml"
 EVENT_STREAM_MEDIA_TYPE = "text/event-stream"
+OCTET_STREAM_MEDIA_TYPE = "application/octet-stream"
 
 RUN_IDENTITY_DOMAIN = "atelier2-command-line-run"
 
@@ -141,6 +150,7 @@ _run_resource = TypeAdapter[AnyRunResource](AnyRunResource)
 _acted_event_resource = TypeAdapter[ActedEventResource](ActedEventResource)
 _stream_failure_resource = TypeAdapter(StreamFailureResource)
 _node_detail_resource = TypeAdapter(NodeDetailResource)
+_artifact_resource = TypeAdapter(ArtifactResource)
 
 
 class RunCommandRefusal(Exception):
@@ -252,7 +262,15 @@ class SuppliedArtifactOrder:
     artifact_hash: str
 
 
-type SuppliedStartOrder = SuppliedOrder | SuppliedArtifactOrder
+@dataclass(frozen=True)
+class SuppliedWorkItemOrder:
+    """One order the caller named by an item in the project's own tracker."""
+
+    name: str
+    work_item: str
+
+
+type SuppliedStartOrder = SuppliedOrder | SuppliedArtifactOrder | SuppliedWorkItemOrder
 
 
 @dataclass(frozen=True)
@@ -410,11 +428,12 @@ def _run_published_revision(
     """
 
     run_id = asked_run_id or derived_run_id(revision_hash, bindings, orders)
+    published_orders = _published_orders(api, orders)
     started = _decoded(
         _run_resource,
         _post(
             api + RUN_PATH,
-            start_request_body(run_id, revision_hash, bindings, orders),
+            start_request_body(run_id, revision_hash, bindings, published_orders),
         ),
         "a run",
     )
@@ -537,6 +556,31 @@ def _unpublishable_binding(role: str, error: ValidationError) -> UnusableRunOrde
     return UnusableRunOrder(
         f"the binding of role {role} is not an agent this API could publish: {error}"
     )
+
+
+def _published_orders(
+    api: str, orders: tuple[SuppliedOrder, ...]
+) -> tuple[SuppliedArtifactOrder, ...]:
+    """Publish every order's exact bytes as an artifact before a start names it.
+
+    One door carries every order regardless of size: a start never again says
+    the bytes themselves, only the address `POST /artifacts` answered.
+    Publishing is idempotent, so a repeated command republishes nothing new.
+    """
+
+    return tuple(
+        SuppliedArtifactOrder(order.name, _published_artifact_hash(api, order.value))
+        for order in orders
+    )
+
+
+def _published_artifact_hash(api: str, content: bytes) -> str:
+    published = _decoded(
+        _artifact_resource,
+        _post(api + ARTIFACT_PATH, content, media_type=OCTET_STREAM_MEDIA_TYPE),
+        "an artifact",
+    )
+    return published.artifact_hash
 
 
 def _published_workflow_revision(
@@ -677,6 +721,8 @@ def start_request_body(
 def _wire_start_order(order: SuppliedStartOrder) -> AnyStartRunOrderResource:
     if isinstance(order, SuppliedArtifactOrder):
         return ArtifactOrderResource(name=order.name, artifact_hash=order.artifact_hash)
+    if isinstance(order, SuppliedWorkItemOrder):
+        return WorkItemOrderResource(name=order.name, work_item=order.work_item)
     return InlineOrderResource(name=order.name, value=order.value.decode("utf-8"))
 
 

@@ -9,8 +9,10 @@ from atelier2.contracts.executions import SubmitWaitAnswerRequest, WaitAnswerSna
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.orders import (
     ArtifactOrderValue,
-    AuthoredOrderValue,
     InlineOrderValue,
+    ObservedWorkItemOrderValue,
+    StartOrderValue,
+    WorkItemOrderValue,
 )
 from atelier2.contracts.run_bindings import AnyRun
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
@@ -96,6 +98,20 @@ class DurableAgentPlatformEffectUnreconcilable:
     node: str
 
 
+@dataclass(frozen=True)
+class DurableWorkItemOrderUnread:
+    """This start names a work item nobody has read, and no run exists to answer.
+
+    A start with a work-item order arrives twice: once naming the item, and --
+    only if no run of that identity exists yet -- once carrying what the caller
+    read in between. That order is deliberate. A retry of an existing run must
+    answer from what the run already pinned rather than read a moving object
+    again, so the durable answer comes first and the reading happens only when
+    there is nothing to answer from. Reading inside this seam is not the
+    alternative: it would hold a write transaction open across a network call.
+    """
+
+
 type DurablePublishedRunResult = (
     DurableRunCreated
     | DurableRunExisting
@@ -111,6 +127,7 @@ type DurablePublishedRunResult = (
     | DurableWriteUnavailable
     | DurableStateCorrupt
     | DurableV3StartInputRefused
+    | DurableWorkItemOrderUnread
 )
 
 
@@ -166,17 +183,27 @@ class AuthoredOrder:
     The document pins the schema. A caller that also named a schema would
     be repeating a decision they do not own; the start looks the pin up.
 
-    The value is inline bytes or the address of a published artifact, and the
-    start resolves the second into the first before anything reads it.
+    The value is inline bytes, the address of a published artifact, or a work
+    item -- either one this start has already read, or one it has not. The
+    unread form exists so an existing run is answered from what it pinned
+    before anything reads a moving object again (`DurableWorkItemOrderUnread`).
     """
 
     name: str
-    value: AuthoredOrderValue
+    value: StartOrderValue
 
     def __post_init__(self) -> None:
         if self.name == "":
             raise ValueError("an order names a nonempty input")
-        if not isinstance(self.value, (InlineOrderValue, ArtifactOrderValue)):
+        if not isinstance(
+            self.value,
+            (
+                InlineOrderValue,
+                ArtifactOrderValue,
+                ObservedWorkItemOrderValue,
+                WorkItemOrderValue,
+            ),
+        ):
             raise TypeError("an order names where its value comes from")
 
 

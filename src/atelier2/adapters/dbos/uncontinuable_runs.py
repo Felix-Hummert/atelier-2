@@ -31,8 +31,10 @@ from atelier2.adapters.dbos.workflow_ids import (
     node_workflow_id_for,
     reconcile_workflow_id_for,
     replacement_workflow_id_for,
+    runner_lease_workflow_id_for,
 )
 from atelier2.contracts.agent_attempts import (
+    AGENT_ATTEMPT_ORDINAL,
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     STOP_AFTER_DRIVER_LOSS,
     TERMINAL_AGENT_ATTEMPT_STATES,
@@ -97,6 +99,32 @@ def live_driver_workflow_ids(
                 _dbos_workflow_status.c.workflow_uuid.in_(ids),
                 _dbos_workflow_status.c.status.in_(LIVE_DRIVER_WORKFLOW_STATUSES),
                 _dbos_workflow_status.c.application_version == application_version,
+            )
+        )
+    )
+
+
+def minted_workflow_ids(
+    connection: Connection, workflow_ids: Iterable[str]
+) -> frozenset[str]:
+    """The ids among `workflow_ids` a workflow was ever durably started under.
+
+    The other half of the question `live_driver_workflow_ids` answers, and the
+    reason a caller may name ids speculatively at all: a derived id no workflow
+    was ever minted under matches nothing here, so "this workflow existed" and
+    "this workflow is still going to run" stay two separate facts. A caller that
+    needs to tell a run nothing ever carried from one whose carrier is dead needs
+    the first, in any application version -- a workflow a retired version left
+    behind still proves the run got that far.
+    """
+
+    ids = tuple(workflow_ids)
+    if not ids:
+        return frozenset()
+    return frozenset(
+        connection.scalars(
+            sa.select(_dbos_workflow_status.c.workflow_uuid).where(
+                _dbos_workflow_status.c.workflow_uuid.in_(ids)
             )
         )
     )
@@ -219,7 +247,7 @@ def _gap_family_run_ids(connection: Any, application_version: str) -> tuple[RunI
             runs.c.current_round_ordinal,
         ).where(*_gap_store_predicates())
     ).mappings():
-        if not _gap_has_recoverable_driver(connection, record, application_version):
+        if _no_workflow_will_move_this_run(connection, record, application_version):
             found.append(RunId(str(record["run_id"])))
     return tuple(found)
 
@@ -243,14 +271,6 @@ def _gap_store_predicates() -> tuple[Any, ...]:
             .where(
                 agent_attempts.c.run_id == runs.c.run_id,
                 agent_attempts.c.state.notin_(terminal_attempt),
-            )
-        ),
-        sa.exists(
-            sa.select(1)
-            .select_from(agent_attempts)
-            .where(
-                agent_attempts.c.run_id == runs.c.run_id,
-                agent_attempts.c.state == AgentAttemptState.SUCCEEDED.value,
             )
         ),
     )
@@ -329,41 +349,86 @@ def _current_node_is_a_dead_gap(
     )
     if still_a_gap is None:
         return False
-    return not _gap_has_recoverable_driver(connection, record, application_version)
+    return _no_workflow_will_move_this_run(connection, record, application_version)
 
 
-def _gap_has_recoverable_driver(
+def _no_workflow_will_move_this_run(
     connection: Any, record: Mapping[Any, Any], application_version: str
 ) -> bool:
+    """Whether nothing is ever going to move this run again.
+
+    Two questions, in order. Did this run ever get anywhere -- so that its
+    silence is an ending rather than a beginning? And of whatever carried it, is
+    anything still one recovery will resume? Only a run that got somewhere and
+    has no live carrier left is a dead gap.
+    """
+
     workflow_ids = _gap_workflow_ids(connection, record)
-    return bool(live_driver_workflow_ids(connection, workflow_ids, application_version))
+    if not _the_run_got_somewhere(connection, record, workflow_ids):
+        return False
+    return not live_driver_workflow_ids(connection, workflow_ids, application_version)
+
+
+def _the_run_got_somewhere(
+    connection: Any, record: Mapping[Any, Any], workflow_ids: Iterable[str]
+) -> bool:
+    """Whether anything ever carried this run, in either of the two ways it can show.
+
+    An attempt that succeeded proves it. So does a workflow genuinely minted for
+    the run, and that second proof is the only one a carrier leaves when it dies
+    or is retired before preparing its first Attempt (#636): a Runner slot
+    workflow left `ENQUEUED` by a version that will never run again has no
+    attempt to its name, and demanding one would leave the run `STARTED` for as
+    long as the store exists.
+
+    A run nothing has carried yet has neither, which is exactly the answer
+    wanted: every id derived for it is speculative and matches no row, so a run
+    whose first workflow has not been picked up is young rather than dead.
+    """
+
+    succeeded = connection.scalar(
+        sa.select(1)
+        .select_from(agent_attempts)
+        .where(
+            agent_attempts.c.run_id == str(record["run_id"]),
+            agent_attempts.c.state == AgentAttemptState.SUCCEEDED.value,
+        )
+    )
+    if succeeded is not None:
+        return True
+    return bool(minted_workflow_ids(connection, workflow_ids))
 
 
 def _gap_workflow_ids(connection: Any, record: Mapping[Any, Any]) -> tuple[str, ...]:
     """Every workflow that could still owe this apparent gap its next move.
 
     A gap is dead only once nothing is going to move the run, so every driver
-    the run can have belongs here, and two families can. The node and
+    the run can have belongs here, and three families can. The node and
     replacement workflows of its own nodes are one. Its effect workflows are
-    the other (#645): an Action node prepares its effect and returns, so the
+    another (#645): an Action node prepares its effect and returns, so the
     node workflow that would name it is already SUCCESS while the effect is
     still in flight. Leaving that family out reads a healthy V3 run standing
     on an Action node as a dead gap and ends it FAILED while its effect is
-    still going to be performed.
+    still going to be performed. The Runner-lease slot is the third, for the
+    same reason (#636): a lease-carried Agent node hands its Attempt to the
+    slot's queue and returns, so its node workflow reads SUCCESS while the
+    Attempt is still waiting its turn or running.
+
+    Naming a workflow that turns out not to owe anything only makes this sweep
+    wait for a status read to say so, so a family is named whenever it *can*
+    carry the run, never only when it does.
     """
 
     run_id = RunId(str(record["run_id"]))
     revision_hash = WorkflowRevisionHash(str(record["revision_hash"]))
-    named = {
-        node_workflow_id_for(
-            NodeExecutionId.for_node(
-                run_id,
-                revision_hash,
-                str(record["current_node_id"]),
-                int(record["current_round_ordinal"]),
-            )
-        )
-    }
+    current_execution = NodeExecutionId.for_node(
+        run_id,
+        revision_hash,
+        str(record["current_node_id"]),
+        int(record["current_round_ordinal"]),
+    )
+    named = {node_workflow_id_for(current_execution)}
+    named.update(_runner_lease_workflow_ids(current_execution))
     for attempt in connection.execute(
         sa.select(
             agent_attempts.c.attempt_id,
@@ -374,16 +439,30 @@ def _gap_workflow_ids(connection: Any, record: Mapping[Any, Any]) -> tuple[str, 
             agent_attempts.c.state == AgentAttemptState.SUCCEEDED.value,
         )
     ):
+        execution_id = NodeExecutionId(str(attempt.node_execution_id))
         if int(attempt.attempt_ordinal) == REPLACEMENT_AGENT_ATTEMPT_ORDINAL:
             named.add(
                 replacement_workflow_id_for(AgentAttemptId(str(attempt.attempt_id)))
             )
         else:
-            named.add(
-                node_workflow_id_for(NodeExecutionId(str(attempt.node_execution_id)))
-            )
+            named.add(node_workflow_id_for(execution_id))
+        named.update(_runner_lease_workflow_ids(execution_id))
     named.update(_effect_workflow_ids(connection, run_id))
     return tuple(named)
+
+
+def _runner_lease_workflow_ids(execution_id: NodeExecutionId) -> tuple[str, ...]:
+    """Both turns one node execution can take in the Runner-lease slot.
+
+    Whether a node is lease-carried is not written on the run, so both its first
+    Attempt's and its replacement's slot workflows are named and the status read
+    decides -- an id no workflow was ever minted under simply matches nothing.
+    """
+
+    return tuple(
+        runner_lease_workflow_id_for(execution_id, ordinal)
+        for ordinal in (AGENT_ATTEMPT_ORDINAL, REPLACEMENT_AGENT_ATTEMPT_ORDINAL)
+    )
 
 
 def _effect_workflow_ids(connection: Any, run_id: RunId) -> tuple[str, ...]:
