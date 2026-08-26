@@ -498,11 +498,124 @@ def stopped_repository(tmp_path: Path) -> tuple[Path, bytes]:
     return repository, record
 
 
-def wait_until_exists(path: Path) -> None:
-    deadline = time.monotonic() + 5
-    while not path.exists() and time.monotonic() < deadline:
+_SUBPROCESS_STALL_SECONDS = 5.0
+_SUBPROCESS_DEADLOCK_SECONDS = 60.0
+
+
+def _process_tree_progress(pid: int) -> tuple[int, int, str]:
+    cpu = 0
+    io_chars = 0
+    wait_sums: list[str] = []
+    pending = [pid]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        proc = Path("/proc") / str(current)
+        try:
+            fields = (
+                (proc / "stat").read_text(encoding="ascii").rpartition(")")[2].split()
+            )
+        except OSError:
+            continue
+        cpu += int(fields[11]) + int(fields[12])
+        try:
+            io_text = (proc / "io").read_text(encoding="ascii")
+        except OSError:
+            pass
+        else:
+            for line in io_text.splitlines():
+                name, separator, value = line.partition(": ")
+                if separator and name in ("rchar", "wchar"):
+                    io_chars += int(value)
+        try:
+            sched = (proc / "sched").read_text(encoding="ascii")
+        except OSError:
+            pass
+        else:
+            for line in sched.splitlines():
+                if "wait_sum" in line:
+                    wait_sums.append(line.rsplit(":", 1)[-1].strip())
+                    break
+        try:
+            children = (proc / "task" / str(current) / "children").read_text(
+                encoding="ascii"
+            )
+        except OSError:
+            continue
+        pending.extend(int(token) for token in children.split())
+    return cpu, io_chars, ",".join(wait_sums)
+
+
+def _workspace_progress(workspace: Path) -> tuple[int, int]:
+    files = 0
+    size = 0
+    for path in workspace.rglob("*"):
+        try:
+            if path.is_file():
+                size += path.stat().st_size
+                files += 1
+        except OSError:
+            continue
+    return files, size
+
+
+def _observed_progress(
+    process: subprocess.Popen[bytes], workspace: Path
+) -> tuple[object, ...]:
+    pid = process.pid
+    tree = (0, 0, "") if pid is None else _process_tree_progress(pid)
+    return tree + _workspace_progress(workspace)
+
+
+def wait_until_exists(path: Path, process: subprocess.Popen[bytes]) -> None:
+    """Wait for the stub's phase marker, extending while the process works.
+
+    A single 5s wall clock races pytest-xdist scheduling: git, bash, and the
+    Docker stub are real processes whose work can slow down without stalling.
+    The wait renews itself for as long as CPU, I/O, scheduler wait, or
+    workspace files advance, and only gives up once they freeze (or a
+    generous absolute ceiling is reached, as a backstop against a genuine
+    deadlock).
+    """
+    message = f"stub did not reach {path.name}"
+    ceiling = time.monotonic() + _SUBPROCESS_DEADLOCK_SECONDS
+    stall_deadline = time.monotonic() + _SUBPROCESS_STALL_SECONDS
+    observed: object = None
+    while not path.exists():
+        now = time.monotonic()
+        if now >= ceiling or now >= stall_deadline:
+            raise AssertionError(message)
+        if process.poll() is not None:
+            raise AssertionError(f"{message} (process exited {process.returncode})")
+        current = _observed_progress(process, path.parent)
+        if current != observed:
+            observed = current
+            stall_deadline = time.monotonic() + _SUBPROCESS_STALL_SECONDS
         time.sleep(0.01)
-    assert path.exists(), f"stub did not reach {path.name}"
+
+
+def wait_for_exit(
+    process: subprocess.Popen[bytes], workspace: Path, message: str
+) -> int:
+    """Wait for the lifecycle process to exit, extending while cleanup works."""
+    ceiling = time.monotonic() + _SUBPROCESS_DEADLOCK_SECONDS
+    stall_deadline = time.monotonic() + _SUBPROCESS_STALL_SECONDS
+    observed: object = None
+    while True:
+        now = time.monotonic()
+        if now >= ceiling or now >= stall_deadline:
+            raise AssertionError(message)
+        timeout = min(0.05, stall_deadline - now, ceiling - now)
+        try:
+            return process.wait(timeout=max(timeout, 0.0))
+        except subprocess.TimeoutExpired:
+            current = _observed_progress(process, workspace)
+            if current != observed:
+                observed = current
+                stall_deadline = time.monotonic() + _SUBPROCESS_STALL_SECONDS
 
 
 def docker_mutations(invocations: list[list[str]]) -> list[list[str]]:
@@ -870,14 +983,19 @@ def test_lifecycle_signal_cleans_only_the_exact_owned_runtime(
         start_new_session=True,
     )
     ready = tmp_path / f"{phase}-ready"
-    wait_until_exists(ready)
+    wait_until_exists(ready, process)
     os.killpg(process.pid, interruption)
     if repeated:
-        wait_until_exists(tmp_path / "start-cleanup-ready")
+        wait_until_exists(tmp_path / "start-cleanup-ready", process)
         os.killpg(process.pid, signal.SIGTERM)
         (tmp_path / "start-cleanup-release").touch()
 
-    assert process.wait(timeout=5) == status
+    assert (
+        wait_for_exit(
+            process, tmp_path, "lifecycle process did not exit after the signal"
+        )
+        == status
+    )
     mutations = docker_mutations(docker_invocations(tmp_path))
     if command == "start":
         assert mutations == RECORDED_START_STOP
