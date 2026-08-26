@@ -459,14 +459,23 @@ this race harmlessly and is left for its launcher.
 
 **A Runner does not die with the Serve that went away.** Losing the session
 connection reaps nothing: the Runner keeps its provider child running and
-redials the session port for as long as the attempt span its manifest declares
-allows, so a Serve that comes back and resumes that Attempt's workflow meets
-the same invocation again and receives the work it already paid for, instead of
-an invocation lost to a restart. Expect the Runner container to still be
-running through a Serve restart — that is the healthy shape. A Runner whose
-Serve never returns inside that span gives up: it reaps its child, keeps
-whatever it had already journalled, and exits, which is the Attempt the
-convergence below is for.
+redials the session port, so a Serve that comes back and resumes that Attempt's
+workflow meets the same invocation again and receives the work it already paid
+for, instead of an invocation lost to a restart. The recovered workflow needs
+no session state of its own for this — it binds its listener, accepts that one
+Runner again, and the cold session it builds is carried by the durable
+attempt's own idempotency. Expect the Runner container to still be running
+through a Serve restart; that is the healthy shape.
+
+**One span bounds everything that Runner waits on.** The attempt span its
+attested manifest declares is spent from the moment its session starts, and
+every wait draws on that one budget: dialling Serve, the TLS handshake, and
+each frame it waits on afterwards — so a Serve that completes the handshake and
+then stops speaking cannot hold a Runner's provider child and credential
+channel open indefinitely. When the span runs out the Runner reaps its child,
+keeps whatever it had already journalled, and exits. That is both the outer
+bound on how long a Runner container survives a Serve that never returns, and
+the Attempt the convergence below is for.
 
 **Every start converges every Runner-lease Attempt no workflow still owes its
 next move.** After a Serve restart mid-session such an Attempt would otherwise

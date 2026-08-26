@@ -362,13 +362,22 @@ class PreparedFreeRunnerAttempt:
     auth_reference: str
 
 
-def prepared_free_runner_attempt(
-    root: Path,
-    run_id_value: str,
-    job: FreeRunnerPrintJob | FreeRunnerHoldJob,
-) -> PreparedFreeRunnerAttempt:
+def free_runner_core_runtime(root: Path) -> DbosRuntime:
+    """The durable runtime one free-runner Core process opens over `root`.
+
+    Named on its own so a test can close it and open it again over the same
+    files, which is all a Serve restart leaves of Core: the durable attempt
+    survives and every in-memory session does not. Nothing may reconstruct
+    these settings a second time by hand -- two spellings of one database
+    would prove recovery against a store no Serve actually runs on.
+
+    The free-runner executor is composed here because a Serve reopening a
+    store that still holds a nonterminal free-runner attempt is refused
+    without it, exactly as a real deployment would be: a runtime may not
+    reopen work whose executor it does not carry.
+    """
     workspace = root / "workspace"
-    workspace.mkdir(mode=0o700, exist_ok=True)
+    workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
     runtime = DbosRuntime(
         DbosRuntimeSettings(
             root / "core.sqlite3",
@@ -381,9 +390,18 @@ def prepared_free_runner_attempt(
             EffectDestination("execute-agent-attempt-on-runner-test"),
         ),
         ExactOutputAgentExecutorFactory(),
-        (),
+        (FreeRunnerExecutorFactory(),),
     )
     runtime.initialize_storage()
+    return runtime
+
+
+def prepared_free_runner_attempt(
+    root: Path,
+    run_id_value: str,
+    job: FreeRunnerPrintJob | FreeRunnerHoldJob,
+) -> PreparedFreeRunnerAttempt:
+    runtime = free_runner_core_runtime(root)
     DbosCatalogStore(runtime.engine).publish_revision(FREE_RUNNER_OUTPUT_SCHEMA)
     runner_registry = AgentExecutorRegistry((FreeRunnerExecutorFactory(),))
     catalog = DbosAgentConfigurationCatalog(runtime.engine, runner_registry)

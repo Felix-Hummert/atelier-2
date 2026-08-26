@@ -8,9 +8,23 @@ across it, the child process it supervises, and the journal it publishes to.
 
 A Core that dies mid-session is not this invocation's death: the provider
 child keeps running and the session asks its caller for another authenticated
-channel, replaying the whole handshake from OFFER on it. Core answers each
-repeated frame out of its own cache, so the replay costs no second child and
-no second durable write.
+channel, replaying the whole handshake from OFFER on it. What answers that
+replay depends on how Core died, and the replay has to satisfy both. A Core
+that only lost the connection answers each repeated frame out of the in-memory
+cache `CoreRunnerSession` keeps, which admits a repeated sequence only as the
+exact bytes it cached. A Core process that *restarted* has no such cache: a
+recovered workflow builds a cold session over the same durable attempt, and
+what recognizes the replay there is the store's own idempotency — arming the
+same invocation again, committing the same terminal record again,
+acknowledging the same evidence again. So the replay is byte-identical and
+free of any second effect, and it costs no second child and no second durable
+write either way.
+
+Every wait in a session is measured against one absolute deadline, the attempt
+span the attested manifest declares. That span is what this container's own
+identity was minted for (ADR 0009 sec. 2), so nothing — dialling Core, its
+handshake, or an authenticated Core that simply stops answering — may outlive
+it while a paid child and its credential channel are still held.
 """
 
 from __future__ import annotations
@@ -141,19 +155,80 @@ class RunnerFrameChannel(Protocol):
     def close(self) -> None: ...
 
 
-# Open one already-connected, peer-verified channel to Core, or raise `OSError`
-# if Core cannot be reached right now. The socket, the TLS handshake and the
-# peer fence behind it belong to `__main__`; this module only ever asks for
-# another channel when the one it had died.
-ConnectToCore = Callable[[], RunnerFrameChannel]
+# Open one already-connected, peer-verified channel to Core within the seconds
+# this invocation still has, or raise `OSError` if Core cannot be reached in
+# that time. The socket, the TLS handshake and the peer fence behind it belong
+# to `__main__`; this module only ever asks for another channel when the one it
+# had died, and only ever for as long as its span still allows.
+ConnectToCore = Callable[[float], RunnerFrameChannel]
+
+
+class SessionClock(Protocol):
+    """The passage of time every wait in a candidate session is measured against.
+
+    Production hands over the real one. A test hands over a clock it drives
+    itself, so a proof about what this container does when its span runs out
+    never has to spend that span waiting for it.
+    """
+
+    def monotonic(self) -> float: ...
+
+    def sleep(self, seconds: float) -> None: ...
+
+
+class _RealTime:
+    """The clock production always waits against."""
+
+    def monotonic(self) -> float:
+        return time.monotonic()
+
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+
+REAL_TIME: SessionClock = _RealTime()
 
 
 class CoreConnectionLost(ConnectionError):
     """This Core connection is gone; the invocation it carried may still live."""
 
 
-class CoreUnreachable(ConnectionError):
-    """Core stayed unreachable for the whole span this invocation was given."""
+class InvocationSpanExhausted(Exception):
+    """The span this invocation was given ran out while Core still owed it frames.
+
+    Terminal on every path, and deliberately not a lost connection: nothing is
+    retried after it. The child is reaped and its credential channel taken
+    back, because this container's identity is minted for exactly that span
+    (ADR 0009 sec. 2) and nothing it could still say would be accepted.
+    """
+
+
+class _InvocationSpan:
+    """The one absolute moment every wait in this invocation is measured to.
+
+    Dialling Core, its TLS handshake, each frame read, each frame write and
+    each pause between reconnects are all capped by what is left of it, so no
+    single stalled step can outlive the span the attested manifest declares.
+    An authenticated Core that simply stops answering is the case this exists
+    for: without it, that Core would hold this container's provider child and
+    its credential channel open for as long as it liked.
+    """
+
+    def __init__(self, clock: SessionClock, manifest: RunnerManifestV1) -> None:
+        self._clock = clock
+        self._ends_at = clock.monotonic() + manifest.total_attempt_milliseconds / 1000
+
+    def left(self) -> float:
+        return self._ends_at - self._clock.monotonic()
+
+    def seconds_for(self, waiting_on: str) -> float:
+        """How long one wait may still take, or an end to the whole invocation."""
+        remaining = self.left()
+        if remaining <= 0:
+            raise InvocationSpanExhausted(
+                f"this invocation's span ran out {waiting_on}"
+            )
+        return remaining
 
 
 class _CoreFrameFence:
@@ -215,10 +290,16 @@ class _SessionWire:
     """One Core connection, driven as this invocation's ordered frame exchange.
 
     The outbound sequence restarts at one on every connection because that is
-    what makes a replay a replay: Core answers a sequence it already accepted
-    out of its own cache, and only if the frame arrives as the exact bytes it
-    cached, so a reconnect must number and shape its frames the way the lost
-    connection did.
+    what makes a replay a replay: a Core that kept its session admits a
+    repeated sequence only as the exact bytes it cached, and a Core that
+    restarted recognizes the same frames only through the durable effects they
+    ask for a second time. Both need this numbering and shaping to repeat
+    exactly.
+
+    No read or write here may outlast the invocation's span. A caller's own
+    timeout is honoured while it fits inside what is left; once the span is
+    the smaller bound, it is what applies, and running out of it ends the
+    invocation rather than the connection.
     """
 
     def __init__(
@@ -226,10 +307,12 @@ class _SessionWire:
         channel: RunnerFrameChannel,
         binding: RunnerGenerationBinding,
         invocation: RunnerInvocationId,
+        span: _InvocationSpan,
     ) -> None:
         self._channel = channel
         self._binding = binding
         self._invocation = invocation
+        self._span = span
         self._fence = _CoreFrameFence(channel, binding, invocation)
         self._sequence = 0
 
@@ -237,16 +320,35 @@ class _SessionWire:
         self, message: RunnerSessionMessage, payload: tuple[bytes, ...] = ()
     ) -> None:
         self._sequence += 1
-        frame = RunnerSessionFrame(
-            message, self._sequence, self._binding, self._invocation, payload
+        wire_bytes = encode_runner_session_frame(
+            RunnerSessionFrame(
+                message, self._sequence, self._binding, self._invocation, payload
+            )
         )
+        seconds = self._span.seconds_for("sending a frame to Core")
         try:
-            self._channel.sendall(encode_runner_session_frame(frame))
+            self._channel.settimeout(seconds)
+            try:
+                self._channel.sendall(wire_bytes)
+            finally:
+                self._channel.settimeout(None)
+        except TimeoutError as stalled:
+            raise InvocationSpanExhausted(
+                "Core stopped reading this session's frames"
+            ) from stalled
         except OSError as error:
             raise CoreConnectionLost("the Core session channel failed") from error
 
     def read(self, timeout: float | None = None) -> RunnerSessionFrame:
-        return self._fence.read_frame(timeout)
+        seconds = self._span.seconds_for("waiting for a frame from Core")
+        if timeout is not None and timeout < seconds:
+            return self._fence.read_frame(timeout)
+        try:
+            return self._fence.read_frame(seconds)
+        except TimeoutError as stalled:
+            raise InvocationSpanExhausted(
+                "Core never sent the frame this session was owed"
+            ) from stalled
 
 
 def _reap_child(
@@ -264,16 +366,14 @@ class _ProviderChild:
     """The one provider process this invocation launched, and all it was given.
 
     It outlives a dropped Core connection deliberately: a Core that dies while
-    a paid provider child is working must not cost that work. Its deadline is
-    fixed at launch rather than recomputed per connection, so a reconnect
-    extends this container's patience with Core and never the span the
-    manifest gave the child.
+    a paid provider child is working must not cost that work. What it may
+    never outlive is the invocation's own span, which is why nothing here
+    carries a deadline of its own -- there is one, and every wait shares it.
     """
 
     executor: AgentExecutorV2
     command: AgentProcessCommand
     process: subprocess.Popen[bytes]
-    deadline: float
 
     def release(self) -> None:
         """Take back what this child was given, once it can no longer use it."""
@@ -281,15 +381,17 @@ class _ProviderChild:
         self.executor.close()
 
 
-def _child_deadline(manifest: RunnerManifestV1) -> float:
-    """When the span this manifest gave one provider child runs out."""
-    return time.monotonic() + manifest.total_attempt_milliseconds / 1000
-
-
 def _control_or_child_exit(
-    wire: _SessionWire, child: subprocess.Popen[bytes], deadline: float
+    wire: _SessionWire, child: subprocess.Popen[bytes], span: _InvocationSpan
 ) -> RunnerSessionFrame | None:
-    while child.poll() is None and time.monotonic() < deadline:
+    """Core's next control frame, or nothing once the child or the span ends.
+
+    The loop stops while a whole poll still fits inside the span, so every
+    read it makes carries its own poll timeout rather than the span's. That
+    keeps a child which simply overran its attempt a named ending of its own
+    (`candidate child outlived the attempt`) instead of an exhausted span.
+    """
+    while child.poll() is None and span.left() > _CONTROL_POLL_SECONDS:
         try:
             return wire.read(timeout=_CONTROL_POLL_SECONDS)
         except TimeoutError:
@@ -559,33 +661,22 @@ def _selected_manifest(
     return manifest
 
 
-class _ReconnectPatience:
-    """How long this container keeps trying to reach a Core that went away.
+def _wait_to_redial(span: _InvocationSpan, clock: SessionClock, loss: OSError) -> None:
+    """Pause before the next attempt to reach Core, or end the invocation.
 
-    The manifest's attempt span is the bound, because it is the span Core
-    selected for this invocation and the span this container's own identity
-    was minted for (ADR 0009 sec. 2): past it a reconnect would present a key
-    that opens nothing, and a Runner still waiting would be a leak rather than
-    a hope.
-
-    Between tries it waits exactly `_CONTROL_POLL_SECONDS` -- the cadence this
-    session already spends looking at an open channel while a child runs. A
-    refused connect inside the Attempt's own private network costs no more
-    than that poll does, so a widening ladder would buy nothing and would
-    leave a Core that came back waiting out whichever step the container
-    happened to be asleep in. What must never be unbounded is the total, and
-    the span above is what bounds it.
+    The pause is `_CONTROL_POLL_SECONDS`, the same cadence this session
+    already spends looking at an open channel while a child runs: a refused
+    connect inside the Attempt's own private network costs no more than that
+    poll does, so a widening ladder would buy nothing and would only leave a
+    Core that came back waiting out whichever step this container happened to
+    be asleep in. What must never be unbounded is the total, and the span is
+    what bounds it.
     """
-
-    def __init__(self, manifest: RunnerManifestV1) -> None:
-        self._deadline = time.monotonic() + manifest.total_attempt_milliseconds / 1000
-
-    def wait_or_give_up(self, loss: OSError) -> None:
-        if time.monotonic() + _CONTROL_POLL_SECONDS >= self._deadline:
-            raise CoreUnreachable(
-                "Core stayed unreachable for this invocation's whole attempt span"
-            ) from loss
-        time.sleep(_CONTROL_POLL_SECONDS)
+    if span.left() <= _CONTROL_POLL_SECONDS:
+        raise InvocationSpanExhausted(
+            "Core stayed unreachable for this invocation's whole span"
+        ) from loss
+    clock.sleep(_CONTROL_POLL_SECONDS)
 
 
 class _CandidateLifetime:
@@ -594,10 +685,11 @@ class _CandidateLifetime:
     A dropped connection costs this container nothing it already did: the
     measured READY attestation, a running provider child, the terminal fact
     this invocation fixed and the tombstone Core acknowledged all live here.
-    The next connection therefore replays the exact frames Core already
-    cached, instead of re-measuring a provider, racing a second child against
-    work this attempt is already paying for, or minting bytes Core would
-    refuse as a different frame under a sequence it already answered.
+    The next connection therefore replays exactly the frames the lost one
+    sent, instead of re-measuring a provider, racing a second child against
+    work this attempt is already paying for, or minting bytes no Core could
+    recognize -- neither one still holding the session it cached them in, nor
+    one restarted into a cold session over the same durable attempt.
     """
 
     def __init__(
@@ -608,6 +700,7 @@ class _CandidateLifetime:
         manifest: RunnerManifestV1,
         identity: Path,
         journal: RunnerJournal,
+        span: _InvocationSpan,
     ) -> None:
         self._binding = binding
         self._invocation = invocation
@@ -615,6 +708,7 @@ class _CandidateLifetime:
         self._manifest = manifest
         self._identity = identity
         self._journal = journal
+        self._span = span
         self._ready_payload: tuple[bytes, ...] | None = None
         self._child: _ProviderChild | None = None
         self._terminal_record: _TerminalRecord | None = None
@@ -626,19 +720,20 @@ class _CandidateLifetime:
         """Whether replaying this invocation on a fresh connection stays honest.
 
         Replay works because every frame this lifetime sends is derived from
-        state it pinned, so Core answers each repeated sequence out of its own
-        cache. A CANCEL breaks exactly that: Core sends it whenever it decides
-        to, and where it landed in the lost connection is what decided this
-        candidate's own frame numbering around it, which a replay cannot
-        reproduce. A cancelled attempt has no paid work left to save anyway,
-        so it ends here the way it did before this loop existed -- the child
-        reaped, the journal keeping whatever it already fixed.
+        state it pinned, so a repeated sequence is answered from the cache a
+        surviving Core kept or from the durable idempotency a restarted one
+        recovers through. A CANCEL breaks exactly that: Core sends it whenever
+        it decides to, and where it landed in the lost connection is what
+        decided this candidate's own frame numbering around it, which a replay
+        cannot reproduce. A cancelled attempt has no paid work left to save
+        anyway, so it ends here the way it did before this loop existed -- the
+        child reaped, the journal keeping whatever it already fixed.
         """
         return not self._cancel_observed
 
     def drive(self, channel: RunnerFrameChannel) -> None:
         """Replay this invocation from OFFER to RELEASED on one Core connection."""
-        wire = _SessionWire(channel, self._binding, self._invocation)
+        wire = _SessionWire(channel, self._binding, self._invocation, self._span)
         request, auth_reference = self._offer(wire)
         wire.send(
             RunnerSessionMessage.READY, self._attested_ready(wire, auth_reference)
@@ -685,8 +780,8 @@ class _CandidateLifetime:
         """This container's own measurement, taken once and then repeated verbatim.
 
         Re-measuring on a reconnect would run the provider CLI again for an
-        answer Core already cached under the same sequence, and a measurement
-        that drifted between the two would make the replayed READY a different
+        answer already given under the same sequence, and a measurement that
+        drifted between the two would make the replayed READY a different
         frame -- refused as one, rather than recognized as the retry it is.
         """
         if self._ready_payload is None:
@@ -732,9 +827,7 @@ class _CandidateLifetime:
         except BaseException:
             executor.close()
             raise
-        return _ProviderChild(
-            executor, command, process, _child_deadline(self._manifest)
-        )
+        return _ProviderChild(executor, command, process)
 
     def _fixed_terminal_record(
         self, wire: _SessionWire, work: _ProviderChild | _TerminalRecord
@@ -755,7 +848,7 @@ class _CandidateLifetime:
         reaped and its credential channel taken back before anything at all is
         journalled.
         """
-        control = _control_or_child_exit(wire, child.process, child.deadline)
+        control = _control_or_child_exit(wire, child.process, self._span)
         # Past the control wait this child ends here on every remaining path,
         # so the lifetime lets go of it now: a connection lost *before* this
         # line keeps the child for the next one, and nothing after it may reap
@@ -879,7 +972,9 @@ class _CandidateLifetime:
         A record that arrived as a prior lifetime's tombstone is already the
         answer; anything else is tombstoned here, exactly once. The journal
         cannot stand in for this memory on a replay: it holds the tombstone
-        only between ACK and RELEASE, and nothing at all after.
+        only between ACK and RELEASE, and nothing at all after -- so a replay
+        that minted a second one would send bytes no Core would take for the
+        frame it already answered.
         """
         if self._tombstone is None:
             self._tombstone = (
@@ -908,17 +1003,24 @@ def run_candidate_session(
     manifest_path: Path,
     identity: Path,
     journal_directory: Path,
+    *,
+    clock: SessionClock = REAL_TIME,
 ) -> None:
     """Drive one candidate invocation from OFFER to RELEASED, across Core deaths.
 
     `connect_to_core` hands back one already-connected, peer-verified channel
-    per call; this function never resolves a name, opens a socket, or
-    negotiates TLS. Core dying is not this invocation's death: the provider
-    child keeps running and the next channel replays the whole handshake from
-    OFFER, which Core answers out of its durable and cached state until the
-    real terminal evidence lands. The manifest's attempt span bounds that
-    patience, and a Core still unreachable at the end of it ends the
-    invocation the way a lost connection always did -- the child reaped, the
+    per call, within the seconds it is given; this function never resolves a
+    name, opens a socket, or negotiates TLS. Core dying is not this
+    invocation's death: the provider child keeps running and the next channel
+    replays the whole handshake from OFFER, which a surviving Core answers out
+    of its cached session and a restarted one out of the durable attempt both
+    lifetimes share, until the real terminal evidence lands.
+
+    One span bounds all of it -- the attempt span the attested manifest
+    declares, spent from this call rather than from any single wait inside it.
+    Dialling Core, an authenticated Core that stalls, and the pauses between
+    reconnects all draw on the same budget, and running it out ends the
+    invocation the way a lost connection always did: the child reaped, the
     credential channel taken back, nothing of either left running.
 
     A prior lifetime's retained journal record, if any, decides whether this
@@ -940,6 +1042,7 @@ def run_candidate_session(
     a Docker restart wipes, cannot carry that guarantee (`#15-B5`).
     """
     manifest = _selected_manifest(manifest_path, binding)
+    span = _InvocationSpan(clock, manifest)
     lifetime = _CandidateLifetime(
         binding,
         invocation,
@@ -947,14 +1050,14 @@ def run_candidate_session(
         manifest,
         identity,
         RunnerJournal(journal_directory),
+        span,
     )
-    patience = _ReconnectPatience(manifest)
     try:
         while True:
             try:
-                channel = connect_to_core()
+                channel = connect_to_core(span.seconds_for("dialling Core"))
             except OSError as unreachable:
-                patience.wait_or_give_up(unreachable)
+                _wait_to_redial(span, clock, unreachable)
                 continue
             try:
                 lifetime.drive(channel)
@@ -962,7 +1065,7 @@ def run_candidate_session(
             except CoreConnectionLost as lost:
                 if not lifetime.survives_a_lost_connection:
                     raise
-                patience.wait_or_give_up(lost)
+                _wait_to_redial(span, clock, lost)
             finally:
                 channel.close()
     finally:

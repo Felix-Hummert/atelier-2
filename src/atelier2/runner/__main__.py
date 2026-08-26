@@ -187,15 +187,22 @@ def _run_candidate_session(
     # SPKI-bound URI, EKU and fingerprint against the bootstrap document.
     context.check_hostname = False
 
-    def connect_to_core() -> ssl.SSLSocket:
+    def connect_to_core(timeout_seconds: float) -> ssl.SSLSocket:
         """One authenticated channel to Core, freshly fenced against its leaf.
+
+        `timeout_seconds` is what the invocation's own span still allows, and
+        it bounds the connect and the TLS handshake together, because the
+        handshake runs on this very socket: neither may outlive the attempt
+        span while the session is holding a paid child. It is cleared again
+        before the channel is handed over, so the session's own per-frame
+        bounds are then the only ones that apply.
 
         The session asks for this again whenever the connection it had died,
         so every fence below is re-run per connection rather than trusted from
         the last one: a Core that comes back is only the Core this bootstrap
         pinned if the leaf it presents still says so.
         """
-        raw = socket.create_connection((CORE_DNS_NAME, document.port), 5)
+        raw = socket.create_connection((CORE_DNS_NAME, document.port), timeout_seconds)
         try:
             connection = context.wrap_socket(raw, server_hostname=CORE_DNS_NAME)
         except BaseException:
@@ -206,6 +213,7 @@ def _run_candidate_session(
             if presented is None:
                 raise RuntimeError("Core did not present an authenticated leaf")
             validate_core_peer_leaf(presented, ca_certificate, document)
+            connection.settimeout(None)
         except BaseException:
             connection.close()
             raise

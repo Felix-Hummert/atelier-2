@@ -132,7 +132,8 @@ _ONE_CONNECTION_SOURCE = """
 _connections = [channel]
 
 
-def _connect_to_core():
+def _connect_to_core(seconds_left):
+    del seconds_left
     if not _connections:
         raise RuntimeError("this candidate was handed exactly one connection")
     return _connections.pop()
