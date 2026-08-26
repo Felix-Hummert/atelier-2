@@ -7,13 +7,11 @@ promises (#660). This suite is the fixture-side proof, one layer under
 `tests/domain/test_authored_workflows.py`'s generic parse check: it loads the
 exact bytes shipped at `workflows/diff-review.yaml` and `workflows/schemas/`,
 publishes them through the same door an operator's Git-source import uses, and
-launches a real run against them with a fake provider -- once with a finding
-the document's own schema admits, and once for each shape of answer #392's
-review criteria name as refused: an announcement instead of a finding (the
-exact defect #392 measured against a live provider), a finding with no
-verdict, and a finding whose verdict is not one of this product's two words.
-The schema's refusal is proven on the committed document itself rather than
-on an inline fixture that could quietly drift from it.
+launches a real run against them with a fake provider -- once with a review
+object the document's own schema admits, and once for every incomplete or
+invalid review object its contract refuses. The schema's refusal is proven on
+the committed document itself rather than on an inline fixture that could
+quietly drift from it.
 """
 
 from __future__ import annotations
@@ -94,43 +92,43 @@ DIFF_ORDER_TEXT = (
 )
 DIFF_ORDER_VALUE = json.dumps(DIFF_ORDER_TEXT, ensure_ascii=False).encode()
 
-COMPLIANT_FINDING = (
-    "Befund 1: workflows/diff-review.yaml adds one guard clause; nothing here "
-    "blocks it.\nVerdict: accepted"
-)
-COMPLIANT_ANSWER = json.dumps(COMPLIANT_FINDING, ensure_ascii=False).encode()
+COMPLIANT_REVIEW = {
+    "findings": [
+        {
+            "file": "workflows/diff-review.yaml",
+            "text": "The guard clause does not block this diff.",
+        }
+    ],
+    "verdict": "accepted",
+}
+COMPLIANT_ANSWER = json.dumps(COMPLIANT_REVIEW, ensure_ascii=False).encode()
 
-REFUSED_FINDINGS = {
-    "an announcement instead of a finding": (
-        "Ich pruefe zuerst die Projektregeln und dann den Diff."
-    ),
-    "a finding with no verdict line": (
-        "Befund 1: workflows/diff-review.yaml adds one guard clause."
-    ),
-    "a finding whose verdict is not one of the two product owns": (
-        "Befund 1: workflows/diff-review.yaml adds one guard clause.\nVerdict: maybe"
-    ),
+REFUSED_REVIEWS = {
+    "an object with no verdict": {
+        "findings": [{"file": "workflows/diff-review.yaml", "text": "Needs work."}]
+    },
+    "an object with a finding missing its text": {
+        "findings": [{"file": "workflows/diff-review.yaml"}],
+        "verdict": "revise",
+    },
+    "an object with an unknown verdict": {"findings": [], "verdict": "maybe"},
 }
 
 
-def test_the_finding_schema_avoids_unsupported_regex_tokens_and_refuses_befund_10() -> (
-    None
-):
-    """The provider's response-format regex engine rejects word boundaries."""
+def test_the_review_schema_accepts_only_the_review_object_contract() -> None:
     schema = json.loads(FINDING_SCHEMA.document)
-    pattern = schema["pattern"]
     schema_verdict = read_schema_document(FINDING_SCHEMA.document)
 
-    assert all(
-        token not in pattern for token in (r"\b", r"\B", "(?=", "(?!", "(?<=", "(?<!")
-    )
+    assert schema["type"] == "object"
+    assert schema["required"] == ["findings", "verdict"]
     assert isinstance(schema_verdict, SchemaAccepted), schema_verdict
 
     accepted = read_instance_document(
-        json.dumps("Befund 1: keine.\nVerdict: accepted").encode(), schema_verdict
+        json.dumps(COMPLIANT_REVIEW).encode(), schema_verdict
     )
     refused = read_instance_document(
-        json.dumps("Befund 10: keine.\nVerdict: accepted").encode(), schema_verdict
+        json.dumps(REFUSED_REVIEWS["an object with no verdict"]).encode(),
+        schema_verdict,
     )
 
     assert isinstance(accepted, InstanceAccepted)
@@ -263,7 +261,7 @@ def wait_for_state(runtime: DbosRuntime, run_id: RunId, state: RunState) -> None
 
 
 @pytest.mark.parametrize("provider", [COMPLIANT_ANSWER], indirect=True)
-def test_a_compliant_finding_completes_the_run_with_the_diff_the_order_carried(
+def test_a_compliant_review_completes_the_run_with_the_diff_the_order_carried(
     runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
 ) -> None:
     workflow, bindings = publish_diff_review(runtime)
@@ -281,7 +279,7 @@ def test_a_compliant_finding_completes_the_run_with_the_diff_the_order_carried(
     assert DIFF_ORDER_VALUE in handed
     assert b"cannot read files, run anything, or use tools" in handed
     assert b"the diff text is your only evidence" in handed
-    assert b"one final message with no progress narration" in handed
+    assert b"Accept the diff when nothing you find blocks it" in handed
 
     detail = durable_queries(runtime.engine).get_node_detail(run_id, "review")
     assert isinstance(detail, NodeDetailFound), detail
@@ -294,25 +292,15 @@ def test_a_compliant_finding_completes_the_run_with_the_diff_the_order_carried(
 @pytest.mark.parametrize(
     "provider",
     [
-        pytest.param(json.dumps(text, ensure_ascii=False).encode(), id=case)
-        for case, text in REFUSED_FINDINGS.items()
+        pytest.param(json.dumps(review, ensure_ascii=False).encode(), id=case)
+        for case, review in REFUSED_REVIEWS.items()
     ],
     indirect=True,
 )
-def test_a_finding_the_review_criteria_refuse_never_becomes_a_success(
+def test_a_review_object_the_schema_refuses_never_becomes_a_success(
     runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
 ) -> None:
-    """The exact defects #392 named, each refused by the shipped schema.
-
-    A reviewer that answers with a sentence about what it is about to do
-    instead of leading with "Befund 1" produced the `COMPLETED` run with a
-    semantically empty artifact #392 measured against a live provider. A
-    reviewer that never states whether the diff stands, or names a verdict
-    this product does not own, is exactly as unusable to an operator reading
-    the run. All three are the schema-level guarantee the document now
-    carries: none of these answers can ever write a success artifact for
-    `review`, whatever the provider says.
-    """
+    """An incomplete or invalid review object cannot write a success artifact."""
     workflow, bindings = publish_diff_review(runtime)
     run_id = RunId("v3/diff-review-refused")
 

@@ -225,24 +225,23 @@ def emitting_claude(standard_output: str, return_code: int = 0) -> str:
     )
 
 
-def success_envelope(result: str) -> str:
+def success_envelope(result: str, structured_output: object | None = None) -> str:
     """The last line of a stream: the answer, and what the whole call spent."""
 
-    return json.dumps(
-        {
-            "type": "result",
-            "is_error": False,
-            "result": result,
-            "usage": {
-                "input_tokens": ENVELOPE_USAGE.input_tokens,
-                "output_tokens": ENVELOPE_USAGE.output_tokens,
-                "cache_read_input_tokens": ENVELOPE_USAGE.cache_read_input_tokens,
-                "cache_creation_input_tokens": (
-                    ENVELOPE_USAGE.cache_creation_input_tokens
-                ),
-            },
-        }
-    )
+    envelope: dict[str, object] = {
+        "type": "result",
+        "is_error": False,
+        "result": result,
+        "usage": {
+            "input_tokens": ENVELOPE_USAGE.input_tokens,
+            "output_tokens": ENVELOPE_USAGE.output_tokens,
+            "cache_read_input_tokens": ENVELOPE_USAGE.cache_read_input_tokens,
+            "cache_creation_input_tokens": ENVELOPE_USAGE.cache_creation_input_tokens,
+        },
+    }
+    if structured_output is not None:
+        envelope["structured_output"] = structured_output
+    return json.dumps(envelope)
 
 
 def assistant_line(*blocks: Mapping[str, object]) -> str:
@@ -261,6 +260,7 @@ def subscription_request(
     model: str = "claude-opus-4-6",
     auth_mode: AuthMode = AuthMode.SUBSCRIPTION,
     job: bytes = b"Reply with the single word pong",
+    declared_output_schema: bytes | None = None,
     maximum_assistant_turns: int | None = None,
 ) -> AgentExecutionRequestV2:
     auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), auth_mode)
@@ -281,6 +281,7 @@ def subscription_request(
         ResolvedAgentBinding(AgentRole("builder"), configuration, auth),
         CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY,
         job,
+        declared_output_schema,
         maximum_assistant_turns=maximum_assistant_turns,
     )
 
@@ -375,6 +376,38 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     )
     assert "HOME" not in observed["environment"]
     assert observed["job"] == "draw the owl"
+
+
+def test_a_declared_schema_uses_claudes_native_structured_output(
+    tmp_path: Path,
+) -> None:
+    declared_schema = b'{"type": "object", "additionalProperties": false}'
+    structured_output = {"findings": [], "verdict": "accepted"}
+    settings = claude_subscription_deployment(
+        tmp_path,
+        emitting_claude(success_envelope("structured review", structured_output)),
+    )
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+    request = subscription_request(declared_output_schema=declared_schema)
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+
+    assert command.arguments[2:6] == (
+        "--output-format",
+        "json",
+        "--json-schema",
+        declared_schema.decode(),
+    )
+    assert "--tools=StructuredOutput" in command.arguments
+    assert "--verbose" not in command.arguments
+
+    result = executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+
+    assert result == AgentExecutionResult(
+        json.dumps(structured_output, separators=(",", ":")).encode(), spent_only()
+    )
 
 
 def test_a_successful_envelope_becomes_the_exact_output_bytes_of_one_receipt(
@@ -1793,6 +1826,20 @@ def test_the_tool_invocation_names_its_tools_and_keeps_every_other_containment_f
     assert observed["working_directory"] == str(workspace)
     assert observed["job"] == "draw the owl"
     assert "HOME" not in observed["environment"]
+
+
+def test_a_schema_bearing_workspace_tool_call_adds_only_structured_output(
+    tmp_path: Path,
+) -> None:
+    settings = claude_deployment(tmp_path, "deployment", INTROSPECTING_CLAUDE)
+    executor = ClaudeWorkspaceToolExecutorFactory(settings).open()
+    command = executor.prepare_process(
+        subscription_request(declared_output_schema=b'{"type":"object"}')
+    )
+    expected_tools = ",".join((*WORKSPACE_TOOLS, "StructuredOutput"))
+
+    assert argument_after(command.arguments, "--tools") == expected_tools
+    assert argument_after(command.arguments, "--allowedTools") == expected_tools
 
 
 @pytest.mark.proves("a-pinned-budget-turn-bound-is-the-tool-attempt-ceiling")

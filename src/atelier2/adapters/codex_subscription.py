@@ -18,10 +18,11 @@ Because that answer arrives beside the process rather than inside it, decoding
 takes the invocation it prepared: the runtime opens one executor per registry
 key and hands that same object to every attempt, so an executor correlating
 through its own state would let overlapping attempts decode each other's
-answers into durable results. This executor therefore holds none. The answer is
-asked for under a bare name, so the CLI writes it into the directory the attempt
-leased, and the workspace owner removes it with everything else the attempt
-left behind. One directory regime, not two.
+answers into durable results. This executor holds no answer correlation. The
+answer is asked for under a bare name, so the CLI writes it into the directory
+the attempt leased, and the workspace owner removes it with everything else the
+attempt left behind. A declared output schema uses its own private file until
+release, because `codex exec --output-schema` requires a path.
 
 Flags alone do not bound what the CLI discovers or what it may do. `codex
 doctor --json` reports the config layer, credential home and MCP servers a
@@ -39,7 +40,8 @@ import json
 import os
 import subprocess
 import tempfile
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
@@ -67,7 +69,7 @@ CODEX_SUBSCRIPTION_EXECUTOR_KEY = AgentExecutorKey(
     ProviderId("openai"), AgentExecutorRevision("codex-subscription/v1")
 )
 CODEX_SUBSCRIPTION_OPERATIONAL_IDENTITY = AgentExecutorOperationalIdentity(
-    "headless-exec-last-message/v1"
+    "headless-exec-last-message-output-schema/v2"
 )
 
 # `codex exec` writes progress to standard output while the durable answer goes
@@ -109,6 +111,7 @@ _NEVER = "never"
 _MODEL_FLAG = "--model"
 _SANDBOX_FLAG = "--sandbox"
 _LAST_MESSAGE_FLAG = "--output-last-message"
+_OUTPUT_SCHEMA_FLAG = "--output-schema"
 # `codex exec` reads its instructions from standard input when the prompt
 # argument is `-`. A prompt given as an argument would additionally append
 # piped input as a `<stdin>` block, so the job is passed one way only.
@@ -133,6 +136,7 @@ _SANDBOX_PROBE_ARGUMENTS = ("--", "/bin/true")
 
 _PROBE_DIRECTORY_PREFIX = "atelier2-codex-probe-"
 _ANSWER_FILE_NAME = "last-message"
+_OUTPUT_SCHEMA_FILE_PREFIX = "atelier2-codex-output-schema-"
 
 _HOME_VARIABLE = "HOME"
 _CREDENTIAL_DIRECTORY_VARIABLE = "CODEX_HOME"
@@ -420,9 +424,50 @@ def _answer_file_of(invocation: AgentProcessInvocation) -> Path:
     return invocation.lease.working_directory / _ANSWER_FILE_NAME
 
 
+def _write_output_schema(document: bytes) -> Path:
+    """Store this invocation's exact schema in one private disposable file."""
+
+    descriptor, name = tempfile.mkstemp(
+        prefix=_OUTPUT_SCHEMA_FILE_PREFIX, suffix=".json"
+    )
+    path = Path(name)
+    try:
+        remaining = memoryview(document)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written < 1:
+                raise OSError("Codex output schema write made no progress")
+            remaining = remaining[written:]
+        return path
+    except BaseException:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        os.close(descriptor)
+
+
+@dataclass(frozen=True)
+class CodexSubscriptionProcessCommand(AgentProcessCommand):
+    """One Codex command and, where declared, its private schema file."""
+
+    output_schema_path: Path | None = field(default=None, kw_only=True)
+
+
 @dataclass(frozen=True)
 class CodexSubscriptionExecutor:
     settings: CodexSubscriptionSettings
+    _output_schema_paths: set[Path] = field(
+        default_factory=set, init=False, compare=False, repr=False
+    )
+    _lifecycle_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, compare=False, repr=False
+    )
+    _closed: threading.Event = field(
+        default_factory=threading.Event, init=False, compare=False, repr=False
+    )
 
     def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
         binding = request.resolved_binding
@@ -431,28 +476,54 @@ class CodexSubscriptionExecutor:
                 "the Codex subscription executor serves subscription profiles only"
             )
         settings = self.settings
-        return AgentProcessCommand(
-            (
-                str(settings.executable),
-                _EXEC_COMMAND,
-                _IGNORE_USER_CONFIG_FLAG,
-                _IGNORE_RULES_FLAG,
-                _SKIP_GIT_REPOSITORY_CHECK_FLAG,
-                _EPHEMERAL_FLAG,
-                _COLOR_FLAG,
-                _NEVER,
-                _MODEL_FLAG,
-                binding.configuration.model,
-                _SANDBOX_FLAG,
-                settings.sandbox.value,
-                _LAST_MESSAGE_FLAG,
-                _ANSWER_FILE_NAME,
-                _PROMPT_FROM_STANDARD_INPUT,
-            ),
-            _child_environment(settings),
-            request.job_bytes,
-            standard_output_frame_bytes=CODEX_SUBSCRIPTION_FRAME_BYTES,
+        output_schema_path = (
+            None
+            if request.declared_output_schema_bytes is None
+            else _write_output_schema(request.declared_output_schema_bytes)
         )
+        registered = False
+        try:
+            command = CodexSubscriptionProcessCommand(
+                (
+                    str(settings.executable),
+                    _EXEC_COMMAND,
+                    _IGNORE_USER_CONFIG_FLAG,
+                    _IGNORE_RULES_FLAG,
+                    _SKIP_GIT_REPOSITORY_CHECK_FLAG,
+                    _EPHEMERAL_FLAG,
+                    _COLOR_FLAG,
+                    _NEVER,
+                    _MODEL_FLAG,
+                    binding.configuration.model,
+                    _SANDBOX_FLAG,
+                    settings.sandbox.value,
+                    _LAST_MESSAGE_FLAG,
+                    _ANSWER_FILE_NAME,
+                    *(
+                        ()
+                        if output_schema_path is None
+                        else (_OUTPUT_SCHEMA_FLAG, str(output_schema_path))
+                    ),
+                    _PROMPT_FROM_STANDARD_INPUT,
+                ),
+                _child_environment(settings),
+                request.job_bytes,
+                standard_output_frame_bytes=CODEX_SUBSCRIPTION_FRAME_BYTES,
+                output_schema_path=output_schema_path,
+            )
+            with self._lifecycle_lock:
+                if self._closed.is_set():
+                    raise RuntimeError("the Codex executor is closed")
+                if output_schema_path is not None:
+                    self._output_schema_paths.add(output_schema_path)
+                registered = True
+            return command
+        finally:
+            if output_schema_path is not None and not registered:
+                try:
+                    output_schema_path.unlink()
+                except FileNotFoundError:
+                    pass
 
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
@@ -472,18 +543,48 @@ class CodexSubscriptionExecutor:
         return AgentExecutionResult(answer)
 
     def release_credential_channel(self, command: AgentProcessCommand) -> None:
-        """Nothing to take back: this executor copies no credential anywhere.
+        """Take back the private schema file this invocation handed Codex.
 
         `CODEX_HOME` names the operator's own credential directory rather than a
-        copy made for one invocation, and the answer lives in the attempt's
-        leased directory, which the workspace owner takes away. Removing
-        anything here would remove the lease itself.
+        copy made for one invocation. The answer remains in the attempt's leased
+        directory, while an output schema file must be removed as soon as Codex
+        can no longer read it.
         """
 
-        del command
+        if not isinstance(command, CodexSubscriptionProcessCommand):
+            return
+        path = command.output_schema_path
+        if path is None:
+            return
+        with self._lifecycle_lock:
+            if path not in self._output_schema_paths:
+                return
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            self._output_schema_paths.remove(path)
 
     def close(self) -> None:
-        """The lease owns every byte this executor produced, so it owns nothing."""
+        """Take back any schema file whose invocation never reached release."""
+
+        with self._lifecycle_lock:
+            self._closed.set()
+            paths = tuple(self._output_schema_paths)
+            errors: list[OSError] = []
+            for path in paths:
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    self._output_schema_paths.remove(path)
+                except OSError as error:
+                    errors.append(error)
+                else:
+                    self._output_schema_paths.remove(path)
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise ExceptionGroup("Codex output schema cleanup failed", errors)
 
 
 @dataclass(frozen=True)

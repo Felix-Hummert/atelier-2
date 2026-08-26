@@ -367,6 +367,7 @@ class _UnlaunchedExecutor:
     """An executor whose command is prepared and whose process never starts."""
 
     launches: int = 0
+    released: int = 0
 
     def prepare_process(self, request: object) -> AgentProcessCommand:
         del request
@@ -380,6 +381,7 @@ class _UnlaunchedExecutor:
 
     def release_credential_channel(self, command: AgentProcessCommand) -> None:
         del command
+        self.released += 1
 
     def close(self) -> None:
         return None
@@ -453,6 +455,7 @@ def test_an_undeclared_verification_refuses_before_the_attempt_is_claimed(
 
     assert verifications.asked == 1
     assert attempt.cost == (["prepare"], 0, 0)
+    assert attempt.executor.released == 1
 
 
 @dataclass
