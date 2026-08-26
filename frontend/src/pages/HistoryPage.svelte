@@ -136,7 +136,10 @@
             >
               <span class="row-name">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnName)}: </span>
-                {row.name}
+                <span class="row-purpose">{row.purpose ?? row.workflowName}</span>
+                {#if row.purpose !== null}
+                  <small class="row-workflow">{row.workflowName}</small>
+                {/if}
               </span>
               <span class="row-when">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnWhen)}: </span>
@@ -268,10 +271,30 @@
   }
 
   .row-name {
+    display: flex;
     flex: none;
+    flex-direction: column;
     width: var(--name-column);
-    font-weight: var(--weight-strong);
+    min-width: 0;
+  }
+
+  /* The purpose line (mockup v8 §05: "Purpose (the order sentence)"); it can
+     be as terse as one order's own name today (#717's honest first slice), so
+     it stays on one line rather than wrapping. */
+  .row-purpose {
     overflow: hidden;
+    font-weight: var(--weight-strong);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* "…, workflow small beneath" (mockup v8 §05): the recipe name, dim and
+     smaller, shown only when the purpose line above says something the
+     workflow name does not already say on its own. */
+  .row-workflow {
+    overflow: hidden;
+    font-size: var(--text-xs);
+    color: var(--ink-dim);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -321,7 +344,7 @@
   }
 
   /**
-   * Names each row's fragments (Name/When/Result/Duration) for a
+   * Names each row's fragments (Purpose/When/Result/Duration) for a
    * screen reader without repeating the header aloud for every row --
    * sighted eyes already read the column from `.history-head-row`'s
    * alignment, and duplicating that header once per row would be visual
