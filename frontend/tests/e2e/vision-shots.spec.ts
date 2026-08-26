@@ -220,17 +220,18 @@ test("captures every surface at both widths", async ({ page }) => {
   await page.getByRole("button", { name: "Send" }).click();
   await shoot(page, "workbench-said");
 
-  await page.goto("/atelier/workflows/iterate-code");
+  await page.goto("/atelier/catalog/iterate-code");
   await expect(page.getByRole("heading", { level: 1, name: "iterate-code" })).toBeVisible();
   await shoot(page, "workflow-detail");
+
+  await page.getByRole("button", { name: "Start" }).click();
+  await expect(page.getByRole("heading", { name: "Start iterate-code" })).toBeVisible();
+  await shoot(page, "workflow-start-sheet");
+  await page.getByRole("button", { name: "Cancel" }).first().click();
 
   await page.goto("/atelier/catalog");
   await expect(page.getByRole("heading", { level: 1, name: "Catalog" })).toBeVisible();
   await shoot(page, "catalog");
-
-  await page.goto("/atelier/new");
-  await expect(page.getByRole("heading", { name: "Choose a workflow" })).toBeVisible();
-  await shoot(page, "new-run");
 
   await page.goto(`/atelier/runs/${reference}`);
   await expect(page.getByLabel("Where this run stands")).toContainText("Waiting for you");
@@ -289,7 +290,7 @@ test("captures every surface at both widths", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "History" })).toBeVisible();
   await shoot(page, "history");
 
-  await page.goto("/atelier/project");
+  await page.goto("/atelier/settings");
   await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
   await shoot(page, "project");
 });

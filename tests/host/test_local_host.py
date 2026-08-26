@@ -171,7 +171,9 @@ def test_the_server_serves_exactly_the_paths_the_browser_declares(
 def test_frontend_routes_serve_one_fixed_index_without_catching_api(
     runtime, frontend_dist: Path, path: str
 ) -> None:
-    path = path.replace("{public_ref}", SAMPLE_PUBLIC_REFERENCE)
+    path = path.replace("{public_ref}", SAMPLE_PUBLIC_REFERENCE).replace(
+        "{workflow_name:path}", "catalog/detail"
+    )
     app = create_app(
         source_commit="commit",
         source_tree="tree",

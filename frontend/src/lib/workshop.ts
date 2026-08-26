@@ -13,10 +13,9 @@ import type { CockpitRoute } from "./route";
  * Board and no Workflows room: a Board would repeat the workbench and the
  * history, and starting lives in the catalog.
  *
- * The Workbench keeps the `/atelier/chat` address it grew from (issue #580)
- * and Settings the `/atelier/project` one: a served path is a durable
- * bookmark, and moving it belongs to the phase that also changes the
- * served-path declaration and the server that mirrors it.
+ * The Workbench keeps the `/atelier/chat` address it grew from (issue #580).
+ * Settings and catalog detail use their canonical paths, declared alongside
+ * the server's cold-load paths in `servedPaths.json`.
  */
 export type WorkshopRoomId = "workbench" | "catalog" | "history";
 
@@ -25,7 +24,7 @@ export type WorkshopDestination = {
   label: string;
   /** The one glyph this destination wears; §01 of the picture explains the vocabulary. */
   glyph: string;
-  path: "/atelier/chat" | "/atelier/catalog" | "/atelier/history" | "/atelier/project";
+  path: "/atelier/chat" | "/atelier/catalog" | "/atelier/history" | "/atelier/settings";
 };
 
 /** Each destination by name, for the trail that leads back to one of them. */
@@ -33,7 +32,7 @@ export const WORKSHOP_DESTINATION: Record<WorkshopDestination["id"], WorkshopDes
   workbench: { id: "workbench", label: "Workbench", glyph: "⌂", path: "/atelier/chat" },
   catalog: { id: "catalog", label: "Catalog", glyph: "▤", path: "/atelier/catalog" },
   history: { id: "history", label: "History", glyph: "◷", path: "/atelier/history" },
-  settings: { id: "settings", label: "Settings", glyph: "⚙", path: "/atelier/project" }
+  settings: { id: "settings", label: "Settings", glyph: "⚙", path: "/atelier/settings" }
 };
 
 /** The three rooms, in the order the rail shows them; Settings stands apart at its foot. */
@@ -46,7 +45,7 @@ export const WORKSHOP_ROOMS: readonly WorkshopDestination[] = [
 /**
  * Which rail entry the current page sits under. A missing page sits under none.
  *
- * The workflow detail and the start door sit under the Catalog: it is the one
+ * The workflow detail sits under the Catalog: it is the one
  * room a workflow is found and started from. A run sits under the Workbench,
  * where living work lives now that the Board is gone, and the run page's trail
  * leads back to the same entry. Deriving that trail from the run's own state —
@@ -56,7 +55,7 @@ export function activeWorkshopDestination(route: CockpitRoute): WorkshopDestinat
   if (route.page === "workbench" || route.page === "run") {
     return "workbench";
   }
-  if (route.page === "catalog" || route.page === "workflow" || route.page === "new") {
+  if (route.page === "catalog" || route.page === "workflow") {
     return "catalog";
   }
   if (route.page === "history") {

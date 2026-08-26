@@ -21,7 +21,6 @@ const SAMPLE_WORKFLOW_NAME = "iterate-code";
 const REACHED_COLD: Record<CockpitRoute["page"], boolean> = {
   workbench: true,
   settings: true,
-  new: true,
   workflow: true,
   catalog: true,
   history: true,
@@ -62,14 +61,9 @@ describe("the paths the server is asked to serve", () => {
     );
   });
 
-  /**
-   * The defect this file was written for: the project level was a page here and
-   * a 404 on the server, so the level the workshop makes its primary answer
-   * survived a click and died on a reload.
-   */
-  it("opens the Settings room on the project path it grew from", () => {
-    expect(SERVED_PATHS).toContain("/atelier/project");
-    expect(cockpitRoute("/atelier/project")).toEqual({ page: "settings" });
+  it("opens Settings on its canonical address", () => {
+    expect(SERVED_PATHS).toContain("/atelier/settings");
+    expect(cockpitRoute("/atelier/settings")).toEqual({ page: "settings" });
   });
 
   it("opens the Workbench on the workshop root, where the Board used to stand", () => {
@@ -82,28 +76,32 @@ describe("the paths the server is asked to serve", () => {
     expect(cockpitRoute("/atelier/nowhere").page).toBe("not-found");
   });
 
-  // The Workflows room folded into the Catalog (ADR 0019 §1). Its address
-  // keeps working rather than turning a living bookmark into a not-found page.
-  it("opens the Catalog on its own path and on the address the Workflows room left behind", () => {
-    expect(SERVED_PATHS).toContain("/atelier/workflows");
+  it("opens the Catalog only on its canonical address", () => {
+    expect(SERVED_PATHS).toContain("/atelier/catalog");
     expect(cockpitRoute("/atelier/catalog")).toEqual({ page: "catalog" });
-    expect(cockpitRoute("/atelier/workflows")).toEqual({ page: "catalog" });
+    expect(cockpitRoute("/atelier/workflows")).toEqual({ page: "not-found" });
   });
 
-  it("opens History on its own path, separate from the old project level", () => {
+  it("opens History on its own path", () => {
     expect(SERVED_PATHS).toContain("/atelier/history");
     expect(cockpitRoute("/atelier/history")).toEqual({ page: "history" });
-    expect(cockpitRoute("/atelier/project")).toEqual({ page: "settings" });
   });
 
-  it("round-trips a workflow name a person actually publishes, spaces included", () => {
-    const name = "Probefahrt am frischen Haus";
+  it("round-trips a workflow name a person actually publishes, spaces and a detail path included", () => {
+    const name = "Probefahrt am frischen Haus/detail";
 
     expect(cockpitRoute(workflowPath(name))).toEqual({ page: "workflow", name });
   });
 
+  it("keeps the remaining detail path in a pasted workflow address", () => {
+    expect(cockpitRoute("/atelier/catalog/catalog/detail")).toEqual({
+      page: "workflow",
+      name: "catalog/detail"
+    });
+  });
+
   it("answers a malformed percent-encoding in a workflow path with not-found", () => {
-    expect(cockpitRoute("/atelier/workflows/%").page).toBe("not-found");
+    expect(cockpitRoute("/atelier/catalog/%").page).toBe("not-found");
   });
 });
 
