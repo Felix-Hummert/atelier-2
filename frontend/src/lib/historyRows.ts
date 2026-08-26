@@ -14,7 +14,21 @@ export type HistoryRowResult =
 
 export type HistoryRow = {
   run: AnyRun;
-  name: string;
+  workflowName: string;
+  /**
+   * What the run was for, in the reader's own words to `run.orders` -- the
+   * order names it was started with, comma-joined, never a node read and
+   * never text parsed out of a job (mockup v8 §05, ADR 0019 §4, PR #736
+   * RESLICE review). Null for a V1/V2 run (no `orders` field exists yet) or
+   * a V3 run declared with none: the row then names only the workflow, as
+   * before -- there is nothing else honest to add.
+   *
+   * A real order *sentence* -- the mockup's own example ("Fix the wait bug")
+   * -- needs the order's redacted material, which `RunOrderResource` does not
+   * carry yet (#738's own named next step, waiting on #666's redaction
+   * owner). This is that slice's honest first step, not the finished shape.
+   */
+  purpose: string | null;
   result: HistoryRowResult;
   /** Only ever a real V3 pair with both stamps present -- never guessed for V1/V2 or a partial V3 row. */
   span: { startedAt: string; endedAt: string } | null;
@@ -45,11 +59,17 @@ function historyRow(
 ): HistoryRow {
   return {
     run,
-    name: resolveWorkflowName(run, workflowNames),
+    workflowName: resolveWorkflowName(run, workflowNames),
+    purpose: historyPurpose(run),
     result: historyResult(run),
     span: historySpan(run),
     activityAt: runActivityAt(run)
   };
+}
+
+function historyPurpose(run: AnyRun): string | null {
+  if (!isRunV3(run) || run.orders.length === 0) return null;
+  return run.orders.map((order) => order.name).join(", ");
 }
 
 function historyResult(run: AnyRun): HistoryRowResult {

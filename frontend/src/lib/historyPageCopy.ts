@@ -1,6 +1,6 @@
 /**
  * Copy the History surface renders: only finished runs, as ruhige Zeilen
- * (mockup v5 §05) -- no Start, no Refresh, no queue prose.
+ * (mockup v8 §05) -- no Start, no Refresh, no queue prose.
  *
  * One owner for this screen's strings, the same convention `workflowsPageCopy`
  * and `studioPageCopy` already hold to, so `?pseudo-locale=1`
@@ -20,10 +20,15 @@ export const historyPageCopy = {
   emptyTitle: "No finished runs yet",
   emptyDescription: "Runs land here once they finish — start one from a workflow.",
   emptyNext: "Open Workflows",
-  columnName: "Name",
+  /** Mockup v8 §05: "Purpose (the order sentence), workflow small beneath". */
+  columnName: "Purpose",
   columnWhen: "When",
+  /** ADR 0019 §4; PR #766 projects the first work item onto a run -- until then every row reads `workItemPlaceholder`. */
+  columnWorkItem: "Work item",
   columnResult: "Result",
   columnDuration: "Duration",
+  /** "—" where a run names none (mockup v8 §05); also every row's honest answer until PR #766 lands a work item to show. */
+  workItemPlaceholder: "—",
   /** Only a V1/V2 row, or a V3 row with neither stamp, ever reaches this -- the same gap in both When and Duration. */
   notRecorded: "Not recorded",
   /**
