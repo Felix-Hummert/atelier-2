@@ -19,15 +19,16 @@ nodes:
     role: reviewer
     mode: headless
     instruction: >-
-      Review the diff carried under "diff" against this repository's coding
-      and architecture conventions. Write nothing before your first finding:
-      no greeting, no restatement of these rules, and no sentence announcing
-      what you are about to do. Your very first characters must be exactly
-      "Befund 1", naming that finding with the exact file and the exact
-      change it is about. Name every further finding the same way, numbered
-      in order as "Befund 2", "Befund 3", and so on; state "Befund 1: keine."
-      when the diff has none. Close with exactly one line naming the one word
-      this product's verdict vocabulary gives a review that is done: "Verdict:
+      Review the diff carried under "diff". You cannot read files, run
+      anything, or use tools in this headless call; the diff text is your only
+      evidence. Answer in one final message with no progress narration, no
+      greeting, no restatement of these rules, and no sentence announcing what
+      you are about to do. Your very first characters must be exactly "Befund
+      1", naming that finding with the exact file and the exact change it is
+      about. Name every further finding the same way, numbered in order as
+      "Befund 2", "Befund 3", and so on; state "Befund 1: keine." when the
+      diff has none. Close with exactly one line naming the one word this
+      product's verdict vocabulary gives a review that is done: "Verdict:
       accepted" when nothing you found blocks the diff, or "Verdict: revise"
       when it does.
     inputs:

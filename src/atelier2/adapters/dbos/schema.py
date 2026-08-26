@@ -58,12 +58,12 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head gives an effect intent the word for a run that ended
-# without resolving it (#705), so a prepared effect no workflow will move again
-# stops standing PREPARED forever. Predecessor is the published schema that gave
-# an attempt the address of its transcript (#666).
+# Movable hop: this head gives an attempt the word for work that was done and
+# could not be kept (#642), so an attempt whose candidate was never anchored
+# ends by its own name instead of borrowing one that would be a lie. Predecessor
+# is the published schema that admitted `ABANDONED` as an intent ending (#705).
 # Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 37
+_HOP_PREDECESSOR_VERSION = 38
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -95,6 +95,7 @@ _VERSION_THIRTY_FIVE = 35
 _VERSION_THIRTY_SIX = 36
 _VERSION_THIRTY_SEVEN = 37
 _VERSION_THIRTY_EIGHT = 38
+_VERSION_THIRTY_NINE = 39
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -218,6 +219,21 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # `effect_intents_no_abandoned_insert` closes the other door: a row born
 # ABANDONED would be an ending no run ever reached. Only the vocabulary widens;
 # every stored row keeps its bytes, its key and its meaning.
+# V39 admits CANDIDATE_CAPTURE_FAILED as an attempt failure code (#642). An
+# attempt's work lives only in the directory it was made in, so it is kept as a
+# candidate before the attempt is completed; a capture that fails leaves the work
+# lost, and every code published before this one would have said something untrue
+# about how -- that a process died, or that a form refused what no form saw. The
+# widened CHECK admits the word on the table, and both FAILED transitions of
+# `agent_attempts_state_transition` admit it: the armed local-process attempt
+# that reaches this ending today, and the runner-evidence one beside it. Which
+# carrier can reach an ending is the carrier's business, not the vocabulary's --
+# today no runner-lease attempt captures a candidate, because it is refused a
+# pinned project source before it starts, but a schema that encoded that refusal
+# as a narrower word list would have to be migrated again the day the carrier
+# changes, and until then it would hold two disagreeing answers to "which codes
+# exist". Only the vocabulary widens; every stored row keeps its bytes, its key
+# and its meaning.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -253,6 +269,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     36: "c9f4b5d99a9ff8e33796e36151b66f00175eceaa797e30461bf6e01264266ce8",
     37: "e41cf318212e0a79d6605413b5818ef68d6245baaf05a53b888b8aac40131a13",
     38: "aebd8b6bad8a719864f0c02828db643dd3dcbe7c89198beb6a8c1c4c30100824",
+    39: "3c0cc05dd977fd61d2c88d78ba7566fdc0146e2d7af27df61aea636a4ac2c4be",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -369,6 +386,10 @@ V36_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V37_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_THIRTY_SEVEN,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_SEVEN],
+)
+V38_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_THIRTY_EIGHT,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_EIGHT],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -905,21 +926,26 @@ agent_receipts_v2 = sa.Table(
 tool_redemptions = sa.Table(
     "tool_redemptions",
     metadata,
-    sa.Column(
-        "node_execution_id",
-        sa.Text,
-        sa.ForeignKey("agent_receipts_v2.node_execution_id"),
-        primary_key=True,
-    ),
-    sa.Column("run_id", sa.Text, nullable=False),
-    sa.Column("workflow_revision_hash", sa.Text, nullable=False),
-    sa.Column("node_id", sa.Text, nullable=False),
+    # Keyed by the attempt, and bound to the attempt alone (V39, #642). What a
+    # redemption records is what *one attempt's* grant ran, and an attempt exists
+    # whichever way it ends -- where the agent receipt this row used to hang from
+    # is written only for a success. Anchored there, a verification that exited
+    # zero and was then followed by a capture that could not keep the work had
+    # nowhere to be written, so the proof of a check that really passed was
+    # discarded with the ending. Keyed by the attempt rather than by the node
+    # execution for the same reason: a replacement attempt of that node redeems
+    # its own grant, and two attempts of one node are two redemptions, not a
+    # collision.
     sa.Column(
         "attempt_id",
         sa.Text,
         sa.ForeignKey("agent_attempts.attempt_id"),
-        nullable=False,
+        primary_key=True,
     ),
+    sa.Column("node_execution_id", sa.Text, nullable=False),
+    sa.Column("run_id", sa.Text, nullable=False),
+    sa.Column("workflow_revision_hash", sa.Text, nullable=False),
+    sa.Column("node_id", sa.Text, nullable=False),
     sa.Column("tool_revision_hash", sa.Text, nullable=False),
     sa.Column("capability", sa.Text, nullable=False),
     sa.Column("command", sa.Text, nullable=False),
@@ -950,9 +976,14 @@ tool_redemptions = sa.Table(
     # the record's own bound, not a second one spelled here: what a store may
     # hold and what a receipt may carry would be two numbers for one limit.
     sa.CheckConstraint("length(command) > 0"),
-    sa.CheckConstraint(
-        f"exit_code BETWEEN {-MAXIMUM_SIGNED_INT64 - 1} AND {MAXIMUM_SIGNED_INT64}"
-    ),
+    # A stored redemption is the record of a command that was *satisfied* (V39,
+    # #642). A nonzero exit is the opposite fact -- it ends the attempt under
+    # PROJECT_VERIFICATION_FAILED and redeems nothing -- so the column is not
+    # bounded here but fixed: with the row now able to outlive its attempt's
+    # success, "exit code any integer" would have made "the check passed" a
+    # thing a reader had to re-derive from every row instead of a thing this
+    # table means.
+    sa.CheckConstraint("exit_code = 0"),
     sa.CheckConstraint(
         "length(standard_output_hash) = 64 "
         "AND standard_output_hash NOT GLOB '*[^0-9a-f]*'"
@@ -1137,7 +1168,8 @@ agent_attempts = sa.Table(
         "AND failure_code IN "
         "('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED', "
         "'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED', "
-        "'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED') "
+        "'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED', "
+        "'CANDIDATE_CAPTURE_FAILED') "
         "AND receipt_hash IS NULL)"
     ),
 )
@@ -2104,7 +2136,8 @@ _PRODUCT_TRIGGERS = {
              AND NEW.failure_code IN
                ('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED',
                 'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED',
-                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED')
+                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED',
+                'CANDIDATE_CAPTURE_FAILED')
              AND NEW.runner_manifest_id IS NULL
              AND NEW.receipt_hash IS NULL
              AND NEW.cancellation_command_id IS NULL)
@@ -2218,7 +2251,8 @@ _PRODUCT_TRIGGERS = {
              AND NEW.failure_code IN
                ('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED',
                 'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED',
-                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED')
+                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED',
+                'CANDIDATE_CAPTURE_FAILED')
              AND NEW.receipt_hash IS NULL)
             OR
             (OLD.state = 'CANCEL_REQUESTED'
@@ -2775,11 +2809,12 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    # V33 to V37 hold the same tables as the current version: the hops between
-    # them moved one table's key and columns, two tables' state vocabulary, one
+    # V33 to V38 hold the same tables as the current version: the hops between
+    # them moved one table's key and columns, three tables' state vocabulary, one
     # table's index and one table's column set, never the set of tables.
     if version in {
         SCHEMA_VERSION,
+        _VERSION_THIRTY_EIGHT,
         _VERSION_THIRTY_SEVEN,
         _VERSION_THIRTY_SIX,
         _VERSION_THIRTY_FIVE,
@@ -3033,6 +3068,12 @@ def _added_table_step(
     Five published steps add exactly one immutable table, so the hop is written
     once rather than copied per version; what differs between them is only the
     table, its triggers, and the two version numbers.
+
+    The table is created in the shape its *own* version published, which is
+    today's declaration only while no later hop has moved it. A step that
+    introduced a table and then built today's shape for it would leave a store
+    that skipped every change since, and the next fingerprint on the way up
+    would refuse it -- correctly, and far from the line that caused it.
     """
 
     def apply(connection: sqlite3.Connection) -> None:
@@ -3046,7 +3087,10 @@ def _added_table_step(
                 "this command will not alter it"
             )
         connection.execute(
-            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
+            PUBLISHED_TABLE_SHAPES.get(
+                (target, table.name),
+                str(CreateTable(table).compile(dialect=sqlite_dialect.dialect())),
+            )
         )
         for trigger in triggers:
             connection.execute(_PRODUCT_TRIGGERS[trigger])
@@ -3871,6 +3915,32 @@ _V32_AGENT_ATTEMPT_TRIGGERS = {
     "agent_attempts_state_transition": _V32_AGENT_ATTEMPT_STATE_TRANSITION,
     "agent_attempts_no_delete": _PRODUCT_TRIGGERS["agent_attempts_no_delete"],
 }
+_SEVEN_FAILURE_CODES = (
+    "('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED',\n"
+    "                'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED',\n"
+    "                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED',\n"
+    "                'CANDIDATE_CAPTURE_FAILED')"
+)
+_SIX_FAILURE_CODES = (
+    "('PROCESS_EXITED_UNSUCCESSFULLY', 'PROCESS_OUTPUT_LIMIT_EXCEEDED',\n"
+    "                'PROCESS_SUPERVISION_FAILED', 'OUTPUT_SCHEMA_REFUSED',\n"
+    "                'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED')"
+)
+_V38_AGENT_ATTEMPT_TRIGGERS = {
+    "agent_attempts_state_transition": _PRODUCT_TRIGGERS[
+        "agent_attempts_state_transition"
+    ].replace(_SEVEN_FAILURE_CODES, _SIX_FAILURE_CODES),
+    "agent_attempts_no_delete": _PRODUCT_TRIGGERS["agent_attempts_no_delete"],
+}
+"""What V33 to V38 published: today's trigger without one word.
+
+Derived rather than copied out, the way every earlier vocabulary hop here is
+derived: the whole difference *is* the failure-code list, so writing the other
+250 lines again would be 250 more lines able to drift from the ones they have to
+match. The replacement reaches **both** places the list appears, because the
+vocabulary is one set: a code this schema admits at all is admitted wherever an
+attempt may end FAILED, and a trigger naming a narrower subset would be a
+second, quieter definition of what a failure code is."""
 
 
 def _apply_v16_to_v17(connection: sqlite3.Connection) -> None:
@@ -4315,6 +4385,9 @@ def _apply_v36_to_v37(connection: sqlite3.Connection) -> None:
     COLUMN`. The attempt table's state-transition and no-delete triggers are
     reinstalled by the rebuild, because an attempt row that could take an
     unguarded transition for the length of one hop would be no ledger at all.
+    The triggers it reinstalls are V37's own, not today's: a hop must leave the
+    store standing at exactly the version it published, and the V39 word this
+    version has no CHECK for would break its own fingerprint one step later.
     """
 
     _rebuild_product_table(
@@ -4324,6 +4397,7 @@ def _apply_v36_to_v37(connection: sqlite3.Connection) -> None:
         _AGENT_ATTEMPTS_TRIGGERS,
         _VERSION_THIRTY_SIX,
         _VERSION_THIRTY_SEVEN,
+        trigger_source=_V38_AGENT_ATTEMPT_TRIGGERS,
     )
     _raise_declared_version(connection, _VERSION_THIRTY_SIX, _VERSION_THIRTY_SEVEN)
 
@@ -4366,6 +4440,151 @@ def _apply_v37_to_v38(connection: sqlite3.Connection) -> None:
     for trigger in _EFFECT_INTENTS_ABANDONMENT_TRIGGERS:
         connection.execute(_PRODUCT_TRIGGERS[trigger])
     _raise_declared_version(connection, _VERSION_THIRTY_SEVEN, _VERSION_THIRTY_EIGHT)
+
+
+_PREDECESSOR_ATTEMPTS_BEFORE_CANDIDATE_CAPTURE_FAILED = (
+    "agent_attempts_before_candidate_capture_failed"
+)
+_PREDECESSOR_REDEMPTIONS_BOUND_TO_THE_RECEIPT = (
+    "tool_redemptions_bound_to_the_agent_receipt"
+)
+_TOOL_REDEMPTIONS_TRIGGERS = (
+    "tool_redemptions_no_update",
+    "tool_redemptions_no_delete",
+)
+
+
+def _refuse_redemptions_that_cannot_be_re_owned(
+    connection: sqlite3.Connection,
+) -> None:
+    """Read every V38 redemption against the attempt it will be keyed by.
+
+    A redemption, the attempt it names and the receipt it hangs from are three
+    rows that must describe *one* execution. V38 never made them: its two
+    foreign keys point at different tables and constrain each other not at all,
+    so all three can name different work and still pass `foreign_key_check`.
+    Carrying such a row would move the proof of a check onto an execution that
+    never ran it -- quietly, and past every guard the store has.
+
+    So the three are read against each other in full: the same run, the same
+    workflow revision, the same node, the same node execution, the same request
+    hash and the same executor identity, and the attempt's own receipt hash
+    naming the very receipt found. Those last three are not extra caution --
+    they are exactly what V38's own success trigger required before an attempt
+    could reach SUCCEEDED, so a store where they disagree is one that reached
+    that state without passing through it. Beside that, a row is refused where
+    two claim one attempt (the new key cannot hold both), where the attempt
+    never succeeded, and where the command exited nonzero -- which was never a
+    redemption at all under the meaning this version fixes.
+
+    The check reads and refuses. Nothing is repaired, because every one of these
+    is a store this product did not write, and guessing which half of a
+    contradiction to keep is how evidence gets quietly rewritten.
+    """
+
+    unsatisfied = connection.execute(
+        "SELECT attempt_id FROM tool_redemptions WHERE exit_code <> 0"
+    ).fetchall()
+    if unsatisfied:
+        raise StoreMigrationRefused(
+            f"{len(unsatisfied)} tool redemptions record a command that exited "
+            "nonzero, which this version does not admit as a redemption; this "
+            "command will not alter it"
+        )
+
+    duplicated = connection.execute(
+        "SELECT attempt_id FROM tool_redemptions "
+        "GROUP BY attempt_id HAVING count(*) > 1"
+    ).fetchall()
+    if duplicated:
+        raise StoreMigrationRefused(
+            f"{len(duplicated)} attempts each hold more than one tool redemption, "
+            "which the attempt-owned shape cannot represent; this command will "
+            "not alter it"
+        )
+    unowned = connection.execute(
+        "SELECT redemption.attempt_id FROM tool_redemptions AS redemption "
+        "LEFT JOIN agent_attempts AS attempt "
+        "  ON attempt.attempt_id = redemption.attempt_id "
+        "WHERE attempt.attempt_id IS NULL "
+        "   OR attempt.state <> 'SUCCEEDED' "
+        "   OR attempt.node_execution_id <> redemption.node_execution_id "
+        "   OR attempt.run_id <> redemption.run_id "
+        "   OR attempt.workflow_revision_hash <> redemption.workflow_revision_hash "
+        "   OR attempt.node_id <> redemption.node_id"
+    ).fetchall()
+    if unowned:
+        raise StoreMigrationRefused(
+            f"{len(unowned)} tool redemptions do not belong to a succeeded attempt "
+            "of their own execution; this command will not alter it"
+        )
+    orphaned = connection.execute(
+        "SELECT redemption.attempt_id FROM tool_redemptions AS redemption "
+        "JOIN agent_attempts AS attempt "
+        "  ON attempt.attempt_id = redemption.attempt_id "
+        "LEFT JOIN agent_receipts_v2 AS receipt "
+        "  ON receipt.node_execution_id = redemption.node_execution_id "
+        " AND receipt.run_id = redemption.run_id "
+        " AND receipt.workflow_revision_hash = redemption.workflow_revision_hash "
+        " AND receipt.node_id = redemption.node_id "
+        " AND receipt.receipt_hash = attempt.receipt_hash "
+        " AND receipt.request_hash = attempt.request_hash "
+        " AND receipt.executor_operational_identity "
+        "     = attempt.executor_operational_identity "
+        "WHERE receipt.node_execution_id IS NULL"
+    ).fetchall()
+    if orphaned:
+        raise StoreMigrationRefused(
+            f"{len(orphaned)} tool redemptions hang from no agent receipt of "
+            "their own attempt's execution; this command will not alter it"
+        )
+
+
+def _apply_v38_to_v39(connection: sqlite3.Connection) -> None:
+    """Admit CANDIDATE_CAPTURE_FAILED, and re-own a redemption to its attempt.
+
+    Every stored FAILED attempt carries one of the six older codes, which the
+    widened constraint still admits, so no ending changes meaning. Nothing is
+    backfilled either: an attempt that ended before this word could not have
+    failed for this reason, and saying it did would invent a loss that never
+    happened.
+
+    The redemption table is rebuilt in the same hop because the new ending needs
+    it: a redemption hung from the success-only agent receipt cannot be written
+    beside an attempt that failed, so a check that really passed would be thrown
+    away with the loss of the work. Its key moves to the attempt for the same
+    reason a replacement attempt is its own attempt -- two attempts of one node
+    redeem two grants.
+
+    What every stored row must be for that carry to be honest is *checked*, not
+    assumed. V38's two foreign keys point at different tables and constrain each
+    other not at all: nothing there forbids two rows naming one attempt, an
+    attempt that never succeeded, or a receipt and an attempt describing
+    different executions. Those stores are not ones this product wrote, but a
+    hop that silently collided their rows -- or moved one project's proof onto
+    another attempt -- would corrupt the evidence it exists to preserve. So each
+    row is read against the attempt it names and the receipt it hangs from
+    first, and a store that fails is refused whole and left exactly as it was.
+    """
+
+    _refuse_redemptions_that_cannot_be_re_owned(connection)
+    _rebuild_product_table(
+        connection,
+        agent_attempts,
+        _PREDECESSOR_ATTEMPTS_BEFORE_CANDIDATE_CAPTURE_FAILED,
+        _AGENT_ATTEMPTS_TRIGGERS,
+        _VERSION_THIRTY_EIGHT,
+        _VERSION_THIRTY_NINE,
+    )
+    _rebuild_product_table(
+        connection,
+        tool_redemptions,
+        _PREDECESSOR_REDEMPTIONS_BOUND_TO_THE_RECEIPT,
+        _TOOL_REDEMPTIONS_TRIGGERS,
+        _VERSION_THIRTY_EIGHT,
+        _VERSION_THIRTY_NINE,
+    )
+    _raise_declared_version(connection, _VERSION_THIRTY_EIGHT, _VERSION_THIRTY_NINE)
 
 
 @dataclass(frozen=True)
@@ -4500,6 +4719,11 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _VERSION_THIRTY_SEVEN,
         _VERSION_THIRTY_EIGHT,
         _apply_v37_to_v38,
+    ),
+    _SchemaMigrationStep(
+        _VERSION_THIRTY_EIGHT,
+        _VERSION_THIRTY_NINE,
+        _apply_v38_to_v39,
     ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {

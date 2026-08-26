@@ -7,8 +7,9 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 
 import pytest
@@ -93,12 +94,21 @@ from atelier2.ports.durable_runs import (
 )
 from tests.scenarios.agents import (
     agent_attempt_execution,
-    agent_scratch_root,
     leased_directory_identity,
     runtime_workspace_owner,
 )
 
 MEASURED_GROK_VERSION = "1.0.4"
+
+
+@pytest.fixture
+def scratch_root_outside_a_worktree() -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(
+        prefix="atelier2-grok-scratch-", dir="/var/tmp"
+    ) as directory:
+        yield Path(directory)
+
+
 HOST_DOCUMENT = b"""format_version: 2
 start: build
 nodes:
@@ -698,27 +708,38 @@ def test_grok_ending_after_concatenated_progress_has_no_final_message(
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
     executor = GrokSubscriptionExecutorFactory(settings).open()
     invocation = leased(
-        AgentProcessCommand(
+        GrokSubscriptionProcessCommand(
             ("grok",),
             standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+            serialize_free_text_as_json_string=True,
         ),
         tmp_path,
     )
-    first_finding = f"{'Befund'} {1}"
     progress = (
         (
-            f'"{first_finding}" is the required first token; I am gathering '
-            "the surrounding contract, callers, and tests."
+            "Befund 1 is the required first token; I will inspect the "
+            "surrounding owner, callers, and tests for "
+            "`_project_source_connection` before writing it."
         ),
         (
-            f'"{first_finding}" stays first in the final reply; I am comparing '
-            "the empty-file gate with its host-init twin."
+            "Befund 1 still has to name a real defect; next I'll check how "
+            "empty stores are treated at the connect command and in tests."
         ),
     )
+    recorded_output = (
+        b'"Befund 1 is the required first token; I will inspect the '
+        b"surrounding owner, callers, and tests for "
+        b'`_project_source_connection` before writing it."'
+        b"\"Befund 1 still has to name a real defect; next I'll check how "
+        b'empty stores are treated at the connect command and in tests."'
+    )
+
+    assert len(recorded_output) == 273
+    assert recorded_output == recorded_grok_json_values(*progress)
 
     result = executor.decode_process_completion(
         invocation,
-        AgentProcessCompletion(0, recorded_grok_json_values(*progress), b""),
+        AgentProcessCompletion(0, recorded_output, b""),
     )
 
     assert result == GrokProviderEndedWithoutFinalMessage(
@@ -1016,7 +1037,9 @@ def test_any_enabled_external_compatibility_cell_refuses_the_exact_launch(
 
 
 def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scratch_root_outside_a_worktree: Path,
 ) -> None:
     deployment = tmp_path / "deployment"
     deployment.mkdir()
@@ -1047,7 +1070,7 @@ def test_real_host_runtime_supervisor_executes_and_cleans_without_a_billed_cli(
         "source_commit": "proof",
         "source_tree": "proof",
         "frontend_dist": frontend,
-        "agent_scratch_root": agent_scratch_root(tmp_path),
+        "agent_scratch_root": scratch_root_outside_a_worktree,
         "grok_subscription": declared.settings,
     }
     with pytest.raises(ValueError, match="loopback"):
@@ -1314,6 +1337,7 @@ json.dump({{"text": json.dumps({{"wrote": written, "read_back": read_back}})}}, 
 def grok_subscription_runtime(
     root: Path,
     settings: GrokSubscriptionSettings,
+    scratch_root: Path,
     *,
     workspace_tools: bool = False,
 ) -> DbosRuntime:
@@ -1323,7 +1347,7 @@ def grok_subscription_runtime(
         DbosRuntimeSettings(
             root / "atelier.sqlite",
             "grok-subscription-test",
-            agent_scratch_root=agent_scratch_root(root),
+            agent_scratch_root=scratch_root,
         ),
         LoopbackEffectAdapterFactory(
             root / "effects.sqlite",
@@ -1602,13 +1626,19 @@ def test_a_non_subscription_profile_reaches_no_tool_bearing_process(
 def test_a_binding_asking_a_grok_executor_for_a_capability_it_never_declared_is_refused(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    scratch_root_outside_a_worktree: Path,
     executor_revision: AgentExecutorRevision,
     requested_capability: AgentExecutionCapability,
 ) -> None:
     """Neither executor answers the other's ask, and the refusal is the starter's."""
 
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    runtime = grok_subscription_runtime(tmp_path, settings, workspace_tools=True)
+    runtime = grok_subscription_runtime(
+        tmp_path,
+        settings,
+        scratch_root_outside_a_worktree,
+        workspace_tools=True,
+    )
     runtime.initialize_storage()
 
     def unexpected_enqueue(*_args: object, **_kwargs: object) -> object:
@@ -1635,10 +1665,15 @@ def test_a_binding_asking_a_grok_executor_for_a_capability_it_never_declared_is_
 
 
 def test_a_node_requesting_grok_tools_starts_through_the_production_starter(
-    tmp_path: Path,
+    tmp_path: Path, scratch_root_outside_a_worktree: Path
 ) -> None:
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    runtime = grok_subscription_runtime(tmp_path, settings, workspace_tools=True)
+    runtime = grok_subscription_runtime(
+        tmp_path,
+        settings,
+        scratch_root_outside_a_worktree,
+        workspace_tools=True,
+    )
     runtime.initialize_storage()
     try:
         started, _workflow = grok_subscription_start(
@@ -1659,10 +1694,12 @@ def test_a_node_requesting_grok_tools_starts_through_the_production_starter(
 
 
 def test_a_tool_free_grok_attempt_persists_the_v2_operational_identity(
-    tmp_path: Path,
+    tmp_path: Path, scratch_root_outside_a_worktree: Path
 ) -> None:
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    runtime = grok_subscription_runtime(tmp_path, settings)
+    runtime = grok_subscription_runtime(
+        tmp_path, settings, scratch_root_outside_a_worktree
+    )
     runtime.initialize_storage()
     try:
         execution = grok_subscription_attempt(
@@ -1694,12 +1731,17 @@ def test_a_tool_free_grok_attempt_persists_the_v2_operational_identity(
 
 
 def test_a_tool_bearing_grok_attempt_writes_in_its_lease_and_answers_what_it_wrote(
-    tmp_path: Path,
+    tmp_path: Path, scratch_root_outside_a_worktree: Path
 ) -> None:
     """The vertical the capability exists for, through the production path."""
 
     settings = grok_subscription_deployment(tmp_path, TOOL_USING_GROK)
-    runtime = grok_subscription_runtime(tmp_path, settings, workspace_tools=True)
+    runtime = grok_subscription_runtime(
+        tmp_path,
+        settings,
+        scratch_root_outside_a_worktree,
+        workspace_tools=True,
+    )
     runtime.initialize_storage()
     try:
         execution = grok_subscription_attempt(

@@ -47,7 +47,7 @@ from atelier2.adapters.grok_subscription import (
     attest_grok_workspace_tool_invocation,
     verify_grok_capability,
 )
-from atelier2.adapters.project_verification import declared_project
+from atelier2.adapters.project_verification import refuse_unusable_project_checkout
 from atelier2.application.project_connections import (
     ConnectionProjectUnknown,
     ProjectSourceConnectionCollision,
@@ -612,8 +612,7 @@ def _declared_project_root(
     if root is None:
         return None
     try:
-        project = declared_project(root)
-        project.verifications.preflight(project.source.head())
+        refuse_unusable_project_checkout(root)
     except (ProjectSourceUnavailable, ProjectVerificationUndeclared) as refusal:
         parser.error(str(refusal))
     return root

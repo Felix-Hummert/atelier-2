@@ -27,6 +27,7 @@ from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
+from atelier2.ports.candidate_store import CandidateTreeStore
 from atelier2.ports.project_source import ProjectSourceRepository
 
 
@@ -86,29 +87,41 @@ class PinnedProjectSource:
     source is a promise nothing can keep -- there would be no manifest to read it
     from and no tree to run it in. Where a node pinned none, the grant is absent
     and the runner beside it is simply not asked.
+
+    The store of candidates travels with them because what an attempt made is a
+    change *to this pin*: the same value that says which tree the work started
+    from says where the work it became is kept.
     """
 
     source: ProjectSourceRepository
     verifications: ProjectVerificationRunner
+    candidates: CandidateTreeStore
     pin: ProjectSourcePin
     grant: DeclaredToolGrant | None
 
 
 @dataclass(frozen=True)
 class DeclaredProject:
-    """The one project this runtime was pointed at: its source, and what verifies it.
+    """One project: where its work comes from, what verifies it, and what keeps it.
 
-    They travel as one value because neither answers alone: a source nothing
-    verifies redeems no grant, and a verification with no source has no tree to
-    read its declaration from and none to run in.
+    The three travel as one value because none of them answers alone: a source
+    nothing verifies redeems no grant, a verification with no source has no tree
+    to read its declaration from and none to run in, and a store of candidates
+    with neither would keep work no pin says anything about. None of the three
+    is optional either -- a project whose candidates had nowhere to go would run
+    attempts whose work dies with their directory, and that is the loss this
+    value exists to make unrepresentable.
     """
 
     source: ProjectSourceRepository
     verifications: ProjectVerificationRunner
+    candidates: CandidateTreeStore
 
     def pinned(
         self, pin: ProjectSourcePin, grant: DeclaredToolGrant | None
     ) -> PinnedProjectSource:
-        """What one attempt of this project works in, and redeems there."""
+        """What one attempt of this project works in, redeems in, and keeps."""
 
-        return PinnedProjectSource(self.source, self.verifications, pin, grant)
+        return PinnedProjectSource(
+            self.source, self.verifications, self.candidates, pin, grant
+        )

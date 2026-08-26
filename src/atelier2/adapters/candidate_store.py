@@ -35,7 +35,10 @@ import time
 from pathlib import Path
 from typing import IO
 
-from atelier2.adapters.leased_directory import entered_leased_directory
+from atelier2.adapters.leased_directory import (
+    LeasedDirectoryChanged,
+    entered_leased_directory,
+)
 from atelier2.adapters.project_source import (
     NO_GIT_TEMPLATE,
     GitRefused,
@@ -54,6 +57,7 @@ from atelier2.contracts.project_sources import (
 from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
 from atelier2.ports.candidate_store import (
     CandidateCaptureConflict,
+    CandidateNotKept,
     CandidateStoreUnavailable,
     CandidateTreeUnrepresentable,
 )
@@ -102,6 +106,36 @@ class GitCandidateTreeStore:
         self._store = database_path.parent.resolve() / CANDIDATE_STORE_DIRECTORY_NAME
 
     def capture(
+        self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
+    ) -> CandidateTree:
+        """Keep what stands in this lease, or say by its own name it was not kept.
+
+        Every way this can fail leaves through `CandidateNotKept`, the
+        operational ones included: a directory swapped under the capture, and a
+        staging directory the machine would not give, are losses of the work
+        exactly as a refused git call is. They are normalized here, at the
+        boundary that knows they are one kind, rather than at the caller, which
+        would have to know this adapter runs git in a temporary directory to
+        guess what else might come out of it.
+
+        The reason is not tidiness. This adapter is asked between an attempt's
+        last work and its completion, and an exception in any other shape
+        escapes that caller's catch and leaves the attempt `LAUNCH_ARMED` --
+        which no operator can resolve, while a named loss is a fact they can
+        act on.
+        """
+
+        try:
+            return self._captured(pin, lease)
+        except CandidateNotKept:
+            raise
+        except (LeasedDirectoryChanged, OSError) as failure:
+            raise CandidateStoreUnavailable(
+                f"the work in the workspace of attempt {lease.attempt_id.value} "
+                f"could not be kept: {failure}"
+            ) from failure
+
+    def _captured(
         self, pin: ProjectSourcePin, lease: AgentAttemptWorkspaceLease
     ) -> CandidateTree:
         self._ensure_store()

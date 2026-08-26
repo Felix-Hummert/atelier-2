@@ -351,6 +351,15 @@ class _FailingAttemptStore:
     ) -> AgentAttemptFailed:
         raise AssertionError((execution, verdict, transcript))
 
+    def complete_candidate_capture_failure(
+        self,
+        execution: AgentAttemptExecution,
+        verdict: str,
+        transcript: AttemptTranscript | None = None,
+        redemption: ToolRedemptionReceipt | None = None,
+    ) -> AgentAttemptFailed:
+        raise AssertionError((execution, verdict, transcript, redemption))
+
     def request_cancellation(
         self, request: CancelAgentAttemptRequest
     ) -> AgentAttemptCancellationResult:

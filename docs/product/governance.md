@@ -11,11 +11,16 @@ such a node runs, the command the project's own manifest declares under
 `[tool.atelier2.verification]` is run in that attempt's own leased directory --
 the project decides what verifies it, never the agent and never the atelier.
 A command that exits zero leaves durable proof of exactly which command ran,
-how it ended and the hash of what it wrote, beside the agent receipt whose
-provider bytes stay its own. A command that exits nonzero ends the attempt
-`FAILED` under `PROJECT_VERIFICATION_FAILED`, names how it ended on the
+how it ended and the hash of what it wrote. That proof belongs to the attempt
+that redeemed the grant, not to the attempt's success: it is kept whenever the
+check passed, including where the attempt then failed for a reason of its own --
+an answer the schema refused, a declared refusal, or work that could not be kept
+-- so a run that verified clean is never indistinguishable from one whose check
+was never satisfied. Only a passing check is ever recorded: the stored exit code
+is fixed at zero, so a redemption cannot say a command failed. A command that exits nonzero ends the
+attempt `FAILED` under `PROJECT_VERIFICATION_FAILED`, names how it ended on the
 `failed` `node-receipt/v3`, and writes no agent receipt, no `AGENT_COMPLETED`,
-and no `tool_redemptions` row. A granted verification that exceeds its
+and no `tool_redemptions` row -- there is nothing it redeemed. A granted verification that exceeds its
 declared `timeout_seconds` after the claim ends the same way: the attempt is
 `FAILED` under `PROJECT_VERIFICATION_FAILED`, the `failed` `node-receipt/v3`
 reason names the timeout, and the attempt is not left `LAUNCH_ARMED`. The

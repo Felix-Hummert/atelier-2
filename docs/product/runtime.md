@@ -156,8 +156,17 @@ Removal never follows a symbolic link out and never touches the root itself. Thi
 is a directory holding pinned material, not an operating-system sandbox: the
 process still runs as the serving user and can name other paths.
 
-P2a candidate store (`.atelier2-candidates.git`, ADR 0011 decision 2) is built
-and deliberately unwired until P2b.
+What an attempt made now outlives the directory it was made in. Its finished
+work is captured into the project's own candidate store
+(`.atelier2-candidates.git`, ADR 0011 decision 2) after any granted check has
+run and before the attempt is completed, anchored under the attempt that made
+it. The two writes share no transaction -- one is a git ref, the other a durable
+row -- so the order carries the promise: no attempt is ever read as succeeded
+without its work kept, and a capture that fails ends the attempt `FAILED` under
+`CANDIDATE_CAPTURE_FAILED` rather than letting a run claim work it cannot show.
+A crash between the two leaves the work readable beside an attempt that reports
+it possibly ran. Nothing deletes a candidate yet: the store grows until the
+project root is destroyed.
 
 An attempt now leaves behind what it did, not only what it answered. The
 executor decodes its provider's own structured stream into one neutral shape --

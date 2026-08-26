@@ -66,6 +66,7 @@ from tests.scenarios.agents import (
     prepared_agent_attempt,
 )
 from tests.scenarios.projects import (
+    CandidatesKeptInMemory,
     declaring_verification,
     git_project,
     write_into_checkout,
@@ -442,7 +443,11 @@ def test_an_undeclared_verification_refuses_before_the_attempt_is_claimed(
     with pytest.raises(ProjectVerificationUndeclared):
         attempt.drive(
             PinnedProjectSource(
-                LocalGitProjectSource(root), verifications, pin, THE_GRANT
+                LocalGitProjectSource(root),
+                verifications,
+                CandidatesKeptInMemory(),
+                pin,
+                THE_GRANT,
             )
         )
 
@@ -612,7 +617,13 @@ def test_a_verification_that_times_out_after_claim_fails_the_attempt_named(
         store,  # type: ignore[arg-type]
         supervisor,  # type: ignore[arg-type]
         workspaces,  # type: ignore[arg-type]
-        PinnedProjectSource(LocalGitProjectSource(root), verifications, pin, THE_GRANT),
+        PinnedProjectSource(
+            LocalGitProjectSource(root),
+            verifications,
+            CandidatesKeptInMemory(),
+            pin,
+            THE_GRANT,
+        ),
     )
 
     assert isinstance(outcome, AgentAttemptFailed)
@@ -649,6 +660,7 @@ def test_a_pin_this_source_cannot_answer_for_refuses_before_the_attempt_is_claim
             PinnedProjectSource(
                 LocalGitProjectSource(root),
                 verifications,
+                CandidatesKeptInMemory(),
                 A_PIN_NO_SOURCE_ANSWERS_FOR,
                 THE_GRANT,
             )
