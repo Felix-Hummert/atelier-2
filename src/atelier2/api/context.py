@@ -11,6 +11,7 @@ from atelier2.application.admit_catalog_member import (
     AdmitMemberResult,
     FoundLineageResult,
 )
+from atelier2.application.admit_library_addition import AdmitLibraryAdditionResult
 from atelier2.application.admit_queue_item import (
     AdmitQueueItemOutcome,
     ListAdmittedQueueItemsOutcome,
@@ -124,6 +125,7 @@ from atelier2.ports.issue_observation import TrackerItemSource
 from atelier2.ports.published_revisions import (
     CatalogAdmissions,
     CatalogResolver,
+    LibraryAdditions,
     PublishedRevisionListing,
     PublishedRevisionRegistry,
 )
@@ -157,6 +159,7 @@ class ApiPorts:
     agent_attempt_canceller: TransactionalAgentAttemptCanceller
     catalog_resolver: CatalogResolver
     catalog_admissions: CatalogAdmissions
+    library_additions: LibraryAdditions
     published_revision_registry: PublishedRevisionRegistry
     published_revision_listing: PublishedRevisionListing
     artifact_publisher: ArtifactPublisher
@@ -213,6 +216,10 @@ class ApiUseCases:
     ]
     classify_definition_document: Callable[
         [bytes, str | None], ClassifyDefinitionDocumentResult
+    ]
+    admit_library_addition: Callable[
+        [bytes, str | None, CatalogActor, CatalogActivatedAt],
+        AdmitLibraryAdditionResult,
     ]
     list_agent_definition_revisions: Callable[
         [PublishedRevisionHash | None, int], ListAgentDefinitionRevisionsResult
