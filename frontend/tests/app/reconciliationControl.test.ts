@@ -29,6 +29,18 @@ import {
 const requestHash = "1f58b9145b24d108d7ac38887338b3ea3229833b9c1e418250343f907bfd1047";
 const emptyResultHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
+/**
+ * Every wait below converges on real, finite async work this suite performs
+ * -- WebCrypto SHA-256 hashing inside the mutation journal, and the DOM
+ * updates it drives -- not on an external or unbounded resource. Under full
+ * test-suite CPU contention that work can outrun Testing Library's 1000 ms
+ * default, so these waits carry generous, still-bounded headroom instead
+ * (#747): eventually true either way, never a longer sleep standing in for a
+ * stuck assertion.
+ */
+const UNDER_LOAD_WAIT_TIMEOUT_MS = 5_000;
+const UNDER_LOAD_TEST_TIMEOUT_MS = 10_000;
+
 beforeEach(() => {
   Object.defineProperties(HTMLDialogElement.prototype, {
     showModal: {
@@ -120,10 +132,12 @@ describe("reconciliation control", () => {
     expect(await journal.get(first.mutation_id)).not.toBeNull();
     feed.handlers?.event(JSON.stringify(reconciliationResolved(3, "command-found", "OPERATOR_FOUND")));
 
-    await waitFor(async () => expect(await journal.get(first.mutation_id)).toBeNull());
+    await waitFor(async () => expect(await journal.get(first.mutation_id)).toBeNull(), {
+      timeout: UNDER_LOAD_WAIT_TIMEOUT_MS
+    });
     expect(screen.queryByRole("heading", { name: /Decision/ })).toBeNull();
     expect(screen.getByRole("article", { name: "action — Working" })).toBeTruthy();
-  });
+  }, UNDER_LOAD_TEST_TIMEOUT_MS);
 
   it("keeps a durable reconciliation authoritative when its event arrives before the 202 response", async () => {
     const journal = new MutationJournal(sessionStorage);
@@ -150,17 +164,21 @@ describe("reconciliation control", () => {
     await fireEvent.input(screen.getByLabelText("Effect ID"), { target: { value: "effect-empty" } });
     await fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
     expect(await screen.findByRole("heading", { name: "Sending decision" })).toBeTruthy();
-    await waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1), {
+      timeout: UNDER_LOAD_WAIT_TIMEOUT_MS
+    });
 
     feed.handlers?.event(JSON.stringify(agentCompleted(1)));
     feed.handlers?.event(JSON.stringify(reconciliationRequired(2, { request_hash: requestHash })));
     feed.handlers?.event(JSON.stringify(reconciliationResolved(3, "command-race", "OPERATOR_FOUND")));
     acceptDecision({ status: 202, value: reconciliationRun() });
 
-    await waitFor(async () => expect(await journal.entries()).toEqual([]));
+    await waitFor(async () => expect(await journal.entries()).toEqual([]), {
+      timeout: UNDER_LOAD_WAIT_TIMEOUT_MS
+    });
     expect(screen.queryByRole("heading", { name: /Decision/ })).toBeNull();
     expect(screen.getByRole("article", { name: "action — Working" })).toBeTruthy();
-  });
+  }, UNDER_LOAD_TEST_TIMEOUT_MS);
 
   it("reconcile_absent_requires_execute_confirmation", async () => {
     const journal = new MutationJournal(sessionStorage);
@@ -194,7 +212,9 @@ describe("reconciliation control", () => {
     expect(dialog).toBeInstanceOf(HTMLDialogElement);
     expect(screen.getByText(`${PRODUCT_NAME} will execute the exact request once.`)).toBeTruthy();
     await fireEvent(dialog, new Event("cancel", { cancelable: true }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), {
+      timeout: UNDER_LOAD_WAIT_TIMEOUT_MS
+    });
     expect(document.activeElement).toBe(review);
     expect(reconcile).not.toHaveBeenCalled();
 
@@ -203,7 +223,9 @@ describe("reconciliation control", () => {
 
     const sending = await screen.findByRole("heading", { name: "Sending decision" });
     expect(document.activeElement).toBe(sending);
-    await waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1), {
+      timeout: UNDER_LOAD_WAIT_TIMEOUT_MS
+    });
     rejectFirst(new CockpitRequestError("The response was lost."));
     expect(await screen.findByRole("heading", { name: "Decision uncertain" })).toBeTruthy();
     expect(reconcile).toHaveBeenCalledTimes(1);
@@ -220,7 +242,7 @@ describe("reconciliation control", () => {
     expect(reconcile.mock.calls[1]?.[0]).toMatchObject(first);
     expect(reconcile.mock.calls[1]?.[0].body_base64).toBe(first.body_base64);
     expect(await screen.findByRole("heading", { name: "Decision pending" })).toBeTruthy();
-  });
+  }, UNDER_LOAD_TEST_TIMEOUT_MS);
 
   it("shows reconciliation only for its exact durable state and projects server-owned pending as Working", async () => {
     const first = render(App, {

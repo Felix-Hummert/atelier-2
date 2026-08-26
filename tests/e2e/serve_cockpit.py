@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 from unittest.mock import patch
+from urllib.parse import parse_qs
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -269,11 +270,13 @@ class BrowserProofHarness:
         runtime: DbosRuntime,
         factory: BlockingAgentExecutorFactory,
         recompose: Callable[[], tuple[ASGIApp, DbosRuntime]],
-        request_restart: Callable[[], None],
+        request_restart: Callable[[bool], None],
+        reset_state: Callable[[], None],
     ) -> None:
         self.app, self.runtime, self.factory = app, runtime, factory
         self.recompose = recompose
         self.request_restart = request_restart
+        self.reset_state = reset_state
         self.generation = 1
         self.expected_hash = hashlib.sha256(factory.output).hexdigest().encode("ascii")
         self.released = False
@@ -316,7 +319,20 @@ class BrowserProofHarness:
             and scope.get("method") == "POST"
             and path == "/__e2e/recompose"
         ):
-            self.request_restart()
+            # `?reset=true` additionally wipes and re-seeds durable state back to
+            # the exact cold-boot baseline (#742): a spec that needs a guaranteed
+            # unseeded server calls this itself instead of depending on file
+            # listing order. Bare `/__e2e/recompose` keeps its original meaning --
+            # a restart that a real redeploy's data survives -- unchanged, since
+            # `cockpit.spec.ts` and `connection-restart.spec.ts` prove exactly
+            # that.
+            reset = (
+                parse_qs(scope.get("query_string", b"").decode()).get(
+                    "reset", ["false"]
+                )[0]
+                == "true"
+            )
+            self.request_restart(reset)
             await send(
                 {
                     "type": "http.response.start",
@@ -426,8 +442,10 @@ class BrowserProofHarness:
     def close(self) -> None:
         self.runtime.close()
 
-    def recompose_after_server_stop(self) -> None:
+    def recompose_after_server_stop(self, reset: bool) -> None:
         self.runtime.close()
+        if reset:
+            self.reset_state()
         self.app, self.runtime = self.recompose()
         self.generation += 1
 
@@ -520,16 +538,16 @@ class BrowserProofHarness:
         ).encode()
 
 
-def main() -> None:
-    root = Path(os.environ["ATELIER2_E2E_ROOT"]).resolve()
-    if root.name != ".playwright-runtime":
-        raise RuntimeError("refusing to clear an unexpected e2e runtime path")
-    shutil.rmtree(root, ignore_errors=True)
-    root.mkdir(parents=True, exist_ok=True)
-    port = int(os.environ["ATELIER2_E2E_PORT"])
-    database = root / "atelier.sqlite"
-    effects = root / "effects.sqlite"
-    application_version = "r3-phase5-e2e"
+def seed_boot_baseline(database: Path, effects: Path, application_version: str) -> None:
+    """(Re)creates the harness's cold-boot baseline against fresh database and
+    effect-store files: the schema, and the two `RUN_IDS` runs already parked
+    in `WAITING_RECONCILIATION` that `wait_for_reconciliation` and the Board's
+    own "never empty" suite depend on. `main()` calls this once at process
+    start; an `/__e2e/recompose?reset=true` (#742) calls it again after wiping
+    both files, so a spec that needs a guaranteed-unseeded server reaches the
+    exact same baseline a cold boot would give it, not an empty schema neither
+    caller actually wants.
+    """
     binding = LoopbackEffectAdapterFactory(
         effects,
         AdapterRevision("loopback-v1"),
@@ -551,6 +569,28 @@ def main() -> None:
         wait_for_reconciliation(prepare)
     finally:
         prepare.close()
+
+
+def main() -> None:
+    root = Path(os.environ["ATELIER2_E2E_ROOT"]).resolve()
+    if root.name != ".playwright-runtime":
+        raise RuntimeError("refusing to clear an unexpected e2e runtime path")
+    shutil.rmtree(root, ignore_errors=True)
+    root.mkdir(parents=True, exist_ok=True)
+    port = int(os.environ["ATELIER2_E2E_PORT"])
+    database = root / "atelier.sqlite"
+    effects = root / "effects.sqlite"
+    application_version = "r3-phase5-e2e"
+    seed_boot_baseline(database, effects, application_version)
+
+    def reset_to_boot_baseline() -> None:
+        for sqlite_path in (database, effects):
+            sqlite_path.unlink(missing_ok=True)
+            for sidecar_suffix in ("-wal", "-shm"):
+                sqlite_path.with_name(sqlite_path.name + sidecar_suffix).unlink(
+                    missing_ok=True
+                )
+        seed_boot_baseline(database, effects, application_version)
 
     factory = BlockingAgentExecutorFactory(
         "e2e",
@@ -625,9 +665,12 @@ def main() -> None:
             return serving.compose_application(settings)
 
     restart_requested = threading.Event()
+    reset_requested = threading.Event()
     server: uvicorn.Server | None = None
 
-    def request_restart() -> None:
+    def request_restart(reset: bool) -> None:
+        if reset:
+            reset_requested.set()
         restart_requested.set()
         if server is None:
             raise RuntimeError("the e2e server is not running")
@@ -639,7 +682,7 @@ def main() -> None:
         app, live_runtime = compose()
         runtime_to_close = live_runtime
         harness = BrowserProofHarness(
-            app, live_runtime, factory, compose, request_restart
+            app, live_runtime, factory, compose, request_restart, reset_to_boot_baseline
         )
         runtime_to_close = harness
         while True:
@@ -654,7 +697,8 @@ def main() -> None:
             if not restart_requested.is_set():
                 break
             restart_requested.clear()
-            harness.recompose_after_server_stop()
+            harness.recompose_after_server_stop(reset_requested.is_set())
+            reset_requested.clear()
     finally:
         close_runtime_and_scratch_root(runtime_to_close, scratch_root)
 
