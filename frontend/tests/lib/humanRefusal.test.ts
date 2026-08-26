@@ -63,4 +63,18 @@ describe("human problem details", () => {
     expect(humanErrorMessage(error, "fallback")).toContain("Refresh the page");
     expect(humanErrorMessage(error, "fallback")).not.toContain("Stop mutation");
   });
+
+  it("names a round trip that never happened by the caller's own sentence, not the browser's raw transport text (#700)", () => {
+    const error = new CockpitRequestError("Failed to fetch", null, false, true);
+    expect(humanErrorMessage(error, "Workflows are unavailable right now.")).toBe(
+      "Workflows are unavailable right now."
+    );
+  });
+
+  it("keeps a contract violation's own specific message even without a server-answered problem", () => {
+    const error = new CockpitRequestError("The workflow response did not match the requested revision.");
+    expect(humanErrorMessage(error, "fallback")).toBe(
+      "The workflow response did not match the requested revision."
+    );
+  });
 });

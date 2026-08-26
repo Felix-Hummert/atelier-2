@@ -1,13 +1,13 @@
 # ADR 0009: One trust boundary separates the coordinating service from every worker
 
-- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-22, 2026-08-23, 2026-08-24, 2026-08-25; disposable #301-A candidate 2026-08-22 — no live Runner availability
+- Status: PROPOSED 2026-08-15; amended 2026-08-21, 2026-08-22, 2026-08-23, 2026-08-24, 2026-08-25, 2026-08-26; disposable #301-A candidate 2026-08-22 — no live Runner availability
 - Date: 2026-08-15
 - Requirement authority: [Issue #1](https://github.com/FlexOr2/atelier-2/issues/1)
-- Decision authority: [Issue #21](https://github.com/FlexOr2/atelier-2/issues/21),
-  intended final served `#21 body @ 3c1f663cd51a1c7aedbeffc39c3f38ee2ed6174d16103ab68d9d811014352ed0`
-  — 7,961 UTF-8 bytes, ending in one LF byte. This candidate binds only when that
-  exact body is read back; until then the current served body remains the
-  authority. The prior rebind and derived-document debt are recorded in
+- Decision authority: [#21](https://github.com/FlexOr2/atelier-2/issues/21) owns
+  the item; this record owns the decision. A live issue body is not a
+  freezable byte object — the prior byte-pinned candidate drifted stale a
+  third time — so this record no longer pins #21's body by digest; the prior
+  rebind and derived-document debt are recorded in
   [#21 comment 5354779824](https://github.com/FlexOr2/atelier-2/issues/21#issuecomment-5354779824).
   The operator-owned architecture ruling is
   [#5 comment 5354196886](https://github.com/FlexOr2/atelier-2/issues/5#issuecomment-5354196886);
@@ -71,15 +71,17 @@ deployment is rejected rather than selectable. Their landed history remains in
 the owning issues; this record retains only the deletion fact needed to prevent
 any of them from returning as a fallback.
 
-**How the decision-authority digest above is computed.** The canonical rule is
-exact: the bytes the API serves as the issue body, hashed as they are, with
-nothing appended, re-encoded or normalized. The current body itself ends in one
-LF byte. This is stated because this record's first revision got the digest
-wrong: a shell pipeline (`gh ... --jq .body`) appended another newline before
-hashing and therefore bound bytes GitHub never served. Until ADR 0010's adapter
-publishes requirement revisions and computes this digest once instead of a human
-pasting it, every record here states the byte count and terminal-byte fact so a
-reader can re-derive it rather than trust it.
+**2026-08-26 amendment: why this record stopped pinning #21's body by
+digest.** An earlier revision bound `#21 body @ 3c1f663c…` — 7,961 UTF-8
+bytes, ending in one LF byte — and it drifted stale a third time as the item
+kept moving. The canonical digest rule is exact — the bytes the API serves as
+the issue body, hashed as they are, with nothing appended, re-encoded or
+normalized — and this record's first revision even got that wrong once, when
+a shell pipeline (`gh ... --jq .body`) appended a newline before hashing and
+bound bytes GitHub never served. A live issue body is not a freezable byte
+object, so a per-record human-pasted pin will always chase it; a document
+that must freeze exact bytes belongs on the requirements registry in
+`docs/requirements/README.md`, as REQ documents already do.
 
 ## Decision
 
@@ -298,6 +300,24 @@ session deadline runs on, so an invocation that is over holds a key that opens
 nothing. A launcher refuses to serve at all when the console identity it is
 pointed at has already expired, because that failure would otherwise appear
 inside every Attempt as an unreadable handshake.
+
+**2026-08-26 amendment (Operator-Ruling 24.08., #632): no new self-built
+isolation cage.** What is built and works here — rootful Docker hardening,
+the per-Attempt packet-filter chains, Landlock on the provider child — stays
+unchanged; this amendment orders no rebuild and #632 stays parked rather than
+blocking. It records only the doctrine the ruling states for what comes
+next: from this date, no new self-built isolation slice (packet-filter,
+network or jail mechanics) is begun; a coming Runner slice is measured
+through an adopt lens first — does a maintained sandbox runtime already meet
+the need? Considered, ascending: gVisor (`runsc`) as the Docker runtime under
+the existing carrier, a deployment detail costing little code and the first
+candidate to try; Firecracker or Kata self-hosted as a new carrier adapter
+fulfilling this same lease/evidence protocol, matching the direction that a
+credential never leaves the network; E2B or another cloud sandbox, rejected
+for that path because code and credentials would cross a foreign cloud, left
+open only as a later option for non-sensitive projects. This item names no
+`Done when` this record owns; it waits for real Runner usage to demand
+isolation work before the first adopt candidate is tried.
 
 ### 3. Operator authentication gates every exposure beyond this machine
 

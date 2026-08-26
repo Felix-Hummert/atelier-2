@@ -68,6 +68,7 @@ function startedV3Run(): RunV3 {
         executor_revision: "immediate/v1"
       }
     ],
+    orders: [],
     state_version: 1,
     state: "STARTED",
     current_node_id: "implement",
