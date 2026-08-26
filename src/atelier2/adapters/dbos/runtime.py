@@ -404,18 +404,23 @@ class _BoundRuntime:
 
 
 def _declared_project_for(
-    engine: Engine, project_id: ProjectId | None
+    engine: Engine, project_id: ProjectId | None, database_path: Path
 ) -> DeclaredProject | None:
     """The project this process serves, read from the host channel.
 
     A missing mapping is `project-unknown`: naming a project with no configured
     root is the ADR 0011 service refusal, not the channel's own row miss.
+
+    The database path travels with it because the project's candidate store is
+    placed beside the store this process binds, the same derivation the
+    agent-control root uses -- so the project keeps its work inside the root it
+    is served from rather than inside the checkout it reads.
     """
 
     if project_id is None:
         return None
     try:
-        return declared_project(project_root_for(engine, project_id))
+        return declared_project(project_root_for(engine, project_id), database_path)
     except ProjectRootMissing as missing:
         raise ProjectUnknown(
             f"{PROJECT_UNKNOWN}: project {project_id.value!r} has no configured root"
@@ -898,7 +903,9 @@ def _open_binding(
             append_project_root(
                 engine, settings.project_id, settings.bootstrap_project_root
             )
-        declared_project_source = _declared_project_for(engine, settings.project_id)
+        declared_project_source = _declared_project_for(
+            engine, settings.project_id, settings.database_path
+        )
         with engine.connect() as connection:
             durable_agent_bindings = {
                 AgentExecutorBinding(

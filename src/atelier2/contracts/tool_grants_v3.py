@@ -240,6 +240,19 @@ class ToolRedemptionReceipt:
             raise ValueError("a redeemed verification exit code must fit signed int64")
         object.__setattr__(self, "receipt_hash", self._hash())
 
+    @property
+    def satisfied_the_project(self) -> bool:
+        """Whether the project's own command was satisfied by what it saw.
+
+        The one owner of that reading. A nonzero exit is not weaker proof of the
+        same thing -- it is the opposite fact, and it ends the attempt under its
+        own code. Every writer that keeps a redemption and every caller that
+        decides what to do after one asks here, so no two of them can disagree
+        about what "the check passed" means.
+        """
+
+        return self.exit_code == 0
+
     def _hash(self) -> ToolRedemptionReceiptHash:
         return ToolRedemptionReceiptHash.of(
             frame(

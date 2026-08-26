@@ -26,6 +26,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 
+from atelier2.adapters.candidate_store import CANDIDATE_STORE_DIRECTORY_NAME
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
@@ -86,6 +87,8 @@ from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 RUN = RunId("v3/redeems-its-grant")
 FAILED_RUN = RunId("v3/red-verify-fails")
 TIMEOUT_RUN = RunId("v3/verify-timeout")
+UNKEPT_RUN = RunId("v3/candidate-unkeepable")
+BOTH_LOST_RUN = RunId("v3/red-verify-and-unkeepable")
 PROVIDER_OUTPUT = b'"the exact provider bytes"'
 VERIFICATION_OUTPUT = b"all green"
 VERIFICATION_EXIT_CODE = 0
@@ -207,6 +210,40 @@ def failing_verification_runtime(
     tmp_path: Path,
 ) -> Iterator[tuple[DbosRuntime, Path, Path]]:
     yield from granted_runtime(tmp_path, FAILED_VERIFICATION_EXIT_CODE)
+
+
+@pytest.fixture
+def unkeepable_candidate_and_failing_verification_runtime(
+    tmp_path: Path,
+) -> Iterator[tuple[DbosRuntime, Path, Path]]:
+    """A project whose check says no, and whose candidates could not be kept.
+
+    Both losses at once, because the question is which of them decides the
+    ending: a check that exited nonzero has already refused this work, and no
+    later failure to keep it may rename that verdict or leave a redemption
+    behind claiming a command that failed.
+    """
+
+    blocked = tmp_path / CANDIDATE_STORE_DIRECTORY_NAME
+    blocked.symlink_to(tmp_path / "somewhere-else", target_is_directory=True)
+    yield from granted_runtime(tmp_path, FAILED_VERIFICATION_EXIT_CODE)
+
+
+@pytest.fixture
+def unkeepable_candidate_runtime(
+    tmp_path: Path,
+) -> Iterator[tuple[DbosRuntime, Path, Path]]:
+    """A runtime whose project can work and verify, but cannot keep what it made.
+
+    The store is blocked the way a project root can really be blocked -- a link
+    standing where the candidate store belongs, which ADR 0011's placement rule
+    refuses because it would take the work outside the root. Nothing is
+    monkeypatched: the runtime builds its own store, and that store says no.
+    """
+
+    blocked = tmp_path / CANDIDATE_STORE_DIRECTORY_NAME
+    blocked.symlink_to(tmp_path / "somewhere-else", target_is_directory=True)
+    yield from granted_runtime(tmp_path, VERIFICATION_EXIT_CODE)
 
 
 @pytest.fixture
@@ -356,9 +393,10 @@ def test_a_nonzero_project_verification_fails_the_attempt_and_leaves_no_success(
 
     The provider's bytes were a success the schema admits. The project's own
     command then exited 1. That ending must not write the success rows a
-    zero-exit grant writes: no agent receipt, no `AGENT_COMPLETED`, no
-    `tool_redemptions` row (its foreign key is an agent receipt a failed
-    attempt does not have). What remains is the named failure.
+    zero-exit grant writes: no agent receipt, no `AGENT_COMPLETED`, and no
+    `tool_redemptions` row -- not because a failed attempt has nowhere to put
+    one since V39, but because a check that exited 1 redeemed nothing. What
+    remains is the named failure.
     """
     started_runtime, _scratch_root, _cwd_record = failing_verification_runtime
     workflow, bindings, _grant_revision = publish_granted_node(started_runtime)
@@ -578,3 +616,187 @@ def test_a_grant_no_registry_carries_refuses_the_start_and_leaves_no_run(
     assert isinstance(started, DurableRunFormatNotExecutable)
     with started_runtime.engine.connect() as connection:
         assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+
+
+def test_an_attempt_that_could_not_keep_its_work_says_so_in_its_node_receipt(
+    unkeepable_candidate_runtime: tuple[DbosRuntime, Path, Path],
+) -> None:
+    """The receipt an operator reads has to name this loss, and not another one.
+
+    Everything before the keeping went right here: the provider answered, the
+    schema admitted the bytes, and the project's own granted check exited zero.
+    Only the candidate store refused. The receipt is where that shows up for a
+    human, so it is asked directly -- because a capture failure recorded as
+    `project-verification-failed` would tell an operator to go and look at a
+    check that passed, and the attempt's own code alone cannot reveal that.
+    """
+    started_runtime, _scratch_root, _cwd_record = unkeepable_candidate_runtime
+    workflow, bindings, _grant_revision = publish_granted_node(started_runtime)
+
+    started = DbosDurableRunStarter(
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
+    ).start_published(
+        StartPublishedRunRequestV2(UNKEPT_RUN, workflow.revision_hash, bindings)
+    )
+    assert isinstance(started, DurableRunCreated)
+
+    started_runtime.launch()
+    deadline = time.monotonic() + 20
+    observed = ""
+    while time.monotonic() < deadline:
+        with started_runtime.engine.connect() as connection:
+            observed = str(
+                connection.scalar(
+                    sa.select(runs.c.state).where(runs.c.run_id == UNKEPT_RUN.value)
+                )
+            )
+        if observed in {RunState.FAILED.value, RunState.COMPLETED.value}:
+            break
+        time.sleep(0.025)
+    assert observed == RunState.FAILED.value, f"run ended {observed!r}"
+
+    with started_runtime.engine.connect() as connection:
+        attempt = (
+            connection.execute(
+                sa.select(agent_attempts).where(
+                    agent_attempts.c.run_id == UNKEPT_RUN.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        payload = connection.scalar(
+            sa.select(run_events.c.payload).where(
+                run_events.c.run_id == UNKEPT_RUN.value,
+                run_events.c.event_kind == RunEventKind.AGENT_FAILED.value,
+            )
+        )
+        stored_reason = connection.scalar(
+            sa.select(node_receipts_v3.c.reason).where(
+                node_receipts_v3.c.node_execution_id == attempt["node_execution_id"]
+            )
+        )
+        redemption = (
+            connection.execute(
+                sa.select(tool_redemptions).where(
+                    tool_redemptions.c.run_id == UNKEPT_RUN.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        receipt_count = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(agent_receipts_v2)
+            .where(agent_receipts_v2.c.run_id == UNKEPT_RUN.value)
+        )
+
+    assert attempt["state"] == AgentAttemptState.FAILED.value
+    assert attempt["failure_code"] == (
+        AgentAttemptFailureCode.CANDIDATE_CAPTURE_FAILED.value
+    )
+    assert payload is not None
+    assert bytes(payload) == (
+        AgentAttemptFailureCode.CANDIDATE_CAPTURE_FAILED.value.encode("ascii")
+    )
+    words, schema_revision, value_hash = read_stored_node_receipt_reason(
+        str(stored_reason)
+    )
+    token, _separator, verdict = words.partition(": ")
+    assert token == NodeReceiptReason.CANDIDATE_CAPTURE_FAILED.value
+    assert CANDIDATE_STORE_DIRECTORY_NAME in verdict
+    assert schema_revision is None
+    assert value_hash is None
+    # The check ran and passed, and its proof is durable beside the failure --
+    # keyed by the attempt, which is why it can exist at all now: there is no
+    # agent receipt here for it to hang from.
+    assert str(redemption["attempt_id"]) == str(attempt["attempt_id"])
+    assert str(redemption["node_id"]) == "implement"
+    assert str(redemption["capability"]) == (
+        ToolGrantCapability.RUN_PROJECT_VERIFICATION.value
+    )
+    assert int(redemption["exit_code"]) == VERIFICATION_EXIT_CODE
+    assert (
+        str(redemption["standard_output_hash"])
+        == Sha256Hash.of(VERIFICATION_OUTPUT).value
+    )
+    assert receipt_count == 0
+
+
+def test_a_check_that_said_no_decides_the_ending_even_when_the_work_is_lost(
+    unkeepable_candidate_and_failing_verification_runtime: tuple[
+        DbosRuntime, Path, Path
+    ],
+) -> None:
+    """Two losses at once, and the first one owns the verdict.
+
+    The project's command exited nonzero, so this attempt was already refused;
+    the candidate store then could not have kept the work either. Reading that
+    second loss as the ending would tell an operator to go and look at a store
+    when what actually happened is that their tests failed -- and it would leave
+    a `tool_redemptions` row recording a command that did not pass, which
+    `docs/PRODUCT.md` says is never written and which V39's own CHECK refuses.
+    """
+    started_runtime, _scratch_root, _cwd_record = (
+        unkeepable_candidate_and_failing_verification_runtime
+    )
+    workflow, bindings, _grant_revision = publish_granted_node(started_runtime)
+
+    started = DbosDurableRunStarter(
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
+        effect_adapter_proves_absence=True,
+    ).start_published(
+        StartPublishedRunRequestV2(BOTH_LOST_RUN, workflow.revision_hash, bindings)
+    )
+    assert isinstance(started, DurableRunCreated)
+
+    started_runtime.launch()
+    deadline = time.monotonic() + 20
+    observed = ""
+    while time.monotonic() < deadline:
+        with started_runtime.engine.connect() as connection:
+            observed = str(
+                connection.scalar(
+                    sa.select(runs.c.state).where(runs.c.run_id == BOTH_LOST_RUN.value)
+                )
+            )
+        if observed in {RunState.FAILED.value, RunState.COMPLETED.value}:
+            break
+        time.sleep(0.025)
+    assert observed == RunState.FAILED.value, f"run ended {observed!r}"
+
+    with started_runtime.engine.connect() as connection:
+        attempt = (
+            connection.execute(
+                sa.select(agent_attempts).where(
+                    agent_attempts.c.run_id == BOTH_LOST_RUN.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        stored_reason = connection.scalar(
+            sa.select(node_receipts_v3.c.reason).where(
+                node_receipts_v3.c.node_execution_id == attempt["node_execution_id"]
+            )
+        )
+        redemption_count = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(tool_redemptions)
+            .where(tool_redemptions.c.run_id == BOTH_LOST_RUN.value)
+        )
+
+    assert attempt["failure_code"] == (
+        AgentAttemptFailureCode.PROJECT_VERIFICATION_FAILED.value
+    )
+    words, _schema_revision, _value_hash = read_stored_node_receipt_reason(
+        str(stored_reason)
+    )
+    assert words.startswith(NodeReceiptReason.PROJECT_VERIFICATION_FAILED.value)
+    assert f"exit {FAILED_VERIFICATION_EXIT_CODE}" in words
+    assert redemption_count == 0

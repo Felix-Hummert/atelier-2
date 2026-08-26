@@ -79,6 +79,7 @@ class NodeReceiptReason(StrEnum):
     PROCESS_SUPERVISION_FAILED = "process-supervision-failed"
     AGENT_REFUSED = "agent-refused"
     PROJECT_VERIFICATION_FAILED = "project-verification-failed"
+    CANDIDATE_CAPTURE_FAILED = "candidate-capture-failed"
     CANCELLED_BY_OPERATOR = "cancelled-by-operator"
     """The running node's own receipt when an operator's run-cancel ends it.
 
