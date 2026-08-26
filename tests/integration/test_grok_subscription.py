@@ -409,16 +409,29 @@ def test_a_bare_string_schema_does_not_travel_as_json_schema(
     executor.release_credential_channel(command)
 
 
+@pytest.mark.parametrize(
+    "prose",
+    (
+        "Befund 1: der Diff nennt die apt-Lock-Heilung.\nVerdict: revise",
+        'Befund: "C:\\\\atelier\\\\report.json"',
+    ),
+)
 def test_a_bare_string_schema_answer_is_serialized_as_a_json_string(
     tmp_path: Path,
+    prose: str,
 ) -> None:
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
     executor = GrokSubscriptionExecutorFactory(settings).open()
-    request = subscription_request(declared_output_schema=b'{"type":"string"}')
+    request = subscription_request(
+        declared_output_schema=(
+            b'{"$schema":"https://json-schema.org/draft/2020-12/schema",'
+            b'"type":"string",'
+            b'"pattern":"^Befund 1[^0-9][\\\\s\\\\S]*\\\\nVerdict: '
+            b'(accepted|revise)$"}'
+        )
+    )
     command = executor.prepare_process(request)
     invocation = leased(command, leased_workspace(tmp_path))
-    prose = "Befund 1: der Diff nennt die apt-Lock-Heilung."
-
     result = executor.decode_process_completion(
         invocation,
         AgentProcessCompletion(
@@ -432,9 +445,7 @@ def test_a_bare_string_schema_answer_is_serialized_as_a_json_string(
     )
 
     assert isinstance(result, AgentExecutionResult)
-    assert result == AgentExecutionResult(
-        json.dumps(prose, ensure_ascii=False).encode()
-    )
+    assert "--json-schema" not in command.arguments
     assert json.loads(result.output_bytes) == prose
     executor.release_credential_channel(command)
 
