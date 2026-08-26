@@ -667,7 +667,9 @@ def test_a_scratch_root_inside_a_git_worktree_refuses_to_serve_and_says_why(
     settings = claude_subscription_deployment(deployment, INERT_CLAUDE)
     monkeypatch.setenv("PATH", settings.search_path)
     checkout = tmp_path / "checkout"
-    (checkout / ".git").mkdir(parents=True)
+    git_directory = checkout / ".git"
+    git_directory.mkdir(parents=True)
+    (git_directory / "HEAD").touch()
     scratch_root = checkout / "scratch"
     scratch_root.mkdir(mode=0o700)
 
