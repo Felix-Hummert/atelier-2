@@ -1,0 +1,39 @@
+format_version: 3
+name: plan-review
+description: >-
+  One headless agent reviews an item's proposed plan against the item's body
+  and the owner documents supplied as durable artifacts. Its structured review
+  result records risks, an executable plan, and whether the plan stands.
+graph_inputs:
+  - name: item_body
+    schema:
+      ref: diff_review_diff
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+  - name: owner_documents
+    schema:
+      ref: diff_review_diff
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+nodes:
+  - id: review
+    type: agent
+    role: reviewer
+    mode: headless
+    instruction: >-
+      Review the item body carried under "item_body" against the owner
+      documents carried under "owner_documents". You cannot read files, run
+      anything, or use tools in this headless call; these artifacts are your
+      only evidence. Pass a plan only when its risks, steps, files, and tests
+      are sufficient to implement the item without contradicting its owners;
+      otherwise revise it.
+    inputs:
+      - name: item_body
+        from:
+          graph_input: item_body
+      - name: owner_documents
+        from:
+          graph_input: owner_documents
+    outputs:
+      - name: result
+        schema:
+          ref: plan_review_result
+          revision: "d3ff9e52d16faf17fe969366c3295b2ffac7184c51d7fbeefc5de93b8c36ab9a"

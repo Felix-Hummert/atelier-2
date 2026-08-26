@@ -1,0 +1,38 @@
+format_version: 3
+name: code-review
+description: >-
+  One headless agent reviews a diff from durable evidence and answers the
+  review questions supplied with the run. Its structured result records each
+  finding's location and severity alongside the review verdict.
+graph_inputs:
+  - name: diff
+    schema:
+      ref: diff_review_diff
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+  - name: review_questions
+    schema:
+      ref: diff_review_diff
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+nodes:
+  - id: review
+    type: agent
+    role: reviewer
+    mode: headless
+    instruction: >-
+      Review the diff carried under "diff" and answer the questions carried
+      under "review_questions". You cannot read files, run anything, or use
+      tools in this headless call; the diff and questions are your only
+      evidence. Approve the diff when nothing you find blocks it; otherwise
+      revise it.
+    inputs:
+      - name: diff
+        from:
+          graph_input: diff
+      - name: review_questions
+        from:
+          graph_input: review_questions
+    outputs:
+      - name: result
+        schema:
+          ref: code_review_result
+          revision: "7a5bf3fdb9030433b0060ac5086386cdb18019f310e35006bb3d42b213b0491f"

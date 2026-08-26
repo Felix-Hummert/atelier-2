@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["risks", "plan", "verdict"],
+  "properties": {
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text"],
+        "properties": {
+          "text": {"type": "string"}
+        }
+      }
+    },
+    "plan": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["step", "files", "test"],
+        "properties": {
+          "step": {"type": "string"},
+          "files": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "test": {"type": "string"}
+        }
+      }
+    },
+    "verdict": {
+      "enum": ["pass", "revise"]
+    }
+  }
+}
