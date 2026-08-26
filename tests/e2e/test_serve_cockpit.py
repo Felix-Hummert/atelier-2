@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import importlib.util
+import sqlite3
 import sys
+import threading
+import time
+from contextlib import closing
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
 SCRIPT_PATH = Path(__file__).with_name("serve_cockpit.py")
 
@@ -121,3 +127,154 @@ def test_a_harness_created_scratch_root_is_removed_after_test_interruption(
 
     assert runtime.closed
     assert not interrupted_root.exists()
+
+
+def _run_states(database: Path) -> dict[str, str]:
+    engine = harness.sa.create_engine(f"sqlite:///{database}")
+    try:
+        with engine.connect() as connection:
+            return {
+                str(row.run_id): str(row.state)
+                for row in connection.execute(
+                    harness.sa.select(harness.runs.c.run_id, harness.runs.c.state)
+                )
+            }
+    finally:
+        engine.dispose()
+
+
+def _effect_call_count(effects: Path) -> int:
+    with closing(sqlite3.connect(effects)) as connection:
+        return connection.execute(
+            "SELECT COUNT(*) FROM loopback_effect_calls"
+        ).fetchone()[0]
+
+
+def _served_settings(
+    tmp_path: Path, database: Path, effects: Path, application_version: str
+) -> object:
+    frontend_dist = tmp_path / "frontend"
+    (frontend_dist / "assets").mkdir(parents=True)
+    (frontend_dist / "index.html").write_text("index")
+    return harness.HostSettings(
+        database_path=database,
+        effect_store_path=effects,
+        effect_adapter_revision="loopback-v1",
+        effect_destination="r3-phase5-e2e",
+        application_version=application_version,
+        source_commit="reset-test",
+        source_tree="reset-test",
+        frontend_dist=frontend_dist,
+        project_id=harness.ProjectId("e2e-workshop"),
+        project_root=SCRIPT_PATH.resolve().parents[2],
+    )
+
+
+def test_a_reset_recompose_restores_the_exact_cold_boot_baseline(
+    tmp_path: Path,
+) -> None:
+    """#742: `/__e2e/recompose?reset=true` must not merely survive a restart --
+    it must wipe every durable trace beyond the cold-boot baseline in BOTH
+    physical stores (the DBOS database and the loopback effect store) and
+    reseed exactly what a fresh boot gives, proven rather than merely claimed.
+
+    Drives the harness's own `/__e2e/recompose`/`/__e2e/generation` doors
+    through a `TestClient`, the same observable surface a spec's browser
+    uses, but calls `recompose_after_server_stop` directly instead of
+    stopping a real uvicorn process -- that real process-restart shape is
+    already proven end-to-end by `connection-restart.spec.ts` and
+    `workbench-conductor.spec.ts`. What this test owns is that the state
+    left behind is the exact cold-boot baseline, not merely "smaller".
+    """
+    database = tmp_path / "atelier.sqlite"
+    effects = tmp_path / "effects.sqlite"
+    application_version = "e2e-reset-test"
+    harness.seed_boot_baseline(database, effects, application_version)
+    baseline_runs = _run_states(database)
+    baseline_effect_calls = _effect_call_count(effects)
+
+    settings = _served_settings(tmp_path, database, effects, application_version)
+
+    def compose() -> tuple:
+        return harness.serving.compose_application(settings)
+
+    app, runtime = compose()
+    # `harness` is loaded dynamically (`load_harness`), so pyright cannot know
+    # `BrowserProofHarness`'s real type here -- `Any` names that honestly.
+    proof: Any = None
+    try:
+        # Mutates BOTH stores: a third v1 run's own start (the `runs` table,
+        # the DBOS database) and its action node's attempted effect (the
+        # `loopback_effect_calls` table, the effect store) -- the same two
+        # files `seed_boot_baseline` owns. Unlike the boot fixture's own
+        # temporary runtime, this live, `compose_application`-built one proves
+        # its effect adapter can confirm its own readback, so the run clears
+        # its action node instead of parking on it -- irrelevant here, since
+        # this test only needs the effect store's own row, not that specific
+        # run state.
+        mutation_run_id = "harness-reset-mutation"
+        harness.start_published_v1_run(
+            runtime.engine,
+            runtime.settings,
+            harness.RunId(mutation_run_id),
+            harness.WorkflowRevision(harness.WORKFLOW),
+        )
+        deadline = time.monotonic() + harness.TIMEOUT_SECONDS
+        while (
+            _effect_call_count(effects) == baseline_effect_calls
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.025)
+        assert _run_states(database) != baseline_runs
+        assert _effect_call_count(effects) == baseline_effect_calls + 1
+
+        factory = harness.BlockingAgentExecutorFactory(
+            "e2e", "blocking/v1", "e2e-blocking-process", b"reset-test-fixture"
+        )
+        proof_holder: list[Any] = []
+        # The real process restarts on its own plain thread, outside uvicorn's
+        # event loop, by the time `recompose_after_server_stop` runs (`main()`'s
+        # own `while True` loop, after `server.run()` returns). A `TestClient`
+        # request keeps an event loop live for the whole call, and DBOS's own
+        # synchronous launch path refuses to run inside one -- so this restart
+        # happens on its own thread too, joined before the next request reads
+        # what it left behind, the same ordering the real restart guarantees.
+        restart_threads: list[threading.Thread] = []
+
+        def request_restart(reset: bool) -> None:
+            thread = threading.Thread(
+                target=proof_holder[0].recompose_after_server_stop, args=(reset,)
+            )
+            thread.start()
+            restart_threads.append(thread)
+
+        proof = harness.BrowserProofHarness(
+            app,
+            runtime,
+            factory,
+            compose,
+            request_restart,
+            lambda: harness.reset_to_boot_baseline(
+                database, effects, application_version
+            ),
+        )
+        proof_holder.append(proof)
+
+        with TestClient(proof) as client:
+            restarted = client.post("/__e2e/recompose?reset=true")
+            assert restarted.status_code == 202
+            expected_generation = restarted.text
+
+            restart_threads[0].join(timeout=harness.TIMEOUT_SECONDS)
+            assert not restart_threads[0].is_alive()
+
+            observed_generation = client.get("/__e2e/generation")
+            assert observed_generation.text == expected_generation
+
+        assert _run_states(database) == baseline_runs
+        assert _effect_call_count(effects) == baseline_effect_calls
+    finally:
+        if proof is not None:
+            proof.runtime.close()
+        else:
+            runtime.close()
