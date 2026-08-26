@@ -4,8 +4,10 @@ description: >-
   One headless agent reviews a diff it is handed. Its output contract makes
   the operator's review criteria a fact of the schema rather than a hope in
   the prompt: the first characters of an accepted finding are always "Befund
-  1", so no greeting or announcement can ever precede it and reach a success
-  (#392).
+  1", so no greeting or announcement can ever precede it and reach a success,
+  and its last line must name one of the two words this product's verdict
+  vocabulary gives a finished review, so a finding that never says whether
+  the diff stands cannot reach a success either (#392).
 graph_inputs:
   - name: diff
     schema:
@@ -36,4 +38,4 @@ nodes:
       - name: finding
         schema:
           ref: diff_review_finding
-          revision: "40b6a304993fff805267a59520002936344f5fa679100576c1243c1a28840eb8"
+          revision: "3a191b1cefa39b13237366cb7b3ab0839a4614aca1ceaa00c087a3efdc1d5e36"

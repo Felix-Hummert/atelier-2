@@ -8,9 +8,12 @@ promises (#660). This suite is the fixture-side proof, one layer under
 exact bytes shipped at `workflows/diff-review.yaml` and `workflows/schemas/`,
 publishes them through the same door an operator's Git-source import uses, and
 launches a real run against them with a fake provider -- once with a finding
-the document's own schema admits, and once with the announcement #392 was
-filed over, so the schema's refusal is proven on the committed document
-itself rather than on an inline fixture that could quietly drift from it.
+the document's own schema admits, and once for each shape of answer #392's
+review criteria name as refused: an announcement instead of a finding (the
+exact defect #392 measured against a live provider), a finding with no
+verdict, and a finding whose verdict is not one of this product's two words.
+The schema's refusal is proven on the committed document itself rather than
+on an inline fixture that could quietly drift from it.
 """
 
 from __future__ import annotations
@@ -86,9 +89,18 @@ COMPLIANT_FINDING = (
 )
 COMPLIANT_ANSWER = json.dumps(COMPLIANT_FINDING, ensure_ascii=False).encode()
 
-ANNOUNCEMENT_ANSWER = json.dumps(
-    "Ich pruefe zuerst die Projektregeln und dann den Diff.", ensure_ascii=False
-).encode()
+REFUSED_FINDINGS = {
+    "an announcement instead of a finding": (
+        "Ich pruefe zuerst die Projektregeln und dann den Diff."
+    ),
+    "a finding with no verdict line": (
+        "Befund 1: workflows/diff-review.yaml adds one guard clause."
+    ),
+    "a finding whose verdict is not one of the two product owns": (
+        "Befund 1: workflows/diff-review.yaml adds one guard clause.\n"
+        "Verdict: maybe"
+    ),
+}
 
 
 def runtime_over(root: Path, provider: RecordingAgentExecutorFactoryV2) -> DbosRuntime:
@@ -225,17 +237,28 @@ def test_a_compliant_finding_completes_the_run_with_the_diff_the_order_carried(
     assert detail.detail.answer.value == COMPLIANT_ANSWER
 
 
-@pytest.mark.parametrize("provider", [ANNOUNCEMENT_ANSWER], indirect=True)
-def test_an_announcement_before_the_first_finding_never_becomes_a_success(
+@pytest.mark.proves("bytes-their-own-schema-refuses-never-become-a-success")
+@pytest.mark.parametrize(
+    "provider",
+    [
+        pytest.param(json.dumps(text, ensure_ascii=False).encode(), id=case)
+        for case, text in REFUSED_FINDINGS.items()
+    ],
+    indirect=True,
+)
+def test_a_finding_the_review_criteria_refuse_never_becomes_a_success(
     runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
 ) -> None:
-    """The exact defect #392 was filed over, refused by the shipped schema.
+    """The exact defects #392 named, each refused by the shipped schema.
 
-    A reviewer that answers with a sentence about what it is about to do,
-    instead of leading with "Befund 1", produced the `COMPLETED` run with a
-    semantically empty artifact #392 measured against the live provider. This
-    is the schema-level guarantee the document now carries: that answer can
-    never write a success artifact for `review`, whatever the provider says.
+    A reviewer that answers with a sentence about what it is about to do
+    instead of leading with "Befund 1" produced the `COMPLETED` run with a
+    semantically empty artifact #392 measured against a live provider. A
+    reviewer that never states whether the diff stands, or names a verdict
+    this product does not own, is exactly as unusable to an operator reading
+    the run. All three are the schema-level guarantee the document now
+    carries: none of these answers can ever write a success artifact for
+    `review`, whatever the provider says.
     """
     workflow, bindings = publish_diff_review(runtime)
     run_id = RunId("v3/diff-review-refused")
