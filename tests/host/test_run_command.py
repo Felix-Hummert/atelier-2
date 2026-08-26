@@ -557,6 +557,7 @@ def chained_run_resource(
         agent_binding_set_hash=BINDING_SET_HASH,
         run_configuration_revision_hash=RUN_CONFIGURATION_HASH,
         agent_bindings=(),
+        orders=(),
         state_version=2,
         state=state,
         current_node_id=CHAIN_SECOND_NODE_ID,

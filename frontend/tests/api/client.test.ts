@@ -9,6 +9,7 @@ import {
   decodeRunEvent,
   decodeWorkflowRevisionDetail,
   executableGraph,
+  isRunV3,
   occupancyRevisionSchema,
   problemDefinitions,
   type Problem
@@ -867,6 +868,7 @@ describe("answering a wait over the existing door", () => {
       agent_binding_set_hash: digest,
       run_configuration_revision_hash: digest,
       agent_bindings: [],
+      orders: [],
       state_version: 2,
       state: "COMPLETED",
       current_node_id: "ask",
@@ -919,6 +921,7 @@ describe("cancelling a run over its cancel door", () => {
       agent_binding_set_hash: "b".repeat(64),
       run_configuration_revision_hash: "c".repeat(64),
       agent_bindings: [],
+      orders: [],
       state_version: 3,
       state: "STARTED",
       current_node_id: "review",
@@ -1146,6 +1149,7 @@ describe("the run listing the studio opens on", () => {
     agent_binding_set_hash: "b".repeat(64),
     run_configuration_revision_hash: "c".repeat(64),
     agent_bindings: [],
+    orders: [],
     state_version: 1,
     state: "STARTED",
     current_node_id: "implement",
@@ -1174,6 +1178,37 @@ describe("the run listing the studio opens on", () => {
     expect(page.items).toHaveLength(1);
     expect(page.items[0]?.public_run_reference).toBe(publicReference);
     expect(page.items[0]?.state).toBe("STARTED");
+  });
+
+  it("decodes a run started with an order, its size and pinned schema, never its bytes", async () => {
+    const orderedRun = {
+      ...v3Run,
+      run_id: "run-with-an-order",
+      orders: [
+        {
+          name: "headline",
+          bytes: 19,
+          schema_revision_hash: "d".repeat(64)
+        }
+      ]
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ items: [orderedRun], next_after: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const page = await createCockpitApi(fetcher).listRuns();
+
+    expect(page.items).toHaveLength(1);
+    const run = page.items[0];
+    if (!run || !isRunV3(run)) {
+      throw new Error("expected a decoded V3 run");
+    }
+    expect(run.orders).toEqual([
+      { name: "headline", bytes: 19, schema_revision_hash: "d".repeat(64) }
+    ]);
   });
 
   it("still lists a version 2 run beside it", async () => {
