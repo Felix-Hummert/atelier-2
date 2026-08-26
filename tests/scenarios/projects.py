@@ -18,7 +18,7 @@ from pathlib import Path
 
 from atelier2.adapters.project_source import LocalGitProjectSource
 from atelier2.adapters.project_verification import PROJECT_MANIFEST_NAME
-from atelier2.contracts.project_sources import ProjectSourcePin
+from atelier2.contracts.project_sources import GitObjectFormat, ProjectSourcePin
 
 COMMITTING_SCENARIO = {
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -33,11 +33,26 @@ COMMITTING_SCENARIO = {
 """Who commits and when, so a scenario's pins depend on its content alone."""
 
 
-def git_project(root: Path, files: Mapping[str, str]) -> ProjectSourcePin:
-    """A repository holding exactly these files at one commit, and the pin for it."""
+def git_project(
+    root: Path,
+    files: Mapping[str, str],
+    object_format: GitObjectFormat = GitObjectFormat.SHA1,
+) -> ProjectSourcePin:
+    """A repository holding exactly these files at one commit, and the pin for it.
+
+    The format is named because a repository's own decides how long every object
+    name in it is, and a scenario that only ever builds SHA-1 repositories can
+    say nothing about a project that chose the other one.
+    """
 
     root.mkdir(parents=True, exist_ok=True)
-    _git(root, "init", "--quiet", "--initial-branch=main")
+    _git(
+        root,
+        "init",
+        "--quiet",
+        "--initial-branch=main",
+        f"--object-format={object_format.value}",
+    )
     return commit_to_project(root, files)
 
 
@@ -48,6 +63,18 @@ def commit_to_project(root: Path, files: Mapping[str, str]) -> ProjectSourcePin:
     _git(root, "add", "--all")
     _git(root, "commit", "--quiet", "--message", "scenario")
     return LocalGitProjectSource(root).head()
+
+
+def declared_in_checkout(root: Path, settings: Mapping[str, str]) -> None:
+    """Write these settings into this repository's own `.git/config`.
+
+    A project's local configuration is neither the machine's nor the product's:
+    it travels with the checkout, and a scenario needs it to say what happens
+    when a project declares something the product must not act on.
+    """
+
+    for name, value in settings.items():
+        _git(root, "config", name, value)
 
 
 def write_into_checkout(root: Path, files: Mapping[str, str]) -> None:

@@ -1,8 +1,8 @@
-# Atelier 2
+# Atelier
 
 ![The workshop — the house you arrive in](docs/atelier.jpg)
 
-Atelier 2 is intended to become a lean agentic orchestrator for versioned,
+Atelier is intended to become a lean agentic orchestrator for versioned,
 configurable workflows. Why it exists is the Desk/Doku reading in
 [docs/VISION.md](docs/VISION.md) of
 [GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1); what it

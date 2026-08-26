@@ -126,6 +126,12 @@ VALUES_THE_SOURCE_MAY_STILL_SPELL: dict[str, SpelledValue] = {
     "adapters/agent_processes.py::MAXIMUM_AGENT_CONTROL_REQUEST_ATTEMPTS": SpelledValue(
         1, "owner with a seam: control-frame retry budget, named once"
     ),
+    "adapters/candidate_store.py::_LOCK_HANDOVER_PAUSE_SECONDS": SpelledValue(
+        1,
+        "stable slice invariant: how long one local rename takes, which is what "
+        "a writer refused a git ref lock is waiting for -- a fact about the "
+        "filesystem under the store, never an operator's to choose",
+    ),
     "adapters/agent_processes.py::ready_timeout_seconds": SpelledValue(
         1,
         "constructor seam already open -- a composer may pass another patience; "

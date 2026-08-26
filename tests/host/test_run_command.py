@@ -34,6 +34,7 @@ from atelier2.api.wire.requests import PublishAgentConfigurationRevisionRequestR
 from atelier2.api.wire.resources import (
     AgentConfigurationRevisionResource,
     AgentNodeResourceV2,
+    ArtifactResource,
     AuthProfileRevisionResource,
     CatalogAdmissionResource,
     NodeDetailResource,
@@ -58,9 +59,11 @@ from atelier2.contracts.run_projections import NodeState
 from atelier2.host import main
 from atelier2.host.run_command import (
     AGENT_CONFIGURATION_PATH,
+    ARTIFACT_PATH,
     AUTH_PROFILE_PATH,
     COMMAND_CATALOG_ACTOR,
     JSON_MEDIA_TYPE,
+    OCTET_STREAM_MEDIA_TYPE,
     RUN_PATH,
     WORKFLOW_LINEAGE_PATH,
     WORKFLOW_REVISION_PATH,
@@ -85,6 +88,8 @@ EVENT_HASH = "1" * 64
 ATTEMPT_ID = "2" * 64
 BINDING_SET_HASH = "3" * 64
 RUN_CONFIGURATION_HASH = "4" * 64
+ARTIFACT_HASH = "9" * 64
+SECOND_ARTIFACT_HASH = "8" * 64
 
 PUBLIC_RUN_REFERENCE = "run1.dGVzdA"
 EVENT_CURSOR = f"event1.dGVzdA.{1}"
@@ -127,6 +132,7 @@ def binding_document(**fields: object) -> bytes:
 RUNS_URL_PATH = API_PREFIX + RUN_PATH
 RUN_URL_PATH = f"{RUNS_URL_PATH}/{PUBLIC_RUN_REFERENCE}"
 EVENTS_URL_PATH = f"{RUN_URL_PATH}/events"
+ARTIFACTS_URL_PATH = API_PREFIX + ARTIFACT_PATH
 NODE_DETAIL_URL_PATH = f"{RUN_URL_PATH}/nodes/{AGENT_NODE_ID}"
 
 
@@ -142,6 +148,7 @@ class Call:
     method: str
     path: str
     body: bytes
+    content_type: str = ""
 
 
 @dataclass
@@ -164,7 +171,10 @@ class ScriptedService:
 
             def _answer(self, method: str) -> None:
                 length = int(self.headers.get("content-length", "0"))
-                service.calls.append(Call(method, self.path, self.rfile.read(length)))
+                content_type = self.headers.get("content-type", "")
+                service.calls.append(
+                    Call(method, self.path, self.rfile.read(length), content_type)
+                )
                 scripted = service.answers.get((method, self.path))
                 answer = (
                     unrouted_answer()
@@ -247,6 +257,12 @@ def published_agent_configuration(
         )
         .model_dump_json()
         .encode()
+    )
+
+
+def published_artifact(artifact_hash: str = ARTIFACT_HASH) -> Answer:
+    return Answer(
+        ArtifactResource(artifact_hash=artifact_hash).model_dump_json().encode()
     )
 
 
@@ -490,6 +506,7 @@ def serving_answers(
             API_PREFIX + WORKFLOW_REVISION_PATH,
             published_workflow_revision(),
         ),
+        "artifact": ("POST", ARTIFACTS_URL_PATH, published_artifact()),
         "start": ("POST", RUNS_URL_PATH, started_run()),
         "events": ("GET", EVENTS_URL_PATH, event_stream(agent_completed())),
         "run": ("GET", RUN_URL_PATH, completed_run()),
@@ -1321,17 +1338,23 @@ ORDER_VALUE = '{"portions": 4}'
 
 
 @pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
-def test_a_named_run_forwards_the_order_and_publishes_nothing_for_it(
+def test_a_named_run_publishes_its_order_as_an_artifact_before_the_start(
     named_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
 ) -> None:
     """`--name` plus `--input` is one run of the named revision, not a new one.
 
-    The command publishes nothing for the order: it hands the name and the exact
-    bytes to `POST /runs`.
+    The order's exact bytes reach `POST /artifacts` before the start ever
+    happens, and `POST /runs` names only the address the artifact door
+    answered -- never the bytes themselves.
     """
     with ScriptedService(named_serving_answers()) as service:
         exit_code = run_command(
             named_order, service, "--input", f"{ORDER_NAME}={ORDER_VALUE}"
+        )
+        called_paths = [call.path for call in service.calls]
+        published_artifacts = service.sent("POST", ARTIFACTS_URL_PATH)
+        artifact_call = next(
+            call for call in service.calls if call.path == ARTIFACTS_URL_PATH
         )
         started = json.loads(service.sent("POST", RUNS_URL_PATH)[0])
         published_workflows = service.sent("POST", API_PREFIX + WORKFLOW_REVISION_PATH)
@@ -1339,28 +1362,33 @@ def test_a_named_run_forwards_the_order_and_publishes_nothing_for_it(
     printed = capsysbinary.readouterr()
     assert (exit_code, printed.out) == (0, AGENT_OUTPUT)
     assert published_workflows == []
+    assert published_artifacts == [ORDER_VALUE.encode()]
+    assert artifact_call.content_type == OCTET_STREAM_MEDIA_TYPE
+    assert called_paths.index(ARTIFACTS_URL_PATH) < called_paths.index(RUNS_URL_PATH)
     assert started["workflow_revision_hash"] == REVISION_HASH
     assert started["workflow_format_version"] == 3
-    assert started["orders"] == [{"name": ORDER_NAME, "value": ORDER_VALUE}]
+    assert started["orders"] == [{"name": ORDER_NAME, "artifact_hash": ARTIFACT_HASH}]
 
 
 @pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
-def test_a_document_run_forwards_the_order_the_same_way(
+def test_a_document_run_publishes_its_order_the_same_way(
     order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
 ) -> None:
-    """`--workflow` is the other door; the order still travels on POST /runs."""
+    """`--workflow` is the other door; the order still publishes before the start."""
     with ScriptedService(serving_answers()) as service:
         exit_code = run_command(
             order, service, "--input", f"{ORDER_NAME}={ORDER_VALUE}"
         )
+        published_artifacts = service.sent("POST", ARTIFACTS_URL_PATH)
         started = json.loads(service.sent("POST", RUNS_URL_PATH)[0])
 
     assert (exit_code, capsysbinary.readouterr().out) == (0, AGENT_OUTPUT)
-    assert started["orders"] == [{"name": ORDER_NAME, "value": ORDER_VALUE}]
+    assert published_artifacts == [ORDER_VALUE.encode()]
+    assert started["orders"] == [{"name": ORDER_NAME, "artifact_hash": ARTIFACT_HASH}]
 
 
 @pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
-def test_an_input_file_forwards_the_exact_bytes_it_held(
+def test_an_input_file_publishes_the_exact_bytes_it_held(
     named_order: list[str],
     tmp_path: Path,
     capsysbinary: pytest.CaptureFixture[bytes],
@@ -1372,17 +1400,52 @@ def test_an_input_file_forwards_the_exact_bytes_it_held(
         exit_code = run_command(
             named_order, service, "--input-file", f"{ORDER_NAME}={order_file}"
         )
+        published_artifacts = service.sent("POST", ARTIFACTS_URL_PATH)
         started = json.loads(service.sent("POST", RUNS_URL_PATH)[0])
 
     assert (exit_code, capsysbinary.readouterr().out) == (0, AGENT_OUTPUT)
-    assert started["orders"] == [{"name": ORDER_NAME, "value": ORDER_VALUE}]
+    assert published_artifacts == [ORDER_VALUE.encode()]
+    assert started["orders"] == [{"name": ORDER_NAME, "artifact_hash": ARTIFACT_HASH}]
+
+
+@pytest.mark.proves("a-full-pull-request-diff-reaches-its-agent-as-an-artifact")
+def test_an_input_larger_than_the_old_inline_bound_still_publishes(
+    named_order: list[str],
+    tmp_path: Path,
+    capsysbinary: pytest.CaptureFixture[bytes],
+) -> None:
+    """A ~100 KB diff took the same door a small order does; no size branch.
+
+    `MAXIMUM_INSTANCE_DOCUMENT_BYTES` (16 KiB) used to bound what an inline
+    order could carry; this order is well past it, and the command still
+    hands it to `POST /artifacts` and starts with only the address.
+    """
+    large_order = json.dumps({"diff": "x" * 100_000}).encode()
+    order_file = tmp_path / "diff.json"
+    order_file.write_bytes(large_order)
+
+    with ScriptedService(named_serving_answers()) as service:
+        exit_code = run_command(
+            named_order, service, "--input-file", f"{ORDER_NAME}={order_file}"
+        )
+        published_artifacts = service.sent("POST", ARTIFACTS_URL_PATH)
+        started = json.loads(service.sent("POST", RUNS_URL_PATH)[0])
+
+    assert (exit_code, capsysbinary.readouterr().out) == (0, AGENT_OUTPUT)
+    assert published_artifacts == [large_order]
+    assert started["orders"] == [{"name": ORDER_NAME, "artifact_hash": ARTIFACT_HASH}]
 
 
 @pytest.mark.proves("a-run-carries-its-order-as-material-not-as-a-new-revision")
-def test_two_inputs_travel_together_and_publish_no_workflow(
+def test_two_inputs_each_publish_their_own_artifact(
     named_order: list[str], capsysbinary: pytest.CaptureFixture[bytes]
 ) -> None:
-    with ScriptedService(named_serving_answers()) as service:
+    answers = named_serving_answers()
+    answers[("POST", ARTIFACTS_URL_PATH)] = [
+        published_artifact(ARTIFACT_HASH),
+        published_artifact(SECOND_ARTIFACT_HASH),
+    ]
+    with ScriptedService(answers) as service:
         exit_code = run_command(
             named_order,
             service,
@@ -1391,13 +1454,15 @@ def test_two_inputs_travel_together_and_publish_no_workflow(
             "--input",
             'side={"name": "beans"}',
         )
+        published_artifacts = service.sent("POST", ARTIFACTS_URL_PATH)
         started = json.loads(service.sent("POST", RUNS_URL_PATH)[0])
         published_workflows = service.sent("POST", API_PREFIX + WORKFLOW_REVISION_PATH)
 
     assert (exit_code, published_workflows) == (0, [])
+    assert published_artifacts == [ORDER_VALUE.encode(), b'{"name": "beans"}']
     assert started["orders"] == [
-        {"name": ORDER_NAME, "value": ORDER_VALUE},
-        {"name": "side", "value": '{"name": "beans"}'},
+        {"name": ORDER_NAME, "artifact_hash": ARTIFACT_HASH},
+        {"name": "side", "artifact_hash": SECOND_ARTIFACT_HASH},
     ]
     assert capsysbinary.readouterr().out == AGENT_OUTPUT
 

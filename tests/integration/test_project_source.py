@@ -52,6 +52,7 @@ from tests.scenarios.agents import (
 )
 from tests.scenarios.projects import (
     commit_to_project,
+    declared_in_checkout,
     git_project,
     write_into_checkout,
 )
@@ -114,6 +115,38 @@ def test_the_pinned_tree_is_unpacked_into_the_lease_without_its_repository(
         encoding="utf-8"
     ) == "print('committed')\n"
     assert not (unpacked / ".git").exists()
+
+
+POISONED_SMUDGE = "sed s/./X/g"
+"""A filter driver rewriting every byte it is handed, as git-lfs and its kind do."""
+
+
+@pytest.mark.proves("an-attempt-works-in-the-tree-its-own-binding-pinned")
+def test_a_filter_the_checkout_declares_never_rewrites_what_the_lease_receives(
+    tmp_path: Path,
+) -> None:
+    """The lease holds the pinned tree, not what a smudge would have made of it.
+
+    A checkout's own `.git/config` can declare a `filter` driver that its
+    `.gitattributes` points paths at. What comes back out of a lease is read
+    under no filter at all, so a smudge here would hand the attempt content the
+    pin does not carry and have it come home as work the attempt never did.
+    """
+
+    root = tmp_path / "project"
+    pin = git_project(
+        root, {".gitattributes": "* filter=poison\n", "src/tool.py": COMMITTED}
+    )
+    declared_in_checkout(
+        root, {"filter.poison.smudge": POISONED_SMUDGE, "filter.poison.clean": "cat"}
+    )
+    leased = lease(tmp_path)
+
+    LocalGitProjectSource(root).materialize(pin, leased)
+
+    assert (leased.working_directory / "src/tool.py").read_text(
+        encoding="utf-8"
+    ) == COMMITTED
 
 
 @pytest.mark.proves("a-pin-no-source-can-answer-for-refuses-before-the-claim")
