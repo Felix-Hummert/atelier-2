@@ -237,6 +237,16 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
+    (
+        API_PREFIX + "/agent-definition-revisions/{agent_definition_revision_hash}",
+        "get",
+    ): (
+        "invalid-revision-hash",
+        "agent-definition-revision-not-found",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
     (LIBRARY_RECOGNITIONS_PATH, "post"): (
         "library-document-ambiguous",
         "invalid-request",
@@ -912,6 +922,13 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
                 API_PREFIX + "/schema-revisions/{schema_revision_hash}",
                 "get",
                 "schema_revision_hash",
+                "path",
+            ),
+            (
+                API_PREFIX
+                + "/agent-definition-revisions/{agent_definition_revision_hash}",
+                "get",
+                "agent_definition_revision_hash",
                 "path",
             ),
         ),

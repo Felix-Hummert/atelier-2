@@ -86,6 +86,7 @@ from atelier2.application.read_agent_configurations import (
     list_auth_profile_revisions,
 )
 from atelier2.application.read_agent_definition_revisions import (
+    get_agent_definition_revision,
     list_agent_definition_revisions,
 )
 from atelier2.application.read_attention_events import read_attention_events
@@ -241,6 +242,13 @@ def bound_use_cases(
                 after,
                 limit,
                 ports.published_revision_listing,
+                ports.agent_definition_parser,
+            )
+        ),
+        get_agent_definition_revision=lambda revision_hash: (
+            get_agent_definition_revision(
+                revision_hash,
+                ports.published_revision_registry,
                 ports.agent_definition_parser,
             )
         ),

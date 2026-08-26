@@ -4,6 +4,7 @@ import yaml
 from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 
 from atelier2.contracts.agent_definitions import (
+    MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS,
     REQUIRED_AGENT_DEFINITION_FIELDS,
     AgentDefinition,
     AgentDefinitionField,
@@ -32,6 +33,8 @@ def parse_agent_definition(document: bytes) -> AgentDefinition:
         raise AgentDefinitionRefused(
             AgentDefinitionRefusal.DOCUMENT_NOT_UTF8
         ) from error
+    if len(text) > MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS:
+        raise AgentDefinitionRefused(AgentDefinitionRefusal.DOCUMENT_TOO_LARGE)
     frontmatter, system_prompt = _split_frontmatter(text)
     fields = _frontmatter_fields(frontmatter)
     for required in REQUIRED_AGENT_DEFINITION_FIELDS:

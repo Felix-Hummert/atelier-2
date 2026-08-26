@@ -12,6 +12,8 @@ from atelier2.application.reconstruct_agent_definition import (
     reconstruct_agent_definition,
 )
 from atelier2.contracts.agent_definitions import (
+    MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS,
+    MAXIMUM_AGENT_DEFINITION_TOOL_COUNT,
     AgentCatalogDeployment,
     AgentDefinition,
     AgentDefinitionField,
@@ -29,6 +31,7 @@ AUTHORED_NAME = "stage-name-witness"
 AUTHORED_DESCRIPTION = "Watches the stage and names what it sees."
 AUTHORED_MODEL = "sonnet"
 AUTHORED_PROMPT = "\nYou watch the stage and name what you see.\n"
+TOO_MANY_TOOLS = MAXIMUM_AGENT_DEFINITION_TOOL_COUNT + 1
 
 
 def test_published_revision_kinds_are_the_closed_catalog_set() -> None:
@@ -245,6 +248,16 @@ def test_the_order_tools_are_typed_in_does_not_change_the_definition() -> None:
             "Read",
             id="tool-duplicated",
         ),
+        pytest.param(
+            f"name: {AUTHORED_NAME}\n"
+            f"description: {AUTHORED_DESCRIPTION}\n"
+            "tools: "
+            + ", ".join(f"tool-{index}" for index in range(TOO_MANY_TOOLS))
+            + "\n",
+            AgentDefinitionRefusal.TOO_MANY_TOOLS,
+            str(TOO_MANY_TOOLS),
+            id="too-many-tools",
+        ),
     ],
 )
 def test_a_refused_frontmatter_names_what_it_refuses(
@@ -285,6 +298,13 @@ def test_a_refused_frontmatter_names_what_it_refuses(
             authored_document(body="\n   \n"),
             AgentDefinitionRefusal.SYSTEM_PROMPT_MISSING,
             id="system-prompt-missing",
+        ),
+        pytest.param(
+            authored_document(
+                body="x" * (MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS + 1)
+            ),
+            AgentDefinitionRefusal.DOCUMENT_TOO_LARGE,
+            id="document-too-large",
         ),
     ],
 )
