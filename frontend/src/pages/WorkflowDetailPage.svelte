@@ -6,6 +6,8 @@
   import ReadState from "../components/ReadState.svelte";
   import WorkflowGraphDrawing from "../components/WorkflowGraphDrawing.svelte";
   import WorkflowNodePreviewPanel from "../components/WorkflowNodePreviewPanel.svelte";
+  import WorkflowStartSheet from "../components/WorkflowStartSheet.svelte";
+  import type { MutationJournal } from "../lib/mutationJournal";
   import { catalogHeadsOf, catalogNameStateOf, type CatalogNameState } from "../lib/catalogName";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { cannotBeStarted, humanErrorMessage } from "../lib/humanRefusal";
@@ -22,8 +24,10 @@
   import { catalogPageCopy, catalogStateNote, workflowDetailCopy } from "../lib/catalogPageCopy";
 
   export let cockpitApi: CockpitApi;
+  export let mutationJournal: MutationJournal;
   export let navigate: (path: string) => void;
   export let name: string;
+  export let createRunId: () => string;
 
   const catalog = WORKSHOP_DESTINATION.catalog;
 
@@ -44,6 +48,7 @@
   let detail: RetainedRead<DetailOutcome, ReadFailure> = retainedRead<DetailOutcome, ReadFailure>();
   let failureMessage: string | null = null;
   let selectedNodeId: string | null = null;
+  let startSheetOpen = false;
 
   $: found = detail.confirmed?.kind === "found" ? detail.confirmed : null;
   $: graph = found?.detail.graph ?? null;
@@ -119,14 +124,9 @@
     selectedNodeId = null;
   }
 
-  /**
-   * Start is one header action to the existing start door, not a second one
-   * built here: this page names which workflow, `/atelier/new` still owns
-   * choosing it, binding agent roles, and confirming the run. Preselecting
-   * this workflow there is a named, deferred convenience.
-   */
+  /** Opens the catalog's one start sheet for this exact revision. */
   function goToStart(): void {
-    navigate("/atelier/new");
+    startSheetOpen = true;
   }
 </script>
 
@@ -145,9 +145,6 @@
         <h1 id="workflow-detail-title">{name}</h1>
         {#if catalogNote !== null}
           <p class="note">{wrapDisplayCopy(catalogNote)}</p>
-        {/if}
-        {#if graph.workflow_format_version === 3 && graph.description !== null}
-          <p class="muted description">{graph.description}</p>
         {/if}
       </div>
       <button
@@ -173,18 +170,24 @@
     {#if selectedPreview !== null}
       <WorkflowNodePreviewPanel preview={selectedPreview} onClose={closePanel} />
     {/if}
+
+    {#if startSheetOpen && found !== null}
+      <WorkflowStartSheet
+        {cockpitApi}
+        {mutationJournal}
+        revision={found.detail}
+        workflowName={name}
+        {navigate}
+        {createRunId}
+        onClose={() => { startSheetOpen = false; }}
+      />
+    {/if}
   {/if}
 </section>
 
 <style>
   .muted {
     color: var(--ink-dim);
-  }
-
-  /* A description reads as prose about the workflow, not a system line, the
-     same visual marker the run page's own description wears. */
-  .description {
-    font-style: italic;
   }
 
   .note {

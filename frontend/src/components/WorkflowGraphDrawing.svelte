@@ -2,22 +2,6 @@
   let nextMarker = 0;
 
   /**
-   * Form carries type, colour carries state (mockup v5 §03/§04): a circle is
-   * an agent, a square an action, a hexagon a wait. Only those three kinds
-   * have a declared shape. `deterministic` and `subworkflow` keep the plain
-   * circle this drawing always drew for them; the subworkflow shape is unfixed
-   * until a real composed-workflow node exists to fix it against (ADR 0006),
-   * and an unmarked circle commits to nothing.
-   */
-  const KIND_LEGEND_ENTRIES = ["agent", "action", "wait"] as const;
-
-  export const kindLegendLabels: Record<(typeof KIND_LEGEND_ENTRIES)[number], string> = {
-    agent: "Agent",
-    action: "Action",
-    wait: "Wait"
-  };
-
-  /**
    * One declared loop, exactly as the wire projects it (`WorkflowLoopResourceV3`).
    *
    * `member_node_ids` names the loop's body by the ids `previews` already
@@ -299,15 +283,6 @@
 </script>
 
 <div class="workflow-graph card">
-  <details class="graph-help">
-    <summary class="reveal-affordance">What the shapes mean</summary>
-    <ul class="graph-legend" aria-label="Node shapes and the loop marker">
-      {#each KIND_LEGEND_ENTRIES as kind (kind)}
-        <li><span class="kind-mark kind-mark-{kind}" aria-hidden="true"></span>{kindLegendLabels[kind]}</li>
-      {/each}
-      <li><span class="kind-mark kind-mark-loop" aria-hidden="true"></span>Loop</li>
-    </ul>
-  </details>
   <div
     class="graph-canvas-frame"
     class:has-more-before={canScrollToStart}
@@ -392,20 +367,10 @@
   /* Framed as a panel, `.card`'s own border and ground, so the graph reads as
      an object on the page rather than shapes floating over bare ground -- a
      single node draws exactly as held as a whole chain (operator ruling
-     23.08.). The help disclosure sits outside the scrollable canvas so it
-     never scrolls away with a wide graph. */
+     23.08.). */
   .workflow-graph {
     display: grid;
     gap: var(--space-3);
-  }
-
-  /* A tap target no smaller than any other control's, the same floor
-     `.event-log summary` and `.revision-details summary` already hold to. */
-  .graph-help summary {
-    display: flex;
-    align-items: center;
-    min-height: var(--tap);
-    cursor: pointer;
   }
 
   /* A graph wider than its card scrolls rather than crops a node mid-shape or
@@ -623,54 +588,6 @@
       transform: scale(1.25);
       opacity: 0;
     }
-  }
-
-  .kind-mark {
-    display: inline-block;
-    width: var(--mark-sm);
-    height: var(--mark-sm);
-    border: var(--edge-strong) solid var(--ink-dim);
-    background: transparent;
-    flex: none;
-  }
-
-  .kind-mark-agent {
-    border-radius: 50%;
-  }
-
-  .kind-mark-action {
-    border-radius: var(--r-sm);
-  }
-
-  .kind-mark-wait {
-    border: none;
-    background: var(--ink-dim);
-    clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
-  }
-
-  /* The legend's loop mark is the loop box itself in miniature: a dashed
-     frame around several nodes, not a second reading of the action square. */
-  .kind-mark-loop {
-    width: calc(var(--mark-sm) * 1.75);
-    border-style: dashed;
-    border-radius: var(--r-sm);
-  }
-
-  .graph-legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-4);
-    margin: var(--space-2) 0 0;
-    padding: 0;
-    list-style: none;
-    font-size: var(--text-xs);
-    color: var(--ink-dim);
-  }
-
-  .graph-legend li {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
   }
 
   .muted {

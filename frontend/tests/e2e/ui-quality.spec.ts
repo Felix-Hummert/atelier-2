@@ -134,19 +134,12 @@ const surfaces: readonly {
     },
     {
       surface: "settings",
-      path: "/atelier/project",
+      path: "/atelier/settings",
       ready: async (page) => {
         await expect(page.getByRole("heading", { name: THE_ONE_PROJECT })).toBeVisible();
       },
       pseudoReady: async (page) => {
         await expect(page.getByText("[[[ Project defaults ]]]", { exact: true })).toBeVisible();
-      }
-    },
-    {
-      surface: "new-run",
-      path: "/atelier/new",
-      ready: async (page) => {
-        await expect(page.getByRole("heading", { name: "Choose a workflow" })).toBeVisible();
       }
     },
     {
@@ -159,7 +152,7 @@ const surfaces: readonly {
     },
     {
       surface: "workflow-detail",
-      path: `/atelier/workflows/${encodeURIComponent(seededWorkflowName)}`,
+      path: `/atelier/catalog/${encodeURIComponent(seededWorkflowName)}`,
       prepare: stageNamedWorkflow,
       ready: async (page) => {
         await expect(
@@ -567,7 +560,7 @@ test("Project keeps work, absence, loading, and retained failure readable", asyn
     for (const viewport of projectViewports) {
       await page.setViewportSize(viewport);
       reply = "common";
-      await page.goto(`/atelier/project${suffix}`);
+      await page.goto(`/atelier/settings${suffix}`);
       await expect(
         page.getByText(pseudoLocale ? wrapped(settingsPageCopy.runsUnavailable) : settingsPageCopy.runsUnavailable)
       ).toHaveCount(0);
@@ -581,14 +574,14 @@ test("Project keeps work, absence, loading, and retained failure readable", asyn
       await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-common.png`, fullPage: true });
 
       reply = "empty";
-      await page.goto(`/atelier/project${suffix}`);
+      await page.goto(`/atelier/settings${suffix}`);
       await expect(
         page.getByText(pseudoLocale ? wrapped(settingsPageCopy.noRuns) : settingsPageCopy.noRuns)
       ).toBeVisible();
       await page.screenshot({ path: `test-results/project-${locale}-${viewport.width}-empty.png`, fullPage: true });
 
       reply = "loading";
-      await page.goto(`/atelier/project${suffix}`, { waitUntil: "domcontentloaded" });
+      await page.goto(`/atelier/settings${suffix}`, { waitUntil: "domcontentloaded" });
       await expect(page.getByText("Looking…")).toBeVisible();
       await page.locator("main.workshop-stage").evaluate((stage) => { stage.scrollTop = 0; });
       await expect(page.getByRole("heading", { level: 1, name: THE_ONE_PROJECT })).toBeVisible();
@@ -601,7 +594,7 @@ test("Project keeps work, absence, loading, and retained failure readable", asyn
       // failing outright, recovered by the one accessible Retry.
       reply = "retained-error";
       loading.retainedReads = 1;
-      await page.goto(`/atelier/project${suffix}`);
+      await page.goto(`/atelier/settings${suffix}`);
       await expect(
         page.getByText(pseudoLocale ? wrapped(settingsPageCopy.runsUnavailable) : settingsPageCopy.runsUnavailable)
       ).toBeVisible();

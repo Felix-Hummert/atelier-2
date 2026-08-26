@@ -62,10 +62,8 @@ export const catalogPageCopy = {
   admit: "Admit into catalog",
   admitting: "Admitting…",
   admitFailed: "This workflow could not be admitted.",
-  admitted: "Admitted — you can start it by name now.",
-  // Starting lives in this room (ADR 0019 §1): the entry leads straight to the
-  // start door, with no second room in between. Moving that door into the
-  // entry's own detail page is the successor phase's work.
+  admitted: "Admitted — you can open it by name now.",
+  // The catalog detail owns the only manual start door (ADR 0019 §1).
   start: "Start",
   // The one door into the workflow detail page (#695): a named revision's
   // node-graph preview and per-node facts, which this entry itself does not
@@ -111,6 +109,31 @@ export const workflowDetailCopy = {
   notAdmittedNote: "Not admitted to the catalog.",
   retiredNote: "Retired",
   retiredNotice: "This workflow's catalog lineage was retired. Starting it is not offered here."
+} as const;
+
+/** Copy owned by the catalog detail's one manual-start sheet. */
+export const workflowStartCopy = {
+  preparing: "Preparing…",
+  sheetUnavailable: "The start sheet could not be prepared.",
+  noConfiguration: "No executable configuration is available.",
+  workItem: "Work item",
+  noSource: "No source",
+  settings: "Settings",
+  unknownSource: "Other source",
+  orderUnavailable: "This order shape cannot be started here.",
+  interim: "Interim",
+  info: "Info",
+  interimConfigurationInfo: "Interim configuration",
+  interimConfiguration: "This choice applies to this run only, until Settings › Model defaults exist.",
+  interimConfigurationNeeded: "Interim source · choose for this run",
+  interimConfigurationChosen: "Interim source · chosen for this run, not saved",
+  choose: "Choose",
+  trueLabel: "True",
+  falseLabel: "False",
+  startRun: "Start run",
+  cancel: "Cancel",
+  retry: "Retry",
+  startUnavailable: "The run could not be started."
 } as const;
 
 /**

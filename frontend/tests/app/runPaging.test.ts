@@ -47,7 +47,7 @@ function open(pathname: string, listRuns: CockpitApi["listRuns"]) {
 describe("the workshop reads the durable list to its end", () => {
   it("proves(the-workshop-reads-every-page-or-says-it-could-not): shows a group that lives only on the second page, following the cursor until it ends", async () => {
     const listRuns = pagedListRuns([firstPage, secondPage]);
-    open("/atelier/project", listRuns);
+    open("/atelier/settings", listRuns);
 
     // The finished run lives only on the second page: it is counted only if
     // the reader followed the cursor to the end.
@@ -63,7 +63,7 @@ describe("the workshop reads the durable list to its end", () => {
   });
 
   it("stops saying that reading further is unbuilt, because it is built", async () => {
-    open("/atelier/project", pagedListRuns([firstPage, secondPage]));
+    open("/atelier/settings", pagedListRuns([firstPage, secondPage]));
     const work = await screen.findByRole("region", { name: settingsPageCopy.workTitle });
     await within(work).findAllByRole("listitem");
 
@@ -73,7 +73,7 @@ describe("the workshop reads the durable list to its end", () => {
 
   it("names an incomplete initial read without confirming its partial rows", async () => {
     const listRuns = pagedListRuns([firstPage, secondPage], 1);
-    window.history.replaceState(null, "", "/atelier/project");
+    window.history.replaceState(null, "", "/atelier/settings");
     render(App, {
       props: {
         cockpitApi: cockpitApiStub({
@@ -94,7 +94,7 @@ describe("the workshop reads the durable list to its end", () => {
 
   it("ends visibly instead of spinning when the durable list repeats a cursor", async () => {
     const listRuns = repeatingCursorListRuns(secondPage);
-    window.history.replaceState(null, "", "/atelier/project");
+    window.history.replaceState(null, "", "/atelier/settings");
     render(App, {
       props: {
         cockpitApi: cockpitApiStub({

@@ -154,19 +154,6 @@ describe("the catalog room", () => {
     expect(screen.queryByText(catalogPageCopy.newerRevisionAvailable)).toBeNull();
   });
 
-  // Starting lives in this room now (ADR 0019 §1): the entry leads straight to
-  // the start door, with no second room in between.
-  it("links a startable entry's Start straight to the start door", async () => {
-    openCatalog({ ...listing([workflowSummary()]), ...admittedName() });
-    await screen.findByText(catalogPageCopy.startable);
-
-    fireEvent.click(screen.getByRole("link", { name: catalogPageCopy.start }));
-
-    expect((await screen.findByRole("heading", { name: "Choose a workflow" })).isConnected).toBe(
-      true
-    );
-  });
-
   it("opens a named workflow's own detail room from its Details door, the only one it has", async () => {
     openCatalog({
       ...listing([workflowSummary()]),
@@ -196,6 +183,55 @@ describe("the catalog room", () => {
     expect(
       (await screen.findByRole("heading", { name: WORKFLOW_NAME })).isConnected
     ).toBe(true);
+  });
+
+  it("opens the selected workflow's start sheet instead of leaving the catalog detail", async () => {
+    openCatalog({
+      ...listing([workflowSummary()]),
+      ...admittedName(),
+      getWorkflowRevision: vi.fn(async () => ({
+        workflow_revision_hash: WORKFLOW_HASH,
+        document_base64: "YQ==",
+        graph: {
+          workflow_format_version: 3 as const,
+          executable: true,
+          not_executable_reason: null,
+          node_count: 1,
+          agent_roles: ["builder"],
+          orders: [],
+          wait_answer_schemas: [],
+          node_previews: [],
+          loops: [],
+          name: WORKFLOW_NAME,
+          description: null
+        }
+      })),
+      listAgentConfigurationRevisions: vi.fn(async () => ({
+        items: [
+          {
+            agent_configuration_revision_hash: AGENT_HASH,
+            provider_id: "claude",
+            model: "test-model",
+            auth_mode: "subscription" as const,
+            auth_profile_revision_hash: "a".repeat(64),
+            executor_revision: "test/v1",
+            requested_capability: "headless" as const,
+            startable: true,
+            not_startable_reason: null
+          }
+        ],
+        next_after_revision_hash: null
+      }))
+    });
+    await screen.findByText(catalogPageCopy.startable);
+    await fireEvent.click(screen.getByRole("link", { name: catalogPageCopy.details }));
+
+    await fireEvent.click(await screen.findByRole("button", { name: catalogPageCopy.start }));
+
+    expect((await screen.findByRole("heading", { name: `Start ${WORKFLOW_NAME}` })).isConnected).toBe(
+      true
+    );
+    expect(await screen.findByLabelText("Configuration for builder")).toBeTruthy();
   });
 
   it("offers no Details door for a revision that declares no name to look one up by", async () => {

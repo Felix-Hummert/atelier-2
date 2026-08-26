@@ -1049,6 +1049,30 @@ describe("the published agent-configuration listing", () => {
   });
 });
 
+describe("the observed queue a start-sheet work-item picker reads", () => {
+  it("asks the served observed queue page and decodes its cursor", async () => {
+    const item = {
+      project_id: "atelier",
+      tracker_item_reference: "gh:450",
+      item_id: digest,
+      revision: 0
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ items: [item], next_after: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const page = await createCockpitApi(fetcher).listObservedQueueItems();
+
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      "/atelier/api/v1/observed-queue-items?limit=50"
+    );
+    expect(page.items).toEqual([item]);
+  });
+});
+
 describe("the published agent definitions the catalog reads", () => {
   const digest = "a".repeat(64);
 

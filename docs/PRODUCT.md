@@ -919,6 +919,14 @@ workflow editing. The graph, API, and local cockpit are a proven durable
 vertical, not yet a general-purpose workflow engine or a deployed remote
 product.
 
+A catalog workflow now opens at `/atelier/catalog/{name}`. Its still graph has
+one Start action; the start sheet reads the V3 order schemas into fields, lets
+the operator choose a startable configuration for each declared role, journals
+the exact V3 start request, and then opens the run it started. There is no
+separate new-run page, workflow room, or catalog-card Start action. Settings
+opens at `/atelier/settings`; the browser's cold-load declaration and Serve's
+index-path mirror carry these canonical addresses together.
+
 A packaged container candidate now runs that same cockpit and catalog as one
 provider-free Serve image. It builds only from a clean committed tree, runs
 non-root with a read-only root, dropped capabilities and

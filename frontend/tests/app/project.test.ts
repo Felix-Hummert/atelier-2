@@ -41,7 +41,7 @@ function openAt(pathname: string, overrides: Partial<CockpitApi> = {}) {
 }
 
 const openProject = (runs: Array<RunV1 | RunV3>, overrides: Partial<CockpitApi> = {}) =>
-  openAt("/atelier/project", {
+  openAt("/atelier/settings", {
     listRuns: vi.fn(async () => ({ items: runs, next_after: null })),
     listProjects: vi.fn(async () => ({ items: [{ public_project_reference: "project1.dGVzdA" }] })),
     ...overrides
@@ -200,7 +200,7 @@ describe("the project answers what is happening here", () => {
     ).toBe(true);
     expect(listRuns).toHaveBeenCalledTimes(3);
     expect(screen.queryByRole("button", { name: /project runs/ })).toBeNull();
-    expect(window.location.pathname).toBe("/atelier/project");
+    expect(window.location.pathname).toBe("/atelier/settings");
   });
 
   it("does not confirm a partial page as Project truth, and Retry replaces it with the complete read", async () => {

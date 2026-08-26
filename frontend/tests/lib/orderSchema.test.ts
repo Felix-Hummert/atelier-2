@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   encodeSingleFieldOrder,
+  classifyStartOrderSchema,
+  WORK_ITEM_ORDER_SCHEMA_REVISION,
   preValidateOrderValue,
   summarizeOrderSchema,
   typeLabel
@@ -153,6 +155,60 @@ describe("pre-validating typed JSON against an order's schema, shallowly", () =>
   it("accepts anything against a schema this profile does not further constrain", () => {
     expect(preValidateOrderValue('{"anything":"goes"}', true)).toEqual({ kind: "valid" });
   });
+});
+
+describe("classifying a schema for the start sheet", () => {
+  it("recognizes the canonical work-item document and ordinary object fields", () => {
+    expect(
+      classifyStartOrderSchema({
+        title: "work item",
+        type: "object",
+        additionalProperties: false,
+        required: ["body", "change_marker", "digest", "kind", "observed_at", "reference"],
+        properties: {
+          body: { type: "string" },
+          change_marker: { type: "string" },
+          digest: { type: "string" },
+          kind: { type: "string" },
+          observed_at: { type: "string" },
+          reference: { type: "string" }
+        }
+      }, WORK_ITEM_ORDER_SCHEMA_REVISION)
+    ).toEqual({ kind: "work_item" });
+    expect(
+      classifyStartOrderSchema({
+        type: "object",
+        properties: { portions: { type: "integer" } },
+        required: ["portions"]
+      }, "schema-portions")
+    ).toEqual({ kind: "inline_object" });
+  });
+
+  it("refuses a noncanonical work-item lookalike before it could make a work-item start", () => {
+    expect(
+      classifyStartOrderSchema({
+        title: "work item",
+        type: "object",
+        additionalProperties: false,
+        required: ["body", "change_marker", "digest", "kind", "observed_at", "reference"],
+        properties: {
+          body: { type: "string" },
+          change_marker: { type: "string" },
+          digest: { type: "string" },
+          kind: { type: "string" },
+          observed_at: { type: "string" },
+          reference: { type: "string" }
+        }
+      }, "f".repeat(64))
+    ).toMatchObject({ kind: "unsupported" });
+  });
+
+  it.each([true, { type: "boolean" }, { type: "array" }, { type: "object", properties: { nested: { type: "object" } } }])(
+    "refuses an unsupported start shape before it can be serialized",
+    (document) => {
+      expect(classifyStartOrderSchema(document, "schema-other").kind).toBe("unsupported");
+    }
+  );
 });
 
 describe("encodeSingleFieldOrder", () => {
