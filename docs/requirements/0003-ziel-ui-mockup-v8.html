@@ -1,0 +1,1448 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workshop target picture v8.13</title>
+<style>
+/* ── House tokens (from frontend/src/styles.css, so the picture is the same house) ── */
+:root{
+  --ground:#d9d4c2; --panel:#e7e3d5; --panel2:#fefdfa; --line:#c2bba6; --chip:#ded9c8;
+  --ink:#1b1e1a; --ink-dim:#4c5248; --ink-faint:#7b8173;
+  --accent:#232821; --accent-ink:#fefdfa;
+  --live:#154c80; --need:#7d4c21; --need-mark:#bd7832; --need-ink:#1b1e1a; --fail:#8c2030; --signal-ink:#fefdfa;
+  --scrim:rgb(40 34 20 / 55%);
+  --shadow-lift:0 1rem 3rem rgb(40 34 20 / 24%);
+  --serif:"Iowan Old Style",Charter,"Bitstream Charter","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,"Cascadia Code",Menlo,Consolas,monospace;
+  /* --tap is the WCAG 2.2 AA target minimum (2.5.8: 24 px); every text action is at least this tall. */
+  --beat:1.6s; --tap:1.5rem; --r:4px; --r-lg:8px;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --ground:#16171a; --panel:#1d1f23; --panel2:#23262b; --line:#33373d; --chip:#262a30;
+    --ink:#e9e7e0; --ink-dim:#a2a8a6; --ink-faint:#6c7377;
+    --accent:#ede9de; --accent-ink:#191a1d;
+    --live:#7fb0e8; --need:#e78f62; --need-mark:#e78f62; --need-ink:#17181b; --fail:#ef7f86; --signal-ink:#17181b;
+    --scrim:rgb(0 0 0 / 60%); --shadow-lift:0 1rem 3rem rgb(0 0 0 / 55%);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ground:#16171a; --panel:#1d1f23; --panel2:#23262b; --line:#33373d; --chip:#262a30;
+  --ink:#e9e7e0; --ink-dim:#a2a8a6; --ink-faint:#6c7377;
+  --accent:#ede9de; --accent-ink:#191a1d;
+  --live:#7fb0e8; --need:#e78f62; --need-mark:#e78f62; --need-ink:#17181b; --fail:#ef7f86; --signal-ink:#17181b;
+  --scrim:rgb(0 0 0 / 60%); --shadow-lift:0 1rem 3rem rgb(0 0 0 / 55%);
+}
+*{box-sizing:border-box;min-width:0}
+html,body{margin:0;max-width:100%;overflow-x:hidden}
+body{background:var(--ground);color:var(--ink);font-family:var(--sans);line-height:1.55;font-size:15px;padding:0 1.25rem 5rem}
+main{max-width:72rem;margin:0 auto}
+a{color:inherit}
+
+/* ── Document (narrator) ── */
+.doc-head{padding:3rem 0 1.4rem;border-bottom:1px solid var(--line)}
+.eyebrow{font-size:.7rem;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-dim);font-weight:700}
+h1{font-family:var(--serif);font-size:2.4rem;line-height:1.1;margin:.3rem 0 .6rem;letter-spacing:-.015em;text-wrap:balance}
+.thesis{font-family:var(--serif);font-size:1.25rem;line-height:1.45;max-width:52rem;border-left:3px solid var(--ink);padding:.3rem 0 .3rem 1rem;margin:1rem 0 1.4rem}
+h2{font-family:var(--serif);font-size:1.5rem;margin:3rem 0 .2rem;line-height:1.2}
+h2 .no{color:var(--ink-dim);font-variant-numeric:tabular-nums;margin-right:.5rem;font-family:var(--sans);font-size:1rem;font-weight:700}
+h3.frame-title{font-family:var(--sans);font-size:.95rem;margin:1.8rem 0 .5rem;font-weight:700}
+h3.frame-title small{font-weight:400;color:var(--ink-dim)}
+p.q{color:var(--ink-dim);font-style:italic;margin:.1rem 0 .9rem;max-width:52rem}
+.rules{margin:.6rem 0 0;padding-left:1.2rem;max-width:52rem;font-size:.95rem}
+.rules li{margin:0 0 .3rem}
+.rules b{font-weight:600}
+.uq{margin:.6rem 0 0;padding:0;font-size:.84rem;color:var(--ink-dim);columns:2;column-gap:2rem;max-width:64rem}
+.uq div{break-inside:avoid;margin:0 0 .25rem}
+.uq dt{display:inline;font-weight:600;color:var(--ink)}
+.uq dt::after{content:" — "}
+.uq dd{display:inline;margin:0}
+code{font-family:var(--mono);font-size:.84em;background:var(--chip);border-radius:2px;padding:0 .25rem}
+table.doc{width:100%;border-collapse:collapse;font-size:.9rem;margin:.9rem 0}
+table.doc th,table.doc td{border:1px solid var(--line);padding:.45rem .6rem;text-align:left;vertical-align:top}
+table.doc th{background:var(--panel);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-dim)}
+.tw{overflow-x:auto}
+
+/* ── The frame: one room ── */
+.frame{display:grid;grid-template-columns:12rem minmax(0,1fr);min-height:22rem;border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;background:var(--ground);margin:.4rem 0 0}
+.frame.short{min-height:0}
+/* A frame at room height: the stage scrolls like the house, not the document — so the sticky ear is measurable. */
+.frame.room{height:min(52rem,85vh)}
+.frame.room .stage{overflow-y:auto;padding-bottom:0}
+.frame.room .ear{padding-bottom:1.4rem}
+.rail{background:var(--panel);border-right:1px solid var(--line);padding:1rem .75rem;display:flex;flex-direction:column;gap:.15rem}
+.rail .brand{font-family:var(--serif);font-size:1.2rem;font-weight:600;letter-spacing:-.015em;padding:.2rem .75rem .9rem}
+.rail a.place{display:flex;align-items:center;gap:.5rem;padding:.55rem .75rem;border-radius:var(--r);color:var(--ink-dim);text-decoration:none;font-size:.9rem;min-height:2.4rem}
+.rail a.place.on{color:var(--ink);background:var(--chip);box-shadow:inset 2px 0 0 var(--accent);font-weight:600}
+.rail a.place .glyph{width:1.1rem;color:inherit}
+.rail .count{margin-left:auto;min-width:1.35rem;height:1.35rem;border-radius:999px;background:var(--need-mark);color:var(--need-ink);font-size:.72rem;font-weight:700;display:inline-grid;place-items:center;padding:0 .35rem}
+.rail .grow{flex:1}
+/* Settings stands at the foot of the rail: the context above the rooms, one entry like the others. */
+.rail a.place.foot{border-top:1px solid var(--line);margin-top:.5rem;padding-top:.8rem;border-radius:0;flex-wrap:wrap;row-gap:0}
+/* The project is the context of every room: one small line under Settings, at every width. */
+.rail .ctx{flex-basis:100%;padding-left:1.6rem;font-size:.72rem;font-weight:400;color:var(--ink-dim)}
+/* The queue on the workbench: one line that unfolds into its list — the list lives nowhere else. */
+.queue{border-bottom:1px solid var(--line);font-size:.88rem;color:var(--ink-dim)}
+.queue summary{display:flex;align-items:center;gap:.6rem;padding:.55rem .3rem;min-height:var(--tap);cursor:pointer;list-style:none}
+.queue summary::-webkit-details-marker{display:none}
+.queue b{color:var(--ink);font-weight:600;white-space:nowrap}
+.queue .chev{margin-left:auto;color:var(--ink);font-size:.8rem}
+.queue[open] .chev{transform:rotate(180deg)}
+/* Taller than its ceiling: the list fades at the bottom, like the graph at its right edge. */
+.queue .list{max-height:12.5rem;overflow:auto;padding:0 .3rem .8rem;mask-image:linear-gradient(#000 calc(100% - 2rem),transparent)}
+.queue .list table{margin-top:.1rem}
+.stage{padding:1.2rem 1.4rem 1.4rem;min-width:0;display:flex;flex-direction:column;gap:.2rem;position:relative}
+.head{display:flex;align-items:baseline;gap:.7rem;flex-wrap:wrap;margin:0 0 .8rem}
+.head h4{font-family:var(--serif);font-size:1.35rem;margin:0;font-weight:600;line-height:1.2}
+.head .meta{color:var(--ink-dim);font-size:.85rem;font-variant-numeric:tabular-nums}
+.head .right{margin-left:auto;display:flex;gap:.5rem;align-items:center}
+/* The project switcher is the head of Settings: the name with ▾, one click shows the other projects. */
+.head .switcher{color:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:.4rem;min-height:var(--tap)}
+.head .switcher .switch{color:var(--ink-dim);font-size:.85rem;font-weight:400}
+.trail{color:var(--ink-dim);font-size:.85rem;text-decoration:none;display:inline-block;margin-bottom:.3rem}
+.shelf{font-size:.7rem;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-dim);font-weight:700;margin:1.1rem 0 .5rem}
+.shelf:first-child{margin-top:0}
+.btn{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--ink);border-radius:var(--r);padding:.5rem 1.05rem;font-weight:600;font-size:.9rem;background:var(--panel2);color:var(--ink);cursor:pointer;min-height:2.4rem;text-decoration:none;white-space:nowrap}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn.quiet{border-color:transparent;background:transparent;color:var(--ink-dim)}
+.btn.held{border-color:var(--line);color:var(--ink-dim);background:var(--panel);cursor:not-allowed}
+.btn.danger{border-color:var(--fail);color:var(--fail)}
+.btn.sm{padding:.3rem .7rem;min-height:2rem;font-size:.82rem}
+.word{font-weight:600;font-size:.85rem}
+.word.live{color:var(--live)} .word.need{color:var(--need)} .word.fail{color:var(--fail)} .word.quiet{color:var(--ink-dim)}
+.item{font-size:.78rem;border:1px solid var(--line);border-radius:999px;padding:.02rem .5rem;color:var(--ink-dim);background:var(--chip);white-space:nowrap;font-variant-numeric:tabular-nums}
+.pill{font-size:.72rem;border:1px solid var(--line);border-radius:999px;padding:.05rem .5rem;color:var(--ink-dim);background:var(--panel);white-space:nowrap}
+.pill.warn{border-color:var(--need-mark);color:var(--need)}
+.pill.dash{border-style:dashed}
+.glyph{display:inline-block;width:1.3rem;color:var(--ink-dim);font-weight:400;text-align:left}
+h4 .glyph{font-family:var(--sans);font-size:.85em;width:1.5rem;vertical-align:baseline}
+/* Provider mark: the provider's own logo in the house; a monogram stands in for it here. */
+.mark{display:inline-grid;place-items:center;width:1.05rem;height:1.05rem;border-radius:50%;border:1px solid var(--ink-dim);font-size:.62rem;font-weight:700;color:var(--ink-dim);font-style:normal;font-family:var(--sans);vertical-align:-.15em}
+/* Person glyph: a human answers here. */
+.person{display:inline-block;width:.85em;height:.85em;vertical-align:-.1em}
+.node small .person{width:1.25em;height:1.25em;margin-top:.15rem}
+.person svg{display:block;width:100%;height:100%}
+
+/* ── The stage: one question, two answers ── */
+.ask{background:var(--panel2);border:2px solid var(--need-mark);border-radius:var(--r-lg);padding:1.1rem 1.3rem;margin:0}
+.ask .from{color:var(--ink-dim);font-size:.85rem;margin:0 0 .35rem}
+.ask .from b{color:var(--ink);font-weight:600}
+.ask h5{font-family:var(--serif);font-size:1.55rem;line-height:1.2;margin:0 0 .9rem;font-weight:600;text-wrap:balance}
+.ask .acts{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+.ask .acts .aside{color:var(--ink-dim);font-size:.85rem;margin-left:.3rem}
+.ask.answered{border-color:var(--line)}
+.ask.answered p{font-family:var(--serif);font-size:1.15rem;margin:0}
+.ask.answered .stamp{font-weight:700}
+/* Every open question is visible: the first is the stage, the others stand compact beneath it; from the fifth on the stack scrolls. */
+.asks{display:flex;flex-direction:column;gap:.35rem;margin:0 0 .4rem}
+.asks.many{max-height:17.5rem;overflow-y:auto;padding-right:.2rem;mask-image:linear-gradient(to bottom,#000 calc(100% - 1.5rem),transparent)}
+.ask.compact{text-decoration:none;color:inherit;display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;padding:.45rem .9rem;border-width:1px}
+.ask.compact .from{margin:0;white-space:nowrap}
+.ask.compact h5{font-size:1rem;margin:0;flex:1;min-width:10rem}
+.ask.compact .act{margin-left:auto;color:var(--need);font-weight:600;white-space:nowrap;min-height:var(--tap);display:inline-flex;align-items:center;text-decoration:none}
+/* A dialog is the stage in the operator's own hand: ink border, not ochre — nothing of the run is asking. */
+.dialog{max-width:27rem}
+.dialog .ask{border-color:var(--ink);box-shadow:var(--shadow-lift)}
+.dialog .ask .from{margin:.2rem 0 .8rem}
+
+/* ── The row: one run ── */
+.piece{display:grid;grid-template-columns:minmax(9rem,14rem) minmax(0,1fr) auto auto;align-items:center;gap:1rem;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:.7rem 1rem;margin:0 0 .5rem;text-decoration:none;color:inherit}
+.piece .who .name{font-weight:600;display:flex;gap:.4rem;align-items:baseline;flex-wrap:wrap}
+.piece .who .why{color:var(--ink-dim);font-size:.82rem}
+.piece .now{color:var(--ink-dim);font-size:.88rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.piece .clock{color:var(--ink-dim);font-size:.82rem;font-variant-numeric:tabular-nums;text-align:right;min-width:3.6rem}
+.done{display:grid;grid-template-columns:minmax(9rem,14rem) minmax(0,1fr) auto;align-items:baseline;gap:1rem;padding:.6rem .3rem;border-bottom:1px solid var(--line);text-decoration:none;color:inherit}
+.done .name{font-weight:600;display:flex;gap:.4rem;align-items:baseline;flex-wrap:wrap}
+.done .res{color:var(--ink-dim);font-size:.9rem}
+.done .clock{color:var(--ink-dim);font-size:.82rem;font-variant-numeric:tabular-nums;white-space:nowrap}
+.nothing{color:var(--ink-dim);background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:.75rem 1rem;margin:0 0 .5rem;font-size:.92rem}
+/* Loading: a still skeleton in the shape of the row — no motion, because only one thing may breathe. */
+.skeleton{display:grid;grid-template-columns:minmax(9rem,14rem) minmax(0,1fr) 3.6rem;gap:1rem;align-items:center;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:.95rem 1rem;margin:0 0 .5rem}
+.skeleton i{display:block;height:.7rem;border-radius:999px;background:var(--chip)}
+.nothing.error{color:var(--fail);border-color:var(--fail)}
+.nothing.error a{margin-left:.5rem;font-weight:600}
+
+/* ── Mini graph (inside the row) ── */
+.mini{display:flex;align-items:center;min-width:7rem}
+.mini i{width:.8rem;height:.8rem;border:1.6px solid var(--ink-faint);background:var(--panel2);flex:none;font-style:normal}
+.mini i.c{border-radius:50%} .mini i.s{border-radius:2px}
+.mini i.h{clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%);border:none;background:var(--ink-faint);width:.9rem}
+.mini i.ok{border-color:var(--ink-dim);background:var(--ink-dim)}
+.mini i.live{border-color:var(--live);background:var(--live)}
+.mini i.live.breath{animation:breath var(--beat) ease-in-out infinite}
+.mini i.need{background:var(--need-mark)}
+.mini i.fail{border-color:var(--fail);background:var(--fail)}
+.mini u{height:1.6px;background:var(--line);flex:1;min-width:.9rem;text-decoration:none}
+.mini u.ok{background:var(--ink-dim)}
+@keyframes breath{50%{box-shadow:0 0 0 .4rem color-mix(in srgb,var(--live) 28%,transparent)}}
+
+/* ── The conversation: the atelier speaks on the left, you answer on the right; the ear (the input) sticks to the bottom ── */
+.talk{display:flex;flex-direction:column;gap:.55rem;font-size:.9rem;margin:.2rem 0 .4rem;max-width:44rem}
+.msg{display:flex;flex-direction:column;max-width:88%}
+.msg .lbl{font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-dim);font-weight:700;margin:0 0 .1rem}
+.msg .lbl small{font-weight:400;letter-spacing:0;text-transform:none;font-variant-numeric:tabular-nums;font-size:.72rem;margin-left:.4rem}
+.msg p{margin:0}
+.msg.atelier{align-self:flex-start;align-items:flex-start}
+.msg.atelier p{font-family:var(--serif);font-size:1.02rem}
+.msg.you{align-self:flex-end;align-items:flex-end;text-align:right}
+.msg.you p{background:var(--chip);border-radius:var(--r-lg) var(--r-lg) 2px var(--r-lg);padding:.4rem .8rem;color:var(--ink)}
+/* The card in the flow: the smallest form of the row — a run or a question, where it arose; inside the atelier's reply. */
+.ref{display:inline-flex;align-items:center;gap:.45rem;border:1px solid var(--line);border-radius:var(--r);padding:.2rem .6rem;background:var(--panel2);font-family:var(--sans);font-size:.84rem;font-weight:600;text-decoration:none;color:inherit;margin:.35rem .35rem 0 0;min-height:var(--tap)}
+.ref .word{font-size:.78rem}
+.ref.need{border-color:var(--need-mark)}
+.ref.need .q{font-family:var(--serif);font-weight:400;font-size:.95rem}
+.ref.answered{border-style:dashed;font-weight:400;color:var(--ink-dim)}
+/* Shelves without titles: spacing and a hairline separate stage, runs and conversation. */
+.runs{padding:.9rem 0 .3rem}
+.asks+.runs{padding-top:1.1rem}
+.runs+.talk,.queue+.talk{padding-top:.9rem;margin-top:.5rem}
+.runs+.talk{border-top:1px solid var(--line)}
+.ear{margin-top:auto;padding-top:.8rem;border-top:1px solid var(--line);position:sticky;bottom:0;background:var(--ground);padding-bottom:.2rem}
+.ear .bar{display:flex;gap:.5rem;max-width:44rem}
+.ear input{flex:1;border:1px solid var(--line);border-radius:var(--r);padding:.6rem .9rem;background:var(--panel2);color:var(--ink);font:inherit;min-height:2.6rem}
+input::placeholder{color:var(--ink-dim);opacity:1}
+.ear input::placeholder{font-family:var(--serif);font-style:italic}
+
+/* ── Graph, three tenses ── */
+.pipe{display:flex;align-items:flex-start;overflow-x:auto;padding:.9rem .2rem 1rem}
+.node{display:flex;flex-direction:column;align-items:center;min-width:6rem;text-align:center;flex:none}
+.loop{flex:none}
+.dot{width:2.2rem;height:2.2rem;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.9rem;font-weight:700;border:2px solid var(--ink-faint);color:var(--ink-dim);background:var(--panel2);position:relative}
+.dot.sq{border-radius:3px}
+.dot.hx{border-radius:0;border:none;clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%);width:2.4rem;background:var(--ink-faint)}
+.dot.hx>i{font-style:normal;position:absolute;inset:2px;clip-path:polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%);background:var(--panel2);display:flex;align-items:center;justify-content:center;color:var(--ink-dim)}
+.dot.ok{border-color:var(--ink-dim);color:var(--ink-dim)}
+.dot.live{border-color:var(--live);color:var(--live)}
+.dot.live::after{content:"";position:absolute;inset:-7px;border-radius:50%;border:2px solid var(--live);opacity:.5;animation:pulse var(--beat) ease-out infinite}
+@keyframes pulse{0%{transform:scale(.82);opacity:.5}100%{transform:scale(1.25);opacity:0}}
+.dot.need{border-color:var(--need-mark);color:var(--need)}
+.dot.hx.need{background:var(--need-mark)}
+.dot.hx.need>i{color:var(--need)}
+.dot.fail{border-color:var(--fail);color:var(--fail)}
+.dot.sel{box-shadow:0 0 0 3px color-mix(in srgb,var(--ink) 22%,transparent)}
+.node b{margin-top:.4rem;font-size:.8rem;font-weight:600}
+.node small{color:var(--ink-dim);font-size:.7rem;margin-top:.05rem}
+.link{flex:none;height:2px;background:var(--line);width:2rem;margin-top:1.1rem}
+.link.ok{background:var(--ink-dim)}
+.loop{display:flex;align-items:flex-start;border:1.5px dashed var(--line);border-radius:.8rem;padding:.6rem .35rem .1rem;margin:0 .15rem;position:relative}
+.loop>.lbl{position:absolute;top:-.6rem;left:.75rem;background:var(--ground);padding:0 .4rem;font-size:.68rem;color:var(--ink-dim);white-space:nowrap;font-variant-numeric:tabular-nums}
+.rounds{font-size:.8rem;color:var(--ink-dim);margin:-.3rem 0 .7rem}
+.rounds b{color:var(--ink)}
+
+/* ── Result / node panel / the back ── */
+.result{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--ink-dim);border-radius:0 var(--r-lg) var(--r-lg) 0;padding:.8rem 1rem;margin:0 0 .6rem}
+.result.fail{border-left-color:var(--fail)}
+.result p{margin:0;font-family:var(--serif);font-size:1.08rem}
+.result p.fail{color:var(--fail)}
+.result .art{display:flex;gap:.4rem;flex-wrap:wrap;margin:.5rem 0 0}
+.panel{background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:.75rem 1rem}
+.panel h6{margin:0 0 .5rem;font-size:.92rem;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.panel h6 .who{margin-left:auto;color:var(--ink-dim);font-weight:400;font-size:.82rem}
+/* Each tab carries its own line: when the row wraps at 390, the second row still reads as a tab row. */
+.tabs{display:flex;gap:.15rem;flex-wrap:wrap;margin-bottom:.6rem;font-size:.82rem}
+.tabs span{padding:.35rem .6rem;color:var(--ink-dim);min-height:2rem;border-bottom:2px solid var(--line)}
+.tabs span.on{color:var(--ink);font-weight:600;border-bottom-color:var(--ink)}
+.log{background:var(--ink);color:var(--ground);border-radius:var(--r);padding:.6rem .75rem;font-family:var(--mono);font-size:.76rem;line-height:1.6;overflow-x:auto;white-space:pre}
+:root[data-theme="dark"] .log{background:#0f1012;color:#cfd3c6}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .log{background:#0f1012;color:#cfd3c6}}
+.log .t{opacity:.6}
+.cursor{display:inline-block;width:.55em;height:1em;background:currentColor;vertical-align:text-bottom}
+details.back{margin-top:.6rem;font-size:.85rem;color:var(--ink-dim)}
+details.back summary{cursor:pointer;min-height:2rem;display:flex;align-items:center;font-weight:600}
+details.back dl{display:grid;grid-template-columns:max-content 1fr;gap:.15rem .9rem;margin:.4rem 0 0}
+details.back dt{font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;padding-top:.15rem}
+details.back dd{margin:0;color:var(--ink)}
+details.back dd.mono{font-family:var(--mono);font-size:.78rem;word-break:break-all;color:var(--ink-dim)}
+details.raw{margin-top:.5rem;font-size:.82rem;color:var(--ink-dim)}
+details.raw summary{cursor:pointer;min-height:2rem;display:flex;align-items:center}
+.prose{font-size:.92rem;max-width:44rem}
+.prose p{margin:.1rem 0 .5rem}
+
+/* ── Catalog ── */
+.filters{position:sticky;top:0;z-index:2;display:flex;flex-wrap:wrap;align-items:center;gap:.3rem 1rem;padding:.4rem 0 .5rem;margin-bottom:.6rem;background:var(--ground);border-bottom:1px solid var(--line)}
+.filters.plain{position:static;border-bottom:none;margin:0;padding:0;gap:.2rem .6rem}
+.filters .f{color:var(--ink-dim);letter-spacing:.06em;text-transform:uppercase;font-weight:700;font-size:.7rem;padding:.4rem .15rem;min-height:2rem;min-width:var(--tap);text-align:center;border-bottom:2px solid transparent;cursor:pointer}
+.filters .f b{color:var(--ink);margin-left:.25rem}
+.filters .f.on{color:var(--ink);border-bottom-color:var(--ink)}
+.filters input{margin-left:auto;width:11rem;max-width:40%;border:1px solid var(--line);border-radius:var(--r);padding:.35rem .65rem;font:inherit;font-size:.85rem;background:var(--panel2);color:var(--ink)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(13.5rem,1fr));gap:.6rem;margin:0 0 1rem}
+.card{background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:.7rem .85rem;text-decoration:none;color:inherit;display:block}
+.card b{display:flex;align-items:center;font-size:.95rem}
+.card small{display:block;color:var(--ink-dim);margin-top:.15rem;font-size:.84rem}
+.card .use{display:flex;align-items:center;gap:.4rem;color:var(--ink-dim);font-size:.8rem;margin-top:.45rem}
+.card .pills{display:flex;gap:.3rem;flex-wrap:wrap;margin-top:.5rem}
+.card .pills .act{color:var(--ink);font-weight:600;font-size:.78rem;text-decoration:underline;text-underline-offset:.2em;min-height:var(--tap);min-width:var(--tap);display:inline-flex;align-items:center;justify-content:center;padding:0 .2rem}
+.veil{position:absolute;inset:0;z-index:3;background:color-mix(in srgb,var(--ground) 80%,transparent);display:flex;align-items:center;justify-content:center;pointer-events:none}
+.veil span{border:2px dashed var(--ink);border-radius:var(--r-lg);padding:1.2rem 1.6rem;font-family:var(--serif);font-size:1.1rem;background:var(--panel2)}
+/* Recent runs is a list of what was → ruled, not framed (line rule §01). */
+.row{display:flex;align-items:center;gap:.65rem;border-bottom:1px solid var(--line);padding:.55rem .3rem;font-size:.9rem;text-decoration:none;color:inherit}
+.row .name{font-weight:600;white-space:nowrap}
+.row .dim{color:var(--ink-dim);font-size:.84rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .dim.fail{color:var(--fail)}
+.row .tail{margin-left:auto;color:var(--ink-dim);font-size:.82rem;white-space:nowrap;font-variant-numeric:tabular-nums}
+.sdot{width:.65rem;height:.65rem;border-radius:50%;flex:none;background:var(--ink-dim)}
+.sdot.live{background:var(--live);animation:breath var(--beat) ease-in-out infinite} .sdot.fail{background:var(--fail)} .sdot.need{background:var(--need-mark)}
+
+/* ── Sheet ── */
+.sheeted{position:relative;min-height:30rem}
+.dimmed{opacity:.4}
+/* The sheet is as tall as its content, never as tall as the room. */
+.sheet{position:absolute;right:.7rem;top:.7rem;max-height:calc(100% - 1.4rem);width:min(23rem,88%);background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:.9rem 1rem;box-shadow:var(--shadow-lift);overflow:auto}
+.sheet.static{position:static;width:auto;box-shadow:none;max-height:none}
+.sheet h5{font-family:var(--serif);font-size:1.15rem;margin:0 0 .6rem;font-weight:600}
+.sheets{display:grid;grid-template-columns:repeat(auto-fit,minmax(18rem,1fr));gap:1rem;margin-top:.5rem;align-items:start}
+.fld{display:flex;flex-direction:column;gap:.2rem;margin:.45rem 0;font-size:.88rem}
+.fld label{font-weight:600}
+.in{border:1px solid var(--line);border-radius:var(--r);padding:.4rem .65rem;background:var(--panel2);color:var(--ink);min-height:2.3rem;display:flex;align-items:center;justify-content:space-between;gap:.5rem}
+.in span{color:var(--ink-dim)}
+.in.degraded{border-style:dashed;border-color:var(--need-mark);color:var(--need)}
+.in.degraded span{color:var(--need)}
+.in.degraded a{color:var(--ink);font-weight:600;font-size:.82rem;white-space:nowrap;min-height:var(--tap);display:inline-flex;align-items:center}
+.in.warn{border-color:var(--need-mark);color:var(--need)}
+/* A configuration field says where its value came from: source dim, value ink, none chosen ochre. */
+.in .val{color:var(--ink)} .in.warn .val{color:var(--need)}
+.menu{border:1px solid var(--line);border-radius:var(--r);background:var(--panel2);padding:.2rem 0;font-size:.85rem;margin-top:.15rem}
+.menu .grp{padding:.25rem .65rem;font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-dim);font-weight:700}
+.menu .opt{padding:.3rem .65rem .3rem 1.1rem;min-height:2rem;display:flex;align-items:center}
+.menu .opt.on{background:var(--chip)}
+.role{display:grid;grid-template-columns:4.5rem minmax(0,1fr);gap:.5rem;align-items:start;font-size:.88rem;margin:.35rem 0}
+.role b{padding-top:.45rem}
+.role .from{color:var(--ink-dim);font-size:.76rem;margin-top:.15rem}
+.sheet .foot{display:flex;gap:.6rem;align-items:center;margin-top:.9rem;flex-wrap:wrap}
+.err{color:var(--fail);font-size:.85rem;border-left:3px solid var(--fail);padding:.35rem .65rem;margin-top:.7rem}
+.err a{font-weight:600;margin-left:.4rem}
+.prompt{border-left:3px solid var(--line);padding:.4rem .75rem;font-size:.9rem;font-style:italic;margin:.3rem 0 .6rem;font-family:var(--serif)}
+.fact{display:grid;grid-template-columns:5.5rem minmax(0,1fr);gap:.4rem;font-size:.88rem;margin:.3rem 0}
+.fact b{color:var(--ink-dim);font-weight:600}
+.fact .pills{display:flex;gap:.3rem;flex-wrap:wrap}
+.found{display:grid;gap:.35rem;margin:.4rem 0 .8rem;font-size:.9rem}
+.found div{display:grid;grid-template-columns:1.3rem 5rem minmax(0,1fr);gap:.5rem;align-items:baseline}
+.found .k{color:var(--ink-dim)}
+.found .n{color:var(--ink-dim);font-variant-numeric:tabular-nums}
+.found .hooks{grid-template-columns:1.3rem minmax(0,1fr);color:var(--need)}
+
+/* ── History table ── */
+table.hist{width:100%;border-collapse:collapse;font-size:.9rem}
+table.hist th{font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-dim);text-align:left;padding:.35rem .5rem;border-bottom:1px solid var(--line);font-weight:700}
+table.hist td{padding:.5rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}
+table.hist td.when,table.hist td.took{font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ink-dim)}
+table.hist td.name{font-weight:600}
+table.hist td.name small{display:block;font-weight:400;color:var(--ink-dim);font-size:.78rem}
+table.hist td.res{color:var(--ink-dim)} table.hist td.res.fail{color:var(--fail)}
+
+/* ── Settings ── */
+.src{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:.8rem;align-items:center;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:.65rem .9rem;margin-bottom:.45rem;font-size:.9rem}
+.src .k{color:var(--ink-dim);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;font-weight:700;width:4rem}
+.src .d{color:var(--ink-dim);font-size:.84rem}
+.src .d b{color:var(--ink);font-weight:600}
+.src .act{color:var(--ink);font-weight:600;font-size:.85rem;white-space:nowrap;min-height:var(--tap);display:inline-flex;align-items:center;text-decoration:underline;text-underline-offset:.2em}
+/* Disconnecting is irreversible: brick, no underline — it never reads like "Pull". */
+.src .act.destroy{color:var(--fail);text-decoration:none;font-weight:500}
+table.list{width:100%;border-collapse:collapse;font-size:.9rem}
+table.list th{font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-dim);text-align:left;padding:.35rem .5rem;border-bottom:1px solid var(--line)}
+table.list td{padding:.45rem .5rem;border-bottom:1px solid var(--line);vertical-align:middle}
+table.list td.by{color:var(--ink-dim);font-size:.84rem}
+table.list .in{display:inline-flex;min-height:2rem;padding:.3rem .6rem}
+table.list td .sub{display:inline;margin-left:.4rem;font-size:.8rem}
+table.list td.ord,table.list .in{white-space:nowrap}
+table.list .grip{display:inline-flex;align-items:center;min-height:var(--tap);min-width:var(--tap);color:var(--ink-dim);cursor:grab;margin-right:.2rem;letter-spacing:-.15em}
+.note{color:var(--ink-dim);font-size:.84rem;margin:.4rem 0 0}
+table.list tr.grp td{padding:.6rem .5rem .25rem;font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-dim);font-weight:700;border-bottom:none}
+table.list tr.grp td .mark{margin-right:.2rem}
+/* A confirmed model that differs from the requested one wants a look: brick, and only the difference. */
+.differs{color:var(--fail);font-weight:600}
+.sub{color:var(--ink-dim);font-weight:400;margin-left:.4rem}
+
+/* ── Vocabulary ── */
+.swatches{display:flex;gap:.6rem;flex-wrap:wrap;margin:.6rem 0}
+.sw{display:flex;align-items:center;gap:.45rem;font-size:.84rem;border:1px solid var(--line);border-radius:var(--r);padding:.3rem .6rem;background:var(--panel2)}
+.sw i{width:1rem;height:1rem;border-radius:50%;display:inline-block}
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:.8rem;margin:.6rem 0}
+.strip .cell{background:var(--ground);border:1px solid var(--line);border-radius:var(--r-lg);padding:.8rem}
+.strip .cell .shelf{margin-top:0}
+.words{display:flex;gap:.4rem;flex-wrap:wrap;margin:.3rem 0 .6rem}
+
+/* ── 390 ── */
+@media (max-width:44rem){
+  body{padding:0 .8rem 4rem}
+  .frame{grid-template-columns:minmax(0,1fr)}
+  .rail{flex-direction:row;flex-wrap:wrap;align-items:center;border-right:none;border-bottom:1px solid var(--line);padding:.5rem .6rem;gap:.1rem}
+  .rail .brand{padding:.2rem .4rem .2rem .2rem;font-size:1rem}
+  .rail a.place{padding:.45rem .4rem;font-size:.82rem;gap:.3rem;min-height:var(--tap)}
+  .rail a.place .glyph{width:auto}
+  .rail .grow{display:none}
+  .rail a.place.foot{border-top:none;margin:0 0 0 auto;padding-top:.45rem}
+  .rail .ctx{flex-basis:auto;padding-left:.15rem}
+  .stage{padding:1rem .9rem 1.1rem}
+  .piece{grid-template-columns:minmax(0,1fr) auto;gap:.4rem .8rem}
+  .piece .now{grid-column:1 / -1;white-space:normal}
+  .piece .mini{grid-column:1;min-width:0}
+  .done{grid-template-columns:minmax(0,1fr) auto;gap:.2rem .8rem}
+  .done .res{grid-column:1 / -1;order:3}
+  .msg{max-width:100%}
+  .ask.compact .from{white-space:normal}
+  .asks.many{max-height:27rem}
+  .sheeted{min-height:40rem}
+  .sheet:not(.static){inset:auto 0 0 0;width:auto;top:auto;max-height:92%;border-radius:var(--r-lg) var(--r-lg) 0 0}
+  .filters input{width:7rem}
+  .uq{columns:1}
+  table.hist thead,table.hist tr:first-child{display:none}
+  table.hist,table.hist tbody{display:block}
+  table.hist tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.15rem .7rem;padding:.55rem 0;border-bottom:1px solid var(--line)}
+  table.hist td{display:block;border:0;padding:0}
+  table.hist td.name{grid-column:1;grid-row:1}
+  table.hist td.when{grid-column:2;grid-row:1;text-align:right;white-space:normal}
+  table.hist td:nth-child(3){grid-column:1 / -1;grid-row:2}
+  table.hist td.res{grid-column:1 / -1;grid-row:3}
+  table.hist td.took,table.hist td.none{display:none}
+  .ask h5{font-size:1.3rem}
+  .head h4{font-size:1.2rem}
+  .src{grid-template-columns:auto minmax(0,1fr)}
+  .src .act{grid-column:2}
+  /* Anything wider than the screen — graph, log, table — fades at its right edge: the one affordance every browser shows. */
+  .pipe,.log,.stage .tw{mask-image:linear-gradient(to right,#000 calc(100% - 2rem),transparent)}
+  .pipe{padding-bottom:.6rem;padding-right:2.5rem}
+  .pipe::-webkit-scrollbar{height:6px}
+  .pipe::-webkit-scrollbar-track{background:var(--chip)}
+  .pipe::-webkit-scrollbar-thumb{background:var(--ink-dim);border-radius:3px}
+  .row{flex-wrap:wrap}
+  .row .dim{flex-basis:100%;white-space:normal;order:3}
+  .found div{grid-template-columns:1.3rem minmax(0,1fr)}
+  .found .n{display:none}
+}
+
+/* ── Motion off when the system asks — stands after every animation rule, or the later one wins ── */
+@media (prefers-reduced-motion: reduce){
+  .mini i.live.breath,.dot.live::after,.sdot.live{animation:none}
+}
+</style>
+<main>
+<header class="doc-head">
+  <div class="eyebrow">v8.13 · 25.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
+  <h1>The workshop holds a piece out to you</h1>
+  <p class="thesis">Everything the workshop says to you is a question it holds out — a wait node of some run. Everything you say is an answer to one. The decision with two buttons, the ear with its input line and the "yes" to the conductor are <b>one</b> mechanism in three sizes; so there is exactly Stage, Row, Card, Sheet, plus Graph, and every room is built from these four blocks. Four rooms — Workbench, Catalog, History, Settings — and the run as a view in three tenses. Colour only for what wants something from you.</p>
+  <div class="tw"><table class="doc">
+    <tr><th>Room</th><th>The one question it answers</th><th>What it never does</th></tr>
+    <tr><td><b>Workbench</b></td><td>What needs me now, what is moving, what did we say today — and what do I want to say next?</td><td>No chronicle, no library; it never explains itself (no shelf titles); it shows nothing twice; it carries no number that does not lead to an action.</td></tr>
+    <tr><td><b>Run</b> <small>(a view, not a room)</small></td><td>What is this run doing right now, or what came of it — everything I must know, and one door for the rest.</td><td>No second run, no brochure of the workflow, no line twice; it starts nothing.</td></tr>
+    <tr><td><b>Catalog</b></td><td>What can this house do — what do I have, from where, how do I get more, and how do I start one by hand?</td><td>It edits nothing (no editor), shows no hash on a card, does not know the conductor (infrastructure, not inventory).</td></tr>
+    <tr><td><b>History</b></td><td>Which run was that — when, for what, with what result?</td><td>Nothing that still runs or waits; it neither counts nor grades.</td></tr>
+    <tr><td><b>Settings</b> <small>(the context, one per project)</small></td><td>Which project am I in, what is it connected to, which models does each provider have — and which one answers each difficulty?</td><td>No second way into a room, no queue, no hard-coded provider lines, no secret in clear text.</td></tr>
+  </table></div>
+</header>
+
+<!-- ═══════════════════════════ 01 VOCABULARY ═══════════════════════════ -->
+<h2><span class="no">01</span>One vocabulary, four building blocks</h2>
+<p class="q">What is learned once holds in every room. Every word and every shape stands here exactly once.</p>
+
+<h3 class="frame-title">Colour is state, nothing else</h3>
+<div class="swatches">
+  <span class="sw"><i style="background:var(--live)"></i>Running — working right now</span>
+  <span class="sw"><i style="background:var(--need-mark)"></i>Waiting for you — wants something from you</span>
+  <span class="sw"><i style="background:var(--fail)"></i>Failed — wants a look</span>
+  <span class="sw"><i style="background:var(--ink-dim)"></i>Done · Cancelled — wants nothing more; ink</span>
+</div>
+<ul class="rules">
+  <li>The five standing words are the house's (<code>standingWords</code>): <b>Running · Waiting for you · Failed · Cancelled · Done</b>.</li>
+  <li>Serif for what is said to you (question, result sentence, the conductor's reply, titles); sans for the room around it.</li>
+  <li>No day/night button: the house follows the system (<code>prefers-color-scheme</code>).</li>
+</ul>
+
+<h3 class="frame-title">One glyph per room, one per kind, one per provider</h3>
+<div class="words">
+  <span class="pill"><span class="glyph">⌂</span>Workbench — the room you enter</span><span class="pill"><span class="glyph">▤</span>Catalog — the shelves</span><span class="pill"><span class="glyph">◷</span>History — the clock</span><span class="pill"><span class="glyph">⚙</span>Settings — the context, at the foot</span>
+</div>
+<div class="words">
+  <span class="pill"><span class="glyph">⧉</span>workflow</span><span class="pill"><span class="glyph">◯</span>agent</span><span class="pill"><span class="glyph">✦</span>skill</span>
+  <span class="pill dash"><span class="glyph">⌗</span>mcp server — glyph reserved, appears with ADR 0018 §5</span>
+</div>
+<div class="words">
+  <span class="pill"><i class="mark">A</i>&nbsp;Claude</span><span class="pill"><i class="mark">O</i>&nbsp;Codex</span><span class="pill"><i class="mark">X</i>&nbsp;Grok</span>
+  <span class="pill"><i class="person"></i>&nbsp;a person answers here</span>
+</div>
+<ul class="rules">
+  <li>The rail shows glyph and word at every width; there is no navigation without a word.</li>
+  <li>The provider mark is the provider's own logo; the monogram stands in for it in this picture.</li>
+  <li>No symbol exists in the house that is not explained here.</li>
+  <li>At 390 anything wider than the screen — graph, log, table — fades at its right edge; that fade is its one affordance. A stack taller than its ceiling fades at the bottom the same way.</li>
+</ul>
+
+<h3 class="frame-title">Shape is kind</h3>
+<div class="pipe" style="padding-top:.4rem;max-width:40rem">
+  <div class="node"><div class="dot">·</div><b>Agent</b><small>circle</small></div><div class="link"></div>
+  <div class="node"><div class="dot sq">·</div><b>Action</b><small>square</small></div><div class="link"></div>
+  <div class="node"><div class="dot hx"><i>?</i></div><b>Wait</b><small>hexagon — holds something out</small></div>
+</div>
+<ul class="rules">
+  <li>One outline per node kind; the three tenses of the graph (REQ-UI-06) are one renderer: <b>still</b> (every node faint; catalog detail), <b>live</b> (ink for what has run, blue for the one node working, ochre for the one asking), <b>frozen</b> (final colours, nothing breathes).</li>
+  <li>Under a node stands the <b>role</b> — never the agent, never the difficulty: who fills the role is the project's <b>Model defaults</b> — one exact model id per difficulty, chosen in Settings from the Models list — and stands on the start sheet and in Settings; how hard the workflow calls the step stands in the node panel's Input tab.</li>
+</ul>
+
+<h3 class="frame-title">The four building blocks</h3>
+<div class="tw"><table class="doc">
+  <tr><th>Block</th><th>Question it answers</th><th>Where it appears</th></tr>
+  <tr><td><b>The stage</b> (<code>.ask</code>) — sender line · question in serif · two honest buttons · one aside with a door</td><td>"What is asked of me, and what are my answers?"</td><td>Workbench top, Run (waiting), the conductor's question in the conversation, every dialog</td></tr>
+  <tr><td><b>The row</b> (<code>.piece</code>/<code>.row</code>; smallest form <code>.ref</code>: name · work item · standing word) — name · work item · one sentence · clock</td><td>"Which run, for what, how does it stand?"</td><td>Run rows on the workbench, cards in the conversation, Recent runs, History</td></tr>
+  <tr><td><b>The card</b> (<code>.card</code>) — the row in grid form: glyph · name · one sentence · pills</td><td>"What is this, what does it do — and may I open it?"</td><td>Catalog</td></tr>
+  <tr><td><b>The sheet</b> (<code>.sheet</code>) — slides in from the right over the still page, from the bottom at 390; as tall as its content</td><td>"What does this step need from me before it goes?"</td><td>Start, Import, Connect a source</td></tr>
+  <tr><td><b>The graph + one node panel</b> — tabs Result · Input · Prompt · Log · Evidence</td><td>"Where does the run stand, and what did this node do?"</td><td>Run in three tenses, catalog detail (still)</td></tr>
+</table></div>
+<ul class="rules">
+  <li><b>State is shown, never restated.</b> A state shows in the shape of the element itself — colour, placeholder, glyph — and is never repeated as a sentence. Text stands only where no element shows it.</li>
+  <li>Origin and provenance stand only where they deviate from the default ("chosen now", "set in the conversation", "group, 3 projects").</li>
+  <li>Explanations come on request — tooltip, "Technical", "Raw" — never inline.</li>
+  <li><b>Line rule.</b> Framed is what lies on a living shelf and can be opened — the run row, the card, the stage. Ruled is the list of what is over — Recent runs, History. A room never mixes the two on one shelf.</li>
+  <li><b>One thing alive.</b> On any screen exactly one element moves: the node where a hand is right now. Every other running run carries its blue still.</li>
+</ul>
+
+<h3 class="frame-title">The four states are one pattern</h3>
+<p class="q">Named means designed, not captioned (REQ-UIQ-10): empty is the shape without content — no sentence where the absence is obvious; loading is a still skeleton without a wheel; error is brick with exactly one next move — the sentence is mandatory; waiting is never a sentence but the stage.</p>
+<div class="strip">
+  <div class="cell"><div class="ear" style="margin:0;padding-top:0;border:none;position:static"><div class="bar"><input placeholder="Tell the atelier what you want…" disabled></div></div><small class="eyebrow">empty — only the ear, no sentence</small></div>
+  <div class="cell"><div class="skeleton" aria-label="Reading…"><i></i><i></i><i></i></div><small class="eyebrow">loading — a skeleton in the shape of the row</small></div>
+  <div class="cell"><p class="nothing error">The atelier didn't answer.<a href="#">Try again</a></p><small class="eyebrow">error — the sentence is mandatory</small></div>
+  <div class="cell"><div class="ask" style="padding:.7rem .9rem"><p class="from">the run <b>Finish the preview door</b></p><h5 style="font-size:1.15rem;margin-bottom:.5rem">Ship it, or hold it back?</h5><div class="acts"><span class="btn primary sm">Ship it</span><span class="btn sm">Hold it back</span></div></div><small class="eyebrow">waiting — the stage</small></div>
+</div>
+<div class="strip">
+  <div class="cell"><p class="nothing">There is no room at this address.</p><p style="margin:.3rem 0 0;font-size:.85rem"><a href="#">← Workbench</a></p><small class="eyebrow">not found — every path under /atelier answers with the house, never with JSON</small></div>
+  <div class="cell"><div class="ear" style="margin:0;padding-top:0;border:none;position:static"><div class="bar"><input placeholder="Restarting — back in a moment…" disabled></div></div><small class="eyebrow">restarting — the placeholder of the held ear, no extra line</small></div>
+</div>
+<dl class="uq">
+  <div><dt>Empty without a sentence</dt><dd>"Is there really nothing, or did it not load?" — the shape without content says: nothing; had it not loaded, the skeleton or the brick sentence would stand there. A sentence may stay where it teaches the next move — never where it only captions the absence.</dd></div>
+  <div><dt>Skeleton</dt><dd>"Should I wait?" — yes, briefly; three still bars in the shape of the row, no wheel and no word, because only one thing may breathe.</dd></div>
+  <div><dt>Error sentence + one door</dt><dd>"What happened, and what can I do?" — exactly one next move.</dd></div>
+  <div><dt>Stage</dt><dd>"What is asked of me?" — never a sentence, always the question with its answers.</dd></div>
+  <div><dt>No cross-link in the empty state</dt><dd>"Where next?" is answered by the rail — a second link would be a second door.</dd></div>
+</dl>
+
+<!-- ═══════════════════════════ 02 WORKBENCH ═══════════════════════════ -->
+<h2><span class="no">02</span>Workbench</h2>
+<p class="q">You enter the room and the workshop holds out the one piece that needs you; beneath it every other open question, compact. Below, what breathes. Below that the conversation — the atelier on the left with the cards of the runs and questions that came of its words, you on the right — and at the bottom the ear, always within reach.</p>
+
+<h3 class="frame-title">Full <small>— two open questions, two runs, the conversation with its cards</small></h3>
+<div class="frame">
+  <nav class="rail" data-on="workbench" data-needs="2"></nav>
+  <div class="stage">
+    <div class="asks">
+    <section class="ask">
+      <p class="from"><b>merge gate</b> in the run <b>Finish the preview door</b> · #450 — the review is green.</p>
+      <h5>Ship it, or hold it back?</h5>
+      <div class="acts"><span class="btn primary">Ship it</span><span class="btn">Hold it back</span><span class="aside"><a href="#">open the run</a></span></div>
+    </section>
+    <a class="ask compact" href="#"><span class="from"><b>reviewer, round 4</b> · Sweep the docs · #162</span><h5>Who reviews round 4?</h5><span class="act">Answer →</span></a>
+    </div>
+
+    <div class="runs">
+    <a class="piece" href="#">
+      <span class="who"><span class="name">Finish the preview door <span class="item">#450</span></span><span class="why">iterate-code</span></span>
+      <span class="now"></span>
+      <span class="mini"><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="h need"></i><u></u><i class="s"></i></span>
+      <span class="clock">22 min</span>
+    </a>
+    <a class="piece" href="#">
+      <span class="who"><span class="name">Yesterday's runs, in one page</span><span class="why">digest</span></span>
+      <span class="now">gathering yesterday's runs</span>
+      <span class="mini"><i class="c live breath"></i><u></u><i class="c"></i><u></u><i class="s"></i></span>
+      <span class="clock">2 min</span>
+    </a>
+    </div>
+    <details class="queue"><summary><b>12 queued</b> · next: #446 Loopback refusal<span class="chev" aria-hidden="true">▾</span></summary></details>
+    <div class="talk">
+      <div class="msg you"><span class="lbl">You<small>11:20</small></span><p>What failed this morning?</p></div>
+      <div class="msg atelier"><span class="lbl">Atelier</span><p>Sweep the docs — not green after three rounds; two findings on refusal ordering. Say what should change and it starts again from there.</p><a class="ref" href="#">Sweep the docs <span class="item">#162</span><span class="word fail">Failed</span></a></div>
+      <div class="msg you"><span class="lbl">You<small>14:02</small></span><p>Finish the preview door and fix the wait bug — in parallel.</p></div>
+      <div class="msg atelier"><span class="lbl">Atelier</span><p>Started both.</p><a class="ref" href="#">Finish the preview door <span class="item">#450</span><span class="word live">Running</span></a><a class="ref" href="#">Fix the wait bug <span class="item">#510</span><span class="word quiet">Done · PR #512 merged</span></a></div>
+      <div class="msg atelier"><span class="lbl">Atelier<small>14:41</small></span><p>The review on the preview door is green — your call at the merge gate.</p><a class="ref need" href="#"><span class="word need">Waiting for you</span><span class="q">Ship it, or hold it back?</span>↑</a></div>
+    </div>
+    <div class="ear">
+      <div class="bar"><input placeholder="Tell the atelier what you want…" aria-label="Tell the atelier what you want"><span class="btn primary">Send</span></div>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Rail: ⌂ Workbench · ▤ Catalog · ◷ History</dt><dd>"Where am I, where can I go?" — three rooms, glyph and word at every width, the active one with an ink edge. The ochre number on Workbench stands as soon as something waits: the decision <i>is</i> the notification, and the number says it the same way in every room.</dd></div>
+  <div><dt>Rail: ⚙ Settings at the foot, the project name small beneath</dt><dd>"Which project am I in, and where is its context — connections, models, defaults?" — the fourth entry, set apart by a line: the room above the three; the name is the context of every room, the switcher stands in Settings' head.</dd></div>
+  <div><dt>Stage: the first open question, large</dt><dd>"What is asked of me?" — sender line (node, run, work item, one half-sentence of context), the question in serif, two honest buttons; the first is filled because it is the expected one, not the better one.</dd></div>
+  <div><dt>"open the run"</dt><dd>"I want the whole story first" — the one door to the rest, without an aside.</dd></div>
+  <div><dt>The other open questions, compact</dt><dd>"What else waits on me?" — one OPEN question, the others visible (REQ-UI-21): each stands as a one-line stage with its own question; a click makes it the large one. From the fifth on the stack scrolls; the rail number says how many there are.</dd></div>
+  <div><dt>Queue line</dt><dd>"What is lined up, and what comes next?" — one line: the count and the next item. The ▾ unfolds it in place into the list with priority and Admit (frame "Queue, open" below); the list lives nowhere else.</dd></div>
+  <div><dt>Run row: purpose + work item</dt><dd>"Which run, for what?" — a run is named everywhere by its purpose (the order sentence); the workflow name stands small beneath: "by which recipe?"</dd></div>
+  <div><dt>Run row: the one sentence</dt><dd>"What is happening right now?" — present tense, from the running node; on a waiting run the sentence is silent, because the ochre node and the stage already carry it.</dd></div>
+  <div><dt>Mini graph</dt><dd>"How far is it?" — the same shapes as in the run, without words.</dd></div>
+  <div><dt>Clock</dt><dd>"For how long?"</dd></div>
+  <div><dt>Conversation: atelier left, you right</dt><dd>"What did I say, what did the workshop answer — today?" — the transcript in order; serif for the atelier, your lines on the right on a chip; time only when the speaker changes. The conversation is a run, and the workbench is its view.</dd></div>
+  <div><dt>Card in the flow: run</dt><dd>"Which run did this sentence start, and how does it stand?" — the smallest form of the row, inside the reply that started it; click opens the run. It carries purpose, work item and standing word — no graph and no sentence: those stand once, in the run row.</dd></div>
+  <div><dt>Card in the flow: question (ochre, ↑)</dt><dd>"Where in the conversation did this question come from?" — the same question as on the stage, as a card where it arose; the arrow says "answer above". While it is open the stage is its place to answer, the card its place in the record.</dd></div>
+  <div><dt>Ear: input + Send</dt><dd>"What do I want next?" — always within reach, sticks to the bottom, no scrolling even in a long conversation.</dd></div>
+</dl>
+
+<h3 class="frame-title">Answered <small>— the moment after the click</small></h3>
+<div class="frame short">
+  <nav class="rail" data-on="workbench" data-needs="1"></nav>
+  <div class="stage">
+    <div class="asks">
+    <section class="ask answered"><p><span class="stamp">✓ Ship it</span> — Finish the preview door moves on to open the PR.</p></section>
+    <a class="ask compact" href="#"><span class="from"><b>reviewer, round 4</b> · Sweep the docs · #162</span><h5>Who reviews round 4?</h5><span class="act">Answer →</span></a>
+    </div>
+    <div class="runs">
+    <a class="piece" href="#">
+      <span class="who"><span class="name">Finish the preview door <span class="item">#450</span></span><span class="why">iterate-code</span></span>
+      <span class="now">opening the pull request</span>
+      <span class="mini"><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="h ok"></i><u class="ok"></u><i class="s live breath"></i></span>
+      <span class="clock">23 min</span>
+    </a>
+    </div>
+    <div class="talk">
+      <div class="msg atelier"><span class="lbl">Atelier<small>14:41</small></span><p>The review on the preview door is green — your call at the merge gate.</p><a class="ref answered" href="#">✓ Ship it · 14:43</a></div>
+    </div>
+    <div class="ear">
+      <div class="bar"><input placeholder="Tell the atelier what you want…" aria-label="Tell the atelier what you want"><span class="btn primary">Send</span></div>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Warm sentence with a stamp</dt><dd>"Did my answer arrive, and what happens now?" — one sentence, then the stage gets out of the way; after a breath the next open question moves up and becomes the large one.</dd></div>
+  <div><dt>Card in the flow, collapsed</dt><dd>"What did I answer back then?" — the question card becomes the dashed answer card with stamp and time; the stage moves on, the conversation keeps the trace.</dd></div>
+  <div><dt>No undo button here</dt><dd>"Can I take it back?" — the answer is an event with an actor; what is reversible, the run shows (REQ-UI-24 "undo instead of asking" is for building blocks, not for given answers).</dd></div>
+</dl>
+
+<h3 class="frame-title">The stage in its other sizes <small>— a written answer · more than two answers · an answer that may not have arrived</small></h3>
+<div class="sheets">
+  <div class="dialog"><section class="ask">
+    <p class="from"><b>focus</b> in the run <b>Review the workbench's face</b></p>
+    <h5>What should the walker look at first?</h5>
+    <div class="acts" style="width:100%"><input class="in" style="flex:1;font:inherit" placeholder="one sentence" aria-label="Your answer"><span class="btn primary">Answer</span></div>
+  </section></div>
+  <div class="dialog"><section class="ask">
+    <p class="from"><b>scope check</b> in the run <b>Rotate the infra keys</b> · !12</p>
+    <h5>Which keys?</h5>
+    <div class="acts"><span class="btn primary">Production</span><span class="btn">Staging too</span><span class="btn">Hold</span></div>
+  </section></div>
+  <div class="dialog"><section class="ask answered">
+    <p><span class="stamp">✓ Ship it</span> — the atelier didn't confirm it arrived.<a class="btn sm" style="margin-left:.6rem" href="#">Send again</a></p>
+  </section></div>
+</div>
+<dl class="uq">
+  <div><dt>A written answer</dt><dd>"It wants words, not a button?" — the same stage with a field in place of the buttons; one "Answer" button. Free text lives here, not in the ear, because the ear speaks to the conductor.</dd></div>
+  <div><dt>Three answers</dt><dd>"More than yes or no?" — one button per honest answer, the expected one filled; never a dropdown for a choice you make once.</dd></div>
+  <div><dt>An uncertain send</dt><dd>"Did it arrive?" — the stamp stays, the sentence says what is unknown, "Send again" is the one move. No "Discard": an answer once given is not taken back here.</dd></div>
+</dl>
+
+<h3 class="frame-title">Many open <small>— six questions: one large, the rest compact, the stack scrolls after four</small></h3>
+<div class="frame short">
+  <nav class="rail" data-on="workbench" data-needs="6"></nav>
+  <div class="stage">
+    <div class="asks many">
+    <section class="ask">
+      <p class="from"><b>merge gate</b> in the run <b>Finish the preview door</b> · #450 — the review is green.</p>
+      <h5>Ship it, or hold it back?</h5>
+      <div class="acts"><span class="btn primary">Ship it</span><span class="btn">Hold it back</span><span class="aside"><a href="#">open the run</a></span></div>
+    </section>
+    <a class="ask compact" href="#"><span class="from"><b>reviewer, round 4</b> · Sweep the docs · #162</span><h5>Who reviews round 4?</h5><span class="act">Answer →</span></a>
+    <a class="ask compact" href="#"><span class="from"><b>scope check</b> · Rotate the infra keys · !12</span><h5>Rotate the staging keys too?</h5><span class="act">Answer →</span></a>
+    <a class="ask compact" href="#"><span class="from"><b>the conductor</b></span><h5>Take grok-4.6 as judge for this run?</h5><span class="act">Answer →</span></a>
+    <a class="ask compact" href="#"><span class="from"><b>merge gate</b> · Close the loopback refusal · #446</span><h5>Ship it, or hold it back?</h5><span class="act">Answer →</span></a>
+    <a class="ask compact" href="#"><span class="from"><b>focus</b> · Review the workbench's face</span><h5>Walk every room, or the workbench only?</h5><span class="act">Answer →</span></a>
+    </div>
+    <div class="ear">
+      <div class="bar"><input placeholder="Tell the atelier what you want…" aria-label="Tell the atelier what you want"><span class="btn primary">Send</span></div>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>One large, five compact</dt><dd>"How much waits on me, and where do I start?" — the first is the stage with its buttons; the others carry sender, question and one door each. Nothing is hidden behind a count.</dd></div>
+  <div><dt>The stack scrolls after four</dt><dd>"Does the room still hold together?" — the stack has a ceiling of about four rows; beyond it it scrolls inside itself — the bottom fades like the graph's right edge — and the runs and the ear stay where they are.</dd></div>
+  <div><dt>The rail number says six</dt><dd>"How many, all told?" — the same number in every room.</dd></div>
+</dl>
+
+<h3 class="frame-title">Loaded <small>— five runs, long conversation, the ear stays reachable without scrolling</small></h3>
+<div class="frame room">
+  <nav class="rail" data-on="workbench"></nav>
+  <div class="stage">
+    <div class="runs">
+    <a class="piece" href="#">
+      <span class="who"><span class="name">Finish the preview door <span class="item">#450</span></span><span class="why">iterate-code</span></span>
+      <span class="now">the reviewer is reading — round 2</span>
+      <span class="mini"><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="c live breath"></i><u></u><i class="c"></i><u></u><i class="h"></i><u></u><i class="s"></i></span>
+      <span class="clock">14 min</span>
+    </a>
+    <a class="piece" href="#">
+      <span class="who"><span class="name">Close the loopback refusal <span class="item">#446</span></span><span class="why">iterate-code</span></span>
+      <span class="now">the builder is writing the change</span>
+      <span class="mini"><i class="c ok"></i><u class="ok"></u><i class="c live"></i><u></u><i class="c"></i><u></u><i class="c"></i><u></u><i class="h"></i><u></u><i class="s"></i></span>
+      <span class="clock">6 min</span>
+    </a>
+    <a class="piece" href="#">
+      <span class="who"><span class="name">Rotate the infra keys <span class="item">!12</span></span><span class="why">iterate-code</span></span>
+      <span class="now">the planner is reading the change request</span>
+      <span class="mini"><i class="c live"></i><u></u><i class="c"></i><u></u><i class="c"></i><u></u><i class="c"></i><u></u><i class="h"></i><u></u><i class="s"></i></span>
+      <span class="clock">1 min</span>
+    </a>
+    <a class="piece" href="#">
+      <span class="who"><span class="name">Review the workbench's face</span><span class="why">ui-quality-review</span></span>
+      <span class="now">the walker is opening every room</span>
+      <span class="mini"><i class="c live"></i><u></u><i class="c"></i><u></u><i class="s"></i></span>
+      <span class="clock">3 min</span>
+    </a>
+    <a class="piece" href="#">
+      <span class="who"><span class="name">Yesterday's runs, in one page</span><span class="why">digest</span></span>
+      <span class="now">gathering yesterday's runs</span>
+      <span class="mini"><i class="c live"></i><u></u><i class="c"></i><u></u><i class="s"></i></span>
+      <span class="clock">2 min</span>
+    </a>
+    </div>
+    <details class="queue"><summary><b>9 queued</b> · next: #452 Receipt on the back<span class="chev" aria-hidden="true">▾</span></summary></details>
+    <div class="talk">
+      <div class="msg you"><span class="lbl">You<small>09:40</small></span><p>Good morning — greet me, then tell me what's open.</p></div>
+      <div class="msg atelier"><span class="lbl">Atelier</span><p>Good morning, Felix. Two issues are open for this project; nothing is running yet.</p><a class="ref" href="#">Greet Felix<span class="word quiet">Done</span></a></div>
+      <div class="msg you"><span class="lbl">You<small>11:20</small></span><p>What failed this morning?</p></div>
+      <div class="msg atelier"><span class="lbl">Atelier</span><p>Sweep the docs — not green after three rounds; two findings on refusal ordering.</p><a class="ref" href="#">Sweep the docs <span class="item">#162</span><span class="word fail">Failed</span></a></div>
+      <div class="msg you"><span class="lbl">You<small>14:02</small></span><p>Finish the preview door and fix the wait bug — in parallel.</p></div>
+      <div class="msg atelier"><span class="lbl">Atelier</span><p>Started both.</p><a class="ref" href="#">Finish the preview door <span class="item">#450</span><span class="word live">Running</span></a><a class="ref" href="#">Fix the wait bug <span class="item">#510</span><span class="word quiet">Done · PR #512 merged</span></a></div>
+      <div class="msg you"><span class="lbl">You<small>14:50</small></span><p>Start the loopback refusal, the key rotation, a UI review and yesterday's digest too.</p></div>
+      <div class="msg atelier"><span class="lbl">Atelier</span><p>Started all four — five runs in motion now, nothing waiting on you.</p><a class="ref" href="#">Close the loopback refusal <span class="item">#446</span><span class="word live">Running</span></a><a class="ref" href="#">Rotate the infra keys <span class="item">!12</span><span class="word live">Running</span></a><a class="ref" href="#">Review the workbench's face<span class="word live">Running</span></a><a class="ref" href="#">Yesterday's runs, in one page<span class="word live">Running</span></a></div>
+    </div>
+    <div class="ear">
+      <div class="bar"><input placeholder="Tell the atelier what you want…" aria-label="Tell the atelier what you want"><span class="btn primary">Send</span></div>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>The ear sticks to the bottom</dt><dd>"Can I still speak when shelf and conversation grow long?" — the ear is <code>position:sticky; bottom:0</code> in the scrolling stage: rows and transcript scroll beneath it, the input stays at the bottom edge. This frame has room height and scrolls like the house; measured at 1280 and 390.</dd></div>
+  <div><dt>Hairline between runs and conversation</dt><dd>"Where does one end and the other begin?" — spacing and a line, no title: rows with a graph are runs, lines with You/Atelier are the conversation.</dd></div>
+  <div><dt>Five runs, one breath</dt><dd>"Where are the hands right now?" — only the top node breathes; four carry their blue still.</dd></div>
+  <div><dt>"!12" beside "#450"</dt><dd>"From which source is this item?" — the adapter's grammar: # for issues, ! for change requests; no source text of its own in the row.</dd></div>
+  <div><dt>Finished runs only as a card in the flow</dt><dd>"Where do I find what finished today?" — in History (the rail), and where the conductor said it; no shelf of its own.</dd></div>
+</dl>
+
+<h3 class="frame-title">Queue, open <small>— the line unfolds into its list; Admit is the not-yet state and the click</small></h3>
+<div class="frame short">
+  <nav class="rail" data-on="workbench"></nav>
+  <div class="stage">
+    <div class="runs">
+    <a class="piece" href="#">
+      <span class="who"><span class="name">Finish the preview door <span class="item">#450</span></span><span class="why">iterate-code</span></span>
+      <span class="now">the reviewer is reading — round 2</span>
+      <span class="mini"><i class="c ok"></i><u class="ok"></u><i class="c ok"></i><u class="ok"></u><i class="c live breath"></i><u></u><i class="c"></i><u></u><i class="h"></i><u></u><i class="s"></i></span>
+      <span class="clock">14 min</span>
+    </a>
+    </div>
+    <details class="queue" open><summary><b>12 queued</b> · next: #446 Loopback refusal<span class="chev" aria-hidden="true">▾</span></summary>
+      <div class="list"><div class="tw"><table class="list">
+      <tr><th title="Drag to reorder">Next</th><th>Work item</th><th>From</th><th>Admitted</th></tr>
+      <tr><td class="ord"><span class="grip" title="Drag to reorder">⋮⋮</span><b>1</b></td><td>#446 Loopback refusal</td><td class="by">GitHub · atelier-2</td><td class="by">✓</td></tr>
+      <tr><td class="ord"><span class="grip" title="Drag to reorder">⋮⋮</span><b>2</b></td><td>!12 Rotate keys</td><td class="by">GitLab · infra</td><td class="by">✓</td></tr>
+      <tr><td class="ord"><span class="grip" title="Drag to reorder">⋮⋮</span><b>3</b></td><td>#452 Receipt on the back</td><td class="by">GitHub · atelier-2</td><td><span class="btn sm">Admit</span></td></tr>
+      <tr><td class="ord"><span class="grip" title="Drag to reorder">⋮⋮</span><b>4</b></td><td>#455 Skeleton while loading</td><td class="by">GitHub · atelier-2</td><td class="by">✓</td></tr>
+      <tr><td class="ord"><span class="grip" title="Drag to reorder">⋮⋮</span><b>5</b></td><td>!14 Rotate the CI token</td><td class="by">GitLab · infra</td><td><span class="btn sm">Admit</span></td></tr>
+      <tr><td class="ord"><span class="grip" title="Drag to reorder">⋮⋮</span><b>6</b></td><td>#458 Fade at the right edge</td><td class="by">GitHub · atelier-2</td><td class="by">✓</td></tr>
+      </table></div></div>
+    </details>
+    <div class="talk">
+      <div class="msg atelier"><span class="lbl">Atelier<small>14:50</small></span><p>Started the loopback refusal.</p><a class="ref" href="#">Close the loopback refusal <span class="item">#446</span><span class="word live">Running</span></a></div>
+    </div>
+    <div class="ear">
+      <div class="bar"><input placeholder="Tell the atelier what you want…" aria-label="Tell the atelier what you want"><span class="btn primary">Send</span></div>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>The same line, turned</dt><dd>"What is in the queue, in which order?" — the ▾ turns, the list opens beneath the line, the room keeps its place; the same click folds it back. Nothing leaves the workbench to see it.</dd></div>
+  <div><dt>Next · Work item · From · Admitted</dt><dd>"In which order do runs start, where does each item come from, and may it already?" — the grip reorders by drag (#79); a ✓ is admitted, the "Admit" button is the not-yet state and the attributed click in one.</dd></div>
+  <div><dt>Fade at the bottom</dt><dd>"Are there more than I see?" — the list has a ceiling and scrolls inside it; the fade is the one affordance (§01).</dd></div>
+</dl>
+
+<h3 class="frame-title">Empty <small>— only the ear</small></h3>
+<div class="frame short">
+  <nav class="rail" data-on="workbench"></nav>
+  <div class="stage">
+    <div class="ear">
+      <div class="bar"><input placeholder="Tell the atelier what you want…" aria-label="Tell the atelier what you want"><span class="btn primary">Send</span></div>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Only the ear</dt><dd>"Is there really nothing?" — yes, and you can see it: no stage, no run row, no transcript. No sentence says so, because the absence is obvious (REQ-UIQ-10 as "named = designed, not captioned"). Stillness is confidence.</dd></div>
+  <div><dt>No line under the ear</dt><dd>"What happens when I write?" — the placeholder says it. If the conductor is not connected the field is held and its placeholder reads "The conductor isn't connected." — the state in the shape of the element, no sentence beneath.</dd></div>
+</dl>
+
+<!-- ═══════════════════════════ 03 RUN ═══════════════════════════ -->
+<h2><span class="no">03</span>Run — the graph in three tenses</h2>
+<p class="q">One click on a row. At the top the purpose of the run, not the brochure of the workflow. The graph; beneath it the panel of the clicked node. At the end the back: the signature.</p>
+
+<h3 class="frame-title">Live</h3>
+<div class="frame">
+  <nav class="rail" data-on="workbench"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← Workbench</a>
+    <div class="head"><h4>Finish the preview door</h4><span class="meta">iterate-code · <span class="item">#450 Preview door</span> · <span class="word live">Running</span> · 14 min</span><div class="right"><span class="btn quiet">Cancel run</span></div></div>
+    <div class="pipe">
+      <div class="node"><div class="dot ok">✓</div><b>planner</b></div><div class="link ok"></div>
+      <div class="loop"><span class="lbl" title="repeats while the review is not green">↻ until green · ≤3</span>
+        <div class="node"><div class="dot ok">✓</div><b>builder</b></div><div class="link ok"></div>
+        <div class="node"><div class="dot live sel">▶</div><b>reviewer</b><small>41 s</small></div><div class="link"></div>
+        <div class="node"><div class="dot">·</div><b>fixer</b></div>
+      </div><div class="link"></div>
+      <div class="node"><div class="dot hx"><i>?</i></div><b>merge gate</b><small><i class="person"></i></small></div><div class="link"></div>
+      <div class="node"><div class="dot sq">·</div><b>open PR</b></div>
+    </div>
+    <p class="rounds">Round <b>2</b> · round 1: two findings → fix</p>
+    <div class="panel">
+      <h6>reviewer<span class="who">grok-4.6</span></h6>
+      <div class="tabs"><span class="on">Log · live</span><span>Input</span><span>Prompt</span><span>Evidence</span></div>
+      <div class="log"><span class="t">13:41:02</span> Reading diff against main, 14 files …
+<span class="t">13:41:19</span> Checking resolve_start_bindings against the starter path
+<span class="t">13:41:36</span> Finding 1 drafted — refusal ordering …
+<span class="t">13:41:43</span> Writing verdict<span class="cursor"></span></div>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Trail "← Workbench"</dt><dd>"Where back to?" — derived from the run's state: alive → Workbench, ended → History; where you came from overrides only if you really came from elsewhere.</dd></div>
+  <div><dt>Head: purpose in serif</dt><dd>"What is this running for?" — the order sentence. Workflow name and work item small beside it: "which recipe, which item?"</dd></div>
+  <div><dt>Standing word + duration</dt><dd>"How does it stand, since when?" — the head owns the span; the panel never repeats it.</dd></div>
+  <div><dt>Cancel run (quiet)</dt><dd>"Can I stop it?" — a quiet button, because cancelling is rare. It opens the cancel dialog (next frame), whose sentence depends on whether a hand is at work or the run is resting at a wait.</dd></div>
+  <div><dt>Loop frame "↻ until green · ≤3"</dt><dd>"Does this repeat, and how often at most?" — ADR 0014: the loop stands beside the edges, as data; the condition is the tooltip.</dd></div>
+  <div><dt>Rounds line</dt><dd>"In which round, and what happened in the previous ones?"</dd></div>
+  <div><dt>Ring around "reviewer"</dt><dd>"Whose panel is open?"</dd></div>
+  <div><dt>Roles under the nodes, the person glyph at the gate</dt><dd>"Who does what here?" — the role; who fills it stands once, in the panel head and on the back. The gate carries the person glyph: a human answers here.</dd></div>
+  <div><dt>Panel head: node · model</dt><dd>"Who works here as what?" — the requested model id, once, in the panel; what the provider confirmed stands under Evidence; no standing word, the node in the graph shows it.</dd></div>
+  <div><dt>Tabs</dt><dd>"What did it get, what is its brief, what is it doing, what proves it?" — running nodes open on Log, finished ones on Result. At 390 the tab row wraps; every tab carries its own line, so the second row reads as a tab row too.</dd></div>
+  <div><dt>Graph at 390: edge fade</dt><dd>"Does the graph continue to the right?" — yes: the right edge fades; that is the one affordance (§01).</dd></div>
+</dl>
+
+<h3 class="frame-title">Node panel, Input and Evidence <small>— what the node was handed, how hard the workflow calls it, and which model actually answered</small></h3>
+<div class="sheets">
+  <div class="sheet static">
+    <div class="panel" style="margin:0">
+      <h6>reviewer<span class="who">grok-4.6</span></h6>
+      <div class="tabs"><span>Log · live</span><span class="on">Input</span><span>Prompt</span><span>Evidence</span></div>
+      <div class="fact"><b>Work item</b><span><span class="item">#450 Preview door</span></span></div>
+      <div class="fact"><b>Focus</b><span>the preview door must open on the first click</span></div>
+      <div class="fact" style="grid-template-columns:6.5rem minmax(0,1fr)"><b>From builder</b><span class="pills"><span class="pill">patch.diff · 14 files</span></span></div>
+      <div class="fact"><b>Difficulty</b><span><b style="color:var(--ink)">2</b> · review · family ≠ builder</span></div>
+    </div>
+  </div>
+  <div class="sheet static">
+    <div class="panel" style="margin:0">
+      <h6>reviewer<span class="who">grok-4.6</span></h6>
+      <div class="tabs"><span>Log · live</span><span>Input</span><span>Prompt</span><span class="on">Evidence</span></div>
+      <div class="fact"><b>Model</b><span>requested <code>grok-4.6</code> · confirmed <code>grok-4.6</code></span></div>
+      <div class="fact"><b>Chosen</b><span>at start, for this run</span></div>
+      <div class="fact"><b>Receipt</b><span class="mono" style="font-size:.8rem">step 3f0e…7b21 · 41 s · 12,400 tokens</span></div>
+    </div>
+  </div>
+  <div class="sheet static">
+    <div class="panel" style="margin:0">
+      <h6>builder<span class="who">gpt-5.6-sol</span></h6>
+      <div class="tabs"><span>Result</span><span>Input</span><span>Prompt</span><span>Log</span><span class="on">Evidence</span></div>
+      <div class="fact"><b>Model</b><span>requested <code>gpt-5.6-sol</code> · confirmed <code class="differs" title="The provider answered with another model than the one requested">gpt-5.5</code></span></div>
+      <div class="fact"><b>Receipt</b><span class="mono" style="font-size:.8rem">step 8c1f…a942 · 21 min · 38,900 tokens</span></div>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Work item · Focus · From builder</dt><dd>"What did this node get?" — the order fields it saw and the artefact handed over by the node before it; the same pills as on the result.</dd></div>
+  <div><dt>"Difficulty 2 · review · family ≠ builder"</dt><dd>"How hard did the workflow call this step?" — the workflow's words for the role (<code>difficulty: 1 | 2 | 3</code>, <code>kind: build | review</code>, optional <code>family_differs_from: builder</code>, optional a pin to one configuration), nothing of the house added. It stands here and nowhere on the graph: the node shows the role, the panel shows the brief.</dd></div>
+  <div><dt>Evidence: "Model requested grok-4.6 · confirmed grok-4.6" · "Chosen at start, for this run"</dt><dd>"Which model was asked for, which one answered, and why this one?" — the receipt holds both exact ids: the one the house requested and the one the provider confirmed (#434). Where the request came from stands only when it deviates from the model default: chosen at start, pinned in workflow.</dd></div>
+  <div><dt>Evidence: "requested gpt-5.6-sol · confirmed <span class="differs">gpt-5.5</span>"</dt><dd>"Did I get what I asked for?" — no: the provider fell back to another model, and the confirmed id says so in brick — the difference is the only thing coloured; the tooltip says what it means. The same brick id stands on the back of the run ("gpt-5.6-sol as builder (gpt-5.5 confirmed)"). A run is not failed by it; it wants a look.</dd></div>
+</dl>
+
+<h3 class="frame-title">Cancel <small>— two dialogs, one per state: a hand at work, or resting at a wait</small></h3>
+<div class="sheets">
+  <div class="dialog"><section class="ask">
+    <h5>Stop the reviewer mid-round?</h5>
+    <p class="from">Round 2 of <b>Finish the preview door</b> ends where it is; the run turns Cancelled and keeps its receipts.</p>
+    <div class="acts"><span class="btn danger">Stop it</span><span class="btn">Keep going</span></div>
+  </section></div>
+  <div class="dialog"><section class="ask">
+    <h5>End the wait?</h5>
+    <p class="from">Nothing is running — <b>Finish the preview door</b> rests at the merge gate. The pause ends and the run turns Cancelled.</p>
+    <div class="acts"><span class="btn danger">End it</span><span class="btn">Keep waiting</span></div>
+  </section></div>
+</div>
+<dl class="uq">
+  <div><dt>The dialog is the stage in your own hand</dt><dd>"What exactly do I stop?" — question as headline, one line of consequence, two honest buttons; ink border, not ochre, because nothing of the run is asking.</dd></div>
+  <div><dt>Two sentences for two states</dt><dd>"Is a hand at work right now?" — "Stop the reviewer" when a node works; "End the wait" when the run rests at a wait node. The button is brick because the step cannot be undone.</dd></div>
+</dl>
+
+<h3 class="frame-title">Done <small>— readable result, raw folded, the back</small></h3>
+<div class="frame">
+  <nav class="rail" data-on="history"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← History</a>
+    <div class="head"><h4>Fix the wait bug</h4><span class="meta">iterate-code · <span class="item">#510 Wait bug</span> · <span class="word quiet">Done</span> · 38 min · today 14:32</span></div>
+    <div class="result"><p>PR #512 merged, issue #510 closed.</p><div class="art"><span class="pill">patch.diff · 6 files</span><span class="pill">tests.log · 2 added, green</span></div></div>
+    <div class="pipe" style="padding-top:.4rem">
+      <div class="node"><div class="dot ok">✓</div><b>planner</b></div><div class="link ok"></div>
+      <div class="loop"><span class="lbl" title="repeated while the review was not green">↻ 1 round</span>
+        <div class="node"><div class="dot ok sel">✓</div><b>builder</b></div><div class="link ok"></div>
+        <div class="node"><div class="dot ok">✓</div><b>reviewer</b></div>
+      </div><div class="link ok"></div>
+      <div class="node"><div class="dot hx ok"><i>✓</i></div><b>merge gate</b><small><i class="person"></i> ship it</small></div><div class="link ok"></div>
+      <div class="node"><div class="dot sq ok">✓</div><b>open PR</b></div>
+    </div>
+    <div class="panel">
+      <h6>builder<span class="who">gpt-5.6-sol · 21 min</span></h6>
+      <div class="tabs"><span class="on">Result</span><span>Input</span><span>Prompt</span><span>Log</span><span>Evidence</span></div>
+      <div class="prose"><p>Moved the wait resume behind the existing answer path and pinned it with two tests. Nothing else was touched.</p>
+        <details class="raw"><summary>Raw</summary><div class="log" style="margin-top:.4rem">{"status":"ok","summary":"wait resume behind answer path; 2 tests","files_changed":6}</div></details></div>
+    </div>
+    <details class="back"><summary>Turn the piece over — signature</summary><dl>
+      <dt>made by</dt><dd>claude-opus-5 as planner · gpt-5.6-sol as builder (gpt-5.5 confirmed) · grok-4.6 as reviewer · Felix at the merge gate</dd>
+      <dt>cost</dt><dd>3 calls · 41,300 tokens · subscription</dd>
+      <dt>proof</dt><dd class="mono">terminal 8c1f…a942 · revision 3f0e…7b21 · every step receipted</dd>
+    </dl></details>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Result block above the graph</dt><dd>"What came of it?" — without a click, one serif sentence from the sink node, artefacts as pills.</dd></div>
+  <div><dt>Frozen graph</dt><dd>"Which path did it take?" — final colours, nothing breathes; the hexagon says what the person answered.</dd></div>
+  <div><dt>Panel "builder": model · node duration</dt><dd>"Who did this, how long?" — only the node's message; where it equals the run's, the panel stays silent.</dd></div>
+  <div><dt>Raw folded</dt><dd>"And the exact bytes?" — right there, but only on request.</dd></div>
+  <div><dt>"Turn the piece over"</dt><dd>"Who, what did it cost, where is the proof?" — the signature on the back, with the requested models by name and a confirmed id where it differed: a small privilege, not a debugger.</dd></div>
+</dl>
+
+<h3 class="frame-title">Failed <small>— the honest sentence</small></h3>
+<div class="frame short">
+  <nav class="rail" data-on="workbench"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← Workbench</a>
+    <div class="head"><h4>Sweep the docs</h4><span class="meta">iterate-code · <span class="item">#162 Docs sweep</span> · <span class="word fail">Failed</span> · 44 min · today 11:05</span></div>
+    <div class="result fail"><p class="fail">Not green after 3 rounds — the last review still names two findings.</p><div class="art"><span class="btn sm">Say what should change</span></div></div>
+    <div class="pipe" style="padding-top:.4rem">
+      <div class="node"><div class="dot ok">✓</div><b>planner</b></div><div class="link ok"></div>
+      <div class="loop"><span class="lbl" title="repeated while the review was not green">↻ 3 of ≤3</span>
+        <div class="node"><div class="dot ok">✓</div><b>builder</b></div><div class="link ok"></div>
+        <div class="node"><div class="dot fail sel">✕</div><b>reviewer</b></div><div class="link ok"></div>
+        <div class="node"><div class="dot ok">✓</div><b>fixer</b></div>
+      </div><div class="link"></div>
+      <div class="node"><div class="dot hx"><i>?</i></div><b>merge gate</b><small><i class="person"></i></small></div><div class="link"></div>
+      <div class="node"><div class="dot sq">·</div><b>open PR</b></div>
+    </div>
+    <div class="panel">
+      <h6>reviewer · round 3<span class="who">grok-4.6</span></h6>
+      <div class="tabs"><span class="on">Result</span><span>Input</span><span>Prompt</span><span>Log</span><span>Evidence</span></div>
+      <div class="prose"><p>Two findings remain: the refusal ordering in <code>resolve_start_bindings</code> is still reversed, and the new test asserts the mock rather than the outcome.</p></div>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Brick sentence</dt><dd>"What went wrong — in my words?" — never a refusal token as a headline; the token lives in Evidence.</dd></div>
+  <div><dt>"Say what should change" — the one move</dt><dd>"What can I do now?" — one button under the brick sentence; it opens the ear with this run as the subject, and the conductor starts again from round 3. No second sentence.</dd></div>
+  <div><dt>Panel opens on the failed node</dt><dd>"Where exactly?" — without you having to look for it.</dd></div>
+</dl>
+
+<h3 class="frame-title">Waiting <small>— the same stage as on the workbench</small></h3>
+<div class="frame short">
+  <nav class="rail" data-on="workbench" data-needs="1"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← Workbench</a>
+    <div class="head"><h4>Finish the preview door</h4><span class="meta">iterate-code · <span class="item">#450 Preview door</span> · <span class="word need">Waiting for you</span> · 22 min</span><div class="right"><span class="btn quiet">Cancel run</span></div></div>
+    <section class="ask">
+      <p class="from"><b>merge gate</b> — the review is green.</p>
+      <h5>Ship it, or hold it back?</h5>
+      <div class="acts"><span class="btn primary">Ship it</span><span class="btn">Hold it back</span></div>
+    </section>
+    <div class="pipe" style="padding-top:.5rem">
+      <div class="node"><div class="dot ok">✓</div><b>planner</b></div><div class="link ok"></div>
+      <div class="loop"><span class="lbl" title="repeated while the review was not green">↻ 2 rounds</span>
+        <div class="node"><div class="dot ok">✓</div><b>builder</b></div><div class="link ok"></div>
+        <div class="node"><div class="dot ok">✓</div><b>reviewer</b></div>
+      </div><div class="link ok"></div>
+      <div class="node"><div class="dot hx need sel"><i>?</i></div><b>merge gate</b><small><i class="person"></i></small></div><div class="link"></div>
+      <div class="node"><div class="dot sq">·</div><b>open PR</b></div>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Stage inside the run</dt><dd>"What is it asking me?" — the same block as on the workbench (REQ-UIQ-07); here without "open the run", because you are in it.</dd></div>
+  <div><dt>Ochre hexagon</dt><dd>"Which node holds me up?"</dd></div>
+  <div><dt>Rail shows "1" on Workbench</dt><dd>"Does something wait while I am here?" — the only number in the rail, only ochre, only when something wants you.</dd></div>
+</dl>
+
+<h3 class="frame-title">The conversation is a run</h3>
+<div class="frame short">
+  <nav class="rail" data-on="workbench"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← Workbench</a>
+    <div class="head"><h4>Conversation · today</h4><span class="meta">conductor · <span class="word need">Waiting for you</span> · since 09:12</span></div>
+    <div class="pipe" style="padding-top:.4rem">
+      <div class="loop"><span class="lbl" title="one round per message, at most 20">↻ 4 of ≤20</span>
+        <div class="node"><div class="dot ok">✓</div><b>conductor</b></div><div class="link ok"></div>
+        <div class="node"><div class="dot hx need"><i>?</i></div><b>next message</b><small><i class="person"></i></small></div>
+      </div>
+    </div>
+    <p class="shelf">Rounds</p>
+    <div class="done"><span class="name">4 · 14:36</span><span class="res"><b style="color:var(--ink)">You:</b> Finish the preview door and fix the wait bug — in parallel. <b style="color:var(--ink)">Atelier:</b> Started both. Preview door is in review; Wait bug is done — PR #512 merged.</span><span class="clock">12 s</span></div>
+    <div class="done"><span class="name">3 · 11:20</span><span class="res"><b style="color:var(--ink)">You:</b> What failed this morning? <b style="color:var(--ink)">Atelier:</b> Docs sweep — not green after 3 rounds; two findings on refusal ordering.</span><span class="clock">9 s</span></div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Loop "↻ 4 of ≤20"</dt><dd>"How long can the conversation still go?" — bounded loop, ADR 0014; the lid is visible, no surprise ending.</dd></div>
+  <div><dt>Trail "← Workbench", rail marks Workbench</dt><dd>"Where back to?" — the conversation is alive (it waits on you), so the trail leads where living things live; History only once it has ended.</dd></div>
+  <div><dt>Wait node "next message"</dt><dd>"Why does the run rest?" — because it is your turn. Your next sentence in the ear is the answer to it.</dd></div>
+  <div><dt>Rounds as lines</dt><dd>"What did I say when, what came back?" — the whole conversation, in the past tense, with a receipt per round on the back.</dd></div>
+</dl>
+
+<!-- ═══════════════════════════ 04 CATALOG ═══════════════════════════ -->
+<h2><span class="no">04</span>Catalog</h2>
+<p class="q">One page, no tabs: everything the house has ever been given, as equal cards with one glyph per kind. The group heads are the filter. Getting more means dropping; starting lives in the detail.</p>
+
+<h3 class="frame-title">List</h3>
+<div class="frame">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage">
+    <div class="head"><h4>Catalog</h4><div class="right"><span class="btn">Import</span></div></div>
+    <div class="filters"><span class="f on">All</span><span class="f">Workflows <b>3</b></span><span class="f">Agents <b>2</b></span><span class="f">Skills <b>0</b></span><input placeholder="Search…" aria-label="Search the catalog"></div>
+    <div class="cards">
+      <a class="card" href="#"><b><span class="glyph">⧉</span>iterate-code</b><small>build → review → fix, until green; then a merge gate and a PR.</small></a>
+      <a class="card" href="#"><b><span class="glyph">⧉</span>diff-review</b><small>One diff, one verdict.</small><div class="pills"><span class="pill">Git · leonardo/atelier-kit</span><span class="pill warn">Newer revision</span><span class="act">Pull</span></div></a>
+      <a class="card" href="#"><b><span class="glyph">⧉</span>digest</b><small>Yesterday's runs, in one page.</small><div class="pills"><span class="pill dash">Not executable</span></div></a>
+    </div>
+    <div class="cards">
+      <a class="card" href="#"><b><span class="glyph">◯</span>builder</b><small>Implements a bounded change and pins it with tests.</small><span class="use"><i class="mark" title="Codex">O</i></span></a>
+      <a class="card" href="#"><b><span class="glyph">◯</span>reviewer</b><small>Reads a diff and names what bothers it.</small><span class="use"><i class="mark" title="Claude">A</i></span><div class="pills"><span class="pill">Git · leonardo/atelier-kit</span></div></a>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>"Import"</dt><dd>"How do I get more?" — opens the file dialog; the whole page is a drop surface (below). One word of the house, one button, not one per kind.</dd></div>
+  <div><dt>Group heads with a count</dt><dd>"What is there, how much of each kind?" — at once the filter; sticks while scrolling.</dd></div>
+  <div><dt>No shelf title above the grid</dt><dd>"Which kind am I looking at?" — the chip row at the top owns the group name; a title beneath would say it a second time.</dd></div>
+  <div><dt>Search, compact on the right</dt><dd>"I know the name."</dd></div>
+  <div><dt>Card: glyph · name · one sentence</dt><dd>"What is this, what does it do?" — the whole card is the click; no hash, no start on the card.</dd></div>
+  <div><dt>Agent card: provider mark</dt><dd>"On which provider does this file run?" — the mark alone (bound, untranslated, ADR 0018 §1). Which model a role gets is not the file's business: that stands in Settings' Model defaults.</dd></div>
+  <div><dt>Pill "Git · leonardo/atelier-kit"</dt><dd>"Where does this come from?" — appears only when there is more than one source; otherwise it would be the same word on every card.</dd></div>
+  <div><dt>"Newer revision · Pull"</dt><dd>"Is my copy current, and how do I catch up?" — drift from the silent scan; Pull is the attributed click (ADR 0007, ADR 0018 §3). Never auto-intake.</dd></div>
+  <div><dt>"Not executable" (dashed)</dt><dd>"Can I start this?" — a property, not a state; likewise "No executor for Codex yet" on agents.</dd></div>
+  <div><dt>No shelf "Skills" in "All"</dt><dd>"Do I have skills?" — the group head says "0"; an empty shelf with a sentence beneath would only caption the absence.</dd></div>
+  <div><dt>The conductor is not in the catalog</dt><dd>"Where is the conductor?" — it is infrastructure; its place is the ear. An MCP server gets its glyph as soon as the house can read one (ADR 0018 §5); until then there is no group head "Servers 0", because a count for something that cannot come would be a claim.</dd></div>
+</dl>
+
+<h3 class="frame-title">Filtered <small>— "Agents" pressed</small></h3>
+<div class="frame short">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage">
+    <div class="head"><h4>Catalog</h4><div class="right"><span class="btn">Import</span></div></div>
+    <div class="filters"><span class="f">All</span><span class="f">Workflows <b>3</b></span><span class="f on">Agents <b>2</b></span><span class="f">Skills <b>0</b></span><input placeholder="Search…" aria-label="Search the catalog"></div>
+    <div class="cards">
+      <a class="card" href="#"><b><span class="glyph">◯</span>builder</b><small>Implements a bounded change and pins it with tests.</small><span class="use"><i class="mark" title="Codex">O</i></span></a>
+      <a class="card" href="#"><b><span class="glyph">◯</span>reviewer</b><small>Reads a diff and names what bothers it.</small><span class="use"><i class="mark" title="Claude">A</i></span><div class="pills"><span class="pill">Git · leonardo/atelier-kit</span></div></a>
+    </div>
+  </div>
+</div>
+<dl class="uq"><div><dt>One head pressed</dt><dd>"Only the agents, please." — the same head again, or "All", resets; no second control.</dd></div></dl>
+
+<h3 class="frame-title">Empty catalog <small>— nothing has ever been given</small></h3>
+<div class="frame short">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage">
+    <div class="head"><h4>Catalog</h4><div class="right"><span class="btn">Import</span></div></div>
+        <p class="nothing">Drop a workflow, an agent, or a plugin folder — anywhere on this page.</p>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>One teaching sentence in the card shape</dt><dd>"How does anything get in here?" — the sentence stays because it teaches the next move; it is the same sentence the veil shows while dragging, so the empty state and the drop state are one lesson.</dd></div>
+  <div><dt>No chips, no search field</dt><dd>"What would I filter or search?" — three heads reading 0 would caption the emptiness; heads and field appear with the first card.</dd></div>
+</dl>
+
+<h3 class="frame-title">Dropping <small>— the drag state</small></h3>
+<div class="frame short">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage">
+    <div class="head"><h4>Catalog</h4><div class="right"><span class="btn">Import</span></div></div>
+    <div class="filters"><span class="f on">All</span><span class="f">Workflows <b>3</b></span><span class="f">Agents <b>2</b></span><span class="f">Skills <b>0</b></span></div>
+    <div class="cards dimmed"><span class="card"><b><span class="glyph">⧉</span>iterate-code</b><small>build → review → fix, until green.</small></span><span class="card"><b><span class="glyph">⧉</span>diff-review</b><small>One diff, one verdict.</small></span></div>
+    <div class="veil"><span>Drop a workflow, an agent, or a plugin folder — anywhere</span></div>
+  </div>
+</div>
+<dl class="uq"><div><dt>Veil with one sentence</dt><dd>"May I let go here, and what?" — the three things the house recognises; a folder is a plugin (ADR 0018 §2).</dd></div></dl>
+
+<h3 class="frame-title">Import <small>— the sheet after the drop</small></h3>
+<div class="frame">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage sheeted">
+    <div class="head dimmed"><h4>Catalog</h4><div class="right"><span class="btn">Import</span></div></div>
+    <div class="cards dimmed"><span class="card"><b><span class="glyph">⧉</span>iterate-code</b><small>build → review → fix, until green.</small></span><span class="card"><b><span class="glyph">⧉</span>diff-review</b><small>One diff, one verdict.</small></span></div>
+    <div class="sheet">
+      <h5>Import</h5>
+      <div class="found">
+        <div><span class="k">⧉</span><span class="n">1 workflow</span><b>ui-quality-review</b></div>
+        <div><span class="k">◯</span><span class="n">2 agents</span><b>judge, walker</b></div>
+        <div><span class="k">✦</span><span class="n">1 skill</span><b>design-interface</b></div>
+        <div class="hooks"><span class="k" style="color:var(--need)">!</span><span>hooks.json travels along but will not run.</span></div>
+      </div>
+      <div class="foot"><span class="btn primary">Add to catalog</span><span class="btn quiet">Cancel</span></div>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Title "Import"</dt><dd>"What is this sheet?" — the same word as the button; where the files came from is on the rows, not in the title.</dd></div>
+  <div><dt>Rows: glyph · count · names</dt><dd>"What did I just let go of?" — recognition is a backend contract; the sheet shows only its result.</dd></div>
+  <div><dt>One ochre line for hooks</dt><dd>"Does anything of this run that I don't see?" — no, and it says so here, not in a log (ADR 0018 §4).</dd></div>
+  <div><dt>Sheet as tall as its content</dt><dd>"Is there more below?" — no; the sheet ends where its content ends.</dd></div>
+  <div><dt>"Add to catalog" — one button, "Cancel" quiet</dt><dd>"And then?" — publishes and admits in one transaction; all or nothing (ADR 0018 §2). Your click is the attribution.</dd></div>
+</dl>
+
+<h3 class="frame-title">Import refused <small>— nothing recognised · a secret in the plugin</small></h3>
+<div class="sheets">
+  <div class="sheet static">
+    <h5>Import</h5>
+    <div class="err" style="margin-top:.2rem">This doesn't look like a workflow, an agent, or a plugin — nothing was added.</div>
+    <div class="foot"><span class="btn quiet">Close</span></div>
+  </div>
+  <div class="sheet static">
+    <h5>Import</h5>
+    <div class="found">
+      <div><span class="k">⧉</span><span class="n">1 workflow</span><b>ui-quality-review</b></div>
+      <div><span class="k">◯</span><span class="n">2 agents</span><b>judge, walker</b></div>
+    </div>
+    <div class="err"><code>.mcp.json</code> carries a secret value in clear text — nothing was added. Replace it with a reference and drop the folder again.</div>
+    <div class="foot"><span class="btn quiet">Close</span></div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Brick sentence in the sheet, one door</dt><dd>"What happened, and what now?" — a human sentence, never a token name; "Close" is the one move, because the fix happens outside the house.</dd></div>
+  <div><dt>The recognised rows stay above the refusal</dt><dd>"Was anything of it taken in?" — no: all or nothing; the rows show what would have come, the sentence says why it did not (ADR 0018 §5).</dd></div>
+</dl>
+
+<h3 class="frame-title">Workflow detail <small>— still</small></h3>
+<div class="frame">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← Catalog</a>
+    <div class="head"><h4><span class="glyph">⧉</span>iterate-code</h4><div class="right"><span class="btn primary">Start</span></div></div>
+    <div class="pipe" style="padding-top:.3rem">
+      <div class="node"><div class="dot">·</div><b>planner</b></div><div class="link"></div>
+      <div class="loop"><span class="lbl" title="repeats while the review is not green">↻ until green · ≤3</span>
+        <div class="node"><div class="dot">·</div><b>builder</b></div><div class="link"></div>
+        <div class="node"><div class="dot">·</div><b>reviewer</b></div><div class="link"></div>
+        <div class="node"><div class="dot">·</div><b>fixer</b></div>
+      </div><div class="link"></div>
+      <div class="node"><div class="dot hx"><i>?</i></div><b>merge gate</b><small><i class="person"></i></small></div><div class="link"></div>
+      <div class="node"><div class="dot sq">·</div><b>open PR</b></div>
+    </div>
+    <p class="shelf">Recent runs</p>
+    <a class="row" href="#"><span class="sdot live"></span><span class="name">Finish the preview door</span><span class="item">#450</span><span class="dim">the reviewer is reading — round 2</span><span class="tail">14 min</span></a>
+    <a class="row" href="#"><span class="sdot"></span><span class="name">Fix the wait bug</span><span class="item">#510</span><span class="dim">PR #512 merged, issue closed</span><span class="tail">today 14:32</span></a>
+    <a class="row" href="#"><span class="sdot fail"></span><span class="name">Sweep the docs</span><span class="item">#162</span><span class="dim fail">Not green after 3 rounds</span><span class="tail">today 11:05</span></a>
+    <details class="back"><summary>Technical</summary><dl><dt>revision</dt><dd class="mono">3f0e9a1c…7b21</dd><dt>source</dt><dd>Git · leonardo/atelier-kit @ b8cfa0d5 · workflows/iterate-code.yaml</dd><dt>format</dt><dd>workflow/v3</dd></dl></details>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Name, no sentence</dt><dd>"What is this?" — the still graph beneath says it; the sentence stays on the card in the catalog.</dd></div>
+  <div><dt>"Start" top right</dt><dd>"How do I start it by hand?" — the one primary button of the room; opens the sheet.</dd></div>
+  <div><dt>Still graph, roles under the nodes</dt><dd>"Which steps, and which role does each?" — the workflow's own words; who fills them stands on the start sheet and in Settings, never here, because the workflow does not know it.</dd></div>
+  <div><dt>Recent runs (three), ruled</dt><dd>"How did it go lately?" — the same row as everywhere: the run named by its purpose, the work item beside it, without repeating the workflow name. Ruled, not framed: this shelf is the file of this workflow, not a living shelf — the one running entry still breathes, because it is the one living thing in the room.</dd></div>
+  <div><dt>"Technical" folded</dt><dd>"Which exact bytes, from where?" — revision and source commit, only on request (REQ-UI-05).</dd></div>
+</dl>
+
+<h3 class="frame-title">Start sheet <small>— generated from the order schema</small></h3>
+<div class="frame">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage sheeted">
+    <div class="head dimmed"><h4><span class="glyph">⧉</span>iterate-code</h4><div class="right"><span class="btn primary">Start</span></div></div>
+    <div class="pipe dimmed" style="padding-top:.3rem">
+      <div class="node"><div class="dot">·</div><b>planner</b></div><div class="link"></div><div class="node"><div class="dot">·</div><b>builder</b></div><div class="link"></div><div class="node"><div class="dot">·</div><b>reviewer</b></div><div class="link"></div><div class="node"><div class="dot hx"><i>?</i></div><b>merge gate</b></div><div class="link"></div><div class="node"><div class="dot sq">·</div><b>open PR</b></div>
+    </div>
+    <div class="sheet">
+      <h5>Start iterate-code</h5>
+      <div class="fld"><label>Work item</label><div class="in">#450 Preview door <span>▴</span></div>
+        <div class="menu">
+          <div class="grp">atelier-2 · GitHub</div>
+          <div class="opt on">#450 Preview door</div>
+          <div class="opt">#446 Loopback refusal</div>
+          <div class="grp">infra · GitLab</div>
+          <div class="opt">!12 Rotate keys</div>
+        </div>
+        </div>
+      <div class="fld"><label>Focus</label><div class="in"><span>what matters most</span></div></div>
+      <p class="shelf">Roles</p>
+      <div class="role"><b>planner</b><div><div class="in"><span>difficulty 2 → <span class="val">claude-sonnet-4-6</span></span><span>▾</span></div></div></div>
+      <div class="role"><b>builder</b><div><div class="in"><span>difficulty 2 → <span class="val">claude-sonnet-4-6</span></span><span>▾</span></div></div></div>
+      <div class="role"><b>reviewer</b><div><div class="in warn" title="iterate-code asks reviewer for a family other than builder's; difficulty 2 and 3 both default to Claude in this project"><span>difficulty 2 → <span class="val">choose a configuration</span></span><span>▾</span></div></div></div>
+      <div class="foot"><span class="btn held" title="reviewer has no configuration yet">Start run</span><span class="btn quiet">Cancel</span></div>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Fields from the schema</dt><dd>"What does this workflow need from me?" — every order type has exactly one rendering: <code>work_item</code> → picker, <code>text</code> → field; never JSON.</dd></div>
+  <div><dt>Picker grouped by source</dt><dd>"Which item, from which connection?" — the sheet stays platform-neutral; #/! are the adapter's grammar.</dd></div>
+  <div><dt>Roles: one line per role, the value is the dropdown</dt><dd>"Who does what — and can I change it this time?" — only the role nodes of the graph. The graph above shows roles, the sheet shows which model fills each: an exact id from Settings › Models with its Account; the dropdown lists the registry, nothing else.</dd></div>
+  <div><dt>"difficulty 2 → claude-sonnet-4-6" · "pinned in workflow → claude-opus-5"</dt><dd>"Where does this come from?" — the source stands in the field, before the arrow: the role's difficulty (the workflow's number, answered by the project's Model defaults; a <code>family_differs_from</code> on the role refuses the family it names), or the workflow's own pin to one configuration (third sheet below: the workflow chose to be provider-bound there, and the field says so). The same dropdown overrides either, for this run only; the precedence is start override · pinned in workflow · model default per difficulty · next higher difficulty · none, and the field shows which one won. There is no durable override per role: what should hold for a project is changed in Settings, once, per difficulty.</dd></div>
+  <div><dt>"(next higher)"</dt><dd>"A difficulty has no default — why is the role still filled?" — the #557 rule: a difficulty without a default takes the next <b>higher</b> difficulty's, never silently and never a weaker one; the field says both which answered and that it was the fallback. Not drawn: every difficulty has a default here. Only when no higher difficulty has one either does the field go ochre.</dd></div>
+  <div><dt>"chosen now" only under an overridden role</dt><dd>"Does this stay?" — only the deviation from the project carries a word; the default and the empty field say it by field and colour.</dd></div>
+  <div><dt>Held button with tooltip</dt><dd>"Why won't it go?" — the ochre field "choose a configuration" is the whole message: no default answers this difficulty or any higher one outside the family the role must differ from; the reason on the button and the field only on request (tooltip).</dd></div>
+</dl>
+<div class="sheets">
+  <div class="sheet static">
+    <h5>Start sweep-docs</h5>
+    <div class="fld"><label>Work item</label><div class="in degraded"><span>no source</span><a href="#">Connect one in Settings →</a></div></div>
+    <div class="fld"><label>Focus</label><div class="in"><span>what matters most</span></div></div>
+    <p class="shelf">Roles</p>
+    <div class="role"><b>sweeper</b><div><div class="in" title="The project's model default for difficulty 1"><span>difficulty 1 → <span class="val">claude-haiku-4-5</span></span><span>▾</span></div></div></div>
+    <div class="role"><b>reviewer</b><div><div class="in"><span>difficulty 2 → <span class="val">claude-sonnet-4-6</span></span><span>▾</span></div></div></div>
+    <div class="foot"><span class="btn held" title="no source for work items">Start run</span><span class="btn quiet">Cancel</span></div>
+  </div>
+  <div class="sheet static">
+    <h5>Start ui-quality-review</h5>
+    <div class="fld"><label>Work item</label><div class="in">#450 Preview door <span>▾</span></div></div>
+    <div class="fld"><label>Focus</label><div class="in"><span>what matters most</span></div></div>
+    <p class="shelf">Roles</p>
+    <div class="role"><b>walker</b><div><div class="in" title="ui-quality-review names this configuration itself; the workflow is provider-bound here"><span>pinned in workflow → <span class="val">claude-opus-5</span></span><span>▾</span></div></div></div>
+    <div class="role"><b>judge</b><div><div class="in">grok-4.6 <span>▾</span></div><div class="from">chosen now</div></div></div>
+    <div class="err">Could not start — the provider for walker refused the key.<a href="#">Try again</a></div>
+    <div class="foot"><span class="btn primary">Start run</span><span class="btn quiet">Cancel</span></div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Degraded: dashed field with a door</dt><dd>"Why can't I choose anything?" — the dashed field shows it, the door "Connect one in Settings" fixes it; no sentence beneath. If a source provides only issues, the field says "This source provides issues, not change requests".</dd></div>
+  <div><dt>Error: brick line above the buttons</dt><dd>"What happened at start?" — the sheet stays open, the inputs stand, "Try again" is the one move.</dd></div>
+  <div><dt>"pinned in workflow → claude-opus-5"</dt><dd>"Why can't the project decide this one?" — the workflow named the configuration itself, so it is provider-bound by its author's choice; the field shows it, the tooltip says it, the dropdown still overrides it for this run.</dd></div>
+</dl>
+
+<h3 class="frame-title">After "Start run"</h3>
+<div class="frame short">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← Catalog</a>
+    <div class="head"><h4><span class="glyph">⧉</span>iterate-code</h4><div class="right"><span class="btn primary">Start</span></div></div>
+    <p class="shelf">Recent runs</p>
+    <a class="row" href="#"><span class="sdot live"></span><span class="name">Close the loopback refusal</span><span class="item">#446</span><span class="dim">the planner is reading the issue</span><span class="tail">just now</span></a>
+    <a class="row" href="#"><span class="sdot live" style="animation:none;background:var(--live)"></span><span class="name">Finish the preview door</span><span class="item">#450</span><span class="dim">the reviewer is reading — round 2</span><span class="tail">15 min</span></a>
+    <a class="row" href="#"><span class="sdot"></span><span class="name">Fix the wait bug</span><span class="item">#510</span><span class="dim">PR #512 merged, issue closed</span><span class="tail">today 14:32</span></a>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>New row on top, breathing — no sentence</dt><dd>"Did it start, and is it really this one?" — the breathing row says both; a "Started …" sentence above would be the same message again. The row is the door to the run.</dd></div>
+</dl>
+
+<h3 class="frame-title">Agent detail <small>— read, not edit</small></h3>
+<div class="frame short">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← Catalog</a>
+    <div class="head"><h4><span class="glyph">◯</span>reviewer</h4><span class="meta"><i class="mark" title="Claude">A</i> Claude</span></div>
+    <div class="panel" style="max-width:34rem">
+      <div class="prompt">You are the workshop's reviewer. Read the diff, name what bothers you, and say nothing that does not. Verdict first, findings after, no praise.</div>
+      <div class="fact"><b>Model</b><span><code>claude-opus</code> <span class="pill" title="The file proposes; Settings decides, per difficulty">proposed</span></span></div>
+      <div class="fact"><b>Tools</b><span class="pills"><span class="pill">Read</span><span class="pill">Grep</span><span class="pill">Bash</span></span></div>
+      <details class="back"><summary>Technical</summary><dl><dt>revision</dt><dd class="mono">2c7d4e11…9d44</dd><dt>source</dt><dd>Git · leonardo/atelier-kit @ b8cfa0d5 · agents/reviewer.md</dd><dt>format</dt><dd>agent · Claude Markdown, passed through whole</dd></dl></details>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Prompt in serif</dt><dd>"What does this agent say about itself?" — the bytes, parsed, unchanged (ADR 0007).</dd></div>
+  <div><dt>"Model · claude-opus · proposed"</dt><dd>"Does it really run with this?" — the pill says "proposal", the tooltip says who decides (ADR 0018 §1): the model default of the role's difficulty in Settings, never the file.</dd></div>
+  <div><dt>Tools without an aside</dt><dd>"What may it do?" — the pills; that the node sets the bound is a rule of the house, not a line per agent.</dd></div>
+  <div><dt>No place, no button</dt><dd>"Where does it stand in the project?" — nowhere: the file is a prompt, the project chooses a model per difficulty in Settings, and a role's file is the workflow's. Nothing here to set.</dd></div>
+</dl>
+
+<h3 class="frame-title">Agent detail, states <small>— no executor · newer revision</small></h3>
+<div class="sheets">
+  <div class="sheet static">
+    <div class="head" style="margin-bottom:.5rem"><h4 style="font-size:1.15rem"><span class="glyph">◯</span>builder</h4><span class="meta"><i class="mark" title="Codex">O</i> Codex</span></div>
+    <div class="prompt">You implement one bounded change and pin it with tests. Touch nothing else.</div>
+    <div class="fact"><b>Model</b><span><code>gpt-5-codex</code> <span class="pill" title="The file proposes; Settings decides, per difficulty">proposed</span></span></div>
+    <div class="fact"><b>Runs</b><span><span class="pill dash">No executor runs Codex here yet</span></span></div>
+  </div>
+  <div class="sheet static">
+    <div class="head" style="margin-bottom:.5rem"><h4 style="font-size:1.15rem"><span class="glyph">◯</span>walker</h4><span class="meta"><i class="mark" title="Claude">A</i> Claude</span><div class="right"><span class="pill warn">Newer revision</span><span class="btn sm">Pull</span></div></div>
+    <div class="prompt">You walk every room of the workshop like its owner and write down where you had to guess.</div>
+    <div class="fact"><b>Model</b><span><code>claude-sonnet</code> <span class="pill" title="The file proposes; Settings decides, per difficulty">proposed</span></span></div>
+    <div class="fact"><b>Tools</b><span class="pills"><span class="pill">Read</span><span class="pill">Bash</span></span></div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>"No executor runs Codex here yet" (dashed)</dt><dd>"Can this one run at all?" — a state on the entry, never a refusal at run start (ADR 0018, Refusals).</dd></div>
+  <div><dt>"Newer revision · Pull" in the head</dt><dd>"Is this the current file?" — the same pair as on the card and in Settings; Pull is the attributed click.</dd></div>
+</dl>
+
+<h3 class="frame-title">Skills, empty</h3>
+<div class="frame short">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage">
+    <div class="head"><h4>Catalog</h4><div class="right"><span class="btn">Import</span></div></div>
+    <div class="filters"><span class="f">All</span><span class="f">Workflows <b>3</b></span><span class="f">Agents <b>2</b></span><span class="f on">Skills <b>0</b></span><input placeholder="Search…" aria-label="Search the catalog"></div>
+    <p class="nothing"><span class="glyph">✦</span>A plugin folder brings skills.</p>
+  </div>
+</div>
+<dl class="uq"><div><dt>One teaching sentence in the card shape</dt><dd>"Where would skills come from?" — the sentence stays because it teaches the next move (a plugin folder), not because it captions the absence; no link, no button: "Import" already stands above.</dd></div></dl>
+
+<!-- ═══════════════════════════ 05 HISTORY ═══════════════════════════ -->
+<h2><span class="no">05</span>History</h2>
+<p class="q">Which run was that? Every line: when · purpose · work item · result in plain words · duration. Click → the same run, frozen.</p>
+<div class="frame">
+  <nav class="rail" data-on="history"></nav>
+  <div class="stage">
+    <div class="head"><h4>History</h4><div class="right filters plain"><span class="f">Today</span><span class="f on">7 days</span><span class="f">30 days</span><span class="f">Range…</span></div></div>
+    <div class="tw"><table class="hist">
+      <tr><th>When</th><th>Purpose</th><th>Work item</th><th>Result</th><th class="took">Duration</th></tr>
+      <tr><td class="when">today 14:32</td><td class="name">Fix the wait bug<small>iterate-code</small></td><td><span class="item">#510</span></td><td class="res">PR #512 merged, issue closed</td><td class="took">38 min</td></tr>
+      <tr><td class="when">today 11:05</td><td class="name">Sweep the docs<small>iterate-code</small></td><td><span class="item">#162</span></td><td class="res fail">Failed — not green after 3 rounds; the last review names two findings</td><td class="took">44 min</td></tr>
+      <tr><td class="when">yesterday 23:40</td><td class="name">Yesterday's runs, in one page<small>digest</small></td><td class="none">—</td><td class="res">Digest of 6 runs written</td><td class="took">3 min</td></tr>
+      <tr><td class="when">Sun 16:22</td><td class="name">Greet Felix<small>hello-atelier</small></td><td class="none">—</td><td class="res">Greeted Felix in one sentence</td><td class="took">18 s</td></tr>
+    </table></div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Chips "Today · 7 days · 30 days · Range…"</dt><dd>"How far back am I looking?" — the same chip as the catalog's group heads; the default is marked, one click changes it, "Range…" opens a date picker. No dropdown: the choices are four, so they stand in the open.</dd></div>
+  <div><dt>When (relative, exact on hover)</dt><dd>"Which one was that — today or Sunday?" — digits aligned.</dd></div>
+  <div><dt>Purpose (the order sentence), workflow small beneath</dt><dd>"What was the run for, by which recipe?" — the same name as on the workbench and in the run head.</dd></div>
+  <div><dt>Work item</dt><dd>"For which item?" — the column that tells two equal workflows apart; "—" where there is none.</dd></div>
+  <div><dt>Result in plain words</dt><dd>"What came of it?" — never the standing word alone; Failed in brick with the sentence.</dd></div>
+  <div><dt>Duration</dt><dd>"How long?" — drops first at 390 so Result is never cut. Not "Took": HEART calls it jargon.</dd></div>
+  <div><dt>The open conversation is not here</dt><dd>"Where is today's conversation?" — it is a run but not ended; History shows nothing that still runs or waits. Its door is the workbench; it becomes a line here once it ends.</dd></div>
+</dl>
+
+<h3 class="frame-title">Empty</h3>
+<div class="frame short">
+  <nav class="rail" data-on="history"></nav>
+  <div class="stage">
+    <div class="head"><h4>History</h4><div class="right filters plain"><span class="f">Today</span><span class="f on">7 days</span><span class="f">30 days</span><span class="f">Range…</span></div></div>
+    <div class="tw"><table class="hist">
+      <tr><th>When</th><th>Purpose</th><th>Work item</th><th>Result</th><th class="took">Duration</th></tr>
+    </table></div>
+  </div>
+</div>
+<dl class="uq"><div><dt>Column heads stay, no sentence</dt><dd>"What would stand here?" — the same shape without lines; the marked chip already says how far the view reaches, a sentence would only caption the emptiness.</dd></div></dl>
+
+<!-- ═══════════════════════════ 06 SETTINGS ═══════════════════════════ -->
+<h2><span class="no">06</span>Settings</h2>
+<p class="q">The context above all rooms, one per project, at the foot of the rail. Its head is the project switcher; beneath it three things: what the project is connected to, which models each provider has, and which one answers each difficulty.</p>
+<div class="frame">
+  <nav class="rail" data-on="settings"></nav>
+  <div class="stage">
+    <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
+    <p class="shelf">Sources</p>
+    <div class="src"><span class="k">Items</span><span class="d"><b>GitHub · FlexOr2/atelier-2</b> · issues and change requests · connected Sat</span><span class="act destroy">Disconnect</span></div>
+    <div class="src"><span class="k">Items</span><span class="d"><b>GitLab · infra</b> · group, 3 projects · issues · connected today</span><span class="act destroy">Disconnect</span></div>
+    <div class="src"><span class="k">Library</span><span class="d"><b>Git · leonardo/atelier-kit</b> · scanned 2 min ago · <span style="color:var(--need)">1 newer revision</span></span><span class="act">Pull</span></div>
+    <div style="margin:.2rem 0 .4rem"><span class="btn sm">Connect a source</span></div>
+    <p class="shelf">Models</p>
+    <div class="tw"><table class="list">
+      <tr><th>Model</th><th>Account</th><th></th></tr>
+      <tr class="grp"><td colspan="3"><i class="mark" title="Claude">A</i> Anthropic · leonardo</td></tr>
+      <tr><td><code>claude-opus-5</code></td><td class="by">leonardo</td><td class="by">added by you · checked</td></tr>
+      <tr><td><code>claude-opus-4-8</code></td><td class="by">leonardo</td><td class="by">added by you · checked</td></tr>
+      <tr><td><code>claude-sonnet-4-6</code></td><td class="by">leonardo</td><td class="by">added by you · checked</td></tr>
+      <tr><td><code>claude-haiku-4-5</code></td><td class="by">leonardo</td><td class="by">added by you · checked</td></tr>
+      <tr><td><code>claude-opus-5-1</code></td><td class="by">leonardo</td><td><span class="pill warn" title="The dry run on first use found no such model at Anthropic; the entry cannot be selected">unknown at the provider</span></td></tr>
+      <tr class="grp"><td colspan="3"><i class="mark" title="Codex">O</i> OpenAI · leonardo</td></tr>
+      <tr><td><code>gpt-5.6-sol</code></td><td class="by">leonardo</td><td class="by"></td></tr>
+      <tr><td><code>gpt-5.5</code></td><td class="by">leonardo</td><td class="by"></td></tr>
+      <tr class="grp"><td colspan="3"><i class="mark" title="Grok">X</i> xAI · leonardo</td></tr>
+      <tr><td><code>grok-4.6</code></td><td class="by">leonardo</td><td class="by"></td></tr>
+      <tr><td colspan="3"><span class="btn sm">Add a model</span></td></tr>
+    </table></div>
+    <p class="note">Discovered from the pinned CLI where the provider lists models; added ids are checked on first use.</p>
+    <p class="shelf">Model defaults</p>
+    <div class="tw"><table class="list">
+      <tr><th>Difficulty</th><th>Model</th></tr>
+      <tr><td class="ord"><b>3</b></td><td><div class="in"><span class="val"><i class="mark" title="Claude">A</i> claude-opus-5</span><span class="sub">Account leonardo</span><span>▾</span></div></td></tr>
+      <tr><td class="ord"><b>2</b></td><td><div class="in"><span class="val"><i class="mark" title="Claude">A</i> claude-sonnet-4-6</span><span class="sub">Account leonardo</span><span>▾</span></div></td></tr>
+      <tr><td class="ord"><b>1</b></td><td><div class="in"><span class="val"><i class="mark" title="Claude">A</i> claude-haiku-4-5</span><span class="sub">Account leonardo</span><span>▾</span></div></td></tr>
+    </table></div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Head = the project switcher</dt><dd>"Which project am I in, how do I switch?" — the name with ▾: one click shows the other projects; the same click that switches lands here, in the switched project's Settings (REQ-UI-23). No word "project", no second switcher anywhere.</dd></div>
+  <div><dt>Source: kind (Items / Library) · form only on deviation (group)</dt><dd>"What does this connection deliver — items or building blocks — and how big is it?" — both kinds in one view; a GitLab group brings its projects along.</dd></div>
+  <div><dt>"issues and change requests"</dt><dd>"What can I pick from this in the start sheet?" — exactly the source's capabilities, in two words; only the deviation (group, 3 projects) carries a word.</dd></div>
+  <div><dt>Library: "scanned 2 min ago · 1 newer revision · Pull"</dt><dd>"Is my library current, and how do I catch up?" — scan silent, intake on click (ADR 0018 §3).</dd></div>
+  <div><dt>"Disconnect" in brick, "Pull" in ink</dt><dd>"Which of the two hurts?" — disconnecting is irreversible and so carries brick without an underline and asks once more (next frame); Pull is an ordinary door in ink. Both at least <code>--tap</code> tall.</dd></div>
+  <div><dt>"Connect a source"</dt><dd>"How do I add one?" — a button that opens the sheet (next frame); the conductor may do the same on request, with the stage as its question.</dd></div>
+  <div><dt>Models: per connected provider, exact ids</dt><dd>"Which models can this house use?" — the <b>registry</b>: configuration, not code — one versioned record per provider, changed here and nowhere else. A line is an exact model id (<code>claude-opus-5</code>, <code>gpt-5.6-sol</code>) with its Account; no rating, no rung — the house does not judge models, you choose them beneath. A new model is one line, never a rebuild. Provenance and check stand only where they deviate: "added by you · checked" beside what discovery did not bring; a discovered line carries nothing.</dd></div>
+  <div><dt>"Discovered from the pinned CLI where the provider lists models; added ids are checked on first use."</dt><dd>"Where do these lines come from, and can I trust an id I typed?" — the one line the table cannot show: where the provider's pinned CLI lists its models (Codex, Grok), discovery pre-fills the registry; where it does not (Claude), you add the id and the house checks it by a dry run on first use.</dd></div>
+  <div><dt>"unknown at the provider" (ochre pill)</dt><dd>"Did my id hold?" — no: the dry run found no such model; the line stays so you can correct it, the entry cannot be selected, and the house says it plainly instead of failing a run later.</dd></div>
+  <div><dt>"Add a model"</dt><dd>"A model came out — how do I use it?" — one row: the id; the check happens on first use.</dd></div>
+  <div><dt>Model defaults: Difficulty 3 · 2 · 1 → one model from the list</dt><dd>"Who does what in this project?" — the one durable assignment, three lines long, <b>your choice</b>: each dropdown lists the Models above and writes on change; nothing is derived, nothing is scored; each a model id and its Account (<code>claude-opus-5 · Account leonardo</code>) — not the prompt file, which stays neutral (ADR 0018 §1). A role of difficulty n takes row n; a role whose workflow says <code>family_differs_from</code> refuses the family it names — the condition is the workflow's, the house adds none, and there is no cost heuristic. There is no second table, no per-role line, no flags: what should differ for one role is the workflow's pin or this run's choice on the start sheet.</dd></div>
+  <div><dt>An empty row</dt><dd>"Must I fill all three?" — no: a difficulty without a default takes the next higher one's (#557); only a difficulty with none above it either (or one the role's family rule refuses) shows where it bites: ochre on the role in the start sheet, and the conductor's question in the conversation.</dd></div>
+</dl>
+
+<h3 class="frame-title">Connect a source <small>— the sheet · and the question before a disconnect</small></h3>
+<div class="sheets">
+  <div class="sheet static">
+    <h5>Connect a source</h5>
+    <div class="fld"><label>Kind</label><div class="filters plain"><span class="f on">Items</span><span class="f">Library</span></div></div>
+    <div class="fld"><label>Where</label><div class="in">github.com/FlexOr2/atelier-2</div></div>
+    <div class="fld"><label>Account</label><div class="in">leonardo · GitHub App <span>▾</span></div></div>
+    <div class="foot"><span class="btn primary">Connect</span><span class="btn quiet">Cancel</span></div>
+  </div>
+  <div class="dialog"><section class="ask">
+    <h5>Disconnect atelier-2 on GitHub?</h5>
+    <p class="from">Its 7 queued items leave the queue; finished runs keep their receipts.</p>
+    <div class="acts"><span class="btn danger">Disconnect</span><span class="btn">Keep it</span></div>
+  </section></div>
+</div>
+<dl class="uq">
+  <div><dt>Kind as two chips</dt><dd>"Items or building blocks?" — the same chip as everywhere; the choice decides what the house reads from the address.</dd></div>
+  <div><dt>Where: one address</dt><dd>"Which repository, group or folder?" — the house recognises the platform from the address; no provider dropdown (REQ-UI-15).</dd></div>
+  <div><dt>Account: a reference, never a token</dt><dd>"With whose access?" — an Account of the installation (ADR 0017); the sheet shows names, never material. Creating an Account is a settings surface that does not exist yet.</dd></div>
+  <div><dt>The question before a disconnect</dt><dd>"What do I lose?" — the stage in your own hand: one line of consequence, brick button, a way back.</dd></div>
+</dl>
+
+<h3 class="frame-title">The conversation's yes is a start override</h3>
+<div class="frame short">
+  <nav class="rail" data-on="workbench" data-needs="1"></nav>
+  <div class="stage">
+    <div class="asks">
+    <section class="ask">
+      <p class="from"><b>the conductor</b>, in your conversation — you asked for a UI review.</p>
+      <h5>Take grok-4.6 as judge for this run?</h5>
+      <div class="acts"><span class="btn primary" title="For this run only; Model defaults stay as they are">Yes, for this run</span><span class="btn">Not now</span></div>
+    </section>
+    </div>
+    <div class="talk">
+      <div class="msg you"><span class="lbl">You<small>15:10</small></span><p>Review the workbench's face against HEART.</p></div>
+      <div class="msg atelier"><span class="lbl">Atelier</span><p>ui-quality-review's judge is difficulty 3 and must differ in family from its walker, which the workflow pins to claude-opus-5 — and difficulty 3 defaults to claude-opus-5 here. I'd take grok-4.6 for judge, this once — say yes above.</p><a class="ref need" href="#"><span class="word need">Waiting for you</span><span class="q">Take grok-4.6 as judge?</span>↑</a></div>
+    </div>
+    <div class="ear"><div class="bar"><input placeholder="Tell the atelier what you want…" aria-label="Tell the atelier what you want"><span class="btn primary">Send</span></div></div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>The stage, sender "the conductor"</dt><dd>"Who asks, and why?" — the conductor has no write door; its question is a wait node of its run, your yes a wait answer with actor <i>operator</i>, and that is the <b>start override</b> for this run — the same thing the start sheet's dropdown does by hand. Nothing durable is written: the conductor asks for a run, and Model defaults are yours to set in Settings.</dd></div>
+  <div><dt>Tooltip on "Yes, for this run"</dt><dd>"Is this only for this time?" — yes; the answer only on request, not as an aside.</dd></div>
+  <div><dt>The round beneath</dt><dd>"What brought me here?" — your sentence and the reply that points at the stage.</dd></div>
+</dl>
+
+<!-- ═══════════════════════════ 07 BUDGETS ═══════════════════════════ -->
+<h2><span class="no">07</span>Click and glance budgets</h2>
+<div class="tw"><table class="doc">
+  <tr><th>Core task</th><th>From the workbench</th><th>From another room</th><th>Glances</th></tr>
+  <tr><td>Send a message</td><td><b>0 clicks</b> + Enter — the ear is there without scrolling</td><td>1 (Workbench) + Enter</td><td>1 — at the bottom</td></tr>
+  <tr><td>Answer a decision</td><td><b>1 click</b> — the button on the stage; any other open question: 1 + 1</td><td>2 (Workbench, then the button); the ochre number in the rail says it is worth it</td><td>1 — it is the first thing in the room</td></tr>
+  <tr><td>Find the running run</td><td><b>0 clicks</b> — the run row with the breathing node; open it: 1</td><td>1 + 1</td><td>1 — the one movement</td></tr>
+  <tr><td>Open the result of a finished run</td><td><b>1 click</b> — the conductor's card in the conversation; the sentence stands at the top, no second click</td><td>History: 1 + 1 line = 2</td><td>2 — card or line, then sentence</td></tr>
+  <tr><td>Start a workflow by hand</td><td>Catalog · card · Start · Start run = <b>4 clicks</b>; choosing a work item +1</td><td class="none">—</td><td>2 — card, sheet</td></tr>
+  <tr><td>Import a file</td><td>Drop + "Add to catalog" = <b>1 click</b>; via "Import": button · file · Add = 3</td><td>Catalog +1</td><td>2 — veil, sheet</td></tr>
+  <tr><td>Cancel a run</td><td>Run row · Cancel run · confirm = <b>3 clicks</b></td><td>+1</td><td>2 — head, dialog</td></tr>
+<tr><td>See the queue · admit an item</td><td>The line · ▾ = <b>1 click</b>; Admit +1</td><td>Workbench +1</td><td>1 — the line, then the list beneath it</td></tr>
+  <tr><td>Connect a source</td><td>Settings · Connect a source · Connect = <b>3 clicks</b> + one address</td><td>same — Settings is one click from every room</td><td>2 — room, sheet</td></tr>
+</table></div>
+<ul class="rules">
+  <li>Through the ear, starting is <b>1 Enter</b> ("start iterate-code for #450"); the catalog path is the exception for trying out and debugging.</li>
+  <li>A surface that breaks these budgets is a defect (REQ-UIQ-08).</li>
+</ul>
+</main>
+<script>
+/* The rail once, not thirty times: the same rail in every frame. */
+(function(){
+  var places=[["workbench","Workbench","⌂"],["catalog","Catalog","▤"],["history","History","◷"]];
+  document.querySelectorAll("nav.rail[data-on]").forEach(function(nav){
+    var on=nav.dataset.on, needs=nav.dataset.needs;
+    var h='<div class="brand">atelier</div>';
+    places.forEach(function(p){
+      h+='<a class="place'+(on===p[0]?" on":"")+'" href="#" aria-label="'+p[1]+'" title="'+p[1]+'"><span class="glyph" aria-hidden="true">'+p[2]+'</span><span class="lbl">'+p[1]+'</span>'+(p[0]==="workbench"&&needs?'<span class="count" aria-label="'+needs+' needs you">'+needs+'</span>':"")+'</a>';
+    });
+    h+='<div class="grow"></div><a class="place foot'+(on==="settings"?" on":"")+'" href="#" aria-label="Settings" title="Settings"><span class="glyph" aria-hidden="true">⚙</span><span class="lbl">Settings</span><span class="ctx">atelier-2</span></a>';
+    nav.innerHTML=h;
+  });
+  /* The person glyph once: a human answers here. */
+  var person='<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="4.6" r="3" fill="currentColor"/><path d="M1.8 15.2a6.2 6.2 0 0 1 12.4 0z" fill="currentColor"/></svg>';
+  document.querySelectorAll(".person").forEach(function(el){ el.innerHTML=person; el.setAttribute("title","a person answers here"); });
+})();
+</script>
