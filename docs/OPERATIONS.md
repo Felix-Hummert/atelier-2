@@ -457,6 +457,17 @@ attempt paths for the full accept deadline, and is converged to its real
 terminal at the next start (below). A lease a launcher already claimed loses
 this race harmlessly and is left for its launcher.
 
+**A Runner does not die with the Serve that went away.** Losing the session
+connection reaps nothing: the Runner keeps its provider child running and
+redials the session port for as long as the attempt span its manifest declares
+allows, so a Serve that comes back and resumes that Attempt's workflow meets
+the same invocation again and receives the work it already paid for, instead of
+an invocation lost to a restart. Expect the Runner container to still be
+running through a Serve restart — that is the healthy shape. A Runner whose
+Serve never returns inside that span gives up: it reaps its child, keeps
+whatever it had already journalled, and exits, which is the Attempt the
+convergence below is for.
+
 **Every start converges every Runner-lease Attempt no workflow still owes its
 next move.** After a Serve restart mid-session such an Attempt would otherwise
 stand `LAUNCH_ARMED`/`POSSIBLY_RAN`, its run `STARTED`, forever. The launcher

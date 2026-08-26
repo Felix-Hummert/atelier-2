@@ -120,12 +120,31 @@ from atelier2.runner.session import CandidateScenario, RunnerFrameChannel, _stat
 # attested cgroup.
 _STUBBED_PROCESS_LIMIT = 4096
 
+# Every candidate driver below inherits one already-connected channel as a
+# descriptor rather than a Core address it could dial again, so its channel
+# source hands that channel over once and then refuses. A test whose Core
+# drops the connection therefore ends the candidate right there, instead of
+# leaving the session's reconnect loop waiting out the manifest's whole
+# attempt span for a Core that no test is going to bring back;
+# `test_runner_session_reconnect.py` is where a source that really reconnects
+# lives.
+_ONE_CONNECTION_SOURCE = """
+_connections = [channel]
+
+
+def _connect_to_core():
+    if not _connections:
+        raise RuntimeError("this candidate was handed exactly one connection")
+    return _connections.pop()
+"""
+
 # Runs `run_candidate_session` in a fresh interpreter with its own
 # `PR_SET_NO_NEW_PRIVS` and a stubbed cgroup pid limit reading (see
 # `_STUBBED_PROCESS_LIMIT` above). The child's Landlock surface arrives
 # through the manifest `_host_manifest` attests, exactly as it does in the
 # deployed image. Nothing about the session's own logic is touched.
-_CANDIDATE_DRIVER = """
+_CANDIDATE_DRIVER = (
+    """
 import ctypes
 import socket
 import sys
@@ -161,8 +180,12 @@ if landlock_abi:
     session_module.landlock_kernel_abi = lambda: int(landlock_abi)
 session_module._pid_limit = lambda: int(process_limit)
 session_module._runner_workspace_directory = lambda: Path(workspace_directory)
+channel = socket.socket(fileno=int(fd))
+"""
+    + _ONE_CONNECTION_SOURCE
+    + """
 run_candidate_session(
-    socket.socket(fileno=int(fd)),
+    _connect_to_core,
     RunnerGenerationBinding(
         AgentAttemptId(attempt_id),
         AgentExecutionRequestHash(request_hash),
@@ -176,6 +199,7 @@ run_candidate_session(
     Path(journal_directory),
 )
 """
+)
 
 
 class _FakeRunnerSessionCore:
@@ -510,18 +534,25 @@ _CLAUDE_EXECUTOR = (
 )
 
 
+_WIRE_MANIFEST_TIMINGS = {
+    "total_attempt_milliseconds": 5_000,
+    "terminate_grace_milliseconds": 200,
+    "reap_deadline_milliseconds": 2_000,
+}
+"""Long enough for a real handshake, child and reap on a loaded host; short
+enough that a test which drives one of those endings wrong fails rather than
+hangs. A test with its own timing subject overrides exactly what it needs."""
+
+
 def _prepared_session(
     tmp_path: Path,
     scenario: CandidateScenario = CandidateScenario.SUCCESS,
     job_bytes: bytes | None = None,
     executor: tuple[str, str] | None = None,
+    **timings: int,
 ) -> _PreparedSession:
     invocation = RunnerInvocationId("B" * 43)
-    manifest = _host_manifest(
-        total_attempt_milliseconds=5_000,
-        terminate_grace_milliseconds=200,
-        reap_deadline_milliseconds=2_000,
-    )
+    manifest = _host_manifest(**{**_WIRE_MANIFEST_TIMINGS, **timings})
     if executor is not None:
         manifest = replace(
             manifest, provider_id=executor[0], executor_revision=executor[1]
@@ -915,7 +946,8 @@ def _client_tls_context(
     return context
 
 
-_TLS_CANDIDATE_DRIVER = """
+_TLS_CANDIDATE_DRIVER = (
+    """
 import ctypes
 import socket
 import ssl
@@ -952,11 +984,14 @@ context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=ca_cert)
 context.minimum_version = ssl.TLSVersion.TLSv1_3
 context.maximum_version = ssl.TLSVersion.TLSv1_3
 context.load_cert_chain(runner_cert, runner_key)
-connection = context.wrap_socket(
+channel = context.wrap_socket(
     socket.socket(fileno=int(fd)), server_hostname=server_hostname
 )
+"""
+    + _ONE_CONNECTION_SOURCE
+    + """
 run_candidate_session(
-    connection,
+    _connect_to_core,
     RunnerGenerationBinding(
         AgentAttemptId(attempt_id),
         AgentExecutionRequestHash(request_hash),
@@ -970,6 +1005,7 @@ run_candidate_session(
     Path(journal_directory),
 )
 """
+)
 
 
 def _spawn_tls_candidate_session(

@@ -186,23 +186,40 @@ def _run_candidate_session(
     # post-handshake fence below: validate_core_peer_leaf pins SAN DNS name,
     # SPKI-bound URI, EKU and fingerprint against the bootstrap document.
     context.check_hostname = False
-    with (
-        socket.create_connection((CORE_DNS_NAME, document.port), 5) as raw,
-        context.wrap_socket(raw, server_hostname=CORE_DNS_NAME) as connection,
-    ):
-        presented = connection.getpeercert(binary_form=True)
-        if presented is None:
-            raise RuntimeError("Core did not present an authenticated leaf")
-        validate_core_peer_leaf(presented, ca_certificate, document)
-        run_candidate_session(
-            connection,
-            binding,
-            invocation,
-            scenario,
-            handoff.joinpath("manifest"),
-            identity,
-            journal_directory,
-        )
+
+    def connect_to_core() -> ssl.SSLSocket:
+        """One authenticated channel to Core, freshly fenced against its leaf.
+
+        The session asks for this again whenever the connection it had died,
+        so every fence below is re-run per connection rather than trusted from
+        the last one: a Core that comes back is only the Core this bootstrap
+        pinned if the leaf it presents still says so.
+        """
+        raw = socket.create_connection((CORE_DNS_NAME, document.port), 5)
+        try:
+            connection = context.wrap_socket(raw, server_hostname=CORE_DNS_NAME)
+        except BaseException:
+            raw.close()
+            raise
+        try:
+            presented = connection.getpeercert(binary_form=True)
+            if presented is None:
+                raise RuntimeError("Core did not present an authenticated leaf")
+            validate_core_peer_leaf(presented, ca_certificate, document)
+        except BaseException:
+            connection.close()
+            raise
+        return connection
+
+    run_candidate_session(
+        connect_to_core,
+        binding,
+        invocation,
+        scenario,
+        handoff.joinpath("manifest"),
+        identity,
+        journal_directory,
+    )
     return 0
 
 

@@ -1,10 +1,16 @@
-"""The candidate Runner's one-shot session state machine, off the wire.
+"""The candidate Runner's session state machine, off the wire.
 
 Everything here drives OFFER through RELEASED against a narrow byte channel —
 no socket, TLS, or DNS import crosses this boundary. `__main__` owns the
-socket connect, the TLS handshake, and the peer-certificate fence; once that
-authenticated channel exists, this module owns every frame that flows across
-it, the child process it supervises, and the journal it publishes to.
+socket connect, the TLS handshake, and the peer-certificate fence; once such
+an authenticated channel exists, this module owns every frame that flows
+across it, the child process it supervises, and the journal it publishes to.
+
+A Core that dies mid-session is not this invocation's death: the provider
+child keeps running and the session asks its caller for another authenticated
+channel, replaying the whole handshake from OFFER on it. Core answers each
+repeated frame out of its own cache, so the replay costs no second child and
+no second durable write.
 """
 
 from __future__ import annotations
@@ -15,6 +21,8 @@ import os
 import struct
 import subprocess
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
@@ -57,6 +65,7 @@ from atelier2.contracts.agent_attempts import (
     RunnerTerminalEvidenceEnvelope,
     RunnerTerminalEvidenceHash,
 )
+from atelier2.contracts.agents import AgentExecutionRequestV2
 from atelier2.contracts.runner_manifests import (
     RunnerManifestV1,
     decode_runner_manifest,
@@ -80,6 +89,8 @@ from atelier2.contracts.runner_terminal_evidence_codec import (
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceLease,
     AgentExecutionFailure,
+    AgentExecutorV2,
+    AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
@@ -116,9 +127,9 @@ class CandidateScenario(StrEnum):
 class RunnerFrameChannel(Protocol):
     """The narrow byte boundary the candidate session drives.
 
-    Anything that can recv, sendall, and settimeout satisfies it — a real TLS
-    socket in production, a plain `socket.socketpair()` half in a test. The
-    session state machine never imports socket or ssl itself.
+    Anything that can recv, sendall, settimeout, and close satisfies it — a
+    real TLS socket in production, a plain `socket.socketpair()` half in a
+    test. The session state machine never imports socket or ssl itself.
     """
 
     def recv(self, buffer_size: int, /) -> bytes: ...
@@ -126,6 +137,23 @@ class RunnerFrameChannel(Protocol):
     def sendall(self, data: bytes, /) -> None: ...
 
     def settimeout(self, value: float | None, /) -> None: ...
+
+    def close(self) -> None: ...
+
+
+# Open one already-connected, peer-verified channel to Core, or raise `OSError`
+# if Core cannot be reached right now. The socket, the TLS handshake and the
+# peer fence behind it belong to `__main__`; this module only ever asks for
+# another channel when the one it had died.
+ConnectToCore = Callable[[], RunnerFrameChannel]
+
+
+class CoreConnectionLost(ConnectionError):
+    """This Core connection is gone; the invocation it carried may still live."""
+
+
+class CoreUnreachable(ConnectionError):
+    """Core stayed unreachable for the whole span this invocation was given."""
 
 
 class _CoreFrameFence:
@@ -170,24 +198,55 @@ class _CoreFrameFence:
 
     def _buffer_exactly(self, length: int) -> None:
         while len(self._buffer) < length:
-            piece = self._channel.recv(length - len(self._buffer))
+            try:
+                piece = self._channel.recv(length - len(self._buffer))
+            except TimeoutError:
+                # The control poll's own bound, not a failure: `read_frame`
+                # asks for one with a timeout on purpose while a child runs.
+                raise
+            except OSError as error:
+                raise CoreConnectionLost("the Core session channel failed") from error
             if not piece:
-                raise ConnectionError("Core closed the candidate session")
+                raise CoreConnectionLost("Core closed the candidate session")
             self._buffer.extend(piece)
 
 
-def _write_frame(channel: RunnerFrameChannel, frame: RunnerSessionFrame) -> None:
-    channel.sendall(encode_runner_session_frame(frame))
+class _SessionWire:
+    """One Core connection, driven as this invocation's ordered frame exchange.
 
+    The outbound sequence restarts at one on every connection because that is
+    what makes a replay a replay: Core answers a sequence it already accepted
+    out of its own cache, and only if the frame arrives as the exact bytes it
+    cached, so a reconnect must number and shape its frames the way the lost
+    connection did.
+    """
 
-def _frame(
-    message: RunnerSessionMessage,
-    sequence: int,
-    binding: RunnerGenerationBinding,
-    invocation: RunnerInvocationId,
-    payload: tuple[bytes, ...] = (),
-) -> RunnerSessionFrame:
-    return RunnerSessionFrame(message, sequence, binding, invocation, payload)
+    def __init__(
+        self,
+        channel: RunnerFrameChannel,
+        binding: RunnerGenerationBinding,
+        invocation: RunnerInvocationId,
+    ) -> None:
+        self._channel = channel
+        self._binding = binding
+        self._invocation = invocation
+        self._fence = _CoreFrameFence(channel, binding, invocation)
+        self._sequence = 0
+
+    def send(
+        self, message: RunnerSessionMessage, payload: tuple[bytes, ...] = ()
+    ) -> None:
+        self._sequence += 1
+        frame = RunnerSessionFrame(
+            message, self._sequence, self._binding, self._invocation, payload
+        )
+        try:
+            self._channel.sendall(encode_runner_session_frame(frame))
+        except OSError as error:
+            raise CoreConnectionLost("the Core session channel failed") from error
+
+    def read(self, timeout: float | None = None) -> RunnerSessionFrame:
+        return self._fence.read_frame(timeout)
 
 
 def _reap_child(
@@ -200,15 +259,39 @@ def _reap_child(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _ProviderChild:
+    """The one provider process this invocation launched, and all it was given.
+
+    It outlives a dropped Core connection deliberately: a Core that dies while
+    a paid provider child is working must not cost that work. Its deadline is
+    fixed at launch rather than recomputed per connection, so a reconnect
+    extends this container's patience with Core and never the span the
+    manifest gave the child.
+    """
+
+    executor: AgentExecutorV2
+    command: AgentProcessCommand
+    process: subprocess.Popen[bytes]
+    deadline: float
+
+    def release(self) -> None:
+        """Take back what this child was given, once it can no longer use it."""
+        self.executor.release_credential_channel(self.command)
+        self.executor.close()
+
+
+def _child_deadline(manifest: RunnerManifestV1) -> float:
+    """When the span this manifest gave one provider child runs out."""
+    return time.monotonic() + manifest.total_attempt_milliseconds / 1000
+
+
 def _control_or_child_exit(
-    fence: _CoreFrameFence,
-    child: subprocess.Popen[bytes],
-    manifest: RunnerManifestV1,
+    wire: _SessionWire, child: subprocess.Popen[bytes], deadline: float
 ) -> RunnerSessionFrame | None:
-    deadline = time.monotonic() + manifest.total_attempt_milliseconds / 1000
     while child.poll() is None and time.monotonic() < deadline:
         try:
-            return fence.read_frame(timeout=_CONTROL_POLL_SECONDS)
+            return wire.read(timeout=_CONTROL_POLL_SECONDS)
         except TimeoutError:
             continue
     return None
@@ -357,10 +440,7 @@ CHILD_BOUNDARY_UNAVAILABLE_REFUSAL_CODE = "runner-child-boundary-unavailable"
 
 
 def _attested_ready_payload(
-    channel: RunnerFrameChannel,
-    binding: RunnerGenerationBinding,
-    invocation: RunnerInvocationId,
-    sequence: int,
+    wire: _SessionWire,
     manifest: RunnerManifestV1,
     auth_reference: str,
     identity: Path,
@@ -379,46 +459,20 @@ def _attested_ready_payload(
         return _measured_ready_payload(manifest, auth_reference, identity)
     except (RunnerToolchainUnpinned, RunnerToolchainRefused) as refusal:
         # These carry their own declared code as their message by construction.
-        _refuse_before_start(channel, binding, invocation, sequence, str(refusal))
+        _refuse_before_start(wire, str(refusal))
         raise
     except LandlockUnavailable:
-        _refuse_before_start(
-            channel,
-            binding,
-            invocation,
-            sequence,
-            CHILD_BOUNDARY_UNAVAILABLE_REFUSAL_CODE,
-        )
+        _refuse_before_start(wire, CHILD_BOUNDARY_UNAVAILABLE_REFUSAL_CODE)
         raise
 
 
-def _refuse_before_start(
-    channel: RunnerFrameChannel,
-    binding: RunnerGenerationBinding,
-    invocation: RunnerInvocationId,
-    sequence: int,
-    code: str,
-) -> None:
-    _write_frame(
-        channel,
-        _frame(
-            RunnerSessionMessage.REFUSE,
-            sequence,
-            binding,
-            invocation,
-            (code.encode("ascii"), NO_REFUSED_EVIDENCE),
-        ),
-    )
+def _refuse_before_start(wire: _SessionWire, code: str) -> None:
+    wire.send(RunnerSessionMessage.REFUSE, (code.encode("ascii"), NO_REFUSED_EVIDENCE))
 
 
 def _decline_crossing_cancel(
-    channel: RunnerFrameChannel,
-    fence: _CoreFrameFence,
-    binding: RunnerGenerationBinding,
-    invocation: RunnerInvocationId,
-    sequence: int,
-    evidence_hash: RunnerTerminalEvidenceHash,
-) -> tuple[RunnerSessionFrame, int]:
+    wire: _SessionWire, evidence_hash: RunnerTerminalEvidenceHash
+) -> RunnerSessionFrame:
     """Answer a CANCEL that crossed the already-sent TERMINAL_AVAILABLE.
 
     This invocation's one evidence envelope is already published to the
@@ -427,21 +481,14 @@ def _decline_crossing_cancel(
     silently dropping Core's frame or killing the session; the caller then
     keeps waiting for the READBACK that was always coming.
     """
-    sequence += 1
-    _write_frame(
-        channel,
-        _frame(
-            RunnerSessionMessage.REFUSE,
-            sequence,
-            binding,
-            invocation,
-            (
-                CROSSING_CANCEL_REFUSAL_CODE.encode("ascii"),
-                evidence_hash.value.encode("ascii"),
-            ),
+    wire.send(
+        RunnerSessionMessage.REFUSE,
+        (
+            CROSSING_CANCEL_REFUSAL_CODE.encode("ascii"),
+            evidence_hash.value.encode("ascii"),
         ),
     )
-    return fence.read_frame(), sequence
+    return wire.read()
 
 
 # The exact message `RunnerJournal.readback` raises when nothing is retained
@@ -491,8 +538,370 @@ def _after_ack_tombstone_published() -> None:
     """
 
 
+_TerminalRecord = RunnerTerminalEvidenceEnvelope | RunnerTerminalEvidenceAckTombstone
+
+
+def _evidence_hash_of(record: _TerminalRecord) -> RunnerTerminalEvidenceHash:
+    return (
+        record.evidence_hash
+        if isinstance(record, RunnerTerminalEvidenceAckTombstone)
+        else RunnerTerminalEvidenceHash.for_envelope(record)
+    )
+
+
+def _selected_manifest(
+    manifest_path: Path, binding: RunnerGenerationBinding
+) -> RunnerManifestV1:
+    """The carrier facts Core selected for this exact generation, or a refusal."""
+    manifest = decode_runner_manifest(manifest_path.read_bytes())
+    if runner_manifest_id(manifest) != binding.manifest_id:
+        raise RuntimeError("runner-manifest-mismatch")
+    return manifest
+
+
+class _ReconnectPatience:
+    """How long this container keeps trying to reach a Core that went away.
+
+    The manifest's attempt span is the bound, because it is the span Core
+    selected for this invocation and the span this container's own identity
+    was minted for (ADR 0009 sec. 2): past it a reconnect would present a key
+    that opens nothing, and a Runner still waiting would be a leak rather than
+    a hope.
+
+    Between tries it waits exactly `_CONTROL_POLL_SECONDS` -- the cadence this
+    session already spends looking at an open channel while a child runs. A
+    refused connect inside the Attempt's own private network costs no more
+    than that poll does, so a widening ladder would buy nothing and would
+    leave a Core that came back waiting out whichever step the container
+    happened to be asleep in. What must never be unbounded is the total, and
+    the span above is what bounds it.
+    """
+
+    def __init__(self, manifest: RunnerManifestV1) -> None:
+        self._deadline = time.monotonic() + manifest.total_attempt_milliseconds / 1000
+
+    def wait_or_give_up(self, loss: OSError) -> None:
+        if time.monotonic() + _CONTROL_POLL_SECONDS >= self._deadline:
+            raise CoreUnreachable(
+                "Core stayed unreachable for this invocation's whole attempt span"
+            ) from loss
+        time.sleep(_CONTROL_POLL_SECONDS)
+
+
+class _CandidateLifetime:
+    """One candidate process's whole invocation, across every connection it needs.
+
+    A dropped connection costs this container nothing it already did: the
+    measured READY attestation, a running provider child, the terminal fact
+    this invocation fixed and the tombstone Core acknowledged all live here.
+    The next connection therefore replays the exact frames Core already
+    cached, instead of re-measuring a provider, racing a second child against
+    work this attempt is already paying for, or minting bytes Core would
+    refuse as a different frame under a sequence it already answered.
+    """
+
+    def __init__(
+        self,
+        binding: RunnerGenerationBinding,
+        invocation: RunnerInvocationId,
+        scenario: CandidateScenario,
+        manifest: RunnerManifestV1,
+        identity: Path,
+        journal: RunnerJournal,
+    ) -> None:
+        self._binding = binding
+        self._invocation = invocation
+        self._scenario = scenario
+        self._manifest = manifest
+        self._identity = identity
+        self._journal = journal
+        self._ready_payload: tuple[bytes, ...] | None = None
+        self._child: _ProviderChild | None = None
+        self._terminal_record: _TerminalRecord | None = None
+        self._tombstone: RunnerTerminalEvidenceAckTombstone | None = None
+        self._cancel_observed = False
+
+    @property
+    def survives_a_lost_connection(self) -> bool:
+        """Whether replaying this invocation on a fresh connection stays honest.
+
+        Replay works because every frame this lifetime sends is derived from
+        state it pinned, so Core answers each repeated sequence out of its own
+        cache. A CANCEL breaks exactly that: Core sends it whenever it decides
+        to, and where it landed in the lost connection is what decided this
+        candidate's own frame numbering around it, which a replay cannot
+        reproduce. A cancelled attempt has no paid work left to save anyway,
+        so it ends here the way it did before this loop existed -- the child
+        reaped, the journal keeping whatever it already fixed.
+        """
+        return not self._cancel_observed
+
+    def drive(self, channel: RunnerFrameChannel) -> None:
+        """Replay this invocation from OFFER to RELEASED on one Core connection."""
+        wire = _SessionWire(channel, self._binding, self._invocation)
+        request, auth_reference = self._offer(wire)
+        wire.send(
+            RunnerSessionMessage.READY, self._attested_ready(wire, auth_reference)
+        )
+        if wire.read().message is not RunnerSessionMessage.LAUNCH:
+            raise RuntimeError("Core did not durably arm the candidate invocation")
+        work = self._work_under_way(request)
+        wire.send(RunnerSessionMessage.STARTED, (struct.pack(">Q", 1),))
+        self._deliver(wire, self._fixed_terminal_record(wire, work))
+
+    def close(self) -> None:
+        """Give up this invocation's child, leaving nothing of it running."""
+        child = self._child
+        if child is None:
+            return
+        self._child = None
+        try:
+            if child.process.poll() is None:
+                _reap_child(child.process, self._manifest)
+        finally:
+            child.release()
+
+    def _offer(self, wire: _SessionWire) -> tuple[AgentExecutionRequestV2, str]:
+        wire.send(RunnerSessionMessage.INVOCATION_OFFER)
+        prepare = wire.read()
+        if prepare.message is not RunnerSessionMessage.PREPARE:
+            raise RuntimeError("Core did not prepare the exact candidate invocation")
+        request = decode_runner_prepare_payload(
+            prepare.payload, self._binding.request_hash
+        )
+        refuse_unbound_runner_a_request(request)
+        auth = request.resolved_binding.auth_profile
+        auth_reference = free_runner_auth_reference(auth)
+        if prepare.payload[PREPARE_AUTH_REFERENCE_FIELD] != auth_reference.value.encode(
+            "ascii"
+        ):
+            raise RuntimeError("auth-profile-unresolvable")
+        resolve_free_runner_authorization(auth, auth_reference)
+        return request, auth_reference.value
+
+    def _attested_ready(
+        self, wire: _SessionWire, auth_reference: str
+    ) -> tuple[bytes, ...]:
+        """This container's own measurement, taken once and then repeated verbatim.
+
+        Re-measuring on a reconnect would run the provider CLI again for an
+        answer Core already cached under the same sequence, and a measurement
+        that drifted between the two would make the replayed READY a different
+        frame -- refused as one, rather than recognized as the retry it is.
+        """
+        if self._ready_payload is None:
+            self._ready_payload = _attested_ready_payload(
+                wire, self._manifest, auth_reference, self._identity
+            )
+        return self._ready_payload
+
+    def _work_under_way(
+        self, request: AgentExecutionRequestV2
+    ) -> _ProviderChild | _TerminalRecord:
+        """This invocation's live child, or the terminal fact already fixed for it.
+
+        A child this lifetime already started, a fact it already journalled,
+        or a record a prior lifetime left behind all mean the work is under
+        way or done; only a genuinely empty invocation launches a provider.
+        """
+        if self._child is not None:
+            return self._child
+        if self._terminal_record is None:
+            self._terminal_record = retained_terminal_record(
+                self._journal, self._binding
+            )
+        if self._terminal_record is not None:
+            return self._terminal_record
+        self._child = self._launch(request)
+        return self._child
+
+    def _launch(self, request: AgentExecutionRequestV2) -> _ProviderChild:
+        executor = select_runner_executor(self._manifest)
+        try:
+            command = executor.prepare_process(request)
+            try:
+                process = start_runner_child(
+                    command.arguments,
+                    self._manifest.child_path_grants,
+                    environment=command.environment,
+                    standard_input=command.standard_input,
+                )
+            except BaseException:
+                executor.release_credential_channel(command)
+                raise
+        except BaseException:
+            executor.close()
+            raise
+        return _ProviderChild(
+            executor, command, process, _child_deadline(self._manifest)
+        )
+
+    def _fixed_terminal_record(
+        self, wire: _SessionWire, work: _ProviderChild | _TerminalRecord
+    ) -> _TerminalRecord:
+        if not isinstance(work, _ProviderChild):
+            return work
+        self._terminal_record = self._journalled_child_result(wire, work)
+        return self._terminal_record
+
+    def _journalled_child_result(
+        self, wire: _SessionWire, child: _ProviderChild
+    ) -> RunnerTerminalEvidenceEnvelope:
+        """Wait this invocation's child out, then fix what it did, once and for good.
+
+        A connection lost while waiting escapes from here untouched, leaving
+        the child running for the next one -- that is what the reconnect loop
+        exists for. Every other ending is terminal for the child, so it is
+        reaped and its credential channel taken back before anything at all is
+        journalled.
+        """
+        control = _control_or_child_exit(wire, child.process, child.deadline)
+        # Past the control wait this child ends here on every remaining path,
+        # so the lifetime lets go of it now: a connection lost *before* this
+        # line keeps the child for the next one, and nothing after it may reap
+        # or release the same child a second time from `close`.
+        self._child = None
+        try:
+            envelope = self._child_evidence(control, child)
+        except BaseException:
+            if child.process.poll() is None:
+                _reap_child(child.process, self._manifest)
+            raise
+        finally:
+            child.release()
+        self._journal.publish(envelope, self._manifest.journal_bytes)
+        _after_terminal_evidence_published()
+        if self._scenario is CandidateScenario.CRASH_AFTER_PUBLISH:
+            # A declared witness scenario, not a test seam: this lifetime dies
+            # for real right after journaling its terminal fact but before
+            # telling Core (crash cut C3), so the Docker witness can restart
+            # this exact container and prove resume delivers the retained
+            # evidence through RELEASED (`#15-B5`).
+            os._exit(_CRASH_AFTER_PUBLISH_EXIT_CODE)
+        return envelope
+
+    def _child_evidence(
+        self, control: RunnerSessionFrame | None, child: _ProviderChild
+    ) -> RunnerTerminalEvidenceEnvelope:
+        if control is None:
+            return RunnerTerminalEvidenceEnvelope(
+                self._binding, self._invocation, self._completed_child_evidence(child)
+            )
+        if control.message is not RunnerSessionMessage.CANCEL:
+            raise RuntimeError("Core sent an unexpected post-start control frame")
+        self._cancel_observed = True
+        if control.payload[3] != b"NONE":
+            raise RuntimeError("runner-replacement-not-supported-a")
+        return RunnerTerminalEvidenceEnvelope(
+            self._binding,
+            self._invocation,
+            RunnerCancellation(
+                control.payload[1].decode("utf-8"),
+                _reap_child(child.process, self._manifest),
+            ),
+        )
+
+    def _completed_child_evidence(
+        self, child: _ProviderChild
+    ) -> RunnerProviderResult | RunnerProviderFailure:
+        if child.process.poll() is None:
+            raise RuntimeError("candidate child outlived the attempt")
+        completion = _drain_exited_child(
+            child.process, self._manifest, child.command.standard_output_frame_bytes
+        )
+        lease = _workspace_lease(self._binding, _runner_workspace_directory())
+        outcome = child.executor.decode_process_completion(
+            AgentProcessInvocation(child.command, lease), completion
+        )
+        # A failing outcome's steps would be dropped here rather than by the
+        # evidence record, because this evidence carries only how the child
+        # exited. The success door refuses one in `RunnerProviderResult`; this
+        # is the same refusal at the other door, so neither ending can
+        # silently record a Runner-carried attempt as having decoded nothing.
+        if (
+            isinstance(outcome, AgentExecutionFailure)
+            and outcome.transcript is not None
+        ):
+            raise RunnerEvidenceCannotCarryTranscript(
+                "runner terminal evidence does not carry an attempt transcript yet"
+            )
+        return (
+            RunnerProviderFailure(
+                ProcessExitSignature(completion.return_code, completion.standard_error)
+            )
+            if isinstance(outcome, AgentExecutionFailure)
+            else RunnerProviderResult(outcome)
+        )
+
+    def _deliver(self, wire: _SessionWire, record: _TerminalRecord) -> None:
+        """Offer, hand over and release this invocation's one terminal fact."""
+        evidence_hash = _evidence_hash_of(record)
+        wire.send(
+            RunnerSessionMessage.TERMINAL_AVAILABLE,
+            (evidence_hash.value.encode("ascii"),),
+        )
+        readback = wire.read()
+        if readback.message is RunnerSessionMessage.CANCEL:
+            self._cancel_observed = True
+            readback = _decline_crossing_cancel(wire, evidence_hash)
+        if readback.message is not RunnerSessionMessage.READBACK:
+            raise RuntimeError("Core did not request retained evidence")
+        wire.send(
+            RunnerSessionMessage.TERMINAL_RECORD,
+            (encode_runner_terminal_evidence_record(record),),
+        )
+        acknowledgement = wire.read()
+        if acknowledgement.message is not RunnerSessionMessage.ACK:
+            raise RuntimeError("Core did not acknowledge durable evidence")
+        accepted = require_matching_evidence_hash(
+            acknowledgement.payload, evidence_hash
+        )
+        wire.send(
+            RunnerSessionMessage.ACK_TOMBSTONE,
+            (
+                encode_runner_terminal_evidence_record(
+                    self._acknowledged(record, accepted)
+                ),
+            ),
+        )
+        _after_ack_tombstone_published()
+        release = wire.read()
+        if release.message is not RunnerSessionMessage.RELEASE:
+            raise RuntimeError("Core did not release acknowledged evidence")
+        self._release(require_matching_evidence_hash(release.payload, evidence_hash))
+        wire.send(RunnerSessionMessage.RELEASED, (evidence_hash.value.encode("ascii"),))
+
+    def _acknowledged(
+        self, record: _TerminalRecord, accepted: RunnerTerminalEvidenceHash
+    ) -> RunnerTerminalEvidenceAckTombstone:
+        """This invocation's one ACK tombstone, minted once and repeated verbatim.
+
+        A record that arrived as a prior lifetime's tombstone is already the
+        answer; anything else is tombstoned here, exactly once. The journal
+        cannot stand in for this memory on a replay: it holds the tombstone
+        only between ACK and RELEASE, and nothing at all after.
+        """
+        if self._tombstone is None:
+            self._tombstone = (
+                record
+                if isinstance(record, RunnerTerminalEvidenceAckTombstone)
+                else self._journal.acknowledge(record, accepted)
+            )
+        return self._tombstone
+
+    def _release(self, released: RunnerTerminalEvidenceHash) -> None:
+        """Drop the retained record, unless a lost connection already got here.
+
+        The journal is its own record of whether this ran: release unlinks
+        what it releases, so an empty journal on a replay means this
+        invocation already reached exactly this point.
+        """
+        if retained_terminal_record(self._journal, self._binding) is not None:
+            self._journal.release(self._binding, released)
+
+
 def run_candidate_session(
-    channel: RunnerFrameChannel,
+    connect_to_core: ConnectToCore,
     binding: RunnerGenerationBinding,
     invocation: RunnerInvocationId,
     scenario: CandidateScenario,
@@ -500,252 +909,61 @@ def run_candidate_session(
     identity: Path,
     journal_directory: Path,
 ) -> None:
-    """Drive one authenticated candidate session from OFFER to RELEASED.
+    """Drive one candidate invocation from OFFER to RELEASED, across Core deaths.
 
-    `channel` is already connected and peer-verified by the caller; this
-    function never resolves a name, opens a socket, or negotiates TLS. A
-    prior lifetime's retained journal record, if any, decides whether this
-    call launches a real child or replays the fact that lifetime already
-    fixed -- see `retained_terminal_record`.
+    `connect_to_core` hands back one already-connected, peer-verified channel
+    per call; this function never resolves a name, opens a socket, or
+    negotiates TLS. Core dying is not this invocation's death: the provider
+    child keeps running and the next channel replays the whole handshake from
+    OFFER, which Core answers out of its durable and cached state until the
+    real terminal evidence lands. The manifest's attempt span bounds that
+    patience, and a Core still unreachable at the end of it ends the
+    invocation the way a lost connection always did -- the child reaped, the
+    credential channel taken back, nothing of either left running.
+
+    A prior lifetime's retained journal record, if any, decides whether this
+    call launches a real child at all -- see `retained_terminal_record`.
 
     Named, deferred gap (`#15-B4`): an empty journal only proves "nothing was
     ever published"; it cannot yet tell apart a lifetime that crashed before
     calling `start_runner_child` from one that crashed *after* -- while a
     real child from that earlier lifetime could still be alive, orphaned,
     outside this process's own reap path. Closing that gap needs a durable
-    "child observed started" marker (or the Core-side liveness/reconnect
-    mechanism `#15`'s board tracks separately) neither of which exists yet;
-    until then, only a caller that can guarantee this exact container's
-    previous lifetime never reached `start_runner_child` may safely resume it
-    this way.
+    "child observed started" marker neither this journal nor anything else
+    carries yet; the reconnect loop here removes only the in-process half of
+    it, where this same process still holds the child it started. Until then,
+    only a caller that can guarantee this exact container's previous lifetime
+    never reached `start_runner_child` may safely resume it this way.
 
     `journal_directory` must survive a caller's own crash and restart for
     `retained_terminal_record` to ever find anything -- a tmpfs mount, which
     a Docker restart wipes, cannot carry that guarantee (`#15-B5`).
     """
-    fence = _CoreFrameFence(channel, binding, invocation)
-    journal = RunnerJournal(journal_directory)
-    retained = retained_terminal_record(journal, binding)
-    sequence = 1
-    _write_frame(
-        channel,
-        _frame(RunnerSessionMessage.INVOCATION_OFFER, sequence, binding, invocation),
+    manifest = _selected_manifest(manifest_path, binding)
+    lifetime = _CandidateLifetime(
+        binding,
+        invocation,
+        scenario,
+        manifest,
+        identity,
+        RunnerJournal(journal_directory),
     )
-    prepare = fence.read_frame()
-    if prepare.message is not RunnerSessionMessage.PREPARE:
-        raise RuntimeError("Core did not prepare the exact candidate invocation")
-    request = decode_runner_prepare_payload(prepare.payload, binding.request_hash)
-    refuse_unbound_runner_a_request(request)
-    auth = request.resolved_binding.auth_profile
-    auth_reference = free_runner_auth_reference(auth)
-    if prepare.payload[PREPARE_AUTH_REFERENCE_FIELD] != auth_reference.value.encode(
-        "ascii"
-    ):
-        raise RuntimeError("auth-profile-unresolvable")
-    resolve_free_runner_authorization(auth, auth_reference)
-    reference = auth_reference.value
-    manifest = decode_runner_manifest(manifest_path.read_bytes())
-    if runner_manifest_id(manifest) != binding.manifest_id:
-        raise RuntimeError("runner-manifest-mismatch")
-    sequence += 1
-    _write_frame(
-        channel,
-        _frame(
-            RunnerSessionMessage.READY,
-            sequence,
-            binding,
-            invocation,
-            _attested_ready_payload(
-                channel, binding, invocation, sequence, manifest, reference, identity
-            ),
-        ),
-    )
-    if fence.read_frame().message is not RunnerSessionMessage.LAUNCH:
-        raise RuntimeError("Core did not durably arm the candidate invocation")
-    sequence += 1
-    if retained is not None:
-        # A prior lifetime already fixed this invocation's one terminal fact
-        # (published, or even acknowledged) before it died. Starting a second
-        # child now would race a real result against the retained one for no
-        # reason; the wire handshake still replays in full, just without the
-        # child.
-        _write_frame(
-            channel,
-            _frame(
-                RunnerSessionMessage.STARTED,
-                sequence,
-                binding,
-                invocation,
-                (struct.pack(">Q", 1),),
-            ),
-        )
-        terminal_record_source: (
-            RunnerTerminalEvidenceEnvelope | RunnerTerminalEvidenceAckTombstone
-        ) = retained
-        if isinstance(retained, RunnerTerminalEvidenceEnvelope):
-            evidence_hash = RunnerTerminalEvidenceHash.for_envelope(retained)
-        else:
-            evidence_hash = retained.evidence_hash
-    else:
-        executor = select_runner_executor(manifest)
-        try:
-            command = executor.prepare_process(request)
-            child = start_runner_child(
-                command.arguments,
-                manifest.child_path_grants,
-                environment=command.environment,
-                standard_input=command.standard_input,
-            )
+    patience = _ReconnectPatience(manifest)
+    try:
+        while True:
             try:
-                _write_frame(
-                    channel,
-                    _frame(
-                        RunnerSessionMessage.STARTED,
-                        sequence,
-                        binding,
-                        invocation,
-                        (struct.pack(">Q", 1),),
-                    ),
-                )
-                control = _control_or_child_exit(fence, child, manifest)
-                if (
-                    control is not None
-                    and control.message is not RunnerSessionMessage.CANCEL
-                ):
-                    raise RuntimeError(
-                        "Core sent an unexpected post-start control frame"
-                    )
-                if control is not None:
-                    if control.payload[3] != b"NONE":
-                        raise RuntimeError("runner-replacement-not-supported-a")
-                    envelope = RunnerTerminalEvidenceEnvelope(
-                        binding,
-                        invocation,
-                        RunnerCancellation(
-                            control.payload[1].decode("utf-8"),
-                            _reap_child(child, manifest),
-                        ),
-                    )
-                else:
-                    if child.poll() is None:
-                        raise RuntimeError("candidate child outlived the attempt")
-                    completion = _drain_exited_child(
-                        child, manifest, command.standard_output_frame_bytes
-                    )
-                    lease = _workspace_lease(binding, _runner_workspace_directory())
-                    outcome = executor.decode_process_completion(
-                        AgentProcessInvocation(command, lease), completion
-                    )
-                    # A failing outcome's steps would be dropped here rather than
-                    # by the evidence record, because this evidence carries only
-                    # how the child exited. The success door refuses one in
-                    # `RunnerProviderResult`; this is the same refusal at the
-                    # other door, so neither ending can silently record a
-                    # Runner-carried attempt as having decoded nothing.
-                    if (
-                        isinstance(outcome, AgentExecutionFailure)
-                        and outcome.transcript is not None
-                    ):
-                        raise RunnerEvidenceCannotCarryTranscript(
-                            "runner terminal evidence does not carry an attempt "
-                            "transcript yet"
-                        )
-                    evidence: RunnerProviderResult | RunnerProviderFailure = (
-                        RunnerProviderFailure(
-                            ProcessExitSignature(
-                                completion.return_code, completion.standard_error
-                            )
-                        )
-                        if isinstance(outcome, AgentExecutionFailure)
-                        else RunnerProviderResult(outcome)
-                    )
-                    envelope = RunnerTerminalEvidenceEnvelope(
-                        binding, invocation, evidence
-                    )
-            except BaseException:
-                if child.poll() is None:
-                    _reap_child(child, manifest)
-                raise
+                channel = connect_to_core()
+            except OSError as unreachable:
+                patience.wait_or_give_up(unreachable)
+                continue
+            try:
+                lifetime.drive(channel)
+                return
+            except CoreConnectionLost as lost:
+                if not lifetime.survives_a_lost_connection:
+                    raise
+                patience.wait_or_give_up(lost)
             finally:
-                executor.release_credential_channel(command)
-        finally:
-            executor.close()
-        journal.publish(envelope, manifest.journal_bytes)
-        _after_terminal_evidence_published()
-        if scenario is CandidateScenario.CRASH_AFTER_PUBLISH:
-            # A declared witness scenario, not a test seam: this lifetime
-            # dies for real right after journaling its terminal fact but
-            # before telling Core (crash cut C3), so the Docker witness can
-            # restart this exact container and prove resume delivers the
-            # retained evidence through RELEASED (`#15-B5`).
-            os._exit(_CRASH_AFTER_PUBLISH_EXIT_CODE)
-        terminal_record_source = envelope
-        evidence_hash = RunnerTerminalEvidenceHash.for_envelope(envelope)
-    sequence += 1
-    _write_frame(
-        channel,
-        _frame(
-            RunnerSessionMessage.TERMINAL_AVAILABLE,
-            sequence,
-            binding,
-            invocation,
-            (evidence_hash.value.encode("ascii"),),
-        ),
-    )
-    readback = fence.read_frame()
-    if readback.message is RunnerSessionMessage.CANCEL:
-        readback, sequence = _decline_crossing_cancel(
-            channel, fence, binding, invocation, sequence, evidence_hash
-        )
-    if readback.message is not RunnerSessionMessage.READBACK:
-        raise RuntimeError("Core did not request retained evidence")
-    sequence += 1
-    encoded = encode_runner_terminal_evidence_record(terminal_record_source)
-    _write_frame(
-        channel,
-        _frame(
-            RunnerSessionMessage.TERMINAL_RECORD,
-            sequence,
-            binding,
-            invocation,
-            (encoded,),
-        ),
-    )
-    acknowledgement = fence.read_frame()
-    if acknowledgement.message is not RunnerSessionMessage.ACK:
-        raise RuntimeError("Core did not acknowledge durable evidence")
-    accepted = require_matching_evidence_hash(acknowledgement.payload, evidence_hash)
-    if isinstance(terminal_record_source, RunnerTerminalEvidenceAckTombstone):
-        # This exact lifetime already collected this ACK before it died --
-        # the journal still holds nothing else to re-tombstone.
-        tombstone = terminal_record_source
-    else:
-        tombstone = journal.acknowledge(terminal_record_source, accepted)
-    sequence += 1
-    _write_frame(
-        channel,
-        _frame(
-            RunnerSessionMessage.ACK_TOMBSTONE,
-            sequence,
-            binding,
-            invocation,
-            (encode_runner_terminal_evidence_record(tombstone),),
-        ),
-    )
-    _after_ack_tombstone_published()
-    release = fence.read_frame()
-    if release.message is not RunnerSessionMessage.RELEASE:
-        raise RuntimeError("Core did not release acknowledged evidence")
-    released = require_matching_evidence_hash(release.payload, evidence_hash)
-    journal.release(binding, released)
-    sequence += 1
-    _write_frame(
-        channel,
-        _frame(
-            RunnerSessionMessage.RELEASED,
-            sequence,
-            binding,
-            invocation,
-            (evidence_hash.value.encode("ascii"),),
-        ),
-    )
+                channel.close()
+    finally:
+        lifetime.close()
