@@ -59,6 +59,8 @@ from atelier2.host.run_command import (
     AgentRoleBinding,
     SuppliedArtifactOrder,
     SuppliedOrder,
+    SuppliedStartOrder,
+    SuppliedWorkItemOrder,
     start_request_body,
 )
 from tests.api.test_openapi import served_app
@@ -73,6 +75,7 @@ BINDING_SET_HASH = "3" * 64
 CONFIGURATION_HASH = "4" * 64
 AGENT_CONFIGURATION_HASH = "b" * 64
 ARTIFACT_HASH = "a" * 64
+WORK_ITEM_REFERENCE = "gh:712"
 PUBLIC_RUN_REFERENCE = "run1.dGVzdA"
 WORKFLOW_NAME = "review-bounded-diff"
 
@@ -548,14 +551,35 @@ def test_list_workflows_answers_the_same_catalog_resolution_http_would(
             (AgentRoleBinding("builder", AGENT_CONFIGURATION_HASH),),
             (SuppliedArtifactOrder("order", ARTIFACT_HASH),),
         ),
+        (
+            {
+                "name": WORKFLOW_NAME,
+                "run_id": "named-run",
+                "agent_bindings": [
+                    {
+                        "role": "builder",
+                        "agent_configuration_revision_hash": AGENT_CONFIGURATION_HASH,
+                    }
+                ],
+                "orders": [{"name": "order", "work_item": WORK_ITEM_REFERENCE}],
+            },
+            (AgentRoleBinding("builder", AGENT_CONFIGURATION_HASH),),
+            (SuppliedWorkItemOrder("order", WORK_ITEM_REFERENCE),),
+        ),
     ),
-    ids=("v1-bare", "v2-bindings", "v3-orders", "v3-artifact-order"),
+    ids=(
+        "v1-bare",
+        "v2-bindings",
+        "v3-orders",
+        "v3-artifact-order",
+        "v3-work-item-order",
+    ),
 )
 def test_start_run_posts_the_same_start_body_the_http_door_already_owns(
     session: tuple[ScriptedService, StdioMcpSession],
     arguments: dict[str, Any],
     bindings: tuple[AgentRoleBinding, ...],
-    orders: tuple[SuppliedOrder | SuppliedArtifactOrder, ...],
+    orders: tuple[SuppliedStartOrder, ...],
 ) -> None:
     service, client = session
     payload, is_error = client.call_tool(McpToolName.START_RUN.value, arguments)
@@ -571,6 +595,8 @@ def test_start_run_posts_the_same_start_body_the_http_door_already_owns(
     assert posted == owned
     if any(isinstance(order, SuppliedArtifactOrder) for order in orders):
         assert posted["orders"] == [{"name": "order", "artifact_hash": ARTIFACT_HASH}]
+    if any(isinstance(order, SuppliedWorkItemOrder) for order in orders):
+        assert posted["orders"] == [{"name": "order", "work_item": WORK_ITEM_REFERENCE}]
 
 
 @pytest.mark.proves("mcp-and-http-never-diverge")

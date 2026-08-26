@@ -45,9 +45,10 @@ from atelier2.adapters.dbos.schema import (
     wait_answers,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
+from atelier2.adapters.dbos.uncontinuable_runs import live_driver_workflow_ids
 from atelier2.adapters.dbos.workflow_ids import (
     cancellation_workflow_id_for,
-    driving_workflow_id,
+    driving_workflow_ids,
     replacement_workflow_id_for,
 )
 from atelier2.application.compose_node_job import node_job
@@ -177,16 +178,6 @@ from atelier2.ports.agent_attempts import (
     RunnerTerminalEvidenceRefusal,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt
-
-# DBOS owns this table and these tokens; the store only reads them, and only to
-# answer whether a workflow it enqueued itself is still going to run. Reaching
-# for the whole DBOS model to ask one question would bind far more of the
-# runtime's internals than the answer is worth.
-_dbos_workflow_status = sa.table(
-    "workflow_status", sa.column("workflow_uuid"), sa.column("status")
-)
-_DRIVING_WORKFLOW_STATUSES = ("PENDING", "ENQUEUED", "DELAYED")
-"""The DBOS statuses under which a workflow is still owed its next step."""
 
 
 def attempt_from_record(record: Mapping[Any, Any]) -> AgentAttempt:
@@ -1385,9 +1376,17 @@ class DbosAgentAttemptStore:
 
         Before the launch, the workflow table this reads is either absent or
         still holds the statuses of the process that died, so every answer it
-        could give would be about a machine that is not running yet.
+        could give would be about a machine that is not running yet. Which is
+        also why the runtime's own application version is required rather than
+        optional: a `PENDING` row a retired version left behind is never going to
+        be recovered, and counting it as a live driver would hide this attempt
+        from the sweep forever.
         """
 
+        if self._application_version is None:
+            raise RunTransitionConflict(
+                "the driverless sweep requires the runtime application version"
+            )
         terminal_states = tuple(state.value for state in TERMINAL_AGENT_ATTEMPT_STATES)
         after: AgentAttemptId | None = None
         while True:
@@ -1409,23 +1408,20 @@ class DbosAgentAttemptStore:
                 if not candidates:
                     return
                 drivers = tuple(
-                    (attempt, driving_workflow_id(attempt)) for attempt in candidates
+                    (attempt, driving_workflow_ids(attempt)) for attempt in candidates
                 )
-                driving = set(
-                    connection.scalars(
-                        sa.select(_dbos_workflow_status.c.workflow_uuid).where(
-                            _dbos_workflow_status.c.workflow_uuid.in_(
-                                tuple(driver for _attempt, driver in drivers)
-                            ),
-                            _dbos_workflow_status.c.status.in_(
-                                _DRIVING_WORKFLOW_STATUSES
-                            ),
-                        )
-                    )
+                driving = live_driver_workflow_ids(
+                    connection,
+                    (
+                        workflow_id
+                        for _attempt, workflow_ids in drivers
+                        for workflow_id in workflow_ids
+                    ),
+                    self._application_version,
                 )
             after = candidates[-1].attempt_id
-            for attempt, driver in drivers:
-                if driver not in driving:
+            for attempt, workflow_ids in drivers:
+                if driving.isdisjoint(workflow_ids):
                     yield attempt
             if len(candidates) < page_limit.value:
                 return

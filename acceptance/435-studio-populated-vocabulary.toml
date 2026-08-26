@@ -3,5 +3,5 @@ story = "https://github.com/FlexOr2/atelier-2/issues/435"
 
 [[sentence]]
 id = "studio-populated-copy-is-owned-and-survives-pseudo-locale"
-requirement = "REQ-UIQ-04"
+requirement = "REQ-UIQ-12"
 text = "Studio takes its inbox, project-card counts, chat door, connection label, and failed-read titles from their owners and keeps those strings visible under the longer pseudo-locale form at desktop and 390px."

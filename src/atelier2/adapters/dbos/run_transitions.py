@@ -774,9 +774,15 @@ def lift_started_run(
     the target word differs by caller and by why the run stopped, but the
     CAS and the terminal hash it stamps do not.
 
-    `False` on a lost CAS or an empty event log means exactly what it always
-    has -- the caller's snapshot of the run no longer names its live row, or
-    a run with no event yet has nothing a terminal hash could fold over.
+    A run whose log is still empty is lifted like any other, over the empty
+    fold. Its terminal hash then says exactly what happened: this revision, and
+    nothing after it. Refusing that instead left a run whose carrier died before
+    writing its first event `STARTED` for as long as the store existed, which is
+    the one answer that is certainly wrong (#636) -- and the hash is no weaker
+    for it, because `terminal_hash_for` frames the revision either way, so an
+    empty fold is a distinct value rather than an absent one.
+
+    `False` still means the caller's snapshot no longer names the run's live row.
     """
     event_hashes = tuple(
         Sha256Hash(str(value))
@@ -786,8 +792,6 @@ def lift_started_run(
             .order_by(run_events.c.event_sequence)
         ).scalars()
     )
-    if not event_hashes:
-        return False
     terminal_hash = terminal_hash_for(revision_hash, event_hashes)
     updated = connection.execute(
         runs.update()
