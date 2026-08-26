@@ -31,8 +31,10 @@ from atelier2.contracts.revisions_v3 import (
     PublishedRevisionHash,
     RevisionKind,
 )
+from atelier2.contracts.runs import WorkflowRevision
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 from atelier2.ports.published_revisions import (
+    AddWorkflowToLibraryResult,
     AdmitCatalogMemberResult,
     CatalogAdmissionExisting,
     CatalogAdmissionKindMismatch,
@@ -337,6 +339,120 @@ def _append_member(
     return revision_number
 
 
+def _persist_workflow_publication(
+    connection: sa.Connection, revision: WorkflowRevision
+) -> None:
+    """Write one workflow document where the publication door writes it.
+
+    The same row `DbosWorkflowRevisionPublisher` inserts, on a connection its
+    caller owns, so that publishing a workflow and admitting it can share one
+    transaction. Bytes already there are left alone; whether what is stored
+    agrees with what was handed in is `_record_publication`'s check, and it runs
+    on this connection right after.
+    """
+    connection.execute(
+        workflow_revisions.insert()
+        .prefix_with("OR IGNORE")
+        .values(
+            revision_hash=revision.revision_hash.value,
+            document=revision.document,
+        )
+    )
+
+
+def _found_lineage(
+    connection: sa.Connection,
+    revision: PublishedRevision,
+    display_name: CatalogLineageDisplayName,
+    actor: CatalogActor,
+    activated_at: CatalogActivatedAt,
+) -> FoundCatalogLineageResult:
+    lineage = CatalogLineage(revision.kind, revision.revision_hash)
+    if _record_publication(connection, revision) is None:
+        return CatalogAdmissionUnpublished(revision.revision_hash)
+    existing = _lineage_record(connection, lineage.lineage_id)
+    if existing is not None:
+        stored = _derived_lineage_or_mismatch(existing)
+        if isinstance(stored, CatalogLineageIdMismatch):
+            return stored
+        if _is_retired(connection, stored.lineage_id):
+            return CatalogAdmissionRetired(stored.lineage_id)
+        member = _member(connection, lineage.lineage_id, revision.revision_hash)
+        if member is None:
+            owner = revision_owner(connection, revision.kind, revision.revision_hash)
+            if owner is not None:
+                return CatalogAdmissionRevisionOwned(revision.revision_hash, owner)
+            raise ValueError("catalog founding lineage is missing its founding member")
+        return CatalogAdmissionExisting(
+            stored,
+            revision,
+            int(member["revision_number"]),
+            _current_display_name(connection, lineage.lineage_id),
+        )
+    owner = revision_owner(connection, revision.kind, revision.revision_hash)
+    if owner is not None:
+        return CatalogAdmissionRevisionOwned(revision.revision_hash, owner)
+    holder = _name_holder(connection, revision.kind, display_name)
+    if holder is not None:
+        return CatalogAdmissionNameHeld(display_name, holder)
+    connection.execute(
+        catalog_lineages.insert().values(
+            lineage_id=lineage.lineage_id.value,
+            kind=revision.kind.value,
+            founding_revision_hash=revision.revision_hash.value,
+        )
+    )
+    _append_member(connection, lineage.lineage_id, revision)
+    _append_alias(connection, lineage.lineage_id, display_name, actor, activated_at)
+    return CatalogLineageFounded(lineage, revision, display_name)
+
+
+def _admit_member(
+    connection: sa.Connection,
+    lineage_id: CatalogLineageId,
+    revision: PublishedRevision,
+    display_name: CatalogLineageDisplayName,
+    actor: CatalogActor,
+    activated_at: CatalogActivatedAt,
+) -> AdmitCatalogMemberResult:
+    record = _lineage_record(connection, lineage_id)
+    if record is None:
+        return CatalogAdmissionLineageMissing(lineage_id)
+    lineage = _derived_lineage_or_mismatch(record)
+    if isinstance(lineage, CatalogLineageIdMismatch):
+        return lineage
+    if lineage.kind is not revision.kind:
+        return CatalogAdmissionKindMismatch(
+            lineage.lineage_id, lineage.kind, revision.kind
+        )
+    if _is_retired(connection, lineage.lineage_id):
+        return CatalogAdmissionRetired(lineage.lineage_id)
+    if _record_publication(connection, revision) is None:
+        return CatalogAdmissionUnpublished(revision.revision_hash)
+    existing_member = _member(connection, lineage.lineage_id, revision.revision_hash)
+    if existing_member is not None:
+        return CatalogAdmissionExisting(
+            lineage,
+            revision,
+            int(existing_member["revision_number"]),
+            _current_display_name(connection, lineage.lineage_id),
+        )
+    owner = revision_owner(connection, revision.kind, revision.revision_hash)
+    if owner is not None:
+        return CatalogAdmissionRevisionOwned(revision.revision_hash, owner)
+    holder = _name_holder(
+        connection,
+        revision.kind,
+        display_name,
+        except_lineage_id=lineage.lineage_id,
+    )
+    if holder is not None:
+        return CatalogAdmissionNameHeld(display_name, holder)
+    revision_number = _append_member(connection, lineage.lineage_id, revision)
+    _append_alias(connection, lineage.lineage_id, display_name, actor, activated_at)
+    return CatalogMemberAdmitted(lineage, revision, revision_number, display_name)
+
+
 class DbosCatalogStore:
     """Published revisions and admitted named lineages over the V12 catalog tables."""
 
@@ -505,55 +621,9 @@ class DbosCatalogStore:
             return CatalogLineageIdMismatch(claimed_lineage_id, lineage.lineage_id)
         try:
             with canonical_write_transaction(self._engine) as connection:
-                if _record_publication(connection, revision) is None:
-                    return CatalogAdmissionUnpublished(revision.revision_hash)
-                existing = _lineage_record(connection, lineage.lineage_id)
-                if existing is not None:
-                    stored = _derived_lineage_or_mismatch(existing)
-                    if isinstance(stored, CatalogLineageIdMismatch):
-                        return stored
-                    if _is_retired(connection, stored.lineage_id):
-                        return CatalogAdmissionRetired(stored.lineage_id)
-                    member = _member(
-                        connection, lineage.lineage_id, revision.revision_hash
-                    )
-                    if member is None:
-                        owner = revision_owner(
-                            connection, revision.kind, revision.revision_hash
-                        )
-                        if owner is not None:
-                            return CatalogAdmissionRevisionOwned(
-                                revision.revision_hash, owner
-                            )
-                        raise ValueError(
-                            "catalog founding lineage is missing its founding member"
-                        )
-                    return CatalogAdmissionExisting(
-                        stored,
-                        revision,
-                        int(member["revision_number"]),
-                        _current_display_name(connection, lineage.lineage_id),
-                    )
-                owner = revision_owner(
-                    connection, revision.kind, revision.revision_hash
+                return _found_lineage(
+                    connection, revision, display_name, actor, activated_at
                 )
-                if owner is not None:
-                    return CatalogAdmissionRevisionOwned(revision.revision_hash, owner)
-                holder = _name_holder(connection, revision.kind, display_name)
-                if holder is not None:
-                    return CatalogAdmissionNameHeld(display_name, holder)
-                connection.execute(
-                    catalog_lineages.insert().values(
-                        lineage_id=lineage.lineage_id.value,
-                        kind=revision.kind.value,
-                        founding_revision_hash=revision.revision_hash.value,
-                    )
-                )
-                _append_member(connection, lineage.lineage_id, revision)
-                _append_alias(
-                    connection, lineage.lineage_id, display_name, actor, activated_at
-                )
-                return CatalogLineageFounded(lineage, revision, display_name)
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
@@ -569,52 +639,50 @@ class DbosCatalogStore:
     ) -> AdmitCatalogMemberResult:
         try:
             with canonical_write_transaction(self._engine) as connection:
-                record = _lineage_record(connection, lineage_id)
-                if record is None:
-                    return CatalogAdmissionLineageMissing(lineage_id)
-                lineage = _derived_lineage_or_mismatch(record)
-                if isinstance(lineage, CatalogLineageIdMismatch):
-                    return lineage
-                if lineage.kind is not revision.kind:
-                    return CatalogAdmissionKindMismatch(
-                        lineage.lineage_id, lineage.kind, revision.kind
+                return _admit_member(
+                    connection, lineage_id, revision, display_name, actor, activated_at
+                )
+        except (OperationalError, PoolTimeoutError):
+            return DurableWriteUnavailable()
+        except (ValueError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
+
+    def add_workflow(
+        self,
+        revision: WorkflowRevision,
+        display_name: CatalogLineageDisplayName,
+        actor: CatalogActor,
+        activated_at: CatalogActivatedAt,
+    ) -> AddWorkflowToLibraryResult:
+        published = PublishedRevision(RevisionKind.WORKFLOW, revision.document)
+        try:
+            with canonical_write_transaction(self._engine) as connection:
+                _persist_workflow_publication(connection, revision)
+                holder = _name_holder(connection, RevisionKind.WORKFLOW, display_name)
+                admission = (
+                    _found_lineage(
+                        connection, published, display_name, actor, activated_at
                     )
-                if _is_retired(connection, lineage.lineage_id):
-                    return CatalogAdmissionRetired(lineage.lineage_id)
-                if _record_publication(connection, revision) is None:
-                    return CatalogAdmissionUnpublished(revision.revision_hash)
-                existing_member = _member(
-                    connection, lineage.lineage_id, revision.revision_hash
-                )
-                if existing_member is not None:
-                    return CatalogAdmissionExisting(
-                        lineage,
-                        revision,
-                        int(existing_member["revision_number"]),
-                        _current_display_name(connection, lineage.lineage_id),
+                    if holder is None
+                    else _admit_member(
+                        connection,
+                        holder,
+                        published,
+                        display_name,
+                        actor,
+                        activated_at,
                     )
-                owner = revision_owner(
-                    connection, revision.kind, revision.revision_hash
                 )
-                if owner is not None:
-                    return CatalogAdmissionRevisionOwned(revision.revision_hash, owner)
-                holder = _name_holder(
-                    connection,
-                    revision.kind,
-                    display_name,
-                    except_lineage_id=lineage.lineage_id,
-                )
-                if holder is not None:
-                    return CatalogAdmissionNameHeld(display_name, holder)
-                revision_number = _append_member(
-                    connection, lineage.lineage_id, revision
-                )
-                _append_alias(
-                    connection, lineage.lineage_id, display_name, actor, activated_at
-                )
-                return CatalogMemberAdmitted(
-                    lineage, revision, revision_number, display_name
-                )
+                if not isinstance(
+                    admission,
+                    CatalogLineageFounded
+                    | CatalogMemberAdmitted
+                    | CatalogAdmissionExisting,
+                ):
+                    # The document and its name are one act (ADR 0018 §2), so a
+                    # refused admission must not leave the bytes published alone.
+                    connection.rollback()
+                return admission
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):

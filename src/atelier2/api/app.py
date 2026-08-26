@@ -37,6 +37,7 @@ from atelier2.application.admit_catalog_member import (
     admit_catalog_member,
     found_catalog_lineage,
 )
+from atelier2.application.admit_library_addition import admit_library_addition
 from atelier2.application.admit_queue_item import (
     admit_queue_item,
     list_admitted_queue_items,
@@ -235,6 +236,20 @@ def bound_use_cases(
                 file_name,
                 ports.workflow_document_parser,
                 ports.agent_definition_parser,
+            )
+        ),
+        admit_library_addition=lambda document, file_name, actor, activated_at: (
+            admit_library_addition(
+                document,
+                file_name,
+                actor,
+                activated_at,
+                projection_limit,
+                ports.workflow_document_parser,
+                ports.agent_definition_parser,
+                ports.agent_definition_renderer,
+                ports.library_additions,
+                ports.published_revision_registry,
             )
         ),
         list_agent_definition_revisions=(
