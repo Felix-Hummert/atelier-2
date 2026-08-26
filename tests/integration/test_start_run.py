@@ -100,7 +100,6 @@ def storage(tmp_path: Path) -> Iterator[tuple[DbosRuntime, DbosDurableRunStarter
                 runtime.engine,
                 runtime.settings,
                 NO_AGENT_EXECUTORS,
-                effect_adapter_proves_absence=True,
             ),
         )
     finally:
@@ -207,9 +206,7 @@ def test_a_starter_cannot_be_built_without_the_registry_it_binds_against(
     runtime, _starter = storage
 
     with pytest.raises(TypeError):
-        DbosDurableRunStarter(
-            runtime.engine, runtime.settings, effect_adapter_proves_absence=True
-        )  # type: ignore[call-arg]
+        DbosDurableRunStarter(runtime.engine, runtime.settings)  # type: ignore[call-arg]
 
 
 def test_invalid_graph_writes_no_revision_run_event_answer_or_dbos_workflow(

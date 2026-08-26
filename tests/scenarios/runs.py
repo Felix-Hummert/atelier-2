@@ -92,7 +92,6 @@ def start_published_v1_run(
             engine,
             settings,
             agent_executor_registry,
-            effect_adapter_proves_absence=True,
         ),
     )
     assert isinstance(result, (RunCreated, RunExisting)), result

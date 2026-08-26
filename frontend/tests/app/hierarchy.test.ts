@@ -70,20 +70,10 @@ describe("every page carries one way back and does not repeat its own title", ()
   // every room, so it carries no way back of its own -- a second door to the
   // room you just left is exactly what ADR 0019 removes.
   it("gives Settings no trail of its own, because the rail is its one door", async () => {
-    open("/atelier/project");
+    open("/atelier/settings");
     await screen.findByRole("heading", { name: THE_ONE_PROJECT });
 
     expect(screen.queryByRole("navigation", { name: "Where you are" })).toBeNull();
   });
 
-  it("leads the start door back to the Catalog, where starting a run belongs", async () => {
-    open("/atelier/new");
-    await screen.findByRole("heading", { name: "Choose a workflow" });
-
-    const back = screen.getByRole("navigation", { name: "Where you are" });
-
-    expect(within(back).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
-      "←Catalog"
-    ]);
-  });
 });

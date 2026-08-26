@@ -1,27 +1,14 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/345"
 
-# Slice 1: the picker is reorganised so a choice and its start sit in one
-# glance, and catalog/start refusals are a shape, not only extra words.
-# Slice 2: Details carries the published substance, the edit door republishes
-# through the existing YAML door, and hashes sit behind proof anchors.
-
-[[sentence]]
-id = "a-chosen-workflow-collapses-the-picker-onto-its-start"
-text = "After an operator chooses a saved workflow, the list collapses onto that card with a Change path and the start form sits directly under it, so the rest of the catalog no longer sits between the choice and what it starts."
-
-[[sentence]]
-id = "a-picker-row-carries-its-catalog-state-in-its-shape"
-text = "A selectable workflow, an Unlisted name, an Unnamable title and a row that cannot be started each have their own shape on the picker, so the operator can tell a choice from a named refusal without reading the card."
+# The Catalog detail is the one place where an operator reads a published
+# workflow before opening its start sheet. It carries the published substance
+# and its proof anchor; it does not offer an editor.
 
 [[sentence]]
 id = "a-details-panel-shows-the-published-substance"
-text = "Opening Details on a saved workflow shows the published nodes with their roles and instruction starts, the graph miniature, each declared order with the schema it pinned, and the lineage's revision history — so the operator decides from the content, not only the name."
-
-[[sentence]]
-id = "a-published-document-can-be-edited-into-a-new-revision"
-text = "The operator can read a published revision as exact YAML, change it, and publish it as a new revision that joins the lineage that already holds the name — through the same publication and admission doors, not a new endpoint."
+text = "Opening the Catalog detail shows the published nodes with their roles and instruction starts, the graph miniature, and each declared order with a summary of its pinned schema — so the operator decides from the content, not only the name."
 
 [[sentence]]
 id = "a-revision-hash-is-a-proof-anchor"
-text = "A revision hash on the picker is hidden until asked, names what it seals, and can be copied — it is not a line of reading matter."
+text = "A revision hash in the Catalog detail is a named, copyable proof anchor that says it seals the published workflow revision."

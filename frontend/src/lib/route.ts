@@ -10,10 +10,9 @@ import servedPaths from "./servedPaths.json";
  * the server's list was a copy, and a copy can only carry the paths someone
  * already thought of.
  *
- * A room that closes keeps its address rather than turning a living bookmark
- * into a not-found page: `/atelier` and `/atelier/workflows` name the rooms
- * that took their content over (ADR 0019 §1), the way `/atelier/runs` has
- * named the project level ever since that level appeared above it.
+ * The catalog detail has its own canonical address. Retired rooms do not keep
+ * a second address: a bookmark must either name a current surface or fail
+ * honestly.
  */
 export const SERVED_PATHS: readonly string[] = servedPaths;
 
@@ -21,12 +20,11 @@ export const SERVED_PATHS: readonly string[] = servedPaths;
 export const PUBLIC_REFERENCE_PLACEHOLDER = "{public_ref}";
 
 /** Where a workflow's name stands in a served path. */
-export const WORKFLOW_NAME_PLACEHOLDER = "{workflow_name}";
+export const WORKFLOW_NAME_PLACEHOLDER = "{workflow_name:path}";
 
 export type CockpitRoute =
   | { page: "workbench" }
   | { page: "settings" }
-  | { page: "new" }
   | { page: "catalog" }
   | { page: "workflow"; name: string }
   | { page: "history" }
@@ -49,24 +47,16 @@ export function cockpitRoute(path: string): CockpitRoute {
   // level existed; it names the same set, so old history entries keep landing
   // on it rather than on a not-found page. #133 owns its fate once a project
   // has a backend identity and "every run" and "this project" can differ.
-  if (pathname === "/atelier/project" || pathname === "/atelier/runs") {
+  if (pathname === "/atelier/settings") {
     return { page: "settings" };
   }
-  if (pathname === "/atelier/new") {
-    return { page: "new" };
-  }
-  if (
-    pathname === "/atelier/catalog" ||
-    pathname === "/atelier/catalog/" ||
-    pathname === "/atelier/workflows" ||
-    pathname === "/atelier/workflows/"
-  ) {
+  if (pathname === "/atelier/catalog" || pathname === "/atelier/catalog/") {
     return { page: "catalog" };
   }
   if (pathname === "/atelier/history" || pathname === "/atelier/history/") {
     return { page: "history" };
   }
-  const workflowMatch = /^\/atelier\/workflows\/([^/]+)$/.exec(pathname);
+  const workflowMatch = /^\/atelier\/catalog\/(.+)$/.exec(pathname);
   if (workflowMatch?.[1] !== undefined) {
     try {
       return { page: "workflow", name: decodeURIComponent(workflowMatch[1]) };
@@ -96,5 +86,5 @@ export function runPath(publicReference: string): string {
 
 /** The one place the path of a workflow's catalog page is built. */
 export function workflowPath(name: string): string {
-  return `/atelier/workflows/${encodeURIComponent(name)}`;
+  return `/atelier/catalog/${encodeURIComponent(name)}`;
 }

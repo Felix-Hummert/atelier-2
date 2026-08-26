@@ -491,13 +491,10 @@ COCKPIT_INDEX_PATHS: tuple[str, ...] = (
     "/atelier",
     "/atelier/",
     "/atelier/chat",
-    "/atelier/project",
-    "/atelier/runs",
-    "/atelier/new",
+    "/atelier/settings",
     "/atelier/runs/{public_ref}",
-    "/atelier/workflows",
-    "/atelier/workflows/{workflow_name}",
     "/atelier/catalog",
+    "/atelier/catalog/{workflow_name:path}",
     "/atelier/history",
 )
 

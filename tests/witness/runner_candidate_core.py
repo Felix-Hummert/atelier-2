@@ -206,7 +206,6 @@ def _bootstrap(root: Path, handoff: Path, scenario: str):
             runtime.engine,
             runtime.settings,
             runner_registry,
-            effect_adapter_proves_absence=True,
         ).start_published(
             StartPublishedRunRequestV2(
                 run_id,

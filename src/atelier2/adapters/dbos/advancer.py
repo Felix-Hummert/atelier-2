@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
 
 import sqlalchemy as sa
 
-from atelier2.adapters.dbos.agent_attempt_store import attempt_from_record
+from atelier2.adapters.dbos.agent_effect_grants import (
+    open_pr_capability_for,
+)
+from atelier2.adapters.dbos.agent_effect_grants import (
+    read_pinned_tool_grant as read_agent_pinned_tool_grant,
+)
 from atelier2.adapters.dbos.effect_store import (
     commit_resolution,
     encode_readback,
@@ -14,14 +18,12 @@ from atelier2.adapters.dbos.effect_store import (
 )
 from atelier2.adapters.dbos.run_transitions import load_graph, load_run
 from atelier2.adapters.dbos.schema import (
-    agent_attempts,
+    agent_receipts_v2,
     effect_intents,
-    published_revisions,
+    effect_receipts,
     run_events,
     runs,
 )
-from atelier2.adapters.dbos.uncontinuable_runs import live_driver_workflow_ids
-from atelier2.adapters.dbos.workflow_ids import driving_workflow_ids
 from atelier2.contracts.effects import (
     CanonicalRequest,
     EffectAdapterBinding,
@@ -37,10 +39,7 @@ from atelier2.contracts.executions import (
     logical_effect_key_for_node,
 )
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
-from atelier2.contracts.run_bindings import RunBindingConflict
 from atelier2.contracts.runs import (
-    TERMINAL_RUN_STATES,
     RunId,
     RunState,
     WorkflowRevisionHash,
@@ -48,10 +47,6 @@ from atelier2.contracts.runs import (
 from atelier2.contracts.tool_grants_v3 import (
     DeclaredToolGrant,
     ToolGrantCapability,
-    ToolGrantCapabilityNotRedeemed,
-    ToolGrantRefused,
-    read_tool_grant_document,
-    redeems_as_platform_effect,
 )
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflows import ActionNode, AgentNode, AgentNodeV2
@@ -76,18 +71,6 @@ class EffectIntentIdentityConflict(RuntimeError):
 
 class RunEffectConflict(RuntimeError):
     """A V1 run cannot prepare this effect against its durable run binding."""
-
-
-class AgentEffectRedemptionPending(RuntimeError):
-    """An agent-node effect readback could name no outcome, so nothing is durable yet.
-
-    Only an authoritative absence licenses this runtime to open the pull
-    request, and only a found effect confirms one; an `UNKNOWN` readback is
-    neither. Resolving it is the operator reconciliation `ports.effects` already
-    owns for every other effect, against live GitHub (`#430`); this slice drives
-    a fake platform that can prove its own absence, so it never reaches here and
-    fails loud rather than guessing when it would.
-    """
 
 
 def graph_action_intent(
@@ -216,21 +199,92 @@ def read_pinned_tool_grant(
     an exec-shaped one, the effect preparation to open a pull request for an
     effect-shaped one -- so the two never read it two different ways.
     """
-    if not isinstance(node, AgentNodeV3) or not node.tools:
+    if not isinstance(node, AgentNodeV3):
         return None
-    pinned = node.tools[0]
-    document = session.scalar(
-        sa.select(published_revisions.c.document).where(
-            published_revisions.c.kind == RevisionKind.TOOL.value,
-            published_revisions.c.revision_hash == pinned.revision,
+    return read_agent_pinned_tool_grant(session, node)
+
+
+def legacy_agent_open_pr_runs_without_receipt(engine: sa.Engine) -> tuple[RunId, ...]:
+    """Find persisted pre-reconciliation agent-effect checkpoints.
+
+    Before agent effects entered the shared continuation, an agent could advance
+    its run and then redeem its grant. Current runs remain on that agent until
+    a receipt exists, or wait there for reconciliation. A completed or advanced
+    agent execution without the receipt that now authorizes its advance is
+    therefore a persisted pre-change shape, not recoverable current work.
+    """
+
+    with engine.connect() as connection:
+        records = connection.execute(
+            sa.select(runs).where(
+                runs.c.workflow_format_version == int(WorkflowFormatVersion.V3)
+            )
+        ).mappings()
+        blocking: set[RunId] = set()
+        for record in records:
+            run_id = RunId(str(record["run_id"]))
+            revision_hash = WorkflowRevisionHash(str(record["revision_hash"]))
+            graph = load_graph(connection, revision_hash)
+            current_node_id = str(record["current_node_id"])
+            current_round_ordinal = int(record["current_round_ordinal"])
+            current_node = graph.node(current_node_id)
+            if (
+                isinstance(current_node, AgentNodeV3)
+                and _agent_node_redeems_platform_effect(connection, current_node)
+                and RunState(str(record["state"])) is RunState.COMPLETED
+                and not _effect_receipt_exists(
+                    connection,
+                    logical_effect_key_for_node(
+                        run_id,
+                        revision_hash,
+                        current_node_id,
+                        current_round_ordinal,
+                    ).value,
+                )
+            ):
+                blocking.add(run_id)
+                continue
+            for event in connection.execute(
+                sa.select(run_events.c.node_id, run_events.c.round_ordinal).where(
+                    run_events.c.run_id == run_id.value,
+                    run_events.c.event_kind == RunEventKind.AGENT_COMPLETED.value,
+                )
+            ).mappings():
+                node_id = str(event["node_id"])
+                round_ordinal = int(event["round_ordinal"])
+                node = graph.node(node_id)
+                if (
+                    not isinstance(node, AgentNodeV3)
+                    or not _agent_node_redeems_platform_effect(connection, node)
+                    or _effect_receipt_exists(
+                        connection,
+                        logical_effect_key_for_node(
+                            run_id, revision_hash, node_id, round_ordinal
+                        ).value,
+                    )
+                    or (
+                        current_node_id == node_id
+                        and current_round_ordinal == round_ordinal
+                    )
+                ):
+                    continue
+                blocking.add(run_id)
+        return tuple(sorted(blocking, key=lambda run: run.value))
+
+
+def _agent_node_redeems_platform_effect(session: Any, node: AgentNodeV3) -> bool:
+    return open_pr_capability_for(read_pinned_tool_grant(session, node)) is not None
+
+
+def _effect_receipt_exists(connection: Any, logical_key: str) -> bool:
+    return (
+        connection.scalar(
+            sa.select(effect_receipts.c.logical_key).where(
+                effect_receipts.c.logical_key == logical_key
+            )
         )
+        is not None
     )
-    if document is None:
-        raise RunBindingConflict("the pinned tool revision left the registry")
-    grant = read_tool_grant_document(bytes(document))
-    if isinstance(grant, ToolGrantRefused):
-        raise RunBindingConflict(f"the pinned tool revision is no grant: {grant}")
-    return DeclaredToolGrant(PublishedRevisionHash(pinned.revision), grant.capability)
 
 
 def _effect_shaped_capability_to_open_pr(
@@ -248,159 +302,7 @@ def _effect_shaped_capability_to_open_pr(
     a capability it does not perform. `redeems_as_platform_effect` is the one
     owner of the exec-versus-effect split both redemption paths read.
     """
-    if grant is None or not redeems_as_platform_effect(grant.capability):
-        return None
-    if grant.capability is not ToolGrantCapability.OPEN_PR:
-        raise ToolGrantCapabilityNotRedeemed(grant.capability)
-    return grant.capability
-
-
-def first_agent_platform_effect_node(
-    session: Any, graph: AnyWorkflowDocument
-) -> str | None:
-    """The id of the first agent node whose own grant redeems as a platform effect.
-
-    Only a V3 agent node pins a tool grant, and only an effect-shaped grant
-    (`_effect_shaped_capability_to_open_pr`) is redeemed against the effect
-    adapter after the attempt already succeeded. The redemption has no
-    Action-only `WAITING_RECONCILIATION` resting place, so a destination that
-    cannot prove absence cannot safely carry it. Admission asks this question at
-    run start to refuse such a run before it advances (`#430`/`#431`), reading
-    the pinned grant through the same door `prepare_graph_agent_open_pr` reads it.
-    """
-    if not isinstance(graph, WorkflowGraphV3):
-        return None
-    for node in graph.nodes:
-        if not isinstance(node, AgentNodeV3):
-            continue
-        if _effect_shaped_capability_to_open_pr(read_pinned_tool_grant(session, node)):
-            return node.id
-    return None
-
-
-def agent_open_pr_runs_pending_live_redemption(
-    engine: sa.Engine, application_version: str
-) -> tuple[RunId, ...]:
-    """Every V3 run whose agent open-pr grant could still redeem against live GitHub.
-
-    Admission refuses an agent-authored `open-pr` grant against an adapter that
-    cannot prove absence, but that door only guards the runs that instance itself
-    starts. A run admitted earlier under an absence-proving adapter can still owe
-    its redemption when the same database is reopened against the live adapter,
-    and resuming it there ends the run ERROR after it committed COMPLETED
-    (`#430`/`#431`). This one pass names exactly those runs so a live-GitHub
-    startup can refuse them.
-
-    A run still owes that redemption unless it has durably finished it. The
-    redemption runs inside whichever workflow still drives an attempt of the sink
-    node -- the node workflow of the original attempt, or the replacement workflow
-    of one that was cancelled and replaced -- *after* that workflow committed the
-    run COMPLETED, so blocking on the run's state alone misses the crash window
-    between the two durable steps: a COMPLETED run one of whose sink-node attempts
-    is still driven has not redeemed yet. `_still_owes_live_redemption` is the
-    predicate that catches both the in-flight run and that window while letting a
-    run whose sink-node attempts have all finished driving serve.
-
-    The application version is what makes "still driven" mean recoverable rather
-    than merely unfinished: a `PENDING` row a retired version left behind will
-    never be resumed, and reading it as a live driver would block every later
-    live-GitHub start on a redemption nothing is going to make.
-    """
-    with engine.connect() as connection:
-        blocking: list[RunId] = []
-        for record in (
-            connection.execute(
-                sa.select(
-                    runs.c.run_id,
-                    runs.c.revision_hash,
-                    runs.c.state,
-                    runs.c.current_node_id,
-                    runs.c.current_round_ordinal,
-                ).where(runs.c.workflow_format_version == int(WorkflowFormatVersion.V3))
-            )
-            .mappings()
-            .all()
-        ):
-            if _still_owes_live_redemption(
-                connection, record, application_version
-            ) and _carries_agent_open_pr_grant(connection, record):
-                blocking.append(RunId(str(record["run_id"])))
-        return tuple(blocking)
-
-
-def _still_owes_live_redemption(
-    connection: Any, record: Mapping[Any, Any], application_version: str
-) -> bool:
-    """Whether this run could still redeem an agent open-pr grant on a next launch.
-
-    A non-terminal run is still advancing -- or parked at input -- toward that
-    redemption. A terminal run has committed its ending, but the redemption is
-    the last thing the driving workflow of a sink-node attempt does after
-    committing COMPLETED; a crash between those two durable steps leaves that
-    workflow recoverable and the redemption still owed. A terminal run all of
-    whose sink-node attempts have finished driving redeemed once under the
-    absence-proving adapter and owes nothing more, so it must not block a later
-    live-GitHub start.
-    """
-
-    if RunState(str(record["state"])) not in TERMINAL_RUN_STATES:
-        return True
-    return _current_node_attempt_still_driving(connection, record, application_version)
-
-
-def _current_node_attempt_still_driving(
-    connection: Any, record: Mapping[Any, Any], application_version: str
-) -> bool:
-    """Whether any attempt of the run's current node is still owed its next move.
-
-    A run reaching COMPLETED leaves its current node at the sink node that
-    completed it, and the post-COMPLETED redemption runs inside whichever workflow
-    still drives one of that node's attempts. `driving_workflow_ids` is the one
-    owner of that mapping -- the node workflow for the original attempt, the
-    replacement workflow for one that was cancelled and replaced, the Runner slot
-    for a lease-carried one -- so asking it for every attempt of the node covers
-    every crash window without enumerating any workflow form here. A recoverable
-    status under any of those ids names a redemption recovery would still resume.
-    """
-
-    execution_id = NodeExecutionId.for_node(
-        RunId(str(record["run_id"])),
-        WorkflowRevisionHash(str(record["revision_hash"])),
-        str(record["current_node_id"]),
-        int(record["current_round_ordinal"]),
-    )
-    attempt_records = (
-        connection.execute(
-            sa.select(agent_attempts).where(
-                agent_attempts.c.node_execution_id == execution_id.value
-            )
-        )
-        .mappings()
-        .all()
-    )
-    driving_ids = [
-        workflow_id
-        for attempt_record in attempt_records
-        for workflow_id in driving_workflow_ids(attempt_from_record(attempt_record))
-    ]
-    return bool(live_driver_workflow_ids(connection, driving_ids, application_version))
-
-
-def _carries_agent_open_pr_grant(connection: Any, record: Mapping[Any, Any]) -> bool:
-    """Whether this run's graph pins an agent node that opens its own pull request.
-
-    Read through the same `first_agent_platform_effect_node` door admission reads
-    it, so the startup scan and admission never disagree about which grant an
-    agent node carries.
-    """
-
-    return (
-        first_agent_platform_effect_node(
-            connection,
-            load_graph(connection, WorkflowRevisionHash(str(record["revision_hash"]))),
-        )
-        is not None
-    )
+    return open_pr_capability_for(grant)
 
 
 def graph_agent_open_pr_intent(
@@ -418,9 +320,9 @@ def graph_agent_open_pr_intent(
     effect-shaped grant this preparation does not perform is refused by name
     rather than silently left unprepared.
 
-    The request bytes are the node's own durable output, read back from its
-    `AGENT_COMPLETED` event rather than trusted from memory, because the same
-    provider bytes the run kept are what the pull request must carry. The
+    The request bytes are the node's own durable receipt output rather than
+    trusted from memory, because the same provider bytes the run kept are what
+    the pull request must carry. The
     effect binds to the connected repo the adapter names -- not to a
     `project_source` tree-pin -- because a pull request targets a repository,
     not a tree state, so an `open-pr` grant needs no pinned source at all. The
@@ -481,15 +383,19 @@ def redeem_agent_open_pr(
     already exists is recognized rather than opened twice. The receipt reaches
     the same `effect_receipts` row an Action's confirmation writes, through the
     same `commit_resolution`, so what an operator reads back is one effect
-    whichever authorization opened it. An `UNKNOWN` readback confirms nothing and
-    is refused loud rather than guessed at.
+    whichever authorization opened it. An `UNKNOWN` readback instead durably
+    moves the run and its intent to reconciliation; it never guesses or lets
+    the agent complete before a receipt exists.
     """
     intent = load_intent(session, logical_key, revision_hash)
     redemption = redeem_prepared_tool_effect(intent, adapter)
     if isinstance(redemption, AgentToolEffectPending):
-        raise AgentEffectRedemptionPending(
-            "an agent open-pr readback named no outcome; nothing may be confirmed yet"
-        )
+        return commit_resolution(
+            session,
+            logical_key,
+            revision_hash,
+            encode_readback(redemption.unknown),
+        ).value
     return commit_resolution(
         session, logical_key, revision_hash, encode_readback(redemption.receipt)
     ).value
@@ -497,15 +403,16 @@ def redeem_agent_open_pr(
 
 def _agent_output(session: Any, execution_id: NodeExecutionId) -> bytes:
     record = session.execute(
-        sa.select(run_events.c.payload, run_events.c.payload_hash).where(
-            run_events.c.node_execution_id == execution_id.value,
-            run_events.c.event_kind == RunEventKind.AGENT_COMPLETED.value,
+        sa.select(
+            agent_receipts_v2.c.output_bytes, agent_receipts_v2.c.output_hash
+        ).where(
+            agent_receipts_v2.c.node_execution_id == execution_id.value,
         )
     ).one_or_none()
     if record is None:
-        raise RunEffectConflict("agent open-pr grant has no durable agent output")
-    payload = bytes(record.payload)
-    if Sha256Hash.of(payload).value != record.payload_hash:
+        raise RunEffectConflict("agent open-pr grant has no durable agent receipt")
+    payload = bytes(record.output_bytes)
+    if Sha256Hash.of(payload).value != record.output_hash:
         raise RunEffectConflict("agent output binding changed")
     return payload
 

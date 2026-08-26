@@ -7,7 +7,14 @@ import sqlalchemy as sa
 from dbos import DBOSClient, EnqueueOptions
 from sqlalchemy.engine import Engine
 
+from atelier2.adapters.dbos.agent_effect_grants import (
+    agent_node_redeems_platform_effect,
+)
 from atelier2.adapters.dbos.artifact_store import keep_artifact
+from atelier2.adapters.dbos.effect_store import (
+    intent_snapshot_from_record,
+    receipt_from_record,
+)
 from atelier2.adapters.dbos.instants import record_attempt_ended, record_attempt_started
 from atelier2.adapters.dbos.names import (
     CANCELLATION_WORKFLOW_NAME,
@@ -39,6 +46,8 @@ from atelier2.adapters.dbos.run_transitions import (
 from atelier2.adapters.dbos.schema import (
     agent_attempts,
     agent_receipts_v2,
+    effect_intents,
+    effect_receipts,
     run_events,
     runs,
     tool_redemptions,
@@ -98,6 +107,7 @@ from atelier2.contracts.agents import (
     AgentReceiptV2,
 )
 from atelier2.contracts.artifacts import Artifact, ArtifactHash
+from atelier2.contracts.effects import EffectIntentState
 from atelier2.contracts.executions import (
     AgentAttemptExecution,
     AgentExecutionRefusal,
@@ -107,6 +117,7 @@ from atelier2.contracts.executions import (
     RunEventCancellationBinding,
     RunEventKind,
     WaitAnswerState,
+    logical_effect_key_for_node,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
@@ -367,6 +378,16 @@ def _load_attempt(session: Any, attempt_id: AgentAttemptId) -> AgentAttempt:
     return attempt_from_record(record)
 
 
+def _agent_node_for_attempt(
+    graph: WorkflowGraphV2 | WorkflowGraphV3, node_id: str
+) -> AgentNodeV2 | AgentNodeV3:
+    """Return the declared Agent node an attempt is allowed to name."""
+    node = graph.node(node_id)
+    if not isinstance(node, (AgentNodeV2, AgentNodeV3)):
+        raise RunTransitionConflict("agent attempt request differs from durable graph")
+    return node
+
+
 def _validate_request(
     session: Any, request: AgentExecutionRequestV2
 ) -> tuple[RunV2 | RunV3, WorkflowGraphV2 | WorkflowGraphV3]:
@@ -389,9 +410,7 @@ def _validate_request(
         raise RunTransitionConflict("agent attempt requires a bound run")
     if run.revision_hash != request.workflow_revision_hash:
         raise RunTransitionConflict("agent attempt request names another revision")
-    node = graph.node(request.node_id)
-    if not isinstance(node, (AgentNodeV2, AgentNodeV3)):
-        raise RunTransitionConflict("agent attempt request differs from durable graph")
+    node = _agent_node_for_attempt(graph, request.node_id)
     # Recomputed from durable truth rather than trusted: what the node's author
     # wrote, plus the orders this run was started with, through the one owner
     # that decides what an agent is handed. A second spelling here would let a
@@ -451,10 +470,21 @@ def _require_attempt_binding(
 
 
 def _require_completed_attempt_head(
+    connection: Any,
     run: RunV2 | RunV3,
     request: AgentExecutionRequestV2,
     completion: NodeCompletion,
+    completion_is_deferred: bool,
 ) -> None:
+    if completion_is_deferred:
+        if (
+            run.state is not RunState.STARTED
+            or run.current_node_id != request.node_id
+            or run.current_round_ordinal != request.round_ordinal
+        ):
+            _require_confirmed_effect_receipt_for_completed_attempt(connection, request)
+        else:
+            return
     match completion:
         case RunContinues(node_id, round_ordinal):
             if (
@@ -475,6 +505,81 @@ def _require_completed_attempt_head(
                 )
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _require_confirmed_effect_receipt_for_completed_attempt(
+    connection: Any, request: AgentExecutionRequestV2
+) -> None:
+    """Prove that this exact effect grant settled before accepting its replay.
+
+    An attempt whose effect continuation already moved the run is safe to replay
+    only when the intent for this execution reached CONFIRMED and its receipt is
+    present. The intent also has to carry this attempt's durable output, otherwise
+    an unrelated confirmed effect could make a torn head look like a continuation.
+    """
+    logical_key = logical_effect_key_for_node(
+        request.run_id,
+        request.workflow_revision_hash,
+        request.node_id,
+        request.round_ordinal,
+    )
+    intent_record = (
+        connection.execute(
+            sa.select(effect_intents).where(
+                effect_intents.c.logical_key == logical_key.value
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    receipt_record = (
+        connection.execute(
+            sa.select(effect_receipts).where(
+                effect_receipts.c.logical_key == logical_key.value
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    output = connection.execute(
+        sa.select(
+            agent_receipts_v2.c.output_bytes, agent_receipts_v2.c.output_hash
+        ).where(
+            agent_receipts_v2.c.node_execution_id == request.node_execution_id.value
+        )
+    ).one_or_none()
+    if intent_record is None or receipt_record is None or output is None:
+        raise RunTransitionConflict(
+            "successful effect-grant attempt has no exact confirmed effect receipt"
+        )
+    intent_snapshot = intent_snapshot_from_record(intent_record)
+    receipt = receipt_from_record(receipt_record)
+    if (
+        intent_snapshot.state is not EffectIntentState.CONFIRMED
+        or receipt.intent != intent_snapshot.intent
+        or bytes(intent_snapshot.intent.request.payload) != bytes(output.output_bytes)
+        or str(intent_snapshot.intent.request.request_hash.value)
+        != str(output.output_hash)
+    ):
+        raise RunTransitionConflict(
+            "successful effect-grant attempt has no exact confirmed effect receipt"
+        )
+
+
+def _agent_platform_effect_completion_is_deferred(
+    connection: Any, node: AgentNodeV2 | AgentNodeV3
+) -> bool:
+    """Whether this node's kept output must wait for platform-effect settlement.
+
+    An effect grant redeems only after the agent output has become durable, but
+    the run may not leave the node until that redemption has a receipt. The
+    grant document is the same pinned revision the node binding already read;
+    a missing or invalid document is therefore durable corruption, not an
+    absence that could make a completed run honest.
+    """
+    return isinstance(node, AgentNodeV3) and agent_node_redeems_platform_effect(
+        connection, node
+    )
 
 
 def _kept_transcript_values(
@@ -1359,7 +1464,15 @@ class DbosAgentAttemptStore:
                     request.round_ordinal,
                     _kept_verdict(connection, graph, request),
                 )
-                _require_completed_attempt_head(run, request, completion)
+                _require_completed_attempt_head(
+                    connection,
+                    run,
+                    request,
+                    completion,
+                    _agent_platform_effect_completion_is_deferred(
+                        connection, _agent_node_for_attempt(graph, request.node_id)
+                    ),
+                )
                 return AgentAttemptSucceeded(durable, completion)
             raise AssertionError("closed agent attempt state was not exhaustive")
 
@@ -1664,7 +1777,7 @@ class DbosAgentAttemptStore:
         runner_evidence_hash: RunnerTerminalEvidenceHash | None = None,
     ) -> AgentAttemptSucceeded | AgentAttemptFailed:
         request = execution.request
-        node = graph.node(request.node_id)
+        node = _agent_node_for_attempt(graph, request.node_id)
         if isinstance(node, AgentNodeV3):
             declared = node.outputs[0]
             if declared.refusal is not None:
@@ -1794,19 +1907,25 @@ class DbosAgentAttemptStore:
             if verdict_condition_of(graph, request.node_id) is None
             else read_verdict(result.output_bytes),
         )
-        match completion:
-            case RunContinues(node_id, target_round):
-                target_state = RunState.STARTED
-                target_node_id = node_id
-                target_round_ordinal = target_round
-                terminal = False
-            case RunCompletes():
-                target_state = RunState.COMPLETED
-                target_node_id = request.node_id
-                target_round_ordinal = request.round_ordinal
-                terminal = True
-            case _ as unreachable:
-                assert_never(unreachable)
+        if _agent_platform_effect_completion_is_deferred(connection, node):
+            target_state = RunState.STARTED
+            target_node_id = request.node_id
+            target_round_ordinal = request.round_ordinal
+            terminal = False
+        else:
+            match completion:
+                case RunContinues(node_id, target_round):
+                    target_state = RunState.STARTED
+                    target_node_id = node_id
+                    target_round_ordinal = target_round
+                    terminal = False
+                case RunCompletes():
+                    target_state = RunState.COMPLETED
+                    target_node_id = request.node_id
+                    target_round_ordinal = request.round_ordinal
+                    terminal = True
+                case _ as unreachable:
+                    assert_never(unreachable)
         _commit_event(
             connection,
             request.run_id,

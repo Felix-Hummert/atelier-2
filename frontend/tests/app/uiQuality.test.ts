@@ -204,12 +204,6 @@ describe("core surfaces read owned display strings", () => {
     await railShowsOwnedPseudoLocale();
   });
 
-  it("proves(core-surfaces-render-owned-display-strings-under-a-pseudo-locale): New Run rail uses the owner, not a hardcoded copy", async () => {
-    open("/atelier/new?pseudo-locale=1");
-    await screen.findByRole("heading", { name: "Choose a workflow" });
-    await railShowsOwnedPseudoLocale();
-  });
-
   it("proves(core-surfaces-render-owned-display-strings-under-a-pseudo-locale): Run page rail uses the owner, not a hardcoded copy", async () => {
     open(`/atelier/runs/${publicReference}?pseudo-locale=1`);
     await screen.findByRole("heading", { name: "Unnamed workflow" });

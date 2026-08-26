@@ -1,19 +1,52 @@
 # Why this atelier exists
 
-**DRAFT — Operator-Segnung ausstehend**
+1. This is a derived view of the owner documents; if it disagrees with them, the owners win.[^1]
 
-This page is a Desk/Doku reading of
-[GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1) (body UTF-8
-26837 bytes including GitHub's trailing newline, SHA-256
-`070da2570c878ee8d1e37488c715cfa7af972af7c347a4554f273ef72047b3f6`, Operator
-amendment 19.08.2026). It is not a second authority and not a copy of that
-issue. The issue wins. Nothing below is an operator sentence except a quotation
-taken from that body.
+# The workshop
 
-## The reason
+```mermaid
+flowchart TB
+    subgraph Workshop["Workshop UI — operator"]
+        subgraph Rooms["Four rooms"]
+            direction LR
+            Workbench["Workbench<br/>needs me · moving · conversation"]
+            Catalog["Catalog<br/>library · intake · manual start"]
+            History["History<br/>terminal runs"]
+            Settings["Settings<br/>project · sources · models"]
+        end
+        Run["Run view<br/>one graph: still · live · frozen"]
+        Settings -.->|project context| Workbench
+        Settings -.->|project context| Catalog
+        Settings -.->|project context| History
+        Workbench -->|open active run| Run
+        Catalog -->|start| Run
+        History -->|open finished run| Run
+    end
 
-The operator wants a lean, independent product that runs agentic work as
-published graphs — and refuses to rebuild the platforms that already exist.
+    subgraph Engine["Engine boundary"]
+        Core["Durable Core<br/>state · scheduling · receipts"]
+        Store[("Canonical store")]
+        Adapters["Provider and platform adapters"]
+        Core --> Store
+        Core --> Adapters
+    end
+
+    Workshop <-->|typed commands, reads, durable events| Core
+```
+
+2. Atelier is a workshop rather than a dashboard, and the first thing in a room is the work or the quiet fact that nothing needs the operator.[^2]
+3. Its rail contains Workbench, Catalog and History, with Settings set apart as the project context and the only project-switch seam.[^3]
+4. Workbench owns what needs the operator, what is moving, the conversation and the unfolding queue, while a terminal run crosses once into History.[^4]
+5. Catalog owns the library, provenance, intake, workflow approval and the single manual start door.[^5]
+6. History contains only terminal runs and identifies each by when, purpose, work item, result and duration rather than by standing alone.[^6]
+7. Settings owns connected sources, the provider model registry and the three project model defaults, while credential material is never shown or stored as ordinary application state.[^7]
+8. A Run is a view rather than a room: one graph appears still before execution, live while work moves and frozen after completion, with detail in one node panel.[^8]
+9. Rooms reuse Stage, Row, Card and Sheet; state is carried once by shape and colour, and at most one element moves on a screen.[^9]
+10. Beneath the rooms, the engine owns immutable bindings, durable transitions, events and receipts, while the cockpit remains a projection and provider or platform specifics stay behind adapters.[^10]
+
+## Operator sentences (Issue #1, 19.08.2026 amendment)
+
+Source: [GitHub Issue #1](https://github.com/FlexOr2/atelier-2/issues/1).
 
 > „Ich will Atelier 2 als neues, eigenständiges Produkt bauen: einen schlanken
 > agentischen Orchestrator, in dem ich Abläufe als versionierte, deklarative
@@ -22,84 +55,16 @@ published graphs — and refuses to rebuild the platforms that already exist.
 > erfinden, sondern bestehende Plattformen hinter kleinen austauschbaren
 > Grenzen verwenden."
 
-Desk/Doku-Lesart of that paragraph: a run binds one immutable workflow
-revision. The person starts, observes, steers, approves, cancels, and resumes
-through one cockpit. The core owns Requirement, Workflow, Run, Context,
-Capability, Budget, and Receipt. External platforms keep their native objects.
-The cockpit projects those truths and does not invent a second set.
-
-He keeps the workflow:
-
 > „Der Operator behält jederzeit die fachliche Kontrolle darüber, welcher
 > Workflow verwendet wird."
 
-Desk/Doku-Lesart of that sentence: Atelier may propose or compose. It does not
-add a hidden ceremony. Publish and start are separate acts. After start, the
-bound revision does not move.
-
-Coder and reviewer are the same node kind. A Markdown agent definition owns the
-reusable worker identity and its stable system behaviour; a workflow Agent node
-is one occurrence of that worker. The node names a portable role, a required
-workflow-generic instruction, what it **gets** (typed run inputs, pinned source)
-and what it **may do** (capability, tools, grants). At run start the role binds to
-one exact configuration; the target binding makes the exact agent definition
-behind it reconstructible. Concrete story material enters as a typed run input,
-never by interpolating task bytes into the instruction. A follow-on node sees
-only mapped outputs, not the predecessor's throwaway directory. Landing (push,
-PR, merge) is one platform-adapter effect: an Action node, or the same effect as
-a grant on an Agent. The secret never enters the lease. A CI host may hold git
-and a token; the agent does not inherit them. The issue's own words:
-
-> „Coder-Knoten und Review-Knoten sind dieselbe Node-Art (`agent`). […]
-> Irreversible externe Mutationen wie Push, Merge oder Deploy laufen
-> ausschließlich über Intent, Readback und Receipt des Plattform-Adapters —
-> nie als Roh-`git push` im Provider-CLI-Stream, nie mit Token in der
-> Agent-Lease."
-
-## The march route (ruled 24.08.2026)
-
-The flagship product review of 24.08.2026 —
-[Issue #637](https://github.com/FlexOr2/atelier-2/issues/637) is its record —
-ended in an operator ruling on sequence and moat. Sequence: the live
-end-to-end loop comes first — a real chain landing a real pull request under a
-real budget, provably — before any further workflow-language feature,
-migration-ladder growth, or bespoke isolation mechanics; the workflow language
-is frozen without usage evidence, and the isolation-adoption and dbos-core
-visions are parked
-([#632](https://github.com/FlexOr2/atelier-2/issues/632),
-[#634](https://github.com/FlexOr2/atelier-2/issues/634)). Moat: what this
-product defends is provider-neutrality over the operator's own subscriptions,
-evidence-first execution — byte-pinned revisions, receipts, an honest
-UNKNOWN — and a catalogue of proven, measured workflows. Provider-native
-surfaces — chat orchestration, parallel agents, cockpit dashboards — are
-commodities: kept thin and fast, never the moat.
-
-## What this page does not claim
-
-Issue #1 also names a V1 success, a *Nicht V1* exclusion list, and a dated
-delivery note. The exclusions are still the issue's. The delivery note is not
-this page's — [PRODUCT.md](PRODUCT.md) owns what exists today. This page does
-not treat an intended cockpit, an intended catalogue, or an intended self-run
-as present.
-
-## Later visions, referenced only
-
-These four issues are marked `VISION/PROPOSAL` on their own bodies. They become
-requirements only if the operator publishes them the way
-[Issue #5](https://github.com/FlexOr2/atelier-2/issues/5) already decided.
-This page does not restate them.
-
-- [Issue #6](https://github.com/FlexOr2/atelier-2/issues/6) — named, versioned
-  catalogue of proven chains
-- [Issue #7](https://github.com/FlexOr2/atelier-2/issues/7) — a conductor: chat
-  becomes work, as the engine's first customer
-- [Issue #8](https://github.com/FlexOr2/atelier-2/issues/8) — a scorecard from
-  measurements, never from self-grades
-- [Issue #9](https://github.com/FlexOr2/atelier-2/issues/9) — the living graph,
-  ephemeral tiles, mode as a capability
-
-## What this page is not
-
-Not what must be built — [requirements/](requirements/). Not how a person walks
-the surfaces that exist — [journeys/](journeys/). Not why a technical shape was
-chosen — [decisions/](decisions/).
+[^1]: Owners: [ADR 0019 preamble](decisions/0019-workshop-target-picture.md), [Requirement 0003 Intent](requirements/0003-ziel-ui.md), [Product intent](product/intent.md)
+[^2]: Owners: [HEART §The place](HEART.md), [REQ-UIQ-01](requirements/0003-ziel-ui.md)
+[^3]: Owners: [ADR 0019 §1](decisions/0019-workshop-target-picture.md), [REQ-UI-20](requirements/0003-ziel-ui.md), [REQ-UI-23](requirements/0003-ziel-ui.md)
+[^4]: Owners: [ADR 0019 §1](decisions/0019-workshop-target-picture.md), [HEART §The place](HEART.md), [REQ-UI-24](requirements/0003-ziel-ui.md)
+[^5]: Owners: [ADR 0019 §1–§2](decisions/0019-workshop-target-picture.md), [REQ-UI-22](requirements/0003-ziel-ui.md), [REQ-UI-05](requirements/0003-ziel-ui.md)
+[^6]: Owners: [ADR 0019 §1 and §4](decisions/0019-workshop-target-picture.md), [REQ-UI-13](requirements/0003-ziel-ui.md)
+[^7]: Owners: [ADR 0019 §1 and §3](decisions/0019-workshop-target-picture.md), [REQ-UI-15](requirements/0003-ziel-ui.md), [ADR 0017 §1 and invariant 1](decisions/0017-account-credential-model.md)
+[^8]: Owners: [ADR 0019 §1–§2](decisions/0019-workshop-target-picture.md), [REQ-UI-06](requirements/0003-ziel-ui.md)
+[^9]: Owners: [ADR 0019 §2–§3](decisions/0019-workshop-target-picture.md), [REQ-UIQ-07](requirements/0003-ziel-ui.md), [HEART §One thing alive](HEART.md)
+[^10]: Owners: [ADR 0001 §Decision and §Production boundary](decisions/0001-durable-runtime.md), [ADR 0003 §Decision](decisions/0003-http-api.md), [ADR 0004 §Decision](decisions/0004-local-cockpit.md), [Product runtime §Current state](product/runtime.md)
