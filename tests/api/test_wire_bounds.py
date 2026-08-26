@@ -36,6 +36,10 @@ from atelier2.api.references import (
 )
 from atelier2.api.wire import events, library, requests, resources
 from atelier2.contracts.agent_attempts import REPLACEMENT_AGENT_ATTEMPT_ORDINAL
+from atelier2.contracts.agent_definitions import (
+    MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS,
+    MAXIMUM_AGENT_DEFINITION_TOOL_COUNT,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
@@ -63,6 +67,10 @@ WIRE_MODULES: tuple[ModuleType, ...] = (requests, resources, events, library)
 # owner caps how many roles one run binds.
 OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AgentAttemptCancellationResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "AgentDefinitionRevisionDetailResource.system_prompt": (
+        MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS
+    ),
+    "AgentDefinitionRevisionDetailResource.tools": MAXIMUM_AGENT_DEFINITION_TOOL_COUNT,
     "AgentBindingResourceV2.executor_revision": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentBindingResourceV2.model": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentBindingResourceV2.profile_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
