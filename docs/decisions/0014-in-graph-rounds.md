@@ -11,6 +11,10 @@
   repeated Wait is executable, replacing "What this build repeats, and what it
   refuses" below — the round identity this record decided already carries the
   answer path, so what the section called a missing identity is a landed one.
+  Amended 2026-08-26 ([#751](https://github.com/FlexOr2/atelier-2/issues/751)):
+  an Action node inside a declared loop stays refused, this time deliberately
+  rather than by gap — see "What this build repeats, and what it refuses"
+  below.
 - Supersedes: the structural finding of
   [ADR 0013](0013-bounded-iteration.md) — "A loop inside one graph is therefore
   identity-impossible" — and, with it, ADR 0013's decision that a round is a child
@@ -156,6 +160,24 @@ A value read *out of* a loop still names no round — the reader would have to
 say which round wrote it, and choosing is the verdict-driven continuation this
 record does not decide. That form stays refused by name at the executable
 door rather than started and abandoned.
+
+**Amendment 2026-08-26 ([#751](https://github.com/FlexOr2/atelier-2/issues/751)):
+an Action node inside a declared loop's body is deliberately out of scope, not
+a gap awaiting its turn.** #706 made the Action-node effect-key derivation
+round-aware so the identity plumbing would already be honest the day this
+closed, and named the open question this amendment answers: no caller
+declares an Action inside a loop body today, and repeating an Action repeats
+an *external* side effect — a PR reopened, a message resent — once per round.
+That repetition has its own idempotency question the round dimension does not
+answer by itself: an external effect needs its own per-round idempotency key
+before "run it again" is safe, and no domain need has asked for one. Extending
+`_unrepeatable_loop_forms` (`contracts/workflows_v3.py`) to admit Action nodes
+without that key would let a published document declare a shape the runtime
+cannot honestly repeat. The refusal therefore stays exactly where #706 left
+it — enforced by `_unrepeatable_loop_forms` and `parse_executable_workflow_document`
+at every load, not only at run start — until a real caller needs a repeated
+external effect and can name its idempotency key. [#751](https://github.com/FlexOr2/atelier-2/issues/751)
+closes `wontfix` on this reasoning.
 
 ### A data edge inside a loop that the edges cannot order reads the previous round
 
