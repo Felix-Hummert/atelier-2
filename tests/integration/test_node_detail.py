@@ -16,12 +16,14 @@ see why. That run is the shape this file reproduces.
 
 from __future__ import annotations
 
+import base64
 import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+from pydantic import ValidationError
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
@@ -35,6 +37,9 @@ from atelier2.adapters.dbos.starter import (
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.projection.runs import node_detail_resource
+from atelier2.api.references import MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS
+from atelier2.api.wire.resources import NodeRefusalOutputResource
 from atelier2.application.answer_wait import AnswerAcceptedPending, answer_wait_result
 from atelier2.contracts.agents import (
     AgentBinding,
@@ -63,6 +68,7 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.secret_redaction import REDACTION_MARKER
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -711,8 +717,7 @@ NOT_EVEN_JSON = (
 """A live episode's own words (#664's head comment) -- prose, not JSON at all."""
 
 
-@pytest.fixture
-def own_schema_refused_runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
+def _own_schema_refused_runtime(tmp_path: Path, answer: bytes) -> DbosRuntime:
     """The `runtime` fixture's own shape, with a provider `implement`'s own
     pinned schema refuses at the success write.
 
@@ -734,13 +739,15 @@ def own_schema_refused_runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
             EffectDestination("loopback-test"),
         ),
         ExactOutputAgentExecutorFactory(),
-        (
-            RecordingAgentExecutorFactoryV2(
-                "exact", "exact/v1", "exact-op", NOT_EVEN_JSON
-            ),
-        ),
+        (RecordingAgentExecutorFactoryV2("exact", "exact/v1", "exact-op", answer),),
     )
     started.initialize_storage()
+    return started
+
+
+@pytest.fixture
+def own_schema_refused_runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
+    started = _own_schema_refused_runtime(tmp_path, NOT_EVEN_JSON)
     try:
         yield started
     finally:
@@ -757,7 +764,11 @@ def test_a_schema_refused_answer_reads_back_its_exact_bytes_and_hash(
     tests above, a downstream node's composition read -- so this is the case
     that really has a `failed` `node-receipt/v3` and a kept artifact behind
     it. The node detail this file's read owns has to resolve that hash back
-    into the exact bytes, not merely report that a value once existed.
+    into bytes, not merely report that a value once existed. `NOT_EVEN_JSON`
+    carries no credential shape, so redaction is a no-op here and the value
+    read back is unchanged -- the credential-shaped case, where it is not, is
+    `test_a_credential_shaped_refusal_is_redacted_from_the_store_through_the_api`
+    below.
     """
     runtime = own_schema_refused_runtime
     publish_and_start(runtime)
@@ -774,3 +785,76 @@ def test_a_schema_refused_answer_reads_back_its_exact_bytes_and_hash(
     assert detail.refusal_output is not None
     assert detail.refusal_output.value == NOT_EVEN_JSON
     assert detail.refusal_output.value_hash == Sha256Hash.of(NOT_EVEN_JSON)
+
+
+def assembled(*parts: str) -> str:
+    """One credential-shaped value, assembled here instead of spelled out.
+
+    This repository's own history is secret-scanned, so a test that needs the
+    shape of a credential builds it from parts rather than writing a
+    credential-shaped literal into the history that scan reads.
+    """
+    return "".join(parts)
+
+
+@pytest.mark.proves("a-refused-episode-shows-its-raw-output-and-hash-in-the-node-panel")
+def test_a_credential_shaped_refusal_is_redacted_from_the_store_through_the_api(
+    tmp_path: Path,
+) -> None:
+    """The review finding this closes: a refused episode must never echo a secret.
+
+    A schema refusal is exactly the shape of episode where a provider might
+    hand back a credential it was given -- prose no schema ever validated --
+    so the exact bytes an operator could once read here are wrong to serve
+    unredacted. This drives a real refused attempt whose answer carries a
+    credential shape assembled at runtime, through the real production write
+    path, and proves the redaction runs before either the domain projection
+    or the wire resource is built from it -- not somewhere a caller could
+    forget to call it.
+    """
+    canary_token = assembled("ghp", "_", "notarealtoken1234567890")
+    canary_answer = f"Sure, here is the token you asked for: {canary_token}".encode()
+    runtime = _own_schema_refused_runtime(tmp_path, canary_answer)
+    try:
+        publish_and_start(runtime)
+        runtime.launch()
+        wait_for_run_state(runtime, RUN, RunState.FAILED)
+        found = durable_queries(runtime.engine).get_node_detail(RUN, "implement")
+    finally:
+        runtime.close()
+
+    assert isinstance(found, NodeDetailFound), found
+    detail = found.detail
+    assert detail.refusal_output is not None
+    redacted_text = detail.refusal_output.value.decode("utf-8")
+    assert canary_token not in redacted_text
+    assert REDACTION_MARKER in redacted_text
+    # The hash still proves what the schema judged -- the original, unredacted
+    # bytes -- even though the value beside it is a presentation of that
+    # judgment, never its exact preimage.
+    assert detail.refusal_output.value_hash == Sha256Hash.of(canary_answer)
+
+    resource = node_detail_resource(detail)
+    assert isinstance(resource.refusal_output, NodeRefusalOutputResource)
+    wire_text = base64.b64decode(resource.refusal_output.value_base64).decode("utf-8")
+    assert canary_token not in wire_text
+    assert REDACTION_MARKER in wire_text
+    assert resource.refusal_output.value_hash == Sha256Hash.of(canary_answer).value
+
+
+def test_the_refusal_output_field_is_bounded_to_the_agent_output_cap() -> None:
+    """The review finding this closes: the wire must not serve this field unbounded.
+
+    Only a V3 agent node's own schema-refused output ever reaches
+    `refusal_output`, and every executor adapter already refuses the domain
+    more than the agent output cap before that judgment runs -- so the wire
+    resource restates that bound, in its own encoding
+    (`MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS`), rather than serving the
+    field unbounded the way the general `answer` field must stay: that field
+    also carries Action and Subworkflow payloads with no shared byte bound.
+    """
+    at_bound = "a" * MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS
+    NodeRefusalOutputResource(value_base64=at_bound, value_hash="a" * 64)
+
+    with pytest.raises(ValidationError):
+        NodeRefusalOutputResource(value_base64=at_bound + "a", value_hash="a" * 64)

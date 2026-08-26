@@ -208,13 +208,21 @@ class NodeDetail:
 
     `refusal_output` is deliberately its own field, not `answer`: `answer` is
     the value the run accepted, and a schema-refused value never was that. It
-    carries the exact bytes a schema owner judged and refused, read back from
-    the content-addressed artifact the failure transaction kept under the
-    receipt's own value hash (#664) -- present only where a node's own output
-    was judged and something to keep survived that judgment: a run from before
-    that write existed, a refusal with no receipt at all (an unavailable
-    executor, a predecessor that has not written), or judged bytes that were
-    themselves empty all carry this field as honestly absent, never a guess.
+    carries a redacted presentation of the bytes a schema owner judged and
+    refused, read back from the content-addressed artifact the failure
+    transaction kept under the receipt's own value hash (#664) -- present only
+    where a node's own output was judged and something to keep survived that
+    judgment: a run from before that write existed, a refusal with no receipt
+    at all (an unavailable executor, a predecessor that has not written),
+    judged bytes that were themselves empty, or bytes that do not decode as
+    UTF-8 (unscannable for a credential shape, so never shown unredacted) all
+    carry this field as honestly absent, never a guess.
+
+    `value` here is not `value_hash`'s exact preimage, on purpose: the caller
+    that builds this `NodeAnswer` runs `contracts.secret_redaction` over the
+    judged bytes first, so `value` is what is safe to show and `value_hash` is
+    still the receipt's own hash of the original, unredacted bytes -- the hash
+    proves what was judged, the value is its redacted presentation.
     """
 
     run_id: RunId

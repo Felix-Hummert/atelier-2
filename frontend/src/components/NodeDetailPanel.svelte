@@ -231,6 +231,7 @@
           {#if refusalOutputText === null}
             <p class="muted">{wrapDisplayCopy(runResultCopy.unreadable)}</p>
           {:else}
+            <p class="muted">{wrapDisplayCopy(runPageCopy.refusedOutputRedactionNotice)}</p>
             <pre
               class="exact"
               role="region"

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/sve
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { CockpitApi, NodeDetail, RunV3 } from "../../src/api/client";
+import { MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS, nodeDetailSchema } from "../../src/api/client";
 import NodeDetailPanel from "../../src/components/NodeDetailPanel.svelte";
 import V3AnswerCard from "../../src/components/V3AnswerCard.svelte";
 import V3RunView from "../../src/components/V3RunView.svelte";
@@ -332,7 +333,7 @@ describe("the node panel shows a schema-refused answer's raw bytes and hash (#66
   const REFUSED_PROSE =
     "Sure! Here is what I would do: first look at the board, then start a run.";
 
-  it("proves(a-refused-episode-shows-its-raw-output-and-hash-in-the-node-panel): shows the exact refused bytes under the stopped-here sentence on the Result tab", () => {
+  it("proves(a-refused-episode-shows-its-raw-output-and-hash-in-the-node-panel): shows the refused bytes under the stopped-here sentence on the Result tab, named as a redacted presentation", () => {
     render(NodeDetailPanel, {
       props: {
         detail: withRefusalOutput(REFUSED_PROSE, REFUSAL),
@@ -343,6 +344,29 @@ describe("the node panel shows a schema-refused answer's raw bytes and hash (#66
 
     expect(screen.getByText("Stopped here:").isConnected).toBe(true);
     expect(screen.getByText(REFUSED_PROSE).isConnected).toBe(true);
+    // The review finding this closes: the panel must say this is a redacted
+    // presentation, never claim the raw bytes are shown exactly.
+    expect(
+      screen.getByText(runPageCopy.refusedOutputRedactionNotice).isConnected
+    ).toBe(true);
+  });
+
+  it("renders whatever the server already redacted, faithfully and without a second decode", () => {
+    // The server-side redaction canary (tests/integration/test_node_detail.py)
+    // proves credential shapes never leave the store unredacted; this proves
+    // the panel is a faithful window onto whatever text it is handed, marker
+    // included, rather than a second place that could reintroduce a secret.
+    const alreadyRedacted =
+      "Sure, here is the token you asked for: [redacted]";
+    render(NodeDetailPanel, {
+      props: {
+        detail: withRefusalOutput(alreadyRedacted, REFUSAL),
+        onClose: () => {},
+        runEvidence
+      }
+    });
+
+    expect(screen.getByText(alreadyRedacted).isConnected).toBe(true);
   });
 
   it("lists the refused output's hash as a proof anchor on the Evidence tab", async () => {
@@ -375,6 +399,27 @@ describe("the node panel shows a schema-refused answer's raw bytes and hash (#66
     await fireEvent.click(screen.getByRole("tab", { name: runPageCopy.tabEvidence }));
 
     expect(screen.queryByRole("group", { name: runPageCopy.refusedOutputHash })).toBeNull();
+  });
+
+  it("bounds refusal_output.value_base64 to the wire's own agent-output-cap mirror, and admits a value exactly at that bound", () => {
+    // The review finding this closes: this field carries only a V3 agent
+    // node's own schema-refused output (#664), never the unrelated, larger
+    // payloads the general `answer` field must also serve -- so the strict
+    // Zod mirror refuses a value the server's own resource could never send.
+    const atBound = withRefusalOutput(REFUSED_PROSE, REFUSAL);
+    const atBoundEncoded = "a".repeat(MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS);
+    const oversized = {
+      ...atBound,
+      refusal_output: { ...atBound.refusal_output, value_base64: atBoundEncoded + "a" }
+    };
+
+    expect(() =>
+      nodeDetailSchema.parse({
+        ...atBound,
+        refusal_output: { ...atBound.refusal_output, value_base64: atBoundEncoded }
+      })
+    ).not.toThrow();
+    expect(() => nodeDetailSchema.parse(oversized)).toThrow();
   });
 });
 

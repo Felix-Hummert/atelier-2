@@ -11,11 +11,29 @@ story = "https://github.com/FlexOr2/atelier-2/issues/664"
 # This slice is that resolution, end to end: `queries.py` reads the artifact
 # behind a judged refusal and hands it to `NodeDetail` as its own field --
 # never `answer`, because `answer` is the value a run accepted and a
-# schema-refused value never was that. The wire (`NodeDetailResource`) and the
-# client (`frontend/src/api/client.ts`, a strict Zod mirror) carry the same
-# field under the same name, and the node panel's Result tab shows the exact
+# schema-refused value never was that. The wire (`NodeRefusalOutputResource`)
+# and the client (`frontend/src/api/client.ts`, a strict Zod mirror) carry the
+# same field under the same name, and the node panel's Result tab shows the
 # bytes under its existing "Stopped here" sentence, with the hash listed
 # beside the run's other proof anchors on the Evidence tab.
+#
+# HARDENED after review (25.08.): a refused episode is untrusted provider text
+# on its way to a browser, and a schema refusal is exactly the shape of
+# episode where a provider might echo a credential it was handed. `queries.py`
+# now runs `contracts.secret_redaction` over the judged bytes before either the
+# domain projection or the wire resource is ever built, and the panel's own
+# copy says so -- a redacted presentation, never "exact". `value_hash` is left
+# untouched: it is the receipt's own hash of the original, unredacted bytes,
+# so it keeps proving what the schema judged even though the value beside it
+# is that judgment's presentation, not its exact preimage. Bytes that do not
+# decode as UTF-8 cannot be scanned for a credential shape at all, so they
+# answer honestly absent rather than unscanned. `NodeRefusalOutputResource`
+# (not the general `NodeAnswerResource` `answer` already uses, which also
+# carries Action/Subworkflow payloads with no shared bound) bounds
+# `value_base64` to the wire's own encoding of the agent output cap
+# (`MAXIMUM_AGENT_OUTPUT_BYTES_V2`, already held upstream by every executor
+# adapter before a schema ever judges anything), mirrored the same way in the
+# Zod schema.
 #
 # NAMED OPEN, deliberately not written by this slice: usage, the
 # provider-resolved model and `session_id` for a FAILED attempt (#664's third
@@ -25,4 +43,4 @@ story = "https://github.com/FlexOr2/atelier-2/issues/664"
 
 [[sentence]]
 id = "a-refused-episode-shows-its-raw-output-and-hash-in-the-node-panel"
-text = "A node whose own output a schema refused answers node detail with the exact refused bytes and their value hash, resolved from the artifact the failure transaction kept under that same address, as a field of its own -- never the accepted-answer field, which a schema-refused value never satisfied -- carried unchanged onto the wire and the client's strict schema; the node panel's Result tab shows those bytes under the sentence that already names where the run stopped, and the Evidence tab lists the hash beside the run's other proof anchors. A refusal with nothing to resolve -- no receipt at all, an unjudged process death, or a run written before this write existed -- answers with no such field, never a placeholder."
+text = "A node whose own output a schema refused answers node detail with a redacted presentation of the refused bytes -- credential shapes replaced by contracts.secret_redaction before either the domain projection or the wire resource is built -- and the value hash of the original, unredacted bytes the schema judged, resolved from the artifact the failure transaction kept under that same hash, as a field of its own bounded to the wire's own encoding of the agent output cap -- never the accepted-answer field, which a schema-refused value never satisfied, and never the general answer resource's own unbounded shape, which also serves larger payloads with no shared bound. The node panel's Result tab shows the redacted bytes under the sentence that already names where the run stopped, states plainly that credential-shaped text was replaced, and the Evidence tab lists the hash -- still proof of what was judged -- beside the run's other proof anchors. A refusal with nothing to resolve -- no receipt at all, an unjudged process death, bytes that do not decode as UTF-8, or a run written before this write existed -- answers with no such field, never a placeholder."

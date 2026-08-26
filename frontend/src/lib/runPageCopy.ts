@@ -83,6 +83,8 @@ export const runPageCopy = {
   receiptHash: "Receipt hash",
   refusedOutput: "What the model wrote",
   refusedOutputHash: "Refused output hash",
+  refusedOutputRedactionNotice:
+    "Credential-shaped text is replaced before this is shown. The hash on the Evidence tab still proves the exact bytes a schema judged.",
   sealsPrompt: "exactly these prompt bytes, not the receipt request hash that frames identity around them",
   sealsOutput: "exactly these output bytes",
   sealsReceipt: "the receipt that named who ran this node",

@@ -112,6 +112,7 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.secret_redaction import redact_credentials
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflow_projections import (
@@ -533,7 +534,7 @@ def _node_receipt_refusal_output(
     connection: Connection,
     execution_id: NodeExecutionId,
 ) -> NodeAnswer | None:
-    """The exact bytes a schema owner judged and refused, where the store still holds them.
+    """A redacted presentation of what a schema owner judged and refused.
 
     Only a judged `node-receipt/v3` row names a value hash at all
     (`store_node_receipt_reason`); a plain reason, an unjudged failure, or an
@@ -545,6 +546,18 @@ def _node_receipt_refusal_output(
     artifact uses. A run written before that publish existed, or judged bytes
     that were themselves empty, named a hash nothing resolves; that absence is
     the honest answer, never manufactured here.
+
+    A provider's refused output is untrusted text on its way to a browser, and
+    a schema refusal is exactly the shape of episode where a provider might
+    have echoed a credential it was handed -- so `redact_credentials` runs over
+    it here, at the read boundary, before this projection's caller ever builds
+    a wire resource from it (#664). `value_hash` is left exactly as the receipt
+    named it: the hash of the original, unredacted bytes the schema judged, so
+    it goes on proving what was judged even though the returned `value` is a
+    presentation of that judgment rather than its exact preimage. Bytes that do
+    not decode as UTF-8 cannot be scanned for a credential shape at all, and
+    showing them unscanned would be exactly the leak this exists to close -- so
+    that case answers honestly absent too, the same as an unresolvable hash.
     """
     record = connection.execute(
         sa.select(node_receipts_v3.c.disposition, node_receipts_v3.c.reason).where(
@@ -564,7 +577,11 @@ def _node_receipt_refusal_output(
     artifact = read_stored_artifact(connection, ArtifactHash(value_hash.value))
     if artifact is None:
         return None
-    return NodeAnswer(artifact.content, value_hash)
+    try:
+        text = artifact.content.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
 
 
 def _unavailable_executor_refusal(

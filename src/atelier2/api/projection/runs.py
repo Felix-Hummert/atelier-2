@@ -23,6 +23,7 @@ from atelier2.api.wire.resources import (
     NodeProvenanceResource,
     NodeRailAttemptResource,
     NodeRailResource,
+    NodeRefusalOutputResource,
     NodeResource,
     NodeResourceV2,
     NodeStateName,
@@ -425,7 +426,7 @@ def node_detail_resource(detail: NodeDetail) -> NodeDetailResource:
         refusal=detail.refusal,
         refusal_output=None
         if detail.refusal_output is None
-        else NodeAnswerResource(
+        else NodeRefusalOutputResource(
             value_base64=encode_canonical_base64(detail.refusal_output.value),
             value_hash=detail.refusal_output.value_hash.value,
         ),
