@@ -12,6 +12,19 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.hashing import Sha256Hash, frame
 
+MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS = 16 * 1024
+"""How long an authored agent-definition file -- frontmatter and prompt
+together -- may be.
+
+This is the one bound the publish door enforces on the whole document
+(`parse_agent_definition`) and the one the read door's wire response answers
+with, because every part it later echoes -- the prompt, a tool name -- is a
+substring of a document already held to this ceiling.
+"""
+
+MAXIMUM_AGENT_DEFINITION_TOOL_COUNT = 128
+"""How many tools one `tools:` declaration may name."""
+
 
 class AgentDefinitionField(StrEnum):
     """Every frontmatter key an authored agent definition may carry.
@@ -46,7 +59,9 @@ class AgentDefinitionRefusal(StrEnum):
     FIELD_TYPE_UNEXPECTED = "field-type-unexpected"
     FIELD_EMPTY = "field-empty"
     TOOL_DUPLICATED = "tool-duplicated"
+    TOO_MANY_TOOLS = "too-many-tools"
     SYSTEM_PROMPT_MISSING = "system-prompt-missing"
+    DOCUMENT_TOO_LARGE = "document-too-large"
 
 
 class AgentDefinitionRefused(ValueError):
@@ -113,6 +128,11 @@ class DeclaredTools:
     names: tuple[AgentToolName, ...]
 
     def __post_init__(self) -> None:
+        if len(self.names) > MAXIMUM_AGENT_DEFINITION_TOOL_COUNT:
+            raise AgentDefinitionRefused(
+                AgentDefinitionRefusal.TOO_MANY_TOOLS,
+                str(len(self.names)),
+            )
         ordered = tuple(sorted(self.names, key=lambda name: name.value.encode("utf-8")))
         seen: set[str] = set()
         for name in ordered:

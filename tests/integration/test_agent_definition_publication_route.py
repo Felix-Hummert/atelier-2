@@ -10,6 +10,7 @@ were stored" but "the exact authored definition comes back out".
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -21,16 +22,24 @@ from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.markdown_agent_definitions import parse_agent_definition
+from atelier2.api.app import create_app
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.agent_definitions import DeclaredTools
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.ports.durable_runs import DurableStateCorrupt
 from atelier2.ports.published_revisions import (
     PublishedRevisionFound,
     PublishedRevisionMissing,
+    PublishedRevisionsUnavailable,
 )
 from tests.scenarios.agents import agent_scratch_root
-from tests.scenarios.api import durable_api_client
+from tests.scenarios.api import (
+    api_limits,
+    api_ports,
+    durable_api_client,
+    event_poll_backoff,
+)
 
 DEFINITION_PATH = f"{API_PREFIX}/agent-definition-revisions"
 THE_DEFINITION = (
@@ -103,6 +112,145 @@ def test_a_published_definition_read_back_by_its_hash_is_the_identical_definitio
     assert (
         reconstructed.system_prompt == "\nYou watch the stage and name what you see.\n"
     )
+
+
+def test_the_definition_door_answers_every_field_its_author_wrote(
+    runtime: DbosRuntime,
+) -> None:
+    api = durable_api_client(runtime)
+    definition_hash = publish(api, THE_DEFINITION).json()[
+        "agent_definition_revision_hash"
+    ]
+
+    read = api.get(f"{DEFINITION_PATH}/{definition_hash}")
+
+    assert read.status_code == 200
+    assert read.json() == {
+        "agent_definition_revision_hash": definition_hash,
+        "name": "stage-name-witness",
+        "description": "Watches the stage and names what it sees.",
+        "model": "sonnet",
+        "system_prompt": "\nYou watch the stage and name what you see.\n",
+        "tools": ["Grep", "Read"],
+    }
+
+
+def test_the_definition_door_answers_an_unrestricted_definition_with_no_tools(
+    runtime: DbosRuntime,
+) -> None:
+    api = durable_api_client(runtime)
+    unrestricted = (
+        b"---\n"
+        b"name: open-handed-scribe\n"
+        b"description: Writes with whatever the executor offers.\n"
+        b"---\n"
+        b"\nYou write.\n"
+    )
+    definition_hash = publish(api, unrestricted).json()[
+        "agent_definition_revision_hash"
+    ]
+
+    read = api.get(f"{DEFINITION_PATH}/{definition_hash}")
+
+    assert read.status_code == 200
+    body = read.json()
+    assert body["model"] is None
+    assert body["tools"] is None
+
+
+def test_the_definition_door_refuses_a_hash_nothing_published(
+    runtime: DbosRuntime,
+) -> None:
+    unpublished_hash = PublishedRevisionHash.of(THE_DEFINITION).value
+
+    read = durable_api_client(runtime).get(f"{DEFINITION_PATH}/{unpublished_hash}")
+
+    assert read.status_code == 404
+    assert read.json()["type"].endswith(":agent-definition-revision-not-found")
+
+
+def test_the_definition_door_refuses_a_hash_published_under_another_kind(
+    runtime: DbosRuntime,
+) -> None:
+    """A schema and an agent definition may share nothing but a hash's shape."""
+
+    api = durable_api_client(runtime)
+    schema_hash = api.post(
+        f"{API_PREFIX}/schema-revisions",
+        content=b'{"type": "boolean"}',
+        headers={"content-type": "application/json"},
+    ).json()["schema_revision_hash"]
+
+    read = api.get(f"{DEFINITION_PATH}/{schema_hash}")
+
+    assert read.status_code == 404
+    assert read.json()["type"].endswith(":agent-definition-revision-not-found")
+
+
+def test_the_definition_door_refuses_a_malformed_hash(runtime: DbosRuntime) -> None:
+    read = durable_api_client(runtime).get(f"{DEFINITION_PATH}/not-a-hash")
+
+    assert read.status_code == 400
+    assert read.json()["type"].endswith(":invalid-revision-hash")
+
+
+@dataclass
+class ScriptedResolverRegistry:
+    """A route-level fake standing in for the durable registry's `resolve`.
+
+    Publication never reaches it: every case below asks only what the read
+    door's resolve answers, not what a write would do with it.
+    """
+
+    answer: object
+
+    def publish_revision(self, revision: object) -> object:
+        del revision
+        raise AssertionError("the read-door matrix registry never publishes")
+
+    def resolve(self, kind: object, revision_hash: object) -> object:
+        del kind, revision_hash
+        return self.answer
+
+
+def _scripted_definition_client(registry_answer: object) -> TestClient:
+    app = create_app(
+        source_commit="commit",
+        source_tree="tree",
+        ports=api_ports(
+            published_revision_registry=ScriptedResolverRegistry(registry_answer)
+        ),
+        limits=api_limits(),
+        event_poll_backoff=event_poll_backoff(),
+    )
+    return TestClient(app)
+
+
+def test_the_definition_door_answers_unavailable_rather_than_a_false_not_found() -> (
+    None
+):
+    """The store did not say "no such revision" -- it could not answer, and
+    telling a caller 404 would stop retrying a hash that may yet resolve."""
+
+    client = _scripted_definition_client(
+        PublishedRevisionsUnavailable("registry asleep")
+    )
+
+    read = client.get(f"{DEFINITION_PATH}/{'a' * 64}")
+
+    assert read.status_code == 503
+    assert read.json()["type"].endswith(":temporarily-unavailable")
+
+
+def test_the_definition_door_answers_durable_state_corrupt_rather_than_not_found() -> (
+    None
+):
+    client = _scripted_definition_client(DurableStateCorrupt())
+
+    read = client.get(f"{DEFINITION_PATH}/{'a' * 64}")
+
+    assert read.status_code == 500
+    assert read.json()["type"].endswith(":durable-state-corrupt")
 
 
 def test_the_catalog_lists_every_published_definition_by_its_authored_name(

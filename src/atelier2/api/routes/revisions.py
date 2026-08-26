@@ -46,6 +46,7 @@ from atelier2.api.wire.requests import (
 )
 from atelier2.api.wire.resources import (
     AdapterOperationRevisionResource,
+    AgentDefinitionRevisionDetailResource,
     AgentDefinitionRevisionListItemResource,
     AgentDefinitionRevisionPageResource,
     AgentDefinitionRevisionResource,
@@ -108,6 +109,8 @@ from atelier2.application.publish_workflow_revision import (
     PublicationInvalid,
 )
 from atelier2.application.read_agent_definition_revisions import (
+    AgentDefinitionRevisionNotFound,
+    AgentDefinitionRevisionRead,
     AgentDefinitionRevisionsListed,
     PublishedAgentDefinition,
 )
@@ -130,6 +133,7 @@ from atelier2.application.resolve_catalog_name import (
     CatalogNameResolved,
     CatalogReferenceNonMember,
 )
+from atelier2.contracts.agent_definitions import UnrestrictedTools
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
@@ -436,6 +440,59 @@ def _agent_definition_list_item(
         agent_definition_revision_hash=published.revision_hash.value,
         name=published.definition.name,
         description=published.definition.description,
+    )
+
+
+@router.get(
+    API_PREFIX + "/agent-definition-revisions/{agent_definition_revision_hash}",
+    response_model=AgentDefinitionRevisionDetailResource,
+)
+async def get_agent_definition_revision_route(
+    agent_definition_revision_hash: str, context: ApiContext = api_context_dependency
+) -> AgentDefinitionRevisionDetailResource:
+    """The whole authored definition a caller holding its hash asked to read.
+
+    Mirrors `GET /schema-revisions/{hash}`: named by hash alone (ADR 0007), so
+    this answers nothing a reference did not already carry -- parsed back into
+    the definition its author wrote, exactly as the publish door parsed it once
+    already.
+    """
+    try:
+        parsed = PublishedRevisionHash(agent_definition_revision_hash)
+    except (TypeError, ValueError) as error:
+        raise ApiProblem("invalid-revision-hash") from error
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.get_agent_definition_revision(parsed),
+    )
+    match result:
+        case AgentDefinitionRevisionRead(published):
+            return _agent_definition_detail_resource(published)
+        case AgentDefinitionRevisionNotFound():
+            raise ApiProblem("agent-definition-revision-not-found")
+        case ReadUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _agent_definition_detail_resource(
+    published: PublishedAgentDefinition,
+) -> AgentDefinitionRevisionDetailResource:
+    definition = published.definition
+    return AgentDefinitionRevisionDetailResource(
+        agent_definition_revision_hash=published.revision_hash.value,
+        name=definition.name,
+        description=definition.description,
+        model=definition.model,
+        system_prompt=definition.system_prompt,
+        tools=(
+            None
+            if isinstance(definition.tools, UnrestrictedTools)
+            else tuple(name.value for name in definition.tools.names)
+        ),
     )
 
 

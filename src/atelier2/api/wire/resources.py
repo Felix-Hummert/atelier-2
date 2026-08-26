@@ -31,6 +31,10 @@ from atelier2.contracts.agent_attempts import (
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     AgentAttemptCancellationDisposition,
 )
+from atelier2.contracts.agent_definitions import (
+    MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS,
+    MAXIMUM_AGENT_DEFINITION_TOOL_COUNT,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
@@ -149,6 +153,48 @@ class AgentDefinitionRevisionListItemResource(ApiModel):
 class AgentDefinitionRevisionPageResource(ApiModel):
     items: tuple[AgentDefinitionRevisionListItemResource, ...]
     next_after_revision_hash: str | None = Field(pattern=REVISION_HASH_PATTERN)
+
+
+class AgentDefinitionRevisionDetailResource(ApiModel):
+    """One published agent definition, parsed into every field its author wrote.
+
+    Where the list item stops at name and description
+    (`AgentDefinitionRevisionListItemResource`), a caller holding the hash asked
+    to read the revision itself, so this answers the whole authored file: the
+    provider mark the author proposed, the system prompt, and the declared
+    tools. `model` is absent exactly where the file proposed none -- the
+    deployment's own model decides then, not this door. `tools` is absent
+    exactly where the file declared none -- every tool the executor offers --
+    and the declared names otherwise.
+
+    `system_prompt` and each tool name are bounded by
+    `MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS`, the whole-document ceiling
+    the publish door already enforces (`parse_agent_definition`): neither can
+    outgrow the document it was parsed from. `tools` itself is bounded by
+    `MAXIMUM_AGENT_DEFINITION_TOOL_COUNT`, the same count `DeclaredTools`
+    refuses past.
+    """
+
+    agent_definition_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    model: str | None = Field(default=None, min_length=1)
+    system_prompt: str = Field(
+        min_length=1, max_length=MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS
+    )
+    tools: (
+        tuple[
+            Annotated[
+                str,
+                Field(
+                    min_length=1,
+                    max_length=MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS,
+                ),
+            ],
+            ...,
+        ]
+        | None
+    ) = Field(default=None, max_length=MAXIMUM_AGENT_DEFINITION_TOOL_COUNT)
 
 
 class AuthProfileRevisionResource(ApiModel):
