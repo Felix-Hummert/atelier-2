@@ -62,6 +62,7 @@ from atelier2.application.read_agent_configurations import (
     ListAuthProfileRevisionsResult,
 )
 from atelier2.application.read_agent_definition_revisions import (
+    GetAgentDefinitionRevisionResult,
     ListAgentDefinitionRevisionsResult,
 )
 from atelier2.application.read_attention_events import ReadAttentionEventsResult
@@ -215,6 +216,9 @@ class ApiUseCases:
     ]
     list_agent_definition_revisions: Callable[
         [PublishedRevisionHash | None, int], ListAgentDefinitionRevisionsResult
+    ]
+    get_agent_definition_revision: Callable[
+        [PublishedRevisionHash], GetAgentDefinitionRevisionResult
     ]
     publish_auth_profile_revision: Callable[
         [str, int, str, str], PublishAuthProfileRevisionResult

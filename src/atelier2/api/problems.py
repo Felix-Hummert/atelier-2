@@ -391,6 +391,11 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Agent definition revision collision",
         "Stop and inspect durable agent definition revision integrity.",
     ),
+    "agent-definition-revision-not-found": ProblemDefinition(
+        404,
+        "Agent definition revision not found",
+        "Publish the exact agent definition revision before reading its fields.",
+    ),
     "library-document-ambiguous": ProblemDefinition(
         422,
         "Document matches more than one library kind",

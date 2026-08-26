@@ -14,6 +14,7 @@ from atelier2.contracts.agent_attempts import (
     AgentProcessOwnerId,
     WatchdogGenerationId,
 )
+from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_PROCESS_INPUT_BYTES,
     MAXIMUM_AGENT_PROCESS_STANDARD_OUTPUT_BYTES,
@@ -79,7 +80,17 @@ class AgentExecutorManifestEntry:
 
 @dataclass(frozen=True)
 class AgentExecutionFailure:
+    """This process left no answer this executor could use, and what it did leave.
+
+    The transcript is the executor's own reading of what the process wrote --
+    the steps it got through, and whatever it printed instead of a usable
+    answer. It travels with the failure rather than beside it because only the
+    executor knows its provider's wire format, and only the failure it returns
+    reaches the seam that can keep the reading durably.
+    """
+
     code: AgentAttemptFailureCode
+    transcript: AttemptTranscript | None = None
 
 
 @dataclass(frozen=True)

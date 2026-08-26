@@ -301,6 +301,24 @@ nothing. A launcher refuses to serve at all when the console identity it is
 pointed at has already expired, because that failure would otherwise appear
 inside every Attempt as an unreadable handshake.
 
+**2026-08-26 amendment (Operator-Ruling 24.08., #632): no new self-built
+isolation cage.** What is built and works here — rootful Docker hardening,
+the per-Attempt packet-filter chains, Landlock on the provider child — stays
+unchanged; this amendment orders no rebuild and #632 stays parked rather than
+blocking. It records only the doctrine the ruling states for what comes
+next: from this date, no new self-built isolation slice (packet-filter,
+network or jail mechanics) is begun; a coming Runner slice is measured
+through an adopt lens first — does a maintained sandbox runtime already meet
+the need? Considered, ascending: gVisor (`runsc`) as the Docker runtime under
+the existing carrier, a deployment detail costing little code and the first
+candidate to try; Firecracker or Kata self-hosted as a new carrier adapter
+fulfilling this same lease/evidence protocol, matching the direction that a
+credential never leaves the network; E2B or another cloud sandbox, rejected
+for that path because code and credentials would cross a foreign cloud, left
+open only as a later option for non-sensitive projects. This item names no
+`Done when` this record owns; it waits for real Runner usage to demand
+isolation work before the first adopt candidate is tried.
+
 ### 3. Operator authentication gates every exposure beyond this machine
 
 The API gains an authenticated **operator principal** before any exposure that

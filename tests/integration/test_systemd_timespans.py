@@ -37,11 +37,30 @@ def _wait_until_gone(process_id: int, message: str) -> None:
     _wait_until(lambda: _process_is_gone(process_id), message)
 
 
-def _normalize(executable: Path, value: str, expected: int | None = None) -> int:
+# Every test below except the real-systemd probe drives `_fake_analyzer`, a
+# script this suite writes and fully controls: its deliberately-hanging cases
+# sleep 2s or 4s so the real subprocess deadline this constant drives has to
+# actually fire, and every other case has to finish inside it. Under
+# `pytest -n auto` full parallel load, process spawn and scheduling jitter for
+# a trivial subprocess can exceed a quarter second, so this stays well below
+# the shortest induced hang while giving real headroom to the
+# fast-completing cases -- a fake clock cannot stand in for this because the
+# deadline is enforced against a real process. It never bounds the real
+# systemd-analyze probe below, which owns its deadline separately.
+_COMMAND_DEADLINE_SECONDS = 1.5
+
+
+def _normalize(
+    executable: Path,
+    value: str,
+    expected: int | None = None,
+    *,
+    command_timeout_seconds: float = _COMMAND_DEADLINE_SECONDS,
+) -> int:
     return normalize_direct_systemd_timespan(
         executable,
         value,
-        command_timeout_seconds=0.25,
+        command_timeout_seconds=command_timeout_seconds,
         maximum_output_bytes=128,
         expected_microseconds=expected,
     )
@@ -171,16 +190,45 @@ def test_maps_execution_failures_to_host_failure(tmp_path: Path, value: str) -> 
         _normalize(executable, value)
 
 
+# `systemd-analyze timespan` is a local capability probe, not a workload
+# command -- the same class of call this codebase already bounds at 30s
+# wherever it asks a local tool what it is before trusting it:
+# `_PROBE_TIMEOUT_SECONDS` in claude_subscription.py, both providers'
+# `_VERSION_PROBE_TIMEOUT_SECONDS` in codex_subscription.py and
+# grok_subscription.py, and `REQUEST_TIMEOUT_SECONDS` in host/run_command.py.
+# This adapter has no production caller yet (no `serve` path invokes it) and
+# so owns no default of its own to read; a value hoisted from `src/` would
+# also need to register in `tests/tooling/test_value_ownership_gate.py`'s
+# VALUES_THE_SOURCE_MAY_STILL_SPELL, a file #642 holds exclusively today.
+# Matching the established convention's number here, rather than inventing
+# one, is the closest honest substitute until that hoist is unblocked.
+_REAL_SYSTEMD_PROBE_DEADLINE_SECONDS = 30.0
+
+
 def test_real_systemd_analyzer_owns_c_locale_grammar() -> None:
+    """The suite's one call into the real systemd-analyze binary.
+
+    Every other test above proves the adapter's parsing and deadline
+    mechanics against a fake analyzer this suite fully controls; this is the
+    single compatibility probe against the real host tool, so it takes the
+    same deadline a production caller with no tighter contract of its own
+    would use -- never a value tuned to this test run.
+    """
     found = shutil.which("systemd-analyze")
     if found is None:
         pytest.skip("systemd-analyze is absent")
     executable = Path(found).resolve()
+    deadline = _REAL_SYSTEMD_PROBE_DEADLINE_SECONDS
 
-    assert _normalize(executable, "60s") == _normalize(executable, "1min")
-    assert _normalize(executable, "1min 30s") == 90_000_000
+    assert _normalize(
+        executable, "60s", command_timeout_seconds=deadline
+    ) == _normalize(executable, "1min", command_timeout_seconds=deadline)
+    assert (
+        _normalize(executable, "1min 30s", command_timeout_seconds=deadline)
+        == 90_000_000
+    )
     with pytest.raises(DirectSystemdUnitConflict):
-        _normalize(executable, "infinity")
+        _normalize(executable, "infinity", command_timeout_seconds=deadline)
 
 
 @pytest.mark.parametrize("reap_times_out", [False, True])
@@ -227,7 +275,7 @@ def test_refused_group_signal_cannot_abandon_the_caller_deadline(
             normalize_direct_systemd_timespan(
                 executable,
                 str(pid_file),
-                command_timeout_seconds=0.25,
+                command_timeout_seconds=_COMMAND_DEADLINE_SECONDS,
                 maximum_output_bytes=64,
             )
         _wait_until(pid_file.exists, "group-signal scenario never launched")
