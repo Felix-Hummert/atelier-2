@@ -1,0 +1,218 @@
+# Governance and project status
+
+A node can now say which tool it needs and have it redeemed. A `tools` entry is
+a published tool grant the document pins by hash, exactly as an output pins its
+schema, so what a node may do is byte-pinned like every other material it names;
+the one capability a runtime here redeems is `run-project-verification`. A
+client publishes those bytes through `POST /tool-grant-revisions`, the same
+form as a schema: exact JSON in, the catalog's own write, hash out, refused by
+the grant owner's own name before anything is stored. When
+such a node runs, the command the project's own manifest declares under
+`[tool.atelier2.verification]` is run in that attempt's own leased directory --
+the project decides what verifies it, never the agent and never the atelier.
+A command that exits zero leaves durable proof of exactly which command ran,
+how it ended and the hash of what it wrote, beside the agent receipt whose
+provider bytes stay its own. A command that exits nonzero ends the attempt
+`FAILED` under `PROJECT_VERIFICATION_FAILED`, names how it ended on the
+`failed` `node-receipt/v3`, and writes no agent receipt, no `AGENT_COMPLETED`,
+and no `tool_redemptions` row. A granted verification that exceeds its
+declared `timeout_seconds` after the claim ends the same way: the attempt is
+`FAILED` under `PROJECT_VERIFICATION_FAILED`, the `failed` `node-receipt/v3`
+reason names the timeout, and the attempt is not left `LAUNCH_ARMED`. The
+manifest that is read is the one the pinned commit carries, and the
+directory it runs in is that same lease after the provider has worked there, so
+what a project declared stays the pin's and where it was run is the mutated
+lease rather than a rematerialized pin tree or a living checkout. Refusals are
+named rather than worked around: a grant
+naming a capability nothing here performs, or bytes that are no grant at all,
+refuses the run at the reference that pinned it; a node pinning more grants than
+one attempt redeems is refused by that count; a project stating no verification
+at the pinned commit refuses the attempt in the words of the manifest that should
+have stated it; and a root that is no repository of its own is refused before the
+server exists -- each before any provider process starts. What this does not
+claim is isolation: the leased directory is still honestly "not a sandbox", the
+verification runs as the served process's own user, and enforcement at a boundary
+that cannot be talked out of is not built. Neither is the static capability
+attestation of a build -- declared, resolved, redeemed and proven is the whole of
+the claim.
+
+A node's `budget` is content now, not a word. A `budget_policy` revision is
+published through `POST /budget-revisions` and carries exactly four bounds: the
+hard `attempt_deadline_seconds` every budget states, an optional hard
+`maximum_assistant_turns`, and the two `reported_*_token_threshold` values a
+provider can only report after the work it measures. The names carry that
+difference, so no surface can offer a post-hoc number as a maximum, a cap or a
+ceiling. Every present value is a positive signed 64-bit integer, an absent
+optional is not zero, and money is absent by decision: an authentication mode
+selects a credential path and measures no charge. Bytes that bound nothing are
+refused by their own name -- an unknown field such as a cost ceiling or a run
+budget, an explicit null, a zero, a fraction, a boolean, a value past signed
+int64, prose -- at the publication door and again at the reference that pins
+them, so no run starts under a budget nobody could read. A budget revision is
+identified twice, on purpose: the registry and the node pin the exact bytes,
+while the four bounds have their own `budget-revision/v1` content identity, which
+catalog lineage, display name and revision position never enter. A document that
+writes `budget:` is executable: the start resolves that pin the same way it
+resolves a schema or a tool grant, and the attempt reads the bound from those
+published bytes. The hard turn bound now reaches both workspace-tool executors:
+a node that pins a budget naming `maximum_assistant_turns` launches with that
+value as `--max-turns`; a node that pins no budget, or a budget that names no
+turn bound, keeps the executor's existing default. What this still does not
+claim: the deadline does not run a clock, the reported token thresholds judge no
+usage report, a tool-free attempt does not read the bound, and the executor-side
+declaration of which dimensions a revision requires and what ceiling it attests
+is not built.
+The first fully budgeted V3 Agent attempt -- deadline clock, reported-token
+thresholds, executor-attested refusal, usage and receipt binding -- belongs to
+#455 after the durable Runner work in #15 and #301.
+
+Whoever recomputes a finished run's terminal hash now also proves under which
+binding it ran. The agent receipt already folded provider, auth mode, auth
+profile revision, model, executor revision, configuration revision and request
+hash into one value; that value is a named position in the `AGENT_COMPLETED`
+event's own preimage, so the fold from receipt fields through event hashes to the
+terminal hash misses under any other binding. Older events are untouched: the
+`node-event-hash/v3` domain is chosen by content, so a completion that carries no
+receipt binding keeps the hash it always had, and an event written before this
+version carries no binding rather than an invented one. What is still not proven
+is the request hash's own preimage: the job bytes it is taken over have no
+durable home, so a verifier copies that hash rather than recomputing it.
+
+The host keeps one live-versioned configuration channel. It is durable,
+append-only-versioned in the `auth_profile_revisions` form, and readable at
+runtime. The first entry is `project id → root path`. The second is recommended
+occupancy per workflow lineage, versioned beside that mapping and readable
+over HTTP. Today's store is the
+first project: that configuration entry, and the reads that treat it as a
+project. CLI flags remain bootstrap of where the channel lives --
+`--database` is the store, and `--project-id` with `--project-root` may write
+the first mapping -- they are not a second copy of the map. After the mapping
+exists, compose and the run path that needs a project root read it from the
+channel for that project id, not from a second `--project-root` flag. A bad
+project id -- including text that is not exact UTF-8 Unicode scalar text -- is
+refused `project-unknown` before hashing or configuration. `GET
+/atelier/api/v1/projects` answers zero or the one project this process opened,
+and its delivered `project1.` reference addresses the identical detail
+resource. That resource exposes neither the internal id nor the root path. A
+different well-formed reference is `project-unknown`; a malformed reference is
+`invalid-public-project-reference`. A configured id with no root is not an
+empty collection, and unreadable or corrupt configuration stays visibly
+unavailable or corrupt. There is no HTTP project write, second project,
+pagination, project editor, or store-per-project process.
+
+The channel's third family is the project-source connection record
+([ADR 0010](../decisions/0010-github-platform-adapter.md) decision 2). `atelier2
+connect` is the explicit offline operator act: it appends one immutable
+revision binding a configured project to a source kind, an opaque source
+address only the connected platform adapter interprets, a credential-directory
+reference, the chosen auth method (`personal-access-token` today; the App
+method is deferred by naming), and the connecting actor. The record holds
+identities and the reference, never a credential value, and every read answers
+the same; a project without a record is refused in the
+`platform-connection-unknown` shape. Revisions are keyed per project and
+source kind so a second source stays representable, while today's read returns
+the single latest connection. Schema V33 gives the family its append-only
+table under the same immutability trigger pair the channel's other two
+families carry. Serve composes from the record: a served project whose latest
+connection revision names a GitHub source gets the live `open-pr` adapter, and
+the github adapter package alone decodes the opaque address
+(`owner/name@base-branch`) into its repository facts -- no GitHub identifier
+returns to host or serving (ADR 0010 decision 1). The temporary `--github-*`
+serve flags are gone; argparse refuses them as unrecognized arguments. All
+three live-GitHub guards stand on the record-composed path: a non-loopback
+bind refuses to start, admission refuses an agent-authored `open-pr` grant,
+and a start refuses while an earlier run still owes an agent `open-pr`
+redemption.
+
+The canonical store is schema V33. A fresh store is created as exact V33 and
+carries published revisions of the closed kind set, lineage membership bound
+to those revisions, append-only alias and retirement histories, format-3
+runs, immutable node artifact bytes, node receipts, their ordered output
+bindings, and the immutable declared context packages, node-execution request
+preimages and run configuration snapshots those receipts name, and the immutable
+orders a run was started with, the immutable proof of every redeemed tool
+grant, the receipt hash an agent completion binds, immutable content-addressed
+artifacts an order may name instead of carrying their bytes, the round a
+declared loop was turning when each run, event and agent receipt was written,
+the host configuration channel's project-root, occupancy, and project-source
+connection revisions, and the queue projection's admission row per work item. The catalog adapter founds a lineage
+and admits members through a typed writer that derives `CatalogLineageId`
+from kind and founding hash and refuses a mismatched id before mutation. An
+admitted name or lineage id resolves to the exact published bytes; a missing
+founding, unpublished member, wrong kind, or retired lineage is refused by
+name. Measurements and policy activations are not in this profile. Every schema
+from V9 up to the one just below current remains a published predecessor
+object -- `schema.py` names each as its own `V*_SCHEMA_HANDOFF` constant -- and
+an exact file at V7 through the version just below current is refused by
+runtime without mutation, with no runtime migration or downgrade. An offline
+`atelier2 migrate` command raises an exact store on any source version
+`schema.py`'s `_SCHEMA_MIGRATION_STEPS` ladder still names to the current
+schema, one published step at a time. Until a named maturity there is no
+compatibility promise.
+V28 removes the writerless receipt-Access table and triggers. Its offline V27
+hop drops only an empty table and refuses any row without mutation; the
+published V3 receipt hash retains its literal empty Access subframe as frozen
+byte identity, not as a public input or writable store.
+V29 gives the queue projection ([ADR 0016](../decisions/0016-queue-projection-identity.md))
+its durable admission row: one item identified by a project id and an opaque
+tracker reference, whose id a caller never supplies -- it is a SHA-256 digest
+framed from both fields, exactly as a catalog lineage id is framed from its
+kind and founding revision. An admission names an exact, already-founded
+`CatalogLineageId` and a durable rationale; the one CAS-guarded transition an
+item's row admits is OBSERVED to ADMITTED: a stale revision or an admission
+that would replace a different one already recorded is refused with the row
+provably unchanged, and repeating the exact same admission again succeeds
+without a second write. The first admission attempt for one derived identity
+also establishes that identity's row, and OBSERVED rows also enter through the
+operator's issue import: `POST /atelier/api/v1/project-sources/import` on a
+served instance whose project-source connection record names a GitHub
+repository observes every open issue as one OBSERVED row (reference grammar
+`gh:<n>`, owned by the GitHub adapter), idempotent through the derived
+identity and insert-or-ignore -- a repeated import adds nothing and never
+rewinds an admission. Observed items are listable at
+`GET /atelier/api/v1/observed-queue-items`, admitted ones at
+`GET /atelier/api/v1/queue-items`, and admission runs through
+`POST /atelier/api/v1/queue-admissions`; choosing a workflow per item stays
+the operator's manual decision at that door. A poll loop, a durable cursor
+with conditional reads, rate-limit projection, and closed/label semantics are
+named deferrals of the import's first slice. No dependency edge, no
+readiness, and no priority exist for this projection yet, and nothing in it
+holds a tracker item's title, description, or comments -- REQ-QUEUE-14 keeps
+those with the tracker.
+
+A run reads one of those items as its own material through the start door: a V3
+start order may name a work item (`{"name": ..., "work_item": "gh:<n>"}` on
+`POST /atelier/api/v1/runs` and on the MCP `start_run` tool) instead of
+carrying bytes, and the start reads that item from the served project's
+connected tracker before any durable row exists. What the run stores is the
+observed revision of ADR 0010 §5 -- the exact served body bytes, their
+SHA-256, the neutral kind (`issue` or `change_request`, so a GitHub pull
+request carries no GitHub noun into the core), the read's entity tag and its
+read time -- serialized under the house schema `contracts.work_items` owns. A
+workflow declares a work item by pinning that schema's published revision and
+no other: a graph input pinning a different, in particular a permissive, schema
+for a work-item order refuses the start rather than storing a value nothing
+checked. The value is pinned, not re-read: the same item started across an edit
+is two runs with two different values, and a retry of a run that already exists
+is answered from what that run pinned without reaching the tracker at all --
+the store is asked before the item is read, and only a start with nothing to
+answer from reads. A start that cannot read the item answers which of the four
+ways it failed -- no connected project, no such item in the tracker, an
+unreachable platform, a payload its adapter refused -- and writes nothing;
+those three connection answers are published on the start door's own OpenAPI
+operation. Publishing the house schema is still the operator's own act, an item
+whose read is larger than the inline order bound is refused by that bound
+rather than published as an artifact, and no picker offers the items in a
+surface yet.
+
+On 2026-08-19 at `ed6376b` this landing measured how many concurrent
+fake-executor runs one SQLite instance carries. The harness is in-process ASGI on one event loop,
+production query-admission bounds, a V3 one-agent document, and
+`RecordingAgentExecutorFactoryV2` — not Claude, Grok, or Codex. It carried 96
+concurrent runs without a named HTTP or stream refusal. The first observed
+pressure was event-write latency: 0.42s at the CI n=2, 12.3s at n=96. The start
+door crossed the instance's 1s query-admission wait from n=16 (1.22s) and still
+answered 201. The 30s SQLite writer-lock timeout, process-spawn, watchdog
+cgroup, and memory failures were not observed. That is a measurement, not a
+capacity promise and not a Postgres or #312 decision. The 503 knee is leftover;
+[OPERATIONS.md](../OPERATIONS.md) names the operator command that raises n.
