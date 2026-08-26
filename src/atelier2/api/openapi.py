@@ -65,6 +65,7 @@ from atelier2.api.wire.events import (
     WaitingInputEventResourceV3,
 )
 from atelier2.api.wire.resources import StreamFailureResource
+from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
 from atelier2.contracts.executions import (
     KINDS_NO_V1_RUN_CARRIES,
     RunEventKind,
@@ -90,12 +91,14 @@ CANCELLATION_PATH = (
     API_PREFIX + "/runs/{public_ref}/agent-attempts/{attempt_id}/cancellations"
 )
 RUN_CANCELLATION_PATH = API_PREFIX + "/runs/{public_ref}/cancellations"
-OCCUPANCY_PATH = (
-    API_PREFIX + "/projects/{public_project_reference}/occupancy/{lineage_id}"
-)
 PROJECTS_PATH = API_PREFIX + "/projects"
 PROJECT_PATH = PROJECTS_PATH + "/{public_project_reference}"
 PROJECT_ROOT_PATH = PROJECT_PATH + "/root"
+PROJECT_SOURCE_CONNECTION_PATH = PROJECT_PATH + "/source-connection"
+MODEL_REGISTRY_PATH = API_PREFIX + "/model-registries/{provider_id}"
+MODEL_REGISTRY_VALIDATIONS_PATH = MODEL_REGISTRY_PATH + "/validations"
+PROJECT_MODEL_DEFAULTS_PATH = PROJECT_PATH + "/model-defaults"
+PROJECT_MODEL_RESOLUTION_PATH = PROJECT_PATH + "/model-resolution"
 QUEUE_ADMISSIONS_PATH = API_PREFIX + "/queue-admissions"
 QUEUE_ITEMS_PATH = API_PREFIX + "/queue-items"
 OBSERVED_QUEUE_ITEMS_PATH = API_PREFIX + "/observed-queue-items"
@@ -336,23 +339,58 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
-    (OCCUPANCY_PATH, "put"): (
-        "invalid-public-project-reference",
-        "project-unknown",
-        "catalog-lineage-missing",
+    (MODEL_REGISTRY_PATH, "put"): (
         "invalid-request",
         "unsupported-media-type",
-        "occupancy-revision-conflict",
-        "occupancy-revision-collision",
+        "model-registry-revision-conflict",
+        "model-registry-revision-collision",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
     ),
-    (OCCUPANCY_PATH, "get"): (
+    (MODEL_REGISTRY_PATH, "get"): (
+        "invalid-request",
+        "model-registry-missing",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (MODEL_REGISTRY_VALIDATIONS_PATH, "post"): (
+        "invalid-request",
+        "model-registry-revision-conflict",
+        "model-registry-revision-collision",
+        "unsupported-media-type",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (PROJECT_MODEL_DEFAULTS_PATH, "put"): (
         "invalid-public-project-reference",
         "project-unknown",
-        "catalog-lineage-missing",
-        "occupancy-missing",
+        "invalid-request",
+        "unsupported-media-type",
+        "project-model-defaults-revision-conflict",
+        "project-model-defaults-revision-collision",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (PROJECT_MODEL_DEFAULTS_PATH, "get"): (
+        "invalid-public-project-reference",
+        "project-unknown",
+        "project-model-defaults-missing",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (PROJECT_MODEL_RESOLUTION_PATH, "post"): (
+        "invalid-public-project-reference",
+        "project-unknown",
+        "workflow-revision-not-found",
+        "workflow-format-not-executable",
+        "invalid-agent-bindings",
+        "invalid-request",
+        "unsupported-media-type",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -375,12 +413,21 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "durable-state-corrupt",
         "internal-error",
     ),
+    (PROJECT_SOURCE_CONNECTION_PATH, "get"): (
+        "invalid-public-project-reference",
+        "project-unknown",
+        "project-source-not-connected",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
     (API_PREFIX + "/runs", "post"): (
         "invalid-revision-hash",
         "invalid-request",
         "unsupported-media-type",
         "workflow-revision-not-found",
         "invalid-agent-bindings",
+        "uncast-agent-roles",
         "binding-constraint-refused",
         "agent-platform-effect-unreconcilable",
         "agent-configuration-revision-not-found",
@@ -721,11 +768,49 @@ def _install_problem_components(schema: dict[str, Any]) -> None:
             },
         },
     )
+    components.setdefault(
+        "UncastRoleResource",
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["role", "reason"],
+            "properties": {
+                "role": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": MAXIMUM_AGENT_FIELD_CHARACTERS,
+                },
+                "reason": {
+                    "type": "string",
+                    "enum": [
+                        "override-not-registered",
+                        "workflow-model-not-registered",
+                        "workflow-model-ambiguous",
+                        "no-project-default",
+                        "family-difference-unavailable",
+                    ],
+                },
+                "family_differs_from": {
+                    "oneOf": [
+                        {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": MAXIMUM_AGENT_FIELD_CHARACTERS,
+                        },
+                        {"type": "null"},
+                    ]
+                },
+            },
+        },
+    )
     for code, definition in PROBLEM_DEFINITIONS.items():
+        required = ["type", "title", "status", "detail"]
+        if code == "uncast-agent-roles":
+            required.append("uncast_roles")
         components[_problem_component_name(code)] = {
             "type": "object",
             "additionalProperties": False,
-            "required": ["type", "title", "status", "detail"],
+            "required": required,
             "properties": {
                 "type": {"type": "string", "const": PROBLEM_TYPE_PREFIX + code},
                 "title": {"type": "string", "const": definition.title},
@@ -741,6 +826,19 @@ def _install_problem_components(schema: dict[str, Any]) -> None:
                         }
                     }
                     if code in ("invalid-request", "run-input-refused")
+                    else {}
+                ),
+                **(
+                    {
+                        "uncast_roles": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "$ref": "#/components/schemas/UncastRoleResource"
+                            },
+                        }
+                    }
+                    if code == "uncast-agent-roles"
                     else {}
                 ),
             },
@@ -889,14 +987,32 @@ def _install_parameter_contracts(schema: dict[str, Any]) -> None:
     references = {
         "PublicProjectReference": (
             (PROJECT_PATH, "get", "public_project_reference", "path"),
-            (OCCUPANCY_PATH, "put", "public_project_reference", "path"),
-            (OCCUPANCY_PATH, "get", "public_project_reference", "path"),
+            (
+                PROJECT_MODEL_DEFAULTS_PATH,
+                "put",
+                "public_project_reference",
+                "path",
+            ),
+            (
+                PROJECT_MODEL_DEFAULTS_PATH,
+                "get",
+                "public_project_reference",
+                "path",
+            ),
+            (
+                PROJECT_MODEL_RESOLUTION_PATH,
+                "post",
+                "public_project_reference",
+                "path",
+            ),
             (PROJECT_ROOT_PATH, "put", "public_project_reference", "path"),
             (PROJECT_ROOT_PATH, "get", "public_project_reference", "path"),
-        ),
-        "CatalogLineageId": (
-            (OCCUPANCY_PATH, "put", "lineage_id", "path"),
-            (OCCUPANCY_PATH, "get", "lineage_id", "path"),
+            (
+                PROJECT_SOURCE_CONNECTION_PATH,
+                "get",
+                "public_project_reference",
+                "path",
+            ),
         ),
         "PublicRunReference": (
             (API_PREFIX + "/runs", "get", "after", "query"),

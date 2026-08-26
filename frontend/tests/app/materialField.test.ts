@@ -13,6 +13,7 @@ const otherHash = "b".repeat(64);
 const authHash = "c".repeat(64);
 const configurationHash = "d".repeat(64);
 const publicReference = "run1.cnVuLW9yZGVy";
+const projectReference = "project1.dGVzdA";
 
 const portionsOrder = {
   name: "portions",
@@ -125,6 +126,35 @@ function publishedCookConfigurations() {
   };
 }
 
+function projectModelApi(): Pick<CockpitApi, "listProjects" | "resolveProjectModels"> {
+  return {
+    listProjects: vi.fn(async () => ({ items: [{ public_project_reference: projectReference }] })),
+    resolveProjectModels: vi.fn(async (
+      _project: string,
+      workflowHash: string,
+      modelOverrides: Parameters<CockpitApi["resolveProjectModels"]>[2]
+    ) => {
+      const chosen = modelOverrides.find((item) => item.role === "cook")
+        ?.agent_configuration_revision_hash ?? configurationHash;
+      return {
+        project_id: "atelier",
+        public_project_reference: projectReference,
+        workflow_revision_hash: workflowHash,
+        resolutions: [{
+          role: "cook",
+          agent_configuration_revision_hash: chosen,
+          source: modelOverrides.length === 0 ? "from-project" as const : "chosen-now" as const,
+          model_id: "cook-model",
+          declared_difficulty: 2 as const,
+          default_difficulty: modelOverrides.length === 0 ? 2 as const : null,
+          uncast_reason: null,
+          family_differs_from: null
+        }]
+      };
+    })
+  };
+}
+
 function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
   return cockpitApiStub({
     listWorkflowRevisions: vi.fn(async () => ({
@@ -143,6 +173,7 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
     listAgentConfigurationRevisions: vi.fn(async () => publishedCookConfigurations()),
     start: vi.fn(async () => ({ status: 201, value: startedRun() })),
     getRun: vi.fn(async () => startedRun()),
+    ...projectModelApi(),
     ...overrides
   });
 }
@@ -318,6 +349,7 @@ describe("a human editor for an order whose schema names exactly one required st
       listAgentConfigurationRevisions: vi.fn(async () => publishedCookConfigurations()),
       start: vi.fn(async () => ({ status: 201, value: startedRun() })),
       getRun: vi.fn(async () => startedRun()),
+      ...projectModelApi(),
       ...overrides
     });
   }
@@ -370,6 +402,7 @@ describe("a multi-field order that stays JSON", () => {
       getWorkflowRevision: vi.fn(async () => detail(revisionHash, [briefOrder], "Chat with conductor")),
       getSchemaRevision: vi.fn(async () => briefSchema),
       listAgentConfigurationRevisions: vi.fn(async () => publishedCookConfigurations()),
+      ...projectModelApi(),
       start: vi.fn(),
       getRun: vi.fn()
     });

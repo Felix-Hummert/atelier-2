@@ -21,7 +21,7 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevisionHash,
     AgentRole,
 )
-from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.host_configuration import ProjectId, UncastRole
 from atelier2.contracts.orders import (
     ObservedWorkItemOrderValue,
     StartOrderValue,
@@ -44,6 +44,7 @@ from atelier2.ports.durable_runs import (
     DurableRunFormatNotExecutable,
     DurableRunIdentityConflict,
     DurableRunRevisionMissing,
+    DurableUncastAgentRoles,
     DurableV3StartInputRefused,
     DurableWorkItemOrderUnread,
     DurableWriteUnavailable,
@@ -89,6 +90,11 @@ class RunFormatNotExecutable:
 @dataclass(frozen=True)
 class InvalidAgentBindings:
     pass
+
+
+@dataclass(frozen=True)
+class UncastAgentRoles:
+    roles: tuple[UncastRole, ...]
 
 
 @dataclass(frozen=True)
@@ -138,6 +144,7 @@ type StartPublishedRunResult = (
     | RunIdentityConflict
     | RunFormatNotExecutable
     | InvalidAgentBindings
+    | UncastAgentRoles
     | AgentConfigurationRevisionMissing
     | AgentExecutorBindingUnavailable
     | BindingConstraintRefused
@@ -241,6 +248,8 @@ def start_published_run(
             return RunFormatNotExecutable()
         case DurableInvalidAgentBindings():
             return InvalidAgentBindings()
+        case DurableUncastAgentRoles(roles):
+            return UncastAgentRoles(roles)
         case DurableAgentConfigurationRevisionMissing():
             return AgentConfigurationRevisionMissing()
         case DurableAgentExecutorBindingUnavailable():

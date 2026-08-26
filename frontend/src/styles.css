@@ -505,8 +505,7 @@ code {
 .start-card,
 .notice,
 .run-summary,
-.queue,
-.occupancy-editor {
+.queue {
   border: var(--edge) solid var(--line);
   border-radius: var(--r-lg);
   padding: var(--space-4);
@@ -784,6 +783,13 @@ textarea {
   white-space: nowrap;
 }
 
+.binding-source-field {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .binding-source > span {
   display: inline-grid;
   width: var(--mark);
@@ -802,14 +808,16 @@ textarea {
   border-radius: 50%;
 }
 
+.source-choose,
 .source-looking,
 .source-unavailable {
   color: var(--signal-attention);
 }
 
 .binding-startability {
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
   margin: var(--space-3) 0 0;
   color: var(--signal-attention);
@@ -817,7 +825,16 @@ textarea {
   font-weight: var(--weight-heavy);
 }
 
-.binding-startability > span {
+.binding-startability .reveal-affordance {
+  min-height: var(--tap);
+  white-space: nowrap;
+}
+
+.binding-startability .info-hint {
+  flex: none;
+}
+
+.binding-startability > span[aria-hidden] {
   display: inline-grid;
   width: var(--mark);
   height: var(--mark);
@@ -1605,32 +1622,12 @@ textarea {
   border-style: dashed;
 }
 
-.occupancy-editor {
-  margin-bottom: var(--space-2);
-}
-
-.occupancy-confirmed {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin: var(--space-3) 0;
-  border: var(--edge) solid var(--accent);
-  border-radius: var(--r-pill);
-  padding: var(--space-1) var(--space-3);
-  color: var(--accent);
-  background: var(--panel2);
-  font-size: var(--text-xs);
-  font-weight: var(--weight-heavy);
-}
-
-.queue h2,
-.occupancy-editor h2 {
+.queue h2 {
   margin: 0 0 var(--space-1);
   font-size: var(--text-md);
 }
 
-.queue p,
-.occupancy-editor > p {
+.queue p {
   margin: 0 0 var(--space-3);
   color: var(--ink-dim);
 }

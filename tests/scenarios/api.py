@@ -38,13 +38,20 @@ from atelier2.api.openapi import API_PREFIX
 from atelier2.api.stream import EventPollBackoff
 from atelier2.application.publish_workflow_revision import WorkflowPublicationLimits
 from atelier2.application.read_run_events import ReadRunEventsResult, read_run_events
-from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.agents import AgentConfigurationRevision, AuthProfileRevision
+from atelier2.contracts.host_configuration import ProjectId, ProviderModelCheck
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_projections import (
     RunProjection,
 )
 from atelier2.contracts.runs import Run, RunId, RunState, WorkflowRevision
 from atelier2.ports.agent_executions import AgentExecutorRegistry
+from atelier2.ports.host_configuration import (
+    ProviderModelDiscovery,
+    ProviderModelDiscoveryResult,
+    ProviderModelInspector,
+    ProviderModelValidationResult,
+)
 from atelier2.ports.issue_observation import TrackerItemSource
 from atelier2.ports.run_events import (
     RunEventQueries,
@@ -284,6 +291,26 @@ class OneRunQueries:
         return RunFound(self._projection)
 
 
+class ExactConfiguredModelInspector:
+    """The deterministic provider boundary used by API integration scenarios."""
+
+    def discover_models(
+        self,
+        configuration: AgentConfigurationRevision,
+        auth_profile: AuthProfileRevision,
+    ) -> ProviderModelDiscoveryResult:
+        del auth_profile
+        return ProviderModelDiscovery(frozenset({configuration.model}))
+
+    def validate_model(
+        self,
+        configuration: AgentConfigurationRevision,
+        auth_profile: AuthProfileRevision,
+    ) -> ProviderModelValidationResult:
+        del configuration, auth_profile
+        return ProviderModelCheck.CHECKED
+
+
 def api_ports(**overrides: object) -> ApiPorts:
     """The full port set with only the ports a test names actually wired."""
     unused = UnusedPort()
@@ -307,7 +334,9 @@ def api_ports(**overrides: object) -> ApiPorts:
         "published_revision_listing": unused,
         "artifact_publisher": unused,
         "host_configuration_channel": unused,
+        "project_source_connection_channel": unused,
         "queue_projection": unused,
+        "model_registry_inspector": ExactConfiguredModelInspector(),
     }
     ports.update(overrides)
     return ApiPorts(**ports)
@@ -359,7 +388,9 @@ def durable_ports(
         "published_revision_listing": catalog,
         "artifact_publisher": DbosArtifactStore(engine),
         "host_configuration_channel": DbosHostConfigurationChannel(engine),
+        "project_source_connection_channel": DbosHostConfigurationChannel(engine),
         "queue_projection": DbosQueueProjectionStore(engine),
+        "model_registry_inspector": ExactConfiguredModelInspector(),
     }
     ports.update(overrides)
     return ApiPorts(**ports)
@@ -485,6 +516,7 @@ def durable_asgi_app(
     poll_backoff: EventPollBackoff | None = None,
     served_project_id: ProjectId | None = None,
     tracker_item_source: TrackerItemSource | None = None,
+    model_registry_inspector: ProviderModelInspector | None = None,
 ) -> FastAPI:
     """The ASGI app in front of one real durable runtime.
 
@@ -500,6 +532,11 @@ def durable_asgi_app(
             runtime.settings,
             runtime.agent_executor_registry,
             tracker_item_source=tracker_item_source,
+            model_registry_inspector=(
+                ExactConfiguredModelInspector()
+                if model_registry_inspector is None
+                else model_registry_inspector
+            ),
         ),
         limits=api_limits() if limits is None else limits,
         event_poll_backoff=event_poll_backoff()
@@ -514,6 +551,7 @@ def durable_api_client(
     limits: ApiLimits | None = None,
     served_project_id: ProjectId | None = None,
     tracker_item_source: TrackerItemSource | None = None,
+    model_registry_inspector: ProviderModelInspector | None = None,
 ) -> TestClient:
     """The real HTTP boundary in front of one real durable runtime.
 
@@ -528,6 +566,7 @@ def durable_api_client(
             limits,
             served_project_id=served_project_id,
             tracker_item_source=tracker_item_source,
+            model_registry_inspector=model_registry_inspector,
         )
     )
 

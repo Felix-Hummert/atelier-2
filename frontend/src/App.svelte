@@ -64,7 +64,7 @@
   {#if route.page === "workbench"}
     <WorkbenchPage {cockpitApi} {mutationJournal} {navigate} />
   {:else if route.page === "settings"}
-    <SettingsPage {cockpitApi} {navigate} />
+    <SettingsPage {cockpitApi} />
   {:else if route.page === "new"}
     <NewRunPage {cockpitApi} {mutationJournal} {navigate} {createRunId} />
   {:else if route.page === "catalog"}

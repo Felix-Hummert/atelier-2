@@ -24,14 +24,17 @@ from atelier2.api.openapi import (
     EVENT_PATH,
     LIBRARY_ADDITIONS_PATH,
     LIBRARY_RECOGNITIONS_PATH,
-    OCCUPANCY_PATH,
+    MODEL_REGISTRY_PATH,
+    MODEL_REGISTRY_VALIDATIONS_PATH,
+    PROJECT_MODEL_DEFAULTS_PATH,
+    PROJECT_MODEL_RESOLUTION_PATH,
     PROJECT_PATH,
     PROJECT_ROOT_PATH,
+    PROJECT_SOURCE_CONNECTION_PATH,
     PROJECTS_PATH,
     RUN_CANCELLATION_PATH,
 )
 from atelier2.api.references import (
-    CATALOG_LINEAGE_ID_PATTERN,
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     MAXIMUM_RUN_ORDERS,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
@@ -105,8 +108,12 @@ EXPECTED_PATHS = {
     API_PREFIX + "/workflow-lineages/{lineage_id}/members",
     PROJECTS_PATH,
     PROJECT_PATH,
-    OCCUPANCY_PATH,
+    MODEL_REGISTRY_PATH,
+    MODEL_REGISTRY_VALIDATIONS_PATH,
+    PROJECT_MODEL_DEFAULTS_PATH,
+    PROJECT_MODEL_RESOLUTION_PATH,
     PROJECT_ROOT_PATH,
+    PROJECT_SOURCE_CONNECTION_PATH,
     API_PREFIX + "/runs",
     API_PREFIX + "/runs/{public_ref}",
     NODE_DETAIL_PATH,
@@ -216,10 +223,23 @@ EXPECTED_ROUTE_SEQUENCE = (
     ),
     ("GET", PROJECTS_PATH, "list_projects_route"),
     ("GET", PROJECT_PATH, "get_project_route"),
-    ("PUT", OCCUPANCY_PATH, "put_occupancy_revision_route"),
-    ("GET", OCCUPANCY_PATH, "get_occupancy_revision_route"),
+    ("PUT", MODEL_REGISTRY_PATH, "put_model_registry_route"),
+    (
+        "POST",
+        MODEL_REGISTRY_VALIDATIONS_PATH,
+        "validate_model_registry_entry_route",
+    ),
+    ("GET", MODEL_REGISTRY_PATH, "get_model_registry_route"),
+    ("PUT", PROJECT_MODEL_DEFAULTS_PATH, "put_project_model_defaults_route"),
+    ("GET", PROJECT_MODEL_DEFAULTS_PATH, "get_project_model_defaults_route"),
+    ("POST", PROJECT_MODEL_RESOLUTION_PATH, "resolve_project_models_route"),
     ("PUT", PROJECT_ROOT_PATH, "put_project_root_revision_route"),
     ("GET", PROJECT_ROOT_PATH, "get_project_root_revision_route"),
+    (
+        "GET",
+        PROJECT_SOURCE_CONNECTION_PATH,
+        "get_project_source_connection_route",
+    ),
     ("POST", API_PREFIX + "/runs", "start_run_route"),
     ("GET", API_PREFIX + "/runs", "list_runs"),
     ("GET", API_PREFIX + "/runs/{public_ref}", "get_run_route"),
@@ -272,10 +292,14 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/workflow-revisions/{workflow_revision_hash}", "get"): {"200"},
     (PROJECTS_PATH, "get"): {"200"},
     (PROJECT_PATH, "get"): {"200"},
-    (OCCUPANCY_PATH, "put"): {"200", "201"},
-    (OCCUPANCY_PATH, "get"): {"200"},
+    (MODEL_REGISTRY_PATH, "put"): {"200", "201"},
+    (MODEL_REGISTRY_PATH, "get"): {"200"},
+    (PROJECT_MODEL_DEFAULTS_PATH, "put"): {"200", "201"},
+    (PROJECT_MODEL_DEFAULTS_PATH, "get"): {"200"},
+    (PROJECT_MODEL_RESOLUTION_PATH, "post"): {"200"},
     (PROJECT_ROOT_PATH, "put"): {"200", "201"},
     (PROJECT_ROOT_PATH, "get"): {"200"},
+    (PROJECT_SOURCE_CONNECTION_PATH, "get"): {"200"},
     (API_PREFIX + "/runs", "post"): {"200", "201"},
     (API_PREFIX + "/runs", "get"): {"200"},
     (API_PREFIX + "/runs/{public_ref}", "get"): {"200"},
@@ -447,33 +471,27 @@ def test_openapi_v3_event_union_names_every_wire_v3_event_resource() -> None:
     assert published_resource_names == wire_resource_names
 
 
-def test_occupancy_path_parameters_use_owned_project_and_lineage_components() -> None:
+def test_model_configuration_paths_use_the_owned_project_reference_component() -> None:
     schema = served_app().openapi()
     project_component = schema["components"]["schemas"]["PublicProjectReference"]
-    lineage_component = schema["components"]["schemas"]["CatalogLineageId"]
 
     assert project_component == {
         "type": "string",
         "pattern": PUBLIC_PROJECT_REFERENCE_PATTERN,
         "maxLength": MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     }
-    assert lineage_component == {
-        "type": "string",
-        "pattern": CATALOG_LINEAGE_ID_PATTERN,
-    }
-    for method in ("get", "put"):
+    for path, method in (
+        (PROJECT_MODEL_DEFAULTS_PATH, "get"),
+        (PROJECT_MODEL_DEFAULTS_PATH, "put"),
+        (PROJECT_MODEL_RESOLUTION_PATH, "post"),
+        (PROJECT_SOURCE_CONNECTION_PATH, "get"),
+    ):
         parameters = {
             (parameter["name"], parameter["in"]): parameter
-            for parameter in schema["paths"][OCCUPANCY_PATH][method]["parameters"]
+            for parameter in schema["paths"][path][method]["parameters"]
         }
         assert parameters[("public_project_reference", "path")]["schema"] == {
             "$ref": "#/components/schemas/PublicProjectReference"
-        }
-        assert parameters[("lineage_id", "path")]["schema"] == {
-            "$ref": "#/components/schemas/CatalogLineageId"
-        }
-        assert parameters[("lineage_id", "path")]["schema"] != {
-            "$ref": "#/components/schemas/RevisionHash"
         }
 
 
@@ -720,6 +738,45 @@ def test_openapi_list_item_names_the_closed_startability_pair() -> None:
     ]
     publication = schema["components"]["schemas"]["AgentConfigurationRevisionResource"]
     assert "startable" not in publication.get("properties", {})
+
+
+def test_openapi_names_provider_check_and_workflow_pin_as_closed_facts() -> None:
+    document = served_app().openapi()
+    schemas = document["components"]["schemas"]
+
+    registry_entry = schemas["ModelRegistryEntryResource"]
+    assert registry_entry["properties"]["provider_check"] == {
+        "type": "string",
+        "enum": ["not-checked", "checked", "unknown-at-provider"],
+        "title": "Provider Check",
+    }
+    assert "provider_check" in registry_entry["required"]
+    registry_input = schemas["ModelRegistryEntryInputResource"]
+    assert set(registry_input["properties"]) == {
+        "model_id",
+        "agent_configuration_revision_hash",
+    }
+
+    resolution = schemas["RoleModelResolutionResource"]
+    assert resolution["properties"]["source"] == {
+        "type": "string",
+        "enum": ["chosen-now", "pinned-in-workflow", "from-project", "uncast"],
+        "title": "Source",
+    }
+    assert {
+        "agent_configuration_revision_hash",
+        "model_id",
+        "default_difficulty",
+        "uncast_reason",
+        "family_differs_from",
+    } <= set(resolution["required"])
+
+    resolution_problem = document["paths"][PROJECT_MODEL_RESOLUTION_PATH]["post"][
+        "responses"
+    ]["422"]["content"]["application/problem+json"]["schema"]["oneOf"]
+    assert {variant["$ref"].rsplit("/", 1)[-1] for variant in resolution_problem} >= {
+        "ProblemInvalidAgentBindings"
+    }
 
 
 def test_invalid_openapi_fails_during_app_construction(

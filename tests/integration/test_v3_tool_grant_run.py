@@ -80,6 +80,7 @@ from atelier2.ports.durable_runs import (
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
+    publish_checked_model_registry,
 )
 from tests.scenarios.projects import declaring_verification, git_project
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
@@ -278,6 +279,9 @@ def publish_granted_node(
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),
         AgentConfigurationRevisionCreated,
+    )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("exact"), (configuration,)
     )
     grant = PublishedRevision(RevisionKind.TOOL, THE_GRANT)
     with runtime.engine.begin() as connection:

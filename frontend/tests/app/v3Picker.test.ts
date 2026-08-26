@@ -11,6 +11,7 @@ const revisionHash = "a".repeat(64);
 const authHash = "b".repeat(64);
 const configurationHash = "c".repeat(64);
 const publicReference = "run1.cnVuLXYz";
+const projectReference = "project1.dGVzdA";
 
 function v3Revision(hash: string, documentBase64: string) {
   return {
@@ -132,6 +133,26 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
     ),
     start: vi.fn(async () => ({ status: 201, value: startedV3Run() }) as never),
     getRun: vi.fn(async () => startedV3Run()),
+    listProjects: vi.fn(async () => ({ items: [{ public_project_reference: projectReference }] })),
+    resolveProjectModels: vi.fn(async (
+      _project: string,
+      workflowHash: string,
+      modelOverrides: Parameters<CockpitApi["resolveProjectModels"]>[2]
+    ) => ({
+      project_id: "atelier",
+      public_project_reference: projectReference,
+      workflow_revision_hash: workflowHash,
+      resolutions: modelOverrides.map((binding) => ({
+        role: binding.role,
+        agent_configuration_revision_hash: binding.agent_configuration_revision_hash,
+        source: "chosen-now" as const,
+        model_id: "v3-model",
+        declared_difficulty: 2 as const,
+        default_difficulty: null,
+        uncast_reason: null,
+        family_differs_from: null
+      }))
+    })),
     ...overrides
   });
 }

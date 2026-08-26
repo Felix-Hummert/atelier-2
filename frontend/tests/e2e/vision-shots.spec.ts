@@ -49,6 +49,56 @@ async function anyJsonSchema(page: Page): Promise<string> {
   return (await published.json()).schema_revision_hash as string;
 }
 
+async function publishCheckedModelRegistry(
+  page: Page,
+  providerId: string,
+  modelId: string,
+  configurationHash: string
+): Promise<void> {
+  const endpoint = `/atelier/api/v1/model-registries/${encodeURIComponent(providerId)}`;
+  const current = await page.request.get(endpoint);
+  expect([200, 404]).toContain(current.status());
+  const registry = current.status() === 200
+    ? await current.json() as {
+      revision_number: number;
+      entries: Array<{
+        model_id: string;
+        agent_configuration_revision_hash: string;
+        source: string;
+        provider_check: string;
+      }>;
+    }
+    : undefined;
+  const entriesByModelId = new Map(registry?.entries.map((entry) => [entry.model_id, entry]));
+  entriesByModelId.set(modelId, {
+    model_id: modelId,
+    agent_configuration_revision_hash: configurationHash,
+    source: "operator",
+    provider_check: "checked"
+  });
+  const published = await page.request.put(endpoint, {
+    data: {
+      revision_number: registry === undefined ? 1 : registry.revision_number + 1,
+      entries: [...entriesByModelId.values()].map((entry) => ({
+        model_id: entry.model_id,
+        agent_configuration_revision_hash: entry.agent_configuration_revision_hash
+      }))
+    }
+  });
+  expect([200, 201]).toContain(published.status());
+  const registryBody = await published.json() as {
+    entries: Array<{ agent_configuration_revision_hash: string; provider_check: string }>;
+  };
+  if (registryBody.entries.find(
+    (entry) => entry.agent_configuration_revision_hash === configurationHash
+  )?.provider_check !== "checked") {
+    const validation = await page.request.post(`${endpoint}/validations`, {
+      data: { agent_configuration_revision_hash: configurationHash }
+    });
+    expect([200, 201]).toContain(validation.status());
+  }
+}
+
 async function immediateAgent(page: Page): Promise<string> {
   const auth = await page.request.post("/atelier/api/v1/auth-profile-revisions", {
     data: {
@@ -68,7 +118,9 @@ async function immediateAgent(page: Page): Promise<string> {
     }
   });
   expect([200, 201]).toContain(configuration.status());
-  return (await configuration.json()).agent_configuration_revision_hash as string;
+  const configurationHash = (await configuration.json()).agent_configuration_revision_hash as string;
+  await publishCheckedModelRegistry(page, "e2e-v3", "shot-model", configurationHash);
+  return configurationHash;
 }
 
 /**
@@ -95,7 +147,9 @@ async function agentOf(
     }
   });
   expect([200, 201]).toContain(configuration.status());
-  return (await configuration.json()).agent_configuration_revision_hash as string;
+  const configurationHash = (await configuration.json()).agent_configuration_revision_hash as string;
+  await publishCheckedModelRegistry(page, providerId, "shot-model", configurationHash);
+  return configurationHash;
 }
 
 async function chainOf(page: Page, name: string, schemaHash: string, nodeIds: readonly string[]): Promise<string> {

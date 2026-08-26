@@ -84,6 +84,7 @@ from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
     emitting,
+    publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_queries
 from tests.scenarios.workflows import (
@@ -185,6 +186,9 @@ def publish_looped_line(
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),
         AgentConfigurationRevisionCreated,
+    )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("exact"), (configuration,)
     )
     workflow = WorkflowRevision(LOOPED_LINE_DOCUMENT)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)

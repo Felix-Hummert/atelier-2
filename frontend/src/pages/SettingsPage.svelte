@@ -1,20 +1,21 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
 
   import {
     type AgentConfigurationRevisionListItem,
-    type AnyRun,
-    CockpitRequestError,
+    type AuthProfileRevision,
     type CockpitApi,
-    type OccupancyRevision,
-    type WorkflowRevisionDetail,
-    type WorkflowRevisionSummary
+    type ExactModelRegistryRevisionWrite,
+    type ExactProjectModelDefaultsRevisionWrite,
+    type ModelRegistryRevision,
+    type ProjectModelDefaultsRevision,
+    type ProjectSourceConnectionRevision
   } from "../api/client";
   import ReadState from "../components/ReadState.svelte";
+  import { problemCode } from "../lib/catalogName";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { THE_ONE_PROJECT } from "../lib/project";
-  import { settingsPageCopy } from "../lib/settingsPageCopy";
-  import { WORKSHOP_DESTINATION } from "../lib/workshop";
   import {
     beginRead,
     confirmRead,
@@ -22,494 +23,492 @@
     retainedRead,
     type RetainedRead
   } from "../lib/readResource";
-  import { readEveryAgentConfiguration, readEveryRevision, readEveryRun } from "../lib/runPages";
-  import { catalogHeadsOf, catalogNameStateOf, problemCode, type CatalogNameState } from "../lib/catalogName";
-  import { namedAgentLabel } from "../lib/namedAgentChoice";
-  import { agentRolesOf, groupSavedWorkflows } from "../lib/savedWorkflows";
-  import { countStanding, standingMarks, standingOrder, standingWords } from "../lib/runState";
+  import { readEveryAgentConfiguration } from "../lib/runPages";
+  import { settingsPageCopy } from "../lib/settingsPageCopy";
 
   export let cockpitApi: CockpitApi;
-  export let navigate: (path: string) => void;
 
-  const catalogPath = WORKSHOP_DESTINATION.catalog.path;
+  const difficulties = [3, 2, 1] as const;
+  type Difficulty = typeof difficulties[number];
+  type SettingsFailure = { kind: "unavailable"; title: string };
 
-  interface ProjectSnapshot {
-    runs: AnyRun[];
-  }
-
-  type ProjectReadFailure =
-    | { kind: "unavailable"; title: string }
-    | { kind: "incomplete"; title: string };
-
-  interface OccupancyEditorSnapshot {
+  interface SettingsSnapshot {
     projectReference: string;
-    workflows: WorkflowRevisionSummary[];
-    newestByName: Record<string, string>;
-    catalogByName: Record<string, CatalogNameState>;
-    agents: AgentConfigurationRevisionListItem[];
+    source: ProjectSourceConnectionRevision | null;
+    configurations: AgentConfigurationRevisionListItem[];
+    profiles: AuthProfileRevision[];
+    registries: ModelRegistryRevision[];
+    defaults: ProjectModelDefaultsRevision | null;
   }
 
-  interface SelectedOccupancy {
-    revision: WorkflowRevisionSummary;
-    lineageId: string;
-    detail: WorkflowRevisionDetail;
-    occupancy: OccupancyRevision | null;
-    selections: Record<string, string>;
-  }
+  type FailedWrite =
+    | {
+      kind: "registry";
+      providerId: string;
+      write: ExactModelRegistryRevisionWrite;
+      }
+    | {
+        kind: "validation";
+        providerId: string;
+        configurationHash: string;
+      }
+    | {
+        kind: "defaults";
+        projectReference: string;
+        write: ExactProjectModelDefaultsRevisionWrite;
+      };
 
-  type OccupancyEditorFailure = { kind: "unavailable"; title: string };
+  let settings: RetainedRead<SettingsSnapshot, SettingsFailure> = retainedRead();
+  let selections: Partial<Record<Difficulty, string>> = {};
+  let writing = false;
+  let failedWrite: FailedWrite | null = null;
 
-  let project: RetainedRead<ProjectSnapshot, ProjectReadFailure> =
-    retainedRead<ProjectSnapshot, ProjectReadFailure>();
+  $: mutationsFrozen = writing || failedWrite !== null;
 
-  let occupancyEditor: RetainedRead<OccupancyEditorSnapshot, OccupancyEditorFailure> = retainedRead();
-  let occupancySelection: RetainedRead<SelectedOccupancy, OccupancyEditorFailure> = retainedRead();
-  let selectedWorkflowHash = "";
-  let frozenWrite: {
-    projectReference: string;
-    lineageId: string;
-    input: { revision_number: number; bindings: Array<{ role: string; agent_configuration_revision_hash: string }> };
-    body: string;
-  } | null = null;
-  let writeInFlight = false;
-  let saveFailure: "conflict" | "uncertain" | "unavailable" | null = null;
-  let saveConfirmed = false;
+  onMount(() => { void load(); });
 
-  onMount(() => { void load(); void loadOccupancyEditor(); });
-
-  function clearOccupancySelection(): void {
-    occupancySelection = {
-      confirmed: null,
-      generation: occupancySelection.generation + 1,
-      request: { state: "idle" }
-    };
+  async function readProfiles(): Promise<AuthProfileRevision[]> {
+    const profiles: AuthProfileRevision[] = [];
+    let after: string | undefined;
+    const followed = new SvelteSet<string>();
+    for (;;) {
+      const page = await cockpitApi.listAuthProfileRevisions(after);
+      profiles.push(...page.items);
+      if (page.next_after_revision_hash === null) return profiles;
+      if (followed.has(page.next_after_revision_hash)) throw new Error("profile cursor repeated");
+      followed.add(page.next_after_revision_hash);
+      after = page.next_after_revision_hash;
+    }
   }
 
   async function load(): Promise<void> {
-    const begun = beginRead(project);
-    project = begun.read;
+    const begun = beginRead(settings);
+    settings = begun.read;
+    failedWrite = null;
     try {
-      const reading = await readEveryRun((after) => cockpitApi.listRuns(after));
-      if (!reading.complete) {
-        project = failRead(project, begun.generation, {
-          kind: "incomplete",
-          title: wrapDisplayCopy(settingsPageCopy.runsIncomplete)
-        });
-        return;
-      }
-      project = confirmRead(project, begun.generation, { runs: reading.runs });
-    } catch {
-      project = failRead(project, begun.generation, {
-        kind: "unavailable",
-        title: wrapDisplayCopy(settingsPageCopy.runsUnavailable)
-      });
-    }
-  }
+      const projects = await cockpitApi.listProjects();
+      const projectReference = projects.items[0]?.public_project_reference;
+      if (projectReference === undefined) throw new Error("served project missing");
 
-  async function loadOccupancyEditor(): Promise<void> {
-    if (frozenWrite !== null || selectedWorkflowHash !== "") return;
-    const begun = beginRead(occupancyEditor);
-    occupancyEditor = begun.read;
-    selectedWorkflowHash = "";
-    clearOccupancySelection();
-    saveFailure = null;
-    try {
-      const [projects, workflowReading, agentReading] = await Promise.all([
-        cockpitApi.listProjects(),
-        readEveryRevision((after) => cockpitApi.listWorkflowRevisions(after)),
-        readEveryAgentConfiguration((after) => cockpitApi.listAgentConfigurationRevisions(after))
-      ]);
-      if (projects.items.length !== 1 || !workflowReading.complete || !agentReading.complete) throw new Error("incomplete");
-      const names = [...new Set(workflowReading.revisions.flatMap((item) => item.name === null ? [] : [item.name]))];
-      const states = Object.fromEntries(await Promise.all(names.map(async (name) => [
-        name,
-        await catalogNameStateOf(name, (asked) => cockpitApi.getRevisionByName(asked))
-      ]))) as Record<string, CatalogNameState>;
-      const newestByName = catalogHeadsOf(workflowReading.revisions, states);
-      if (newestByName === null) throw new Error("skew");
-      const projectResource = projects.items[0];
-      if (projectResource === undefined) throw new Error("project missing");
-      occupancyEditor = confirmRead(occupancyEditor, begun.generation, {
-        projectReference: projectResource.public_project_reference,
-        workflows: workflowReading.revisions,
-        newestByName,
-        catalogByName: states,
-        agents: agentReading.configurations
-      });
-    } catch {
-      occupancyEditor = failRead(occupancyEditor, begun.generation, {
-        kind: "unavailable", title: "Project occupancy unavailable"
-      });
-    }
-  }
-
-  async function selectOccupancy(revision: WorkflowRevisionSummary | null): Promise<void> {
-    if (frozenWrite !== null || occupancyEditor.request.state !== "idle") return;
-    selectedWorkflowHash = revision?.workflow_revision_hash ?? "";
-    frozenWrite = null;
-    saveFailure = null;
-    saveConfirmed = false;
-    if (revision === null) {
-      clearOccupancySelection();
-      return;
-    }
-    const snapshot = occupancyEditor.confirmed;
-    if (snapshot === null || revision.name === null) return;
-    const state = snapshot.catalogByName[revision.name];
-    if (state?.kind !== "admitted" || state.revisionHash !== revision.workflow_revision_hash) {
-      selectedWorkflowHash = "";
-      clearOccupancySelection();
-      return;
-    }
-    const begun = beginRead(occupancySelection);
-    occupancySelection = { ...begun.read, confirmed: null };
-    const baseGeneration = occupancyEditor.generation;
-    try {
-      const [detail, occupancy] = await Promise.all([
-        cockpitApi.getWorkflowRevision(revision.workflow_revision_hash),
-        cockpitApi.getProjectOccupancy(snapshot.projectReference, state.lineageId).catch((error: unknown) => {
-          if (problemCode(error) === "occupancy-missing") return null;
+      const [source, configurationReading, profiles] = await Promise.all([
+        cockpitApi.getProjectSourceConnection(projectReference).catch((error: unknown) => {
+          if (problemCode(error) === "project-source-not-connected") return null;
           throw error;
-        })
+        }),
+        readEveryAgentConfiguration((after) => cockpitApi.listAgentConfigurationRevisions(after)),
+        readProfiles()
       ]);
-      if (
-        occupancyEditor.confirmed !== snapshot ||
-        occupancyEditor.generation !== baseGeneration ||
-        selectedWorkflowHash !== revision.workflow_revision_hash ||
-        detail.workflow_revision_hash !== revision.workflow_revision_hash
-      ) return;
-      const roles = agentRolesOf(detail.graph);
-      occupancySelection = confirmRead(occupancySelection, begun.generation, {
-        revision, lineageId: state.lineageId, detail, occupancy,
-        selections: Object.fromEntries(roles.map((role) => [role, occupancy?.bindings.find((binding) => binding.role === role)?.agent_configuration_revision_hash ?? ""]))
+      if (!configurationReading.complete) throw new Error("model listing incomplete");
+
+      const providers = [...new Set(
+        configurationReading.configurations.map((configuration) => configuration.provider_id)
+      )].sort();
+      const registries = (await Promise.all(
+        providers.map((providerId) => cockpitApi.getModelRegistry(providerId).catch((error: unknown) => {
+          if (problemCode(error) === "model-registry-missing") return null;
+          throw error;
+        }))
+      )).filter((registry): registry is ModelRegistryRevision => registry !== null);
+      const defaults = await cockpitApi.getProjectModelDefaults(projectReference).catch(
+        (error: unknown) => {
+          if (problemCode(error) === "project-model-defaults-missing") return null;
+          throw error;
+        }
+      );
+      selections = Object.fromEntries(
+        (defaults?.defaults ?? []).map((item) => [
+          item.difficulty,
+          item.agent_configuration_revision_hash
+        ])
+      );
+      settings = confirmRead(settings, begun.generation, {
+        projectReference,
+        source,
+        configurations: configurationReading.configurations,
+        profiles,
+        registries,
+        defaults
       });
     } catch {
-      if (selectedWorkflowHash !== revision.workflow_revision_hash) return;
-      occupancySelection = failRead(occupancySelection, begun.generation, {
-        kind: "unavailable", title: "Project occupancy unavailable"
+      settings = failRead(settings, begun.generation, {
+        kind: "unavailable",
+        title: wrapDisplayCopy(settingsPageCopy.unavailable)
       });
     }
   }
 
-  function setOccupancyRole(role: string, value: string): void {
-    const selected = occupancySelection.confirmed;
-    if (selected === null || frozenWrite !== null) return;
-    occupancySelection = { ...occupancySelection, confirmed: { ...selected, selections: { ...selected.selections, [role]: value } } };
-    saveFailure = null;
-    saveConfirmed = false;
+  function registryFor(providerId: string): ModelRegistryRevision | null {
+    return settings.confirmed?.registries.find(
+      (registry) => registry.provider_id === providerId
+    ) ?? null;
   }
 
-  function occupancyInputOf(selected: SelectedOccupancy) {
-    const roles = new Set(agentRolesOf(selected.detail.graph));
-    const preserved = (selected.occupancy?.bindings ?? []).filter((binding) => !roles.has(binding.role));
-    const authored = [...roles].flatMap((role) => {
-      const hash = selected.selections[role] ?? "";
-      return hash === "" ? [] : [{ role, agent_configuration_revision_hash: hash }];
-    });
-    return {
-      revision_number: (selected.occupancy?.revision_number ?? 0) + 1,
-      bindings: [...preserved, ...authored]
-    };
+  function entryFor(configurationHash: string) {
+    for (const registry of settings.confirmed?.registries ?? []) {
+      const entry = registry.entries.find(
+        (candidate) => candidate.agent_configuration_revision_hash === configurationHash
+      );
+      if (entry !== undefined) return { registry, entry };
+    }
+    return null;
   }
 
-  function sameBindings(left: readonly { role: string; agent_configuration_revision_hash: string }[], right: readonly { role: string; agent_configuration_revision_hash: string }[]): boolean {
-    if (left.length !== right.length) return false;
-    const rightByRole = new Map(right.map((binding) => [binding.role, binding.agent_configuration_revision_hash]));
-    if (rightByRole.size !== right.length) return false;
-    return left.every((binding) => rightByRole.get(binding.role) === binding.agent_configuration_revision_hash);
+  function accountFor(configuration: AgentConfigurationRevisionListItem): string {
+    return settings.confirmed?.profiles.find(
+      (profile) => profile.auth_profile_revision_hash === configuration.auth_profile_revision_hash
+    )?.profile_id ?? "Unknown account";
   }
 
-  async function saveOccupancy(retry = false): Promise<void> {
-    const snapshot = occupancyEditor.confirmed;
-    const selected = occupancySelection.confirmed;
-    if (snapshot === null || selected === null || writeInFlight || (frozenWrite !== null && !retry)) return;
-    const state = selected.revision.name === null ? null : snapshot.catalogByName[selected.revision.name];
-    if (
-      occupancyEditor.request.state !== "idle" ||
-      state?.kind !== "admitted" ||
-      state.revisionHash !== selected.revision.workflow_revision_hash ||
-      state.lineageId !== selected.lineageId ||
-      !snapshot.workflows.some((item) => item.workflow_revision_hash === selected.revision.workflow_revision_hash)
-    ) {
-      saveFailure = "unavailable";
-      return;
+  function registryEntryDetails(entry: ModelRegistryRevision["entries"][number]): string {
+    if (entry.provider_check === "unknown-at-provider") return "◇ unknown at provider";
+    if (entry.source === "operator" && entry.provider_check === "checked") {
+      return "added by you · ✓ checked";
     }
-    const currentRevision = selected.occupancy?.revision_number ?? 0;
-    if (!Number.isSafeInteger(currentRevision) || currentRevision >= Number.MAX_SAFE_INTEGER) {
-      saveFailure = "unavailable";
-      return;
-    }
-    if (retry === false && sameBindings(occupancyInputOf(selected).bindings, selected.occupancy?.bindings ?? [])) {
-      return;
-    }
-    const input = occupancyInputOf(selected);
-    const body = JSON.stringify(input);
-    const frozen = retry ? frozenWrite : {
-      projectReference: snapshot.projectReference,
-      lineageId: selected.lineageId,
-      input: JSON.parse(body) as typeof input,
-      body
-    };
-    if (frozen === null) return;
-    const baseSnapshot = snapshot;
-    const selectionGeneration = occupancySelection.generation;
-    frozenWrite = frozen;
-    writeInFlight = true;
-    saveFailure = null;
-    try {
-      const result = await cockpitApi.putProjectOccupancy(frozen.projectReference, frozen.lineageId, frozen);
-      if (
-        result.value.public_project_reference !== frozen.projectReference ||
-        result.value.lineage_id !== frozen.lineageId ||
-        result.value.revision_number !== frozen.input.revision_number ||
-        !sameBindings(result.value.bindings, frozen.input.bindings)
-      ) throw new Error("identity");
-      if (
-        occupancyEditor.confirmed !== baseSnapshot ||
-        occupancySelection.generation !== selectionGeneration ||
-        selectedWorkflowHash !== selected.revision.workflow_revision_hash
-      ) {
-        frozenWrite = null;
-        writeInFlight = false;
-        saveFailure = "unavailable";
-        return;
+    if (entry.source === "operator") return "added by you · ◇ not checked yet";
+    return "";
+  }
+
+  function updateRegistry(result: ModelRegistryRevision): void {
+    const snapshot = settings.confirmed;
+    if (snapshot === null) return;
+    settings = {
+      ...settings,
+      confirmed: {
+        ...snapshot,
+        registries: [
+          ...snapshot.registries.filter((registry) => registry.provider_id !== result.provider_id),
+          result
+        ].sort((left, right) => left.provider_id.localeCompare(right.provider_id))
       }
-      occupancySelection = { ...occupancySelection, confirmed: { ...selected, occupancy: result.value } };
-      frozenWrite = null;
-      writeInFlight = false;
-      saveConfirmed = true;
-    } catch (error) {
-      writeInFlight = false;
-      saveFailure = problemCode(error) === "occupancy-revision-conflict"
-        ? "conflict"
-        : problemCode(error) === "durable-state-corrupt" || (error instanceof CockpitRequestError && error.definitive_failure)
-          ? "unavailable"
-          : "uncertain";
+    };
+  }
+
+  async function sendRegistryWrite(
+    providerId: string,
+    write: ExactModelRegistryRevisionWrite,
+    retrying = false
+  ): Promise<void> {
+    if (writing || (failedWrite !== null && !retrying)) return;
+    writing = true;
+    try {
+      const result = await cockpitApi.putModelRegistry(providerId, write);
+      updateRegistry(result.value);
+      failedWrite = null;
+    } catch {
+      if (!retrying) failedWrite = { kind: "registry", providerId, write };
+    } finally {
+      writing = false;
     }
   }
 
-  function reloadOccupancy(): void {
-    frozenWrite = null;
-    saveFailure = null;
-    saveConfirmed = false;
-    const revision = occupancySelection.confirmed?.revision
-      ?? occupancyEditor.confirmed?.workflows.find((item) => item.workflow_revision_hash === selectedWorkflowHash)
-      ?? null;
-    void selectOccupancy(revision);
+  async function addModel(configuration: AgentConfigurationRevisionListItem): Promise<void> {
+    const registry = registryFor(configuration.provider_id);
+    const entries = [
+      ...(registry?.entries ?? []).map(registryEntryInput),
+      {
+        model_id: configuration.model,
+        agent_configuration_revision_hash: configuration.agent_configuration_revision_hash
+      }
+    ];
+    const input = { revision_number: (registry?.revision_number ?? 0) + 1, entries };
+    await sendRegistryWrite(configuration.provider_id, { input, body: JSON.stringify(input) });
   }
 
-  /**
-   * How much work this project holds, one number per standing.
-   *
-   * A count is the whole statement here: the rows themselves are the Board's
-   * (live) and History's (finished), and repeating them at this level was the
-   * same list a third time (#536).
-   */
-  $: workCounts = standingOrder
-    .map((standing) => ({ standing, count: countStanding(project.confirmed?.runs ?? [], standing) }))
-    .filter((entry) => entry.count > 0);
-  $: occupancyRows = groupSavedWorkflows(occupancyEditor.confirmed?.workflows ?? [], occupancyEditor.confirmed?.newestByName ?? {});
-  $: selectedRevision = occupancyEditor.confirmed?.workflows.find((item) => item.workflow_revision_hash === selectedWorkflowHash) ?? null;
-  $: selectedOccupancy = occupancySelection.confirmed;
-  $: selectedRoles = selectedOccupancy === null ? [] : agentRolesOf(selectedOccupancy.detail.graph);
-  $: occupancyChanged = selectedOccupancy !== null && !sameBindings(occupancyInputOf(selectedOccupancy).bindings, selectedOccupancy.occupancy?.bindings ?? []);
+  async function removeModel(
+    registry: ModelRegistryRevision,
+    entry: ModelRegistryRevision["entries"][number]
+  ): Promise<void> {
+    const input = {
+      revision_number: registry.revision_number + 1,
+      entries: registry.entries
+        .filter(
+          (candidate) => candidate.agent_configuration_revision_hash !== entry.agent_configuration_revision_hash
+        )
+        .map(registryEntryInput)
+    };
+    await sendRegistryWrite(registry.provider_id, { input, body: JSON.stringify(input) });
+  }
+
+  function registryEntryInput(entry: ModelRegistryRevision["entries"][number]) {
+    return {
+      model_id: entry.model_id,
+      agent_configuration_revision_hash: entry.agent_configuration_revision_hash
+    };
+  }
+
+  async function validateModel(
+    providerId: string,
+    configurationHash: string,
+    retrying = false
+  ): Promise<void> {
+    if (writing || (failedWrite !== null && !retrying)) return;
+    writing = true;
+    try {
+      const result = await cockpitApi.validateModelRegistryEntry(providerId, configurationHash);
+      updateRegistry(result.value);
+      failedWrite = null;
+    } catch {
+      if (!retrying) failedWrite = { kind: "validation", providerId, configurationHash };
+    } finally {
+      writing = false;
+    }
+  }
+
+  function updateDefaults(result: ProjectModelDefaultsRevision): void {
+    const snapshot = settings.confirmed;
+    if (snapshot === null) return;
+    settings = { ...settings, confirmed: { ...snapshot, defaults: result } };
+    selections = Object.fromEntries(
+      result.defaults.map((item) => [item.difficulty, item.agent_configuration_revision_hash])
+    );
+  }
+
+  async function sendDefaultsWrite(
+    projectReference: string,
+    write: ExactProjectModelDefaultsRevisionWrite,
+    retrying = false
+  ): Promise<void> {
+    if (writing || (failedWrite !== null && !retrying)) return;
+    writing = true;
+    try {
+      const result = await cockpitApi.putProjectModelDefaults(projectReference, write);
+      updateDefaults(result.value);
+      failedWrite = null;
+    } catch {
+      if (!retrying) failedWrite = { kind: "defaults", projectReference, write };
+    } finally {
+      writing = false;
+    }
+  }
+
+  async function choose(difficulty: Difficulty, configurationHash: string): Promise<void> {
+    const snapshot = settings.confirmed;
+    if (snapshot === null) return;
+    const untouched = snapshot.defaults?.defaults.filter(
+      (item) => item.difficulty !== difficulty
+    ) ?? [];
+    const found = configurationHash === "" ? null : entryFor(configurationHash);
+    const replacement = found === null ? [] : [{
+      difficulty,
+      model_registry_revision_hash: found.registry.model_registry_revision_hash,
+      provider_id: found.registry.provider_id,
+      model_id: found.entry.model_id,
+      agent_configuration_revision_hash: found.entry.agent_configuration_revision_hash
+    }];
+    const defaults = [...untouched, ...replacement];
+    const input = { revision_number: (snapshot.defaults?.revision_number ?? 0) + 1, defaults };
+    await sendDefaultsWrite(snapshot.projectReference, { input, body: JSON.stringify(input) });
+  }
+
+  async function retryWrite(): Promise<void> {
+    const retry = failedWrite;
+    if (retry === null) return;
+    if (retry.kind === "registry") await sendRegistryWrite(retry.providerId, retry.write, true);
+    else if (retry.kind === "validation") {
+      await validateModel(retry.providerId, retry.configurationHash, true);
+    } else await sendDefaultsWrite(retry.projectReference, retry.write, true);
+  }
+
+  $: registeredChoices = (settings.confirmed?.registries ?? []).flatMap((registry) =>
+    registry.entries.filter((entry) => entry.provider_check === "checked").map((entry) => {
+      const configuration = settings.confirmed?.configurations.find(
+        (candidate) => candidate.agent_configuration_revision_hash === entry.agent_configuration_revision_hash
+      );
+      return {
+        value: entry.agent_configuration_revision_hash,
+        label: `${entry.model_id} · Account ${configuration === undefined ? "Unknown account" : accountFor(configuration)}`
+      };
+    })
+  );
+
+  function retainedDefaultChoice(configurationHash: string): { value: string; label: string } | null {
+    if (registeredChoices.some((choice) => choice.value === configurationHash)) return null;
+    const found = entryFor(configurationHash);
+    if (found === null) return { value: configurationHash, label: "Unavailable saved model" };
+    const configuration = settings.confirmed?.configurations.find(
+      (candidate) => candidate.agent_configuration_revision_hash === configurationHash
+    );
+    return {
+      value: configurationHash,
+      label: `${found.entry.model_id} · Account ${configuration === undefined ? "Unknown account" : accountFor(configuration)} — Unavailable`
+    };
+  }
+
+  $: availableConfigurations = (settings.confirmed?.configurations ?? []).filter(
+    (configuration) => entryFor(configuration.agent_configuration_revision_hash) === null
+  );
+  $: registryEntries = (settings.confirmed?.registries ?? []).flatMap(
+    (registry) => registry.entries
+  );
+  $: checkableEntries = registryEntries.filter(
+    (entry) => entry.provider_check === "not-checked"
+  );
 </script>
 
-<section class="project-page" aria-labelledby="project-title">
-  <header>
-    <h1 id="project-title">{THE_ONE_PROJECT}</h1>
-  </header>
+<section class="settings-page" aria-labelledby="settings-title">
+  <header><h1 id="settings-title">{THE_ONE_PROJECT}</h1></header>
 
-  <section class="project-block" aria-labelledby="project-work-title">
-    <h2 id="project-work-title">{wrapDisplayCopy(settingsPageCopy.workTitle)}</h2>
-    <ReadState read={project} label="project runs" onRetry={() => { void load(); }} />
-    {#if project.confirmed !== null}
-      {#if workCounts.length === 0}
-        <p class="muted">{wrapDisplayCopy(settingsPageCopy.noRuns)}</p>
-        <a
-          class="button primary"
-          href={catalogPath}
-          onclick={(event) => { event.preventDefault(); navigate(catalogPath); }}
-        >{wrapDisplayCopy(settingsPageCopy.noRunsNext)}</a>
-      {:else}
-        <ul class="project-counts">
-          {#each workCounts as entry (entry.standing)}
-            <li class="project-count project-count-{entry.standing}">
-              <span class="project-count-mark" aria-hidden="true">{standingMarks[entry.standing]}</span>
-              <b>{entry.count}</b>
-              <span>{wrapDisplayCopy(standingWords[entry.standing])}</span>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    {/if}
-  </section>
+  <ReadState read={settings} label={settingsPageCopy.label} onRetry={() => { void load(); }} />
 
-  <section class="occupancy-editor" aria-labelledby="occupancy-title">
-    <p class="eyebrow">{wrapDisplayCopy(settingsPageCopy.occupancyEyebrow)}</p>
-    <h2 id="occupancy-title">{wrapDisplayCopy(settingsPageCopy.occupancyTitle)}</h2>
-    {#if frozenWrite === null}
-      {#if selectedWorkflowHash === ""}
-        <ReadState read={occupancyEditor} label="project occupancy" onRetry={() => { void loadOccupancyEditor(); }} />
-      {/if}
-    {:else if writeInFlight}
-      <p class="muted" role="status">Saving occupancy…</p>
-    {/if}
-    {#if occupancyEditor.confirmed !== null}
-      {#if occupancyRows.length === 0}
-        <p class="muted">No admitted workflows yet.</p>
+  {#if settings.confirmed !== null}
+    <section class="settings-block" aria-labelledby="sources-title">
+      <h2 id="sources-title">{wrapDisplayCopy(settingsPageCopy.sourcesTitle)}</h2>
+      {#if settings.confirmed.source === null}
+        <p class="muted">{wrapDisplayCopy(settingsPageCopy.sourcesEmpty)}</p>
       {:else}
-        <label class="named-agent">Workflow
+        <dl class="source-list">
+          <div><dt>{settingsPageCopy.sourceKind}</dt><dd>{settings.confirmed.source.source_kind}</dd></div>
+          <div><dt>{settingsPageCopy.sourceAddress}</dt><dd>{settings.confirmed.source.source_address}</dd></div>
+          <div><dt>{settingsPageCopy.sourceAuthMethod}</dt><dd>{settings.confirmed.source.auth_method}</dd></div>
+          <div><dt>{settingsPageCopy.sourceRevision}</dt><dd>{settings.confirmed.source.revision_number}</dd></div>
+        </dl>
+      {/if}
+    </section>
+
+    <section class="settings-block" aria-labelledby="models-title">
+      <h2 id="models-title">{wrapDisplayCopy(settingsPageCopy.modelsTitle)}</h2>
+      {#if settings.confirmed.registries.flatMap((registry) => registry.entries).length === 0}
+        <div class="empty-state" role="status"><span aria-hidden="true">◇</span><strong>{settingsPageCopy.modelsEmpty}</strong></div>
+      {:else}
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Model</th><th>Account</th><th><span class="sr-only">Registry</span></th></tr></thead>
+            <tbody>
+              {#each settings.confirmed.registries as registry (registry.model_registry_revision_hash)}
+                <tr class="provider-row"><td colspan="3">{registry.provider_id}</td></tr>
+                {#each registry.entries as entry (entry.agent_configuration_revision_hash)}
+                  {@const configuration = settings.confirmed.configurations.find((candidate) => candidate.agent_configuration_revision_hash === entry.agent_configuration_revision_hash)}
+                  <tr>
+                    <td data-label="Model"><code>{entry.model_id}</code></td>
+                    <td data-label="Account">{configuration === undefined ? "Unknown account" : accountFor(configuration)}</td>
+                    <td data-label="Registry">
+                      {#if registryEntryDetails(entry) !== ""}<span class:unchecked={entry.provider_check !== "checked"}>{registryEntryDetails(entry)}</span>{/if}
+                      {#if entry.provider_check === "not-checked"}
+                        <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void validateModel(registry.provider_id, entry.agent_configuration_revision_hash); }}>Check</button>
+                      {/if}
+                      <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void removeModel(registry, entry); }}>Remove</button>
+                    </td>
+                  </tr>
+                {/each}
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+      {#if availableConfigurations.length > 0}
+        <label class="add-model">
+          <span class="sr-only">Add a model</span>
           <select
-            aria-label="Workflow occupancy"
-            disabled={frozenWrite !== null || occupancyEditor.request.state !== "idle"}
-            value={selectedWorkflowHash}
+            aria-label="Add a model"
+            value=""
+            disabled={mutationsFrozen}
             onchange={(event) => {
-              const selector = event.currentTarget;
-              const revision = occupancyEditor.confirmed?.workflows.find((item) => item.workflow_revision_hash === event.currentTarget.value);
-              void selectOccupancy(revision ?? null).then(() => { selector.value = selectedWorkflowHash; });
+              const configuration = availableConfigurations.find(
+                (candidate) => candidate.agent_configuration_revision_hash === event.currentTarget.value
+              );
+              if (configuration !== undefined) void addModel(configuration);
             }}
           >
-            <option value="">Choose</option>
-            {#each occupancyRows as row (row.key)}
-              {@const revision = row.revisions[0]}
-              {#if revision !== undefined && revision.name !== null && occupancyEditor.confirmed.catalogByName[revision.name]?.kind === "admitted"}
-                <option value={revision.workflow_revision_hash}>{revision.name}</option>
-              {/if}
+            <option value="" disabled>Add a model</option>
+            {#each availableConfigurations as configuration (configuration.agent_configuration_revision_hash)}
+              <option value={configuration.agent_configuration_revision_hash}>{configuration.model} · Account {accountFor(configuration)}</option>
             {/each}
           </select>
         </label>
       {/if}
-      {#if occupancySelection.request.state !== "idle"}
-        <ReadState
-          read={occupancySelection}
-          label="selected project occupancy"
-          onRetry={() => { void selectOccupancy(selectedRevision); }}
-        />
-      {/if}
-      {#if selectedOccupancy !== null}
-        {#if selectedRoles.length === 0}
-          <p class="muted">This workflow declares no agent roles.</p>
-        {:else}
-          {#if selectedOccupancy.occupancy === null || selectedOccupancy.occupancy.bindings.length === 0}
-            <p class="muted">No project recommendations yet.</p>
-          {/if}
-          {#if occupancyEditor.confirmed.agents.length === 0}
-            <p class="muted">No published agents yet.</p>
-          {/if}
-          <div class="binding-list">
-            {#each selectedRoles as role (role)}
-              <label class="named-agent">{role}
-                <select
-                  value={selectedOccupancy.selections[role] ?? ""}
-                  aria-label={`Recommendation for ${role}`}
-                  disabled={frozenWrite !== null}
-                  onchange={(event) => setOccupancyRole(role, event.currentTarget.value)}
-                >
-                  <option value="">None</option>
-                  {#if selectedOccupancy.selections[role] && !occupancyEditor.confirmed.agents.some((agent) => agent.agent_configuration_revision_hash === selectedOccupancy?.selections[role])}
-                    <option value={selectedOccupancy.selections[role]} disabled>Unavailable</option>
-                  {/if}
-                  {#each occupancyEditor.confirmed.agents as agent (agent.agent_configuration_revision_hash)}
-                    <option value={agent.agent_configuration_revision_hash}>{namedAgentLabel(agent)}</option>
-                  {/each}
-                </select>
-              </label>
-            {/each}
-          </div>
-          {#if saveConfirmed}
-            <p class="occupancy-confirmed"><span aria-hidden="true">✓</span> Saved</p>
-          {/if}
-          {#if saveFailure === "conflict"}
-            <div class="inbox-card" role="alert"><span class="inbox-mark" aria-hidden="true">◇</span><strong>Occupancy changed elsewhere.</strong></div>
-            <button type="button" onclick={reloadOccupancy}>Reload</button>
-          {:else if saveFailure === "uncertain" && frozenWrite !== null}
-            <div class="inbox-card" role="alert"><span class="inbox-mark" aria-hidden="true">◇</span><strong>Occupancy save unconfirmed.</strong></div>
-            <button type="button" onclick={() => { void saveOccupancy(true); }}>Retry</button>
-          {:else if saveFailure === "unavailable"}
-            <div class="inbox-card" role="alert"><span class="inbox-mark" aria-hidden="true">◇</span><strong>Project occupancy unavailable.</strong></div>
-            <button type="button" onclick={reloadOccupancy}>Reload</button>
-          {:else}
-            <button class="primary" type="button" disabled={frozenWrite !== null || !occupancyChanged} onclick={() => { void saveOccupancy(); }}>Save</button>
-          {/if}
-        {/if}
-      {/if}
-    {/if}
-  </section>
+    </section>
 
+    <section class="settings-block" aria-labelledby="defaults-title">
+      <h2 id="defaults-title">{wrapDisplayCopy(settingsPageCopy.defaultsTitle)}</h2>
+      {#if registeredChoices.length === 0}
+        <div class="empty-state" role="status"><span aria-hidden="true">◇</span><strong>{registryEntries.length === 0 ? settingsPageCopy.defaultsEmptyRegistry : checkableEntries.length > 0 ? settingsPageCopy.defaultsNoCheckedModels : settingsPageCopy.defaultsUnavailableModels}</strong></div>
+      {/if}
+      <div class="table-wrap">
+        <table class="defaults-table">
+          <thead><tr><th>Difficulty</th><th>Model</th></tr></thead>
+          <tbody>
+          {#each difficulties as difficulty (difficulty)}
+            {@const retained = selections[difficulty] === undefined ? null : retainedDefaultChoice(selections[difficulty])}
+            <tr>
+              <td class="difficulty-mark" data-label="Difficulty"><b>{difficulty}</b></td>
+              <td data-label="Model">
+              {#if retained !== null}
+                <div class="retained-default" role="status">{retained.label}</div>
+              {/if}
+              <select
+                aria-label={`Difficulty ${difficulty}`}
+                value={retained === null ? selections[difficulty] ?? "" : ""}
+                disabled={mutationsFrozen}
+                onchange={(event) => { void choose(difficulty, event.currentTarget.value === "__clear" ? "" : event.currentTarget.value); }}
+              >
+                {#if retained !== null}
+                  <option value="" disabled>Change saved default</option>
+                  <option value="__clear">No default</option>
+                {:else}
+                  <option value="">No default</option>
+                {/if}
+                {#each registeredChoices as choice (choice.value)}
+                  <option value={choice.value}>{choice.label}</option>
+                {/each}
+              </select>
+              </td>
+            </tr>
+          {/each}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    {#if failedWrite !== null}
+      <div class="write-failure" role="alert">
+        <span aria-hidden="true">◇</span><strong>{settingsPageCopy.writeFailed}</strong>
+        <button class="quiet compact" type="button" disabled={writing} onclick={() => { void retryWrite(); }}>Retry</button>
+      </div>
+    {/if}
+  {/if}
 </section>
 
 <style>
-  /* Sections of a surface stand a section apart, so a label reads as
-     belonging to the group under it rather than floating between two. */
-  .project-page {
-    display: grid;
-    align-content: start;
-    gap: var(--space-section);
-    min-width: 0;
-  }
-
-  .project-block {
-    display: grid;
-    gap: var(--space-3);
-    min-width: 0;
-  }
-
-  .project-block h2 {
-    margin: 0;
-    font-size: var(--text-2xs);
-    font-weight: var(--weight-heavy);
-    letter-spacing: var(--tracking-label);
-    text-transform: uppercase;
-    color: var(--ink-dim);
-  }
-
-  .project-counts {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), 1fr));
-    gap: var(--space-3);
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .project-count {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-2);
-    border: var(--edge) solid var(--line);
-    border-radius: var(--r-lg);
-    padding: var(--space-4) var(--space-5);
-    background: var(--panel2);
-  }
-
-  .project-count b {
-    font-size: var(--text-lg);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .project-count span:last-child {
-    color: var(--ink-dim);
-    font-size: var(--text-sm);
-  }
-
-  .project-count-running .project-count-mark {
-    color: var(--signal-live);
-  }
-
-  .project-count-waiting .project-count-mark {
-    color: var(--signal-attention-mark);
-  }
-
-  .project-count-failed .project-count-mark {
-    color: var(--signal-failure);
-  }
-
-  .project-count-done .project-count-mark {
-    color: var(--signal-quiet);
-  }
-
-  .muted {
-    color: var(--ink-dim);
+  .settings-page, .settings-block { display: grid; align-content: start; gap: var(--space-3); min-width: 0; }
+  .settings-page { gap: var(--space-section); }
+  h1, h2 { margin: 0; }
+  h2 { color: var(--ink-dim); font-size: var(--text-2xs); font-weight: var(--weight-heavy); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+  .muted { color: var(--ink-dim); }
+  .source-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); margin: 0; }
+  .source-list div { border: var(--edge) solid var(--line); border-radius: var(--r-lg); padding: var(--space-3); background: var(--panel2); }
+  dt { color: var(--ink-dim); font-size: var(--text-2xs); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+  dd { margin: var(--space-1) 0 0; overflow-wrap: anywhere; }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; min-width: var(--table-min); width: 100%; }
+  th, td { border-bottom: var(--edge) solid var(--line); padding: var(--space-3); text-align: left; white-space: nowrap; }
+  th { color: var(--ink-dim); font-size: var(--text-2xs); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+  td:last-child, th:last-child { text-align: right; }
+  .provider-row td { background: var(--panel2); color: var(--ink-dim); font-size: var(--text-2xs); font-weight: var(--weight-heavy); letter-spacing: var(--tracking-label); text-align: left; text-transform: uppercase; }
+  .unchecked { color: var(--signal-attention); }
+  .add-model { display: block; width: fit-content; }
+  .difficulty-mark { font-size: var(--text-lg); font-weight: var(--weight-heavy); }
+  .defaults-table { min-width: 0; }
+  .defaults-table td:last-child { text-align: left; }
+  .defaults-table select { padding-inline: var(--space-2); }
+  .retained-default { margin-bottom: var(--space-2); max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+  .empty-state, .write-failure { display: flex; gap: var(--space-2); align-items: center; color: var(--ink-dim); }
+  .write-failure { color: var(--signal-failure); }
+  .write-failure button { margin-left: auto; }
+  .compact { min-height: var(--tap); padding: var(--space-1) var(--space-3); }
+  @media (max-width: 520px) {
+    .source-list { grid-template-columns: 1fr; }
+    table { display: block; min-width: 0; }
+    thead { display: none; }
+    tbody { display: grid; gap: var(--space-3); }
+    tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: var(--edge) solid var(--line); border-radius: var(--r-lg); padding: var(--space-2); background: var(--panel2); }
+    td { border: 0; padding: var(--space-2); white-space: normal; overflow-wrap: anywhere; }
+    td::before { content: attr(data-label); display: block; margin-bottom: var(--space-1); color: var(--ink-dim); font-size: var(--text-2xs); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+    td:first-child, td:last-child { grid-column: 1 / -1; }
+    td:last-child { text-align: left; }
+    .provider-row { display: table-row; border: 0; border-radius: 0; padding: 0; background: transparent; }
+    .provider-row td { display: table-cell; padding: var(--space-2); }
+    .defaults-table tr { grid-template-columns: minmax(var(--tap), auto) minmax(0, 1fr); }
+    .defaults-table td:first-child { grid-column: auto; }
+    .defaults-table select { width: 100%; max-width: 100%; font-size: var(--text-sm); }
   }
 </style>

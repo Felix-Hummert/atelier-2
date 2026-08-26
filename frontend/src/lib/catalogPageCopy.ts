@@ -119,7 +119,7 @@ export const workflowDetailCopy = {
  * admitted head, which wears no note at all.
  *
  * Read-only browsing shows every published name it can identify rather than
- * hiding one, unlike the project occupancy editor's picker (a write
+ * hiding one, unlike a project configuration picker (a write
  * precondition: it must bind to a live catalog member, so it drops what
  * cannot be bound). This surface only answers "what can the house do", so an
  * honest note beats disappearing content -- the same choice the saved-workflow

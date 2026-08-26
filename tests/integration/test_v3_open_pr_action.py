@@ -60,6 +60,7 @@ from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
     launching,
+    publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
@@ -149,6 +150,9 @@ def publish_line(
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),
         AgentConfigurationRevisionCreated,
+    )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("exact"), (configuration,)
     )
     document = (
         b"""format_version: 3

@@ -92,6 +92,7 @@ from atelier2.ports.run_queries import RunFound
 from tests.scenarios.agents import (
     agent_scratch_root,
     failing_agent_executor_factory,
+    publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_api_client, durable_queries
 from tests.scenarios.projects import git_project
@@ -177,6 +178,9 @@ def publish(
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),
         AgentConfigurationRevisionCreated,
+    )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("exact"), (configuration,)
     )
     workflow = WorkflowRevision(document)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)

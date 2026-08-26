@@ -137,6 +137,7 @@ from atelier2.ports.published_revisions import (
 from tests.scenarios.agents import (
     agent_scratch_root,
     failing_agent_executor_factory,
+    publish_checked_model_registry,
 )
 from tests.scenarios.runs import prepare_and_launch_graph_action
 
@@ -267,6 +268,9 @@ def _bindings(runtime: DbosRuntime) -> AgentBindingSet:
         published_configuration,
         (AgentConfigurationRevisionCreated, AgentConfigurationRevisionExisting),
     ), published_configuration
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("exact"), (configuration,)
+    )
     return AgentBindingSet(
         (AgentBinding(AgentRole("builder"), configuration.revision_hash),)
     )

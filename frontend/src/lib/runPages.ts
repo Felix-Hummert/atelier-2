@@ -1,6 +1,8 @@
 import type {
   AgentConfigurationRevisionListItem,
   AgentConfigurationRevisionPage,
+  AuthProfileRevision,
+  AuthProfileRevisionPage,
   AnyRun,
   RunPage,
   WorkflowRevisionPage,
@@ -40,6 +42,10 @@ export type AgentConfigurationReading =
       configurations: AgentConfigurationRevisionListItem[];
       unreadable: string;
     };
+
+export type AuthProfileReading =
+  | { complete: true; profiles: AuthProfileRevision[] }
+  | { complete: false; profiles: AuthProfileRevision[]; unreadable: string };
 
 export async function readEveryRun(
   listRuns: (after?: string) => Promise<RunPage>
@@ -86,6 +92,22 @@ export async function readEveryAgentConfiguration(
   return read.complete
     ? { complete: true, configurations: read.items }
     : { complete: false, configurations: read.items, unreadable: read.unreadable };
+}
+
+/** Every published account identity a model picker names beside its exact model. */
+export async function readEveryAuthProfile(
+  listProfiles: (after?: string) => Promise<AuthProfileRevisionPage>
+): Promise<AuthProfileReading> {
+  const read = await readEveryPage(
+    async (after) => {
+      const page = await listProfiles(after);
+      return { items: page.items, next: page.next_after_revision_hash };
+    },
+    (profile) => profile.auth_profile_revision_hash
+  );
+  return read.complete
+    ? { complete: true, profiles: read.items }
+    : { complete: false, profiles: read.items, unreadable: read.unreadable };
 }
 
 type PageReading<Item> =

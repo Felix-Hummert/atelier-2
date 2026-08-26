@@ -39,16 +39,23 @@ from atelier2.contracts.agent_definitions import (
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
+    PROVIDER_ID_PATTERN,
 )
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.catalog_v3 import (
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
 )
 from atelier2.contracts.host_configuration import (
-    MAXIMUM_OCCUPANCY_BINDINGS,
+    EXACT_MODEL_ID_PATTERN,
+    MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
+    MAXIMUM_MODEL_REGISTRY_ENTRIES,
     MAXIMUM_PROJECT_ID_CHARACTERS,
+    MAXIMUM_PROJECT_MODEL_DEFAULTS,
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SERVED_PROJECTS,
+    MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
+    MAXIMUM_SOURCE_KIND_CHARACTERS,
+    SourceConnectionAuthMethod,
 )
 from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
@@ -254,11 +261,6 @@ class AuthProfileRevisionPageResource(ApiModel):
     next_after_revision_hash: str | None = Field(pattern=REVISION_HASH_PATTERN)
 
 
-class OccupancyBindingResource(ApiModel):
-    role: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
-    agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-
-
 class ProjectResource(ApiModel):
     public_project_reference: str = Field(
         pattern=PUBLIC_PROJECT_REFERENCE_PATTERN,
@@ -269,6 +271,116 @@ class ProjectResource(ApiModel):
 class ProjectListResource(ApiModel):
     items: tuple[ProjectResource, ...] = Field(
         max_length=MAXIMUM_SERVED_PROJECTS, strict=False
+    )
+
+
+class ProjectSourceConnectionRevisionResource(ApiModel):
+    public_project_reference: str = Field(
+        pattern=PUBLIC_PROJECT_REFERENCE_PATTERN,
+        max_length=MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    )
+    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    source_kind: str = Field(min_length=1, max_length=MAXIMUM_SOURCE_KIND_CHARACTERS)
+    source_address: str = Field(
+        min_length=1, max_length=MAXIMUM_SOURCE_ADDRESS_CHARACTERS
+    )
+    auth_method: SourceConnectionAuthMethod
+    project_source_connection_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class ModelRegistryEntryResource(ApiModel):
+    model_id: str = Field(
+        min_length=1,
+        max_length=MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
+        pattern=EXACT_MODEL_ID_PATTERN,
+    )
+    agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    source: Literal["discovered", "operator"]
+    provider_check: Literal["not-checked", "checked", "unknown-at-provider"]
+
+
+class ModelRegistryRevisionResource(ApiModel):
+    provider_id: str = Field(
+        min_length=1,
+        max_length=MAXIMUM_PROVIDER_ID_CHARACTERS,
+        pattern=PROVIDER_ID_PATTERN,
+    )
+    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    model_registry_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    entries: tuple[ModelRegistryEntryResource, ...] = Field(
+        max_length=MAXIMUM_MODEL_REGISTRY_ENTRIES, strict=False
+    )
+
+
+class ProjectModelDefaultResource(ApiModel):
+    difficulty: Literal[1, 2, 3]
+    model_registry_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    provider_id: str = Field(
+        min_length=1,
+        max_length=MAXIMUM_PROVIDER_ID_CHARACTERS,
+        pattern=PROVIDER_ID_PATTERN,
+    )
+    model_id: str = Field(
+        min_length=1,
+        max_length=MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
+        pattern=EXACT_MODEL_ID_PATTERN,
+    )
+    agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class ProjectModelDefaultsRevisionResource(ApiModel):
+    project_id: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_ID_CHARACTERS)
+    public_project_reference: str = Field(
+        pattern=PUBLIC_PROJECT_REFERENCE_PATTERN,
+        max_length=MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    )
+    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    project_model_defaults_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    defaults: tuple[ProjectModelDefaultResource, ...] = Field(
+        max_length=MAXIMUM_PROJECT_MODEL_DEFAULTS, strict=False
+    )
+
+
+class RoleModelResolutionResource(ApiModel):
+    role: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
+    agent_configuration_revision_hash: str | None = Field(
+        ..., pattern=SHA256_HASH_PATTERN
+    )
+    source: Literal["chosen-now", "pinned-in-workflow", "from-project", "uncast"]
+    model_id: str | None = Field(
+        ...,
+        min_length=1,
+        max_length=MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
+        pattern=EXACT_MODEL_ID_PATTERN,
+    )
+    declared_difficulty: Literal[1, 2, 3]
+    default_difficulty: Literal[1, 2, 3] | None = Field(...)
+    uncast_reason: (
+        Literal[
+            "override-not-registered",
+            "workflow-model-not-registered",
+            "workflow-model-ambiguous",
+            "no-project-default",
+            "family-difference-unavailable",
+        ]
+        | None
+    ) = Field(...)
+    family_differs_from: str | None = Field(
+        ...,
+        min_length=1,
+        max_length=MAXIMUM_AGENT_FIELD_CHARACTERS,
+    )
+
+
+class ProjectModelResolutionResource(ApiModel):
+    project_id: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_ID_CHARACTERS)
+    public_project_reference: str = Field(
+        pattern=PUBLIC_PROJECT_REFERENCE_PATTERN,
+        max_length=MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
+    )
+    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    resolutions: tuple[RoleModelResolutionResource, ...] = Field(
+        max_length=MAXIMUM_RUN_AGENT_BINDINGS, strict=False
     )
 
 
@@ -283,20 +395,6 @@ class ProjectRootRevisionResource(ApiModel):
         min_length=1, max_length=MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS
     )
     project_root_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-
-
-class OccupancyRevisionResource(ApiModel):
-    project_id: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_ID_CHARACTERS)
-    public_project_reference: str = Field(
-        pattern=PUBLIC_PROJECT_REFERENCE_PATTERN,
-        max_length=MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
-    )
-    lineage_id: str = Field(pattern=SHA256_HASH_PATTERN)
-    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
-    occupancy_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
-    bindings: tuple[OccupancyBindingResource, ...] = Field(
-        max_length=MAXIMUM_OCCUPANCY_BINDINGS, strict=False
-    )
 
 
 class AgentReceiptResource(ApiModel):
@@ -1385,12 +1483,29 @@ class InvalidFieldResource(ApiModel):
     )
 
 
+class UncastRoleResource(ApiModel):
+    role: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
+    reason: Literal[
+        "override-not-registered",
+        "workflow-model-not-registered",
+        "workflow-model-ambiguous",
+        "no-project-default",
+        "family-difference-unavailable",
+    ]
+    family_differs_from: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAXIMUM_AGENT_FIELD_CHARACTERS,
+    )
+
+
 class ProblemResource(ApiModel):
     type: str
     title: str
     status: int
     detail: str
     invalid_fields: tuple[InvalidFieldResource, ...] | None = None
+    uncast_roles: tuple[UncastRoleResource, ...] | None = None
 
     @model_serializer(mode="wrap")
     def omit_absent_field_pointers(
@@ -1399,6 +1514,8 @@ class ProblemResource(ApiModel):
         dumped = serializer(self)
         if dumped.get("invalid_fields") is None:
             dumped.pop("invalid_fields", None)
+        if dumped.get("uncast_roles") is None:
+            dumped.pop("uncast_roles", None)
         return dumped
 
 

@@ -7,14 +7,14 @@ import App from "../../src/App.svelte";
 import {
   agentConfigurationRevisionPageSchema,
   type AgentConfigurationRevisionListItem,
+  type AuthProfileRevision,
   type CockpitApi,
+  type ModelRegistryRevision,
+  type ProjectModelResolution,
   type RunV3
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
-import {
-  NAMED_AGENT_CHOICE_STORAGE_KEY,
-  namedAgentLabel
-} from "../../src/lib/namedAgentChoice";
+import { agentConfigurationLabel } from "../../src/lib/agentConfigurationLabel";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { cancellableBlock } from "../support/runV3";
 
@@ -22,6 +22,7 @@ const revisionHash = "a".repeat(64);
 const authHash = "b".repeat(64);
 const configurationHash = "c".repeat(64);
 const publicReference = "run1.cnVuLW5hbWVk";
+const projectReference = "project1.dGVzdA";
 
 const servedDocument = JSON.parse(
   readFileSync(resolve(process.cwd(), "..", "tests", "api", "openapi_frozen.json"), "utf8")
@@ -49,7 +50,7 @@ function publishedAgent(
   };
 }
 
-function v3Revision(hash: string, documentBase64: string) {
+function v3Revision(hash: string, documentBase64: string, roles = ["builder"]) {
   return {
     workflow_revision_hash: hash,
     document_base64: documentBase64,
@@ -57,19 +58,17 @@ function v3Revision(hash: string, documentBase64: string) {
       workflow_format_version: 3 as const,
       executable: true as const,
       not_executable_reason: null,
-      node_count: 1,
-      agent_roles: ["builder"],
+      node_count: roles.length,
+      agent_roles: roles,
       orders: [],
       wait_answer_schemas: [],
-      node_previews: [
-        {
-          id: "implement",
+      node_previews: roles.map((role, index) => ({
+          id: `step-${index + 1}`,
           kind: "agent" as const,
-          role: "builder",
+          role,
           instruction_start: "Do the one thing.",
-          depends_on: []
-        }
-      ],
+          depends_on: index === 0 ? [] : [`step-${index}`]
+        })),
       loops: [],
       name: "Named start",
       description: null
@@ -109,6 +108,40 @@ function startedV3Run(): RunV3 {
   };
 }
 
+function listedProfile(): AuthProfileRevision {
+  return {
+    profile_id: "max",
+    revision_number: 1,
+    provider_id: "anthropic",
+    auth_mode: "subscription",
+    auth_profile_revision_hash: authHash
+  };
+}
+
+function registry(providerId: string): ModelRegistryRevision {
+  const entries = providerId === "anthropic"
+    ? [{
+        model_id: "sonnet",
+        agent_configuration_revision_hash: configurationHash,
+        source: "discovered" as const,
+        provider_check: "checked" as const
+      }]
+    : providerId === "openai"
+      ? [{
+          model_id: "codex",
+          agent_configuration_revision_hash: "d".repeat(64),
+          source: "discovered" as const,
+          provider_check: "checked" as const
+        }]
+      : [];
+  return {
+    provider_id: providerId,
+    revision_number: 1,
+    model_registry_revision_hash: "e".repeat(64),
+    entries
+  };
+}
+
 function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
   return cockpitApiStub({
     publish: vi.fn(async (mutation) =>
@@ -119,8 +152,56 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
     ),
     start: vi.fn(async () => ({ status: 201, value: startedV3Run() }) as never),
     getRun: vi.fn(async () => startedV3Run()),
+    listProjects: vi.fn(async () => ({ items: [{ public_project_reference: projectReference }] })),
+    listAuthProfileRevisions: vi.fn(async () => ({
+      items: [listedProfile()],
+      next_after_revision_hash: null
+    })),
+    getModelRegistry: vi.fn(async (providerId: string) => registry(providerId)),
+    resolveProjectModels: vi.fn(async (
+      _project: string,
+      workflowHash: string,
+      modelOverrides: Parameters<CockpitApi["resolveProjectModels"]>[2]
+    ) => {
+      const selected = modelOverrides.find((item) => item.role === "builder")
+        ?.agent_configuration_revision_hash ?? null;
+      return modelResolution(workflowHash, [{
+        role: "builder",
+        hash: selected,
+        source: selected === null ? "uncast" : "chosen-now",
+        uncastReason: selected === null ? "no-project-default" : null
+      }]);
+    }),
     ...overrides
   });
+}
+
+function modelResolution(
+  workflowHash: string,
+  bindings: Array<{
+    role: string;
+    hash: string | null;
+    source: "chosen-now" | "pinned-in-workflow" | "from-project" | "uncast";
+    uncastReason: ProjectModelResolution["resolutions"][number]["uncast_reason"];
+    defaultDifficulty?: 1 | 2 | 3 | null;
+    familyDiffersFrom?: string | null;
+  }>
+): ProjectModelResolution {
+  return {
+    project_id: "atelier",
+    public_project_reference: projectReference,
+    workflow_revision_hash: workflowHash,
+    resolutions: bindings.map((binding) => ({
+      role: binding.role,
+      agent_configuration_revision_hash: binding.hash,
+      source: binding.source,
+      model_id: binding.hash === null ? null : "sonnet",
+      declared_difficulty: 2,
+      default_difficulty: binding.defaultDifficulty ?? (binding.source === "from-project" ? 2 : null),
+      uncast_reason: binding.uncastReason,
+      family_differs_from: binding.familyDiffersFrom ?? null
+    }))
+  };
 }
 
 async function publishWorkflow(cockpitApi: CockpitApi): Promise<void> {
@@ -191,8 +272,8 @@ describe("named agent picker", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Retry published agents" }));
 
     const picker = await screen.findByLabelText("Agent for builder");
-    expect(picker.textContent).toContain("anthropic · sonnet · Subscription");
-    expect(picker.textContent).toContain("openai · codex · Subscription");
+    expect(picker.textContent).toContain("anthropic · sonnet · max");
+    expect(picker.textContent).toContain("openai · codex · max");
     expect(listAgentConfigurationRevisions.mock.calls).toEqual([
       [undefined],
       [configurationHash],
@@ -242,7 +323,7 @@ describe("named agent picker", () => {
     expect(screen.queryByRole("button", { name: /published agents/ })).toBeNull();
   });
 
-  it("offers a published agent as provider · model · readable auth, and starts with that hash", async () => {
+  it("offers a registered exact model with its account, and starts with that hash", async () => {
     const agent = publishedAgent();
     const cockpitApi = api({
       listAgentConfigurationRevisions: vi.fn(async () => ({
@@ -254,8 +335,8 @@ describe("named agent picker", () => {
 
     const binding = await screen.findByRole("article", { name: "Binding builder" });
     const picker = within(binding).getByLabelText("Agent for builder");
-    expect(namedAgentLabel(agent)).toBe("anthropic · sonnet · Subscription");
-    expect(picker.textContent).toContain("anthropic · sonnet · Subscription");
+    expect(agentConfigurationLabel(agent)).toBe("anthropic · sonnet · Subscription");
+    expect(picker.textContent).toContain("anthropic · sonnet · max");
     expect(picker.textContent).not.toContain("subscription");
     await fireEvent.change(picker, { target: { value: configurationHash } });
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
@@ -267,82 +348,372 @@ describe("named agent picker", () => {
     expect(body.agent_bindings).toEqual([
       { role: "builder", agent_configuration_revision_hash: configurationHash }
     ]);
-    expect(localStorage.getItem(NAMED_AGENT_CHOICE_STORAGE_KEY)).toContain(configurationHash);
   });
 
-  it("preselects the last choice for that role so the daily path is Start", async () => {
-    localStorage.setItem(
-      NAMED_AGENT_CHOICE_STORAGE_KEY,
-      JSON.stringify({ builder: configurationHash })
-    );
+  it("re-resolves at Start and refuses a project default removed after preview", async () => {
+    const agent = publishedAgent();
+    const resolveProjectModels = vi
+      .fn()
+      .mockResolvedValueOnce(modelResolution(revisionHash, [{
+        role: "builder",
+        hash: configurationHash,
+        source: "from-project",
+        uncastReason: null
+      }]))
+      .mockResolvedValueOnce(modelResolution(revisionHash, [{
+        role: "builder",
+        hash: null,
+        source: "uncast",
+        uncastReason: "no-project-default"
+      }]));
     const cockpitApi = api({
       listAgentConfigurationRevisions: vi.fn(async () => ({
-        items: [publishedAgent()],
+        items: [agent],
         next_after_revision_hash: null
-      }))
+      })),
+      resolveProjectModels
     });
-    await publishWorkflow(cockpitApi);
-
-    const picker = await screen.findByLabelText("Agent for builder");
-    expect((picker as HTMLSelectElement).value).toBe(configurationHash);
-    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
-
-    await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
-    expect(cockpitApi.publishAuthProfile).not.toHaveBeenCalled();
-  });
-
-  it("keeps a remembered unavailable choice visible and requires a healthy manual switch", async () => {
-    const healthyHash = "d".repeat(64);
-    localStorage.setItem(
-      NAMED_AGENT_CHOICE_STORAGE_KEY,
-      JSON.stringify({ builder: configurationHash })
-    );
-    const unavailable = publishedAgent({
-      startable: false,
-      not_startable_reason: "agent-executor-binding-unavailable"
-    });
-    const healthy = publishedAgent({
-      agent_configuration_revision_hash: healthyHash,
-      provider_id: "openai",
-      model: "codex"
-    });
-    const cockpitApi = api({
-      listAgentConfigurationRevisions: vi.fn(async () => ({
-        items: [unavailable, healthy],
-        next_after_revision_hash: null
-      }))
-    });
-
     await publishWorkflow(cockpitApi);
 
     const binding = await screen.findByRole("article", { name: "Binding builder" });
-    const picker = within(binding).getByLabelText("Agent for builder") as HTMLSelectElement;
-    expect(picker.value).toBe(configurationHash);
-    expect(
-      within(binding).getByLabelText("Binding source: Remembered").isConnected
-    ).toBe(true);
-    expect(within(binding).getByText("Unavailable").isConnected).toBe(true);
-    expect(
-      (within(binding).getByRole("option", { name: /sonnet.*Unavailable/ }) as HTMLOptionElement)
-        .disabled
-    ).toBe(true);
-    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
-    await fireEvent.click(within(binding).getByRole("button", { name: "Why builder is unavailable" }));
-    expect(
-      within(binding).getByText(
-        "This deployment cannot start this executor. Choose another agent or repair its startup check."
-      ).isConnected
-    ).toBe(true);
-    expect(cockpitApi.start).not.toHaveBeenCalled();
+    await waitFor(() => expect(within(binding).getByLabelText("Agent for builder")).toHaveProperty(
+      "value",
+      configurationHash
+    ));
+    expect(within(binding).getByText("From project")).toBeTruthy();
 
-    await fireEvent.change(picker, { target: { value: healthyHash } });
+    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    await waitFor(() => expect(resolveProjectModels).toHaveBeenCalledTimes(2));
+    expect(resolveProjectModels.mock.calls.map((call) => call[2])).toEqual([[], []]);
+    expect(cockpitApi.start).not.toHaveBeenCalled();
+    await waitFor(() => expect(within(binding).getByLabelText("Agent for builder")).toHaveProperty(
+      "value",
+      ""
+    ));
+    expect(within(binding).getByLabelText("Binding source: Choose")).toBeTruthy();
+    expect(within(binding).queryByRole("alert")).toBeNull();
+    expect(binding.classList).not.toContain("node-needs_you");
+  });
+
+  it("names the refused override on its role and sends no start request", async () => {
+    const rejectedHash = "d".repeat(64);
+    const resolveProjectModels = vi
+      .fn()
+      .mockResolvedValueOnce(modelResolution(revisionHash, [{
+        role: "builder",
+        hash: configurationHash,
+        source: "from-project",
+        uncastReason: null
+      }]))
+      .mockResolvedValueOnce(modelResolution(revisionHash, [{
+        role: "builder",
+        hash: rejectedHash,
+        source: "chosen-now",
+        uncastReason: null
+      }]))
+      .mockResolvedValueOnce(modelResolution(revisionHash, [{
+        role: "builder",
+        hash: null,
+        source: "uncast",
+        uncastReason: "override-not-registered"
+      }]));
+    const cockpitApi = api({
+      listAgentConfigurationRevisions: vi.fn(async () => ({
+        items: [
+          publishedAgent(),
+          publishedAgent({
+            agent_configuration_revision_hash: rejectedHash,
+            provider_id: "openai",
+            model: "codex"
+          })
+        ],
+        next_after_revision_hash: null
+      })),
+      resolveProjectModels
+    });
+    await publishWorkflow(cockpitApi);
+
+    const builder = await screen.findByRole("article", { name: "Binding builder" });
+    await waitFor(() => expect(within(builder).getByLabelText("Agent for builder")).toHaveProperty(
+      "value",
+      configurationHash
+    ));
+    await fireEvent.change(within(builder).getByLabelText("Agent for builder"), {
+      target: { value: rejectedHash }
+    });
+    await waitFor(() => expect(within(builder).getByText("Chosen now")).toBeTruthy());
+
+    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    const why = await within(builder).findByRole("button", {
+      name: "Why builder needs a choice"
+    });
+    expect(within(builder).queryByRole("alert")).toBeNull();
+    await fireEvent.click(why);
+    expect(within(builder).getByRole("status").textContent).toBe(
+      "Override not registered."
+    );
+    expect(cockpitApi.start).not.toHaveBeenCalled();
+  });
+
+  it("names the family relation on the refused role and sends no start request", async () => {
+    const reviewerHash = "d".repeat(64);
+    const refusal = () => modelResolution(revisionHash, [
+      {
+        role: "builder",
+        hash: configurationHash,
+        source: "from-project" as const,
+        uncastReason: null
+      },
+      {
+        role: "reviewer",
+        hash: null,
+        source: "uncast" as const,
+        uncastReason: "family-difference-unavailable" as const,
+        familyDiffersFrom: "builder"
+      }
+    ]);
+    const cockpitApi = api({
+      publish: vi.fn(async (mutation) => ({
+        status: 201,
+        value: v3Revision(
+          mutation.mutation_id.slice("publish:".length),
+          mutation.body_base64,
+          ["builder", "reviewer"]
+        )
+      }) as never),
+      listAgentConfigurationRevisions: vi.fn(async () => ({
+        items: [
+          publishedAgent(),
+          publishedAgent({
+            agent_configuration_revision_hash: reviewerHash,
+            provider_id: "openai",
+            model: "codex"
+          })
+        ],
+        next_after_revision_hash: null
+      })),
+      resolveProjectModels: vi.fn(async () => refusal())
+    });
+    await publishWorkflow(cockpitApi);
+
+    const builder = await screen.findByRole("article", { name: "Binding builder" });
+    const reviewer = screen.getByRole("article", { name: "Binding reviewer" });
+    await waitFor(() => expect(within(builder).getByText("From project")).toBeTruthy());
+    const why = within(reviewer).getByRole("button", {
+      name: "Why reviewer needs a choice"
+    });
+    expect(within(reviewer).queryByRole("alert")).toBeNull();
+    await fireEvent.click(why);
+    expect(within(reviewer).getByRole("status").textContent).toBe(
+      "Family difference from builder unavailable."
+    );
+
+    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    await waitFor(() => expect(cockpitApi.resolveProjectModels).toHaveBeenCalledTimes(2));
+    expect(await within(reviewer).findByRole("button", {
+      name: "Why reviewer needs a choice"
+    })).toBeTruthy();
+    expect(within(reviewer).queryByRole("alert")).toBeNull();
+    expect(cockpitApi.start).not.toHaveBeenCalled();
+  });
+
+  it("accepts a full resolved V3 response for a start request with no manual overrides", async () => {
+    const agent = publishedAgent();
+    const cockpitApi = api({
+      listAgentConfigurationRevisions: vi.fn(async () => ({
+        items: [agent],
+        next_after_revision_hash: null
+      })),
+      start: vi.fn(async (mutation) => ({
+        status: 201,
+        value: {
+          ...startedV3Run(),
+          workflow_revision_hash: JSON.parse(globalThis.atob(mutation.body_base64)).workflow_revision_hash
+        }
+      }) as never),
+      resolveProjectModels: vi.fn(async (_project, workflowHash) => modelResolution(workflowHash, [{
+        role: "builder",
+        hash: configurationHash,
+        source: "from-project",
+        uncastReason: null
+      }]))
+    });
+    await publishWorkflow(cockpitApi);
+
+    const binding = await screen.findByRole("article", { name: "Binding builder" });
+    await waitFor(() => expect(within(binding).getByLabelText("Agent for builder")).toHaveProperty(
+      "value",
+      configurationHash
+    ));
+    await fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    await waitFor(() => expect(cockpitApi.getRun).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(globalThis.atob(vi.mocked(cockpitApi.start).mock.calls[0]?.[0].body_base64 ?? ""));
+    expect(body.agent_bindings).toEqual([]);
+  });
+
+  it("submits only the manual override and shows the family-rebalanced recommendation", async () => {
+    const reviewerHash = "d".repeat(64);
+    const builder = publishedAgent();
+    const reviewer = publishedAgent({
+      agent_configuration_revision_hash: reviewerHash,
+      provider_id: "openai",
+      model: "codex"
+    });
+    const resolveProjectModels = vi.fn(async (
+      _project: string,
+      workflowHash: string,
+      modelOverrides: Parameters<CockpitApi["resolveProjectModels"]>[2]
+    ) => {
+      const builderOverride = modelOverrides.find((item) => item.role === "builder")
+        ?.agent_configuration_revision_hash;
+      return modelResolution(workflowHash, builderOverride === undefined
+        ? [
+            { role: "builder", hash: configurationHash, source: "from-project", uncastReason: null },
+            { role: "reviewer", hash: reviewerHash, source: "from-project", uncastReason: null }
+          ]
+        : [
+            { role: "builder", hash: builderOverride, source: "chosen-now", uncastReason: null },
+            { role: "reviewer", hash: configurationHash, source: "from-project", uncastReason: null }
+          ]);
+    });
+    const cockpitApi = api({
+      publish: vi.fn(async (mutation) => ({
+        status: 201,
+        value: v3Revision(
+          mutation.mutation_id.slice("publish:".length),
+          mutation.body_base64,
+          ["builder", "reviewer"]
+        )
+      }) as never),
+      listAgentConfigurationRevisions: vi.fn(async () => ({
+        items: [builder, reviewer],
+        next_after_revision_hash: null
+      })),
+      start: vi.fn(async (mutation) => ({
+        status: 201,
+        value: {
+          ...startedV3Run(),
+          workflow_revision_hash: JSON.parse(globalThis.atob(mutation.body_base64)).workflow_revision_hash,
+          agent_bindings: [{
+            ...startedV3Run().agent_bindings[0],
+            agent_configuration_revision_hash: reviewerHash
+          }]
+        }
+      }) as never),
+      resolveProjectModels
+    });
+    await publishWorkflow(cockpitApi);
+
+    const builderBinding = await screen.findByRole("article", { name: "Binding builder" });
+    const reviewerBinding = screen.getByRole("article", { name: "Binding reviewer" });
+    await waitFor(() => expect(within(reviewerBinding).getByLabelText("Agent for reviewer")).toHaveProperty(
+      "value",
+      reviewerHash
+    ));
+
+    await fireEvent.change(within(builderBinding).getByLabelText("Agent for builder"), {
+      target: { value: reviewerHash }
+    });
+
+    await waitFor(() => expect(within(reviewerBinding).getByLabelText("Agent for reviewer")).toHaveProperty(
+      "value",
+      configurationHash
+    ));
+    expect(within(builderBinding).getByText("Chosen now")).toBeTruthy();
+    expect(within(reviewerBinding).getByText("From project")).toBeTruthy();
+    expect(resolveProjectModels.mock.calls.at(-1)?.[2]).toEqual([{
+      role: "builder",
+      agent_configuration_revision_hash: reviewerHash
+    }]);
+
     await fireEvent.click(screen.getByRole("button", { name: "Start" }));
 
     await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
+    expect(resolveProjectModels.mock.calls.at(-1)?.[2]).toEqual([{
+      role: "builder",
+      agent_configuration_revision_hash: reviewerHash
+    }]);
     const body = JSON.parse(globalThis.atob(vi.mocked(cockpitApi.start).mock.calls[0]?.[0].body_base64 ?? ""));
-    expect(body.agent_bindings).toEqual([
-      { role: "builder", agent_configuration_revision_hash: healthyHash }
-    ]);
+    expect(body.agent_bindings).toEqual([{
+      role: "builder",
+      agent_configuration_revision_hash: reviewerHash
+    }]);
+    await waitFor(() => expect(cockpitApi.getRun).toHaveBeenCalledTimes(1));
+  });
+
+  it("shows next-higher provenance while unregistered configurations stay behind Add model", async () => {
+    const agent = publishedAgent();
+    const unregisteredHash = "d".repeat(64);
+    const resolveProjectModels = vi.fn(async (
+      _project: string,
+      workflowHash: string,
+      modelOverrides: Parameters<CockpitApi["resolveProjectModels"]>[2]
+    ) => modelResolution(workflowHash, [modelOverrides.length === 0
+      ? {
+          role: "builder",
+          hash: configurationHash,
+          source: "from-project",
+          uncastReason: null,
+          defaultDifficulty: 3
+        }
+      : {
+          role: "builder",
+          hash: null,
+          source: "uncast",
+          uncastReason: "override-not-registered"
+        }
+    ]));
+    const cockpitApi = api({
+      listAgentConfigurationRevisions: vi.fn(async () => ({
+        items: [agent, publishedAgent({ agent_configuration_revision_hash: unregisteredHash, model: "other" })],
+        next_after_revision_hash: null
+      })),
+      resolveProjectModels
+    });
+    await publishWorkflow(cockpitApi);
+
+    const binding = await screen.findByRole("article", { name: "Binding builder" });
+    await waitFor(() => expect(within(binding).getByText("Next higher")).toBeTruthy());
+
+    const picker = within(binding).getByLabelText("Agent for builder");
+    expect(picker.textContent).toContain("anthropic · sonnet · max");
+    expect(picker.textContent).not.toContain("anthropic · other · max");
+    expect(within(binding).getByText("Expert fields")).toBeTruthy();
+    expect(resolveProjectModels).toHaveBeenCalledTimes(1);
+  });
+
+  it("never offers a startable registry entry the provider marked unknown", async () => {
+    const agent = publishedAgent();
+    const cockpitApi = api({
+      listAgentConfigurationRevisions: vi.fn(async () => ({
+        items: [agent],
+        next_after_revision_hash: null
+      })),
+      getModelRegistry: vi.fn(async () => ({
+        ...registry("anthropic"),
+        entries: [{
+          model_id: "sonnet",
+          agent_configuration_revision_hash: configurationHash,
+          source: "operator" as const,
+          provider_check: "unknown-at-provider" as const
+        }]
+      })),
+      resolveProjectModels: vi.fn(async (_project, workflowHash) => modelResolution(workflowHash, [{
+        role: "builder",
+        hash: null,
+        source: "uncast",
+        uncastReason: "no-project-default"
+      }]))
+    });
+    await publishWorkflow(cockpitApi);
+
+    const binding = await screen.findByRole("article", { name: "Binding builder" });
+    expect(within(binding).queryByLabelText("Agent for builder")).toBeNull();
+    expect(within(binding).getByText("Expert fields")).toBeTruthy();
   });
 
   it("decodes the published listing as the frozen page", () => {

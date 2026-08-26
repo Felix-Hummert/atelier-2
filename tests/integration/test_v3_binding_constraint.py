@@ -46,7 +46,11 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
 )
-from tests.scenarios.agents import agent_scratch_root, failing_agent_executor_factory
+from tests.scenarios.agents import (
+    agent_scratch_root,
+    failing_agent_executor_factory,
+    publish_checked_model_registry,
+)
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
@@ -142,6 +146,7 @@ def publish(
             catalog.publish_agent_configuration_revision(second),
             AgentConfigurationRevisionCreated,
         )
+    publish_checked_model_registry(runtime.engine, ProviderId("exact"), (first, second))
     workflow = WorkflowRevision(document)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     return workflow, AgentBindingSet(

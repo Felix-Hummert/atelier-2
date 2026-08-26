@@ -13,6 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
 
+from atelier2.application.read_projects import (
+    ProjectRead,
+    ServedProjectUnknown,
+    get_project,
+)
 from atelier2.application.refusals import (
     DurableStateCorrupt,
     ReadUnavailable,
@@ -68,6 +73,9 @@ type GetProjectSourceConnectionResult = (
     | PlatformConnectionUnknown
     | ReadUnavailable
     | DurableStateCorrupt
+)
+type GetServedProjectSourceConnectionResult = (
+    GetProjectSourceConnectionResult | ServedProjectUnknown
 )
 
 
@@ -130,6 +138,25 @@ def get_project_source_connection(
             return ReadUnavailable(detail)
         case PortDurableStateCorrupt():
             return DurableStateCorrupt()
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def get_served_project_source_connection(
+    project_id: ProjectId,
+    served_project_id: ProjectId | None,
+    host_configuration: HostConfigurationChannel,
+    connections: ProjectSourceConnectionChannel,
+) -> GetServedProjectSourceConnectionResult:
+    match get_project(project_id, served_project_id, host_configuration):
+        case ProjectRead():
+            return get_project_source_connection(project_id.value, connections)
+        case ServedProjectUnknown() as unknown:
+            return unknown
+        case ReadUnavailable() as unavailable:
+            return unavailable
+        case DurableStateCorrupt() as corrupt:
+            return corrupt
         case _ as unreachable:
             assert_never(unreachable)
 

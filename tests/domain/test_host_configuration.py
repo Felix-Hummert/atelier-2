@@ -10,18 +10,22 @@ from atelier2.api.references import (
     decode_public_project_reference,
     encode_public_project_reference,
 )
-from atelier2.contracts.agents import AgentConfigurationRevisionHash, AgentRole
-from atelier2.contracts.catalog_v3 import CatalogLineageId
+from atelier2.contracts.agents import AgentConfigurationRevisionHash, ProviderId
 from atelier2.contracts.host_configuration import (
-    MAXIMUM_OCCUPANCY_BINDINGS,
+    MAXIMUM_MODEL_REGISTRY_ENTRIES,
     MAXIMUM_PROJECT_ID_CHARACTERS,
     PROJECT_UNKNOWN,
-    OccupancyBinding,
-    OccupancyRevision,
+    ModelRegistryEntry,
+    ModelRegistryEntrySource,
+    ModelRegistryRevision,
     ProjectId,
+    ProjectModelDefault,
+    ProjectModelDefaultsRevision,
     ProjectRootRevision,
     ProjectUnknown,
+    ProviderModelCheck,
 )
+from atelier2.contracts.workflows_v3 import RoleDifficulty
 
 
 def test_a_project_id_is_the_exact_characters_it_was_given() -> None:
@@ -86,92 +90,141 @@ def test_a_later_revision_or_another_project_is_a_different_hash(
     assert first.revision_hash != other.revision_hash
 
 
-def _occupancy(
-    *,
-    project: str = "studio",
-    lineage: str = "ab" * 32,
+def _registry_entry(
+    model_id: str,
+    configuration_hash: str,
+    source: ModelRegistryEntrySource = ModelRegistryEntrySource.OPERATOR,
+    provider_check: ProviderModelCheck = ProviderModelCheck.CHECKED,
+) -> ModelRegistryEntry:
+    return ModelRegistryEntry(
+        model_id,
+        AgentConfigurationRevisionHash(configuration_hash),
+        source,
+        provider_check,
+    )
+
+
+def _registry(
+    *entries: ModelRegistryEntry,
+    provider: str = "anthropic",
     revision_number: int = 1,
-    bindings: tuple[OccupancyBinding, ...] = (),
-) -> OccupancyRevision:
-    return OccupancyRevision(
-        ProjectId(project),
-        CatalogLineageId(lineage),
+) -> ModelRegistryRevision:
+    return ModelRegistryRevision(
+        ProviderId(provider),
         revision_number,
-        bindings,
+        entries,
     )
 
 
-def test_the_same_occupancy_revision_is_the_same_hash() -> None:
-    binding = OccupancyBinding(
-        AgentRole("chef"), AgentConfigurationRevisionHash("cd" * 32)
+def test_model_registry_entries_are_exact_and_canonical_by_model_id() -> None:
+    opus = _registry_entry("claude-opus-5", "cd" * 32)
+    sonnet = _registry_entry(
+        "claude-sonnet-4-6", "ef" * 32, ModelRegistryEntrySource.DISCOVERED
     )
-    first = _occupancy(bindings=(binding,))
-    second = _occupancy(bindings=(binding,))
+
+    first = _registry(opus, sonnet)
+    second = _registry(sonnet, opus)
 
     assert first.revision_hash == second.revision_hash
-    assert first.bindings == (binding,)
+    assert first.entries == (opus, sonnet)
 
 
-def test_occupancy_bindings_are_canonical_by_role() -> None:
-    chef = OccupancyBinding(
-        AgentRole("chef"), AgentConfigurationRevisionHash("cd" * 32)
+def test_provider_check_is_part_of_the_immutable_registry_fact() -> None:
+    unchecked = _registry(
+        _registry_entry(
+            "claude-opus-5",
+            "cd" * 32,
+            provider_check=ProviderModelCheck.NOT_CHECKED,
+        )
     )
-    baker = OccupancyBinding(
-        AgentRole("baker"), AgentConfigurationRevisionHash("ef" * 32)
-    )
-    first = _occupancy(bindings=(chef, baker))
-    second = _occupancy(bindings=(baker, chef))
-
-    assert first.revision_hash == second.revision_hash
-    assert first.bindings == (baker, chef)
-
-
-def test_a_later_occupancy_revision_or_another_key_is_a_different_hash() -> None:
-    binding = OccupancyBinding(
-        AgentRole("chef"), AgentConfigurationRevisionHash("cd" * 32)
-    )
-    first = _occupancy(bindings=(binding,))
-    later = _occupancy(revision_number=2, bindings=(binding,))
-    other_project = _occupancy(project="other", bindings=(binding,))
-    other_lineage = _occupancy(lineage="11" * 32, bindings=(binding,))
-    other_binding = _occupancy(
-        bindings=(
-            OccupancyBinding(
-                AgentRole("chef"), AgentConfigurationRevisionHash("ee" * 32)
-            ),
+    checked = _registry(
+        _registry_entry(
+            "claude-opus-5",
+            "cd" * 32,
+            provider_check=ProviderModelCheck.CHECKED,
         )
     )
 
-    assert first.revision_hash != later.revision_hash
-    assert first.revision_hash != other_project.revision_hash
-    assert first.revision_hash != other_lineage.revision_hash
-    assert first.revision_hash != other_binding.revision_hash
+    assert unchecked.entries[0].provider_check is ProviderModelCheck.NOT_CHECKED
+    assert checked.entries[0].provider_check is ProviderModelCheck.CHECKED
+    assert unchecked.revision_hash != checked.revision_hash
 
 
-def test_duplicate_occupancy_roles_are_refused() -> None:
-    first = OccupancyBinding(
-        AgentRole("chef"), AgentConfigurationRevisionHash("cd" * 32)
+@pytest.mark.parametrize("model_id", ["", "newest opus", "\tmodel"])
+def test_a_registry_refuses_a_non_exact_model_id(model_id: str) -> None:
+    with pytest.raises(ValueError, match="model id"):
+        _registry_entry(model_id, "cd" * 32)
+
+
+def test_duplicate_model_ids_in_one_provider_revision_are_refused() -> None:
+    with pytest.raises(ValueError, match="unique"):
+        _registry(
+            _registry_entry("claude-opus-5", "cd" * 32),
+            _registry_entry("claude-opus-5", "ef" * 32),
+        )
+
+
+def test_registry_entries_are_bounded_before_they_are_hashed() -> None:
+    allowed = tuple(
+        _registry_entry(f"model-{index}", f"{index:064x}")
+        for index in range(MAXIMUM_MODEL_REGISTRY_ENTRIES)
     )
-    second = OccupancyBinding(
-        AgentRole("chef"), AgentConfigurationRevisionHash("ef" * 32)
+
+    assert len(_registry(*allowed).entries) == MAXIMUM_MODEL_REGISTRY_ENTRIES
+    with pytest.raises(ValueError, match="at most"):
+        _registry(*allowed, _registry_entry("one-too-many", "f" * 64))
+
+
+def _defaults(
+    *defaults: ProjectModelDefault,
+    project: str = "studio",
+    revision_number: int = 1,
+) -> ProjectModelDefaultsRevision:
+    return ProjectModelDefaultsRevision(ProjectId(project), revision_number, defaults)
+
+
+def _default(
+    difficulty: RoleDifficulty,
+    registry: ModelRegistryRevision,
+    entry: ModelRegistryEntry,
+) -> ProjectModelDefault:
+    return ProjectModelDefault(
+        difficulty,
+        registry.revision_hash,
+        registry.provider_id,
+        entry.model_id,
+        entry.agent_configuration_revision_hash,
     )
+
+
+def test_project_defaults_are_three_operator_chosen_registry_references() -> None:
+    easy = _registry_entry("claude-haiku-4-5", "11" * 32)
+    standard = _registry_entry("claude-sonnet-4-6", "22" * 32)
+    hard = _registry_entry("claude-opus-5", "33" * 32)
+    registry = _registry(easy, standard, hard)
+    defaults = (
+        _default(3, registry, hard),
+        _default(1, registry, easy),
+        _default(2, registry, standard),
+    )
+
+    first = _defaults(*defaults)
+    second = _defaults(*reversed(defaults))
+
+    assert first.revision_hash == second.revision_hash
+    assert tuple(item.difficulty for item in first.defaults) == (
+        1,
+        2,
+        3,
+    )
+
+
+def test_a_project_default_difficulty_is_unique() -> None:
+    entry = _registry_entry("claude-opus-5", "33" * 32)
+    registry = _registry(entry)
 
     with pytest.raises(ValueError, match="unique"):
-        _occupancy(bindings=(first, second))
-
-
-def test_occupancy_bindings_are_bounded_before_they_are_hashed() -> None:
-    allowed = tuple(
-        OccupancyBinding(
-            AgentRole(f"role{index}"),
-            AgentConfigurationRevisionHash("cd" * 32),
+        _defaults(
+            _default(2, registry, entry),
+            _default(2, registry, entry),
         )
-        for index in range(MAXIMUM_OCCUPANCY_BINDINGS)
-    )
-    extra = OccupancyBinding(
-        AgentRole("role-extra"), AgentConfigurationRevisionHash("cd" * 32)
-    )
-
-    assert len(_occupancy(bindings=allowed).bindings) == MAXIMUM_OCCUPANCY_BINDINGS
-    with pytest.raises(ValueError, match="at most"):
-        _occupancy(bindings=(*allowed, extra))

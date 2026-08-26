@@ -14,7 +14,11 @@ from atelier2.api.references import (
     MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
 )
-from atelier2.api.wire.resources import InvalidFieldResource, ProblemResource
+from atelier2.api.wire.resources import (
+    InvalidFieldResource,
+    ProblemResource,
+    UncastRoleResource,
+)
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationRefusal
 from atelier2.contracts.agent_definitions import AgentDefinitionRefusal
 from atelier2.contracts.artifacts import ArtifactRefusal
@@ -230,11 +234,13 @@ class ApiProblem(Exception):
         code: str,
         detail: str | None = None,
         invalid_fields: tuple[InvalidFieldResource, ...] | None = None,
+        uncast_roles: tuple[UncastRoleResource, ...] | None = None,
     ) -> None:
         super().__init__(code)
         self.code = code
         self.detail = detail
         self.invalid_fields = invalid_fields
+        self.uncast_roles = uncast_roles
 
 
 PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
@@ -272,6 +278,11 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         422,
         "Invalid agent bindings",
         "Bind every workflow agent role exactly once and no other role.",
+    ),
+    "uncast-agent-roles": ProblemDefinition(
+        422,
+        "Agent roles need models",
+        "Choose a registered model for every workflow role without one.",
     ),
     "binding-constraint-refused": ProblemDefinition(
         422,
@@ -459,20 +470,35 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Host configuration channel unreadable",
         "Retry after the host configuration channel becomes available.",
     ),
-    "occupancy-missing": ProblemDefinition(
+    "model-registry-missing": ProblemDefinition(
         404,
-        "Occupancy not found",
-        "Publish an occupancy revision for this project and lineage before reading it.",
+        "Model registry not found",
+        "Publish a model-registry revision for this provider.",
     ),
-    "occupancy-revision-conflict": ProblemDefinition(
+    "model-registry-revision-conflict": ProblemDefinition(
         409,
-        "Occupancy revision conflict",
-        "Use a new revision_number or retry the exact original occupancy revision.",
+        "Model registry revision conflict",
+        "Use a new revision_number or retry the exact original registry revision.",
     ),
-    "occupancy-revision-collision": ProblemDefinition(
+    "model-registry-revision-collision": ProblemDefinition(
         409,
-        "Occupancy revision collision",
-        "Stop mutation and inspect durable occupancy revision integrity.",
+        "Model registry revision collision",
+        "Stop mutation and inspect durable model-registry integrity.",
+    ),
+    "project-model-defaults-missing": ProblemDefinition(
+        404,
+        "Project model defaults not found",
+        "Choose the project's model defaults for difficulty 1, 2, and 3.",
+    ),
+    "project-model-defaults-revision-conflict": ProblemDefinition(
+        409,
+        "Project model defaults revision conflict",
+        "Use a new revision_number or retry the exact original defaults revision.",
+    ),
+    "project-model-defaults-revision-collision": ProblemDefinition(
+        409,
+        "Project model defaults revision collision",
+        "Stop mutation and inspect durable project model-default integrity.",
     ),
     "catalog-lineage-missing": ProblemDefinition(
         404,
@@ -637,6 +663,7 @@ def problem_resource(
     code: str,
     detail: str | None = None,
     invalid_fields: tuple[InvalidFieldResource, ...] | None = None,
+    uncast_roles: tuple[UncastRoleResource, ...] | None = None,
 ) -> ProblemResource:
     definition = PROBLEM_DEFINITIONS[code]
     return ProblemResource(
@@ -645,6 +672,7 @@ def problem_resource(
         status=definition.status,
         detail=definition.detail if detail is None else detail,
         invalid_fields=invalid_fields,
+        uncast_roles=uncast_roles,
     )
 
 
@@ -652,8 +680,9 @@ def problem_response(
     code: str,
     detail: str | None = None,
     invalid_fields: tuple[InvalidFieldResource, ...] | None = None,
+    uncast_roles: tuple[UncastRoleResource, ...] | None = None,
 ) -> JSONResponse:
-    resource = problem_resource(code, detail, invalid_fields)
+    resource = problem_resource(code, detail, invalid_fields, uncast_roles)
     return JSONResponse(
         resource.model_dump(mode="json", exclude_none=True),
         status_code=resource.status,
@@ -698,7 +727,9 @@ def install_problem_handlers(
 ) -> None:
     @app.exception_handler(ApiProblem)
     async def typed_problem(_request: Request, error: ApiProblem) -> JSONResponse:
-        return problem_response(error.code, error.detail, error.invalid_fields)
+        return problem_response(
+            error.code, error.detail, error.invalid_fields, error.uncast_roles
+        )
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(

@@ -159,33 +159,41 @@ saved-workflow picker reuses the same drawing without run state. A chosen V3 rev
 orders shows one material field per order — the name and the schema the
 author pinned — and sends the typed text as `orders` on the start; a revision
 that declares none shows no field. Role
-bindings on `/new` offer published agent-configuration
-revisions by provider, model, and readable auth mode; the raw publication form
-stays as a collapsed expert fallback. Last choice per role is remembered in
-this browser only. For an admitted workflow with roles, the picker reuses the
-catalog read's lineage id and reads the configured project's current occupancy.
-Each untouched role takes a known project binding before a valid remembered
-choice before empty; missing project roles fall through independently, while an
-unknown project hash stays visibly unavailable rather than becoming the browser
-choice. Late reads do not replace manual draft values, and a failed read keeps
-same-lineage confirmed truth with one retry. Unlisted, retired, unnamable, and
-roleless workflows do not read occupancy. The agent list is empty until a
-configuration is published, and says so. That occupancy is no longer this
-picker's alone: a start that names no binding for a declared role takes it from
-the served project's occupancy at the start path itself, so the conductor's
-`start_run` and the queue's launch sweep run an occupied workflow with no hand
-on this page. An explicit binding still wins over the recommendation, only
-roles the parsed document declares are filled, and a role the project has not
-cast is still refused by name. The Workbench is the one workshop surface for
+bindings on `/new` offer eligible registered configurations by provider, exact
+model id, and readable Account; the raw publication form stays as a collapsed
+expert fallback. There is no remembered role choice. For an admitted V3
+workflow, the picker reads the same model-resolution door as every other start
+sheet. Each role is resolved by the fixed order: a run-local override, an
+exact workflow pin, the configured model default for its declared difficulty,
+then a configured higher difficulty.
+Missing or ambiguous pins and unknown overrides are terminal; they never fall
+through to a default. A `family_differs_from` declaration is checked against
+the final provider assignments, including overrides. Any roles left without an
+assignment are returned together in one typed refusal naming the role, the
+reason, and the family relation where that caused the refusal. The same
+decision runs inside the canonical start transaction against one
+host-configuration snapshot, so a run never combines registries and defaults
+from different instants. The agent list is empty until a configuration is
+published, and says so. The Workbench is the one workshop surface for
 work that needs a person or is moving. Its stage is the notification surface;
 the rail's ochre count is the notification count. Catalog, History, and
 Settings complete the rail described by the blessed Mockup v8 and ADR 0019.
-Project is the one editing surface for that durable
-recommendation: after it confirms one complete workflow, catalog, agent,
-detail, and occupancy snapshot, an operator may choose or explicitly remove an
-authored role. Foreign and unavailable bindings stay intact unless the operator
-changes an authored role; an uncertain save retries the same bytes and a
-conflict requires Reload. The new-run trail names the project the same way the other
+Settings shows the project's source connection as read-only provenance. It is
+the one editing surface only for each provider's exact model registry and the
+three difficulty defaults, in that order. Registry rows name the exact model
+id, Account, provenance, and current provider check as separate facts; adding
+or removing a row writes immediately, while a not-yet-checked operator row has
+the available Check action that asks the server to append its dry-run result.
+Only checked rows are offered to defaults. Defaults are shown
+as Difficulty 3, 2, and 1; selecting a model or clearing a row is an immediate
+write that replaces only that difficulty. The other two saved rows are carried
+byte-for-byte. A new choice is admitted when its provider, model, and
+configuration are checked in the latest provider registry; a carried row stays
+admissible if that provider later stops reporting it. The retained model,
+Account, and unavailable state wrap as one visible surface
+until that row is changed or cleared. Neither operation renders a saving or saved caption, and an uncertain
+write retries its identical bytes. Settings does not read or count runs; the
+Workbench alone owns that live-work signal. The new-run trail names the project the same way the other
 levels do. It can answer the exact integer requested by a Wait node and resolve an
 unknown Action outcome as either an exact found effect or an accountable,
 confirmed absence. For a V2 run it renders the node states the API names rather

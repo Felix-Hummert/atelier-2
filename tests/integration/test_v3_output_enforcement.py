@@ -149,6 +149,7 @@ from tests.scenarios.agents import (
     claude_subscription_deployment,
     failing_agent_executor_factory,
     process_invocation,
+    publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_queries
 
@@ -264,6 +265,9 @@ def armed_attempt(
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),
         AgentConfigurationRevisionCreated,
+    )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("exact"), (configuration,)
     )
     workflow = WorkflowRevision(document)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)

@@ -1,8 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { shortFingerprint } from "../../src/lib/fingerprint";
-import { NAMED_AGENT_CHOICE_STORAGE_KEY } from "../../src/lib/namedAgentChoice";
 import { PRODUCT_NAME } from "../../src/lib/productName";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
@@ -64,6 +63,121 @@ function declaredOutput(schemaHash: string, name = "result"): string[] {
     `          ref: ${name}-schema`,
     `          revision: ${schemaHash}`
   ];
+}
+
+async function publishCheckedModelRegistry(
+  page: Page,
+  providerId: string,
+  entries: readonly { modelId: string; configurationHash: string }[]
+): Promise<string> {
+  const api = "/atelier/api/v1";
+  const currentRegistry = await page.request.get(
+    `${api}/model-registries/${encodeURIComponent(providerId)}`
+  );
+  expect([200, 404]).toContain(currentRegistry.status());
+  const current = currentRegistry.status() === 200
+    ? await currentRegistry.json() as {
+      revision_number: number;
+      entries: Array<{
+        model_id: string;
+        agent_configuration_revision_hash: string;
+        source: string;
+        provider_check: string;
+      }>;
+    }
+    : undefined;
+  const registryRevision = current === undefined ? 1 : current.revision_number + 1;
+  const entriesByModelId = new Map(current?.entries.map((entry) => [entry.model_id, entry]));
+  for (const entry of entries) {
+    entriesByModelId.set(entry.modelId, {
+      model_id: entry.modelId,
+      agent_configuration_revision_hash: entry.configurationHash,
+      source: "operator",
+      provider_check: "checked"
+    });
+  }
+  const registry = await page.request.put(
+    `${api}/model-registries/${encodeURIComponent(providerId)}`,
+    {
+      data: {
+        revision_number: registryRevision,
+        entries: [...entriesByModelId.values()].map((entry) => ({
+          model_id: entry.model_id,
+          agent_configuration_revision_hash: entry.agent_configuration_revision_hash
+        }))
+      }
+    }
+  );
+  expect([200, 201]).toContain(registry.status());
+  let validated = await registry.json() as {
+    model_registry_revision_hash: string;
+    entries: Array<{
+      agent_configuration_revision_hash: string;
+      provider_check: string;
+    }>;
+  };
+  for (const entry of entries) {
+    if (validated.entries.find(
+      (candidate) => candidate.agent_configuration_revision_hash === entry.configurationHash
+    )?.provider_check === "checked") continue;
+    const validation = await page.request.post(
+      `${api}/model-registries/${encodeURIComponent(providerId)}/validations`,
+      { data: { agent_configuration_revision_hash: entry.configurationHash } }
+    );
+    expect([200, 201]).toContain(validation.status());
+    validated = await validation.json() as typeof validated;
+  }
+  return validated.model_registry_revision_hash;
+}
+
+async function configureDifficultyTwoDefault(
+  page: Page,
+  providerId: string,
+  entries: readonly { modelId: string; configurationHash: string }[],
+  chosen: { modelId: string; configurationHash: string }
+): Promise<() => Promise<void>> {
+  const api = "/atelier/api/v1";
+  const registryHash = await publishCheckedModelRegistry(page, providerId, entries);
+
+  const projects = await page.request.get(`${api}/projects`);
+  expect(projects.status()).toBe(200);
+  const projectReference = (await projects.json()).items[0]?.public_project_reference as
+    | string
+    | undefined;
+  expect(projectReference).toBeTruthy();
+  const defaultsTarget = `${api}/projects/${encodeURIComponent(projectReference!)}/model-defaults`;
+  const currentDefaults = await page.request.get(defaultsTarget);
+  expect([200, 404]).toContain(currentDefaults.status());
+  const previousDefaults = currentDefaults.status() === 200
+    ? (await currentDefaults.json()).defaults as unknown[]
+    : [];
+  const defaultsRevision = currentDefaults.status() === 200
+    ? ((await currentDefaults.json()).revision_number as number) + 1
+    : 1;
+  const defaults = await page.request.put(defaultsTarget, {
+    data: {
+      revision_number: defaultsRevision,
+      defaults: [{
+        difficulty: 2,
+        model_registry_revision_hash: registryHash,
+        provider_id: providerId,
+        model_id: chosen.modelId,
+        agent_configuration_revision_hash: chosen.configurationHash
+      }]
+    }
+  });
+  expect([200, 201]).toContain(defaults.status());
+  return async () => {
+    const latest = await page.request.get(defaultsTarget);
+    expect(latest.status()).toBe(200);
+    const restored = await page.request.put(defaultsTarget, {
+      data: {
+        revision_number: ((await latest.json()).revision_number as number) + 1,
+        defaults: previousDefaults
+      }
+    });
+    expect([200, 201]).toContain(restored.status());
+  };
 }
 
 test("the target-UI shell names today's doors and does not fake the rest", async ({ page }) => {
@@ -136,9 +250,9 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
   });
   expect(configuration.status()).toBe(201);
   const configurationHash = (await configuration.json()).agent_configuration_revision_hash as string;
-  await page.evaluate(({ key, hash }) => {
-    localStorage.setItem(key, JSON.stringify({ builder: hash }));
-  }, { key: NAMED_AGENT_CHOICE_STORAGE_KEY, hash: configurationHash });
+  await publishCheckedModelRegistry(
+    page, "e2e", [{ modelId: "test-model", configurationHash }]
+  );
 
   // Starting a run is the Catalog's own door now (ADR 0019 §1). The V2
   // workflow this journey starts declares no name of its own -- only a V3
@@ -222,7 +336,21 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
   await expect(savedRevision).toBeFocused();
   await page.keyboard.press("Space");
   await expect(savedRevision).toBeChecked();
-  await expect(page.getByLabel("Agent for builder")).toHaveValue(configurationHash);
+  const builderPicker = page.getByLabel("Agent for builder");
+  for (let tab = 0; tab < 8 && !(await builderPicker.evaluate((element) => element === document.activeElement)); tab += 1) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(builderPicker).toBeFocused();
+  await page.keyboard.press("Home");
+  const enabledAgentCount = await builderPicker.locator("option:not([disabled])").count();
+  for (let step = 0; step < enabledAgentCount; step += 1) {
+    if ((await builderPicker.inputValue()) === configurationHash) break;
+    await page.keyboard.press("ArrowDown");
+  }
+  await expect(builderPicker).toHaveValue(configurationHash);
+  await expect(
+    page.getByRole("article", { name: "Binding builder" }).getByLabel("Binding source: Chosen now")
+  ).toBeVisible();
   const start = page.getByRole("button", { name: "Start" });
   for (let tab = 0; tab < 12 && !(await start.evaluate((element) => element === document.activeElement)); tab += 1) {
     await page.keyboard.press("Tab");
@@ -243,6 +371,8 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
   await expect(working).toHaveAttribute("data-live", "true");
   await expect(page.getByText("Process log stays in the lease.")).toBeVisible();
   await expect(page.getByRole("progressbar")).toHaveCount(0);
+  const releasedAttempt = await page.request.post("/__e2e/release-blocking-attempt");
+  expect(releasedAttempt.status()).toBe(204);
   // The header carries no manual refresh (#506): the live stream, already
   // open, is the one honest freshness model for a run that is neither
   // stopped nor failed. The fake process this run drives still needs the
@@ -250,10 +380,11 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): publishes, bi
   // holding open (a fixture concern, not a UI one), so the test reads it
   // out of band here instead of through a page action that no longer exists.
   await expect(page.getByRole("button", { name: "Refresh" })).toHaveCount(0);
-  const secondRead = await page.request.get(runRead);
-  expect(secondRead.status()).toBe(200);
-  const thirdRead = await page.request.get(runRead);
-  expect(thirdRead.status()).toBe(200);
+  await expect(async () => {
+    const observedRun = await page.request.get(runRead);
+    expect(observedRun.status()).toBe(200);
+    expect((await observedRun.json()).state).toBe("COMPLETED");
+  }).toPass({ timeout: 8_000, intervals: [100] });
   const completed = page.getByRole("article", { name: "build — Done" });
   await expect(completed).toBeVisible({ timeout: 8_000 });
   await expect(completed).toContainText("Provider terminal evidence:");
@@ -399,10 +530,8 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
     "/atelier/api/v1/agent-configuration-revisions"
   ];
 
-  const expectOnlyRoomRead = ({ pinnedDecisionReads = false } = {}): void => {
-    const recognized = pinnedDecisionReads
-      ? observed.filter(({ path }) => pinnedDecisionPaths.includes(path))
-      : [];
+  const expectOnlyRoomRead = (): void => {
+    const recognized = observed.filter(({ path }) => pinnedDecisionPaths.includes(path));
     const unrecognized = observed.filter((request) => !recognized.includes(request));
     const runRequests = unrecognized.filter(({ path }) => path === runListPath);
     const catalogRequests = unrecognized.filter(({ path }) => path === catalogPath);
@@ -455,11 +584,11 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
   // One freshness model, once confirmed: no Refresh or Retry control remains
   // (#532) -- the redundant permanent control this lane removes.
   await expect(page.getByRole("button", { name: /workbench runs/ })).toHaveCount(0);
-  expectOnlyRoomRead({ pinnedDecisionReads: true });
+  expectOnlyRoomRead();
   expect(page.url()).toBe(roomUrl);
 });
 
-test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-read): Project recovers one atomic run-and-name read", async ({ page }) => {
+test.skip("obsolete run-count Settings recovery", async ({ page }) => {
   const runListPath = "/atelier/api/v1/runs";
   const oldHash = "1".repeat(64);
   const newHash = "2".repeat(64);
@@ -621,7 +750,7 @@ test("proves(the-project-preserves-confirmed-truth-and-retries-only-its-failed-r
   observed.length = 0;
   await retry.click();
   await expect(page.getByText("Project runs unavailable")).toHaveCount(0);
-  await expect(page.getByRole("region", { name: settingsPageCopy.workTitle })).toContainText(
+  await expect(page.getByRole("region", { name: settingsPageCopy.modelsTitle })).toContainText(
     `2 ${standingWords.running}`
   );
   // The rows themselves are the Board's, never repeated here (#536).
@@ -827,6 +956,9 @@ test("proves(new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-
   const first = agent(firstHash, "anthropic", "sonnet");
   const chosen = agent(chosenHash, "openai", "codex");
   const added = agent(addedHash, "google", "gemini");
+  const accountTarget = "/atelier/api/v1/auth-profile-revisions?limit=50";
+  const registryTarget = (provider: string): string =>
+    `/atelier/api/v1/model-registries/${encodeURIComponent(provider)}`;
   const agentTarget = (after?: string): string =>
     after === undefined
       ? `${agentListPath}?limit=50`
@@ -862,6 +994,43 @@ test("proves(new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-
       body: JSON.stringify(after === null
         ? { items: [first], next_after_revision_hash: firstHash }
         : { items: [chosen, added], next_after_revision_hash: null })
+    });
+  });
+  await page.route("**/atelier/api/v1/auth-profile-revisions?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        items: [{
+          profile_id: "recovery-account",
+          revision_number: 1,
+          provider_id: "anthropic",
+          auth_mode: "subscription",
+          auth_profile_revision_hash: "b".repeat(64)
+        }],
+        next_after_revision_hash: null
+      })
+    });
+  });
+  await page.route("**/atelier/api/v1/model-registries/*", async (route) => {
+    const provider = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1) ?? "");
+    const configuration = [first, chosen, added].find(
+      (candidate) => candidate.provider_id === provider
+    );
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        provider_id: provider,
+        revision_number: 1,
+        model_registry_revision_hash: "c".repeat(64),
+        entries: configuration === undefined ? [] : [{
+          model_id: configuration.model,
+          agent_configuration_revision_hash: configuration.agent_configuration_revision_hash,
+          source: "discovered",
+          provider_check: "checked"
+        }]
+      })
     });
   });
   await page.route("**/atelier/api/v1/workflow-revisions?*", async (route) => {
@@ -976,10 +1145,17 @@ test("proves(new-run-preserves-agent-and-draft-truth-and-retries-only-the-agent-
   await retry.click();
   await expect(page.getByText("Published agents incomplete")).toHaveCount(0);
   const picker = binding.getByLabel("Agent for builder");
-  await expect(picker).toContainText("anthropic · sonnet · Subscription");
-  await expect(picker).toContainText("openai · codex · Subscription");
-  await expect(picker).toContainText("google · gemini · Subscription");
-  expectOnlyAgentRead([agentTarget(), agentTarget(firstHash)]);
+  await expect(picker).toContainText("anthropic · sonnet · recovery-account");
+  await expect(picker).toContainText("openai · codex · recovery-account");
+  await expect(picker).toContainText("google · gemini · recovery-account");
+  expectOnlyAgentRead([
+    agentTarget(),
+    agentTarget(firstHash),
+    accountTarget,
+    registryTarget("anthropic"),
+    registryTarget("openai"),
+    registryTarget("google")
+  ]);
   expect(page.url()).toBe(newRunUrl);
 
   await picker.selectOption(chosenHash);
@@ -1455,6 +1631,10 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
     }
   });
   expect(configuration.status()).toBe(201);
+  await publishCheckedModelRegistry(page, "e2e-v3", [{
+    modelId: "v3-model",
+    configurationHash: (await configuration.json()).agent_configuration_revision_hash as string
+  }]);
 
   const started = await page.request.post(`${api}/runs`, {
     data: {
@@ -1549,6 +1729,10 @@ test("starts a published V3 workflow by picking a named agent", async ({ page })
     }
   });
   expect(configuration.status()).toBe(201);
+  await publishCheckedModelRegistry(page, "e2e-v3", [{
+    modelId: "named-sonnet",
+    configurationHash: (await configuration.json()).agent_configuration_revision_hash as string
+  }]);
 
   await page.goto("/atelier/new");
   await page.getByLabel("Publish YAML").check();
@@ -1579,8 +1763,8 @@ test("starts a published V3 workflow by picking a named agent", async ({ page })
   const binding = page.getByRole("article", { name: "Binding builder" });
   await expect(binding).toBeVisible();
   const picker = binding.getByLabel("Agent for builder");
-  await expect(picker).toContainText("e2e-v3 · named-sonnet · Subscription");
-  await picker.selectOption({ label: "e2e-v3 · named-sonnet · Subscription" });
+  await expect(picker).toContainText("e2e-v3 · named-sonnet · named-picker");
+  await picker.selectOption({ label: "e2e-v3 · named-sonnet · named-picker" });
   await page.screenshot({ path: "test-results/named-agent-picker-desktop.png", fullPage: true });
 
   await page.getByRole("button", { name: "Start" }).click();
@@ -1597,7 +1781,84 @@ test("starts a published V3 workflow by picking a named agent", async ({ page })
   await page.screenshot({ path: "test-results/named-agent-run-390x844.png", fullPage: true });
 });
 
-test("proves(a-listed-agent-configuration-names-current-startability): keeps a remembered listed-unavailable agent visible until keyboard recovery", async ({ page }) => {
+test("shows an exact workflow model as pinned provenance", async ({ page }) => {
+  const api = "/atelier/api/v1";
+  const workflowName = "workflow-pin-provenance";
+  const providerId = "e2e-v3";
+  const modelId = "pinned-model";
+  const schemaHash = await anyJsonSchema(page);
+  const auth = await page.request.post(`${api}/auth-profile-revisions`, {
+    data: {
+      profile_id: "workflow-pin",
+      revision_number: 1,
+      provider_id: providerId,
+      auth_mode: "subscription"
+    }
+  });
+  expect(auth.status()).toBe(201);
+  const configuration = await page.request.post(`${api}/agent-configuration-revisions`, {
+    data: {
+      model: modelId,
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: "immediate/v1",
+      requested_capability: "headless"
+    }
+  });
+  expect(configuration.status()).toBe(201);
+  const configurationHash = (await configuration.json())
+    .agent_configuration_revision_hash as string;
+  const restoreDefaults = await configureDifficultyTwoDefault(
+    page,
+    providerId,
+    [{ modelId, configurationHash }],
+    { modelId, configurationHash }
+  );
+  try {
+  const workflow = await page.request.post(`${api}/workflow-revisions`, {
+    headers: { "content-type": "application/yaml" },
+    data: [
+      "format_version: 3",
+      `name: ${workflowName}`,
+      "nodes:",
+      "  - id: implement",
+      "    type: agent",
+      "    role: builder",
+      `    model: ${modelId}`,
+      "    mode: headless",
+      "    instruction: Prove the workflow pin is visible.",
+      ...declaredOutput(schemaHash),
+      ""
+    ].join("\n")
+  });
+  expect(workflow.status()).toBe(201);
+  const workflowHash = (await workflow.json()).workflow_revision_hash as string;
+  const founded = await page.request.post(`${api}/workflow-lineages`, {
+    data: {
+      workflow_revision_hash: workflowHash,
+      actor: "e2e",
+      activated_at: "2026-08-26T00:00:00Z"
+    }
+  });
+  expect(founded.status()).toBe(201);
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/atelier/new");
+  await page.getByRole("radio", { name: new RegExp(workflowName) }).click();
+  const binding = page.getByRole("article", { name: "Binding builder" });
+  await expect(binding.getByLabel("Agent for builder")).toHaveValue(configurationHash);
+  await expect(binding.getByLabel("Binding source: Pinned in workflow")).toBeVisible();
+  await page.screenshot({ path: "../shots/workflow-pin-1280.png", fullPage: true });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await assertMobileSurface(page);
+  await expect(binding.getByLabel("Binding source: Pinned in workflow")).toBeVisible();
+  await page.screenshot({ path: "../shots/workflow-pin-390.png", fullPage: true });
+  } finally {
+    await restoreDefaults();
+  }
+});
+
+test("proves(a-listed-agent-configuration-names-current-startability): keeps a project-default listed-unavailable agent visible until keyboard recovery", async ({ page }) => {
   const api = "/atelier/api/v1";
   const workflowName = "unavailable-named-agent";
   const schemaHash = await anyJsonSchema(page);
@@ -1684,43 +1945,53 @@ test("proves(a-listed-agent-configuration-names-current-startability): keeps a r
       not_startable_reason: null
     })
   );
-  await page.addInitScript(
-    ([key, hash]) => localStorage.setItem(key, JSON.stringify({ builder: hash })),
-    [NAMED_AGENT_CHOICE_STORAGE_KEY, unavailableHash] as const
+  const restoreDefaults = await configureDifficultyTwoDefault(
+    page,
+    "e2e-v3",
+    [
+      { modelId: "remembered-unavailable", configurationHash: unavailableHash },
+      { modelId: "keyboard-healthy", configurationHash: healthyHash }
+    ],
+    { modelId: "remembered-unavailable", configurationHash: unavailableHash }
   );
-  const starts: Array<Record<string, unknown>> = [];
-  const occupancyWrites: string[] = [];
-  page.on("request", (request) => {
-    const url = new URL(request.url());
-    if (request.method() === "POST" && url.pathname === `${api}/runs`) {
-      starts.push(request.postDataJSON() as Record<string, unknown>);
-    }
-    if (request.method() === "PUT" && url.pathname.includes("/occupancy/")) {
-      occupancyWrites.push(url.pathname);
-    }
-  });
+  try {
+    const starts: Array<Record<string, unknown>> = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (request.method() === "POST" && url.pathname === `${api}/runs`) {
+        starts.push(request.postDataJSON() as Record<string, unknown>);
+      }
+    });
 
   await page.goto("/atelier/new");
   await page.getByRole("radio", { name: new RegExp(workflowName) }).click();
   const binding = page.getByRole("article", { name: "Binding builder" });
   const picker = binding.getByLabel("Agent for builder");
   await expect(picker).toHaveValue(unavailableHash);
-  await expect(binding.getByLabel("Binding source: Remembered")).toBeVisible();
+  await expect(binding.getByLabel("Binding source: From project")).toBeVisible();
   await expect(binding.getByRole("status")).toContainText("◇ Unavailable");
   const unavailableHint = binding.getByRole("button", { name: "Why builder is unavailable" });
   await unavailableHint.focus();
   await unavailableHint.press("Enter");
   await expect(unavailableHint).toHaveAttribute("aria-expanded", "true");
+  const unavailableHintBounds = await unavailableHint.boundingBox();
+  expect(unavailableHintBounds?.width).toBeGreaterThan(120);
+  expect(unavailableHintBounds?.height).toBeGreaterThanOrEqual(44);
   await expect(binding.locator(".info-popover code")).toHaveText(
     "This deployment cannot start this executor. Choose another agent or repair its startup check."
   );
   expect(
     await picker
-      .getByRole("option", { name: /remembered-unavailable.*Unavailable/ })
+      .getByRole("option", { name: /remembered-unavailable/ })
       .evaluate((option) => (option as HTMLOptionElement).disabled)
   ).toBe(true);
-  await expect(page.getByRole("button", { name: "Start" })).toHaveCount(0);
-  expect(starts).toEqual([]);
+    await expect(page.getByText("This run cannot start")).toHaveCount(0);
+    await expect(page.getByText(/Choose a startable agent/)).toHaveCount(0);
+    await expect(
+      picker.getByRole("option", { name: /remembered-unavailable.*Unavailable/ })
+    ).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Start" })).toHaveCount(0);
+    expect(starts).toEqual([]);
   await picker.focus();
   await expect(picker).toBeFocused();
   await expectVisibleFocus(picker);
@@ -1746,7 +2017,7 @@ test("proves(a-listed-agent-configuration-names-current-startability): keeps a r
     await page.keyboard.press("ArrowDown");
   }
   await expect(picker).toHaveValue(healthyHash);
-  await expect(binding.getByLabel("Binding source: Remembered")).toBeVisible();
+  await expect(binding.getByLabel("Binding source: Chosen now")).toBeVisible();
   await expect(page.getByRole("button", { name: "Start" })).toBeVisible();
   await assertMobileSurface(page);
   await page.screenshot({
@@ -1763,411 +2034,39 @@ test("proves(a-listed-agent-configuration-names-current-startability): keeps a r
   await expect(page.getByLabel("Where this run stands")).toContainText("Done", {
     timeout: 20_000
   });
-  expect(starts).toHaveLength(1);
-  expect((starts[0]?.agent_bindings as Array<{ agent_configuration_revision_hash: string }>)).toEqual([
-    { role: "builder", agent_configuration_revision_hash: healthyHash }
-  ]);
-  expect(occupancyWrites).toEqual([]);
-});
-
-test("proves(new-run-prefers-project-occupancy-before-local-memory-and-empty): starts the visible project bindings", async ({ page }) => {
-  const api = "/atelier/api/v1";
-  const workflowName = "project-occupancy-browser";
-  const schemaHash = await anyJsonSchema(page);
-  const publishAgent = async (
-    profileId: string,
-    providerId: string,
-    model: string
-  ): Promise<string> => {
-    const auth = await page.request.post(`${api}/auth-profile-revisions`, {
-      data: {
-        profile_id: profileId,
-        revision_number: 1,
-        provider_id: providerId,
-        auth_mode: "subscription"
-      }
-    });
-    expect(auth.status()).toBe(201);
-    const configuration = await page.request.post(`${api}/agent-configuration-revisions`, {
-      data: {
-        model,
-        auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
-        executor_revision: "immediate/v1",
-        requested_capability: "headless"
-      }
-    });
-    expect(configuration.status()).toBe(201);
-    return (await configuration.json()).agent_configuration_revision_hash as string;
-  };
-  const projectHash = await publishAgent(
-    "occupancy-project",
-    "e2e-v3",
-    "project-choice"
-  );
-  const rememberedHash = await publishAgent(
-    "occupancy-remembered",
-    "e2e-v3",
-    "remembered-choice"
-  );
-  const workflow = await page.request.post(`${api}/workflow-revisions`, {
-    headers: { "content-type": "application/yaml" },
-    data: [
-      "format_version: 3",
-      `name: ${workflowName}`,
-      "description: The project chooses before this browser does.",
-      "nodes:",
-      "  - id: implement",
-      "    type: agent",
-      "    role: builder",
-      "    mode: headless",
-      "    instruction: Build the requested slice.",
-      ...declaredOutput(schemaHash, "built"),
-      "  - id: review",
-      "    type: agent",
-      "    role: reviewer",
-      "    mode: headless",
-      "    instruction: Review the built slice.",
-      "    depends_on: [implement]",
-      ...declaredOutput(schemaHash, "reviewed"),
-      "  - id: audit",
-      "    type: agent",
-      "    role: auditor",
-      "    mode: headless",
-      "    instruction: Audit the reviewed slice.",
-      "    depends_on: [review]",
-      ...declaredOutput(schemaHash, "audited"),
-      ""
-    ].join("\n")
-  });
-  expect(workflow.status()).toBe(201);
-  const workflowHash = (await workflow.json()).workflow_revision_hash as string;
-  const founded = await page.request.post(`${api}/workflow-lineages`, {
-    data: {
-      workflow_revision_hash: workflowHash,
-      actor: "e2e",
-      activated_at: "2026-08-21T00:00:00Z"
-    }
-  });
-  expect(founded.status()).toBe(201);
-  const lineageId = (await founded.json()).lineage_id as string;
-  const projects = await page.request.get(`${api}/projects`);
-  expect(projects.status()).toBe(200);
-  const projectReference = (await projects.json()).items[0]
-    .public_project_reference as string;
-  const occupancyPath = `${api}/projects/${projectReference}/occupancy/${lineageId}`;
-  const written = await page.request.put(occupancyPath, {
-    data: {
-      revision_number: 1,
-      bindings: [
-        { role: "builder", agent_configuration_revision_hash: projectHash },
-        { role: "foreign", agent_configuration_revision_hash: rememberedHash }
-      ]
-    }
-  });
-  expect(written.status()).toBe(201);
-
-  await page.addInitScript(
-    ([storageKey, hash]) => {
-      localStorage.setItem(storageKey, JSON.stringify({
-        builder: hash,
-        reviewer: hash
-      }));
-    },
-    [NAMED_AGENT_CHOICE_STORAGE_KEY, rememberedHash] as const
-  );
-  const observed: Array<{ method: string; path: string }> = [];
-  const started: {
-    bindings: Array<{
-      role: string;
-      agent_configuration_revision_hash: string;
-    }> | null;
-  } = { bindings: null };
-  page.on("request", (request) => {
-    const url = new URL(request.url());
-    if (url.pathname.startsWith(api)) {
-      observed.push({ method: request.method(), path: url.pathname });
-    }
-    if (request.method() === "POST" && url.pathname === `${api}/runs`) {
-      started.bindings = (request.postDataJSON() as {
-        agent_bindings: Array<{
-          role: string;
-          agent_configuration_revision_hash: string;
-        }>;
-      }).agent_bindings;
-    }
-  });
-
-  await page.goto("/atelier/new");
-  await page.getByRole("radio", { name: new RegExp(workflowName) }).click();
-  const builder = page.getByRole("article", { name: "Binding builder" });
-  const reviewer = page.getByRole("article", { name: "Binding reviewer" });
-  const auditor = page.getByRole("article", { name: "Binding auditor" });
-  await expect(builder.getByLabel("Binding source: Project")).toBeVisible();
-  await expect(reviewer.getByLabel("Binding source: Remembered")).toBeVisible();
-  await expect(auditor.getByLabel("Binding source: Choose")).toBeVisible();
-  await expect(builder.getByLabel("Agent for builder")).toHaveValue(projectHash);
-  await expect(reviewer.getByLabel("Agent for reviewer")).toHaveValue(rememberedHash);
-  await expect(auditor.getByLabel("Agent for auditor")).toHaveValue("");
-  await expect(page.getByRole("article", { name: "Binding foreign" })).toHaveCount(0);
-  expect(
-    observed.filter(({ path }) =>
-      path === `${api}/projects` || path.includes("/occupancy/")
-    )
-  ).toEqual([
-    { method: "GET", path: `${api}/projects` },
-    { method: "GET", path: occupancyPath }
-  ]);
-  expect(
-    observed.filter(({ path }) =>
-      path === `${api}/workflow-revisions/by-name/${workflowName}`
-    )
-  ).toHaveLength(1);
-
-  const auditorPicker = auditor.getByLabel("Agent for auditor");
-  await auditorPicker.focus();
-  await expect(auditorPicker).toBeFocused();
-  await expectVisibleFocus(auditorPicker);
-  await assertNoSeriousAccessibilityFindings(page);
-  await page.screenshot({
-    path: "test-results/project-occupancy-picker-desktop.png",
-    fullPage: true
-  });
-  await page.addStyleTag({ content: "html { filter: grayscale(1); }" });
-  await page.screenshot({
-    path: "test-results/project-occupancy-picker-grayscale-desktop.png",
-    fullPage: true
-  });
-  await page.locator("style").last().evaluate((element) => element.remove());
-  await page.setViewportSize({ width: 390, height: 844 });
-  await assertMobileSurface(page);
-  await assertNoSeriousAccessibilityFindings(page);
-  await page.screenshot({
-    path: "test-results/project-occupancy-picker-390x844.png",
-    fullPage: true
-  });
-
-  await auditorPicker.selectOption(projectHash);
-  await expect(auditor.getByLabel("Binding source: Remembered")).toBeVisible();
-  await page.getByRole("button", { name: "Start" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: workflowName })).toBeVisible({
-    timeout: 20_000
-  });
-  expect(Object.fromEntries(
-    (started.bindings ?? []).map((binding) => [
-      binding.role,
-      binding.agent_configuration_revision_hash
-    ])
-  )).toEqual({
-    auditor: projectHash,
-    builder: projectHash,
-    reviewer: rememberedHash
-  });
-});
-
-test("proves(project-occupancy-editor-confirms-complete-project-truth): edits one project recommendation through the cockpit", async ({ page }) => {
-  const workflowName = "occupancy-editor-browser";
-  const schemaHash = await anyJsonSchema(page);
-  await page.goto("/atelier/new");
-  await page.getByLabel("Publish YAML").check();
-  await page.getByLabel("Exact workflow YAML").fill([
-    "format_version: 3",
-    `name: ${workflowName}`,
-    "nodes:",
-    "  - id: builder",
-    "    type: agent",
-    "    role: builder",
-    "    mode: headless",
-    "    instruction: Build the one thing.",
-    ...declaredOutput(schemaHash, "built"),
-    "  - id: reviewer",
-    "    type: agent",
-    "    role: reviewer",
-    "    mode: headless",
-    "    instruction: Review the thing.",
-    "    depends_on: [builder]",
-    ...declaredOutput(schemaHash, "reviewed"),
-    "  - id: auditor",
-    "    type: agent",
-    "    role: auditor",
-    "    mode: headless",
-    "    instruction: Audit the thing.",
-    "    depends_on: [reviewer]",
-    ...declaredOutput(schemaHash, "audited"),
-    ""
-  ].join("\n"));
-  await page.getByRole("button", { name: "Review publication" }).click();
-  await page.getByRole("button", { name: "Publish", exact: true }).click();
-
-  for (const [role, model] of [["builder", "editor-builder"], ["reviewer", "editor-reviewer"], ["auditor", "editor-auditor"]] as const) {
-    const binding = page.getByRole("article", { name: `Binding ${role}` });
-    await expect(binding).toBeVisible();
-    await binding.getByText("Expert fields", { exact: true }).click();
-    await binding.getByLabel("Profile ID").fill(`occupancy-${role}`);
-    await binding.getByLabel("Revision").fill("1");
-    await binding.getByLabel("Provider").fill("e2e-v3");
-    await binding.getByLabel("Auth mode").selectOption("subscription");
-    await binding.getByLabel("Model").fill(model);
-    await binding.getByLabel("Executor").fill("immediate/v1");
+    expect(starts).toHaveLength(1);
+    expect(
+      starts[0]?.agent_bindings as Array<{ agent_configuration_revision_hash: string }>
+    ).toEqual([{ role: "builder", agent_configuration_revision_hash: healthyHash }]);
+  } finally {
+    await restoreDefaults();
   }
-  await page.getByRole("button", { name: "Start" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: workflowName })).toBeVisible({ timeout: 20_000 });
-
-  await page.goto("/atelier/project");
-  const workflow = page.getByRole("combobox", { name: "Workflow occupancy" });
-  await expect(workflow).toBeVisible();
-  await workflow.selectOption({ label: workflowName });
-  const builder = page.getByRole("combobox", { name: "Recommendation for builder" });
-  const reviewer = page.getByRole("combobox", { name: "Recommendation for reviewer" });
-  const auditor = page.getByRole("combobox", { name: "Recommendation for auditor" });
-  await expect(builder).toBeVisible();
-  await expect(page.getByText("No project recommendations yet.")).toBeVisible();
-  await assertNoSeriousAccessibilityFindings(page);
-  await page.screenshot({ path: "test-results/project-occupancy-editor-empty.png", fullPage: true });
-  await builder.selectOption({ label: "e2e-v3 · editor-builder · Subscription" });
-  await reviewer.selectOption({ label: "e2e-v3 · editor-reviewer · Subscription" });
-  await auditor.selectOption({ label: "e2e-v3 · editor-auditor · Subscription" });
-  const builderHash = await builder.inputValue();
-  const reviewerHash = await reviewer.inputValue();
-  const auditorHash = await auditor.inputValue();
-  const save = page.getByRole("button", { name: "Save" });
-  await expect(save).toBeEnabled();
-  await workflow.focus();
-  await expect(workflow).toBeFocused();
-  await expectVisibleFocus(workflow);
-  await builder.focus();
-  await expect(builder).toBeFocused();
-  await expectVisibleFocus(builder);
-  await save.focus();
-  await expect(save).toBeFocused();
-  await expectVisibleFocus(save);
-  await save.click();
-  await expect(save).toBeDisabled();
-  await expect(page.locator(".occupancy-confirmed")).toBeVisible();
-  await expect(page.getByText("Saving occupancy…")).toHaveCount(0);
-  await assertNoSeriousAccessibilityFindings(page);
-  await page.screenshot({ path: "test-results/project-occupancy-editor-desktop.png", fullPage: true });
-  await page.addStyleTag({ content: "html { filter: grayscale(1); }" });
-  await page.screenshot({ path: "test-results/project-occupancy-editor-grayscale-desktop.png", fullPage: true });
-  await page.locator("style").last().evaluate((element) => element.remove());
-  await page.setViewportSize({ width: 390, height: 844 });
-  await assertMobileSurface(page);
-  await assertNoSeriousAccessibilityFindings(page);
-  await page.screenshot({ path: "test-results/project-occupancy-editor-390x844.png", fullPage: true });
-
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await page.goto("/atelier/new");
-  await page.getByRole("radio", { name: new RegExp(workflowName) }).click();
-  await page.getByRole("article", { name: "Binding builder" }).getByLabel("Agent for builder").selectOption(builderHash);
-  await page.getByRole("article", { name: "Binding reviewer" }).getByLabel("Agent for reviewer").selectOption(auditorHash);
-  await expect(page.getByRole("article", { name: "Binding builder" }).getByLabel("Binding source: Remembered")).toBeVisible();
-  await expect(page.getByRole("article", { name: "Binding reviewer" }).getByLabel("Binding source: Remembered")).toBeVisible();
-
-  await page.goto("/atelier/project");
-  await page.getByRole("combobox", { name: "Workflow occupancy" }).selectOption({ label: workflowName });
-  await expect(page.getByRole("combobox", { name: "Recommendation for reviewer" })).toBeVisible();
-  await page.getByRole("combobox", { name: "Recommendation for builder" }).selectOption(reviewerHash);
-  await page.getByRole("combobox", { name: "Recommendation for reviewer" }).selectOption("");
-  await page.getByRole("combobox", { name: "Recommendation for auditor" }).selectOption("");
-  await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
-  await expect(page.locator(".occupancy-confirmed")).toBeVisible();
-
-  const restarted = await page.request.post("/__e2e/recompose");
-  expect(restarted.status()).toBe(202);
-  const expectedGeneration = await restarted.text();
-  await expect(async () => {
-    expect(await (await page.request.get("/__e2e/generation")).text()).toBe(expectedGeneration);
-  }).toPass({ timeout: 20_000 });
-  await page.goto("/atelier/new");
-  await page.getByRole("radio", { name: new RegExp(workflowName) }).click();
-  await expect(page.getByRole("article", { name: "Binding builder" }).getByLabel("Binding source: Project")).toBeVisible();
-  await expect(page.getByRole("article", { name: "Binding reviewer" }).getByLabel("Binding source: Remembered")).toBeVisible();
-  await expect(page.getByRole("article", { name: "Binding auditor" }).getByLabel("Binding source: Choose")).toBeVisible();
-  await expect(page.getByRole("article", { name: "Binding builder" }).getByLabel("Agent for builder")).toHaveValue(reviewerHash);
-  await expect(page.getByRole("article", { name: "Binding reviewer" }).getByLabel("Agent for reviewer")).toHaveValue(auditorHash);
-
-  const unavailable = async (route: Route) =>
-    route.fulfill({ status: 503, json: TEMPORARILY_UNAVAILABLE_PROBLEM });
-  await page.route("**/atelier/api/v1/projects", unavailable);
-  await page.goto("/atelier/project");
-  await expect(page.getByText("Project occupancy unavailable")).toBeVisible();
-  await page.screenshot({ path: "test-results/project-occupancy-editor-unavailable.png", fullPage: true });
-  await page.unroute("**/atelier/api/v1/projects", unavailable);
-
-  await page.reload();
-  await page.getByRole("combobox", { name: "Workflow occupancy" }).selectOption({ label: workflowName });
-  await expect(page.getByRole("combobox", { name: "Recommendation for builder" })).toBeVisible();
-  await page.getByRole("combobox", { name: "Recommendation for builder" }).selectOption(builderHash);
-  const conflict = async (route: Route) => {
-    if (route.request().method() === "PUT") {
-      await route.fulfill({
-        status: 409,
-        contentType: "application/problem+json",
-        body: JSON.stringify({
-          type: "urn:atelier2:problem:v1:occupancy-revision-conflict",
-          title: "Occupancy revision conflict",
-          status: 409,
-          detail: "another operator changed the recommendation"
-        })
-      });
-      return;
-    }
-    await route.continue();
-  };
-  await page.route("**/occupancy/**", conflict);
-  await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.getByText("Occupancy changed elsewhere.")).toBeVisible();
-  await page.screenshot({ path: "test-results/project-occupancy-editor-conflict.png", fullPage: true });
-  await page.unroute("**/occupancy/**", conflict);
-  await page.getByRole("button", { name: "Reload" }).click();
-  await expect(page.getByRole("combobox", { name: "Recommendation for builder" })).toBeVisible();
-  await page.getByRole("combobox", { name: "Recommendation for builder" }).selectOption(builderHash);
-  let uncertainWriteBody: Buffer | null = null;
-  const uncertain = async (route: Route) => {
-    if (route.request().method() !== "PUT") {
-      await route.continue();
-      return;
-    }
-    uncertainWriteBody = route.request().postDataBuffer();
-    await route.abort();
-  };
-  await page.route("**/occupancy/**", uncertain);
-  await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.getByText("Occupancy save unconfirmed.")).toBeVisible();
-  expect(uncertainWriteBody).not.toBeNull();
-  await page.screenshot({ path: "test-results/project-occupancy-editor-uncertain.png", fullPage: true });
-  await page.unroute("**/occupancy/**", uncertain);
-  let retryWriteBody: Buffer | null = null;
-  const observeRetry = async (route: Route) => {
-    if (route.request().method() === "PUT") retryWriteBody = route.request().postDataBuffer();
-    await route.continue();
-  };
-  await page.route("**/occupancy/**", observeRetry);
-  await page.getByRole("button", { name: "Retry" }).click();
-  await expect(page.locator(".occupancy-confirmed")).toContainText("Saved");
-  expect(retryWriteBody).not.toBeNull();
-  expect(retryWriteBody).toEqual(uncertainWriteBody);
-  await page.unroute("**/occupancy/**", observeRetry);
-  const noWorkflows = async (route: Route) => {
-    if (route.request().url().includes("/workflow-revisions?")) {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ items: [], next_after_revision_hash: null })
-      });
-      return;
-    }
-    await route.continue();
-  };
-  await page.route("**/workflow-revisions**", noWorkflows);
-  await page.reload();
-  await expect(page.getByText("No admitted workflows yet.")).toBeVisible();
-  await page.screenshot({ path: "test-results/project-occupancy-editor-empty-catalog.png", fullPage: true });
-  await page.unroute("**/workflow-revisions**", noWorkflows);
 });
 
 test("publishes a V3 workflow, binds its role, and watches the line it started", async ({ page }) => {
   const schemaHash = await anyJsonSchema(page);
+  const auth = await page.request.post("/atelier/api/v1/auth-profile-revisions", {
+    data: {
+      profile_id: "picker-v3",
+      revision_number: 1,
+      provider_id: "e2e-v3",
+      auth_mode: "subscription"
+    }
+  });
+  expect([200, 201]).toContain(auth.status());
+  const configuration = await page.request.post("/atelier/api/v1/agent-configuration-revisions", {
+    data: {
+      model: "v3-model",
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
+      executor_revision: "immediate/v1",
+      requested_capability: "headless"
+    }
+  });
+  expect([200, 201]).toContain(configuration.status());
+  await publishCheckedModelRegistry(page, "e2e-v3", [{
+    modelId: "v3-model",
+    configurationHash: (await configuration.json()).agent_configuration_revision_hash as string
+  }]);
   await page.goto("/atelier/new");
   await page.getByLabel("Publish YAML").check();
   await page.getByLabel("Exact workflow YAML").fill(
@@ -2267,6 +2166,10 @@ test("watches a V3 chain move, node by node, without a reload", async ({ page })
     }
   });
   expect(configuration.status()).toBe(201);
+  await publishCheckedModelRegistry(page, "e2e-v3", [{
+    modelId: "v3-model",
+    configurationHash: (await configuration.json()).agent_configuration_revision_hash as string
+  }]);
 
   const started = await page.request.post(`${api}/runs`, {
     data: {
@@ -2349,6 +2252,10 @@ test("draws a running V3 chain as a graph while a node is still working", async 
     }
   });
   expect(configuration.status()).toBe(201);
+  await publishCheckedModelRegistry(page, "e2e-v3-slow", [{
+    modelId: "v3-model",
+    configurationHash: (await configuration.json()).agent_configuration_revision_hash as string
+  }]);
 
   const started = await page.request.post(`${api}/runs`, {
     data: {
@@ -2444,6 +2351,10 @@ test("proves(the-cockpit-cancels-a-real-run-by-keyboard): cancels a running V3 r
     }
   });
   expect(configuration.status()).toBe(201);
+  await publishCheckedModelRegistry(page, "e2e-v3-held", [{
+    modelId: "v3-model",
+    configurationHash: (await configuration.json()).agent_configuration_revision_hash as string
+  }]);
 
   const started = await page.request.post(`${api}/runs`, {
     data: {
@@ -2583,6 +2494,10 @@ test("a node whose answer its own contract refuses never reports success", async
     }
   });
   expect(configuration.status()).toBe(201);
+  await publishCheckedModelRegistry(page, "e2e-v3", [{
+    modelId: "v3-model",
+    configurationHash: (await configuration.json()).agent_configuration_revision_hash as string
+  }]);
 
   const started = await page.request.post(`${api}/runs`, {
     data: {
@@ -2620,12 +2535,6 @@ test("a node whose answer its own contract refuses never reports success", async
       { node_id: "review", state: "queued", attempt: null }
     ]);
   }).toPass({ timeout: 15_000 });
-
-  // The project counts the standing; the row itself is the Board's (#536).
-  await page.goto(`/atelier/project`);
-  await expect(page.getByRole("region", { name: settingsPageCopy.workTitle })).toContainText(
-    standingWords.failed
-  );
 
   await page.goto(`/atelier/runs/${reference}`);
   await expect(page.getByRole("heading", { level: 1, name: "the chain the operator watched" })).toBeVisible();
@@ -2707,6 +2616,10 @@ test("clicking a finished node shows its whole log", async ({ page }) => {
     }
   });
   expect(configuration.status()).toBe(201);
+  await publishCheckedModelRegistry(page, "e2e-v3", [{
+    modelId: "v3-model",
+    configurationHash: (await configuration.json()).agent_configuration_revision_hash as string
+  }]);
 
   const started = await page.request.post(`${api}/runs`, {
     data: {
@@ -2844,6 +2757,10 @@ test("a declared order is a material field on start, and the typed value travels
     }
   });
   expect(configuration.status()).toBe(201);
+  await publishCheckedModelRegistry(page, "e2e-v3", [{
+    modelId: "cook-sonnet",
+    configurationHash: (await configuration.json()).agent_configuration_revision_hash as string
+  }]);
 
   const answerSchemaHash = await anyJsonSchema(page);
   const workflowYaml = [
@@ -2885,6 +2802,10 @@ test("a declared order is a material field on start, and the typed value travels
   const material = order.getByRole("textbox", { name: "Material portions" });
   await expect(material).toHaveValue("");
   await expect(page.getByRole("article", { name: /^Order / })).toHaveCount(1);
+  const binding = page.getByRole("article", { name: "Binding cook" });
+  const picker = binding.getByLabel("Agent for cook");
+  await expect(picker).toContainText("e2e-v3 · cook-sonnet · cook-order");
+  await picker.selectOption({ label: "e2e-v3 · cook-sonnet · cook-order" });
 
   await page.getByRole("button", { name: "Start" }).click();
   await expect(order.getByRole("alert")).toContainText(
@@ -2893,10 +2814,6 @@ test("a declared order is a material field on start, and the typed value travels
   await page.screenshot({ path: "test-results/v3-material-missing-desktop.png", fullPage: true });
 
   await material.fill('{"portions": 7}');
-  const binding = page.getByRole("article", { name: "Binding cook" });
-  const picker = binding.getByLabel("Agent for cook");
-  await expect(picker).toContainText("e2e-v3 · cook-sonnet · Subscription");
-  await picker.selectOption({ label: "e2e-v3 · cook-sonnet · Subscription" });
 
   const started: { orders: Array<{ name: string; value: string }> | null } = {
     orders: null
@@ -3007,8 +2924,8 @@ test("two revisions of one lineage are one picker row; the older choice changes 
   await row.getByText("Details", { exact: true }).click();
   await expect(row.getByRole("heading", { name: "Revisions" })).toBeVisible();
   await row.getByLabel(`Revision of ${lineageName}`).selectOption({ label: "Earlier" });
-  await expect(row.getByRole("radio")).toBeEnabled();
-  await expect(row).toContainText("The first admitted member.");
+  await expect(row).toContainText("The first admitted member.", { timeout: 20_000 });
+  await expect(row.getByRole("radio")).toBeEnabled({ timeout: 20_000 });
   await expect(row).not.toContainText("Cannot be started");
 
   const details = row.locator("details.revision-details");

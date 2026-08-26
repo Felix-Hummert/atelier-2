@@ -15,12 +15,12 @@ from atelier2.api.references import (
 )
 from atelier2.api.wire.resources import (
     ApiModel,
-    OccupancyBindingResource,
     ReconciliationDeterminationResource,
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
+    PROVIDER_ID_PATTERN,
 )
 from atelier2.contracts.catalog_v3 import (
     CATALOG_ACTIVATED_AT_PATTERN,
@@ -28,8 +28,11 @@ from atelier2.contracts.catalog_v3 import (
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
 )
 from atelier2.contracts.host_configuration import (
-    MAXIMUM_OCCUPANCY_BINDINGS,
+    EXACT_MODEL_ID_PATTERN,
+    MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
+    MAXIMUM_MODEL_REGISTRY_ENTRIES,
     MAXIMUM_PROJECT_ID_CHARACTERS,
+    MAXIMUM_PROJECT_MODEL_DEFAULTS,
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
 )
 from atelier2.contracts.queue_projection import (
@@ -133,10 +136,58 @@ class PutProjectRootRevisionRequestResource(ApiModel):
     )
 
 
-class PutOccupancyRevisionRequestResource(ApiModel):
+class ModelRegistryEntryInputResource(ApiModel):
+    model_id: str = Field(
+        min_length=1,
+        max_length=MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
+        pattern=EXACT_MODEL_ID_PATTERN,
+    )
+    agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class PutModelRegistryRevisionRequestResource(ApiModel):
     revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
-    bindings: tuple[OccupancyBindingResource, ...] = Field(
-        max_length=MAXIMUM_OCCUPANCY_BINDINGS, strict=False
+    entries: tuple[ModelRegistryEntryInputResource, ...] = Field(
+        max_length=MAXIMUM_MODEL_REGISTRY_ENTRIES, strict=False
+    )
+
+
+class ValidateModelRegistryEntryRequestResource(ApiModel):
+    agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class ProjectModelDefaultInputResource(ApiModel):
+    difficulty: Literal[1, 2, 3]
+    model_registry_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    provider_id: str = Field(
+        min_length=1,
+        max_length=MAXIMUM_PROVIDER_ID_CHARACTERS,
+        pattern=PROVIDER_ID_PATTERN,
+    )
+    model_id: str = Field(
+        min_length=1,
+        max_length=MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
+        pattern=EXACT_MODEL_ID_PATTERN,
+    )
+    agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class PutProjectModelDefaultsRevisionRequestResource(ApiModel):
+    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    defaults: tuple[ProjectModelDefaultInputResource, ...] = Field(
+        max_length=MAXIMUM_PROJECT_MODEL_DEFAULTS, strict=False
+    )
+
+
+class ModelResolutionOverrideResource(ApiModel):
+    role: str = Field(min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS)
+    agent_configuration_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class ResolveProjectModelsRequestResource(ApiModel):
+    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
+    overrides: tuple[ModelResolutionOverrideResource, ...] = Field(
+        max_length=MAXIMUM_RUN_AGENT_BINDINGS, strict=False
     )
 
 

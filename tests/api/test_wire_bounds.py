@@ -24,7 +24,7 @@ from types import ModuleType
 
 import pytest
 from annotated_types import MaxLen
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from atelier2.api.references import (
     MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
@@ -50,10 +50,14 @@ from atelier2.contracts.catalog_v3 import (
     MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS,
 )
 from atelier2.contracts.host_configuration import (
-    MAXIMUM_OCCUPANCY_BINDINGS,
+    MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
+    MAXIMUM_MODEL_REGISTRY_ENTRIES,
     MAXIMUM_PROJECT_ID_CHARACTERS,
+    MAXIMUM_PROJECT_MODEL_DEFAULTS,
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SERVED_PROJECTS,
+    MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
+    MAXIMUM_SOURCE_KIND_CHARACTERS,
 )
 from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
@@ -158,17 +162,46 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "InlineOrderResource.value": MAXIMUM_INSTANCE_DOCUMENT_BYTES,
     "WorkItemOrderResource.work_item": MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
     "StartRunAgentBindingResourceV2.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
-    "OccupancyBindingResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "ModelRegistryEntryResource.model_id": MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
+    "ModelRegistryRevisionResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
+    "ModelRegistryRevisionResource.entries": MAXIMUM_MODEL_REGISTRY_ENTRIES,
+    "ModelRegistryEntryInputResource.model_id": MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
+    "PutModelRegistryRevisionRequestResource.entries": MAXIMUM_MODEL_REGISTRY_ENTRIES,
+    "ProjectModelDefaultResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
+    "ProjectModelDefaultResource.model_id": MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
+    "ProjectModelDefaultInputResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
+    "ProjectModelDefaultInputResource.model_id": MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
+    "ProjectModelDefaultsRevisionResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "ProjectModelDefaultsRevisionResource.public_project_reference": (
+        MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS
+    ),
+    "ProjectModelDefaultsRevisionResource.defaults": MAXIMUM_PROJECT_MODEL_DEFAULTS,
+    "PutProjectModelDefaultsRevisionRequestResource.defaults": (
+        MAXIMUM_PROJECT_MODEL_DEFAULTS
+    ),
+    "RoleModelResolutionResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "RoleModelResolutionResource.model_id": MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
+    "RoleModelResolutionResource.family_differs_from": (MAXIMUM_AGENT_FIELD_CHARACTERS),
+    "ProjectModelResolutionResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "ProjectModelResolutionResource.public_project_reference": (
+        MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS
+    ),
+    "ProjectModelResolutionResource.resolutions": MAXIMUM_RUN_AGENT_BINDINGS,
+    "ModelResolutionOverrideResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "ResolveProjectModelsRequestResource.overrides": MAXIMUM_RUN_AGENT_BINDINGS,
     "ProjectResource.public_project_reference": (
         MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS
     ),
     "ProjectListResource.items": MAXIMUM_SERVED_PROJECTS,
-    "OccupancyRevisionResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
-    "OccupancyRevisionResource.public_project_reference": (
+    "ProjectSourceConnectionRevisionResource.public_project_reference": (
         MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS
     ),
-    "OccupancyRevisionResource.bindings": MAXIMUM_OCCUPANCY_BINDINGS,
-    "PutOccupancyRevisionRequestResource.bindings": MAXIMUM_OCCUPANCY_BINDINGS,
+    "ProjectSourceConnectionRevisionResource.source_kind": (
+        MAXIMUM_SOURCE_KIND_CHARACTERS
+    ),
+    "ProjectSourceConnectionRevisionResource.source_address": (
+        MAXIMUM_SOURCE_ADDRESS_CHARACTERS
+    ),
     "ProjectRootRevisionResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
     "ProjectRootRevisionResource.public_project_reference": (
         MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS
@@ -179,6 +212,8 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     ),
     "InvalidFieldResource.path": MAXIMUM_INVALID_FIELD_PATH_CHARACTERS,
     "InvalidFieldResource.reason": MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
+    "UncastRoleResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "UncastRoleResource.family_differs_from": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AdmitQueueItemRequestResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
     "AdmitQueueItemRequestResource.tracker_item_reference": (
         MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
@@ -316,6 +351,20 @@ def test_no_wire_field_writes_a_bound_it_does_not_take_from_its_owner() -> None:
     )
 
     assert unowned == ()
+
+
+@pytest.mark.parametrize("model_id", [" opus", "opus ", "opus mini", "opus\nmini"])
+def test_model_registry_input_refuses_non_exact_model_ids(model_id: str) -> None:
+    with pytest.raises(ValidationError):
+        requests.PutModelRegistryRevisionRequestResource(
+            revision_number=1,
+            entries=(
+                requests.ModelRegistryEntryInputResource(
+                    model_id=model_id,
+                    agent_configuration_revision_hash="a" * 64,
+                ),
+            ),
+        )
 
 
 @pytest.mark.parametrize(

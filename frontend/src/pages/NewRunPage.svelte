@@ -1,14 +1,17 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
 
   import {
     CockpitRequestError,
     decodeCanonicalBase64,
     type AgentConfigurationRevisionListItem,
     type AuthProfileInput,
+    type AuthProfileRevision,
     type CockpitApi,
     type InvalidField,
-    type OccupancyRevision,
+    type ModelRegistryRevision,
+    type ProjectModelResolution,
     type Problem,
     type WorkflowRevisionDetail,
     type WorkflowRevisionSummary
@@ -42,18 +45,17 @@
     type StartMutation
   } from "../lib/mutationJournal";
   import {
-    namedAgentLabel,
-    readLastNamedAgentChoices,
-    rememberNamedAgentChoice
-  } from "../lib/namedAgentChoice";
-  import {
     beginRead,
     confirmRead,
     failRead,
     retainedRead,
     type RetainedRead
   } from "../lib/readResource";
-  import { readEveryAgentConfiguration, readEveryRevision } from "../lib/runPages";
+  import {
+    readEveryAgentConfiguration,
+    readEveryAuthProfile,
+    readEveryRevision
+  } from "../lib/runPages";
   import { cannotBeStarted, humanErrorMessage } from "../lib/humanRefusal";
   import {
     admitPublishedRevision,
@@ -82,19 +84,23 @@
   /** Starting is the Catalog's own act now that the Workflows room is gone. */
   const catalogRoom = WORKSHOP_DESTINATION.catalog;
 
-  type BindingSource = "looking" | "project" | "remembered" | "choose" | "unavailable";
+  type BindingSource = "looking" | "project" | "next-higher" | "workflow" | "chosen" | "choose" | "unavailable";
+
+  type ModelOverride = { role: string; agent_configuration_revision_hash: string };
 
   interface BindingDraft {
     role: string;
     selectedHash: string;
     source: BindingSource;
-    manual: boolean;
+    manualOverrideHash: string | null;
+    expertOverrideDrafted: boolean;
     profileId: string;
     revisionNumber: string;
     providerId: string;
     authMode: "" | AuthProfileInput["auth_mode"];
     model: string;
     executorRevision: string;
+    resolutionHint: string | null;
     error: string | null;
   }
 
@@ -141,20 +147,30 @@
     | { kind: "unavailable"; title: string }
     | { kind: "incomplete"; title: string };
 
-  interface ProjectOccupancySnapshot {
-    lineageId: string;
-    bindings: Map<string, string>;
+  interface ProjectModelSnapshot {
+    workflowRevisionHash: string;
+    overrideKey: string;
+    resolution: ProjectModelResolution;
+    bindings: Map<string, ProjectModelResolution["resolutions"][number]>;
+  }
+
+  /** A selectable model is the registry's exact model id attached to its account. */
+  interface RegisteredConfiguration {
+    configuration: AgentConfigurationRevisionListItem;
+    modelId: string;
+    accountId: string;
   }
 
   let revisions: RetainedRead<SavedWorkflowSnapshot, ReadFailure> =
     retainedRead<SavedWorkflowSnapshot, ReadFailure>();
   let configurations: RetainedRead<AgentConfigurationRevisionListItem[], ReadFailure> =
     retainedRead<AgentConfigurationRevisionListItem[], ReadFailure>();
-  let projectOccupancy: RetainedRead<ProjectOccupancySnapshot, ReadFailure> =
-    retainedRead<ProjectOccupancySnapshot, ReadFailure>();
-  let activeOccupancyLineageId: string | null = null;
-  let occupancyDraftGeneration = 0;
+  let projectModels: RetainedRead<ProjectModelSnapshot, ReadFailure> =
+    retainedRead<ProjectModelSnapshot, ReadFailure>();
+  let activeModelWorkflowRevisionHash: string | null = null;
+  let modelDraftGeneration = 0;
   let publishedConfigurations: AgentConfigurationRevisionListItem[] = [];
+  let registeredConfigurations: RegisteredConfiguration[] = [];
   let mode: "saved" | "publish" = "saved";
   let exactYaml = "";
   let draft: RunDraft | null = null;
@@ -173,6 +189,9 @@
   $: publishedConfigurations = configurations.confirmed ?? [];
   $: draftHasUnavailableBinding =
     draft !== null && draft.bindings.some((binding) => bindingHasUnavailableExecutor(binding));
+  $: correctingOrder = draft?.orders.some(
+    (order) => order.error !== null || order.fieldErrors.length > 0
+  ) ?? false;
   $: visibleRows =
     chosenRowKey === null
       ? savedRows
@@ -264,7 +283,7 @@
   function changeChosenWorkflow(): void {
     chosenRowKey = null;
     draft = null;
-    clearProjectOccupancy();
+    clearProjectModels();
     activeWorkflowDetailHash = null;
     failureMessage = null;
     editingHash = null;
@@ -274,7 +293,7 @@
   function changeWorkflowSource(): void {
     activeWorkflowDetailHash = null;
     draft = null;
-    clearProjectOccupancy();
+    clearProjectModels();
     failureMessage = null;
     chosenRowKey = null;
     editingHash = null;
@@ -321,6 +340,7 @@
   async function loadConfigurations(): Promise<void> {
     const begun = beginRead(configurations);
     configurations = begun.read;
+    registeredConfigurations = [];
     applyBindingRecommendations();
     try {
       const reading = await readEveryAgentConfiguration((after) =>
@@ -334,18 +354,82 @@
         applyBindingRecommendations();
         return;
       }
+      registeredConfigurations = await registeredConfigurationsOf(reading.configurations);
       const confirmed = confirmRead(configurations, begun.generation, reading.configurations);
       configurations = confirmed;
       if (confirmed.generation === begun.generation) {
         applyBindingRecommendations();
       }
     } catch {
+      registeredConfigurations = [];
       configurations = failRead(configurations, begun.generation, {
         kind: "unavailable",
         title: "Published agents unavailable"
       });
       applyBindingRecommendations();
     }
+  }
+
+  async function registeredConfigurationsOf(
+    available: readonly AgentConfigurationRevisionListItem[]
+  ): Promise<RegisteredConfiguration[]> {
+    if (available.length === 0) return [];
+    const profileReading = await readEveryAuthProfile((after) =>
+      cockpitApi.listAuthProfileRevisions(after)
+    );
+    if (!profileReading.complete) throw new Error("account listing incomplete");
+    const registries = await registriesFor(available);
+    return registeredConfigurationsFrom(available, profileReading.profiles, registries);
+  }
+
+  async function registriesFor(
+    available: readonly AgentConfigurationRevisionListItem[]
+  ): Promise<ModelRegistryRevision[]> {
+    const providers = [...new Set(available.map((configuration) => configuration.provider_id))]
+      .sort();
+    const registries = await Promise.all(providers.map(async (providerId) => {
+      try {
+        return await cockpitApi.getModelRegistry(providerId);
+      } catch (error) {
+        if (problemCode(error) === "model-registry-missing") return null;
+        throw error;
+      }
+    }));
+    return registries.filter((registry): registry is ModelRegistryRevision => registry !== null);
+  }
+
+  function registeredConfigurationsFrom(
+    available: readonly AgentConfigurationRevisionListItem[],
+    profiles: readonly AuthProfileRevision[],
+    registries: readonly ModelRegistryRevision[]
+  ): RegisteredConfiguration[] {
+    const selected: RegisteredConfiguration[] = [];
+    const included = new SvelteSet<string>();
+    for (const registry of registries) {
+      for (const entry of registry.entries) {
+        if (entry.provider_check !== "checked") continue;
+        const configuration = available.find(
+          (candidate) =>
+            candidate.agent_configuration_revision_hash === entry.agent_configuration_revision_hash
+        );
+        const profile = configuration === undefined
+          ? undefined
+          : profiles.find(
+              (candidate) =>
+                candidate.auth_profile_revision_hash === configuration.auth_profile_revision_hash
+            );
+        if (configuration === undefined || profile === undefined || included.has(
+          configuration.agent_configuration_revision_hash
+        )) continue;
+        included.add(configuration.agent_configuration_revision_hash);
+        selected.push({
+          configuration,
+          modelId: entry.model_id,
+          accountId: profile.profile_id
+        });
+      }
+    }
+    return selected;
   }
 
   async function loadPending(): Promise<void> {
@@ -696,23 +780,49 @@
   async function startDraft(): Promise<void> {
     if (draft === null) return;
     const selected = draft;
-    if (selected.bindings.some((binding) => bindingHasUnavailableExecutor(binding))) return;
     let mutation: StartMutation | null = null;
     if (selected.orders.length > 0 && !validateOrders(selected.orders)) return;
     if (bindsAgentRoles(selected.revision.graph)) {
-      if (!validateBindings(selected.bindings)) return;
+      if (!validateExpertOverrides(selected.bindings)) return;
       operation = "start";
       failureMessage = null;
       const bindings = selected.bindings.map((binding) => ({ ...binding }));
-      const publishedBindings = await resolveBindings(bindings);
-      if (publishedBindings === null) {
+      const overrides = await publishManualOverrides(bindings);
+      if (overrides === null) {
         operation = null;
         return;
       }
-      const bound = publishedBindings.map(({ role, agent_configuration_revision_hash }) => ({
-        role,
-        agent_configuration_revision_hash
-      }));
+      let bound: ModelOverride[] | null = overrides;
+      let resolved: ModelOverride[] | null = null;
+      if (selected.revision.graph.workflow_format_version === 3) {
+        modelDraftGeneration += 1;
+        const resolution = await loadProjectModels(
+          selected.revision.workflow_revision_hash,
+          overrides,
+          true,
+          modelDraftGeneration
+        );
+        resolved = resolution === null ? null : resolvedBindingsOf(resolution, selected.bindings);
+      }
+      if (
+        bound === null ||
+        (selected.revision.graph.workflow_format_version === 3
+          ? resolved === null
+          : bound.length !== selected.bindings.length)
+      ) {
+        operation = null;
+        return;
+      }
+      const startabilityBindings = resolved ?? bound;
+      if (startabilityBindings.some((binding) => {
+        const configuration = publishedConfigurations.find(
+          (item) => item.agent_configuration_revision_hash === binding.agent_configuration_revision_hash
+        );
+        return configuration?.startable === false;
+      })) {
+        operation = null;
+        return;
+      }
       mutation =
         selected.orders.length > 0
           ? startMutationV3(
@@ -795,6 +905,7 @@
 
   function prepareDraft(revision: WorkflowRevisionDetail, lineageId: string | null): void {
     const roles = agentRolesOf(revision.graph);
+    const resolvesProjectModels = revision.graph.workflow_format_version === 3;
     draft = {
       revision,
       lineageId,
@@ -802,125 +913,178 @@
       bindings: roles.map((role) => ({
         role,
         selectedHash: "",
-        source: lineageId === null ? "choose" : "looking",
-        manual: false,
+        source: resolvesProjectModels ? "looking" : "choose",
+        manualOverrideHash: null,
+        expertOverrideDrafted: !resolvesProjectModels,
         profileId: "",
         revisionNumber: "",
         providerId: "",
         authMode: "",
         model: "",
         executorRevision: "",
+        resolutionHint: null,
         error: null
       })),
       orders: declaredOrdersOf(revision.graph)
     };
     for (const order of draft.orders) void loadOrderSchema(order);
-    if (lineageId === null || roles.length === 0) {
-      clearProjectOccupancy();
+    if (roles.length === 0) {
+      clearProjectModels();
       applyBindingRecommendations();
       return;
     }
-    occupancyDraftGeneration += 1;
-    void loadProjectOccupancy(lineageId, false, occupancyDraftGeneration);
+    if (!resolvesProjectModels) {
+      clearProjectModels();
+      return;
+    }
+    modelDraftGeneration += 1;
+    void loadProjectModels(
+      revision.workflow_revision_hash,
+      manualOverridesOf(draft.bindings),
+      false,
+      modelDraftGeneration
+    );
   }
 
-  function clearProjectOccupancy(): void {
-    occupancyDraftGeneration += 1;
-    activeOccupancyLineageId = null;
-    projectOccupancy = {
-      ...projectOccupancy,
-      generation: projectOccupancy.generation + 1,
+  function clearProjectModels(): void {
+    modelDraftGeneration += 1;
+    activeModelWorkflowRevisionHash = null;
+    projectModels = {
+      ...projectModels,
+      generation: projectModels.generation + 1,
       request: { state: "idle" }
     };
   }
 
-  function occupancySnapshotOf(
-    lineageId: string,
-    occupancy: OccupancyRevision | null
-  ): ProjectOccupancySnapshot {
+  function modelSnapshotOf(
+    workflowRevisionHash: string,
+    overrides: readonly ModelOverride[],
+    resolution: ProjectModelResolution
+  ): ProjectModelSnapshot {
     return {
-      lineageId,
-      bindings: new Map(
-        (occupancy?.bindings ?? []).map((binding) => [
-          binding.role,
-          binding.agent_configuration_revision_hash
-        ])
-      )
+      workflowRevisionHash,
+      overrideKey: overrideKeyOf(overrides),
+      resolution,
+      bindings: new Map(resolution.resolutions.map((item) => [item.role, item]))
     };
   }
 
-  async function loadProjectOccupancy(
-    lineageId: string,
+  function resolvedBindingsOf(
+    snapshot: ProjectModelSnapshot,
+    bindings: readonly BindingDraft[]
+  ): ModelOverride[] | null {
+    if (snapshot.resolution.resolutions.length !== bindings.length) return null;
+    const expectedRoles = new Set(bindings.map((binding) => binding.role));
+    if (snapshot.resolution.resolutions.some((item) => !expectedRoles.has(item.role))) return null;
+    const resolved = snapshot.resolution.resolutions.flatMap((item) =>
+      item.agent_configuration_revision_hash === null
+        ? []
+        : [{ role: item.role, agent_configuration_revision_hash: item.agent_configuration_revision_hash }]
+    );
+    return resolved.length === bindings.length ? resolved : null;
+  }
+
+  async function loadProjectModels(
+    workflowRevisionHash: string,
+    overrides: readonly ModelOverride[],
     retry = false,
-    draftGeneration = occupancyDraftGeneration
-  ): Promise<void> {
-    if (draft === null || draft.lineageId !== lineageId || draft.bindings.length === 0) return;
-    if (activeOccupancyLineageId !== lineageId) {
-      activeOccupancyLineageId = lineageId;
-      projectOccupancy = projectOccupancy.confirmed?.lineageId === lineageId
-        ? { ...projectOccupancy, request: { state: "idle" } }
-        : retainedRead<ProjectOccupancySnapshot, ReadFailure>();
-    } else if (projectOccupancy.request.state === "failed" && !retry) {
+    draftGeneration = modelDraftGeneration
+  ): Promise<ProjectModelSnapshot | null> {
+    if (
+      draft === null ||
+      draft.revision.workflow_revision_hash !== workflowRevisionHash ||
+      draft.bindings.length === 0
+    ) return null;
+    if (activeModelWorkflowRevisionHash !== workflowRevisionHash) {
+      activeModelWorkflowRevisionHash = workflowRevisionHash;
+      projectModels = projectModels.confirmed?.workflowRevisionHash === workflowRevisionHash
+        ? { ...projectModels, request: { state: "idle" } }
+        : retainedRead<ProjectModelSnapshot, ReadFailure>();
+    } else if (projectModels.request.state === "failed" && !retry) {
       applyBindingRecommendations();
-      return;
+      return null;
     }
-    const begun = beginRead(projectOccupancy);
-    projectOccupancy = begun.read;
+    const begun = beginRead(projectModels);
+    projectModels = begun.read;
     applyBindingRecommendations();
     try {
       const projects = await cockpitApi.listProjects();
-      let snapshot = occupancySnapshotOf(lineageId, null);
       const project = projects.items[0];
-      if (project !== undefined) {
-        try {
-          const occupancy = await cockpitApi.getProjectOccupancy(
-            project.public_project_reference,
-            lineageId
-          );
-          snapshot = occupancySnapshotOf(lineageId, occupancy);
-        } catch (error) {
-          if (problemCode(error) !== "occupancy-missing") throw error;
-        }
-      }
+      if (project === undefined) throw new Error("project missing");
+      const resolution = await cockpitApi.resolveProjectModels(
+        project.public_project_reference,
+        workflowRevisionHash,
+        [...overrides]
+      );
+      const snapshot = modelSnapshotOf(workflowRevisionHash, overrides, resolution);
       if (
-        activeOccupancyLineageId !== lineageId ||
-        occupancyDraftGeneration !== draftGeneration
-      ) return;
-      projectOccupancy = confirmRead(projectOccupancy, begun.generation, snapshot);
-      if (draft?.lineageId === lineageId) applyBindingRecommendations();
+        activeModelWorkflowRevisionHash !== workflowRevisionHash ||
+        modelDraftGeneration !== draftGeneration
+      ) return null;
+      projectModels = confirmRead(projectModels, begun.generation, snapshot);
+      if (draft?.revision.workflow_revision_hash === workflowRevisionHash) {
+        applyBindingRecommendations();
+      }
+      return snapshot;
     } catch {
       if (
-        activeOccupancyLineageId !== lineageId ||
-        occupancyDraftGeneration !== draftGeneration
-      ) return;
-      projectOccupancy = failRead(projectOccupancy, begun.generation, {
+        activeModelWorkflowRevisionHash !== workflowRevisionHash ||
+        modelDraftGeneration !== draftGeneration
+      ) return null;
+      projectModels = failRead(projectModels, begun.generation, {
         kind: "unavailable",
-        title: "Project occupancy unavailable"
+        title: "Model setup unavailable"
       });
-      if (draft?.lineageId === lineageId) applyBindingRecommendations();
+      if (draft?.revision.workflow_revision_hash === workflowRevisionHash) {
+        applyBindingRecommendations();
+      }
+      return null;
     }
   }
 
-  function retryProjectOccupancy(): void {
-    if (draft?.lineageId !== null && draft?.lineageId !== undefined) {
-      void loadProjectOccupancy(draft.lineageId, true);
+  function retryProjectModels(): void {
+    if (draft !== null) {
+      void loadProjectModels(
+        draft.revision.workflow_revision_hash,
+        manualOverridesOf(draft.bindings),
+        true
+      );
     }
   }
 
   function bindingSourceLabel(source: BindingSource): string {
     if (source === "looking") return "Looking…";
-    if (source === "project") return "Project";
-    if (source === "remembered") return "Remembered";
+    if (source === "project") return "From project";
+    if (source === "next-higher") return "Next higher";
+    if (source === "workflow") return "Pinned in workflow";
+    if (source === "chosen") return "Chosen now";
     if (source === "unavailable") return "Unavailable";
     return "Choose";
   }
 
   function bindingSourceShape(source: BindingSource): string {
     if (source === "project") return "◆";
-    if (source === "remembered") return "●";
+    if (source === "next-higher") return "↑";
+    if (source === "workflow") return "■";
+    if (source === "chosen") return "●";
     if (source === "looking") return "↻";
     if (source === "unavailable") return "◇";
     return "○";
+  }
+
+  function resolutionHint(
+    resolution: ProjectModelResolution["resolutions"][number]
+  ): string | null {
+    if (resolution.uncast_reason === "override-not-registered") return "Override not registered.";
+    if (resolution.uncast_reason === "workflow-model-not-registered") return "Workflow model not registered.";
+    if (resolution.uncast_reason === "workflow-model-ambiguous") return "Workflow model ambiguous.";
+    if (resolution.uncast_reason === "no-project-default") return null;
+    if (resolution.uncast_reason === "family-difference-unavailable") {
+      return resolution.family_differs_from === null
+        ? "Family difference unavailable."
+        : `Family difference from ${resolution.family_differs_from} unavailable.`;
+    }
+    return null;
   }
 
   function selectedConfiguration(
@@ -929,6 +1093,19 @@
     return publishedConfigurations.find(
       (item) => item.agent_configuration_revision_hash === binding.selectedHash
     );
+  }
+
+  function registeredConfiguration(
+    configurationHash: string
+  ): RegisteredConfiguration | undefined {
+    return registeredConfigurations.find(
+      ({ configuration }) => configuration.agent_configuration_revision_hash === configurationHash
+    );
+  }
+
+  function registeredConfigurationLabel(registered: RegisteredConfiguration): string {
+    const { configuration, modelId, accountId } = registered;
+    return `${configuration.provider_id} · ${modelId} · ${accountId}`;
   }
 
   function bindingHasUnavailableExecutor(binding: BindingDraft): boolean {
@@ -945,52 +1122,88 @@
     };
   }
 
+  function manualOverridesOf(bindings: readonly BindingDraft[]): ModelOverride[] {
+    return bindings.flatMap((binding) =>
+      binding.manualOverrideHash === null
+        ? []
+        : [{
+            role: binding.role,
+            agent_configuration_revision_hash: binding.manualOverrideHash
+          }]
+    );
+  }
+
+  function overrideKeyOf(overrides: readonly ModelOverride[]): string {
+    return JSON.stringify(overrides);
+  }
+
   function applyBindingRecommendations(): void {
     if (draft === null) return;
-    const remembered = readLastNamedAgentChoices(globalThis.localStorage);
-    const known = new Set(
-      (configurations.confirmed ?? []).map(
-        (item) => item.agent_configuration_revision_hash
-      )
+    const registered = new Set(
+      registeredConfigurations.map(({ configuration }) => configuration.agent_configuration_revision_hash)
     );
     const agentListComplete =
       configurations.confirmed !== null && configurations.request.state === "idle";
-    const occupancy =
-      draft.lineageId !== null && projectOccupancy.confirmed?.lineageId === draft.lineageId
-        ? projectOccupancy.confirmed
+    const overrides = manualOverridesOf(draft.bindings);
+    const modelSnapshot =
+      projectModels.confirmed?.workflowRevisionHash === draft.revision.workflow_revision_hash &&
+      projectModels.confirmed.overrideKey === overrideKeyOf(overrides)
+        ? projectModels.confirmed
         : null;
     draft = {
       ...draft,
       bindings: draft.bindings.map((binding) => {
-        if (binding.manual) return binding;
-        if (draft?.lineageId !== null && occupancy === null) {
-          return { ...binding, selectedHash: "", source: "looking" };
+        if (modelSnapshot === null) {
+          return {
+            ...binding,
+            selectedHash: binding.manualOverrideHash ?? "",
+            source: "looking",
+            resolutionHint: null,
+            error: null
+          };
         }
-        const projectHash = occupancy?.bindings.get(binding.role);
-        if (projectHash !== undefined) {
-          if (known.has(projectHash)) {
-            return { ...binding, selectedHash: projectHash, source: "project" };
+        const projectChoice = modelSnapshot?.bindings.get(binding.role);
+        if (projectChoice !== undefined && projectChoice.agent_configuration_revision_hash !== null) {
+          if (registered.has(projectChoice.agent_configuration_revision_hash)) {
+            return {
+              ...binding,
+              selectedHash: projectChoice.agent_configuration_revision_hash,
+              source:
+                projectChoice.source === "chosen-now"
+                  ? "chosen"
+                  : projectChoice.source === "pinned-in-workflow"
+                    ? "workflow"
+                    : projectChoice.default_difficulty !== projectChoice.declared_difficulty
+                      ? "next-higher"
+                      : "project",
+              resolutionHint: null,
+              error: null
+            };
           }
           return {
             ...binding,
-            selectedHash: projectHash,
-            source: agentListComplete ? "unavailable" : "looking"
+            selectedHash: projectChoice.agent_configuration_revision_hash,
+            source: agentListComplete ? "unavailable" : "looking",
+            resolutionHint: null,
+            error: null
           };
         }
-        const rememberedHash = remembered.get(binding.role);
-        if (rememberedHash !== undefined && known.has(rememberedHash)) {
-          return { ...binding, selectedHash: rememberedHash, source: "remembered" };
-        }
-        if (rememberedHash !== undefined && !agentListComplete) {
-          return { ...binding, selectedHash: "", source: "looking" };
-        }
-        return { ...binding, selectedHash: "", source: "choose" };
+        return {
+          ...binding,
+          selectedHash: "",
+          source: "choose",
+          resolutionHint: projectChoice === undefined
+            ? "Model resolution did not name this role."
+            : resolutionHint(projectChoice),
+          error: null
+        };
       })
     };
   }
 
   function chooseNamedAgent(role: string, hash: string): void {
     if (draft === null) return;
+    const resolvesProjectModels = draft.revision.graph.workflow_format_version === 3;
     draft = {
       ...draft,
       bindings: draft.bindings.map((binding) =>
@@ -998,28 +1211,43 @@
           ? {
               ...binding,
               selectedHash: hash,
-              source: hash.length === 0 ? "choose" : "remembered",
-              manual: true,
+              source:
+                hash.length === 0
+                  ? resolvesProjectModels
+                    ? "looking"
+                    : "choose"
+                  : "chosen",
+              manualOverrideHash: hash.length === 0 ? null : hash,
+              expertOverrideDrafted: false,
+              resolutionHint: null,
               error: null
             }
           : binding
       )
     };
-    if (hash.length > 0) rememberNamedAgentChoice(globalThis.localStorage, role, hash);
+    if (!resolvesProjectModels) return;
+    modelDraftGeneration += 1;
+    void loadProjectModels(
+      draft.revision.workflow_revision_hash,
+      manualOverridesOf(draft.bindings),
+      false,
+      modelDraftGeneration
+    );
   }
 
-  async function resolveBindings(
+  async function publishManualOverrides(
     bindings: BindingDraft[]
-  ): Promise<Array<{ role: string; agent_configuration_revision_hash: string }> | null> {
+  ): Promise<ModelOverride[] | null> {
     const published: Array<{ role: string; agent_configuration_revision_hash: string }> = [];
     for (const binding of bindings) {
-      if (binding.selectedHash.length > 0) {
+      if (binding.manualOverrideHash !== null) {
         published.push({
           role: binding.role,
-          agent_configuration_revision_hash: binding.selectedHash
+          agent_configuration_revision_hash: binding.manualOverrideHash
         });
         continue;
       }
+      if (!binding.expertOverrideDrafted) continue;
       try {
         const authInput = {
           profile_id: binding.profileId,
@@ -1044,6 +1272,24 @@
           role: binding.role,
           agent_configuration_revision_hash: configuration.value.agent_configuration_revision_hash
         });
+        if (draft !== null) {
+          draft = {
+            ...draft,
+            bindings: draft.bindings.map((candidate) =>
+              candidate.role === binding.role
+                ? {
+                    ...candidate,
+                    selectedHash: configuration.value.agent_configuration_revision_hash,
+                    source: "chosen",
+                    manualOverrideHash: configuration.value.agent_configuration_revision_hash,
+                    expertOverrideDrafted: false,
+                    resolutionHint: null,
+                    error: null
+                  }
+                : candidate
+            )
+          };
+        }
       } catch (error) {
         setBindingError(binding.role, error instanceof Error ? error.message : "Binding failed.");
         return null;
@@ -1052,14 +1298,14 @@
     return published;
   }
 
-  function validateBindings(bindings: BindingDraft[]): boolean {
-    const known = new Set(
-      publishedConfigurations.map((item) => item.agent_configuration_revision_hash)
-    );
+  function validateExpertOverrides(bindings: BindingDraft[]): boolean {
     let valid = true;
     for (const binding of bindings) {
+      if (!binding.expertOverrideDrafted || binding.manualOverrideHash !== null) {
+        binding.error = null;
+        continue;
+      }
       const revisionNumber = Number(binding.revisionNumber);
-      const named = binding.selectedHash.length > 0 && known.has(binding.selectedHash);
       const expert =
         binding.profileId.length > 0 &&
         /^(?:[1-9][0-9]*)$/.test(binding.revisionNumber) &&
@@ -1068,13 +1314,9 @@
         binding.authMode !== "" &&
         binding.model.length > 0 &&
         binding.executorRevision.length > 0;
-      const complete = named || expert;
-      binding.error = complete
-        ? null
-        : publishedConfigurations.length === 0
-          ? "Complete every field."
-          : "Choose a published agent or complete every field.";
-      valid &&= complete;
+      binding.error = expert ? null : "Complete every field.";
+      binding.resolutionHint = null;
+      valid &&= expert;
     }
     draft = draft === null ? null : { ...draft, bindings: [...bindings] };
     return valid;
@@ -1095,7 +1337,18 @@
       ...draft,
       bindings: draft.bindings.map((binding) =>
         binding.role === role
-          ? { ...binding, source: binding.selectedHash === "" ? "choose" : binding.source, manual: true, error }
+          ? error === null
+            ? binding.manualOverrideHash === null
+              ? {
+                  ...binding,
+                  selectedHash: "",
+                  source: "choose",
+                  expertOverrideDrafted: true,
+                  resolutionHint: null,
+                  error: null
+                }
+              : { ...binding, expertOverrideDrafted: true, error: null }
+            : { ...binding, error }
           : binding
       )
     };
@@ -1107,10 +1360,12 @@
     const returnedBindings = "workflow_format_version" in result.value
       ? result.value.agent_bindings
       : null;
+    const resolvesBindings =
+      "workflow_format_version" in result.value && result.value.workflow_format_version === 3;
     if (
       expectedBindings !== null &&
       (returnedBindings === null ||
-        returnedBindings.length !== expectedBindings.length ||
+        (!resolvesBindings && returnedBindings.length !== expectedBindings.length) ||
         expectedBindings.some((binding) => {
           const returnedBinding = returnedBindings.find((candidate) => candidate.role === binding.role);
           return returnedBinding?.agent_configuration_revision_hash !==
@@ -1415,12 +1670,18 @@
       <section class="binding-list" aria-labelledby="binding-list-title">
         <p class="eyebrow">Agent setup</p>
         <h2 id="binding-list-title">Bindings</h2>
-        <ReadState read={configurations} label="published agents" onRetry={() => void loadConfigurations()} />
-        {#if draft.lineageId !== null && projectOccupancy.request.state !== "idle"}
+        {#if !correctingOrder}
           <ReadState
-            read={projectOccupancy}
-            label="project occupancy"
-            onRetry={retryProjectOccupancy}
+            read={configurations}
+            label="published agents"
+            onRetry={() => void loadConfigurations()}
+          />
+        {/if}
+        {#if projectModels.request.state !== "idle"}
+          <ReadState
+            read={projectModels}
+            label="model setup"
+            onRetry={retryProjectModels}
           />
         {/if}
         {#if configurations.confirmed?.length === 0}
@@ -1432,13 +1693,22 @@
               <div>
                 <span class="node-kind">Agent role</span><h3>{binding.role}</h3>
               </div>
-              <span
-                class="binding-source source-{binding.source}"
-                aria-label={`Binding source: ${bindingSourceLabel(binding.source)}`}
-              >
-                <span aria-hidden="true">{bindingSourceShape(binding.source)}</span>
-                {bindingSourceLabel(binding.source)}
-              </span>
+              <div class="binding-source-field">
+                <span
+                  class="binding-source source-{binding.source}"
+                  aria-label={`Binding source: ${bindingSourceLabel(binding.source)}`}
+                >
+                  <span aria-hidden="true">{bindingSourceShape(binding.source)}</span>
+                  {bindingSourceLabel(binding.source)}
+                </span>
+                {#if binding.resolutionHint !== null}
+                  <InfoHint
+                    label={`Why ${binding.role} needs a choice`}
+                    exact={binding.resolutionHint}
+                    text="Why"
+                  />
+                {/if}
+              </div>
             </header>
             {#if bindingHasUnavailableExecutor(binding)}
               <p class="binding-startability" role="status">
@@ -1450,7 +1720,7 @@
                 />
               </p>
             {/if}
-            {#if publishedConfigurations.length > 0 || binding.selectedHash.length > 0}
+            {#if registeredConfigurations.length > 0 || binding.selectedHash.length > 0}
               <label class="named-agent">Agent
                 <select
                   value={binding.selectedHash}
@@ -1460,18 +1730,16 @@
                   aria-label={`Agent for ${binding.role}`}
                 >
                   <option value="">Choose</option>
-                  {#if binding.selectedHash.length > 0 && !publishedConfigurations.some(
-                    (item) => item.agent_configuration_revision_hash === binding.selectedHash
-                  )}
+                  {#if binding.selectedHash.length > 0 && registeredConfiguration(binding.selectedHash) === undefined}
                     <option value={binding.selectedHash} disabled>
-                      {binding.source === "unavailable" ? "Unavailable" : "Looking…"}
+                      {binding.source === "unavailable" ? "Saved agent" : "Looking…"}
                     </option>
                   {/if}
-                  {#each publishedConfigurations as item (item.agent_configuration_revision_hash)}
+                  {#each registeredConfigurations as registered (registered.configuration.agent_configuration_revision_hash)}
                     <option
-                      value={item.agent_configuration_revision_hash}
-                      disabled={!item.startable}
-                    >{namedAgentLabel(item)}{item.startable ? "" : " — Unavailable"}</option>
+                      value={registered.configuration.agent_configuration_revision_hash}
+                      disabled={!registered.configuration.startable}
+                    >{registeredConfigurationLabel(registered)}</option>
                   {/each}
                 </select>
               </label>
@@ -1494,24 +1762,16 @@
     {/if}
     <!-- Only a version 3 revision can be unexecutable: the older formats carry no
          such field, because everything they can express this build runs. -->
-    {#if (draft.revision.graph.workflow_format_version === 3 && !draft.revision.graph.executable) || draftHasUnavailableBinding}
+    {#if draft.revision.graph.workflow_format_version === 3 && !draft.revision.graph.executable}
       <section class="start-card unstartable" aria-labelledby="start-title">
         <div>
-          {#if draftHasUnavailableBinding}
-            <p class="eyebrow">Unavailable</p>
-            <h2 id="start-title">This run cannot start</h2>
-            <p class="revision-refusal">Choose a startable agent before starting this run.</p>
-          {:else}
-            {#if draft.revision.graph.workflow_format_version === 3}
-              <p class="eyebrow">Published</p>
-              <h2 id="start-title">{draft.revision.graph.name}</h2>
-              {#if draft.revision.graph.description !== null}<p class="muted">{draft.revision.graph.description}</p>{/if}
-              <p class="revision-refusal">{cannotBeStarted(draft.revision.graph.not_executable_reason)}</p>
-            {/if}
-          {/if}
+          <p class="eyebrow">Published</p>
+          <h2 id="start-title">{draft.revision.graph.name}</h2>
+          {#if draft.revision.graph.description !== null}<p class="muted">{draft.revision.graph.description}</p>{/if}
+          <p class="revision-refusal">{cannotBeStarted(draft.revision.graph.not_executable_reason)}</p>
         </div>
       </section>
-    {:else}
+    {:else if !draftHasUnavailableBinding}
       <section class="start-card" aria-labelledby="start-title">
         <div><p class="eyebrow">{operation === "start" ? "Starting" : "Ready"}</p><h2 id="start-title">Run ID</h2><code>{draft.runId}</code></div>
         <button class="primary" type="button" disabled={busy} onclick={startDraft}>Start</button>

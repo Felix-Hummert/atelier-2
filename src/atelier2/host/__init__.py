@@ -279,6 +279,9 @@ def _serve(parser: argparse.ArgumentParser, parsed: argparse.Namespace) -> int:
                 agent_termination_grace_seconds=(
                     parsed.agent_termination_grace_seconds
                 ),
+                model_inspection_timeout_seconds=(
+                    parsed.model_inspection_timeout_seconds
+                ),
             ),
             database_path=parsed.database,
             effect_store_path=parsed.effect_store,
@@ -812,6 +815,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--event-poll-delay-multiplier", type=float)
     serve_parser.add_argument("--sqlite-lock-timeout-seconds", type=float)
     serve_parser.add_argument("--agent-termination-grace-seconds", type=float)
+    serve_parser.add_argument("--model-inspection-timeout-seconds", type=float)
     serve_parser.add_argument("--host", default=DEFAULT_HOST)
     serve_parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     serve_parser.add_argument("--agent-scratch-root", type=Path)

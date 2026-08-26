@@ -1,6 +1,0 @@
-schema_version = 1
-story = "https://github.com/FlexOr2/atelier-2/issues/451"
-
-[[sentence]]
-id = "new-run-prefers-project-occupancy-before-local-memory-and-empty"
-text = "After exact detail confirmation for an admitted workflow lineage, New Run reads the configured project's current occupancy and resolves each untouched role as a known project binding before a valid browser-remembered binding before empty; it names pending and unavailable project bindings honestly, preserves manual and same-lineage confirmed truth across late or failed reads with one retry, skips ineligible workflows, and starts with exactly the visible hashes."

@@ -25,8 +25,9 @@ from atelier2.api.routes import (
     artifacts,
     events,
     health,
-    occupancy,
+    models,
     project_root,
+    project_source_connection,
     projects,
     queue,
     revisions,
@@ -52,11 +53,18 @@ from atelier2.application.import_project_source_issues import (
     import_project_source_issues,
     list_observed_queue_items,
 )
-from atelier2.application.occupancy import (
-    get_occupancy_revision,
-    publish_occupancy_revision,
+from atelier2.application.model_configuration import (
+    get_model_registry,
+    get_project_model_defaults,
+    get_project_model_resolution,
+    publish_model_registry,
+    publish_project_model_defaults,
+    validate_model_registry_entry,
 )
 from atelier2.application.prepare_run_events import prepare_run_events
+from atelier2.application.project_connections import (
+    get_served_project_source_connection,
+)
 from atelier2.application.project_root import (
     get_project_root_revision,
     publish_project_root_revision,
@@ -305,6 +313,63 @@ def bound_use_cases(
         get_project=lambda project_id: get_project(
             project_id, served_project_id, ports.host_configuration_channel
         ),
+        get_project_source_connection=lambda project_id: (
+            get_served_project_source_connection(
+                project_id,
+                served_project_id,
+                ports.host_configuration_channel,
+                ports.project_source_connection_channel,
+            )
+        ),
+        get_model_registry=lambda provider_id: get_model_registry(
+            provider_id, ports.host_configuration_channel
+        ),
+        publish_model_registry=lambda provider_id, revision_number, entries: (
+            publish_model_registry(
+                provider_id,
+                revision_number,
+                entries,
+                ports.host_configuration_channel,
+                ports.agent_configuration_catalog,
+                ports.model_registry_inspector,
+            )
+        ),
+        validate_model_registry_entry=(
+            lambda provider_id, configuration_hash: validate_model_registry_entry(
+                provider_id,
+                configuration_hash,
+                ports.host_configuration_channel,
+                ports.agent_configuration_catalog,
+                ports.model_registry_inspector,
+            )
+        ),
+        get_project_model_defaults=lambda project_id: get_project_model_defaults(
+            project_id, served_project_id, ports.host_configuration_channel
+        ),
+        publish_project_model_defaults=(
+            lambda project_id, revision_number, defaults: (
+                publish_project_model_defaults(
+                    project_id,
+                    served_project_id,
+                    revision_number,
+                    defaults,
+                    ports.host_configuration_channel,
+                )
+            )
+        ),
+        get_project_model_resolution=(
+            lambda project_id, workflow_revision_hash, overrides: (
+                get_project_model_resolution(
+                    project_id,
+                    served_project_id,
+                    workflow_revision_hash,
+                    overrides,
+                    ports.host_configuration_channel,
+                    ports.workflow_revision_queries,
+                    ports.agent_configuration_catalog,
+                )
+            )
+        ),
         start_published_run=lambda run_id, revision_hash, bindings, orders=(): (
             start_published_run(
                 run_id,
@@ -334,24 +399,6 @@ def bound_use_cases(
         ),
         reconcile_run=lambda request: reconcile_run(
             request, ports.run_queries, ports.reconcile_commander
-        ),
-        get_occupancy_revision=lambda project_id, lineage_id: get_occupancy_revision(
-            project_id,
-            lineage_id,
-            ports.host_configuration_channel,
-            ports.catalog_resolver,
-        ),
-        publish_occupancy_revision=(
-            lambda project_id, lineage_id, revision_number, bindings: (
-                publish_occupancy_revision(
-                    project_id,
-                    lineage_id,
-                    revision_number,
-                    bindings,
-                    ports.host_configuration_channel,
-                    ports.catalog_resolver,
-                )
-            )
         ),
         get_project_root_revision=lambda project_id: get_project_root_revision(
             project_id, ports.host_configuration_channel
@@ -458,8 +505,9 @@ def create_app(
     app.include_router(artifacts.router)
     app.include_router(revisions.router)
     app.include_router(projects.router)
-    app.include_router(occupancy.router)
+    app.include_router(models.router)
     app.include_router(project_root.router)
+    app.include_router(project_source_connection.router)
     app.include_router(runs.router)
     app.include_router(events.router)
     app.include_router(queue.router)

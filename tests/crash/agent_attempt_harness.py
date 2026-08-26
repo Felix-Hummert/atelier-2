@@ -72,6 +72,7 @@ from tests.scenarios.agents import (
     decoding_to,
     launching,
     process_invocation,
+    publish_checked_model_registry,
     refusing,
     runtime_workspace_owner,
 )
@@ -187,6 +188,9 @@ def request(lease: DbosRuntime) -> AgentExecutionRequestV2:
     catalog = DbosAgentConfigurationCatalog(lease.engine, lease.agent_executor_registry)
     catalog.publish_auth_profile_revision(auth)
     catalog.publish_agent_configuration_revision(configuration)
+    publish_checked_model_registry(
+        lease.engine, ProviderId("anthropic"), (configuration,)
+    )
     workflow = WorkflowRevision(DOCUMENT)
     DbosWorkflowRevisionPublisher(lease.engine).publish(workflow)
     binding_set = AgentBindingSet(

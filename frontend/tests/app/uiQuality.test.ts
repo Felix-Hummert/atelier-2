@@ -103,7 +103,22 @@ function openProjectPseudoLocale() {
     props: {
       cockpitApi: cockpitApiStub({
         listRuns: vi.fn(async () => ({ items: [], next_after: null })),
-        listProjects: vi.fn(async () => ({ items: [{ public_project_reference: "project1.dGVzdA" }] }))
+        listProjects: vi.fn(async () => ({ items: [{ public_project_reference: "project1.dGVzdA" }] })),
+        getProjectSourceConnection: vi.fn(async () => ({
+          public_project_reference: "project1.dGVzdA",
+          revision_number: 1,
+          source_kind: "github",
+          source_address: "atelier/atelier-2",
+          auth_method: "personal-access-token" as const,
+          project_source_connection_revision_hash: "a".repeat(64)
+        })),
+        getProjectModelDefaults: vi.fn(async () => ({
+          project_id: "atelier",
+          public_project_reference: "project1.dGVzdA",
+          revision_number: 1,
+          project_model_defaults_revision_hash: "b".repeat(64),
+          defaults: []
+        }))
       }),
       mutationJournal: new MutationJournal(sessionStorage)
     }
@@ -234,10 +249,10 @@ describe("core surfaces read owned display strings", () => {
 
     await screen.findByRole("heading", { name: THE_ONE_PROJECT });
     expect(
-      screen.getByRole("heading", { name: wrapDisplayCopy(settingsPageCopy.workTitle) }).isConnected
+      (await screen.findByRole("heading", { name: wrapDisplayCopy(settingsPageCopy.sourcesTitle) })).isConnected
     ).toBe(true);
     expect(
-      screen.getByRole("heading", { name: wrapDisplayCopy(settingsPageCopy.occupancyTitle) })
+      screen.getByRole("heading", { name: wrapDisplayCopy(settingsPageCopy.modelsTitle) })
         .isConnected
     ).toBe(true);
   });
