@@ -8,7 +8,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/336"
 
 [[sentence]]
 id = "core-surfaces-render-owned-display-strings-under-a-pseudo-locale"
-requirement = "REQ-UIQ-04"
+requirement = "REQ-UIQ-12"
 text = "Studio, New Run, and the Run page render the display strings their existing vocabulary owner holds even when those strings are wrapped in a pseudo-locale, so a second hardcoded copy of an owned string cannot hide on those surfaces."
 
 [[sentence]]
