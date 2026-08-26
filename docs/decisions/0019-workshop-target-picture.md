@@ -130,6 +130,9 @@ is buttons, never a dropdown. Dropdowns are for values chosen per difficulty,
 per role on a start sheet, per work item or per account, which may be
 re-chosen (model defaults, the start sheet's roles, picker, Account).
 
+**Interactive Attach is an ephemeral exception surface above the graph, not a
+room or fifth building block.**
+
 ### 3. State is shown, never restated
 
 A state shows in the shape of the element itself — colour, placeholder, glyph,
