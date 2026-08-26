@@ -154,13 +154,17 @@ describe("the catalog room", () => {
     expect(screen.queryByText(catalogPageCopy.newerRevisionAvailable)).toBeNull();
   });
 
-  it("links a startable entry's Start into the start room, never the reverse", async () => {
+  // Starting lives in this room now (ADR 0019 §1): the entry leads straight to
+  // the start door, with no second room in between.
+  it("links a startable entry's Start straight to the start door", async () => {
     openCatalog({ ...listing([workflowSummary()]), ...admittedName() });
     await screen.findByText(catalogPageCopy.startable);
 
     fireEvent.click(screen.getByRole("link", { name: catalogPageCopy.start }));
 
-    expect((await screen.findByRole("heading", { name: "Workflows" })).isConnected).toBe(true);
+    expect((await screen.findByRole("heading", { name: "Choose a workflow" })).isConnected).toBe(
+      true
+    );
   });
 
   it("opens a named workflow's own detail room from its Details door, the only one it has", async () => {

@@ -73,7 +73,7 @@ async function immediateAgent(page: Page): Promise<string> {
 
 /**
  * A run that fails, and one that is still working, so the evidence series can
- * show the two states a calm Board is judged on: brick that is unmistakably
+ * show the two states a calm room is judged on: brick that is unmistakably
  * not clay, and the blue that means something is actually running.
  */
 async function agentOf(
@@ -220,14 +220,6 @@ test("captures every surface at both widths", async ({ page }) => {
   await page.getByRole("button", { name: "Send" }).click();
   await shoot(page, "workbench-said");
 
-  await page.goto("/atelier");
-  await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
-  await shoot(page, "board");
-
-  await page.goto("/atelier/workflows");
-  await expect(page.getByRole("button", { name: "iterate-code" })).toBeVisible();
-  await shoot(page, "workflows");
-
   await page.goto("/atelier/workflows/iterate-code");
   await expect(page.getByRole("heading", { level: 1, name: "iterate-code" })).toBeVisible();
   await shoot(page, "workflow-detail");
@@ -288,10 +280,10 @@ test("captures every surface at both widths", async ({ page }) => {
   await shoot(page, "run-running");
 
   await page.goto("/atelier");
-  await expect(page.getByRole("heading", { name: "Board" })).toBeVisible();
-  // Clay, blue, brick and quiet ink on one Board: the only place where the
-  // four standings can be judged against each other.
-  await shoot(page, "board-populated");
+  await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
+  // Clay, blue and quiet ink on one shelf: what waits and what moves, judged
+  // against each other in the room that owns both.
+  await shoot(page, "workbench-populated");
 
   await page.goto("/atelier/history");
   await expect(page.getByRole("heading", { name: "History" })).toBeVisible();

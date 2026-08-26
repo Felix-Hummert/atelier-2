@@ -297,11 +297,11 @@ describe("the trail back from a run (#654)", () => {
     return within(trail).getByRole("link");
   }
 
-  it("leads back to the Board when the run names no other origin", async () => {
+  it("leads back to the Workbench, the room living work belongs to", async () => {
     const link = await trailLink();
 
-    expect(link.textContent).toContain("Board");
-    expect(link.getAttribute("href")).toBe("/atelier");
+    expect(link.textContent).toContain("Workbench");
+    expect(link.getAttribute("href")).toBe("/atelier/chat");
   });
 
   it("leads back to the Workbench when the run was opened from the chat", async () => {

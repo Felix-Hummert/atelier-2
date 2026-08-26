@@ -31,14 +31,14 @@ describe("the axe baseline is a named exception list", () => {
         id: "color-contrast",
         impact: "serious",
         helpUrl: "https://dequeuniversity.com/rules/axe/4.13/color-contrast",
-        surfaces: ["studio"],
+        surfaces: ["workbench"],
         item: "https://github.com/FlexOr2/atelier-2/issues/336"
       }
     ];
 
     expect(
       unnamedAxeViolations(
-        "studio",
+        "workbench",
         [
           {
             id: "button-name",
@@ -52,7 +52,7 @@ describe("the axe baseline is a named exception list", () => {
 
     expect(
       unnamedAxeViolations(
-        "studio",
+        "workbench",
         [
           {
             id: "color-contrast",
@@ -85,7 +85,7 @@ describe("the axe baseline is a named exception list", () => {
         id: "color-contrast",
         impact: "serious",
         helpUrl: "https://dequeuniversity.com/rules/axe/4.13/color-contrast",
-        surfaces: ["studio"],
+        surfaces: ["workbench"],
         item: "later"
       })
     ).toContain("color-contrast: item is not an atelier-2 issue URL");

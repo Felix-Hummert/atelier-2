@@ -50,41 +50,40 @@ function open(pathname: string, overrides: Partial<CockpitApi> = {}) {
  * them to carry.
  */
 describe("every page carries one way back and does not repeat its own title", () => {
-  it("leads a run back to the Board, the rail destination it belongs to", async () => {
+  it("leads a run back to the Workbench, the room living work belongs to", async () => {
     open(RUN_PATH);
     await screen.findByRole("heading", { name: "Unnamed workflow" });
 
     const back = screen.getByRole("navigation", { name: "Where you are" });
     expect(within(back).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
-      "←Board"
+      "←Workbench"
     ]);
     expect(within(back).queryByText("Unnamed workflow")).toBeNull();
 
-    await fireEvent.click(within(back).getByRole("link", { name: "Board" }));
+    await fireEvent.click(within(back).getByRole("link", { name: "Workbench" }));
 
-    expect((await screen.findByRole("heading", { name: "Board" })).isConnected).toBe(true);
-    expect(window.location.pathname).toBe("/atelier");
+    expect((await screen.findByRole("heading", { name: "Workbench" })).isConnected).toBe(true);
+    expect(window.location.pathname).toBe("/atelier/chat");
   });
 
-  it("leads the project back to the Board without naming the project twice", async () => {
+  // Settings is the context above the rooms, reached from the rail's foot in
+  // every room, so it carries no way back of its own -- a second door to the
+  // room you just left is exactly what ADR 0019 removes.
+  it("gives Settings no trail of its own, because the rail is its one door", async () => {
     open("/atelier/project");
     await screen.findByRole("heading", { name: THE_ONE_PROJECT });
 
-    const back = screen.getByRole("navigation", { name: "Where you are" });
-    expect(within(back).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
-      "←Board"
-    ]);
-    expect(within(back).queryByText(THE_ONE_PROJECT)).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Where you are" })).toBeNull();
   });
 
-  it("leads the start door back to Workflows, where starting a run belongs", async () => {
+  it("leads the start door back to the Catalog, where starting a run belongs", async () => {
     open("/atelier/new");
     await screen.findByRole("heading", { name: "Choose a workflow" });
 
     const back = screen.getByRole("navigation", { name: "Where you are" });
 
     expect(within(back).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
-      "←Workflows"
+      "←Catalog"
     ]);
   });
 });

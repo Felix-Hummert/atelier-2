@@ -294,33 +294,23 @@ button.quiet {
   flex: 1;
 }
 
-.rail-project,
-.rail-settings {
-  padding: var(--space-2) var(--space-3) 0;
+/* Settings is an entry like the others, set apart by one line: it is the
+   context above the three rooms, not a fourth room (ADR 0019 §1). */
+.rail-foot {
+  margin-top: var(--space-2);
   border-top: var(--edge) solid var(--line);
-  color: var(--ink-dim);
-  font-size: var(--text-xs);
+  border-radius: 0;
+  padding-top: var(--space-3);
+  row-gap: 0;
 }
 
+/* The project the settings are for, small under its entry: the context, never
+   a heading of its own. */
 .rail-project {
-  padding-top: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.rail-project b {
-  color: var(--ink);
-}
-
-.rail-settings {
-  border-top: none;
-  padding-top: var(--space-1);
-}
-
-.rail-settings small {
+  flex-basis: 100%;
+  padding-left: calc(var(--space-5) + var(--space-3));
+  color: var(--ink-dim);
   font-size: var(--text-2xs);
-  white-space: nowrap;
 }
 
 .workshop-stage {
@@ -411,12 +401,25 @@ button.quiet {
 
   .nav-destination {
     width: auto;
-    flex: 1 1 auto;
+    flex: 0 1 auto;
+    padding: var(--space-2);
   }
 
-  .rail-grow,
-  .rail-project,
-  .rail-settings {
+  /* One row at phone width, and still glyph and word for every entry: there is
+     no navigation without a word (picture §01). Settings keeps the row's right
+     end, the way it keeps the rail's foot. */
+  .rail-foot {
+    margin: 0 0 0 auto;
+    border-top: none;
+    padding-top: var(--space-2);
+  }
+
+  .rail-project {
+    flex-basis: auto;
+    padding-left: var(--space-2);
+  }
+
+  .rail-grow {
     display: none;
   }
 }

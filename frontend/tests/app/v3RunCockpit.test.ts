@@ -314,7 +314,7 @@ describe("a version 3 run in the cockpit", () => {
     ).toBe(true);
   });
 
-  it("leads back to the Board without repeating the page's own title", async () => {
+  it("leads back to the Workbench without repeating the page's own title", async () => {
     render(App, {
       props: { cockpitApi: api(v3Run()), mutationJournal: new MutationJournal(sessionStorage) }
     });
@@ -322,7 +322,7 @@ describe("a version 3 run in the cockpit", () => {
 
     const back = screen.getByRole("navigation", { name: "Where you are" });
     expect(within(back).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
-      "←Board"
+      "←Workbench"
     ]);
     expect(within(back).queryByText("Two agents in a line")).toBeNull();
   });

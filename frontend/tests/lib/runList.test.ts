@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { RunV3, WorkflowRevisionDetail } from "../../src/api/client";
-import { newestActivityFirst, runActivityAt, workflowNamesOf } from "../../src/lib/runList";
+import {
+  newestActivityFirst,
+  newestReadOfEachRun,
+  runActivityAt,
+  workflowNamesOf
+} from "../../src/lib/runList";
 import { notCancellableBlock } from "../support/runV3";
 import {
   publicReference,
@@ -187,5 +192,31 @@ describe("the project run list reads published workflow names", () => {
         async () => v3Revision("Different revision", "e".repeat(64))
       )
     ).rejects.toThrow("a V3 run received a different workflow revision");
+  });
+});
+
+/**
+ * A room that asks several state lists at one moment gets them answered
+ * separately, so a run that moves between two answers comes back in both.
+ */
+describe("one entry per run, across separately answered reads", () => {
+  it("keeps the higher state version when two reads answer with the same run", () => {
+    const opened = v3Run({ state: "WAITING_INPUT", state_version: 2 });
+    const earlier = v3Run({ state: "STARTED", state_version: 1 });
+
+    expect(newestReadOfEachRun([earlier, opened])).toEqual([opened]);
+    // Whichever read is drained first, the fresher truth is the one kept.
+    expect(newestReadOfEachRun([opened, earlier])).toEqual([opened]);
+  });
+
+  it("keeps every distinct run, in the order it was first read", () => {
+    const first = v3Run({ public_run_reference: "run1.YQ" });
+    const second = v3Run({ public_run_reference: "run1.Yg" });
+
+    expect(newestReadOfEachRun([first, second])).toEqual([first, second]);
+  });
+
+  it("answers an empty reading with an empty list rather than inventing a row", () => {
+    expect(newestReadOfEachRun([])).toEqual([]);
   });
 });

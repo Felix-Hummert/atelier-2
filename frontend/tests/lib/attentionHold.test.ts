@@ -62,6 +62,32 @@ describe("the studio's hold of GET /events", () => {
     expect(applied.hold.stream_failure?.title).toBe("Durable state is corrupt");
   });
 
+  // The door carries three kinds; a client list that knows two reads the third
+  // as a broken contract and stops the hold on the first reconciliation the
+  // workshop raises.
+  it("takes every kind the attention door carries, reconciliation included", () => {
+    const applied = applyAttentionFrame(
+      markAttentionLive(startAttentionHold()),
+      JSON.stringify({
+        workflow_format_version: 2 as const,
+        cursor: eventCursor(1),
+        sequence: 1,
+        public_run_reference: publicReference,
+        workflow_revision_hash: revisionHash,
+        node_id: "action",
+        node_execution_id: revisionHash,
+        event_hash: revisionHash,
+        node_rail: [{ node_id: "action", state: "needs_you" as const, attempt: null }],
+        event: "ACTION_RECONCILIATION_REQUIRED",
+        request_base64: "YQ==",
+        request_hash: revisionHash
+      })
+    );
+
+    expect(applied.hold.protocol_problem).toBeNull();
+    expect(applied.event?.event).toBe("ACTION_RECONCILIATION_REQUIRED");
+  });
+
   it("names a non-attention durable event as a decoder failure", () => {
     const applied = applyAttentionFrame(
       markAttentionLive(startAttentionHold()),
