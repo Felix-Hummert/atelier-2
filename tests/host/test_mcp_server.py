@@ -293,6 +293,7 @@ def started_run() -> RunResourceV3:
         agent_binding_set_hash=BINDING_SET_HASH,
         run_configuration_revision_hash=CONFIGURATION_HASH,
         agent_bindings=(),
+        orders=(),
         state_version=1,
         state="STARTED",
         current_node_id="implement",

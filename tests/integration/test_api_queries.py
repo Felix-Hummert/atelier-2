@@ -29,6 +29,7 @@ from atelier2.adapters.dbos.schema import (
     reconcile_commands,
     run_configuration_revisions,
     run_events,
+    run_inputs_v3,
     runs,
     workflow_revisions,
 )
@@ -57,7 +58,9 @@ from atelier2.contracts.executions import (
     RunEventKind,
     logical_effect_key_for,
 )
+from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.pages import PageLimit
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_projections import (
     RunPage,
 )
@@ -1189,6 +1192,55 @@ def test_run_page_batches_rows_and_parses_each_distinct_revision_once(
     assert selects <= 4
 
 
+def test_run_page_batches_orders_in_one_query_and_a_run_without_one_answers_empty(
+    engine: Engine,
+) -> None:
+    revision = WorkflowRevision(_workflow_document())
+    run_ids = tuple(RunId(f"orders-{index:03d}") for index in range(5))
+    _seed_runs(engine, tuple((run_id, revision) for run_id in run_ids))
+    ordered_run_id = run_ids[0]
+    schema_hash = _digest("orders-schema")
+    order_value = b'{"topic":"launch"}'
+    with engine.begin() as connection:
+        connection.execute(
+            run_inputs_v3.insert().values(
+                run_id=ordered_run_id.value,
+                name="headline",
+                schema_revision_hash=schema_hash,
+                value=order_value,
+                value_hash=hashlib.sha256(order_value).hexdigest(),
+            )
+        )
+    order_selects: list[str] = []
+
+    def capture_order_select(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: object,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        if "FROM run_inputs_v3" in statement:
+            order_selects.append(statement)
+
+    event.listen(engine, "before_cursor_execute", capture_order_select)
+    try:
+        page = durable_queries(engine).list_runs(None, 100)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_order_select)
+
+    assert isinstance(page, RunPage)
+    assert len(order_selects) == 1
+    assert "run_inputs_v3.run_id IN" in order_selects[0]
+    projections = {projection.run.run_id: projection for projection in page.runs}
+    assert projections[ordered_run_id].orders == (
+        RunInput("headline", PublishedRevisionHash(schema_hash), order_value),
+    )
+    for unordered_run_id in run_ids[1:]:
+        assert projections[unordered_run_id].orders == ()
+
+
 def test_run_page_batches_waiting_reconciliation_and_projects_command_owner_state(
     engine: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1304,7 +1356,7 @@ nodes:
         event.remove(engine, "before_cursor_execute", count_selects)
 
     assert isinstance(page, RunPage)
-    assert selects == 5
+    assert selects == 6
     assert len(intent_selects) == 1
     assert "effect_intents.logical_key IN" in intent_selects[0]
     assert "effect_intents.run_id IN" not in intent_selects[0]

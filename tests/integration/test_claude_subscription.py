@@ -52,6 +52,14 @@ from atelier2.adapters.dbos.schema import (
 from atelier2.api.openapi import API_PREFIX
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import AgentAttemptFailureCode
+from atelier2.contracts.agent_transcripts import (
+    AssistantTurn,
+    AttemptTranscript,
+    ToolCalled,
+    ToolReturned,
+    UnrecognisedProviderOutput,
+    Usage,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentBinding,
@@ -123,9 +131,36 @@ json.dump(
 )
 """
 
-UNUSABLE_ANSWER = AgentExecutionFailure(
-    AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY
-)
+LINE_SEPARATOR = "\u2028"
+"""A character a JSON string may carry and NDJSON does not end a record on.
+
+Named rather than written into the fixture, because a bare one is invisible to a
+reader of the test and to a reviewer of the diff alike.
+"""
+
+ENVELOPE_USAGE = Usage(1_024, 32, 256, 64)
+"""What the last line of a stream reports the whole call spent."""
+
+
+def spent_only() -> AttemptTranscript:
+    """The steps a stream carrying nothing but its final line leaves behind."""
+
+    return AttemptTranscript.of([ENVELOPE_USAGE])
+
+
+def kept_whole(standard_output: str) -> AttemptTranscript:
+    """What a call whose stream this executor could not read still leaves behind."""
+
+    return AttemptTranscript.of([UnrecognisedProviderOutput(standard_output)])
+
+
+def unusable(transcript: AttemptTranscript | None) -> AgentExecutionFailure:
+    """This call left no answer this executor may use, and what it did leave."""
+
+    return AgentExecutionFailure(
+        AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY, transcript
+    )
+
 
 # What a fake CLI leaves beside itself, so a probe that is handed no
 # environment and no working directory of ours can still say how it was run.
@@ -191,7 +226,35 @@ def emitting_claude(standard_output: str, return_code: int = 0) -> str:
 
 
 def success_envelope(result: str) -> str:
-    return json.dumps({"type": "result", "is_error": False, "result": result})
+    """The last line of a stream: the answer, and what the whole call spent."""
+
+    return json.dumps(
+        {
+            "type": "result",
+            "is_error": False,
+            "result": result,
+            "usage": {
+                "input_tokens": ENVELOPE_USAGE.input_tokens,
+                "output_tokens": ENVELOPE_USAGE.output_tokens,
+                "cache_read_input_tokens": ENVELOPE_USAGE.cache_read_input_tokens,
+                "cache_creation_input_tokens": (
+                    ENVELOPE_USAGE.cache_creation_input_tokens
+                ),
+            },
+        }
+    )
+
+
+def assistant_line(*blocks: Mapping[str, object]) -> str:
+    """One stream line of what the model said or asked for, in its own shape."""
+
+    return json.dumps({"type": "assistant", "message": {"content": list(blocks)}})
+
+
+def tool_result_line(*blocks: Mapping[str, object]) -> str:
+    """One stream line of what the doors answered, in the provider's own shape."""
+
+    return json.dumps({"type": "user", "message": {"content": list(blocks)}})
 
 
 def subscription_request(
@@ -274,7 +337,8 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
         str(settings.executable),
         "-p",
         "--output-format",
-        "json",
+        "stream-json",
+        "--verbose",
         "--model",
         "claude-sonnet-4-6",
         "--tools=",
@@ -367,45 +431,80 @@ def test_an_answer_at_the_durable_output_bound_still_completes(tmp_path: Path) -
         invocation, launched(command, workspace)
     )
 
-    assert result == AgentExecutionResult(answer.encode("utf-8"))
+    assert result == AgentExecutionResult(answer.encode("utf-8"), spent_only())
 
 
 @pytest.mark.parametrize(
-    ("standard_output", "return_code"),
+    ("standard_output", "return_code", "kept"),
     [
-        pytest.param(success_envelope("pong"), 1, id="the CLI exited unsuccessfully"),
-        pytest.param("not an envelope at all", 0, id="stdout is not JSON"),
-        pytest.param(json.dumps(["result"]), 0, id="the envelope is not an object"),
+        pytest.param(
+            success_envelope("pong"),
+            1,
+            spent_only(),
+            id="the CLI exited unsuccessfully",
+        ),
+        pytest.param(
+            "not an envelope at all",
+            0,
+            kept_whole("not an envelope at all"),
+            id="stdout is not JSON",
+        ),
+        pytest.param(
+            json.dumps(["result"]),
+            0,
+            kept_whole(json.dumps(["result"])),
+            id="the envelope is not an object",
+        ),
         pytest.param(
             json.dumps({"type": "result", "is_error": True, "result": "pong"}),
             0,
+            kept_whole(
+                json.dumps({"type": "result", "is_error": True, "result": "pong"})
+            ),
             id="the envelope declares an error",
         ),
         pytest.param(
             json.dumps({"type": "system", "is_error": False, "result": "pong"}),
             0,
+            kept_whole(
+                json.dumps({"type": "system", "is_error": False, "result": "pong"})
+            ),
             id="the envelope is not the terminal result",
         ),
         pytest.param(
             json.dumps({"type": "result", "is_error": False}),
             0,
+            kept_whole(json.dumps({"type": "result", "is_error": False})),
             id="the envelope carries no result text",
         ),
         pytest.param(
             json.dumps({"type": "result", "is_error": 0, "result": "pong"}),
             0,
+            kept_whole(json.dumps({"type": "result", "is_error": 0, "result": "pong"})),
             id="the error flag is not a boolean",
         ),
         pytest.param(
             success_envelope("a" * (MAXIMUM_AGENT_OUTPUT_BYTES_V2 + 1)),
             0,
+            spent_only(),
             id="the answer exceeds the durable output bound",
         ),
     ],
 )
 def test_an_unusable_provider_answer_fails_the_attempt(
-    tmp_path: Path, standard_output: str, return_code: int
+    tmp_path: Path,
+    standard_output: str,
+    return_code: int,
+    kept: AttemptTranscript,
 ) -> None:
+    """Every way an answer is unusable, and what each one still leaves readable.
+
+    The transcript is asserted beside the refusal because it is the difference
+    between the two: a call that wrote something this vocabulary could read
+    keeps those steps, and one that wrote anything else keeps that text whole.
+    Neither keeps nothing, which is what the predecessor did (#733).
+    """
+
     settings = claude_subscription_deployment(
         tmp_path, emitting_claude(standard_output, return_code)
     )
@@ -419,7 +518,7 @@ def test_an_unusable_provider_answer_fails_the_attempt(
         invocation, launched(command, workspace)
     )
 
-    assert result == UNUSABLE_ANSWER
+    assert result == unusable(kept)
 
 
 def test_stdout_that_is_not_text_fails_the_attempt(tmp_path: Path) -> None:
@@ -437,7 +536,7 @@ def test_stdout_that_is_not_text_fails_the_attempt(tmp_path: Path) -> None:
         invocation, launched(command, workspace)
     )
 
-    assert result == UNUSABLE_ANSWER
+    assert result == unusable(kept_whole("\ufffd\ufffd"))
 
 
 def test_a_non_subscription_profile_is_refused_before_any_process_is_prepared(
@@ -1037,7 +1136,10 @@ def test_a_supervised_provider_answer_becomes_exactly_one_durable_receipt(
     assert receipts[0]["provider_id"] == "anthropic"
     assert receipts[0]["auth_mode"] == "subscription"
     assert receipts[0]["executor_revision"] == "claude-subscription/v1"
-    assert receipts[0]["executor_operational_identity"] == "headless-print-json/v1"
+    assert (
+        receipts[0]["executor_operational_identity"]
+        == CLAUDE_SUBSCRIPTION_OPERATIONAL_IDENTITY.value
+    )
 
 
 def test_the_largest_durable_answer_survives_the_supervised_provider_frame(
@@ -1940,3 +2042,276 @@ def test_an_executable_that_answers_its_version_and_cannot_spawn_is_refused(
 
     with pytest.raises(ClaudeExecutableUnsupported, match="could not start"):
         attest_workspace_tool_invocation(settings)
+
+
+def test_a_stream_becomes_the_steps_that_reached_the_answer(tmp_path: Path) -> None:
+    """The tool call, what the door answered, the words, and what it all cost.
+
+    Read from the same call the answer is read from, in the order the CLI wrote
+    them, because a transcript that reordered or re-attributed a step would be a
+    story about the attempt rather than the attempt.
+    """
+
+    stream = "\n".join(
+        (
+            json.dumps({"type": "system", "subtype": "init", "model": "opus"}),
+            assistant_line(
+                {
+                    "type": "tool_use",
+                    "id": "toolu_01",
+                    "name": "Read",
+                    "input": {"file_path": "AGENTS.md"},
+                }
+            ),
+            tool_result_line(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_01",
+                    "content": "This file is reusable AI policy.",
+                }
+            ),
+            assistant_line({"type": "text", "text": "The file names the policy."}),
+            success_envelope("pong"),
+        )
+    )
+    settings = claude_subscription_deployment(tmp_path, emitting_claude(stream))
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+
+    result = executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+
+    assert result == AgentExecutionResult(
+        b"pong",
+        AttemptTranscript.of(
+            [
+                UnrecognisedProviderOutput(
+                    json.dumps({"type": "system", "subtype": "init", "model": "opus"})
+                ),
+                ToolCalled("Read", '{"file_path":"AGENTS.md"}'),
+                ToolReturned("Read", "This file is reusable AI policy."),
+                AssistantTurn("The file names the policy."),
+                ENVELOPE_USAGE,
+            ]
+        ),
+    )
+
+
+def test_a_result_answering_a_call_this_stream_never_showed_keeps_its_own_name(
+    tmp_path: Path,
+) -> None:
+    """A door answer whose call is gone is still kept, under the id it carries.
+
+    A transcript truncated in front of its own first call would otherwise have
+    to invent a tool name or drop the answer, and both would say something the
+    provider never said.
+    """
+
+    stream = "\n".join(
+        (
+            tool_result_line(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_orphan",
+                    "content": "127.0.0.1 localhost",
+                }
+            ),
+            success_envelope("pong"),
+        )
+    )
+    settings = claude_subscription_deployment(tmp_path, emitting_claude(stream))
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+
+    result = executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+
+    assert result == AgentExecutionResult(
+        b"pong",
+        AttemptTranscript.of(
+            [
+                ToolReturned("toolu_orphan", "127.0.0.1 localhost"),
+                ENVELOPE_USAGE,
+            ]
+        ),
+    )
+
+
+def test_a_call_that_died_printing_a_credential_keeps_it_redacted(
+    tmp_path: Path,
+) -> None:
+    """The #733 episode, and the one thing that must not travel out of it.
+
+    A nonzero exit with an empty standard error used to leave the attempt with
+    no account at all. What the process printed is kept instead -- and a
+    credential it happened to print is replaced before anything durable sees it.
+    """
+
+    canary = "sk-ant" + "-plantedcanarysecret0123456789"
+    printed = f"fatal: ANTHROPIC_API_KEY={canary} was rejected"
+    settings = claude_subscription_deployment(tmp_path, emitting_claude(printed, 1))
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+
+    result = executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+
+    assert isinstance(result, AgentExecutionFailure)
+    assert result.transcript is not None
+    kept = result.transcript.document.decode("utf-8")
+    assert canary not in kept
+    assert "was rejected" in kept
+    assert result == unusable(kept_whole(printed))
+
+
+def demanding_claude(known: Iterable[str]) -> str:
+    """A fake CLI whose flags all parse and whose combination is still refused.
+
+    It answers the measured refusal of 2.1.221 (#694): every argument is read,
+    and the call still ends because the output format asks for a flag the vector
+    did not bring.
+    """
+
+    return (
+        "import sys\n"
+        f"known = {sorted(set(known))!r}\n"
+        "for argument in sys.argv[1:]:\n"
+        "    if argument.startswith('--') and argument not in known:\n"
+        '        sys.stderr.write("error: unknown option \'" + argument + "\'\\n")\n'
+        "        raise SystemExit(1)\n"
+        "sys.stderr.write(\n"
+        "    'Error: --output-format=stream-json requires --verbose\\n'\n"
+        ")\n"
+        "raise SystemExit(1)\n"
+    )
+
+
+def test_an_executable_that_needs_a_flag_this_vector_lacks_is_refused_by_name(
+    tmp_path: Path,
+) -> None:
+    """A vector every flag of which parses can still be refused as a whole.
+
+    Measured on 2.1.221 (#694): `--output-format stream-json` without
+    `--verbose` exits 1 saying it requires that flag, which is not an unknown
+    option and which the control beside this probe therefore cannot see. A
+    release that demanded a flag the vector does not carry would pass every
+    earlier check here and then fail on every real call.
+    """
+
+    reference = claude_deployment(tmp_path, "reference", INTROSPECTING_CLAUDE)
+    settings = claude_deployment(
+        tmp_path, "deployment", demanding_claude(workspace_tool_flags(reference))
+    )
+
+    with pytest.raises(ClaudeExecutableUnsupported, match="output format"):
+        attest_workspace_tool_invocation(settings)
+
+
+def test_a_line_separator_inside_an_answer_does_not_cut_the_stream(
+    tmp_path: Path,
+) -> None:
+    """U+2028 is legal inside a JSON string, and is not a record boundary.
+
+    Splitting the way text is usually split would tear this one line in two,
+    leave neither half parseable, and read the second as the envelope -- so a
+    model that quoted a line separator would have failed its own attempt.
+    """
+
+    answered = "pong" + LINE_SEPARATOR + "still pong"
+    envelope = json.dumps(
+        {"type": "result", "is_error": False, "result": answered},
+        ensure_ascii=False,
+    )
+    settings = claude_subscription_deployment(tmp_path, emitting_claude(envelope))
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+
+    result = executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+
+    assert isinstance(result, AgentExecutionResult)
+    assert result.output_bytes == answered.encode("utf-8")
+
+
+def test_a_line_no_parser_can_read_is_kept_rather_than_raised(
+    tmp_path: Path,
+) -> None:
+    """A number past the interpreter's own digit limit is text, not a crash.
+
+    `json.loads` refuses it with a plain `ValueError` rather than a decode
+    error, which an executor catching only the latter would let escape into the
+    attempt driver. It is kept as what it always was: output nobody could read.
+    """
+
+    unreadable = '{"type":"assistant","cost":' + "1" * 5_000 + "}"
+    stream = "\n".join((unreadable, success_envelope("pong")))
+    settings = claude_subscription_deployment(tmp_path, emitting_claude(stream))
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+
+    result = executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+
+    assert result == AgentExecutionResult(
+        b"pong",
+        AttemptTranscript.of([UnrecognisedProviderOutput(unreadable), ENVELOPE_USAGE]),
+    )
+
+
+def test_a_block_shape_this_executor_does_not_know_is_kept_beside_the_ones_it_does(
+    tmp_path: Path,
+) -> None:
+    """A dropped block hides best on a line that IS recognised.
+
+    The reader would see the turn and the tool call and never learn that a third
+    thing stood between them, which is the silence the whole transcript exists
+    to remove -- so an unknown block is kept as the provider's own output.
+    """
+
+    thinking = {"type": "thinking", "thinking": "weighing the two files"}
+    stream = "\n".join(
+        (
+            assistant_line(
+                thinking,
+                {"type": "text", "text": "I will read the policy."},
+            ),
+            success_envelope("pong"),
+        )
+    )
+    settings = claude_subscription_deployment(tmp_path, emitting_claude(stream))
+    executor = ClaudeSubscriptionExecutorFactory(settings).open()
+    request = subscription_request()
+    command = executor.prepare_process(request)
+    workspace = provider_workspace(tmp_path)
+
+    result = executor.decode_process_completion(
+        leased(request, command, workspace), launched(command, workspace)
+    )
+
+    assert result == AgentExecutionResult(
+        b"pong",
+        AttemptTranscript.of(
+            [
+                UnrecognisedProviderOutput(
+                    json.dumps(thinking, ensure_ascii=False, separators=(",", ":"))
+                ),
+                AssistantTurn("I will read the policy."),
+                ENVELOPE_USAGE,
+            ]
+        ),
+    )
