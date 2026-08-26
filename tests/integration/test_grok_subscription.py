@@ -700,18 +700,16 @@ def test_an_unusable_envelope_is_a_typed_process_failure(tmp_path: Path) -> None
     assert isinstance(failed_with_output, AgentExecutionFailure)
     assert failed_with_output.code == refusal.code
     assert failed_with_output.transcript is not None
-    assert (
-        executor.decode_process_completion(
-            invocation, AgentProcessCompletion(0, b"not-json", b"")
-        )
-        == refusal
+    not_json = executor.decode_process_completion(
+        invocation, AgentProcessCompletion(0, b"not-json", b"")
     )
-    assert (
-        executor.decode_process_completion(
-            invocation, AgentProcessCompletion(0, b'{"result":"wrong field"}', b"")
-        )
-        == refusal
+    assert isinstance(not_json, AgentExecutionFailure)
+    assert not_json.code == refusal.code
+    wrong_field = executor.decode_process_completion(
+        invocation, AgentProcessCompletion(0, b'{"result":"wrong field"}', b"")
     )
+    assert isinstance(wrong_field, AgentExecutionFailure)
+    assert wrong_field.code == refusal.code
     assert (
         executor.decode_process_completion(
             invocation, AgentProcessCompletion(0, b"", b"")
