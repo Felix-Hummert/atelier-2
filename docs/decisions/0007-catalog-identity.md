@@ -472,6 +472,16 @@ lineage, per #8 rule 1. Two exclusions are ledger facts rather than reader filte
 entry from a run with operator intervention (#9), and a run whose difficulty covariate is
 absent, marked `covariate_absent` rather than counted at an invented default.
 
+A scorecard projection may be read for every catalog lineage kind and always shows
+its sample count `n`; agent commentary is never a measurement kind. A scorecard
+below its policy’s minimum `n` has no automatic selection effect. Intervention
+means a human-authenticated state-changing action after Run start; observation,
+input authorship and pre-start triage are not intervention. The scorecard policy
+names only receipt/platform-derived signals, including landing/revert, later linked
+defect, terminal verdict/round count, gate outcome, recorded-meter cost per landed
+item and controlled fork comparison; it may separately report external-work share
+and emit one deduplicated improvement item per external completion.
+
 #8's consumption measurements — tokens, duration and cost per run — ride this ledger
 unchanged, one entry per kind per terminated run, sourced `run_terminal` from ADR 0008's
 recorded meter. **Which kinds exist, and how a subscription's consumption is labeled
@@ -619,6 +629,10 @@ finish. #79's queue assigns a workflow to a work item through exactly this prece
 adds no second selector: it may author the item binding the platform then owns, and its
 readiness and automation rules are its own, but which workflow a type gets is the
 selection revision's answer or it is two answers.
+
+A batch selector expands into independently resolved work items; label or status
+meaning is supplied only by the selected versioned triage workflow, never by
+catalog or scheduler hard code.
 
 ### 9. The resolution port ADR 0006's reference binding builds against
 
