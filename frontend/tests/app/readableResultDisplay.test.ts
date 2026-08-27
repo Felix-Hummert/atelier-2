@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { CockpitApi, NodeDetail, RunV3 } from "../../src/api/client";
+import type { NodeDetail, RunV3 } from "../../src/api/client";
 import { MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS, nodeDetailSchema } from "../../src/api/client";
 import NodeDetailPanel from "../../src/components/NodeDetailPanel.svelte";
 import V3AnswerCard from "../../src/components/V3AnswerCard.svelte";
@@ -9,17 +9,18 @@ import V3RunView from "../../src/components/V3RunView.svelte";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { runResultCopy } from "../../src/lib/runResultCopy";
+import { standingWords } from "../../src/lib/runState";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { cancellableBlock, notCancellableBlock } from "../support/runV3";
 import { publicReference, revisionHash as digest } from "../support/workflowV1";
 
 /**
- * A finished run's own result reads as prose everywhere it appears (#716):
- * the run page shows its sink node's answer without a click, and the node
- * panel's Result tab renders the identical readable form, the exact bytes
- * kept only behind a collapsed "Exact text" disclosure. This file owns that
- * behaviour apart from `v3RunCockpit.test.ts`, which another lane's
- * exact-scope claim holds while this fix lands.
+ * A finished run's own result lives on the node's Result tab (#666 / #716):
+ * the run head is the one standing sentence, a completed run does not
+ * prefetch the sink node's answer, and the Result tab renders the readable
+ * form with the exact bytes behind a collapsed "Exact text" disclosure.
+ * This file owns that behaviour apart from `v3RunCockpit.test.ts`, which
+ * another lane's exact-scope claim holds while this fix lands.
  */
 
 afterEach(() => cleanup());
@@ -44,6 +45,34 @@ function v3Run(overrides: Partial<RunV3> = {}): RunV3 {
     started_at: "2026-08-25T15:00:00Z",
     ended_at: "2026-08-25T15:00:12Z",
     ...overrides
+  };
+}
+
+function reportRevision() {
+  return {
+    workflow_revision_hash: digest,
+    document_base64: "YQ==",
+    graph: {
+      workflow_format_version: 3 as const,
+      executable: true as const,
+      not_executable_reason: null,
+      node_count: 1,
+      agent_roles: ["builder"],
+      orders: [],
+      wait_answer_schemas: [],
+      node_previews: [
+        {
+          id: "report",
+          kind: "agent" as const,
+          role: "builder",
+          instruction_start: "Write the report.",
+          depends_on: []
+        }
+      ],
+      loops: [],
+      name: "One report",
+      description: null
+    }
   };
 }
 
@@ -72,7 +101,7 @@ function withRefusalOutput(raw: string, refusal: string): NodeDetail {
   });
 }
 
-/** An agent's own receipt (#716's outcome banner only ever names an agent's report). */
+/** An agent's own receipt. */
 function agentProvenance(): NonNullable<NodeDetail["provenance"]> {
   return {
     role: "builder",
@@ -97,171 +126,72 @@ function withAnswer(raw: string, overrides: Partial<NodeDetail> = {}): NodeDetai
   });
 }
 
-describe("a finished run's page shows its own result, unclicked (#716)", () => {
-  it("renders a declared object's answer field as one plain sentence above the graph", async () => {
+function renderRun(run: RunV3, detail: NodeDetail) {
+  const getNodeDetail = vi.fn(async () => detail);
+  const cockpitApi = cockpitApiStub({
+    getWorkflowRevision: vi.fn(async () => reportRevision()),
+    getNodeDetail
+  });
+  render(V3RunView, {
+    props: {
+      run,
+      cockpitApi,
+      mutationJournal: new MutationJournal(sessionStorage)
+    }
+  });
+  return { getNodeDetail };
+}
+
+describe("a finished run's page shows the standing sentence, not the result (#666)", () => {
+  it("shows the standing sentence and no Result-named region, and does not fetch the sink until a node is opened", async () => {
     const raw = '{"answer":"The workflow could not be started: format not executable.","started_run_ids":[]}';
-    const cockpitApi = cockpitApiStub({
-      getNodeDetail: vi.fn(async () => withAnswer(raw))
-    });
+    const { getNodeDetail } = renderRun(v3Run(), withAnswer(raw));
 
-    render(V3RunView, {
-      props: {
-        run: v3Run(),
-        cockpitApi,
-        mutationJournal: new MutationJournal(sessionStorage)
-      }
-    });
+    const standing = await screen.findByLabelText("Where this run stands");
+    expect(standing.textContent).toContain(standingWords.done);
+    await screen.findByRole("button", { name: "report — Done" });
 
-    const outcome = await screen.findByRole("region", { name: runPageCopy.tabResult });
-    expect(
-      within(outcome).getByText("The workflow could not be started: format not executable.", {
-        exact: true
-      }).isConnected
-    ).toBe(true);
-    // Never a raw JSON line open on the main surface -- the exact bytes stay
-    // behind a disclosure the operator has not opened.
-    expect(within(outcome).getByText(raw).closest("details")?.open).toBe(false);
+    expect(screen.queryByRole("region", { name: runPageCopy.tabResult })).toBeNull();
+    expect(screen.queryByText("The workflow could not be started: format not executable.")).toBeNull();
+    expect(getNodeDetail).not.toHaveBeenCalled();
   });
 
-  it("shows a remaining non-empty field after the answer sentence -- nothing material only in the disclosure", async () => {
-    const raw = '{"answer":"Started the fix.","started_run_ids":["run1.a"]}';
-    const cockpitApi = cockpitApiStub({
-      getNodeDetail: vi.fn(async () => withAnswer(raw))
-    });
+  it("opening the sink node shows the decoded sentence and the collapsed Exact text disclosure", async () => {
+    const raw = '{"answer":"Reviewed the diff.","started_run_ids":["run1.ZHJhZnQ"]}';
+    const { getNodeDetail } = renderRun(v3Run(), withAnswer(raw));
 
-    render(V3RunView, {
-      props: {
-        run: v3Run(),
-        cockpitApi,
-        mutationJournal: new MutationJournal(sessionStorage)
-      }
-    });
+    await fireEvent.click(await screen.findByRole("button", { name: "report — Done" }));
 
-    const outcome = await screen.findByRole("region", { name: runPageCopy.tabResult });
-    expect(within(outcome).getByText("Started the fix.", { exact: true }).isConnected).toBe(true);
-    expect(within(outcome).getByText("started_run_ids").isConnected).toBe(true);
-    expect(within(outcome).getByText("run1.a").isConnected).toBe(true);
+    const panel = await screen.findByRole("complementary");
+    expect(within(panel).getByText("Reviewed the diff.", { exact: true }).isConnected).toBe(true);
+    expect(within(panel).getByText("started_run_ids").isConnected).toBe(true);
+    expect(within(panel).getByText("run1.ZHJhZnQ").isConnected).toBe(true);
+    const disclosure = within(panel)
+      .getByText(runResultCopy.exactText, { selector: "summary" })
+      .closest("details");
+    expect(disclosure?.open).toBe(false);
+    expect(screen.queryByRole("region", { name: runPageCopy.tabResult })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Shown above" })).toBeNull();
+    expect(getNodeDetail).toHaveBeenCalledTimes(1);
+    expect(getNodeDetail).toHaveBeenCalledWith(publicReference, "report");
   });
 
-  it("renders a declared object with no answer field as its named fields", async () => {
-    const raw = '{"verdict":"green","findings":2}';
-    const cockpitApi = cockpitApiStub({
-      getNodeDetail: vi.fn(async () => withAnswer(raw))
-    });
-
-    render(V3RunView, {
-      props: {
-        run: v3Run(),
-        cockpitApi,
-        mutationJournal: new MutationJournal(sessionStorage)
-      }
-    });
-
-    const outcome = await screen.findByRole("region", { name: runPageCopy.tabResult });
-    expect(within(outcome).getByText("verdict").isConnected).toBe(true);
-    expect(within(outcome).getByText("green").isConnected).toBe(true);
-    expect(within(outcome).getByText("2").isConnected).toBe(true);
-  });
-
-  it("renders a declared array as its own items, never as a JSON line", async () => {
-    const raw = '["one finding","another finding"]';
-    const cockpitApi = cockpitApiStub({
-      getNodeDetail: vi.fn(async () => withAnswer(raw))
-    });
-
-    render(V3RunView, {
-      props: {
-        run: v3Run(),
-        cockpitApi,
-        mutationJournal: new MutationJournal(sessionStorage)
-      }
-    });
-
-    const outcome = await screen.findByRole("region", { name: runPageCopy.tabResult });
-    expect(within(outcome).getByText("one finding", { exact: true }).isConnected).toBe(true);
-    expect(within(outcome).getByText("another finding", { exact: true }).isConnected).toBe(true);
-    expect(within(outcome).getByText(raw).closest("details")?.open).toBe(false);
-  });
-
-  it("shows no outcome while the run is still going", async () => {
-    const cockpitApi = cockpitApiStub({ getNodeDetail: vi.fn() });
-
-    render(V3RunView, {
-      props: {
-        run: v3Run({ state: "STARTED", cancellation: cancellableBlock() }),
-        cockpitApi,
-        mutationJournal: new MutationJournal(sessionStorage)
-      }
-    });
+  it("does not fetch node detail while the run is still going", async () => {
+    const { getNodeDetail } = renderRun(
+      v3Run({
+        state: "STARTED",
+        cancellation: cancellableBlock(),
+        ended_at: null,
+        terminal_hash: null,
+        node_rail: [{ node_id: "report", state: "working", attempt: null }]
+      }),
+      withAnswer('{"answer":"Still writing."}')
+    );
 
     await screen.findByLabelText("Where this run stands");
+    await screen.findByRole("button", { name: "report — Working" });
     expect(screen.queryByRole("region", { name: runPageCopy.tabResult })).toBeNull();
-    expect(cockpitApi.getNodeDetail).not.toHaveBeenCalled();
-  });
-
-  it("shows no banner for a FAILED run whose node wrote no answer", async () => {
-    const cockpitApi = cockpitApiStub({
-      getNodeDetail: vi.fn(async () =>
-        nodeDetail({ state: "failed", refusal: "output-schema-refused: instance-not-json" })
-      )
-    });
-
-    render(V3RunView, {
-      props: {
-        run: v3Run({
-          state: "FAILED",
-          node_rail: [{ node_id: "report", state: "failed", attempt: null }],
-          cancellation: notCancellableBlock("already-ended")
-        }),
-        cockpitApi,
-        mutationJournal: new MutationJournal(sessionStorage)
-      }
-    });
-
-    await screen.findByLabelText("Where this run stands");
-    await vi.waitFor(() => expect(cockpitApi.getNodeDetail).toHaveBeenCalledTimes(1));
-    expect(screen.queryByRole("region", { name: runPageCopy.tabResult })).toBeNull();
-  });
-
-  it("shows no banner for a run that ended on an answered Wait node -- that answer is the operator's, not the run's own report", async () => {
-    const cockpitApi = cockpitApiStub({
-      // #562: an answered Wait now carries a real `answer`, but never an
-      // agent `provenance` -- nothing ran it.
-      getNodeDetail: vi.fn(async () => withAnswer('"approved"', { provenance: null }))
-    });
-
-    render(V3RunView, {
-      props: {
-        run: v3Run(),
-        cockpitApi,
-        mutationJournal: new MutationJournal(sessionStorage)
-      }
-    });
-
-    await screen.findByLabelText("Where this run stands");
-    await vi.waitFor(() => expect(cockpitApi.getNodeDetail).toHaveBeenCalledTimes(1));
-    expect(screen.queryByRole("region", { name: runPageCopy.tabResult })).toBeNull();
-  });
-
-  it("surfaces a failed outcome read and retries it once the run is read again", async () => {
-    const getNodeDetail = vi
-      .fn<CockpitApi["getNodeDetail"]>()
-      .mockRejectedValueOnce(new Error("the durable store is unavailable"))
-      .mockResolvedValue(withAnswer('{"answer":"Recovered."}'));
-    const cockpitApi = cockpitApiStub({ getNodeDetail });
-    const run = v3Run();
-    const mutationJournal = new MutationJournal(sessionStorage);
-
-    const view = render(V3RunView, { props: { run, cockpitApi, mutationJournal } });
-
-    await screen.findByText("the durable store is unavailable");
-    expect(screen.queryByRole("region", { name: runPageCopy.tabResult })).toBeNull();
-
-    // The same run read again (e.g. after a stream event) tries the outcome
-    // fetch again rather than staying silent on the first failure forever.
-    await view.rerender({ run: { ...run }, cockpitApi, mutationJournal });
-    await screen.findByRole("region", { name: runPageCopy.tabResult });
-    expect(getNodeDetail).toHaveBeenCalledTimes(2);
+    expect(getNodeDetail).not.toHaveBeenCalled();
   });
 });
 
@@ -284,6 +214,8 @@ describe("the node panel's Result tab renders the same readable form (#716)", ()
     });
 
     expect(screen.getByText("Reviewed the diff.", { exact: true }).isConnected).toBe(true);
+    expect(screen.getByText("started_run_ids").isConnected).toBe(true);
+    expect(screen.getByText("run1.ZHJhZnQ").isConnected).toBe(true);
     const disclosure = screen.getByText(runResultCopy.exactText, { selector: "summary" }).closest("details");
     expect(disclosure?.open).toBe(false);
 
@@ -303,22 +235,6 @@ describe("the node panel's Result tab renders the same readable form (#716)", ()
 
     expect(screen.getByText("Three German sentences about code review.").isConnected).toBe(true);
     expect(screen.queryByText(runResultCopy.exactText, { selector: "summary" })).toBeNull();
-  });
-
-  it("names the run page's own banner instead of rendering the sink node's answer a second time", () => {
-    render(NodeDetailPanel, {
-      props: {
-        detail: withAnswer('{"answer":"Reviewed the diff."}'),
-        onClose: () => {},
-        runEvidence,
-        resultShownAbove: true
-      }
-    });
-
-    expect(screen.queryByText("Reviewed the diff.")).toBeNull();
-    expect(screen.queryByText(runResultCopy.exactText, { selector: "summary" })).toBeNull();
-    const link = screen.getByRole("link", { name: runResultCopy.shownAbove });
-    expect(link.getAttribute("href")).toBe("#run-outcome");
   });
 });
 
