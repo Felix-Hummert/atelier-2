@@ -11,7 +11,8 @@ import { WORKSHOP_DESTINATION } from "../../src/lib/workshop";
  * Click and glance budgets from mockup v8 §07. Each number is a door count on
  * the named frame, not an invented allowance. Catalog and the Run view stay
  * out of this slice (#698 D2 / #666). Queue-admit is named in §07 and has no
- * Workbench door yet — not asserted here.
+ * Workbench door yet — not asserted here. Settings' connect-a-source path is
+ * a named deferral to #567 until that door exists, never a silent pass.
  *
  * Contract only: user-click count to the goal, and the named goal elements in
  * the viewport without scrolling at the picture's 390 and 1280 widths.
@@ -384,14 +385,11 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench and Hist
   await retireReconciliationFixtures(page);
   await startFinishedRun(page, finishedName, `uiq/finished-${suffix}`);
   await startHeldRun(page, runningName, `uiq/running-${suffix}`);
-  await startWaitRun(
-    page,
-    `uiq/waiting-${suffix}`,
-    await publishWaitWorkflow(page, waitingName, DECISION_QUESTION)
-  );
+  const waitRevision = await publishWaitWorkflow(page, waitingName, DECISION_QUESTION);
 
   for (const viewport of VIEWPORTS) {
     await page.setViewportSize(viewport);
+    await startWaitRun(page, `uiq/waiting-${suffix}-${viewport.width}`, waitRevision);
     await openWorkbench(page);
 
     const composer = page.getByLabel(workbenchPageCopy.composerLabel);
@@ -430,14 +428,13 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench and Hist
       await expect(glance, `answer-a-decision glance at ${viewport.width}`).toBeInViewport();
     }
     expect(decisionGlances.length).toBe(ANSWER_A_DECISION_GLANCES);
+    const answer = clickBudget();
+    await answer.click(yes);
+    await expect(yes).toHaveCount(0, { timeout: 20_000 });
+    expect(answer.count, `answer-a-decision clicks at ${viewport.width}`).toBeLessThanOrEqual(
+      ANSWER_A_DECISION_CLICKS
+    );
   }
-
-  const answer = clickBudget();
-  await answer.click(page.getByRole("button", { name: runPageCopy.answerYes }));
-  await expect(page.getByRole("button", { name: runPageCopy.answerYes })).toHaveCount(0, {
-    timeout: 20_000
-  });
-  expect(answer.count).toBeLessThanOrEqual(ANSWER_A_DECISION_CLICKS);
 
   for (const viewport of VIEWPORTS) {
     await page.setViewportSize(viewport);
@@ -458,21 +455,30 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench and Hist
     historyGlances += 1;
     expect(historyGlances).toBe(OPEN_FINISHED_RUN_FROM_HISTORY_GLANCES);
     expect(historyPath.count).toBeLessThanOrEqual(OPEN_FINISHED_RUN_FROM_HISTORY_CLICKS);
+  }
+});
 
+test("Settings connect-a-source stays inside mockup v8 click and glance budgets at 390 and 1280", async ({
+  page
+}) => {
+  test.setTimeout(60_000);
+  await resetToKnownStore(page);
+
+  for (const viewport of VIEWPORTS) {
+    await page.setViewportSize(viewport);
     await openWorkbench(page);
     const connectPath = clickBudget();
-    await connectPath.click(rail(page).getByRole("link", { name: /Settings/ }));
+    await connectPath.click(
+      rail(page).getByRole("link", { name: WORKSHOP_DESTINATION.settings.label })
+    );
     const sources = page.getByRole("heading", { name: settingsPageCopy.sourcesTitle });
     await expect(sources).toBeVisible();
     await expect(sources, `settings room glance at ${viewport.width}`).toBeInViewport();
     const connectDoor = page.getByRole("button", { name: CONNECT_A_SOURCE_DOOR });
-    // FINDING: mockup v8 §06/§07 names Settings · Connect a source · Connect
-    // (3 clicks, 2 glances). The current Settings page has no such door.
-    // Do not invent a stand-in; walk the rest of the path once the door exists.
-    if (await connectDoor.count() === 0) {
-      expect(connectPath.count).toBeLessThanOrEqual(CONNECT_A_SOURCE_CLICKS);
-      continue;
-    }
+    test.fixme(
+      (await connectDoor.count()) === 0,
+      "Settings has no Connect-a-source door yet — owner #567 (mockup v8 §06/§07)"
+    );
     await expect(connectDoor, `connect-a-source room glance at ${viewport.width}`).toBeInViewport();
     let connectGlances = 1;
     await connectPath.click(connectDoor);

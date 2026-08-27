@@ -6,11 +6,9 @@ story = "https://github.com/FlexOr2/atelier-2/issues/435"
 # (start by hand, import, cancel, open a result from the conductor's card)
 # wait on those landings. Queue-admit is named in mockup v8 §07 and has no
 # Workbench door yet — a later checker, not a stand-in path here.
-# Settings' Connect-a-source sheet is named in §06/§07 and is not on the
-# current Settings page; the checker names that budget and walks it once
-# the door exists.
+# Settings' connect-a-source path named in §06/§07 is deferred to #567.
 
 [[sentence]]
 id = "core-tasks-meet-named-click-and-glance-budgets"
 requirement = "REQ-UIQ-02"
-text = "The Workbench send-a-message, answer-a-decision and find-the-running-run tasks and History's open-finished-run task named in mockup v8 §07 reach their goal within that picture's click and glance budgets, with the goal elements in view without scrolling at 390px and 1280px."
+text = "The Workbench send-a-message, answer-a-decision and find-the-running-run tasks and History's open-finished-run task named in mockup v8 §07 reach their goal within that picture's click and glance budgets, with the goal elements in view without scrolling at 390px and 1280px; Settings' connect-a-source path named in §06/§07 is deferred to #567."
