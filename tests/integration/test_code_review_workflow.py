@@ -227,8 +227,8 @@ def test_a_code_review_round_trips_an_artifact_and_inline_question_to_an_object_
 
     assert provider.opened is not None
     handed = provider.opened.requests[0].job_bytes
-    assert DIFF in handed
-    assert QUESTIONS in handed
+    assert DIFF_TEXT.encode() in handed
+    assert QUESTIONS_TEXT.encode() in handed
     detail = durable_queries(runtime.engine).get_node_detail(run_id, "review")
     assert isinstance(detail, NodeDetailFound), detail
     assert detail.detail.state is NodeState.SUCCEEDED
