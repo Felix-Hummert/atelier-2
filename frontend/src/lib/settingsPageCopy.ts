@@ -1,19 +1,26 @@
-/** Copy the Settings room renders. */
+/** Short operator-facing labels for the Settings surface. */
 export const settingsPageCopy = {
+  label: "settings",
+  unavailable: "Settings unavailable",
   sourcesTitle: "Sources",
   sourcesLabel: "sources",
   sourcesUnavailable: "Sources unavailable",
-  sourcesEmpty: "No source connected.",
+  sourcesEmpty: "No source connected",
   sourceKind: "Kind",
   sourceAddress: "Address",
-  sourceAuthMethod: "Auth method",
+  sourceAuthMethod: "Authentication",
   sourceRevision: "Revision",
   modelsTitle: "Models",
   modelsLabel: "models",
   modelsUnavailable: "Models unavailable",
-  modelsEmpty: "No published configurations.",
+  modelsEmpty: "No models available",
   model: "Model",
   provider: "Provider",
   executorRevision: "Executor revision",
-  discovery: "Models are listed as published; discovery from the connected providers follows."
+  discovery: "Models are listed as published; discovery from the connected providers follows.",
+  defaultsTitle: "Model defaults",
+  defaultsEmptyRegistry: "No models are registered",
+  defaultsNoCheckedModels: "Check a model above before choosing defaults",
+  defaultsUnavailableModels: "No checked models are available",
+  writeFailed: "Change not saved",
 } as const;

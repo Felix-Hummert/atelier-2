@@ -8,6 +8,7 @@ import pytest
 
 from atelier2.application.resolve_start_bindings import (
     AuthProfileMissingForConfiguration,
+    ModelResolutionSource,
     agent_role_completeness_refusal,
     cast_unbound_roles,
     resolve_start_bindings,
@@ -27,16 +28,21 @@ from atelier2.contracts.agents import (
     ProviderId,
     ResolvedAgentBinding,
 )
-from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.host_configuration import (
-    OccupancyBinding,
-    OccupancyRevision,
+    ModelRegistryEntry,
+    ModelRegistryEntrySource,
+    ModelRegistryRevision,
+    ModelResolutionUncastReason,
     ProjectId,
+    ProjectModelDefault,
+    ProjectModelDefaultsRevision,
+    ProviderModelCheck,
 )
 from atelier2.contracts.workflows import AgentNodeV2, SubworkflowNode, WorkflowGraphV2
 from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     BindingConstraint,
+    RoleDifficulty,
     WorkflowGraphV3,
 )
 from atelier2.ports.agent_executions import (
@@ -161,7 +167,15 @@ def _v2_graph(role: str = "builder") -> WorkflowGraphV2:
     )
 
 
-def _v3_graph(*, distinct_from: bool = False) -> WorkflowGraphV3:
+def _v3_graph(
+    *,
+    distinct_from: bool = False,
+    builder_difficulty: RoleDifficulty = 2,
+    builder_model: str | None = None,
+    merger_difficulty: RoleDifficulty = 2,
+    merger_model: str | None = None,
+    merger_family_differs_from: str | None = None,
+) -> WorkflowGraphV3:
     """implement -> merge: two roles, optionally held to distinct occupations."""
     return WorkflowGraphV3(
         format_version=3,
@@ -173,6 +187,8 @@ def _v3_graph(*, distinct_from: bool = False) -> WorkflowGraphV3:
                 role="builder",
                 mode="headless",
                 instruction="Write the change.",
+                difficulty=builder_difficulty,
+                model=builder_model,
             ),
             AgentNodeV3(
                 id="merge",
@@ -181,6 +197,9 @@ def _v3_graph(*, distinct_from: bool = False) -> WorkflowGraphV3:
                 mode="headless",
                 instruction="Land the change.",
                 depends_on=("implement",),
+                difficulty=merger_difficulty,
+                model=merger_model,
+                family_differs_from=merger_family_differs_from,
                 binding_constraint=(
                     BindingConstraint(distinct_from="implement")
                     if distinct_from
@@ -191,48 +210,638 @@ def _v3_graph(*, distinct_from: bool = False) -> WorkflowGraphV3:
     )
 
 
-def _occupancy(*bindings: tuple[str, str]) -> OccupancyRevision:
-    """What the operator cast on this workflow, as the project keeps it."""
-    return OccupancyRevision(
+def _model_entry(
+    model_id: str,
+    configuration_hash: str,
+    provider_check: ProviderModelCheck = ProviderModelCheck.CHECKED,
+) -> ModelRegistryEntry:
+    return ModelRegistryEntry(
+        model_id,
+        AgentConfigurationRevisionHash(configuration_hash),
+        ModelRegistryEntrySource.OPERATOR,
+        provider_check,
+    )
+
+
+def _model_registry(
+    provider: str, *entries: ModelRegistryEntry
+) -> ModelRegistryRevision:
+    return ModelRegistryRevision(ProviderId(provider), 1, entries)
+
+
+def _revised_registry(
+    provider: str, revision_number: int, *entries: ModelRegistryEntry
+) -> ModelRegistryRevision:
+    return ModelRegistryRevision(ProviderId(provider), revision_number, entries)
+
+
+def _project_defaults(
+    *selections: tuple[RoleDifficulty, ModelRegistryRevision, ModelRegistryEntry],
+) -> ProjectModelDefaultsRevision:
+    return ProjectModelDefaultsRevision(
         ProjectId("atelier"),
-        CatalogLineageId("b" * 64),
         1,
         tuple(
-            OccupancyBinding(AgentRole(role), AgentConfigurationRevisionHash(hash_))
-            for role, hash_ in bindings
+            ProjectModelDefault(
+                difficulty,
+                registry.revision_hash,
+                registry.provider_id,
+                entry.model_id,
+                entry.agent_configuration_revision_hash,
+            )
+            for difficulty, registry, entry in selections
         ),
     )
 
 
-def test_occupancy_fills_only_declared_roles_the_caller_left_open() -> None:
-    explicit = AgentConfigurationRevisionHash("a" * 64)
-    occupied = AgentConfigurationRevisionHash("b" * 64)
-    requested = AgentBindingSet((AgentBinding(AgentRole("builder"), explicit),))
+def _family_graph_for_roles(
+    roles: tuple[str, ...], links: dict[str, str]
+) -> WorkflowGraphV3:
+    return WorkflowGraphV3(
+        format_version=3,
+        name="Family casting",
+        nodes=tuple(
+            AgentNodeV3(
+                id=role,
+                type="agent",
+                role=role,
+                mode="headless",
+                instruction=f"Do {role} work.",
+                depends_on=(() if index == 0 else (roles[index - 1],)),
+                difficulty=2,
+                family_differs_from=links.get(role),
+            )
+            for index, role in enumerate(roles)
+        ),
+    )
+
+
+def _family_graph(links: dict[str, str]) -> WorkflowGraphV3:
+    return _family_graph_for_roles(("alpha", "beta", "gamma"), links)
+
+
+def test_start_override_beats_workflow_pin_and_project_default() -> None:
+    override = AgentConfigurationRevisionHash("a" * 64)
+    overridden = ModelRegistryEntry(
+        "override",
+        override,
+        ModelRegistryEntrySource.OPERATOR,
+        ProviderModelCheck.CHECKED,
+    )
+    pinned = _model_entry("pinned", "b" * 64)
+    project = _model_entry("project", "c" * 64)
+    registry = _model_registry("anthropic", overridden, pinned, project)
+
+    cast = cast_unbound_roles(
+        _v3_graph(builder_model="pinned"),
+        AgentBindingSet((AgentBinding(AgentRole("builder"), override),)),
+        _project_defaults((2, registry, project)),
+        (registry,),
+    )
+
+    assert cast.agent_bindings.bindings[0] == AgentBinding(
+        AgentRole("builder"), override
+    )
+    assert cast.resolutions[0].source is ModelResolutionSource.CHOSEN_NOW
+
+
+def test_workflow_pin_beats_project_default() -> None:
+    pinned = _model_entry("pinned", "b" * 64)
+    project = _model_entry("project", "c" * 64)
+    registry = _model_registry("anthropic", pinned, project)
+
+    cast = cast_unbound_roles(
+        _v3_graph(builder_model="pinned"),
+        AgentBindingSet(()),
+        _project_defaults((2, registry, project)),
+        (registry,),
+    )
+
+    assert cast.agent_bindings.bindings[0].agent_configuration_revision_hash == (
+        pinned.agent_configuration_revision_hash
+    )
+    assert cast.resolutions[0].source is ModelResolutionSource.PINNED_IN_WORKFLOW
+
+
+def test_missing_difficulty_uses_only_the_next_higher_project_default() -> None:
+    hard = _model_entry("hard", "d" * 64)
+    easy = _model_entry("easy", "e" * 64)
+    registry = _model_registry("anthropic", hard, easy)
+
+    cast = cast_unbound_roles(
+        _v3_graph(builder_difficulty=2),
+        AgentBindingSet(()),
+        _project_defaults((1, registry, easy), (3, registry, hard)),
+        (registry,),
+    )
+
+    assert cast.agent_bindings.bindings[0].agent_configuration_revision_hash == (
+        hard.agent_configuration_revision_hash
+    )
+    assert cast.resolutions[0].source is ModelResolutionSource.FROM_PROJECT
+    assert cast.resolutions[0].difficulty == 3
+
+
+def test_a_family_rule_tries_a_higher_default_then_leaves_the_role_uncast() -> None:
+    shared = _model_entry("shared", "1" * 64)
+    alternate = _model_entry("alternate", "2" * 64)
+    anthropic = _model_registry("anthropic", shared)
+    openai = _model_registry("openai", alternate)
+    defaults = _project_defaults(
+        (2, anthropic, shared),
+        (3, openai, alternate),
+    )
+
+    cast = cast_unbound_roles(
+        _v3_graph(
+            builder_difficulty=2,
+            merger_difficulty=2,
+            merger_family_differs_from="builder",
+        ),
+        AgentBindingSet(()),
+        defaults,
+        (anthropic, openai),
+    )
+
+    assert tuple(binding.role.value for binding in cast.agent_bindings.bindings) == (
+        "builder",
+        "merger",
+    )
+    assert (
+        next(
+            binding
+            for binding in cast.agent_bindings.bindings
+            if binding.role.value == "merger"
+        ).agent_configuration_revision_hash
+        == alternate.agent_configuration_revision_hash
+    )
+    assert (
+        next(
+            resolution
+            for resolution in cast.resolutions
+            if resolution.role.value == "merger"
+        ).difficulty
+        == 3
+    )
+
+    without_alternate = cast_unbound_roles(
+        _v3_graph(merger_family_differs_from="builder"),
+        AgentBindingSet(()),
+        _project_defaults((2, anthropic, shared)),
+        (anthropic,),
+    )
+    merger = next(
+        resolution
+        for resolution in without_alternate.resolutions
+        if resolution.role.value == "merger"
+    )
+    assert merger.agent_configuration_revision_hash is None
+    assert merger.source is ModelResolutionSource.UNCAST
+
+
+def test_a_removed_registry_entry_invalidates_its_default_and_tries_higher() -> None:
+    removed = _model_entry("removed", "1" * 64)
+    replacement = _model_entry("replacement", "2" * 64)
+    old_registry = _revised_registry("anthropic", 1, removed)
+    latest_registry = _revised_registry("anthropic", 2, replacement)
+
+    cast = cast_unbound_roles(
+        _v3_graph(builder_difficulty=2),
+        AgentBindingSet(()),
+        _project_defaults(
+            (2, old_registry, removed),
+            (3, latest_registry, replacement),
+        ),
+        (latest_registry,),
+    )
+
+    builder = next(item for item in cast.resolutions if item.role.value == "builder")
+    assert builder.agent_configuration_revision_hash == (
+        replacement.agent_configuration_revision_hash
+    )
+    assert builder.difficulty == 3
+
+
+def test_an_account_change_invalidates_the_old_exact_default_tuple() -> None:
+    old_account = _model_entry("opus", "3" * 64)
+    new_account = _model_entry("opus", "4" * 64)
+    old_registry = _revised_registry("anthropic", 1, old_account)
+    latest_registry = _revised_registry("anthropic", 2, new_account)
 
     cast = cast_unbound_roles(
         _v3_graph(),
-        requested,
-        _occupancy(
-            ("builder", occupied.value),
-            ("merger", occupied.value),
-            ("stranger", occupied.value),
+        AgentBindingSet(()),
+        _project_defaults((2, old_registry, old_account)),
+        (latest_registry,),
+    )
+
+    assert cast.agent_bindings == AgentBindingSet(())
+    assert {item.uncast_reason for item in cast.resolutions} == {
+        ModelResolutionUncastReason.NO_PROJECT_DEFAULT
+    }
+
+
+def test_a_default_survives_an_additive_and_reordered_registry_revision() -> None:
+    chosen = _model_entry("opus", "a" * 64)
+    added = _model_entry("sonnet", "b" * 64)
+    saved_registry = _revised_registry("anthropic", 1, chosen)
+    latest_registry = _revised_registry("anthropic", 2, added, chosen)
+
+    cast = cast_unbound_roles(
+        _v3_graph(),
+        AgentBindingSet(()),
+        _project_defaults((2, saved_registry, chosen)),
+        (latest_registry,),
+    )
+
+    assert cast.agent_bindings.bindings == (
+        AgentBinding(AgentRole("builder"), chosen.agent_configuration_revision_hash),
+        AgentBinding(AgentRole("merger"), chosen.agent_configuration_revision_hash),
+    )
+
+
+def test_an_unrelated_provider_revision_does_not_invalidate_a_default() -> None:
+    chosen = _model_entry("opus", "5" * 64)
+    unrelated = _model_entry("gpt", "6" * 64)
+    anthropic = _revised_registry("anthropic", 1, chosen)
+    openai = _revised_registry("openai", 9, unrelated)
+
+    cast = cast_unbound_roles(
+        _v3_graph(),
+        AgentBindingSet(()),
+        _project_defaults((2, anthropic, chosen)),
+        (anthropic, openai),
+    )
+
+    assert {
+        binding.agent_configuration_revision_hash
+        for binding in cast.agent_bindings.bindings
+    } == {chosen.agent_configuration_revision_hash}
+
+
+def test_a_missing_override_is_terminal_and_never_falls_back_to_defaults() -> None:
+    chosen = _model_entry("opus", "7" * 64)
+    registry = _model_registry("anthropic", chosen)
+    missing = AgentConfigurationRevisionHash("8" * 64)
+
+    cast = cast_unbound_roles(
+        _v3_graph(),
+        AgentBindingSet((AgentBinding(AgentRole("builder"), missing),)),
+        _project_defaults((2, registry, chosen)),
+        (registry,),
+    )
+
+    builder = next(item for item in cast.resolutions if item.role.value == "builder")
+    assert builder.agent_configuration_revision_hash is None
+    assert builder.uncast_reason is ModelResolutionUncastReason.OVERRIDE_NOT_REGISTERED
+
+
+def test_catalog_metadata_cannot_make_an_absent_override_eligible() -> None:
+    configured = _model_entry("opus", "7" * 64)
+    absent = AgentConfigurationRevisionHash("8" * 64)
+    registry = _model_registry("anthropic", configured)
+
+    cast = cast_unbound_roles(
+        _v3_graph(),
+        AgentBindingSet((AgentBinding(AgentRole("builder"), absent),)),
+        _project_defaults((2, registry, configured)),
+        (registry,),
+        {absent: ("anthropic", "unregistered")},
+    )
+
+    builder = next(item for item in cast.resolutions if item.role.value == "builder")
+    assert builder.uncast_reason is ModelResolutionUncastReason.OVERRIDE_NOT_REGISTERED
+
+
+def test_catalog_metadata_must_match_the_one_eligible_registry_tuple() -> None:
+    configured = _model_entry("opus", "7" * 64)
+    registry = _model_registry("anthropic", configured)
+
+    cast = cast_unbound_roles(
+        _v3_graph(),
+        AgentBindingSet(
+            (
+                AgentBinding(
+                    AgentRole("builder"), configured.agent_configuration_revision_hash
+                ),
+            )
+        ),
+        None,
+        (registry,),
+        {configured.agent_configuration_revision_hash: ("anthropic", "sonnet")},
+    )
+
+    builder = next(item for item in cast.resolutions if item.role.value == "builder")
+    assert builder.uncast_reason is ModelResolutionUncastReason.OVERRIDE_NOT_REGISTERED
+
+
+@pytest.mark.parametrize(
+    ("provider_check", "branch", "expected_reason"),
+    [
+        (check, "override", ModelResolutionUncastReason.OVERRIDE_NOT_REGISTERED)
+        for check in (
+            ProviderModelCheck.NOT_CHECKED,
+            ProviderModelCheck.UNKNOWN_AT_PROVIDER,
+        )
+    ]
+    + [
+        (check, "pin", ModelResolutionUncastReason.WORKFLOW_MODEL_NOT_REGISTERED)
+        for check in (
+            ProviderModelCheck.NOT_CHECKED,
+            ProviderModelCheck.UNKNOWN_AT_PROVIDER,
+        )
+    ]
+    + [
+        (check, "default", ModelResolutionUncastReason.NO_PROJECT_DEFAULT)
+        for check in (
+            ProviderModelCheck.NOT_CHECKED,
+            ProviderModelCheck.UNKNOWN_AT_PROVIDER,
+        )
+    ],
+)
+def test_unchecked_provider_models_are_ineligible_at_every_precedence_branch(
+    provider_check: ProviderModelCheck,
+    branch: str,
+    expected_reason: ModelResolutionUncastReason,
+) -> None:
+    rejected = _model_entry("opus", "8" * 64, provider_check)
+    registry = _model_registry("anthropic", rejected)
+    overrides = (
+        AgentBindingSet(
+            (
+                AgentBinding(
+                    AgentRole("builder"), rejected.agent_configuration_revision_hash
+                ),
+            )
+        )
+        if branch == "override"
+        else AgentBindingSet(())
+    )
+    graph = _v3_graph(builder_model="opus" if branch == "pin" else None)
+    defaults = (
+        _project_defaults((2, registry, rejected)) if branch == "default" else None
+    )
+
+    cast = cast_unbound_roles(graph, overrides, defaults, (registry,))
+
+    builder = next(item for item in cast.resolutions if item.role.value == "builder")
+    assert builder.uncast_reason is expected_reason
+
+
+def test_a_missing_or_ambiguous_workflow_pin_is_terminal() -> None:
+    fallback = _model_entry("fallback", "9" * 64)
+    duplicate_a = _model_entry("pinned", "a" * 64)
+    duplicate_b = _model_entry("pinned", "b" * 64)
+    anthropic = _model_registry("anthropic", fallback, duplicate_a)
+    openai = _model_registry("openai", duplicate_b)
+    defaults = _project_defaults((2, anthropic, fallback))
+
+    missing = cast_unbound_roles(
+        _v3_graph(builder_model="missing"), AgentBindingSet(()), defaults, (anthropic,)
+    )
+    ambiguous = cast_unbound_roles(
+        _v3_graph(builder_model="pinned"),
+        AgentBindingSet(()),
+        defaults,
+        (anthropic, openai),
+    )
+
+    assert missing.resolutions[0].uncast_reason is (
+        ModelResolutionUncastReason.WORKFLOW_MODEL_NOT_REGISTERED
+    )
+    assert ambiguous.resolutions[0].uncast_reason is (
+        ModelResolutionUncastReason.WORKFLOW_MODEL_AMBIGUOUS
+    )
+
+
+def test_family_relation_preserves_each_intrinsic_missing_candidate_reason() -> None:
+    cast = cast_unbound_roles(
+        _v3_graph(
+            builder_model="missing",
+            merger_family_differs_from="builder",
+        ),
+        AgentBindingSet(()),
+        None,
+        (),
+    )
+
+    assert {
+        resolution.role.value: resolution.uncast_reason
+        for resolution in cast.resolutions
+    } == {
+        "builder": ModelResolutionUncastReason.WORKFLOW_MODEL_NOT_REGISTERED,
+        "merger": ModelResolutionUncastReason.NO_PROJECT_DEFAULT,
+    }
+
+
+def test_a_family_declarer_is_uncast_when_its_final_peer_is_uncast() -> None:
+    available = _model_entry("opus", "b" * 64)
+    registry = _model_registry("anthropic", available)
+
+    cast = cast_unbound_roles(
+        _v3_graph(
+            builder_model="missing",
+            merger_family_differs_from="builder",
+        ),
+        AgentBindingSet(()),
+        _project_defaults((2, registry, available)),
+        (registry,),
+    )
+
+    assert {role.role: role.reason for role in cast.uncast_roles} == {
+        "builder": ModelResolutionUncastReason.WORKFLOW_MODEL_NOT_REGISTERED,
+        "merger": ModelResolutionUncastReason.FAMILY_DIFFERENCE_UNAVAILABLE,
+    }
+
+
+def test_family_chain_is_solved_against_the_final_assignments() -> None:
+    anthropic_entry = _model_entry("opus", "c" * 64)
+    openai_entry = _model_entry("gpt", "d" * 64)
+    anthropic = _model_registry("anthropic", anthropic_entry)
+    openai = _model_registry("openai", openai_entry)
+
+    cast = cast_unbound_roles(
+        _family_graph({"beta": "alpha", "gamma": "beta"}),
+        AgentBindingSet(()),
+        _project_defaults((2, anthropic, anthropic_entry), (3, openai, openai_entry)),
+        (anthropic, openai),
+    )
+
+    hashes = {
+        binding.role.value: binding.agent_configuration_revision_hash
+        for binding in cast.agent_bindings.bindings
+    }
+    assert hashes == {
+        "alpha": anthropic_entry.agent_configuration_revision_hash,
+        "beta": openai_entry.agent_configuration_revision_hash,
+        "gamma": anthropic_entry.agent_configuration_revision_hash,
+    }
+
+
+def test_an_unsatisfiable_family_chain_keeps_its_largest_valid_tail() -> None:
+    alpha_entry = _model_entry("alpha", "1" * 64)
+    preferred_entry = _model_entry("preferred", "2" * 64)
+    anthropic = _model_registry("anthropic", alpha_entry)
+    openai = _model_registry("openai", preferred_entry)
+    graph = WorkflowGraphV3(
+        format_version=3,
+        name="Partial family chain",
+        nodes=(
+            AgentNodeV3(
+                id="alpha",
+                type="agent",
+                role="alpha",
+                mode="headless",
+                instruction="Do alpha work.",
+                difficulty=2,
+                model="alpha",
+                family_differs_from="beta",
+            ),
+            AgentNodeV3(
+                id="beta",
+                type="agent",
+                role="beta",
+                mode="headless",
+                instruction="Do beta work.",
+                depends_on=("alpha",),
+                difficulty=2,
+                family_differs_from="gamma",
+            ),
+            AgentNodeV3(
+                id="gamma",
+                type="agent",
+                role="gamma",
+                mode="headless",
+                instruction="Do gamma work.",
+                depends_on=("beta",),
+                difficulty=2,
+                model="preferred",
+            ),
         ),
     )
 
-    assert cast == AgentBindingSet(
+    cast = cast_unbound_roles(
+        graph,
+        AgentBindingSet(()),
+        _project_defaults(
+            (2, openai, preferred_entry),
+            (3, anthropic, alpha_entry),
+        ),
+        (anthropic, openai),
+    )
+
+    assert {
+        binding.role.value: binding.agent_configuration_revision_hash
+        for binding in cast.agent_bindings.bindings
+    } == {
+        "beta": alpha_entry.agent_configuration_revision_hash,
+        "gamma": preferred_entry.agent_configuration_revision_hash,
+    }
+    assert {
+        resolution.role.value: resolution.uncast_reason
+        for resolution in cast.resolutions
+    } == {
+        "alpha": ModelResolutionUncastReason.FAMILY_DIFFERENCE_UNAVAILABLE,
+        "beta": None,
+        "gamma": None,
+    }
+    beta = next(
+        resolution for resolution in cast.resolutions if resolution.role.value == "beta"
+    )
+    assert beta.difficulty == 3
+
+
+def test_family_cycle_names_every_role_when_no_final_assignment_exists() -> None:
+    anthropic_entry = _model_entry("opus", "e" * 64)
+    openai_entry = _model_entry("gpt", "f" * 64)
+    anthropic = _model_registry("anthropic", anthropic_entry)
+    openai = _model_registry("openai", openai_entry)
+
+    cast = cast_unbound_roles(
+        _family_graph({"alpha": "gamma", "beta": "alpha", "gamma": "beta"}),
+        AgentBindingSet(()),
+        _project_defaults((2, anthropic, anthropic_entry), (3, openai, openai_entry)),
+        (anthropic, openai),
+    )
+
+    assert cast.agent_bindings == AgentBindingSet(())
+    assert {role.role for role in cast.uncast_roles} == {"alpha", "beta", "gamma"}
+    assert {role.reason for role in cast.uncast_roles} == {
+        ModelResolutionUncastReason.FAMILY_DIFFERENCE_UNAVAILABLE
+    }
+
+
+@pytest.mark.parametrize("cycle", (False, True), ids=("chain", "cycle"))
+def test_one_hundred_family_roles_keep_the_maximal_precedence_assignment(
+    cycle: bool,
+) -> None:
+    roles = tuple(f"role-{index:03d}" for index in range(100))
+    links = {role: roles[index - 1] for index, role in enumerate(roles) if index > 0}
+    if cycle:
+        links[roles[0]] = roles[-1]
+    anthropic_entry = _model_entry("opus", "2" * 64)
+    openai_entry = _model_entry("gpt", "3" * 64)
+    anthropic = _model_registry("anthropic", anthropic_entry)
+    openai = _model_registry("openai", openai_entry)
+
+    cast = cast_unbound_roles(
+        _family_graph_for_roles(roles, links),
+        AgentBindingSet(()),
+        _project_defaults(
+            (2, anthropic, anthropic_entry),
+            (3, openai, openai_entry),
+        ),
+        (anthropic, openai),
+    )
+
+    assert len(cast.agent_bindings.bindings) == 100
+    assert tuple(
+        binding.agent_configuration_revision_hash
+        for binding in cast.agent_bindings.bindings
+    ) == tuple(
         (
-            AgentBinding(AgentRole("builder"), explicit),
-            AgentBinding(AgentRole("merger"), occupied),
+            anthropic_entry.agent_configuration_revision_hash
+            if index % 2 == 0
+            else openai_entry.agent_configuration_revision_hash
         )
+        for index in range(100)
     )
 
 
-def test_without_a_recommendation_the_requested_bindings_stand() -> None:
-    requested = AgentBindingSet(
-        (AgentBinding(AgentRole("builder"), AgentConfigurationRevisionHash("a" * 64)),)
+def test_a_registered_override_participates_in_family_selection() -> None:
+    anthropic_entry = _model_entry("opus", "0" * 64)
+    openai_entry = _model_entry("gpt", "1" * 64)
+    anthropic = _model_registry("anthropic", anthropic_entry)
+    openai = _model_registry("openai", openai_entry)
+
+    cast = cast_unbound_roles(
+        _v3_graph(merger_family_differs_from="builder"),
+        AgentBindingSet(
+            (
+                AgentBinding(
+                    AgentRole("builder"), openai_entry.agent_configuration_revision_hash
+                ),
+            )
+        ),
+        _project_defaults((2, openai, openai_entry), (3, anthropic, anthropic_entry)),
+        (anthropic, openai),
     )
 
-    assert cast_unbound_roles(_v3_graph(), requested, None) == requested
+    by_role = {
+        binding.role.value: binding.agent_configuration_revision_hash
+        for binding in cast.agent_bindings.bindings
+    }
+    assert by_role["builder"] == openai_entry.agent_configuration_revision_hash
+    assert by_role["merger"] == anthropic_entry.agent_configuration_revision_hash
+
+
+def test_without_project_defaults_every_open_role_is_named_uncast() -> None:
+    cast = cast_unbound_roles(_v3_graph(), AgentBindingSet(()), None, ())
+
+    assert cast.agent_bindings == AgentBindingSet(())
+    assert {resolution.source for resolution in cast.resolutions} == {
+        ModelResolutionSource.UNCAST
+    }
 
 
 @pytest.mark.parametrize(

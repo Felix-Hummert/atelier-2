@@ -263,6 +263,45 @@ describe("the catalog room", () => {
           }
         ],
         next_after_revision_hash: null
+      })),
+      listAuthProfileRevisions: vi.fn(async () => ({
+        items: [{
+          profile_id: "operator",
+          revision_number: 1,
+          provider_id: "claude",
+          auth_mode: "subscription" as const,
+          auth_profile_revision_hash: "a".repeat(64)
+        }],
+        next_after_revision_hash: null
+      })),
+      getModelRegistry: vi.fn(async () => ({
+        provider_id: "claude",
+        revision_number: 1,
+        model_registry_revision_hash: "9".repeat(64),
+        entries: [{
+          model_id: "test-model",
+          agent_configuration_revision_hash: AGENT_HASH,
+          source: "discovered" as const,
+          provider_check: "checked" as const
+        }]
+      })),
+      listProjects: vi.fn(async () => ({
+        items: [{ public_project_reference: "project1.YXRlbGllcg" }]
+      })),
+      resolveProjectModels: vi.fn(async (_project, workflowRevisionHash) => ({
+        project_id: "atelier",
+        public_project_reference: "project1.YXRlbGllcg",
+        workflow_revision_hash: workflowRevisionHash,
+        resolutions: [{
+          role: "builder",
+          agent_configuration_revision_hash: null,
+          source: "uncast" as const,
+          model_id: null,
+          declared_difficulty: 2 as const,
+          default_difficulty: null,
+          uncast_reason: "no-project-default" as const,
+          family_differs_from: null
+        }]
       }))
     });
     await screen.findByText(catalogPageCopy.startable);

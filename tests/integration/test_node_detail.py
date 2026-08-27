@@ -93,6 +93,7 @@ from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
     commit_configured_agent,
+    publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_queries
 from tests.scenarios.runs import prepare_and_launch_graph_action, start_published_v1_run
@@ -199,6 +200,9 @@ def publish_and_start(runtime: DbosRuntime) -> None:
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),
         AgentConfigurationRevisionCreated,
+    )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("exact"), (configuration,)
     )
     workflow = WorkflowRevision(chained_document(TEXT_SCHEMA.revision_hash.value))
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
@@ -394,6 +398,9 @@ def publish_and_start_wait_chain(runtime: DbosRuntime) -> WorkflowRevision:
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),
         AgentConfigurationRevisionCreated,
+    )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("exact"), (configuration,)
     )
     workflow = WorkflowRevision(wait_sink_document(TEXT_SCHEMA.revision_hash.value))
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)

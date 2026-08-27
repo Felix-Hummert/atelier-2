@@ -100,6 +100,7 @@ from atelier2.ports.run_queries import NodeDetailFound, RunFound
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
+    publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_queries
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
@@ -229,6 +230,9 @@ def start_and_launch(runtime: DbosRuntime, document: bytes) -> WorkflowRevision:
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),
         AgentConfigurationRevisionCreated,
+    )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("exact"), (configuration,)
     )
     workflow = WorkflowRevision(document)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)

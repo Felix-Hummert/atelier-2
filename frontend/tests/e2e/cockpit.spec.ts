@@ -10,6 +10,133 @@ import { standingWords } from "../../src/lib/runState";
 
 const foundReference = "run1.Zm91bmQtcnVu";
 const absentReference = "run1.YWJzZW50LXJ1bg";
+const startSheetProjectReference = "project1.YXRlbGllci0y";
+
+interface StartSheetConfiguration {
+  readonly hash: string;
+  readonly authProfileHash: string;
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly startable: boolean;
+}
+
+async function routeStartSheetModelContract(
+  page: Page,
+  configurations: readonly StartSheetConfiguration[],
+  roles: readonly string[] = ["builder"]
+): Promise<void> {
+  await page.route("**/atelier/api/v1/auth-profile-revisions?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        items: configurations.map((configuration, index) => ({
+          profile_id: `operator-${index + 1}`,
+          revision_number: 1,
+          provider_id: configuration.providerId,
+          auth_mode: "subscription",
+          auth_profile_revision_hash: configuration.authProfileHash
+        })),
+        next_after_revision_hash: null
+      })
+    });
+  });
+  await page.route("**/atelier/api/v1/model-registries/*", async (route) => {
+    const providerId = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1) ?? "");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        provider_id: providerId,
+        revision_number: 1,
+        model_registry_revision_hash: "9".repeat(64),
+        entries: configurations
+          .filter((configuration) => configuration.providerId === providerId)
+          .map((configuration) => ({
+            model_id: configuration.modelId,
+            agent_configuration_revision_hash: configuration.hash,
+            source: "operator",
+            provider_check: "checked"
+          }))
+      })
+    });
+  });
+  await page.route("**/atelier/api/v1/projects", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ items: [{ public_project_reference: startSheetProjectReference }] })
+    });
+  });
+  await page.route("**/atelier/api/v1/projects/*/model-resolution", async (route) => {
+    const body = route.request().postDataJSON() as {
+      workflow_revision_hash: string;
+      overrides: Array<{ role: string; agent_configuration_revision_hash: string }>;
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        project_id: "atelier-2",
+        public_project_reference: startSheetProjectReference,
+        workflow_revision_hash: body.workflow_revision_hash,
+        resolutions: roles.map((role) => {
+          const chosen = body.overrides.find((override) => override.role === role)
+            ?.agent_configuration_revision_hash ?? null;
+          const configuration = configurations.find((candidate) => candidate.hash === chosen);
+          return {
+            role,
+            agent_configuration_revision_hash: chosen,
+            source: chosen === null ? "uncast" : "chosen-now",
+            model_id: configuration?.modelId ?? null,
+            declared_difficulty: 2,
+            default_difficulty: null,
+            uncast_reason: chosen === null ? "no-project-default" : null,
+            family_differs_from: null
+          };
+        })
+      })
+    });
+  });
+}
+
+async function publishCheckedRegistryEntry(
+  page: Page,
+  providerId: string,
+  modelId: string,
+  configurationHash: string
+): Promise<void> {
+  const current = await page.request.get(`/atelier/api/v1/model-registries/${providerId}`);
+  const currentRegistry = current.status() === 200
+    ? await current.json() as {
+        revision_number: number;
+        entries: Array<{ model_id: string; agent_configuration_revision_hash: string }>;
+      }
+    : null;
+  if (currentRegistry === null) expect(current.status()).toBe(404);
+  const existingEntries = (currentRegistry?.entries ?? [])
+    .filter((entry) =>
+      entry.agent_configuration_revision_hash !== configurationHash && entry.model_id !== modelId
+    )
+    .map((entry) => ({
+      model_id: entry.model_id,
+      agent_configuration_revision_hash: entry.agent_configuration_revision_hash
+    }));
+  const registry = await page.request.put(`/atelier/api/v1/model-registries/${providerId}`, {
+    data: {
+      revision_number: (currentRegistry?.revision_number ?? 0) + 1,
+      entries: [...existingEntries, {
+        model_id: modelId,
+        agent_configuration_revision_hash: configurationHash
+      }]
+    }
+  });
+  expect([200, 201]).toContain(registry.status());
+  const checked = await page.request.post(`/atelier/api/v1/model-registries/${providerId}/validations`, {
+    data: { agent_configuration_revision_hash: configurationHash }
+  });
+  expect([200, 201]).toContain(checked.status());
+}
 
 /**
  * A real HTTP answer the server gave, not a round trip that never happened
@@ -104,7 +231,7 @@ test("the target-UI shell names today's doors and does not fake the rest", async
   await page.screenshot({ path: "test-results/shell-390x844.png", fullPage: true });
 });
 
-test("proves(core-surfaces-support-one-complete-keyboard-journey): chooses an interim role configuration from Catalog", async ({ page }) => {
+test("proves(core-surfaces-support-one-complete-keyboard-journey): chooses a checked role configuration from Catalog", async ({ page }) => {
   const api = "/atelier/api/v1";
   const workflowName = "keyboard-journey-catalog";
   const schemaHash = await anyJsonSchema(page);
@@ -136,6 +263,13 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): chooses an in
       })
     });
   });
+  await routeStartSheetModelContract(page, [{
+    hash: configurationHash,
+    authProfileHash: authProfileRevisionHash,
+    providerId: "e2e",
+    modelId: "interim-model",
+    startable: true
+  }]);
 
   let receivedStart: Record<string, unknown> | null = null;
   let startedRun: Record<string, unknown> | null = null;
@@ -192,21 +326,23 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): chooses an in
   const sheet = page.getByRole("dialog", { name: `Start ${workflowName}` });
   await expect(sheet).toBeVisible();
   const picker = sheet.getByLabel("Configuration for builder");
-  await sheet.getByRole("button", { name: "Interim configuration" }).hover();
-  await expect(sheet.getByRole("status")).toContainText("Settings › Model defaults exist");
-  await expect(sheet.locator(".role-source")).toContainText("Interim source · choose for this run");
+  await expect(picker).toHaveValue("");
+  await sheet.getByRole("button", { name: "Why builder needs a configuration" }).hover();
+  await expect(sheet.getByRole("status")).toContainText("No project default");
   await picker.selectOption(configurationHash);
-  await expect(sheet.locator(".role-source")).toContainText("Interim source · chosen for this run, not saved");
+  await expect(sheet.locator(".role-source")).toHaveText("Chosen now");
   await page.keyboard.press("Escape");
   await expect(sheet).toHaveCount(0);
   await expect(opener).toBeFocused();
   await opener.click();
   await expect(sheet).toBeVisible();
   await expect(picker).toHaveValue("");
-  await expect(sheet.locator(".role-source")).toContainText("Interim source · choose for this run");
   await picker.selectOption(configurationHash);
-  await sheet.getByRole("button", { name: "Start run" }).focus();
+  const startRun = sheet.getByRole("button", { name: "Start run" });
+  await expect(startRun).toBeEnabled();
+  await startRun.focus();
   await page.keyboard.press("Enter");
+  await expect.poll(() => receivedStart).not.toBeNull();
   expect(receivedStart).toEqual(expect.objectContaining({
     workflow_format_version: 3,
     workflow_revision_hash: workflowRevisionHash,
@@ -277,11 +413,10 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
     "/atelier/api/v1/agent-configuration-revisions"
   ];
 
-  const expectOnlyRoomRead = ({ pinnedDecisionReads = false } = {}): void => {
-    const recognized = pinnedDecisionReads
-      ? observed.filter(({ path }) => pinnedDecisionPaths.includes(path))
-      : [];
-    const unrecognized = observed.filter((request) => !recognized.includes(request));
+  const expectOnlyRoomRead = (): void => {
+    const unrecognized = observed.filter(
+      ({ path }) => !pinnedDecisionPaths.includes(path)
+    );
     const runRequests = unrecognized.filter(({ path }) => path === runListPath);
     const catalogRequests = unrecognized.filter(({ path }) => path === catalogPath);
     expect(unrecognized).toHaveLength(runRequests.length + catalogRequests.length);
@@ -333,7 +468,7 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
   // One freshness model, once confirmed: no Refresh or Retry control remains
   // (#532) -- the redundant permanent control this lane removes.
   await expect(page.getByRole("button", { name: /workbench runs/ })).toHaveCount(0);
-  expectOnlyRoomRead({ pinnedDecisionReads: true });
+  expectOnlyRoomRead();
   expect(page.url()).toBe(roomUrl);
 });
 
@@ -396,6 +531,13 @@ test("Start sheet presents a current role configuration without retaining a draf
       })
     });
   });
+  await routeStartSheetModelContract(page, [{
+    hash: configurationHash,
+    authProfileHash: "d".repeat(64),
+    providerId: "e2e",
+    modelId: "sheet-model",
+    startable: true
+  }]);
 
   await page.goto(`/atelier/catalog/${name}`);
   const opener = page.getByRole("button", { name: "Start" });
@@ -403,9 +545,7 @@ test("Start sheet presents a current role configuration without retaining a draf
   const sheet = page.getByRole("dialog", { name: `Start ${name}` });
   const picker = sheet.getByLabel("Configuration for builder");
   await picker.selectOption(configurationHash);
-  await sheet.getByRole("button", { name: "Interim configuration" }).hover();
-  await expect(sheet.getByRole("status")).toContainText("Settings › Model defaults exist");
-  await expect(sheet.locator(".role-source")).toContainText("chosen for this run, not saved");
+  await expect(sheet.locator(".role-source")).toHaveText("Chosen now");
   await page.keyboard.press("Escape");
   await opener.click();
   await expect(picker).toHaveValue("");
@@ -474,6 +614,7 @@ test("Catalog start sheet refuses scalar and array order schemas before starting
       body: JSON.stringify({ items: [], next_after_revision_hash: null })
     });
   });
+  await routeStartSheetModelContract(page, []);
 
   await page.goto(`/atelier/catalog/${workflowName}`);
   await page.getByRole("button", { name: "Start" }).click();
@@ -709,6 +850,12 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
     }
   });
   expect(configuration.status()).toBe(201);
+  await publishCheckedRegistryEntry(
+    page,
+    "e2e-v3",
+    "v3-model",
+    (await configuration.json()).agent_configuration_revision_hash as string
+  );
 
   const started = await page.request.post(`${api}/runs`, {
     data: {
@@ -724,7 +871,7 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
       ]
     }
   });
-  expect(started.status()).toBe(201);
+  expect(started.status(), await started.text()).toBe(201);
   const createdRun = await started.json();
   expect(createdRun.workflow_format_version).toBe(3);
   const reference = createdRun.public_run_reference as string;
@@ -830,6 +977,13 @@ test("starts an admitted V3 workflow from its Catalog detail sheet", async ({ pa
       })
     });
   });
+  await routeStartSheetModelContract(page, [{
+    hash: configurationHash,
+    authProfileHash: authProfileRevisionHash,
+    providerId: "e2e-v3",
+    modelId: "named-model",
+    startable: true
+  }]);
   let receivedStart: Record<string, unknown> | null = null;
   let startedRun: Record<string, unknown> | null = null;
   await page.route("**/atelier/api/v1/runs", async (route) => {
@@ -883,7 +1037,10 @@ test("starts an admitted V3 workflow from its Catalog detail sheet", async ({ pa
   const sheet = page.getByRole("dialog", { name: `Start ${workflowName}` });
   await expect(sheet).toBeVisible();
   await sheet.getByLabel("Configuration for builder").selectOption(configurationHash);
-  await sheet.getByRole("button", { name: "Start run" }).click();
+  const startRun = sheet.getByRole("button", { name: "Start run" });
+  await expect(startRun).toBeEnabled();
+  await startRun.click();
+  await expect.poll(() => receivedStart).not.toBeNull();
   expect(receivedStart).toEqual({
     workflow_format_version: 3,
     run_id: expect.any(String),
@@ -895,7 +1052,7 @@ test("starts an admitted V3 workflow from its Catalog detail sheet", async ({ pa
   await expect(page.getByRole("heading", { level: 1, name: workflowName })).toBeVisible();
 });
 
-test("Catalog start sheet lists only currently startable configurations", async ({ page }) => {
+test("Catalog start sheet names current startability for checked configurations", async ({ page }) => {
   const name = "configuration-startability";
   const schema = await anyJsonSchema(page);
   const workflow = await page.request.post("/atelier/api/v1/workflow-revisions", { headers: { "content-type": "application/yaml" }, data: ["format_version: 3", `name: ${name}`, "nodes:", "  - id: build", "    type: agent", "    role: builder", "    mode: headless", "    instruction: Choose a working executor.", ...declaredOutput(schema), ""].join("\n") });
@@ -907,11 +1064,33 @@ test("Catalog start sheet lists only currently startable configurations", async 
     { agent_configuration_revision_hash: unavailableHash, auth_profile_revision_hash: "3".repeat(64), provider_id: "e2e", auth_mode: "subscription", model: "unavailable", executor_revision: "immediate/v1", requested_capability: "headless", startable: false, not_startable_reason: "agent-executor-binding-unavailable" },
     { agent_configuration_revision_hash: availableHash, auth_profile_revision_hash: "4".repeat(64), provider_id: "e2e", auth_mode: "subscription", model: "available", executor_revision: "immediate/v1", requested_capability: "headless", startable: true, not_startable_reason: null }
   ], next_after_revision_hash: null }) }));
+  await routeStartSheetModelContract(page, [
+    {
+      hash: unavailableHash,
+      authProfileHash: "3".repeat(64),
+      providerId: "e2e",
+      modelId: "unavailable",
+      startable: false
+    },
+    {
+      hash: availableHash,
+      authProfileHash: "4".repeat(64),
+      providerId: "e2e",
+      modelId: "available",
+      startable: true
+    }
+  ]);
   await page.goto(`/atelier/catalog/${name}`);
   await page.getByRole("button", { name: "Start" }).click();
   const picker = page.getByRole("dialog", { name: `Start ${name}` }).getByLabel("Configuration for builder");
-  await expect(picker.getByRole("option", { name: /available/ })).toHaveCount(1);
-  await expect(picker.getByRole("option", { name: /unavailable/ })).toHaveCount(0);
+  await expect(picker.getByRole("option", {
+    name: "e2e · available · Account operator-2",
+    exact: true
+  })).toHaveCount(1);
+  await expect(picker.getByRole("option", {
+    name: "e2e · unavailable · Account operator-1",
+    exact: true
+  })).toHaveAttribute("disabled", "");
   await picker.selectOption(availableHash);
   await expect(picker).toHaveValue(availableHash);
 });
@@ -924,6 +1103,7 @@ test("Catalog work-item start sheet sends a missing source to Settings", async (
   expect((await page.request.post("/atelier/api/v1/workflow-lineages", { data: { workflow_revision_hash: (await workflow.json()).workflow_revision_hash, actor: "e2e", activated_at: "2026-08-26T00:00:00Z" } })).status()).toBe(201);
   await page.route("**/atelier/api/v1/observed-queue-items?*", async (route) => await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [], next_after: null }) }));
   await page.route("**/atelier/api/v1/agent-configuration-revisions?*", async (route) => await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [], next_after_revision_hash: null }) }));
+  await routeStartSheetModelContract(page, []);
   await page.goto(`/atelier/catalog/${name}`); await page.getByRole("button", { name: "Start" }).click();
   const sheet = page.getByRole("dialog", { name: `Start ${name}` });
   await expect(sheet).toContainText("No source");
@@ -990,6 +1170,12 @@ test("watches a V3 chain move, node by node, without a reload", async ({ page })
     }
   });
   expect(configuration.status()).toBe(201);
+  await publishCheckedRegistryEntry(
+    page,
+    "e2e-v3",
+    "v3-model",
+    (await configuration.json()).agent_configuration_revision_hash as string
+  );
 
   const started = await page.request.post(`${api}/runs`, {
     data: {
@@ -1072,6 +1258,12 @@ test("draws a running V3 chain as a graph while a node is still working", async 
     }
   });
   expect(configuration.status()).toBe(201);
+  await publishCheckedRegistryEntry(
+    page,
+    "e2e-v3-slow",
+    "v3-model",
+    (await configuration.json()).agent_configuration_revision_hash as string
+  );
 
   const started = await page.request.post(`${api}/runs`, {
     data: {
@@ -1167,6 +1359,12 @@ test("proves(the-cockpit-cancels-a-real-run-by-keyboard): cancels a running V3 r
     }
   });
   expect(configuration.status()).toBe(201);
+  await publishCheckedRegistryEntry(
+    page,
+    "e2e-v3-held",
+    "v3-model",
+    (await configuration.json()).agent_configuration_revision_hash as string
+  );
 
   const started = await page.request.post(`${api}/runs`, {
     data: {
@@ -1306,6 +1504,12 @@ test("a node whose answer its own contract refuses never reports success", async
     }
   });
   expect(configuration.status()).toBe(201);
+  await publishCheckedRegistryEntry(
+    page,
+    "e2e-v3",
+    "v3-model",
+    (await configuration.json()).agent_configuration_revision_hash as string
+  );
 
   const started = await page.request.post(`${api}/runs`, {
     data: {
@@ -1424,6 +1628,12 @@ test("clicking a finished node shows its whole log", async ({ page }) => {
     }
   });
   expect(configuration.status()).toBe(201);
+  await publishCheckedRegistryEntry(
+    page,
+    "e2e-v3",
+    "v3-model",
+    (await configuration.json()).agent_configuration_revision_hash as string
+  );
 
   const started = await page.request.post(`${api}/runs`, {
     data: {
@@ -1552,6 +1762,7 @@ test("a declared order is a material field on start, and the typed value travels
   });
   expect(configuration.status()).toBe(201);
   const configurationHash = (await configuration.json()).agent_configuration_revision_hash as string;
+  await publishCheckedRegistryEntry(page, "e2e-v3", "cook-sonnet", configurationHash);
 
   const answerSchemaHash = await anyJsonSchema(page);
   const workflowYaml = [
@@ -1614,6 +1825,7 @@ test("a declared order is a material field on start, and the typed value travels
     await route.continue();
   });
   await sheet.getByRole("button", { name: "Start run" }).click();
+  await expect.poll(() => started.orders).not.toBeNull();
   await expect(page.getByRole("heading", { level: 1, name: workflowName })).toBeVisible({
     timeout: 20_000
   });

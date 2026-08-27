@@ -23,15 +23,17 @@ import uvicorn
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import agent_attempts, runs
+from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.context import ApiContext
-from atelier2.api.references import encode_public_run_reference
-from atelier2.application.occupancy import (
-    OccupancyRead,
-    OccupancyRevisionPublished,
-    OccupancyRevisionUnchanged,
+from atelier2.application.model_configuration import (
+    ModelRegistryPublished,
+    ModelRegistryUnchanged,
+    ProjectModelDefaultsMissing,
+    ProjectModelDefaultsPublished,
+    ProjectModelDefaultsRead,
+    ProjectModelDefaultsUnchanged,
 )
 from atelier2.application.publish_agent_configurations import (
     AgentConfigurationRevisionPublished,
@@ -74,7 +76,6 @@ from atelier2.host import serving
 from atelier2.host.conductor_workflow import (
     CONDUCTOR_BRIEF_SCHEMA,
     CONDUCTOR_REPORT_SCHEMA,
-    CONDUCTOR_ROLE,
     conductor_workflow_document,
 )
 from atelier2.host.serving import HostSettings
@@ -115,6 +116,7 @@ CONDUCTOR_FAKE_REVISION = "conductor-fake/v1"
 # to reach and confirm the cancel by keyboard; the operator's cancel ends it far
 # sooner, so this only bounds a run nobody stops.
 HELD_ATTEMPT_SECONDS = 30.0
+MODEL_VALIDATION_RUN_ID = "provider-model-validation"
 
 
 class RuntimeCloser(Protocol):
@@ -187,26 +189,42 @@ class BlockingAgentExecutor(RecordingAgentExecutorV2):
         lifecycle: list[str],
         name: str,
         release: threading.Event,
+        owner: BlockingAgentExecutorFactory,
     ) -> None:
         super().__init__(output, requests, lifecycle, name)
         self.observed = threading.Event()
         self.release = release
+        self.owner = owner
 
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
+        if self.requests[-1].run_id.value == MODEL_VALIDATION_RUN_ID:
+            return super().decode_process_completion(invocation, completion)
+        self.owner.observed_executor = self
         self.observed.set()
         if not self.release.wait(TIMEOUT_SECONDS):
             raise RuntimeError("browser did not observe the working attempt")
         return super().decode_process_completion(invocation, completion)
 
+    def close(self) -> None:
+        super().close()
+        if (
+            self.requests
+            and self.requests[-1].run_id.value == MODEL_VALIDATION_RUN_ID
+            and self.owner.opened is self
+        ):
+            self.owner.opened = None
+
 
 class BlockingAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
+    observed_executor: BlockingAgentExecutor | None = None
+
     def open(self) -> RecordingAgentExecutorV2:
         self.opens += 1
         self.lifecycle.append(f"open:{self.provider}")
         self.opened = BlockingAgentExecutor(
-            self.output, [], self.lifecycle, self.provider, threading.Event()
+            self.output, [], self.lifecycle, self.provider, threading.Event(), self
         )
         return self.opened
 
@@ -217,6 +235,8 @@ class DelayedAgentExecutor(RecordingAgentExecutorV2):
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
+        if self.requests[-1].run_id.value == MODEL_VALIDATION_RUN_ID:
+            return super().decode_process_completion(invocation, completion)
         time.sleep(3.0)
         return super().decode_process_completion(invocation, completion)
 
@@ -243,6 +263,8 @@ class HeldAgentExecutor(RecordingAgentExecutorV2):
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
+        if self.requests[-1].run_id.value == MODEL_VALIDATION_RUN_ID:
+            return super().decode_process_completion(invocation, completion)
         threading.Event().wait(HELD_ATTEMPT_SECONDS)
         return super().decode_process_completion(invocation, completion)
 
@@ -279,9 +301,6 @@ class BrowserProofHarness:
         self.reset_state = reset_state
         self.generation = 1
         self.expected_hash = hashlib.sha256(factory.output).hexdigest().encode("ascii")
-        self.released = False
-        self.start_response_observed = False
-        self.run_response_counts: dict[str, int] = {}
         self.stream_counts: dict[str, int] = {}
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -298,6 +317,21 @@ class BrowserProofHarness:
                     "body": str(self.generation).encode("ascii"),
                 }
             )
+            return
+        if (
+            scope["type"] == "http"
+            and scope.get("method") == "POST"
+            and path == "/__e2e/release-blocking-attempt"
+        ):
+            released = await asyncio.to_thread(self.release_blocking_attempt)
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 204 if released else 409,
+                    "headers": [],
+                }
+            )
+            await send({"type": "http.response.body", "body": b""})
             return
         if (
             scope["type"] == "http"
@@ -351,93 +385,27 @@ class BrowserProofHarness:
         if path.endswith("/events"):
             stream_number = self.stream_counts.get(path, 0) + 1
             self.stream_counts[path] = stream_number
-        status = 0
-        start_response_body = bytearray()
 
         async def proof_send(message: Message) -> None:
-            nonlocal status
-            if message["type"] == "http.response.start":
-                status = message["status"]
             if message["type"] == "http.response.body" and stream_number >= 2:
                 body = message.get("body", b"").replace(self.expected_hash, b"0" * 64)
                 message = {**message, "body": body}
-            if (
-                message["type"] == "http.response.body"
-                and scope.get("method") == "POST"
-                and path == "/atelier/api/v1/runs"
-                and status in {200, 201}
-            ):
-                start_response_body.extend(message.get("body", b""))
-            if (
-                message["type"] == "http.response.body"
-                and not message.get("more_body", False)
-                and not self.start_response_observed
-                and scope["method"] == "POST"
-                and path == "/atelier/api/v1/runs"
-                and status in {200, 201}
-            ):
-                response = json.loads(start_response_body)
-                bindings = response.get("agent_bindings")
-                if not isinstance(bindings, list):
-                    raise TypeError(
-                        "the successful start did not return agent bindings"
-                    )
-                blocking_start = any(
-                    isinstance(binding, dict)
-                    and binding.get("provider_id") == self.factory.provider
-                    and binding.get("executor_revision") == self.factory.revision
-                    for binding in bindings
-                )
-                if blocking_start:
-                    executor = self.factory.opened
-                    if not isinstance(executor, BlockingAgentExecutor):
-                        raise TypeError(
-                            "the blocking start did not open its expected executor"
-                        )
-                    observed = await asyncio.to_thread(
-                        executor.observed.wait, TIMEOUT_SECONDS
-                    )
-                    if not observed:
-                        raise RuntimeError(
-                            "the blocking start did not observe its process"
-                        )
-                    self.start_response_observed = True
             await send(message)
-            if message["type"] == "http.response.body" and not message.get(
-                "more_body", False
-            ):
-                self.release_after_observed(path, status)
 
         await self.app(scope, receive, proof_send)
 
-    def release_after_observed(self, path: str, status: int) -> None:
-        if (
-            self.released
-            or status != 200
-            or not path.startswith("/atelier/api/v1/runs/")
-        ):
-            return
-        self.run_response_counts[path] = self.run_response_counts.get(path, 0) + 1
-        executor = self.factory.opened
-        if executor is None or not executor.requests:
-            return
-        reference = encode_public_run_reference(executor.requests[0].run_id)
-        if path != f"/atelier/api/v1/runs/{reference}":
-            return
-        if self.run_response_counts[path] < 3:
-            return
-        if not isinstance(executor, BlockingAgentExecutor):
-            raise TypeError("the test executor changed while the browser observed it")
-        with self.runtime.engine.connect() as connection:
-            observed = connection.scalar(
-                sa.select(sa.func.count())
-                .select_from(agent_attempts)
-                .where(agent_attempts.c.process_phase == "PROCESS_OBSERVED")
-            )
-        if not observed:
-            raise RuntimeError("the blocking attempt was not durably observed")
-        self.released = True
+    def release_blocking_attempt(self) -> bool:
+        deadline = time.monotonic() + TIMEOUT_SECONDS
+        executor = self.factory.observed_executor
+        while executor is None:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+            executor = self.factory.observed_executor
+        if not executor.observed.wait(max(0, deadline - time.monotonic())):
+            return False
         executor.release.set()
+        return True
 
     def close(self) -> None:
         self.runtime.close()
@@ -456,8 +424,8 @@ class BrowserProofHarness:
         and report schemas, the production conductor document (built by its own
         owner, `atelier2.host.conductor_workflow`), its catalog lineage, an
         auth profile plus agent configuration bound to the fake conductor
-        executor, and the project occupancy recommending that binding for the
-        conductor role. On demand rather than at startup, so one served
+        executor, and the project level-2 model default selecting that exact
+        model. On demand rather than at startup, so one served
         instance proves BOTH workbench states: the honest refusal before this
         endpoint is called, the real episode after.
         """
@@ -516,19 +484,67 @@ class BrowserProofHarness:
                     f"conductor configuration failed: {refused_configuration!r}"
                 )
 
-        project_id = "e2e-workshop"
-        if not isinstance(
-            use_cases.get_occupancy_revision(project_id, lineage_id), OccupancyRead
+        match use_cases.publish_model_registry(
+            CONDUCTOR_FAKE_PROVIDER,
+            1,
+            (("conductor-fake-model", configuration_hash),),
         ):
-            match use_cases.publish_occupancy_revision(
-                project_id, lineage_id, 1, ((CONDUCTOR_ROLE, configuration_hash),)
-            ):
-                case OccupancyRevisionPublished() | OccupancyRevisionUnchanged():
-                    pass
-                case refused_occupancy:
-                    raise RuntimeError(
-                        f"conductor occupancy failed: {refused_occupancy!r}"
+            case ModelRegistryPublished(registry) | ModelRegistryUnchanged(registry):
+                registry_hash = registry.revision_hash.value
+            case refused_registry:
+                raise RuntimeError(
+                    f"conductor model registry failed: {refused_registry!r}"
+                )
+        match use_cases.validate_model_registry_entry(
+            CONDUCTOR_FAKE_PROVIDER, configuration_hash
+        ):
+            case ModelRegistryPublished(registry) | ModelRegistryUnchanged(registry):
+                registry_hash = registry.revision_hash.value
+            case refused_validation:
+                raise RuntimeError(
+                    f"conductor model validation failed: {refused_validation!r}"
+                )
+        match use_cases.get_project_model_defaults("e2e-workshop"):
+            case ProjectModelDefaultsRead(current_defaults):
+                defaults_revision_number = current_defaults.revision_number + 1
+                retained_defaults = tuple(
+                    (
+                        default.difficulty,
+                        default.model_registry_revision_hash.value,
+                        default.provider_id.value,
+                        default.model_id,
+                        default.agent_configuration_revision_hash.value,
                     )
+                    for default in current_defaults.defaults
+                    if default.difficulty != 2
+                )
+            case ProjectModelDefaultsMissing():
+                defaults_revision_number = 1
+                retained_defaults = ()
+            case refused_defaults_read:
+                raise RuntimeError(
+                    f"conductor model defaults read failed: {refused_defaults_read!r}"
+                )
+        match use_cases.publish_project_model_defaults(
+            "e2e-workshop",
+            defaults_revision_number,
+            retained_defaults
+            + (
+                (
+                    2,
+                    registry_hash,
+                    CONDUCTOR_FAKE_PROVIDER,
+                    "conductor-fake-model",
+                    configuration_hash,
+                ),
+            ),
+        ):
+            case ProjectModelDefaultsPublished() | ProjectModelDefaultsUnchanged():
+                pass
+            case refused_defaults:
+                raise RuntimeError(
+                    f"conductor model defaults failed: {refused_defaults!r}"
+                )
         return json.dumps(
             {
                 "lineage_id": lineage_id,

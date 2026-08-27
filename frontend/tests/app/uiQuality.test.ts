@@ -7,6 +7,7 @@ import { wrapDisplayCopy } from "../../src/lib/displayCopy";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { humanMove } from "../../src/lib/runState";
+import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
 import { standingWords } from "../../src/lib/runState";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
@@ -96,6 +97,33 @@ function openWorkbenchPseudoLocale(listRuns: ReturnType<typeof vi.fn>) {
   });
 }
 
+function openProjectPseudoLocale() {
+  window.history.replaceState(null, "", "/atelier/settings?pseudo-locale=1");
+  return render(App, {
+    props: {
+      cockpitApi: cockpitApiStub({
+        listRuns: vi.fn(async () => ({ items: [], next_after: null })),
+        listProjects: vi.fn(async () => ({ items: [{ public_project_reference: "project1.dGVzdA" }] })),
+        getProjectSourceConnection: vi.fn(async () => ({
+          public_project_reference: "project1.dGVzdA",
+          revision_number: 1,
+          source_kind: "github",
+          source_address: "atelier/atelier-2",
+          auth_method: "personal-access-token" as const,
+          project_source_connection_revision_hash: "a".repeat(64)
+        })),
+        getProjectModelDefaults: vi.fn(async () => ({
+          project_id: "atelier",
+          public_project_reference: "project1.dGVzdA",
+          revision_number: 1,
+          project_model_defaults_revision_hash: "b".repeat(64),
+          defaults: []
+        }))
+      }),
+      mutationJournal: new MutationJournal(sessionStorage)
+    }
+  });
+}
 
 // The one project's real name (#133 seam) is the only rail text a
 // pseudo-locale wrap does not own — everything else the rail renders must come
@@ -210,4 +238,16 @@ describe("core surfaces read owned display strings", () => {
     await railShowsOwnedPseudoLocale();
   });
 
+  it("Settings renders its own copy through the display transform", async () => {
+    openProjectPseudoLocale();
+
+    await screen.findByRole("heading", { name: THE_ONE_PROJECT });
+    expect(
+      (await screen.findByRole("heading", { name: wrapDisplayCopy(settingsPageCopy.sourcesTitle) })).isConnected
+    ).toBe(true);
+    expect(
+      screen.getByRole("heading", { name: wrapDisplayCopy(settingsPageCopy.modelsTitle) })
+        .isConnected
+    ).toBe(true);
+  });
 });

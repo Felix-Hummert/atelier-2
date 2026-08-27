@@ -129,16 +129,24 @@ export const workflowStartCopy = {
   settings: "Settings",
   unknownSource: "Other source",
   orderUnavailable: "This order shape cannot be started here.",
-  interim: "Interim",
+  roles: "Roles",
   info: "Info",
-  interimConfigurationInfo: "Interim configuration",
-  interimConfiguration: "This choice applies to this run only, until Settings › Model defaults exist.",
-  interimConfigurationNeeded: "Interim source · choose for this run",
-  interimConfigurationChosen: "Interim source · chosen for this run, not saved",
   choose: "Choose",
+  chosenNow: "Chosen now",
+  pinnedInWorkflow: "pinned in workflow",
+  nextHigher: "next higher",
+  unavailable: "Unavailable",
+  missingRoleResolution: "Model resolution did not name this role.",
+  overrideNotRegistered: "The chosen configuration is not registered.",
+  workflowModelNotRegistered: "The model pinned in the workflow is not registered.",
+  workflowModelAmbiguous: "The model pinned in the workflow names more than one configuration.",
+  noProjectDefault: "No project default answers this difficulty or a higher one.",
+  familyDifferenceUnavailable: "No registered configuration satisfies the workflow's family rule.",
+  familyDifferenceFrom: "No registered configuration differs in family from",
   trueLabel: "True",
   falseLabel: "False",
   startRun: "Start run",
+  tryAgain: "Try again",
   cancel: "Cancel",
   retry: "Retry",
   startUnavailable: "The run could not be started."
@@ -150,7 +158,7 @@ export const workflowStartCopy = {
  * admitted head, which wears no note at all.
  *
  * Read-only browsing shows every published name it can identify rather than
- * hiding one, unlike the project occupancy editor's picker (a write
+ * hiding one, unlike a project configuration picker (a write
  * precondition: it must bind to a live catalog member, so it drops what
  * cannot be bound). This surface only answers "what can the house do", so an
  * honest note beats disappearing content -- the same choice the saved-workflow

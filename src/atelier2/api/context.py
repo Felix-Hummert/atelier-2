@@ -26,9 +26,12 @@ from atelier2.application.import_project_source_issues import (
     ImportProjectSourceIssuesOutcome,
     ListObservedQueueItemsOutcome,
 )
-from atelier2.application.occupancy import (
-    GetOccupancyResult,
-    PublishOccupancyUseCaseResult,
+from atelier2.application.model_configuration import (
+    GetModelRegistryResult,
+    GetProjectModelDefaultsResult,
+    GetProjectModelResolutionResult,
+    PublishModelRegistryUseCaseResult,
+    PublishProjectModelDefaultsUseCaseResult,
 )
 from atelier2.application.prepare_run_events import PrepareRunEventsResult
 from atelier2.application.project_connections import (
@@ -126,6 +129,7 @@ from atelier2.ports.effects import TransactionalEffectReconcileCommander
 from atelier2.ports.host_configuration import (
     HostConfigurationChannel,
     ProjectSourceConnectionChannel,
+    ProviderModelInspector,
 )
 from atelier2.ports.issue_observation import TrackerItemSource
 from atelier2.ports.published_revisions import (
@@ -175,6 +179,7 @@ class ApiPorts:
     # None is the honest default: a composition that serves no connected
     # project has no tracker to observe, and the import door says so by name.
     tracker_item_source: TrackerItemSource | None = None
+    model_registry_inspector: ProviderModelInspector | None = None
 
 
 @dataclass(frozen=True)
@@ -250,6 +255,22 @@ class ApiUseCases:
     ]
     list_projects: Callable[[], ListProjectsResult]
     get_project: Callable[[ProjectId], GetProjectResult]
+    get_model_registry: Callable[[str], GetModelRegistryResult]
+    publish_model_registry: Callable[
+        [str, int, tuple[tuple[str, str], ...]],
+        PublishModelRegistryUseCaseResult,
+    ]
+    validate_model_registry_entry: Callable[
+        [str, str], PublishModelRegistryUseCaseResult
+    ]
+    get_project_model_defaults: Callable[[str], GetProjectModelDefaultsResult]
+    publish_project_model_defaults: Callable[
+        [str, int, tuple[tuple[int, str, str, str, str], ...]],
+        PublishProjectModelDefaultsUseCaseResult,
+    ]
+    get_project_model_resolution: Callable[
+        [str, str, tuple[tuple[str, str], ...]], GetProjectModelResolutionResult
+    ]
     start_published_run: Callable[
         [
             RunId,
@@ -287,11 +308,6 @@ class ApiUseCases:
             CatalogActivatedAt,
         ],
         AdmitMemberResult,
-    ]
-    get_occupancy_revision: Callable[[str, str], GetOccupancyResult]
-    publish_occupancy_revision: Callable[
-        [str, str, int, tuple[tuple[str, str], ...]],
-        PublishOccupancyUseCaseResult,
     ]
     get_project_root_revision: Callable[[str], GetProjectRootResult]
     publish_project_root_revision: Callable[

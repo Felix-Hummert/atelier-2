@@ -1,14 +1,34 @@
 from __future__ import annotations
 
+from collections import deque
+from dataclasses import dataclass
+from enum import StrEnum
+from functools import cache
+
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
+    AgentConfigurationRevisionHash,
+    AgentRole,
     AuthProfileRevisionHash,
     ResolvedAgentBinding,
 )
-from atelier2.contracts.host_configuration import OccupancyRevision
+from atelier2.contracts.host_configuration import (
+    ModelRegistryRevision,
+    ModelResolutionUncastReason,
+    ProjectModelDefault,
+    ProjectModelDefaultsRevision,
+    ProviderModelCheck,
+    UncastRole,
+)
 from atelier2.contracts.workflows import AgentNodeV2, WorkflowGraphV2
-from atelier2.contracts.workflows_v3 import AgentNodeV3, WorkflowGraphV3
+from atelier2.contracts.workflows_v3 import (
+    AgentNodeV3,
+    DeclaredRole,
+    RoleDifficulty,
+    WorkflowGraphV3,
+    declared_roles_of,
+)
 from atelier2.ports.agent_configurations import AgentConfigurationBindingReads
 from atelier2.ports.agent_executions import AgentExecutorKey, AgentExecutorRegistry
 from atelier2.ports.durable_runs import (
@@ -77,33 +97,499 @@ def agent_role_completeness_refusal(
     return None
 
 
+def undeclared_agent_role_refusal(
+    graph: WorkflowGraphV2 | WorkflowGraphV3, agent_bindings: AgentBindingSet
+) -> DurableInvalidAgentBindings | None:
+    """Whether a partial V3 override names a role the workflow lacks."""
+    requested_roles = {binding.role.value for binding in agent_bindings.bindings}
+    if requested_roles - declared_agent_roles(graph):
+        return DurableInvalidAgentBindings()
+    return None
+
+
+class ModelResolutionSource(StrEnum):
+    """The closed provenance vocabulary exposed to the start sheet."""
+
+    CHOSEN_NOW = "chosen-now"
+    PINNED_IN_WORKFLOW = "pinned-in-workflow"
+    FROM_PROJECT = "from-project"
+    UNCAST = "uncast"
+
+
+@dataclass(frozen=True)
+class RoleModelResolution:
+    role: AgentRole
+    agent_configuration_revision_hash: AgentConfigurationRevisionHash | None
+    source: ModelResolutionSource
+    model_id: str | None
+    declared_difficulty: RoleDifficulty | None
+    difficulty: RoleDifficulty | None
+    uncast_reason: ModelResolutionUncastReason | None
+    family_differs_from: AgentRole | None
+
+
+@dataclass(frozen=True)
+class CastUnboundRolesResult:
+    agent_bindings: AgentBindingSet
+    resolutions: tuple[RoleModelResolution, ...]
+
+    @property
+    def uncast_roles(self) -> tuple[UncastRole, ...]:
+        return tuple(
+            UncastRole(
+                resolution.role.value,
+                resolution.uncast_reason,
+                (
+                    None
+                    if resolution.family_differs_from is None
+                    else resolution.family_differs_from.value
+                ),
+            )
+            for resolution in self.resolutions
+            if resolution.uncast_reason is not None
+        )
+
+
+@dataclass(frozen=True)
+class _ModelCandidate:
+    configuration_hash: AgentConfigurationRevisionHash
+    provider_id: str | None
+    model_id: str | None
+    source: ModelResolutionSource
+    difficulty: RoleDifficulty | None
+
+
+@dataclass(frozen=True)
+class _RoleChoices:
+    candidates: tuple[_ModelCandidate, ...]
+    uncast_reason: ModelResolutionUncastReason | None
+
+
+def _eligible_registry_candidates(
+    registries: tuple[ModelRegistryRevision, ...],
+) -> tuple[_ModelCandidate, ...]:
+    """The only registry tuples a start may name.
+
+    A provider's rejected exact id remains visible configuration, but cannot
+    become a run binding through an override, workflow pin, or default.
+    """
+    return tuple(
+        _ModelCandidate(
+            entry.agent_configuration_revision_hash,
+            registry.provider_id.value,
+            entry.model_id,
+            ModelResolutionSource.CHOSEN_NOW,
+            None,
+        )
+        for registry in registries
+        for entry in registry.entries
+        if entry.provider_check is ProviderModelCheck.CHECKED
+    )
+
+
+def _candidate_choices(
+    declaration: DeclaredRole,
+    requested_by_role: dict[str, AgentBinding],
+    override_models: dict[AgentConfigurationRevisionHash, tuple[str, str]],
+    defaults: ProjectModelDefaultsRevision | None,
+    registries: tuple[ModelRegistryRevision, ...],
+) -> _RoleChoices:
+    registered = _eligible_registry_candidates(registries)
+    requested = requested_by_role.get(declaration.role)
+    if requested is not None:
+        matches = tuple(
+            candidate
+            for candidate in registered
+            if candidate.configuration_hash
+            == requested.agent_configuration_revision_hash
+        )
+        metadata = override_models.get(requested.agent_configuration_revision_hash)
+        if len(matches) == 1 and (
+            metadata is None
+            or (matches[0].provider_id, matches[0].model_id) == metadata
+        ):
+            return _RoleChoices(matches, None)
+        return _RoleChoices((), ModelResolutionUncastReason.OVERRIDE_NOT_REGISTERED)
+    if declaration.model is not None:
+        pinned = tuple(
+            _ModelCandidate(
+                candidate.configuration_hash,
+                candidate.provider_id,
+                candidate.model_id,
+                ModelResolutionSource.PINNED_IN_WORKFLOW,
+                None,
+            )
+            for candidate in registered
+            if candidate.model_id == declaration.model
+        )
+        return _RoleChoices(
+            pinned if len(pinned) == 1 else (),
+            (
+                None
+                if len(pinned) == 1
+                else (
+                    ModelResolutionUncastReason.WORKFLOW_MODEL_NOT_REGISTERED
+                    if not pinned
+                    else ModelResolutionUncastReason.WORKFLOW_MODEL_AMBIGUOUS
+                )
+            ),
+        )
+    choices: list[_ModelCandidate] = []
+    if defaults is not None:
+        by_difficulty: dict[RoleDifficulty, ProjectModelDefault] = {
+            default.difficulty: default for default in defaults.defaults
+        }
+        for typed_difficulty in (1, 2, 3):
+            if typed_difficulty < declaration.difficulty:
+                continue
+            default = by_difficulty.get(typed_difficulty)
+            if default is None:
+                continue
+            matching_registry_tuples = tuple(
+                candidate
+                for candidate in registered
+                if (
+                    candidate.provider_id == default.provider_id.value
+                    and candidate.model_id == default.model_id
+                    and candidate.configuration_hash
+                    == default.agent_configuration_revision_hash
+                )
+            )
+            if len(matching_registry_tuples) == 1:
+                choices.append(
+                    _ModelCandidate(
+                        default.agent_configuration_revision_hash,
+                        default.provider_id.value,
+                        default.model_id,
+                        ModelResolutionSource.FROM_PROJECT,
+                        typed_difficulty,
+                    )
+                )
+    return _RoleChoices(
+        tuple(choices),
+        None if choices else ModelResolutionUncastReason.NO_PROJECT_DEFAULT,
+    )
+
+
+def _family_edges(
+    declarations: tuple[DeclaredRole, ...],
+) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (declaration.role, declaration.family_differs_from)
+        for declaration in declarations
+        if declaration.family_differs_from is not None
+    )
+
+
+def _connected_roles(
+    declarations: tuple[DeclaredRole, ...], edges: tuple[tuple[str, str], ...]
+) -> tuple[tuple[str, ...], ...]:
+    order = tuple(declaration.role for declaration in declarations)
+    neighbours = {role: set[str]() for role in order}
+    for left, right in edges:
+        neighbours[left].add(right)
+        neighbours[right].add(left)
+    remaining = set(order)
+    components: list[tuple[str, ...]] = []
+    for role in order:
+        if role not in remaining:
+            continue
+        reached: set[str] = set()
+        pending = [role]
+        while pending:
+            current = pending.pop()
+            if current in reached:
+                continue
+            reached.add(current)
+            pending.extend(neighbours[current] - reached)
+        remaining -= reached
+        components.append(
+            tuple(candidate for candidate in order if candidate in reached)
+        )
+    return tuple(components)
+
+
+def _select_component(
+    roles: tuple[str, ...],
+    choices: dict[str, _RoleChoices],
+    edges: tuple[tuple[str, str], ...],
+) -> dict[str, _ModelCandidate | None]:
+    """Keep the precedence-first maximum assignment of a tree or one cycle."""
+    relevant_edges = tuple(
+        (left, right) for left, right in edges if left in roles and right in roles
+    )
+    role_index = {role: index for index, role in enumerate(roles)}
+    options = {role: (*choices[role].candidates, None) for role in roles}
+    neighbours = {role: set[str]() for role in roles}
+    for left, right in relevant_edges:
+        neighbours[left].add(right)
+        neighbours[right].add(left)
+
+    @dataclass(frozen=True)
+    class Selection:
+        states: tuple[int, ...]
+        assigned_count: int
+
+    missing_state = max(len(value) for value in options.values()) + 1
+
+    def selection_key(selection: Selection) -> tuple[int, tuple[int, ...]]:
+        return (
+            -selection.assigned_count,
+            tuple(
+                missing_state if state_index < 0 else state_index
+                for state_index in selection.states
+            ),
+        )
+
+    def best_of(selections: list[Selection]) -> Selection:
+        return min(selections, key=selection_key)
+
+    def one_state(role: str, state_index: int) -> Selection:
+        states = [-1] * len(roles)
+        states[role_index[role]] = state_index
+        return Selection(
+            tuple(states),
+            int(options[role][state_index] is not None),
+        )
+
+    def merge(left: Selection, right: Selection) -> Selection:
+        return Selection(
+            tuple(
+                right_state if left_state < 0 else left_state
+                for left_state, right_state in zip(
+                    left.states, right.states, strict=True
+                )
+            ),
+            left.assigned_count + right.assigned_count,
+        )
+
+    def compatible(
+        left_role: str,
+        left_state_index: int,
+        right_role: str,
+        right_state_index: int,
+    ) -> bool:
+        states = {
+            left_role: options[left_role][left_state_index],
+            right_role: options[right_role][right_state_index],
+        }
+        for declarer, referenced in relevant_edges:
+            if {declarer, referenced} != {left_role, right_role}:
+                continue
+            declarer_candidate = states[declarer]
+            referenced_candidate = states[referenced]
+            if declarer_candidate is not None and (
+                referenced_candidate is None
+                or declarer_candidate.provider_id == referenced_candidate.provider_id
+            ):
+                return False
+        return True
+
+    @cache
+    def tree_options(
+        role: str,
+        parent: str | None,
+        blocked: frozenset[str],
+    ) -> dict[int, Selection]:
+        descendants = tuple(
+            neighbour
+            for neighbour in neighbours[role]
+            if neighbour != parent and neighbour not in blocked
+        )
+        selections: dict[int, Selection] = {}
+        for state_index in range(len(options[role])):
+            selected = one_state(role, state_index)
+            viable = True
+            for descendant in descendants:
+                descendant_options = tree_options(descendant, role, blocked)
+                compatible_descendants = [
+                    descendant_selection
+                    for descendant_state, descendant_selection in descendant_options.items()
+                    if compatible(
+                        role,
+                        state_index,
+                        descendant,
+                        descendant_state,
+                    )
+                ]
+                if not compatible_descendants:
+                    viable = False
+                    break
+                selected = merge(selected, best_of(compatible_descendants))
+            if viable:
+                selections[state_index] = selected
+        return selections
+
+    remaining_degree = {role: len(neighbours[role]) for role in roles}
+    leaves = deque(role for role in roles if remaining_degree[role] <= 1)
+    peeled: set[str] = set()
+    while leaves:
+        role = leaves.popleft()
+        if role in peeled:
+            continue
+        peeled.add(role)
+        for neighbour in neighbours[role]:
+            if neighbour in peeled:
+                continue
+            remaining_degree[neighbour] -= 1
+            if remaining_degree[neighbour] == 1:
+                leaves.append(neighbour)
+    cycle = frozenset(role for role in roles if role not in peeled)
+
+    if not cycle:
+        selection = best_of(list(tree_options(roles[0], None, frozenset()).values()))
+    else:
+        start = next(role for role in roles if role in cycle)
+        cycle_order = [start]
+        previous: str | None = None
+        current = start
+        while True:
+            following = next(
+                neighbour
+                for neighbour in neighbours[current]
+                if neighbour in cycle and neighbour != previous
+            )
+            if following == start:
+                break
+            cycle_order.append(following)
+            previous, current = current, following
+
+        attached = {role: tree_options(role, None, cycle) for role in cycle_order}
+        completed: list[Selection] = []
+        for start_state, start_selection in attached[start].items():
+            paths = {start_state: start_selection}
+            previous_role = start
+            for role in cycle_order[1:]:
+                next_paths: dict[int, Selection] = {}
+                for state_index, attachment in attached[role].items():
+                    possible = [
+                        merge(path, attachment)
+                        for previous_state, path in paths.items()
+                        if compatible(
+                            previous_role,
+                            previous_state,
+                            role,
+                            state_index,
+                        )
+                    ]
+                    if possible:
+                        next_paths[state_index] = best_of(possible)
+                paths = next_paths
+                previous_role = role
+            completed.extend(
+                path
+                for final_state, path in paths.items()
+                if compatible(
+                    cycle_order[-1],
+                    final_state,
+                    start,
+                    start_state,
+                )
+            )
+        selection = best_of(completed)
+
+    return {role: options[role][selection.states[role_index[role]]] for role in roles}
+
+
 def cast_unbound_roles(
     graph: WorkflowGraphV2 | WorkflowGraphV3,
     requested: AgentBindingSet,
-    recommendation: OccupancyRevision | None,
-) -> AgentBindingSet:
-    """The requested bindings, with roles nobody bound taken from the occupancy.
+    defaults: ProjectModelDefaultsRevision | None,
+    registries: tuple[ModelRegistryRevision, ...],
+    override_models: dict[AgentConfigurationRevisionHash, tuple[str, str]]
+    | None = None,
+) -> CastUnboundRolesResult:
+    """Resolve every role once under the workshop's fixed model precedence.
 
-    The precedence is fixed here because it is one decision: an explicit
-    binding stands, a role the caller left open is filled from the served
-    project's occupancy, and a role neither answers stays open -- so
-    `agent_role_completeness_refusal` still refuses that start rather than a
-    guess being started. The occupancy fills only roles this document declares:
-    a recommendation older than the document cannot inject a role the document
-    no longer has.
+    Start overrides stand first, followed by the workflow's exact pin, the
+    project's row for the declared difficulty, and only then rows for a higher
+    difficulty. A family rule filters those candidates in the same order. No
+    candidate means an explicit `uncast` resolution and no binding, so the
+    existing completeness guard remains the start gate.
     """
-    if recommendation is None:
-        return requested
-    bound = {binding.role.value for binding in requested.bindings}
-    open_roles = declared_agent_roles(graph) - bound
-    cast = tuple(
-        AgentBinding(binding.role, binding.agent_configuration_revision_hash)
-        for binding in recommendation.bindings
-        if binding.role.value in open_roles
+    requested_by_role = {binding.role.value: binding for binding in requested.bindings}
+    if isinstance(graph, WorkflowGraphV2):
+        resolutions = tuple(
+            RoleModelResolution(
+                AgentRole(role),
+                (
+                    None
+                    if (binding := requested_by_role.get(role)) is None
+                    else binding.agent_configuration_revision_hash
+                ),
+                (
+                    ModelResolutionSource.UNCAST
+                    if binding is None
+                    else ModelResolutionSource.CHOSEN_NOW
+                ),
+                None,
+                None,
+                None,
+                (
+                    ModelResolutionUncastReason.NO_PROJECT_DEFAULT
+                    if binding is None
+                    else None
+                ),
+                None,
+            )
+            for role in sorted(declared_agent_roles(graph))
+        )
+        return CastUnboundRolesResult(requested, resolutions)
+
+    declarations = declared_roles_of(graph)
+    known_override_models = {} if override_models is None else override_models
+    choices_by_role = {
+        declaration.role: _candidate_choices(
+            declaration,
+            requested_by_role,
+            known_override_models,
+            defaults,
+            registries,
+        )
+        for declaration in declarations
+    }
+    selected: dict[str, _ModelCandidate | None] = {}
+    uncast_reasons = {
+        role: choices.uncast_reason
+        for role, choices in choices_by_role.items()
+        if choices.uncast_reason is not None
+    }
+    edges = _family_edges(declarations)
+    for component in _connected_roles(declarations, edges):
+        selected.update(_select_component(component, choices_by_role, edges))
+    for left, _right in edges:
+        if selected[left] is None and choices_by_role[left].uncast_reason is None:
+            uncast_reasons[left] = (
+                ModelResolutionUncastReason.FAMILY_DIFFERENCE_UNAVAILABLE
+            )
+
+    resolutions = tuple(
+        RoleModelResolution(
+            AgentRole(declaration.role),
+            None
+            if (candidate := selected[declaration.role]) is None
+            else candidate.configuration_hash,
+            ModelResolutionSource.UNCAST if candidate is None else candidate.source,
+            None if candidate is None else candidate.model_id,
+            declaration.difficulty,
+            None if candidate is None else candidate.difficulty,
+            uncast_reasons.get(declaration.role),
+            (
+                None
+                if declaration.family_differs_from is None
+                else AgentRole(declaration.family_differs_from)
+            ),
+        )
+        for declaration in declarations
     )
-    if not cast:
-        return requested
-    return AgentBindingSet(requested.bindings + cast)
+    bindings = AgentBindingSet(
+        tuple(
+            AgentBinding(resolution.role, resolution.agent_configuration_revision_hash)
+            for resolution in resolutions
+            if resolution.agent_configuration_revision_hash is not None
+        )
+    )
+    return CastUnboundRolesResult(bindings, resolutions)
 
 
 def resolve_start_bindings(

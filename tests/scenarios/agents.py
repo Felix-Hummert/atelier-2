@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Never
 
+from sqlalchemy.engine import Engine
+
 from atelier2.adapters.agent_workspaces import (
     SCRATCH_ROOT_MODE,
     LocalAgentAttemptWorkspaceOwner,
@@ -22,6 +24,7 @@ from atelier2.adapters.claude_subscription import (
     ClaudeWorkspaceToolExecutorFactory,
 )
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
 from atelier2.adapters.dbos.run_store import commit_agent_completed, load_graph
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.starter import (
@@ -64,6 +67,12 @@ from atelier2.contracts.executions import (
     NodeExecutionId,
     TransitionSnapshot,
 )
+from atelier2.contracts.host_configuration import (
+    ModelRegistryEntry,
+    ModelRegistryEntrySource,
+    ModelRegistryRevision,
+    ProviderModelCheck,
+)
 from atelier2.contracts.run_bindings import RunV2
 from atelier2.contracts.runs import RunId, WorkflowRevision, WorkflowRevisionHash
 from atelier2.contracts.workflows import AgentNode
@@ -80,9 +89,46 @@ from atelier2.ports.durable_runs import (
     DurableRunCreated,
     StartPublishedRunRequestV2,
 )
+from atelier2.ports.host_configuration import (
+    ModelRegistryRevisionCreated,
+    ModelRegistryRevisionExisting,
+)
 
 SCENARIO_PROVIDER_FRAME_BYTES = 49_152
 """The raw stdout frame a scenario provider declares when it is not the subject."""
+
+
+def publish_checked_model_registry(
+    engine: Engine,
+    provider: ProviderId,
+    configurations: tuple[AgentConfigurationRevision, ...],
+) -> None:
+    """Make the exact configurations a direct V3-start scenario names eligible."""
+    channel = DbosHostConfigurationChannel(engine)
+    current = channel.latest_model_registry_revision(provider)
+    assert current is None or isinstance(current, ModelRegistryRevision), current
+    current_entries = () if current is None else current.entries
+    entries_by_model = {entry.model_id: entry for entry in current_entries}
+    entries_by_model.update(
+        {
+            configuration.model: ModelRegistryEntry(
+                configuration.model,
+                configuration.revision_hash,
+                ModelRegistryEntrySource.OPERATOR,
+                ProviderModelCheck.CHECKED,
+            )
+            for configuration in configurations
+        }
+    )
+    revision = ModelRegistryRevision(
+        provider,
+        1 if current is None else current.revision_number + 1,
+        tuple(entries_by_model.values()),
+    )
+    published = channel.publish_model_registry_revision(revision)
+    assert isinstance(
+        published, (ModelRegistryRevisionCreated, ModelRegistryRevisionExisting)
+    )
 
 
 def agent_scratch_root(directory: Path) -> Path:

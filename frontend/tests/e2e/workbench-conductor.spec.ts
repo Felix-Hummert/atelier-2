@@ -58,7 +58,7 @@ test("a message meets the honest refusal without a conductor, and becomes one ep
   await photograph(page, "workbench-not-connected");
 
   // The harness publishes the production conductor catalog: schemas, the
-  // conductor document from its own owner, agent configuration, occupancy.
+  // conductor document from its own owner and agent configuration.
   const seeded = await page.request.post("/__e2e/seed-conductor");
   expect(seeded.ok()).toBeTruthy();
 

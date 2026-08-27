@@ -10,7 +10,6 @@ import {
   decodeWorkflowRevisionDetail,
   executableGraph,
   isRunV3,
-  occupancyRevisionSchema,
   projectSourceConnectionRevisionSchema,
   problemDefinitions,
   type Problem
@@ -597,7 +596,10 @@ describe("closed API decoders", () => {
         type: `urn:atelier2:problem:v1:${code}`,
         title: definition.title,
         status: definition.status,
-        detail: "operation-specific detail"
+        detail: "operation-specific detail",
+        ...(code === "uncast-agent-roles"
+          ? { uncast_roles: [{ role: "reviewer", reason: "no-project-default" }] }
+          : {})
       };
       expect(decodeProblem(exact).detail).toBe("operation-specific detail");
       expect(() => decodeProblem({ ...exact, title: "Wrong" })).toThrow();
@@ -1359,133 +1361,84 @@ describe("the project source connection Settings will read", () => {
   });
 });
 
-describe("the project occupancy the picker will consume", () => {
+describe("the project model configuration the start sheet consumes", () => {
   const projectReference = "project1.dGVhbS9yZWQ";
-  const lineageId = "b".repeat(64);
-  const occupancy = {
-    project_id: "team/red",
-    public_project_reference: projectReference,
-    lineage_id: lineageId,
-    revision_number: 3,
-    occupancy_revision_hash: "c".repeat(64),
-    bindings: [
-      { role: "builder", agent_configuration_revision_hash: "d".repeat(64) }
-    ]
+  const configurationHash = "d".repeat(64);
+  const registry = {
+    provider_id: "openai",
+    revision_number: 1,
+    model_registry_revision_hash: "a".repeat(64),
+    entries: [{
+      model_id: "gpt-5.6",
+      agent_configuration_revision_hash: configurationHash,
+      source: "discovered",
+      provider_check: "checked"
+    }]
   };
 
-  it("asks the existing project-and-lineage door and decodes its exact resource", async () => {
+  it("reads a provider registry and resolves project roles", async () => {
+    const resolution = {
+      project_id: "team/red",
+      public_project_reference: projectReference,
+      workflow_revision_hash: "b".repeat(64),
+      resolutions: [{
+        role: "builder",
+        agent_configuration_revision_hash: configurationHash,
+        source: "pinned-in-workflow",
+        model_id: "gpt-5.6",
+        declared_difficulty: 2,
+        default_difficulty: 2,
+        uncast_reason: null,
+        family_differs_from: null
+      }]
+    };
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(registry), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(resolution), { status: 200, headers: { "content-type": "application/json" } }));
+    const client = createCockpitApi(fetcher);
+
+    expect((await client.getModelRegistry("openai")).entries[0]?.model_id).toBe("gpt-5.6");
+    expect((await client.resolveProjectModels(projectReference, "b".repeat(64), [])).resolutions[0]?.source).toBe("pinned-in-workflow");
+    expect(fetcher.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ workflow_revision_hash: "b".repeat(64), overrides: [] }));
+  });
+
+  it.each([
+    {
+      name: "a registry naming another provider",
+      response: { ...registry, provider_id: "anthropic" },
+      read: (client: ReturnType<typeof createCockpitApi>) => client.getModelRegistry("openai"),
+      message: "model registry response named another provider"
+    },
+    {
+      name: "a resolution naming another project",
+      response: {
+        project_id: "team/blue",
+        public_project_reference: "project1.dGVhbS9ibHVl",
+        workflow_revision_hash: "b".repeat(64),
+        resolutions: []
+      },
+      read: (client: ReturnType<typeof createCockpitApi>) =>
+        client.resolveProjectModels(projectReference, "b".repeat(64), []),
+      message: "model resolution response named another project"
+    },
+    {
+      name: "a resolution naming another workflow",
+      response: {
+        project_id: "team/red",
+        public_project_reference: projectReference,
+        workflow_revision_hash: "c".repeat(64),
+        resolutions: []
+      },
+      read: (client: ReturnType<typeof createCockpitApi>) =>
+        client.resolveProjectModels(projectReference, "b".repeat(64), []),
+      message: "model resolution response named another workflow"
+    }
+  ])("refuses $name", async ({ response, read, message }) => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify(occupancy), {
-        status: 200,
-        headers: { "content-type": "application/json" }
-      })
+      new Response(JSON.stringify(response), { status: 200, headers: { "content-type": "application/json" } })
     );
 
-    const read = await createCockpitApi(fetcher).getProjectOccupancy(
-      projectReference,
-      lineageId
-    );
-
-    expect(fetcher.mock.calls[0]?.[0]).toBe(
-      `/atelier/api/v1/projects/${projectReference}/occupancy/${lineageId}`
-    );
-    expect(read).toEqual(occupancyRevisionSchema.parse(occupancy));
-  });
-
-  it("refuses a response for another project or lineage", async () => {
-    const fetcher = vi.fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ ...occupancy, public_project_reference: "project1.b3RoZXI" }),
-          { status: 200, headers: { "content-type": "application/json" } }
-        )
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ ...occupancy, lineage_id: "e".repeat(64) }), {
-          status: 200,
-          headers: { "content-type": "application/json" }
-        })
-      );
-    const client = createCockpitApi(fetcher);
-
-    await expect(client.getProjectOccupancy(projectReference, lineageId)).rejects.toThrow(
-      /another project or lineage/
-    );
-    await expect(client.getProjectOccupancy(projectReference, lineageId)).rejects.toThrow(
-      /another project or lineage/
-    );
-  });
-
-  it("writes the exact revision and bindings through the existing occupancy door", async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify({ ...occupancy, revision_number: 4 }), {
-        status: 201,
-        headers: { "content-type": "application/json" }
-      })
-    );
-
-    const result = await createCockpitApi(fetcher).putProjectOccupancy(
-      projectReference,
-      lineageId,
-      {
-        input: { revision_number: 4, bindings: occupancy.bindings },
-        body: JSON.stringify({ revision_number: 4, bindings: occupancy.bindings })
-      }
-    );
-
-    expect(fetcher.mock.calls[0]?.[0]).toBe(
-      `/atelier/api/v1/projects/${projectReference}/occupancy/${lineageId}`
-    );
-    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
-      method: "PUT",
-      body: JSON.stringify({ revision_number: 4, bindings: occupancy.bindings })
-    });
-    expect(result.status).toBe(201);
-    expect(result.value.revision_number).toBe(4);
-  });
-
-  it("sends frozen occupancy JSON bytes unchanged on a retry", async () => {
-    const input = { revision_number: 4, bindings: occupancy.bindings };
-    const body = JSON.stringify(input);
-    const response = () => new Response(JSON.stringify({ ...occupancy, revision_number: 4 }), {
-      status: 201,
-      headers: { "content-type": "application/json" }
-    });
-    const fetcher = vi.fn<typeof fetch>()
-      .mockResolvedValueOnce(response())
-      .mockResolvedValueOnce(response());
-    const client = createCockpitApi(fetcher);
-
-    await client.putProjectOccupancy(projectReference, lineageId, { input, body });
-    await client.putProjectOccupancy(projectReference, lineageId, { input, body });
-
-    expect(fetcher.mock.calls.map(([, init]) => init?.body)).toEqual([body, body]);
-  });
-
-  it("refuses mismatched frozen bytes before it opens the occupancy door", async () => {
-    const fetcher = vi.fn<typeof fetch>();
-    await expect(createCockpitApi(fetcher).putProjectOccupancy(projectReference, lineageId, {
-      input: { revision_number: 4, bindings: occupancy.bindings }, body: "{}"
-    })).rejects.toThrow(/frozen occupancy bytes/);
-    expect(fetcher).not.toHaveBeenCalled();
-  });
-
-  it("refuses a write response for another project or lineage", async () => {
-    const fetcher = vi.fn<typeof fetch>()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ...occupancy, public_project_reference: "project1.b3RoZXI", revision_number: 4 }), { status: 201, headers: { "content-type": "application/json" } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ...occupancy, lineage_id: "e".repeat(64), revision_number: 4 }), { status: 201, headers: { "content-type": "application/json" } }));
-    const write = { input: { revision_number: 4, bindings: occupancy.bindings }, body: JSON.stringify({ revision_number: 4, bindings: occupancy.bindings }) };
-    const client = createCockpitApi(fetcher);
-
-    await expect(client.putProjectOccupancy(projectReference, lineageId, write)).rejects.toThrow(/another project or lineage/);
-    await expect(client.putProjectOccupancy(projectReference, lineageId, write)).rejects.toThrow(/another project or lineage/);
-  });
-
-  it("refuses ambiguous duplicate role bindings", () => {
-    expect(() => occupancyRevisionSchema.parse({
-      ...occupancy,
-      bindings: [occupancy.bindings[0], occupancy.bindings[0]]
-    })).toThrow(/roles must be unique/);
+    await expect(read(createCockpitApi(fetcher))).rejects.toThrow(message);
   });
 });
 

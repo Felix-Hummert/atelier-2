@@ -69,6 +69,7 @@ from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
     answering_each_execution,
+    publish_checked_model_registry,
 )
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
@@ -197,6 +198,9 @@ def publish_and_start(
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),
         AgentConfigurationRevisionCreated,
+    )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("exact"), (configuration,)
     )
     workflow = WorkflowRevision(WAIT_IN_LOOP_DOCUMENT)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)

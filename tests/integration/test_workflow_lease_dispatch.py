@@ -114,12 +114,20 @@ from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     RunnerTerminalEvidenceStore,
 )
+from atelier2.ports.agent_configurations import (
+    AgentConfigurationRevisionCreated,
+    AgentConfigurationRevisionExisting,
+)
 from atelier2.ports.agent_executions import (
     AgentExecutorCarrier,
     AgentExecutorRegistration,
 )
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
-from tests.scenarios.agents import RecordingAgentExecutorFactoryV2, agent_scratch_root
+from tests.scenarios.agents import (
+    RecordingAgentExecutorFactoryV2,
+    agent_scratch_root,
+    publish_checked_model_registry,
+)
 from tests.scenarios.runners import (
     RunnerSessionAdvancerLike,
     drive_free_runner_session_to_released,
@@ -593,7 +601,14 @@ def _publish_catalog(runtime: DbosRuntime) -> None:
         (_LOCAL_PROCESS_AUTH_PROFILE, _LOCAL_PROCESS_CONFIGURATION),
     ):
         catalog.publish_auth_profile_revision(auth)
-        catalog.publish_agent_configuration_revision(configuration)
+        published = catalog.publish_agent_configuration_revision(configuration)
+        if isinstance(
+            published,
+            (AgentConfigurationRevisionCreated, AgentConfigurationRevisionExisting),
+        ):
+            publish_checked_model_registry(
+                runtime.engine, auth.provider_id, (configuration,)
+            )
 
 
 def _publish_and_start(

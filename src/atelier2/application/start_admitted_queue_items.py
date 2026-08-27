@@ -20,9 +20,9 @@ whether an item should re-run under a moved head is a Phase D readiness
 question, named here, not decided here.
 
 **What this slice does not do.** It names no agent binding of its own. The start
-path fills every role the document declares from the served project's occupancy
-(`#680`), so an item whose roles the project has cast starts here, and one with
-a role nobody occupied is named `QueueItemAwaitingBinding` and waits.
+path fills every role from the host registry and the served project's difficulty
+defaults, so an item whose roles resolve starts here, and one left uncast is
+named `QueueItemAwaitingBinding` and waits.
 Readiness, priority, and the human-vs-auto filter are Phase D. The
 one precondition this slice enforces is admission itself -- an item still only
 OBSERVED is never read here. A start the workflow itself refuses (its bytes are
@@ -51,6 +51,7 @@ from atelier2.application.start_published_run import (
     RunFormatNotExecutable,
     RunIdentityConflict,
     RunInputRefused,
+    UncastAgentRoles,
     WorkItemOrderUnreadable,
     start_published_run,
 )
@@ -107,10 +108,9 @@ class QueueRunAlreadyActive:
 class QueueItemAwaitingBinding:
     """The bound workflow declares a role neither the sweep nor the project fills.
 
-    The start path already reads the served project's occupancy, so this is what
-    is left: a role the operator has not cast (or a deployment serving no
-    project at all). It waits, named rather than started and never treated as an
-    error.
+    The start path already reads the registry and project defaults, so this is
+    what is left: a role no configured difficulty can resolve. It waits, named
+    rather than started and never treated as an error.
     """
 
     item_id: QueueItemId
@@ -190,7 +190,7 @@ def _start_one(
             return QueueRunStarted(item.item_reference.item_id, run)
         case RunExisting(run):
             return QueueRunAlreadyActive(item.item_reference.item_id, run)
-        case InvalidAgentBindings():
+        case InvalidAgentBindings() | UncastAgentRoles():
             return QueueItemAwaitingBinding(item.item_reference.item_id, lineage_id)
         case (
             RevisionMissing()
