@@ -1,0 +1,61 @@
+format_version: 3
+name: documentation-curation
+description: >-
+  One headless curator turns exact stale-document, owner-source, and current-
+  document evidence into a reviewable derived-view candidate without writing
+  the repository or changing an owner.
+graph_inputs:
+  - name: freshness_report
+    schema:
+      ref: documentation_freshness_report
+      revision: "f68c0638c4bd79dddf994a2adfd0d1782454ab984619df6286f5dfbef43633fd"
+  - name: owner_sources
+    schema:
+      ref: documentation_owner_sources
+      revision: "4231d7abf480f1d318d33c327f7754e3badb8ef48c8589b1995466f47e0837a4"
+  - name: current_documents
+    schema:
+      ref: documentation_current_documents
+      revision: "1a95e1c2b938c0e48e7ea5abcb57b0fcaedd90b39d92ca7e2e71462037a3b1aa"
+  - name: context
+    schema:
+      ref: nonempty_string
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+nodes:
+  - id: curator
+    type: agent
+    role: curator
+    mode: headless
+    instruction: >-
+      Draft a documentation-curation candidate only for documents named in
+      "freshness_report" as stale. Treat the supplied digests as exact current
+      evidence and read each current document content from "current_documents".
+      Cite only exact owner objects from "owner_sources". Work against the
+      contract carried under "context";
+      when it contradicts the source evidence, name the unresolved question
+      rather than inventing an answer. Context is required; the head passes
+      the explicit word "none" when it is truly absent. You cannot read files,
+      run anything, or use tools in this headless call; these artifacts and the
+      context are your only evidence. Return replacement UTF-8 content only as
+      a candidate tied to each document's expected current digest and cited
+      owner objects. Do not create a requirement, change an owner, or write
+      anything to the repository; do not claim the replacement prose is
+      faithful.
+    inputs:
+      - name: freshness_report
+        from:
+          graph_input: freshness_report
+      - name: owner_sources
+        from:
+          graph_input: owner_sources
+      - name: current_documents
+        from:
+          graph_input: current_documents
+      - name: context
+        from:
+          graph_input: context
+    outputs:
+      - name: candidate
+        schema:
+          ref: documentation_curation_candidate
+          revision: "31c3cded8ce57783c84bedbc7f9383a987fa7abaacfc38297fd04e087509cc6a"
