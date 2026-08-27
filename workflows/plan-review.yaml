@@ -24,7 +24,8 @@ nodes:
       anything, or use tools in this headless call; these artifacts are your
       only evidence. Pass a plan only when its risks, steps, files, and tests
       are sufficient to implement the item without contradicting its owners;
-      otherwise revise it.
+      otherwise revise it. Revise only with at least one risk; cannot-judge must
+      carry a reason.
     inputs:
       - name: item_body
         from:
@@ -36,4 +37,4 @@ nodes:
       - name: result
         schema:
           ref: plan_review_result
-          revision: "d3ff9e52d16faf17fe969366c3295b2ffac7184c51d7fbeefc5de93b8c36ab9a"
+          revision: "3d158d6fde7dcda7178f489237f573ec4a1bee7c5e7d900f55f8cecbca407097"

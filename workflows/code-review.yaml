@@ -23,7 +23,8 @@ nodes:
       under "review_questions". You cannot read files, run anything, or use
       tools in this headless call; the diff and questions are your only
       evidence. Approve the diff when nothing you find blocks it; otherwise
-      revise it.
+      revise it. Revise only with at least one finding; cannot-judge must
+      carry a reason.
     inputs:
       - name: diff
         from:
@@ -35,4 +36,4 @@ nodes:
       - name: result
         schema:
           ref: code_review_result
-          revision: "7a5bf3fdb9030433b0060ac5086386cdb18019f310e35006bb3d42b213b0491f"
+          revision: "19cec6b7aac1f66a82c831b9c895b8344dd4483a05a4e33515737112c2fe93ba"

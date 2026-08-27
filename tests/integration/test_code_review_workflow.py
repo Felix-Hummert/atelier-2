@@ -42,6 +42,7 @@ from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.contracts.schemas_v3 import (
     InstanceAccepted,
+    InstanceRefused,
     SchemaAccepted,
     read_instance_document,
     read_schema_document,
@@ -108,6 +109,23 @@ REFUSED_REVIEWS = {
         "findings": [],
         "verdict": "pass",
     },
+}
+
+RESULT_SCHEMA_CASES = {
+    "revise-without-findings": ({"findings": [], "verdict": "revise"}, False),
+    "cannot-judge-without-reason": (
+        {"findings": [], "verdict": "cannot-judge"},
+        False,
+    ),
+    "cannot-judge-with-reason": (
+        {
+            "findings": [],
+            "verdict": "cannot-judge",
+            "reason": "Insufficient evidence to judge.",
+        },
+        True,
+    ),
+    "approve-without-findings": ({"findings": [], "verdict": "approve"}, True),
 }
 
 
@@ -240,6 +258,23 @@ def test_a_code_review_round_trips_an_artifact_and_inline_question_to_an_object_
     assert detail.detail.state is NodeState.SUCCEEDED
     assert detail.detail.answer is not None
     assert detail.detail.answer.value == ANSWER
+
+
+@pytest.mark.parametrize(
+    ("payload", "admitted"),
+    RESULT_SCHEMA_CASES.values(),
+    ids=RESULT_SCHEMA_CASES.keys(),
+)
+def test_the_code_review_result_schema_admits_only_honest_verdicts(
+    payload: dict[str, object], admitted: bool
+) -> None:
+    schema = read_schema_document(RESULT_SCHEMA.document)
+    assert isinstance(schema, SchemaAccepted), schema
+    verdict = read_instance_document(json.dumps(payload).encode(), schema)
+    if admitted:
+        assert isinstance(verdict, InstanceAccepted), verdict
+    else:
+        assert isinstance(verdict, InstanceRefused), verdict
 
 
 @pytest.mark.parametrize(

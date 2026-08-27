@@ -20,8 +20,38 @@
         }
       }
     },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
     "verdict": {
-      "enum": ["approve", "revise"]
+      "enum": ["approve", "revise", "cannot-judge"]
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["verdict"],
+        "properties": {
+          "verdict": {"const": "revise"}
+        }
+      },
+      "then": {
+        "properties": {
+          "findings": {"minItems": 1}
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["verdict"],
+        "properties": {
+          "verdict": {"const": "cannot-judge"}
+        }
+      },
+      "then": {
+        "required": ["reason"]
+      }
+    }
+  ]
 }
