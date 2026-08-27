@@ -11,8 +11,9 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["title", "sketch", "tradeoffs"],
+        "required": ["id", "title", "sketch", "tradeoffs"],
         "properties": {
+          "id": {"type": "string", "minLength": 1},
           "title": {"type": "string"},
           "sketch": {"type": "string"},
           "tradeoffs": {
@@ -27,8 +28,9 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["question", "default_answer", "why"],
+        "required": ["id", "question", "default_answer", "why"],
         "properties": {
+          "id": {"type": "string", "minLength": 1},
           "question": {"type": "string"},
           "default_answer": {"type": "string"},
           "why": {"type": "string"}

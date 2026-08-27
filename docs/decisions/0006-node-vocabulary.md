@@ -439,6 +439,15 @@ favour of a published schema. Answer bytes that violate it are refused as a
 become a node failure. `required_context` on a Wait is what the operator must see
 to decide.
 
+The V3 question is one bound object. With no `inputs`, it is exactly the authored
+`prompt`, preserving earlier V3 behavior; V1/V2 keep their integer-answer form and
+empty pause payload. With `inputs`, the runtime uses the Agent composition owner to
+append each declared graph input or named predecessor output to that prompt and
+records the exact composed question in the durable `WaitNodeBinding`. Authored
+values, node receipts and context inputs remain refused by source form until a
+composition owner carries them. Unknown graph inputs, nodes and outputs are still
+refused by the graph contract before a run exists.
+
 **Amendment 2026-08-25 ([#658](https://github.com/FlexOr2/atelier-2/issues/658)):**
 "not a conversation" was a statement about a single Wait, and it still is — one
 execution carries no provider, no session and no history of its own, and its
@@ -449,8 +458,14 @@ and an answer is keyed by execution and round), so what reads as a conversation
 across rounds is the loop's round identity carrying a sequence of otherwise
 stateless, individually-judged answers — not a session the node itself keeps.
 
-**Restart:** the run persists the waiting node; the answer is one attributed
-durable command keyed by run, node and answer bytes. Identical concurrent
+**Restart:** the run persists the waiting node and round. A bound-input pause's
+`WAITING_INPUT` payload is its exact composed question; the event's payload hash
+is the integrity check, never the carrier. A no-input or legacy pause keeps the
+empty payload and its existing authored-prompt read path. Readback serves an
+input-bearing question from that exact durable pause, so the question shown and
+the pause answered remain one object even if a stored source later changes. The
+answer is one attributed durable command keyed by run, node and answer bytes.
+Identical concurrent
 submissions converge on the same receipt and a different answer loses with a typed
 conflict (ADR 0002's contract, unchanged). A restart re-enters the same wait
 without a second prompt or a second acceptance; a run cancel drives it to one

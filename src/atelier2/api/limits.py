@@ -194,7 +194,12 @@ class ApiLimits:
                 self.require_field(
                     projection.node_receipt_reason, "node_receipt_reason"
                 )
-        self.require_encoded_payload(event.payload, "event_payload")
+        if event.event_kind is not RunEventKind.WAITING_INPUT:
+            # All three public WAITING_INPUT resources omit the private durable
+            # question payload. The adapter has already read its full bytes and
+            # verified both payload_hash and event_hash; this boundary only
+            # limits fields the response actually projects.
+            self.require_encoded_payload(event.payload, "event_payload")
         if (
             event.event_kind is RunEventKind.AGENT_COMPLETED
             and projection.workflow_format_version is WorkflowFormatVersion.V1

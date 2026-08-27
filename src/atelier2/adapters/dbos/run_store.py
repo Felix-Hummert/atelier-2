@@ -151,14 +151,14 @@ class ToolRedemptionConflict(RunTransitionConflict):
 
 
 def load_run_inputs(
-    session: Any, run_id: RunId, node: AgentNodeV3
+    session: Any, run_id: RunId, node: AgentNodeV3 | WaitNodeV3
 ) -> tuple[RunInput, ...]:
     """The orders this node declared it reads, as the start stored them.
 
     A node is handed what it asked for and not everything the run carries: a run
     may be started with orders several nodes divide between them, and a node that
     received one it never named would be told something its author did not ask
-    for -- and would carry it in its request hash.
+    for -- and would carry it in its durable request or question identity.
 
     The start refused the run unless every order it declares was supplied, so an
     order named here and absent from the store is a store that disagrees with the
@@ -214,7 +214,7 @@ def load_run_inputs(
 def _declared_input_schema_kind(
     revision: PublishedRevisionHash, kind: str | None, document: bytes | None
 ) -> RunInputSchemaKind:
-    """The one schema distinction that changes how an order is shown to an agent."""
+    """The schema distinction that changes how an order is composed for a node."""
     if kind is None or document is None:
         raise RunTransitionConflict(
             f"a stored run input names a missing schema revision: {revision.value}"
@@ -485,10 +485,10 @@ def load_node_outputs(
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     graph: AnyWorkflowDocument,
-    node: AgentNodeV3,
+    node: AgentNodeV3 | WaitNodeV3,
     round_ordinal: int = FIRST_ROUND_ORDINAL,
 ) -> tuple[DeliveredOutput, ...]:
-    """The work of earlier nodes this node declared it reads, as they wrote it.
+    """The work of earlier nodes this Agent or Wait reads, as they wrote it.
 
     The value is the producing node's own completion payload -- carried by
     whichever event finished that node, which `event_carrying_the_output_of`
@@ -523,7 +523,7 @@ def load_node_outputs(
     if not read:
         return ()
     if not isinstance(graph, WorkflowGraphV3):
-        raise RunTransitionConflict("a V3 agent node belongs to a V3 document")
+        raise RunTransitionConflict("a V3 Agent or Wait node belongs to a V3 document")
     delivered: list[DeliveredOutput] = []
     for source in sorted(read, key=lambda named: (named.node, named.output)):
         written_in = producing_round(graph, node.id, source.node, round_ordinal)

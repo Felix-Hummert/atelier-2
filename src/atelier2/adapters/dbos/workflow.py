@@ -164,6 +164,7 @@ from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     AnyWorkflowDocument,
     AnyWorkflowDocumentNode,
+    WaitNodeV3,
 )
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
@@ -304,7 +305,7 @@ def _node_binding(
         require_the_run_stands_on(run, revision_hash, node_id)
         graph = load_graph(session, revision_hash)
         node = graph.node(node_id)
-        orders, results = _agent_material(
+        orders, results = _node_material(
             session, run_id, revision_hash, graph, node, run.current_round_ordinal
         )
         return encode_node_binding(
@@ -328,7 +329,7 @@ def _node_binding(
     )
 
 
-def _agent_material(
+def _node_material(
     session: Any,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
@@ -336,16 +337,16 @@ def _agent_material(
     node: AnyWorkflowDocumentNode,
     round_ordinal: int,
 ) -> tuple[tuple[RunInput, ...], tuple[DeliveredOutput, ...]]:
-    """The orders and earlier results a V3 Agent node reads, and nothing for the rest.
+    """The orders and earlier results a V3 Agent or Wait reads.
 
     Read here rather than inside the decision because reading them is a store
-    call, and read only for the one node kind whose document can declare them.
+    call. Other node kinds have no composed request and receive empty material.
 
     The round travels with the read because a looped producer wrote one value per
     round: without it the store would be asked for a node's output and hold
     several.
     """
-    if not isinstance(node, AgentNodeV3):
+    if not isinstance(node, (AgentNodeV3, WaitNodeV3)):
         return ((), ())
     return (
         load_run_inputs(session, run_id, node),
@@ -454,7 +455,7 @@ def _reconstructed_agent_job_candidates(
                 node.outputs[0].schema_reference.revision
             ),
         )
-        orders, results = _agent_material(
+        orders, results = _node_material(
             session,
             attempt.run_id,
             attempt.workflow_revision_hash,
@@ -1214,6 +1215,7 @@ def register_durable_run_workflow(
                         typed_revision,
                         node_id,
                         wait_round_ordinal,
+                        binding.question,
                     ).state.value
                 ),
             )
