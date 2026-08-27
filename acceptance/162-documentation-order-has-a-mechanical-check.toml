@@ -23,3 +23,7 @@ text = "A headless curator receives typed stale-report, current-document, owner-
 [[sentence]]
 id = "an-independent-trace-review-is-bound-to-the-curator-candidate-and-owner-evidence"
 text = "A trace reviewer from a provider family different from the curator receives the curator candidate, original owner-source evidence, and required context and may return only a closed structured verdict bound to that candidate digest, with per-document traced or untraced judgements citing owner objects; it does not write the repository."
+
+[[sentence]]
+id = "an-explicitly-released-approved-documentation-candidate-opens-one-draft-pr"
+text = "An explicitly released, independently approved documentation candidate opens exactly one draft pull request containing exactly its reviewed document changes; retries never create a second commit or pull request."

@@ -2,26 +2,33 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shlex
 import subprocess
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
 from atelier2.adapters.project_source import isolated_git_environment
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effect_requests import (
+    GitCommitIdentity,
     PushAtelierCommit,
     PushAtelierCommitReceipt,
+    ReviewedDocumentationPullRequest,
 )
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
+    CanonicalRequest,
     ConfirmationSource,
     EffectAdapterBinding,
+    EffectBinding,
     EffectDestination,
     EffectId,
     EffectIntent,
@@ -29,6 +36,7 @@ from atelier2.contracts.effects import (
     EffectReceipt,
     EffectResult,
     EffectUnknownOutcome,
+    LogicalEffectKey,
     PerformedEffect,
 )
 
@@ -199,6 +207,21 @@ class GitTransportEffectAdapter:
         )
         return self._readback_after_send(intent, request, expected)
 
+    def publish(
+        self, intent: EffectIntent, request: ReviewedDocumentationPullRequest
+    ) -> None:
+        """Publish one reviewed replacement tree through the existing push fence."""
+
+        push_intent = self._reviewed_documentation_push_intent(intent, request)
+        observed = self.readback(push_intent)
+        if isinstance(observed, EffectReceipt):
+            return
+        performed = self.execute(push_intent)
+        if isinstance(performed, EffectUnknownOutcome):
+            raise GitTransportRefused(
+                "the reviewed documentation push outcome is unknown"
+            )
+
     def close(self) -> None:
         self._closed = True
 
@@ -228,6 +251,207 @@ class GitTransportEffectAdapter:
             raise GitTransportRefused(
                 "the pinned attempt does not name the declared candidate tree"
             )
+
+    def _reviewed_documentation_push_intent(
+        self,
+        intent: EffectIntent,
+        request: ReviewedDocumentationPullRequest,
+    ) -> EffectIntent:
+        self._ensure_candidate_store(request.base_revision)
+        self._fetch_base(request.base_revision)
+        candidate_tree = self._reviewed_candidate_tree(request)
+        self._anchor_reviewed_candidate(request.candidate_digest, candidate_tree)
+        author, committer, completed_at = self._base_commit_identity(
+            request.base_revision
+        )
+        push = PushAtelierCommit(
+            request.candidate_digest,
+            candidate_tree,
+            request.base_revision,
+            request.head_branch,
+            author,
+            committer,
+            completed_at,
+        )
+        return EffectIntent(
+            EffectBinding(
+                LogicalEffectKey(
+                    f"{intent.binding.logical_key.value}/documentation-push"
+                ),
+                intent.binding.run_id,
+                intent.binding.workflow_revision_hash,
+                self._binding.adapter_revision,
+                self._binding.destination,
+                self._binding.operational_identity,
+                self._binding.operation_name,
+            ),
+            CanonicalRequest(push.canonical_bytes()),
+        )
+
+    def _ensure_candidate_store(self, base_revision: str) -> None:
+        if self._candidate_store.is_dir():
+            return
+        if self._candidate_store.exists():
+            raise GitTransportRefused("the candidate store path is not a directory")
+        self._candidate_store.parent.mkdir(parents=True, exist_ok=True)
+        object_format = "sha1" if len(base_revision) == 40 else "sha256"
+        result = self._command_runner.run(
+            (
+                *_HOOK_FREE_ARGUMENTS,
+                "init",
+                "--bare",
+                "--quiet",
+                f"--object-format={object_format}",
+                "--",
+                str(self._candidate_store),
+            ),
+            working_directory=self._candidate_store.parent,
+            environment=isolated_git_environment(),
+        )
+        if result.returncode != 0:
+            raise GitTransportRefused("the candidate store could not be initialized")
+
+    def _reviewed_candidate_tree(
+        self, request: ReviewedDocumentationPullRequest
+    ) -> str:
+        with tempfile.TemporaryDirectory(
+            dir=self._candidate_store.parent,
+            prefix=".atelier2-reviewed-documentation-",
+        ) as temporary:
+            index = Path(temporary) / "index"
+            self._index_git(index, ("read-tree", request.base_revision))
+            for replacement in request.replacements:
+                staged = self._index_git(
+                    index, ("ls-files", "--stage", "-z", "--", replacement.path)
+                )
+                mode, object_id = self._staged_blob(staged, replacement.path)
+                current = self._store_git(("cat-file", "blob", object_id))
+                if current.returncode != 0:
+                    raise GitTransportRefused(
+                        f"the current blob for {replacement.path} could not be read"
+                    )
+                if (
+                    hashlib.sha256(current.stdout).hexdigest()
+                    != replacement.current_digest
+                ):
+                    raise GitTransportRefused(
+                        f"the current digest for {replacement.path} changed"
+                    )
+                written = self._store_git(
+                    ("hash-object", "-w", "--stdin"), replacement.replacement
+                )
+                if written.returncode != 0:
+                    raise GitTransportRefused(
+                        f"the replacement blob for {replacement.path} could not be stored"
+                    )
+                replacement_object = written.stdout.decode(
+                    "ascii", errors="strict"
+                ).strip()
+                self._index_git(
+                    index,
+                    (
+                        "update-index",
+                        "--add",
+                        "--cacheinfo",
+                        mode,
+                        replacement_object,
+                        replacement.path,
+                    ),
+                )
+            return (
+                self._index_git(index, ("write-tree",))
+                .decode("ascii", errors="strict")
+                .strip()
+            )
+
+    def _index_git(self, index: Path, arguments: tuple[str, ...]) -> bytes:
+        result = self._command_runner.run(
+            (*_HOOK_FREE_ARGUMENTS, *arguments),
+            working_directory=self._candidate_store.parent,
+            environment=isolated_git_environment(
+                GIT_DIR=str(self._candidate_store), GIT_INDEX_FILE=str(index)
+            ),
+        )
+        if result.returncode != 0:
+            raise GitTransportRefused(
+                f"the reviewed documentation index refused {arguments[0]}"
+            )
+        return result.stdout
+
+    @staticmethod
+    def _staged_blob(staged: bytes, path: str) -> tuple[str, str]:
+        records = staged.rstrip(b"\0").split(b"\0") if staged else []
+        if len(records) != 1:
+            raise GitTransportRefused(
+                f"the reviewed document {path} is not one existing regular file"
+            )
+        metadata, separator, recorded_path = records[0].partition(b"\t")
+        fields = metadata.split()
+        if separator != b"\t" or len(fields) != 3 or recorded_path.decode() != path:
+            raise GitTransportRefused(
+                f"the reviewed document {path} has an unreadable index entry"
+            )
+        mode, object_id, stage = (field.decode("ascii") for field in fields)
+        if stage != "0" or mode not in {"100644", "100755"}:
+            raise GitTransportRefused(
+                f"the reviewed document {path} is not one existing regular file"
+            )
+        return mode, object_id
+
+    def _anchor_reviewed_candidate(self, attempt_id: str, tree: str) -> None:
+        reference = f"refs/atelier/candidates/{attempt_id}"
+        standing = self._store_git(
+            ("for-each-ref", "--format=%(objectname)", reference)
+        )
+        if standing.returncode != 0:
+            raise GitTransportRefused("the reviewed candidate ref could not be read")
+        current = standing.stdout.decode("ascii", errors="strict").strip()
+        if current:
+            if current != tree:
+                raise GitTransportRefused(
+                    "the reviewed candidate digest already names another tree"
+                )
+            return
+        written = self._store_git(("update-ref", reference, tree, ""))
+        if written.returncode != 0:
+            standing = self._store_git(
+                ("for-each-ref", "--format=%(objectname)", reference)
+            )
+            if (
+                standing.returncode != 0
+                or standing.stdout.decode("ascii", errors="strict").strip() != tree
+            ):
+                raise GitTransportRefused(
+                    "the reviewed candidate ref could not be anchored"
+                )
+
+    def _base_commit_identity(
+        self, base_revision: str
+    ) -> tuple[GitCommitIdentity, GitCommitIdentity, str]:
+        result = self._store_git(
+            (
+                "show",
+                "-s",
+                "--format=%an%x00%ae%x00%cn%x00%ce%x00%ct",
+                base_revision,
+            )
+        )
+        if result.returncode != 0:
+            raise GitTransportRefused("the base commit identity could not be read")
+        fields = result.stdout.rstrip(b"\n").split(b"\0")
+        if len(fields) != 5:
+            raise GitTransportRefused("the base commit identity is malformed")
+        try:
+            author = GitCommitIdentity(fields[0].decode(), fields[1].decode())
+            committer = GitCommitIdentity(fields[2].decode(), fields[3].decode())
+            completed_at = datetime.fromtimestamp(int(fields[4]), UTC).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+        except (UnicodeDecodeError, ValueError) as error:
+            raise GitTransportRefused(
+                "the base commit identity is malformed"
+            ) from error
+        return author, committer, completed_at
 
     def _remote_ref(self, full_ref: str) -> _RemoteRefObservation:
         result = self._remote_git(
