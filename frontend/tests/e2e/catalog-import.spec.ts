@@ -102,7 +102,14 @@ test("proves(the-operator-imports-a-workflow-and-an-agent-and-starts-what-was-im
   // the row says so instead of implying it runs anywhere.
   await expect(entry(page, agentName).getByLabel(catalogPageCopy.agentProviderClaude)).toBeVisible();
 
-  const catalogGroups = page.getByRole("group", { name: "Catalog groups" });
+  const catalogGroups = page.getByRole("group", { name: catalogPageCopy.catalogGroups });
+  // The picture makes All the reset action, not a tally; only the three
+  // concrete kinds carry their catalog counts.
+  const filterChips = catalogGroups.locator(".filter-chip");
+  await expect(filterChips.nth(0)).toHaveText(catalogPageCopy.all);
+  await expect(filterChips.nth(1)).toHaveText(new RegExp(`^${catalogPageCopy.workflowsTitle}\\d+$`));
+  await expect(filterChips.nth(2)).toHaveText(new RegExp(`^${catalogPageCopy.agentsTitle}\\d+$`));
+  await expect(filterChips.nth(3)).toHaveText(new RegExp(`^${catalogPageCopy.skillsTitle}0$`));
   await catalogGroups.getByRole("button", { name: /^Agents/ }).click();
   await expect(entry(page, agentName)).toBeVisible();
   await expect(entry(page, workflowName)).toHaveCount(0);

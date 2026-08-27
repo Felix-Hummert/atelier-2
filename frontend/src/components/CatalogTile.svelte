@@ -1,6 +1,7 @@
 <script lang="ts">
   export let kind: "workflow" | "agent";
   export let title: string;
+  export let ariaLabel: string;
   export let description: string;
   export let provenance: readonly string[];
   export let provider: string | null = null;
@@ -22,7 +23,7 @@
     <a
       class="tile-door"
       {href}
-      aria-label={title}
+      aria-label={ariaLabel}
       onclick={(event) => {
         event.preventDefault();
         onOpen?.(href);

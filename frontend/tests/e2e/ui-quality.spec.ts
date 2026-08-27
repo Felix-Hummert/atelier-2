@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { THE_ONE_PROJECT } from "../../src/lib/project";
+import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
 import { humanMove, standingWords } from "../../src/lib/runState";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import {
@@ -362,6 +363,19 @@ test("core surfaces render owned display strings under a pseudo-locale", async (
     await expect(rail.getByText("[[[ Not built yet ]]]", { exact: true })).toHaveCount(0);
     await expect(rail.getByText("[[[ Profile ]]]", { exact: true })).toHaveCount(0);
     await expect(rail.getByText(THE_ONE_PROJECT, { exact: true })).toBeVisible();
+    if (path === "/atelier/catalog") {
+      const catalogGroups = page.getByRole("group", { name: wrapped(catalogPageCopy.catalogGroups) });
+      await expect(catalogGroups.locator(".filter-chip")).toHaveText([
+        wrapped(catalogPageCopy.all),
+        `${wrapped(catalogPageCopy.workflowsTitle)}1`,
+        `${wrapped(catalogPageCopy.agentsTitle)}0`,
+        `${wrapped(catalogPageCopy.skillsTitle)}0`
+      ]);
+      await expect(page.getByLabel(wrapped(catalogPageCopy.searchLabel))).toBeVisible();
+      await expect(page.getByRole("region", { name: wrapped(catalogPageCopy.workflowsTitle) })).toHaveCount(1);
+      await expect(page.getByRole("region", { name: wrapped(catalogPageCopy.agentsByProvider) })).toHaveCount(1);
+      await expect(page.getByRole("link", { name: wrapped(seededWorkflowName) })).toBeVisible();
+    }
   }
 });
 

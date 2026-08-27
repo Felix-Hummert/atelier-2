@@ -114,7 +114,7 @@ describe("the catalog room", () => {
     openCatalog({ ...listing([workflowSummary()]), ...admittedName() });
 
     await screen.findByText(WORKFLOW_NAME);
-    await fireEvent.click(screen.getByRole("button", { name: /Skills 0/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /Skills\s*0/ }));
     expect((await screen.findByText(catalogPageCopy.skillsNone)).isConnected).toBe(true);
   });
 

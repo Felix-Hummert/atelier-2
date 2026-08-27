@@ -242,9 +242,13 @@
     );
   }
 
-  function catalogGroupChoices(): readonly { group: CatalogGroup; label: string; count: number }[] {
+  function catalogGroupChoices(): readonly {
+    group: CatalogGroup;
+    label: string;
+    count: number | null;
+  }[] {
     return [
-      { group: "all", label: catalogPageCopy.all, count: workflowRows.length + agentRows.length },
+      { group: "all", label: catalogPageCopy.all, count: null },
       { group: "workflows", label: catalogPageCopy.workflowsTitle, count: workflowRows.length },
       { group: "agents", label: catalogPageCopy.agentsTitle, count: agentRows.length },
       { group: "skills", label: catalogPageCopy.skillsTitle, count: 0 }
@@ -277,7 +281,7 @@
   <ReadState read={agents} label="agents" onRetry={() => { void loadAgents(); }} />
 
   {#if hasCatalogEntries}
-    <div class="catalog-filters" role="group" aria-label="Catalog groups">
+    <div class="catalog-filters" role="group" aria-label={wrapDisplayCopy(catalogPageCopy.catalogGroups)}>
       {#each catalogGroupChoices() as { group, label, count } (group)}
         <button
           class="filter-chip"
@@ -285,7 +289,7 @@
           type="button"
           aria-pressed={activeGroup === group}
           onclick={() => { activeGroup = group as CatalogGroup; }}
-        >{wrapDisplayCopy(label)} <b>{count}</b></button>
+        >{wrapDisplayCopy(label)}{#if count !== null} <b>{count}</b>{/if}</button>
       {/each}
       <input bind:value={search} type="search" placeholder={wrapDisplayCopy(catalogPageCopy.search)} aria-label={wrapDisplayCopy(catalogPageCopy.searchLabel)} />
     </div>
@@ -297,6 +301,7 @@
             <CatalogTile
               kind="workflow"
               title={row.title}
+              ariaLabel={wrapDisplayCopy(row.title)}
               description={row.description ?? wrapDisplayCopy(catalogPageCopy.noDescription)}
               provenance={catalogRowFacts()}
               href={row.name === null ? null : workflowPath(row.name)}
@@ -309,12 +314,13 @@
     {/if}
 
     {#if activeGroup === "all" || activeGroup === "agents"}
-      <section aria-label={`${wrapDisplayCopy(catalogPageCopy.agentsTitle)} by provider`}>
+      <section aria-label={wrapDisplayCopy(catalogPageCopy.agentsByProvider)}>
         <ul class="tile-grid">
           {#each matchingAgents as row (row.revisionHash)}
             <CatalogTile
               kind="agent"
               title={row.title}
+              ariaLabel={wrapDisplayCopy(row.title)}
               description={row.description}
               provenance={catalogRowFacts()}
               provider={wrapDisplayCopy(row.provider)}
@@ -335,7 +341,7 @@
 
   {#if isDropTarget}
     <div class="drop-veil" aria-hidden="true">
-      <p>Drop a workflow, an agent, or a plugin folder — anywhere on this page.</p>
+      <p>{wrapDisplayCopy(catalogPageCopy.catalogEmpty)}</p>
     </div>
   {/if}
 
