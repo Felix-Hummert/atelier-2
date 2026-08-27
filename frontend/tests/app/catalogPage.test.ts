@@ -9,7 +9,7 @@ import {
   type Problem,
   type WorkflowRevisionSummary
 } from "../../src/api/client";
-import { catalogPageCopy, workflowDetailCopy } from "../../src/lib/catalogPageCopy";
+import { catalogPageCopy, workflowDetailCopy, workflowStartCopy } from "../../src/lib/catalogPageCopy";
 import { shortFingerprint } from "../../src/lib/fingerprint";
 import {
   reportConnectionLost,
@@ -126,14 +126,15 @@ describe("the catalog room", () => {
     expect(facts.textContent).toContain("bbbbbbbb…bbbb");
   });
 
-  it("calls an admitted workflow startable and offers it no second admission", async () => {
+  it("leaves an admitted workflow calm and offers it no second admission", async () => {
     openCatalog({ ...listing([workflowSummary()]), ...admittedName() });
 
-    expect((await screen.findByText(catalogPageCopy.startable)).isConnected).toBe(true);
+    const card = (await screen.findByText(WORKFLOW_NAME)).closest("li");
+    expect(card).not.toBeNull();
     expect(screen.queryByRole("button", { name: catalogPageCopy.admit })).toBeNull();
   });
 
-  it("marks an admitted name's unadmitted sibling as a newer revision instead of a second card", async () => {
+  it("carries a newer revision with one solid attention shape and a Why hint, not a state band", async () => {
     openCatalog({
       ...listing([
         workflowSummary({ workflow_revision_hash: WORKFLOW_HASH }),
@@ -143,17 +144,18 @@ describe("the catalog room", () => {
     });
 
     expect(await screen.findAllByText(WORKFLOW_NAME)).toHaveLength(1);
-    expect((await screen.findByText(catalogPageCopy.startable)).isConnected).toBe(true);
-    expect(
-      (await screen.findByText(catalogPageCopy.newerRevisionAvailable)).isConnected
-    ).toBe(true);
+    const card = screen.getByText(WORKFLOW_NAME).closest("li");
+    expect(card).not.toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: catalogPageCopy.stateHint }));
+    expect((await screen.findByText(catalogPageCopy.newerRevisionHint)).isConnected).toBe(true);
   });
 
-  it("carries no newer-revision note for a name with no sibling revision", async () => {
+  it("does not mark a workflow with no newer revision", async () => {
     openCatalog({ ...listing([workflowSummary()]), ...admittedName() });
 
-    await screen.findByText(catalogPageCopy.startable);
-    expect(screen.queryByText(catalogPageCopy.newerRevisionAvailable)).toBeNull();
+    const card = (await screen.findByText(WORKFLOW_NAME)).closest("li");
+    expect(card).not.toBeNull();
+    expect(screen.queryByRole("button", { name: catalogPageCopy.stateHint })).toBeNull();
   });
 
   it("opens a named workflow's own detail room from its Details door, the only one it has", async () => {
@@ -178,7 +180,7 @@ describe("the catalog room", () => {
         }
       }))
     });
-    await screen.findByText(catalogPageCopy.startable);
+    await screen.findByText(WORKFLOW_NAME);
 
     fireEvent.click(screen.getByRole("link", { name: catalogPageCopy.details }));
 
@@ -216,7 +218,7 @@ describe("the catalog room", () => {
       }))
     });
 
-    await screen.findByText(catalogPageCopy.startable);
+    await screen.findByText(WORKFLOW_NAME);
     await fireEvent.click(screen.getByRole("link", { name: catalogPageCopy.details }));
 
     const revision = await screen.findByRole("group", { name: workflowDetailCopy.workflowRevision });
@@ -304,7 +306,7 @@ describe("the catalog room", () => {
         }]
       }))
     });
-    await screen.findByText(catalogPageCopy.startable);
+    await screen.findByText(WORKFLOW_NAME);
     await fireEvent.click(screen.getByRole("link", { name: catalogPageCopy.details }));
 
     await fireEvent.click(await screen.findByRole("button", { name: catalogPageCopy.start }));
@@ -313,6 +315,10 @@ describe("the catalog room", () => {
       true
     );
     expect(await screen.findByLabelText("Configuration for builder")).toBeTruthy();
+    const startRun = screen.getByRole("button", { name: workflowStartCopy.startRun }) as HTMLButtonElement;
+    expect(startRun.disabled).toBe(true);
+    expect(startRun.title).toBe(workflowStartCopy.startNeedsConfiguration("builder"));
+    expect(screen.queryByRole("button", { name: /Why builder/ })).toBeNull();
   });
 
   it("offers no Details door for a revision that declares no name to look one up by", async () => {
@@ -325,7 +331,6 @@ describe("the catalog room", () => {
   it("proves(an-unadmitted-or-uncatalogable-published-name-is-named-in-the-picker): offers admission for a published workflow the catalog does not hold yet", async () => {
     openCatalog({ ...listing([workflowSummary()]), ...unlistedName() });
 
-    expect((await screen.findByText(catalogPageCopy.notAdmitted)).isConnected).toBe(true);
     expect(
       (await screen.findByRole("button", { name: catalogPageCopy.admit })).isConnected
     ).toBe(true);
@@ -385,7 +390,7 @@ describe("the catalog room", () => {
 
     await fireEvent.click(await screen.findByRole("button", { name: catalogPageCopy.admit }));
 
-    expect((await screen.findByText(catalogPageCopy.startable)).isConnected).toBe(true);
+    expect((await screen.findByText(WORKFLOW_NAME)).isConnected).toBe(true);
     expect(foundCatalogLineage).toHaveBeenCalledOnce();
   });
 
@@ -399,13 +404,10 @@ describe("the catalog room", () => {
       (await screen.findByText(catalogPageCopy.unnamedWorkflow)).isConnected
     ).toBe(true);
     expect(screen.queryByRole("button", { name: catalogPageCopy.admit })).toBeNull();
-    // The catalog is asked by name, so a nameless revision gets no verdict at
-    // all rather than one this room cannot stand behind.
-    expect(screen.queryByText(catalogPageCopy.notAdmitted)).toBeNull();
-    expect(screen.queryByText(catalogPageCopy.startable)).toBeNull();
+    expect(screen.queryByRole("button", { name: catalogPageCopy.stateHint })).toBeNull();
   });
 
-  it("proves(a-revision-no-run-can-start-says-so-before-the-operator-tries) proves(a-revision-no-run-can-start-says-so-where-it-was-published): names why a published workflow cannot run instead of offering admission", async () => {
+  it("proves(a-revision-no-run-can-start-says-so-before-the-operator-tries) proves(a-revision-no-run-can-start-says-so-where-it-was-published): carries a blocked workflow with a distinct shape and names why on ask", async () => {
     openCatalog({
       ...listing([
         workflowSummary({
@@ -416,12 +418,12 @@ describe("the catalog room", () => {
       ...unlistedName()
     });
 
-    expect(
-      (await screen.findByText(catalogPageCopy.notExecutable)).isConnected
-    ).toBe(true);
-    expect(
-      (await screen.findByText(/declares no output/)).isConnected
-    ).toBe(true);
+    const card = (await screen.findByText(WORKFLOW_NAME)).closest("li");
+    expect(card).not.toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: catalogPageCopy.stateHint }));
+    expect((await screen.findByText(
+      "This workflow declares no output. Add one outputs: entry on the agent node and publish again."
+    )).isConnected).toBe(true);
     expect(screen.queryByRole("button", { name: catalogPageCopy.admit })).toBeNull();
   });
 
@@ -451,7 +453,7 @@ describe("the catalog room", () => {
     expect((await screen.findByText(SECOND_WORKFLOW_NAME)).isConnected).toBe(true);
   });
 
-  it("shows a published agent by name and says no executor runs it yet", async () => {
+  it("carries a published agent with the dashed blocked shape and says why on ask", async () => {
     openCatalog({
       listAgentDefinitionRevisions: vi.fn(async () => ({
         items: [agentItem()],
@@ -460,9 +462,11 @@ describe("the catalog room", () => {
     });
 
     expect((await screen.findByText("scribe")).isConnected).toBe(true);
-    expect(
-      (await screen.findByText(catalogPageCopy.agentPublishedOnly)).isConnected
-    ).toBe(true);
+    const card = screen.getByText("scribe").closest("li");
+    expect(card).not.toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: catalogPageCopy.stateHint }));
+    expect((await screen.findByText(catalogPageCopy.agentUnavailableHint)).isConnected).toBe(true);
+    expect(screen.getByText(catalogPageCopy.agentUnavailableHint).closest("code")).toBeNull();
   });
 
   it("marks which provider an imported agent belongs to", async () => {

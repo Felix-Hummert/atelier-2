@@ -63,6 +63,17 @@ function entry(page: Page, name: string) {
   return page.getByRole("listitem").filter({ hasText: name });
 }
 
+async function expectCardCarrier(
+  card: ReturnType<typeof entry>,
+  borderLeftStyle: string,
+  borderLeftColor: string
+): Promise<void> {
+  await expect.poll(() => card.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { borderLeftStyle: style.borderLeftStyle, borderLeftColor: style.borderLeftColor };
+  })).toEqual({ borderLeftStyle, borderLeftColor });
+}
+
 async function importInto(page: Page, label: string, document: string): Promise<void> {
   const door = page.getByLabel(label);
   await door.fill(document);
@@ -77,16 +88,19 @@ test("proves(the-operator-imports-a-workflow-and-an-agent-and-starts-what-was-im
 }) => {
   const schemaHash = await anyJsonSchema(page);
 
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/atelier");
-  await page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: "Catalog" }).click();
+  const catalogLink = page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: "Catalog" });
+  await catalogLink.click();
   await expect(page.getByRole("heading", { name: catalogPageCopy.title })).toBeVisible();
+  await expect(catalogLink).toBeInViewport();
   await expect(page.getByText(catalogPageCopy.agentsEmpty)).toBeVisible();
   await expect(page.getByText(catalogPageCopy.skillsNone)).toBeVisible();
   await expect(entry(page, WORKFLOW_NAME)).toHaveCount(0);
 
   await importInto(page, catalogPageCopy.importWorkflowLabel, workflowFile(schemaHash));
   await expect(entry(page, WORKFLOW_NAME)).toBeVisible();
-  await expect(entry(page, WORKFLOW_NAME).getByText(catalogPageCopy.notAdmitted)).toBeVisible();
+  await expectCardCarrier(entry(page, WORKFLOW_NAME), "solid", "rgb(189, 120, 50)");
   await expect(entry(page, WORKFLOW_NAME).getByText(catalogPageCopy.provenanceManual)).toBeVisible();
 
   await importInto(page, catalogPageCopy.importAgentLabel, AGENT_FILE);
@@ -94,10 +108,10 @@ test("proves(the-operator-imports-a-workflow-and-an-agent-and-starts-what-was-im
   // An imported agent belongs to the provider whose format it arrived in, and
   // the row says so instead of implying it runs anywhere.
   await expect(entry(page, AGENT_NAME).getByText(catalogPageCopy.agentProviderClaude)).toBeVisible();
-  await expect(entry(page, AGENT_NAME).getByText(catalogPageCopy.agentPublishedOnly)).toBeVisible();
+  await expectCardCarrier(entry(page, AGENT_NAME), "dashed", "rgb(140, 32, 48)");
 
   await entry(page, WORKFLOW_NAME).getByRole("button", { name: catalogPageCopy.admit }).click();
-  await expect(entry(page, WORKFLOW_NAME).getByText(catalogPageCopy.startable)).toBeVisible();
+  await expectCardCarrier(entry(page, WORKFLOW_NAME), "solid", "rgba(0, 0, 0, 0)");
   await expect(
     entry(page, WORKFLOW_NAME).getByRole("button", { name: catalogPageCopy.admit })
   ).toHaveCount(0);
@@ -105,7 +119,7 @@ test("proves(the-operator-imports-a-workflow-and-an-agent-and-starts-what-was-im
   // The admission is durable, not a screen state: a cold load of the room
   // reads the same verdict back out of the catalog.
   await page.reload();
-  await expect(entry(page, WORKFLOW_NAME).getByText(catalogPageCopy.startable)).toBeVisible();
+  await expectCardCarrier(entry(page, WORKFLOW_NAME), "solid", "rgba(0, 0, 0, 0)");
 
   // And what the admission is for: the name now resolves in the library the
   // start door reads, which is what "startable" claims.
@@ -128,7 +142,7 @@ test("an unadmitted sibling of an admitted name shows as a newer revision, not a
     workflowFile(schemaHash, undefined, LINEAGE_WORKFLOW_NAME)
   );
   await entry(page, LINEAGE_WORKFLOW_NAME).getByRole("button", { name: catalogPageCopy.admit }).click();
-  await expect(entry(page, LINEAGE_WORKFLOW_NAME).getByText(catalogPageCopy.startable)).toBeVisible();
+  await expectCardCarrier(entry(page, LINEAGE_WORKFLOW_NAME), "solid", "rgba(0, 0, 0, 0)");
 
   // A second, unadmitted revision is published under the same name -- the
   // live duplicate-card finding (#659): the room must not draw a second
@@ -140,10 +154,9 @@ test("an unadmitted sibling of an admitted name shows as a newer revision, not a
   );
 
   await expect(page.getByRole("listitem").filter({ hasText: LINEAGE_WORKFLOW_NAME })).toHaveCount(1);
-  await expect(entry(page, LINEAGE_WORKFLOW_NAME).getByText(catalogPageCopy.startable)).toBeVisible();
-  await expect(
-    entry(page, LINEAGE_WORKFLOW_NAME).getByText(catalogPageCopy.newerRevisionAvailable)
-  ).toBeVisible();
+  await expectCardCarrier(entry(page, LINEAGE_WORKFLOW_NAME), "solid", "rgb(189, 120, 50)");
+  await entry(page, LINEAGE_WORKFLOW_NAME).getByRole("button", { name: catalogPageCopy.stateHint }).click();
+  await expect(entry(page, LINEAGE_WORKFLOW_NAME).getByText(catalogPageCopy.newerRevisionHint)).toBeVisible();
 });
 
 test("the catalog names the refusal the API gave instead of guessing at one", async ({ page }) => {

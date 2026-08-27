@@ -29,7 +29,6 @@
   } from "../lib/orderSchema";
   import { readEveryAgentConfiguration, readEveryAuthProfile } from "../lib/runPages";
   import { agentRolesOf } from "../lib/savedWorkflows";
-  import InfoHint from "./InfoHint.svelte";
 
   export let cockpitApi: CockpitApi;
   export let mutationJournal: MutationJournal;
@@ -41,7 +40,6 @@
 
   interface OrderDraft {
     readonly name: string;
-    readonly schemaRef: string;
     readonly schemaRevision: string;
     resource: OrderSchemaResource | null;
     shape: StartOrderSchemaShape | null;
@@ -88,6 +86,14 @@
     roles.every(roleCanStart) &&
     orders.every(orderCanStart);
   $: observedItemsBySource = groupObservedItemsBySource(observedQueueItems);
+  $: disabledStartReason = startDisabledReason(
+    loading,
+    resolving,
+    orders,
+    roles,
+    resolutions,
+    registeredConfigurations
+  );
 
   onMount(() => {
     const activeElement = globalThis.document.activeElement;
@@ -262,25 +268,6 @@
     return registered === undefined ? model : configurationLabel(registered);
   }
 
-  function refusalHint(resolution: RoleResolution | undefined): string {
-    if (resolution === undefined) return workflowStartCopy.missingRoleResolution;
-    if (resolution.uncast_reason === "override-not-registered") {
-      return workflowStartCopy.overrideNotRegistered;
-    }
-    if (resolution.uncast_reason === "workflow-model-not-registered") {
-      return workflowStartCopy.workflowModelNotRegistered;
-    }
-    if (resolution.uncast_reason === "workflow-model-ambiguous") {
-      return workflowStartCopy.workflowModelAmbiguous;
-    }
-    if (resolution.uncast_reason === "family-difference-unavailable") {
-      return resolution.family_differs_from === null
-        ? workflowStartCopy.familyDifferenceUnavailable
-        : `${workflowStartCopy.familyDifferenceFrom} ${resolution.family_differs_from}.`;
-    }
-    return workflowStartCopy.noProjectDefault;
-  }
-
   async function chooseConfiguration(role: string, configurationHash: string): Promise<void> {
     manualOverrides = { ...manualOverrides };
     if (configurationHash.length === 0) delete manualOverrides[role];
@@ -312,7 +299,6 @@
     if (revision.graph.workflow_format_version !== 3) return [];
     return revision.graph.orders.map((order) => ({
       name: order.name,
-      schemaRef: order.schema.ref,
       schemaRevision: order.schema.revision,
       resource: null,
       shape: null,
@@ -339,6 +325,36 @@
 
   function orderGroupLabel(order: OrderDraft): string {
     return order.shape?.kind === "work_item" ? workflowStartCopy.workItem : `Order ${order.name}`;
+  }
+
+  function startDisabledReason(
+    isLoading: boolean,
+    isResolving: boolean,
+    currentOrders: readonly OrderDraft[],
+    currentRoles: readonly string[],
+    currentResolutions: Readonly<Record<string, RoleResolution>>,
+    currentConfigurations: readonly RegisteredConfiguration[]
+  ): string | null {
+    if (isLoading || isResolving) return workflowStartCopy.startPreparing;
+    const incompleteOrder = currentOrders.find((order) => !orderCanStart(order));
+    if (incompleteOrder !== undefined) {
+      if (incompleteOrder.shape?.kind === "work_item") {
+        return observedQueueItems.length === 0
+          ? workflowStartCopy.startNeedsWorkItemSource
+          : workflowStartCopy.startNeedsWorkItem;
+      }
+      return workflowStartCopy.startNeedsOrder;
+    }
+    const unresolvedRole = currentRoles.find((role) => {
+      const resolution = currentResolutions[role];
+      const configurationHash = resolution?.agent_configuration_revision_hash ?? null;
+      return currentConfigurations.find(({ configuration }) =>
+        configuration.agent_configuration_revision_hash === configurationHash
+      )?.configuration.startable !== true;
+    });
+    return unresolvedRole === undefined
+      ? null
+      : workflowStartCopy.startNeedsConfiguration(unresolvedRole);
   }
 
   function requiredFieldsFilled(order: OrderDraft): boolean {
@@ -509,7 +525,6 @@
         <fieldset aria-label={orderGroupLabel(order)}>
           {#if order.shape?.kind !== "work_item"}
             <legend>{order.name}</legend>
-            <p class="schema-summary">{order.schemaRef}@{order.schemaRevision}</p>
           {/if}
           {#if order.shape?.kind === "work_item"}
             <label>
@@ -608,13 +623,6 @@
                           : configurationLabel(registered)}</option>
                     {/each}
                   </select>
-                  {#if resolvedHash === null}
-                    <InfoHint
-                      label={`Why ${role} needs a configuration`}
-                      exact={refusalHint(resolution)}
-                      text={workflowStartCopy.info}
-                    />
-                  {/if}
                 </span>
               </label>
               {#if resolvedHash !== null && resolution?.source === "chosen-now"}
@@ -635,7 +643,13 @@
     {/if}
     <footer>
       {#if !loading && failure === null}
-        <button type="button" class="primary" disabled={!canStart} onclick={start}>
+        <button
+          type="button"
+          class="primary"
+          disabled={!canStart}
+          title={!canStart && !starting ? disabledStartReason ?? undefined : undefined}
+          onclick={start}
+        >
           {startFailure === null ? workflowStartCopy.startRun : workflowStartCopy.tryAgain}
         </button>
       {/if}
@@ -659,7 +673,7 @@
   .role-configurations legend { color: var(--ink); font-weight: var(--weight-strong); padding: 0 var(--space-1); }
   .role-row { margin: var(--space-4) 0; }
   .role-row label { margin: 0; }
-  .role-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); }
+  .role-control { display: grid; min-width: 0; }
   .needs-choice { border-color: var(--signal-attention); color: var(--signal-attention); }
   .role-source { color: var(--ink); font-size: var(--text-2xs); font-weight: var(--weight-strong); margin: var(--space-1) 0 0; }
   .unavailable { color: var(--ink-dim); }

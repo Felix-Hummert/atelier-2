@@ -9,6 +9,7 @@ import type {
   RunV3,
   WorkflowRevisionDetail
 } from "../../src/api/client";
+import { workflowStartCopy } from "../../src/lib/catalogPageCopy";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { WORK_ITEM_ORDER_SCHEMA_REVISION } from "../../src/lib/orderSchema";
 import { cockpitApiStub } from "../support/cockpitApi";
@@ -212,12 +213,14 @@ afterEach(() => {
 });
 
 describe("the schema-generated fields on the catalog start sheet", () => {
-  it("shows every declared order's published summary and no order form when the revision declares none", async () => {
+  it("shows every declared order's material fields without its schema identifier or hash", async () => {
     const cockpitApi = api();
     await openStart(cockpitApi);
 
     const order = await screen.findByRole("group", { name: "Order portions" });
-    expect(order.textContent).toContain("portions-schema@schema-portions");
+    expect(order.textContent).toContain("portions");
+    expect(order.textContent).not.toContain("portions-schema");
+    expect(order.textContent).not.toContain("schema-portions");
     expect(within(order).getByLabelText("portions (integer) *")).toBeTruthy();
 
     cleanup();
@@ -311,7 +314,10 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     await fireEvent.change(screen.getByLabelText("Configuration for cook"), {
       target: { value: configurationHash }
     });
-    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
+    const startRun = screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement;
+    expect(startRun.disabled).toBe(true);
+    expect(startRun.title).toBe("Connect a source in Settings before starting.");
+    expect(screen.queryByText("Choose a work item before starting.")).toBeNull();
     await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     await waitFor(() => expect(window.location.pathname).toBe("/atelier/settings"));
   });
@@ -534,7 +540,7 @@ describe("the catalog start sheet's project model resolution", () => {
     }]);
   });
 
-  it("uses the dropdown as the one ochre Choose carrier for a family refusal", async () => {
+  it("uses the dropdown as the one ochre Choose carrier and names why Start is disabled", async () => {
     const resolveProjectModels = vi.fn(async (
       _project: string,
       workflowHash: string,
@@ -555,11 +561,10 @@ describe("the catalog start sheet's project model resolution", () => {
     const picker = screen.getByLabelText("Configuration for cook");
     expect(picker.classList).toContain("needs-choice");
     expect(screen.getAllByText("Choose")).toHaveLength(1);
-    expect(screen.queryByText(/family difference/i)).toBeNull();
-    await fireEvent.click(screen.getByRole("button", {
-      name: "Why cook needs a configuration"
-    }));
-    expect(screen.getByRole("status").textContent).toContain("differs in family from builder");
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).title).toBe(
+      workflowStartCopy.startNeedsConfiguration("cook")
+    );
+    expect(screen.queryByRole("button", { name: "Why cook needs a configuration" })).toBeNull();
 
     await fireEvent.change(picker, { target: { value: configurationHash } });
     await waitFor(() => expect(screen.getByText("Chosen now")).toBeTruthy());
@@ -571,7 +576,7 @@ describe("the catalog start sheet's project model resolution", () => {
       .toBe(false);
   });
 
-  it("returns a refused override to Choose while keeping the typed reason behind Info", async () => {
+  it("returns a refused override to Choose and keeps Start honestly disabled", async () => {
     const otherHash = "8".repeat(64);
     const resolveProjectModels = vi.fn(async (
       _project: string,
@@ -599,10 +604,10 @@ describe("the catalog start sheet's project model resolution", () => {
       (screen.getByLabelText("Configuration for cook") as HTMLSelectElement).value
     ).toBe(""));
     expect(screen.getAllByText("Choose")).toHaveLength(1);
-    await fireEvent.click(screen.getByRole("button", {
-      name: "Why cook needs a configuration"
-    }));
-    expect(screen.getByRole("status").textContent).toContain("not registered");
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).title).toBe(
+      workflowStartCopy.startNeedsConfiguration("cook")
+    );
+    expect(screen.queryByRole("button", { name: "Why cook needs a configuration" })).toBeNull();
     expect(cockpitApi.start).not.toHaveBeenCalled();
   });
 
@@ -714,9 +719,9 @@ describe("the catalog start sheet's project model resolution", () => {
   });
 
   it.each([
-    ["workflow-model-not-registered", "not registered"],
-    ["workflow-model-ambiguous", "more than one configuration"]
-  ] as const)("keeps the %s refusal behind the role's Info hint", async (reason, expected) => {
+    "workflow-model-not-registered",
+    "workflow-model-ambiguous"
+  ] as const)("keeps Start disabled when the %s refusal has no configuration", async (reason) => {
     const resolveProjectModels = vi.fn(async (
       _project: string,
       workflowHash: string
@@ -730,10 +735,10 @@ describe("the catalog start sheet's project model resolution", () => {
     await openStart(modelApi(resolveProjectModels));
 
     expect(screen.getAllByText("Choose")).toHaveLength(1);
-    await fireEvent.click(screen.getByRole("button", {
-      name: "Why cook needs a configuration"
-    }));
-    expect(screen.getByRole("status").textContent).toContain(expected);
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).title).toBe(
+      workflowStartCopy.startNeedsConfiguration("cook")
+    );
+    expect(screen.queryByRole("button", { name: "Why cook needs a configuration" })).toBeNull();
   });
 
   it.each(["registry", "profile"] as const)(

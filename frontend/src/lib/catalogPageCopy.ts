@@ -28,10 +28,6 @@ export const catalogPageCopy = {
   // never in the file, so the heading says which axis this list is sorted on.
   agentsTitle: "Available agents (by provider)",
   agentsEmpty: "No agent published yet — import an .agent.md file below.",
-  // A published definition is not yet something any executor runs: it ends at
-  // the agent configuration, and nothing binds a run to it. The row says so
-  // rather than wearing a state that would read as "ready".
-  agentPublishedOnly: "Published — no executor runs it yet",
   agentsUnavailable: "Agents unavailable",
   agentsIncomplete: "Agents incomplete",
 
@@ -51,13 +47,11 @@ export const catalogPageCopy = {
   // name, so one thing is called one thing across the workshop.
   unnamedWorkflow: "Unnamed workflow",
 
-  startable: "Startable",
-  notAdmitted: "Not in the catalog yet",
-  notExecutable: "Not executable",
-  // The live duplicate-card finding's fix (#659, sharpened by #684): a
-  // published sibling of an admitted name shows here, under that one card,
-  // instead of wearing a second card with the same name.
-  newerRevisionAvailable: "Newer revision available",
+  newerRevisionHint: "A newer published revision is available.",
+  notAdmittedHint: "This published workflow is not in the catalog yet.",
+  agentUnavailableHint: "This published definition has no executor yet.",
+  stateHint: "Why this card is marked",
+  why: "Why",
 
   admit: "Admit into catalog",
   admitting: "Admitting…",
@@ -130,7 +124,6 @@ export const workflowStartCopy = {
   unknownSource: "Other source",
   orderUnavailable: "This order shape cannot be started here.",
   roles: "Roles",
-  info: "Info",
   choose: "Choose",
   chosenNow: "Chosen now",
   pinnedInWorkflow: "pinned in workflow",
@@ -146,6 +139,11 @@ export const workflowStartCopy = {
   trueLabel: "True",
   falseLabel: "False",
   startRun: "Start run",
+  startNeedsWorkItem: "Choose a work item before starting.",
+  startNeedsWorkItemSource: "Connect a source in Settings before starting.",
+  startNeedsOrder: "Complete each required order before starting.",
+  startPreparing: "Preparing the start options.",
+  startNeedsConfiguration: (role: string) => `Choose a configuration for ${role} before starting.`,
   tryAgain: "Try again",
   cancel: "Cancel",
   retry: "Retry",

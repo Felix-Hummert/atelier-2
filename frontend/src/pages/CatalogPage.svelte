@@ -3,6 +3,7 @@
 
   import type { CockpitApi } from "../api/client";
   import CatalogImportDoor from "../components/CatalogImportDoor.svelte";
+  import InfoHint from "../components/InfoHint.svelte";
   import ReadState from "../components/ReadState.svelte";
   import {
     admitPublishedRevision,
@@ -47,6 +48,14 @@
   let admissionFailure: string | null = null;
 
   onMount(() => {
+    // Navigating into the Catalog focuses the stage. On a phone that focus can
+    // leave the rail above the viewport, even though it is the only room door.
+    if (
+      typeof globalThis.matchMedia === "function" &&
+      globalThis.matchMedia("(max-width: 48rem)").matches
+    ) {
+      globalThis.requestAnimationFrame(() => globalThis.scrollTo({ top: 0, left: 0 }));
+    }
     void loadWorkflows();
     void loadAgents();
     // A read that failed while the connection was lost is worth asking again
@@ -158,6 +167,15 @@
       admittingHash = null;
     }
   }
+
+  function workflowStateHint(row: CatalogWorkflowRow): string | null {
+    if (row.state?.kind === "not-executable") {
+      return row.state.reason;
+    }
+    if (row.newerRevisionAvailable) return catalogPageCopy.newerRevisionHint;
+    if (row.state?.kind === "not-admitted") return catalogPageCopy.notAdmittedHint;
+    return null;
+  }
 </script>
 
 <section class="surface" aria-labelledby="catalog-title">
@@ -177,26 +195,24 @@
 
     <ul class="entries">
       {#each workflows.confirmed ?? [] as row (row.revisionHash)}
-        <li class="entry card">
+        {@const stateHint = workflowStateHint(row)}
+        <li
+          class="entry card"
+          class:marked-attention={stateHint !== null && row.state?.kind !== "not-executable"}
+          class:marked-blocked={row.state?.kind === "not-executable"}
+        >
           <div class="entry-head">
             <strong>{row.title}</strong>
-            {#if row.state?.kind === "startable"}
-              <span class="entry-state">{wrapDisplayCopy(catalogPageCopy.startable)}</span>
-            {:else if row.state?.kind === "not-admitted"}
-              <span class="entry-state attention">{wrapDisplayCopy(catalogPageCopy.notAdmitted)}</span>
-            {:else if row.state?.kind === "not-executable"}
-              <span class="entry-state failed">{wrapDisplayCopy(catalogPageCopy.notExecutable)}</span>
-            {/if}
-            {#if row.newerRevisionAvailable}
-              <span class="entry-state attention"
-                >{wrapDisplayCopy(catalogPageCopy.newerRevisionAvailable)}</span
-              >
+            {#if stateHint !== null}
+              <InfoHint
+                label={wrapDisplayCopy(catalogPageCopy.stateHint)}
+                prose={wrapDisplayCopy(stateHint)}
+                text={wrapDisplayCopy(catalogPageCopy.why)}
+                pinToCard={true}
+              />
             {/if}
           </div>
           <p class="entry-line">{row.description ?? wrapDisplayCopy(catalogPageCopy.noDescription)}</p>
-          {#if row.state?.kind === "not-executable"}
-            <p class="entry-line failure">{row.state.reason}</p>
-          {/if}
           <p class="entry-facts">{catalogRowFacts(row.revisionHash).join(" · ")}</p>
           {#if row.name !== null}
             {@const detailPath = workflowPath(row.name)}
@@ -246,11 +262,16 @@
 
     <ul class="entries">
       {#each agents.confirmed ?? [] as row (row.revisionHash)}
-        <li class="entry card">
+        <li class="entry card marked-blocked">
           <div class="entry-head">
             <strong>{row.title}</strong>
             <span class="entry-provider">{wrapDisplayCopy(row.provider)}</span>
-            <span class="entry-state">{wrapDisplayCopy(catalogPageCopy.agentPublishedOnly)}</span>
+            <InfoHint
+              label={wrapDisplayCopy(catalogPageCopy.stateHint)}
+              prose={wrapDisplayCopy(catalogPageCopy.agentUnavailableHint)}
+              text={wrapDisplayCopy(catalogPageCopy.why)}
+              pinToCard={true}
+            />
           </div>
           <p class="entry-line">{row.description}</p>
           <p class="entry-facts">{catalogRowFacts(row.revisionHash).join(" · ")}</p>
@@ -299,10 +320,6 @@
     font-size: var(--text-2xs);
   }
 
-  .failure {
-    color: var(--signal-failure);
-  }
-
   .entries {
     display: grid;
     gap: var(--space-3);
@@ -315,6 +332,20 @@
     display: grid;
     gap: var(--space-1);
     justify-items: start;
+    position: relative;
+    border-left: var(--edge-mark) solid transparent;
+  }
+
+  .entry.marked-attention {
+    border-left-color: var(--signal-attention-mark);
+    border-left-style: solid;
+    background: color-mix(in srgb, var(--signal-attention-mark) var(--wash), var(--panel2));
+  }
+
+  .entry.marked-blocked {
+    border-left-color: var(--signal-failure);
+    border-left-style: dashed;
+    background: color-mix(in srgb, var(--signal-failure) var(--wash), var(--panel2));
   }
 
   .entry-head {
@@ -344,21 +375,4 @@
     margin-top: var(--space-2);
   }
 
-  /* Colour is for what asks of you, so a state that asks nothing — startable,
-     or an agent that is simply published — stays ink. What waits for an
-     admission calls in clay; what cannot run calls in brick. */
-  .entry-state {
-    color: var(--ink-dim);
-    font-size: var(--text-2xs);
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-label);
-  }
-
-  .entry-state.attention {
-    color: var(--signal-attention);
-  }
-
-  .entry-state.failed {
-    color: var(--signal-failure);
-  }
 </style>

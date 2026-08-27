@@ -9,6 +9,7 @@ const viewports = [
   { name: "1280", width: 1280, height: 900 },
   { name: "390", width: 390, height: 844 }
 ] as const;
+const colorSchemes = ["light", "dark"] as const;
 
 const workItemSchemaDocument =
   '{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"body":{"type":"string"},"change_marker":{"maxLength":1024,"minLength":1,"type":"string"},"digest":{"pattern":"^[0-9a-f]{64}$","type":"string"},"kind":{"enum":["issue","change_request"],"type":"string"},"observed_at":{"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$","type":"string"},"reference":{"maxLength":1024,"minLength":1,"type":"string"}},"required":["body","change_marker","digest","kind","observed_at","reference"],"title":"work item","type":"object"}';
@@ -126,7 +127,6 @@ test("captures the Catalog list, detail, and start sheet at both requested width
     "catalog-shot-model",
     (await configuration.json()).agent_configuration_revision_hash as string
   );
-
   const revision = await page.request.post("/atelier/api/v1/workflow-revisions", {
     headers: { "content-type": "application/yaml" },
     data: [
@@ -161,6 +161,32 @@ test("captures the Catalog list, detail, and start sheet at both requested width
     }
   });
   expect(lineage.status()).toBe(201);
+  const newerRevision = await page.request.post("/atelier/api/v1/workflow-revisions", {
+    headers: { "content-type": "application/yaml" },
+    data: [
+      "format_version: 3",
+      `name: ${workflowName}`,
+      "description: A newer published revision that the Catalog marks.",
+      "graph_inputs:",
+      "  - name: work_item",
+      "    schema:",
+      "      ref: work-item",
+      `      revision: ${workItemSchemaHash}`,
+      "nodes:",
+      "  - id: build",
+      "    type: agent",
+      "    role: builder",
+      "    mode: headless",
+      "    instruction: Build the catalog detail.",
+      "    inputs:",
+      "      - name: work_item",
+      "        from:",
+      "          graph_input: work_item",
+      `    outputs: [{name: result, schema: {ref: any, revision: ${schemaHash}}}]`,
+      ""
+    ].join("\n")
+  });
+  expect(newerRevision.status()).toBe(201);
 
   let observedItems = true;
   await page.route("**/atelier/api/v1/observed-queue-items*", async (route) => {
@@ -179,27 +205,62 @@ test("captures the Catalog list, detail, and start sheet at both requested width
     });
   });
 
-  for (const viewport of viewports) {
-    observedItems = viewport.name === "1280";
-    await page.setViewportSize(viewport);
-    await page.goto("/atelier/catalog");
-    await expect(page.getByRole("heading", { name: "Catalog" })).toBeVisible();
-    await page.screenshot({ path: `${shotDirectory}/catalog-list-${viewport.name}.png`, fullPage: true });
+  for (const colorScheme of colorSchemes) {
+    await page.emulateMedia({ colorScheme });
+    for (const viewport of viewports) {
+      observedItems = viewport.name === "1280";
+      await page.setViewportSize(viewport);
+      await page.goto("/atelier/catalog");
+      await expect(page.getByRole("heading", { name: "Catalog" })).toBeVisible();
+      const markedWorkflow = page.getByRole("listitem").filter({ hasText: workflowName });
+      await expect(markedWorkflow).toBeVisible();
+      await expect.poll(() => markedWorkflow.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return {
+          borderLeftStyle: style.borderLeftStyle,
+          borderLeftColor: style.borderLeftColor
+        };
+      })).toEqual({
+        borderLeftStyle: "solid",
+        borderLeftColor: colorScheme === "light" ? "rgb(189, 120, 50)" : "rgb(231, 143, 98)"
+      });
+      await page.screenshot({ path: `${shotDirectory}/catalog-list-${viewport.name}-${colorScheme}.png`, fullPage: true });
 
-    const workflowEntry = page.locator(".entry", { hasText: workflowName });
-    await workflowEntry.getByRole("link", { name: "Details" }).click();
-    await expect(page.getByRole("heading", { name: workflowName })).toBeVisible();
-    await page.screenshot({ path: `${shotDirectory}/catalog-detail-${viewport.name}.png`, fullPage: true });
+      if (viewport.name === "390") {
+        const why = markedWorkflow.getByRole("button", { name: "Why this card is marked" });
+        await why.click();
+        const popover = markedWorkflow.getByRole("status");
+        await expect(popover).toBeVisible();
+        const popoverBounds = await popover.evaluate((element) => {
+          const bounds = element.getBoundingClientRect();
+          return { left: bounds.left, right: bounds.right, viewport: window.innerWidth };
+        });
+        expect(popoverBounds.left).toBeGreaterThanOrEqual(0);
+        expect(popoverBounds.right).toBeLessThanOrEqual(popoverBounds.viewport);
+        await page.screenshot({ path: `${shotDirectory}/catalog-list-why-390-${colorScheme}.png`, fullPage: true });
+      }
 
-    await page.getByRole("button", { name: "Start" }).click();
-    await expect(page.getByRole("dialog", { name: `Start ${workflowName}` })).toBeVisible();
-    await expect(page.getByLabel("Configuration for builder")).toBeVisible();
-    if (observedItems) {
-      await page.getByLabel("Work item for work_item").selectOption("gh:450");
-    } else {
-      await expect(page.getByRole("button", { name: "Settings" })).toBeVisible();
+      const workflowEntry = page.locator(".entry", { hasText: workflowName });
+      await workflowEntry.getByRole("link", { name: "Details" }).click();
+      await expect(page.getByRole("heading", { name: workflowName })).toBeVisible();
+      await page.screenshot({ path: `${shotDirectory}/catalog-detail-${viewport.name}-${colorScheme}.png`, fullPage: true });
+
+      await page.getByRole("button", { name: "Start" }).click();
+      const sheet = page.getByRole("dialog", { name: `Start ${workflowName}` });
+      await expect(sheet).toBeVisible();
+      await expect(page.getByLabel("Configuration for builder")).toBeVisible();
+      await expect(sheet.getByText(workItemSchemaHash)).toHaveCount(0);
+      if (observedItems) {
+        await page.getByLabel("Work item for work_item").selectOption("gh:450");
+      } else {
+        await expect(page.getByRole("button", { name: "Settings" })).toBeVisible();
+      }
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth
+      );
+      expect(overflow).toBeLessThanOrEqual(0);
+      await page.screenshot({ path: `${shotDirectory}/catalog-start-sheet-${viewport.name}-${colorScheme}.png`, fullPage: true });
     }
-    await page.screenshot({ path: `${shotDirectory}/catalog-start-sheet-${viewport.name}.png`, fullPage: true });
   }
 });
 
