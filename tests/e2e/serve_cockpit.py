@@ -23,6 +23,7 @@ import sqlalchemy as sa
 import uvicorn
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from atelier2.adapters.dbos import workflow as dbos_workflow
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
@@ -104,6 +105,9 @@ nodes:
 """
 RUN_IDS = ("found-run", "absent-run")
 TIMEOUT_SECONDS = 10.0
+# Deadlock brake for generation drain. Fake decode waits are short; git capture
+# of the pinned project under CI CPU pressure is not (issue #747 c2).
+GENERATION_DRAIN_SECONDS = 60.0
 # The fake conductor's fixed episode report: valid against the production
 # `CONDUCTOR_REPORT_SCHEMA`, so the browser proof sees exactly the reply a real
 # doors-armed conductor would return -- same vector, unbilled.
@@ -184,19 +188,23 @@ def close_runtime_and_scratch_root(
 
 
 class FakeProviderHolds:
-    """Tracks in-flight fake provider decodes bound to one served generation.
+    """Tracks in-flight fake provider work bound to one served generation.
 
     Delayed, held, and blocking executors wait on a release signal instead of
-    sleeping. Drain sets that signal, seals the live generation under the same
-    lock that tracks in-flight count, then blocks until every already-admitted
-    decode has returned. Each executor captures the live generation token when
-    it is created; admission refuses when that token is not the live generation
-    or when that generation is already sealed. start_generation mints a new
-    token and does not unseal the previous one, so a decode delayed before the
-    admission lock cannot enter after the old scratch root is removed.
+    sleeping. Drain sets that signal, waits until in-process DBOS workflows
+    have finished, seals the live generation under the same lock that tracks
+    in-flight count, then blocks until every already-admitted decode or
+    tracked attempt has returned. Immediate and conductor executors never
+    enter those holds; `track_execute_agent_attempt` counts their whole
+    attempt, including candidate capture after decode. Each executor captures
+    the live generation token when it is created; admission refuses when that
+    token is not the live generation or when that generation is already
+    sealed. start_generation mints a new token and does not unseal the
+    previous one, so a decode delayed before the admission lock cannot enter
+    after the old scratch root is removed.
     DBOS shutdown only waits one second for workflows and then
     ThreadPoolExecutor.shutdown(wait=False), so closing the runtime or
-    removing the scratch root before those decodes finish still races a live
+    removing the scratch root before those attempts finish still races a live
     generation.
     """
 
@@ -368,6 +376,56 @@ class BlockingAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
         type(self).observed_executor = None
 
 
+def active_dbos_workflow_ids() -> tuple[str, ...]:
+    """In-process DBOS workflows still running in this generation.
+
+    `DbosRuntime.close` destroys DBOS after one second, then shuts the worker
+    pool without joining. A node workflow still capturing then keeps the old
+    lease path, and the next generation recovers it.
+    """
+
+    import dbos._dbos as dbos_runtime
+
+    instance = dbos_runtime._dbos_global_instance
+    if instance is None:
+        return ()
+    active = getattr(instance, "_active_workflows_set", None)
+    if active is None:
+        return ()
+    return tuple(active.activeList())
+
+
+def wait_until_dbos_workflows_idle(
+    timeout: float = GENERATION_DRAIN_SECONDS,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining_ids = active_dbos_workflow_ids()
+        if not remaining_ids:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(
+                f"{len(remaining_ids)} DBOS workflow(s) did not finish: "
+                f"{remaining_ids!r}"
+            )
+        time.sleep(min(0.025, remaining))
+
+
+def track_execute_agent_attempt(
+    holds: FakeProviderHolds,
+    execute: Callable[..., object],
+) -> Callable[..., object]:
+    """Count the whole attempt, including capture after decode, in the drain."""
+
+    def tracked(*args: object, **kwargs: object) -> object:
+        generation, _ = holds.bind_decode()
+        with holds.in_flight(generation):
+            return execute(*args, **kwargs)
+
+    return tracked
+
+
 def drain_inflight_fake_decodes(
     holds: FakeProviderHolds,
     blocking: BlockingAgentExecutorFactory | None = None,
@@ -375,7 +433,10 @@ def drain_inflight_fake_decodes(
     holds.release_all()
     if blocking is not None:
         blocking.release_in_flight()
-    holds.wait_until_idle()
+    deadline = time.monotonic() + GENERATION_DRAIN_SECONDS
+    wait_until_dbos_workflows_idle(timeout=max(0.0, deadline - time.monotonic()))
+    holds.wait_until_idle(timeout=max(0.0, deadline - time.monotonic()))
+    wait_until_dbos_workflows_idle(timeout=max(0.0, deadline - time.monotonic()))
 
 
 class DelayedAgentExecutor(RecordingAgentExecutorV2):
@@ -824,6 +885,9 @@ def main() -> None:
     seed_boot_baseline(database, effects, application_version)
 
     holds = FakeProviderHolds()
+    dbos_workflow.execute_agent_attempt = track_execute_agent_attempt(
+        holds, dbos_workflow.execute_agent_attempt
+    )
     factory = BlockingAgentExecutorFactory(
         "e2e",
         "blocking/v1",

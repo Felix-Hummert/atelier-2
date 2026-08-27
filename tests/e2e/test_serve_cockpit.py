@@ -678,3 +678,132 @@ def test_a_reset_recompose_opens_the_next_runtime_on_a_fresh_scratch_root(
         else:
             runtime.close()
         scratch["root"].close()
+
+
+def test_scratch_root_removal_cannot_precede_capture_after_decode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#747 (c2): drain waits for the rest of execute_agent_attempt, not only decode."""
+    created_root = tmp_path / "capture-root"
+    monkeypatch.setattr(
+        harness.tempfile,
+        "mkdtemp",
+        lambda prefix: str(created_root.mkdir() or created_root),
+    )
+    scratch_root = harness.BrowserScratchRoot.create()
+    runtime = ClosingRuntime(scratch_root.path)
+    holds = harness.FakeProviderHolds()
+    factory = harness.RecordingAgentExecutorFactoryV2(
+        "e2e-v3", "immediate/v1", "e2e-immediate-process", b'"V3 provider bytes"'
+    )
+    executor = factory.open()
+    executor.requests.append(
+        SimpleNamespace(run_id=SimpleNamespace(value="immediate-run"))
+    )
+    past_decode = threading.Event()
+    stall = threading.Event()
+    entered_idle_wait = threading.Event()
+    order: list[str] = []
+    original_wait = harness.FakeProviderHolds.wait_until_idle
+
+    def wait_and_signal(
+        self: object, timeout: float = harness.TIMEOUT_SECONDS
+    ) -> None:
+        entered_idle_wait.set()
+        original_wait(self, timeout)
+
+    monkeypatch.setattr(harness.FakeProviderHolds, "wait_until_idle", wait_and_signal)
+
+    def capture_after_decode(*_args: object, **_kwargs: object) -> None:
+        executor.decode_process_completion(
+            SimpleNamespace(),
+            harness.AgentProcessCompletion(0, b'"V3 provider bytes"', b""),
+        )
+        past_decode.set()
+        if not stall.wait(harness.TIMEOUT_SECONDS):
+            raise RuntimeError("stalled capture was not resumed")
+        order.append("capture-finished")
+
+    tracked = harness.track_execute_agent_attempt(holds, capture_after_decode)
+
+    def run_attempt() -> None:
+        tracked()
+
+    def drain_then_remove() -> None:
+        harness.drain_inflight_fake_decodes(holds)
+        order.append("idle")
+        harness.close_runtime_and_scratch_root(runtime, scratch_root)
+        order.append("removed")
+
+    attempt_thread = threading.Thread(target=run_attempt)
+    closer = threading.Thread(target=drain_then_remove)
+    attempt_thread.start()
+    try:
+        assert past_decode.wait(harness.TIMEOUT_SECONDS)
+        closer.start()
+        assert entered_idle_wait.wait(harness.TIMEOUT_SECONDS)
+        assert created_root.is_dir()
+        assert "idle" not in order
+        assert "removed" not in order
+        assert not runtime.closed
+        stall.set()
+        closer.join(timeout=harness.TIMEOUT_SECONDS)
+        attempt_thread.join(timeout=harness.TIMEOUT_SECONDS)
+        assert not closer.is_alive()
+        assert not attempt_thread.is_alive()
+        assert order == ["capture-finished", "idle", "removed"]
+        assert runtime.closed
+        assert not created_root.exists()
+    finally:
+        stall.set()
+        holds.release_all()
+
+
+def test_scratch_root_removal_cannot_precede_an_active_dbos_workflow(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#747 (c2): drain waits for in-process DBOS workflows before rmtree."""
+    created_root = tmp_path / "dbos-active-root"
+    monkeypatch.setattr(
+        harness.tempfile,
+        "mkdtemp",
+        lambda prefix: str(created_root.mkdir() or created_root),
+    )
+    scratch_root = harness.BrowserScratchRoot.create()
+    runtime = ClosingRuntime(scratch_root.path)
+    holds = harness.FakeProviderHolds()
+    remaining = ["atelier2-node-still-capturing"]
+    seen_active = threading.Event()
+    order: list[str] = []
+
+    def fake_ids() -> tuple[str, ...]:
+        ids = tuple(remaining)
+        if ids:
+            seen_active.set()
+        return ids
+
+    monkeypatch.setattr(harness, "active_dbos_workflow_ids", fake_ids)
+
+    def drain_then_remove() -> None:
+        harness.drain_inflight_fake_decodes(holds)
+        order.append("idle")
+        harness.close_runtime_and_scratch_root(runtime, scratch_root)
+        order.append("removed")
+
+    closer = threading.Thread(target=drain_then_remove)
+    closer.start()
+    try:
+        assert seen_active.wait(harness.TIMEOUT_SECONDS)
+        assert created_root.is_dir()
+        assert "idle" not in order
+        assert "removed" not in order
+        assert not runtime.closed
+        remaining.clear()
+        closer.join(timeout=harness.TIMEOUT_SECONDS)
+        assert not closer.is_alive()
+        assert order == ["idle", "removed"]
+        assert runtime.closed
+        assert not created_root.exists()
+    finally:
+        remaining.clear()
+        holds.release_all()
