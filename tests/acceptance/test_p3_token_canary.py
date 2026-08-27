@@ -2,29 +2,88 @@
 
 from __future__ import annotations
 
-import sqlite3
+import hashlib
+import os
+import subprocess
+import sys
 from collections.abc import Mapping
+from dataclasses import dataclass, field
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
+from types import TracebackType
+from typing import Self, cast
+from urllib.parse import urlsplit
 
-from atelier2.adapters.dbos.runtime import create_canonical_engine
-from atelier2.adapters.dbos.schema import initialize_schema
+import sqlalchemy as sa
+from dbos import DBOS
+from pytest import LogCaptureFixture
+
+from atelier2.adapters.candidate_store import CANDIDATE_STORE_DIRECTORY_NAME
+from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
+from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.schema import effect_intents, effect_receipts, run_events
+from atelier2.adapters.dbos.workflow_ids import (
+    action_continuation_workflow_id_for,
+    bootstrap_workflow_id_for,
+    node_workflow_id_for,
+    reconcile_workflow_id_for,
+)
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.git_transport.effects import (
     GitCommandResult,
     GitRemote,
     GitTransportEffectAdapterFactory,
-    SubprocessGitCommandRunner,
 )
+from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
+from atelier2.api.openapi import API_PREFIX
+from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
+from atelier2.contracts.effect_requests import PushAtelierCommitReceipt
 from atelier2.contracts.effects import (
     AdapterRevision,
     EffectDestination,
-    PerformedEffect,
+    EffectIntentStateVersion,
+    OperatorAuthoritativeAbsence,
+    ReconcileActor,
+    ReconcileCommand,
+    ReconcileCommandId,
 )
-from tests.integration.test_git_transport_push import _git, _intent, _repositories
+from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.runs import RunState
+from atelier2.contracts.when import RecordedAt
+from atelier2.contracts.work_items import (
+    ObservedWorkItemRevision,
+    WorkItemChangeMarker,
+    WorkItemKind,
+)
+from atelier2.ports.effects import EffectAdapterRegistration, EffectAdapterRegistry
+from tests.acceptance.test_v3_push_before_open_pr import (
+    _WRITE_CANDIDATE,
+    AGENT_OUTPUT,
+    ITEM,
+    ORDER_NAME,
+    PROJECT,
+    RUN,
+    _git,
+    _publish,
+    _repositories,
+    _Tracker,
+)
+from tests.scenarios.agents import (
+    RecordingAgentExecutorFactoryV2,
+    agent_scratch_root,
+    launching,
+)
+from tests.scenarios.api import durable_api_client
+from tests.scenarios.runs import submit_reconcile_command
 
 
-class RecordingRunner(SubprocessGitCommandRunner):
-    def __init__(self) -> None:
-        self.calls: list[tuple[tuple[str, ...], Mapping[str, str]]] = []
+@dataclass
+class RecordingRunner:
+    trace_directory: Path
+    calls: list[tuple[tuple[str, ...], Mapping[str, str]]] = field(default_factory=list)
+    child_process_records: list[bytes] = field(default_factory=list)
 
     def run(
         self,
@@ -35,54 +94,321 @@ class RecordingRunner(SubprocessGitCommandRunner):
         standard_input: bytes | None = None,
     ) -> GitCommandResult:
         self.calls.append((arguments, dict(environment)))
-        return super().run(
-            arguments,
-            working_directory=working_directory,
-            environment=environment,
-            standard_input=standard_input,
+        trace = self.trace_directory / f"git-{len(self.calls)}.trace"
+        completed = subprocess.run(
+            (
+                "strace",
+                "-f",
+                "-v",
+                "-s",
+                "4096",
+                "-e",
+                "trace=execve",
+                "-o",
+                str(trace),
+                "git",
+                *arguments,
+            ),
+            cwd=working_directory,
+            env=environment,
+            input=standard_input,
+            capture_output=True,
+            check=False,
+        )
+        self.child_process_records.append(trace.read_bytes())
+        return GitCommandResult(
+            completed.returncode,
+            completed.stdout,
+            completed.stderr,
         )
 
 
+@dataclass
+class GitHttpRemote:
+    project_root: Path
+    expected_authorization_digest: bytes
+    _server: ThreadingHTTPServer | None = None
+    _thread: Thread | None = None
+
+    def __enter__(self) -> Self:
+        remote = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self) -> None:
+                self._serve_git()
+
+            def do_POST(self) -> None:
+                self._serve_git()
+
+            def _serve_git(self) -> None:
+                authorization_digest = hashlib.sha256(
+                    self.headers.get("Authorization", "").encode("latin-1")
+                ).digest()
+                if authorization_digest != remote.expected_authorization_digest:
+                    self.send_response(HTTPStatus.UNAUTHORIZED)
+                    self.send_header("WWW-Authenticate", 'Basic realm="atelier-test"')
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+
+                parsed = urlsplit(self.path)
+                length = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(length)
+                assert remote._server is not None
+                server_host, server_port = cast(
+                    tuple[str, int], remote._server.server_address
+                )
+                completed = subprocess.run(
+                    ("git", "http-backend"),
+                    env={
+                        **os.environ,
+                        "GIT_PROJECT_ROOT": str(remote.project_root),
+                        "GIT_HTTP_EXPORT_ALL": "1",
+                        "PATH_INFO": parsed.path,
+                        "QUERY_STRING": parsed.query,
+                        "REQUEST_METHOD": self.command,
+                        "CONTENT_TYPE": self.headers.get("Content-Type", ""),
+                        "CONTENT_LENGTH": str(length),
+                        "REMOTE_USER": "x-access-token",
+                        "SERVER_NAME": str(server_host),
+                        "SERVER_PORT": str(server_port),
+                        "SERVER_PROTOCOL": self.protocol_version,
+                    },
+                    input=body,
+                    capture_output=True,
+                    check=True,
+                )
+                header_bytes, separator, response_body = completed.stdout.partition(
+                    b"\r\n\r\n"
+                )
+                assert separator
+                status = HTTPStatus.OK
+                response_headers: list[tuple[str, str]] = []
+                for line in header_bytes.decode("ascii").split("\r\n"):
+                    name, value = line.split(":", 1)
+                    if name.lower() == "status":
+                        status = HTTPStatus(int(value.strip().split(" ", 1)[0]))
+                    else:
+                        response_headers.append((name, value.strip()))
+                self.send_response(status)
+                for name, value in response_headers:
+                    self.send_header(name, value)
+                self.send_header("Content-Length", str(len(response_body)))
+                self.end_headers()
+                self.wfile.write(response_body)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._thread = Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(
+        self,
+        exception_type: type[BaseException] | None,
+        exception: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        assert self._server is not None
+        assert self._thread is not None
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join()
+
+    @property
+    def url(self) -> str:
+        assert self._server is not None
+        host, port = self._server.server_address[:2]
+        return f"http://{host}:{port}/remote.git"
+
+
 def test_token_canary_is_absent_from_durable_and_process_surfaces(
-    tmp_path: Path, caplog: object
+    tmp_path: Path, caplog: LogCaptureFixture
 ) -> None:
     canary = "p3-token-canary-never-copy"
     token_file = tmp_path / "token"
     token_file.write_text(canary, encoding="utf-8")
-    store, remote, base, tree = _repositories(tmp_path)
-    runner = RecordingRunner()
-    factory = GitTransportEffectAdapterFactory(
-        store,
-        GitRemote("local-test", str(remote), token_file),
-        AdapterRevision("git-push-v1"),
-        EffectDestination("git"),
-        runner,
+    project, remote, _base = _repositories(tmp_path)
+    subprocess.run(
+        ("git", "-C", str(remote), "config", "http.receivepack", "true"),
+        check=True,
     )
-    intent, _request = _intent(factory, base, tree)
-    adapter = factory.open()
-    try:
-        performed = adapter.execute(intent)
-    finally:
-        adapter.close()
-    assert isinstance(performed, PerformedEffect)
+    runner = RecordingRunner(tmp_path / "traces")
+    runner.trace_directory.mkdir()
+    github = GitHubEffectAdapterFactory(
+        tmp_path / "github.sqlite",
+        AdapterRevision("github-open-pr-v1"),
+        EffectDestination("platform"),
+    )
 
-    database = tmp_path / "atelier.sqlite"
-    engine = create_canonical_engine(database)
-    initialize_schema(engine)
-    engine.dispose()
-    durable_bytes = database.read_bytes()
-    commit_bytes = _git(
-        remote, "cat-file", "commit", performed.effect_id.value
-    ).encode()
-    process_surfaces = repr(runner.calls).encode()
-    log_bytes = repr(getattr(caplog, "records", ())).encode()
-    assert canary.encode() not in durable_bytes
-    assert canary.encode() not in performed.result.payload
-    assert canary.encode() not in commit_bytes
-    assert canary.encode() not in process_surfaces
-    assert canary.encode() not in log_bytes
-    with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT count(*) FROM run_events").fetchone() == (0,)
-        assert connection.execute(
-            "SELECT count(*) FROM effect_receipts"
-        ).fetchone() == (0,)
+    with GitHttpRemote(
+        tmp_path,
+        bytes.fromhex(
+            "2f98f89bf9c5691df1d4f68c99528b1491989c25211801822bb80491480c7e3f"
+        ),
+    ) as http_remote:
+        push = GitTransportEffectAdapterFactory(
+            tmp_path / CANDIDATE_STORE_DIRECTORY_NAME,
+            GitRemote("http-canary-test", http_remote.url, token_file),
+            AdapterRevision("git-push-v1"),
+            EffectDestination("git"),
+            runner,
+        )
+        registry = EffectAdapterRegistry(
+            (
+                EffectAdapterRegistration(AdapterOperationName.OPEN_PR, github),
+                EffectAdapterRegistration(
+                    AdapterOperationName.PUSH_ATELIER_COMMIT, push
+                ),
+            )
+        )
+        executor = RecordingAgentExecutorFactoryV2(
+            "exact",
+            "exact/v1",
+            "exact-operation",
+            AGENT_OUTPUT,
+            command=launching(
+                sys.executable,
+                "-c",
+                _WRITE_CANDIDATE,
+                b"candidate exact bytes\n".hex(),
+                AGENT_OUTPUT.hex(),
+            ),
+        )
+        runtime = DbosRuntime(
+            DbosRuntimeSettings(
+                tmp_path / "atelier.sqlite",
+                "p3-canary-test",
+                agent_scratch_root=agent_scratch_root(tmp_path),
+                project_id=PROJECT,
+                bootstrap_project_root=project,
+            ),
+            registry,
+            ExactOutputAgentExecutorFactory(),
+            (executor,),
+        )
+        runtime.initialize_storage()
+        try:
+            workflow, bindings = _publish(runtime)
+            client = durable_api_client(
+                runtime,
+                served_project_id=PROJECT,
+                tracker_item_source=_Tracker(
+                    ObservedWorkItemRevision(
+                        ITEM,
+                        WorkItemKind.ISSUE,
+                        b"Implement P3.",
+                        WorkItemChangeMarker("issue-642-canary"),
+                        RecordedAt("2026-08-27T12:00:00Z"),
+                    )
+                ),
+            )
+            binding = bindings.bindings[0]
+            response = client.post(
+                API_PREFIX + "/runs",
+                json={
+                    "workflow_format_version": 3,
+                    "run_id": RUN.value,
+                    "workflow_revision_hash": workflow.revision_hash.value,
+                    "agent_bindings": [
+                        {
+                            "role": binding.role.value,
+                            "agent_configuration_revision_hash": (
+                                binding.agent_configuration_revision_hash.value
+                            ),
+                        }
+                    ],
+                    "orders": [{"name": ORDER_NAME, "work_item": ITEM.value}],
+                },
+            )
+            assert response.status_code == HTTPStatus.CREATED, response.text
+            runtime.launch()
+            bootstrap = DBOS.retrieve_workflow(bootstrap_workflow_id_for(RUN))
+            assert bootstrap.get_result() == RunState.STARTED.value
+            node = NodeExecutionId.for_node(RUN, workflow.revision_hash, "implement")
+            node_workflow = DBOS.retrieve_workflow(node_workflow_id_for(node))
+            assert node_workflow.get_result() == RunState.WAITING_RECONCILIATION.value
+
+            with runtime.engine.connect() as connection:
+                intent = intent_snapshot_from_record(
+                    connection.execute(
+                        sa.select(effect_intents).where(
+                            effect_intents.c.operation_name
+                            == AdapterOperationName.PUSH_ATELIER_COMMIT.value
+                        )
+                    )
+                    .mappings()
+                    .one()
+                ).intent
+            command = submit_reconcile_command(
+                runtime.engine,
+                runtime.settings,
+                ReconcileCommand(
+                    ReconcileCommandId("authorize-canary-push"),
+                    intent.reference,
+                    EffectIntentStateVersion(1),
+                    ReconcileActor("operator"),
+                    "confirmed the derived branch is absent",
+                    OperatorAuthoritativeAbsence(),
+                ),
+            ).command
+            assert (
+                DBOS.retrieve_workflow(
+                    reconcile_workflow_id_for(command.command_id)
+                ).get_result()
+                == RunState.STARTED.value
+            )
+            assert (
+                DBOS.retrieve_workflow(
+                    action_continuation_workflow_id_for(intent.binding.logical_key)
+                ).get_result()
+                == RunState.STARTED.value
+            )
+
+            with runtime.engine.connect() as connection:
+                receipt_rows = tuple(
+                    connection.execute(sa.select(effect_receipts)).mappings()
+                )
+                event_rows = tuple(connection.execute(sa.select(run_events)).mappings())
+            push_receipts = tuple(
+                row
+                for row in receipt_rows
+                if row["operation_name"]
+                == AdapterOperationName.PUSH_ATELIER_COMMIT.value
+            )
+            push_events = tuple(
+                row
+                for row in event_rows
+                if row["receipt_logical_key"] == intent.binding.logical_key.value
+                and row["event_kind"] == "ACTION_COMPLETED"
+            )
+            assert len(push_receipts) == 1
+            assert len(push_events) == 1
+            push_result = PushAtelierCommitReceipt.from_result_bytes(
+                bytes(push_receipts[0]["result"])
+            )
+            assert (
+                _git(remote, "rev-parse", push_result.full_ref)
+                == push_receipts[0]["effect_id"]
+            )
+            assert canary.encode() not in repr(receipt_rows).encode()
+            assert canary.encode() not in repr(event_rows).encode()
+        finally:
+            runtime.close()
+
+    helper_process_records = tuple(
+        line
+        for record in runner.child_process_records
+        for line in record.splitlines()
+        if b'execve("/bin/sh"' in line and b"username=x-access-token" in line
+    )
+    assert helper_process_records
+    assert canary.encode() not in repr(runner.calls).encode()
+    assert canary.encode() not in b"".join(runner.child_process_records)
+    assert canary.encode() not in b"".join(helper_process_records)
+    assert canary not in caplog.text
+    assert canary.encode() not in repr(caplog.records).encode()
