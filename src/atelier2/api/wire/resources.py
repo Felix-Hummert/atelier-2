@@ -36,6 +36,10 @@ from atelier2.contracts.agent_definitions import (
     MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS,
     MAXIMUM_AGENT_DEFINITION_TOOL_COUNT,
 )
+from atelier2.contracts.agent_transcripts import (
+    MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
+    TranscriptEventKind,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
@@ -1228,6 +1232,66 @@ class NodeProvenanceResource(ApiModel):
     receipt_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
+class ToolCalledEventResource(ApiModel):
+    event: Literal[TranscriptEventKind.TOOL_CALLED]
+    name: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
+    arguments: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
+    redacted: bool
+
+
+class ToolReturnedEventResource(ApiModel):
+    event: Literal[TranscriptEventKind.TOOL_RETURNED]
+    name: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
+    result: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
+    redacted: bool
+
+
+class AssistantTurnEventResource(ApiModel):
+    event: Literal[TranscriptEventKind.ASSISTANT_TURN]
+    text: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
+    redacted: bool
+
+
+class UsageEventResource(ApiModel):
+    event: Literal[TranscriptEventKind.USAGE]
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    cache_read_input_tokens: int = Field(ge=0)
+    cache_creation_input_tokens: int = Field(ge=0)
+
+
+class UnrecognisedProviderOutputEventResource(ApiModel):
+    event: Literal[TranscriptEventKind.UNRECOGNISED_PROVIDER_OUTPUT]
+    text: str = Field(max_length=MAXIMUM_TRANSCRIPT_STEP_CHARACTERS)
+    redacted: bool
+
+
+class TranscriptTruncatedEventResource(ApiModel):
+    event: Literal[TranscriptEventKind.TRANSCRIPT_TRUNCATED]
+    dropped_events: int = Field(ge=1)
+
+
+AttemptTranscriptEventResource = Annotated[
+    ToolCalledEventResource
+    | ToolReturnedEventResource
+    | AssistantTurnEventResource
+    | UsageEventResource
+    | UnrecognisedProviderOutputEventResource
+    | TranscriptTruncatedEventResource,
+    Field(discriminator="event"),
+]
+
+
+class AttemptTranscriptResource(ApiModel):
+    """The decoded, already-redacted steps of one attempt, and nothing else.
+
+    The document kind and the stored bytes stay off the wire: a reader of this
+    resource is looking at the events, not at how they were kept.
+    """
+
+    events: tuple[AttemptTranscriptEventResource, ...] = Field(min_length=1)
+
+
 class NodeDetailResource(ApiModel):
     """One node of a run, answered the way an operator asks about it.
 
@@ -1257,6 +1321,11 @@ class NodeDetailResource(ApiModel):
     other refusal, including one this receipt family predates, answers with no
     such field rather than a guess. Its own type, `NodeRefusalOutputResource`,
     names the redaction and the bound this field alone carries.
+
+    `transcript` is the decoded events of the attempt that named one. The key
+    is omitted when no attempt of this execution did -- never `"transcript":
+    null` -- so a node that stored nothing does not grow a new column. The
+    stored document kind and raw bytes stay off this resource.
     """
 
     run_id: str = Field(min_length=1)
@@ -1271,6 +1340,10 @@ class NodeDetailResource(ApiModel):
     refusal_output: NodeRefusalOutputResource | None = None
     started_at: str | None = None
     ended_at: str | None = None
+    transcript: AttemptTranscriptResource | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class RunResourceV2(ApiModel):
