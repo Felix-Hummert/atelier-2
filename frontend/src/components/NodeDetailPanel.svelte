@@ -58,14 +58,6 @@
    */
   export let railAttempt: RunV3["node_rail"][number]["attempt"] = null;
   /**
-   * True when this is the run's own sink node and the run page already shows
-   * its answer above the graph (#716) -- the Result tab then names that one
-   * fact once, with a link back up to it, rather than rendering the same
-   * sentence and the same disclosure a second time.
-   */
-  export let resultShownAbove = false;
-
-  /**
    * The facts line that replaces the "Done" chip (operator ruling 23.08.):
    * state word, then started/ended/duration exactly as the run head already
    * says them, then the attempt ordinal -- but only once there has been more
@@ -324,10 +316,6 @@
         {/if}
       {:else if answerText === null}
         <p class="muted">{wrapDisplayCopy(runResultCopy.unreadable)}</p>
-      {:else if resultShownAbove}
-        <p class="result-shown-above">
-          <a href="#run-outcome">{wrapDisplayCopy(runResultCopy.shownAbove)}</a>
-        </p>
       {:else}
         <ReadableResult decodedAnswer={answerText} />
       {/if}
@@ -570,24 +558,6 @@
     gap: var(--space-2);
     margin: 0;
     color: var(--ink-dim);
-  }
-
-  .result-shown-above {
-    margin: 0;
-    color: var(--ink-dim);
-    font-size: var(--text-sm);
-  }
-
-  .result-shown-above a {
-    display: inline-flex;
-    align-items: center;
-    min-height: var(--tap);
-    color: var(--accent);
-    text-decoration: none;
-  }
-
-  .result-shown-above a:hover {
-    text-decoration: underline;
   }
 
   /* The Prompt tab's own exact-bytes box: a value copy of
