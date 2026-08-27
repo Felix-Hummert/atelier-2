@@ -197,9 +197,10 @@ not landed, so this child refuses any service that is not a literal
 loopback address rather than pretending a token exists.
 
 The five tools are list_workflows, start_run, run_status, answer_wait and
-publish_artifact. start_run orders are the same union POST /runs already
-publishes. Each tool calls an existing door. A typed problem from the
-service is the tool's own answer, field pointers included.
+publish_artifact. MCP start_run accepts artifact and work-item orders only;
+publish inline material first, then start with its returned artifact hash.
+Each tool calls an existing door. A typed problem from the service is the
+tool's own answer, field pointers included.
 """
 
 BINDING_SEPARATOR = "="

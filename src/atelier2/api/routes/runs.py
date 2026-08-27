@@ -23,7 +23,6 @@ from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.limits import ApiLimitExceeded
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import (
-    PROJECTION_LIMIT_DETAIL,
     ApiProblem,
     bounded_invalid_field,
 )
@@ -354,7 +353,7 @@ async def list_runs(
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case ProjectionTooLarge():
-            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
+            raise ApiProblem("durable-projection-unrepresentable")
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
@@ -403,7 +402,7 @@ async def get_node_detail_route(
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case ProjectionTooLarge():
-            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
+            raise ApiProblem("durable-projection-unrepresentable")
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
@@ -623,7 +622,7 @@ async def reconcile_run_route(
         case WriteUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case ProjectionTooLarge():
-            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
+            raise ApiProblem("durable-projection-unrepresentable")
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:

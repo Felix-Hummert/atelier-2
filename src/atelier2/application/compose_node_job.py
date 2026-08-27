@@ -17,7 +17,13 @@ to carry it.
 
 from __future__ import annotations
 
-from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
+import json
+
+from atelier2.contracts.node_records_v3 import (
+    DeliveredOutput,
+    RunInput,
+    RunInputSchemaKind,
+)
 
 ORDER_HEADING = "--- order: {name} ---"
 """How one order announces itself inside the job, so the agent can tell them apart."""
@@ -54,10 +60,26 @@ def node_job(
     sections = [instruction]
     for order in sorted(orders, key=lambda supplied: supplied.name):
         sections.append(ORDER_HEADING.format(name=order.name))
-        sections.append(order.value.decode("utf-8"))
+        sections.append(_render_order(order))
     for result in sorted(results, key=lambda done: (done.node_id, done.output_name)):
         sections.append(
             RESULT_HEADING.format(node=result.node_id, name=result.output_name)
         )
         sections.append(result.value.decode("utf-8"))
     return "\n\n".join(sections)
+
+
+def _render_order(order: RunInput) -> str:
+    """Render only declared plain-string orders as text.
+
+    The bytes and their hash remain the stored order. This changes only the job
+    text an agent reads, after the schema revision that admitted those bytes
+    declared a top-level string.
+    """
+    value = order.value.decode("utf-8")
+    if order.schema_kind is not RunInputSchemaKind.PLAIN_STRING:
+        return value
+    decoded = json.loads(value)
+    if not isinstance(decoded, str):
+        raise TypeError("a plain-string schema admitted a non-string order")
+    return decoded

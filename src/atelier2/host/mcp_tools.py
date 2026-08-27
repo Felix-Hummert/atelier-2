@@ -18,18 +18,40 @@ from pydantic import TypeAdapter
 from atelier2.api.openapi import API_PREFIX, WORKFLOW_DOCUMENT_COMPONENT
 from atelier2.api.wire.requests import (
     AnswerWaitRequestResource,
-    AnyStartRunOrderResource,
+    ArtifactOrderResource,
     StartRunAgentBindingResourceV2,
+    WorkItemOrderResource,
 )
 from atelier2.api.wire.resources import CatalogNameResolutionResource, ProblemResource
+from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.host.run_command import DEFAULT_CATALOG_POSITION
 
-_START_RUN_ORDER = TypeAdapter(AnyStartRunOrderResource)
+_START_RUN_ORDER = TypeAdapter(ArtifactOrderResource | WorkItemOrderResource)
 
 MCP_SERVER_NAME = "atelier2"
 MCP_SERVER_VERSION = "0.0.0"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 JSONRPC_VERSION = "2.0"
+MAXIMUM_MCP_INPUT_LINE_BYTES = 1_048_576
+"""The largest JSON-RPC request body this stdio door reads, excluding its newline."""
+
+MCP_PUBLISH_ARTIFACT_REQUEST_ENVELOPE_RESERVATION_BYTES = 1_024
+"""Space reserved for the JSON-RPC request around Base64 artifact material."""
+
+MAXIMUM_MCP_ARTIFACT_BASE64_CHARACTERS = 4 * (
+    (
+        MAXIMUM_MCP_INPUT_LINE_BYTES
+        - MCP_PUBLISH_ARTIFACT_REQUEST_ENVELOPE_RESERVATION_BYTES
+    )
+    // 4
+)
+"""Standard Base64 characters that fit beside the reserved request envelope."""
+
+MAXIMUM_MCP_ARTIFACT_BYTES = min(
+    MAXIMUM_ARTIFACT_BYTES,
+    MAXIMUM_MCP_ARTIFACT_BASE64_CHARACTERS * 3 // 4,
+)
+"""Exact decoded bytes whose Base64 fits the reserved `publish_artifact` request."""
 
 METHOD_INITIALIZE = "initialize"
 METHOD_INITIALIZED = "notifications/initialized"
@@ -88,11 +110,14 @@ def tool_definitions() -> tuple[dict[str, Any], ...]:
             "description": (
                 "Start the revision a catalog name holds, using the same "
                 "resolution `atelier2 run --name` asks, then POST /runs. "
-                f"`orders` are the graph_inputs the published "
-                f"{WORKFLOW_DOCUMENT_COMPONENT} grammar names; this tool does "
-                "not restate that grammar. `run_id` is required so a repeating "
-                "agent cannot mint a second billed run. Times on the run wait "
-                "for #355. No caller authentication exists; do not invent one."
+                f"`orders` use the artifact and work-item forms of the published "
+                f"{WORKFLOW_DOCUMENT_COMPONENT} grammar; inline material is not "
+                "an MCP order. Publish material first, then name its returned "
+                "hash here: those are two calls. A failed or refused start leaves that "
+                "immutable artifact reusable and creates no run. `run_id` is "
+                "required so a repeating agent cannot mint a second billed run. "
+                "Times on the run wait for #355. No caller authentication exists; "
+                "do not invent one."
             ),
             "inputSchema": _start_run_input_schema(),
         },
@@ -135,16 +160,30 @@ def tool_definitions() -> tuple[dict[str, Any], ...]:
                 "encoding of those bytes because MCP JSON cannot carry "
                 "octet-stream; the HTTP door is not JSON. The answer is "
                 "ArtifactResource. Publishing the same bytes again is the same "
-                "artifact. Empty or oversized material is the service's typed "
-                "problem. No caller authentication exists; do not invent one."
+                "artifact. Publish then start are two calls: a failed or refused start leaves "
+                "the immutable artifact reusable and creates no run. Empty material "
+                "is the service's typed problem. MCP accepts at most "
+                f"{MAXIMUM_MCP_ARTIFACT_BYTES} decoded bytes "
+                f"({MAXIMUM_MCP_ARTIFACT_BASE64_CHARACTERS} Base64 characters): "
+                "Base64 plus the "
+                f"{MCP_PUBLISH_ARTIFACT_REQUEST_ENVELOPE_RESERVATION_BYTES}-byte "
+                "JSON-RPC envelope reservation must fit the "
+                f"{MAXIMUM_MCP_INPUT_LINE_BYTES}-byte line cap. Larger content is "
+                "refused locally as "
+                "mcp-artifact-payload-too-large and is not sent. No caller "
+                "authentication exists; do not invent one."
             ),
             "inputSchema": _object_schema(
                 {
                     "content_base64": {
                         "type": "string",
+                        "maxLength": MAXIMUM_MCP_ARTIFACT_BASE64_CHARACTERS,
                         "description": (
                             "Standard Base64 of the exact bytes to POST as "
-                            "application/octet-stream."
+                            "application/octet-stream, up to "
+                            f"{MAXIMUM_MCP_ARTIFACT_BYTES} decoded bytes "
+                            f"({MAXIMUM_MCP_ARTIFACT_BASE64_CHARACTERS} "
+                            "characters)."
                         ),
                     }
                 },
@@ -155,7 +194,7 @@ def tool_definitions() -> tuple[dict[str, Any], ...]:
 
 
 def _start_run_input_schema() -> dict[str, Any]:
-    """Name plus the start body POST /runs already owns, minus the hash we resolve."""
+    """Name plus the MCP subset of the start body POST /runs already owns."""
 
     published_orders = _START_RUN_ORDER.json_schema()
     order_defs = published_orders.get("$defs", {})
@@ -199,9 +238,10 @@ def _start_run_input_schema() -> dict[str, Any]:
             "orders": {
                 "type": "array",
                 "description": (
-                    "The graph_inputs the published "
-                    f"{WORKFLOW_DOCUMENT_COMPONENT} grammar names. Item shape "
-                    "is the POST /runs order union, not a second grammar."
+                    "Artifact hashes already returned by publish_artifact, or "
+                    "work-item references. These are the published "
+                    f"{WORKFLOW_DOCUMENT_COMPONENT} grammar's MCP order forms; "
+                    "inline {name, value} material is refused."
                 ),
                 "items": order_schema,
             },
