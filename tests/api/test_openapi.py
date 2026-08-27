@@ -33,6 +33,7 @@ from atelier2.api.openapi import (
     PROJECT_SOURCE_CONNECTION_PATH,
     PROJECTS_PATH,
     RUN_CANCELLATION_PATH,
+    RUN_FORK_PATH,
 )
 from atelier2.api.references import (
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
@@ -116,6 +117,7 @@ EXPECTED_PATHS = {
     PROJECT_SOURCE_CONNECTION_PATH,
     API_PREFIX + "/runs",
     API_PREFIX + "/runs/{public_ref}",
+    RUN_FORK_PATH,
     NODE_DETAIL_PATH,
     RECEIPT_PATH,
     API_PREFIX + "/runs/{public_ref}/answers",
@@ -243,6 +245,7 @@ EXPECTED_ROUTE_SEQUENCE = (
     ("POST", API_PREFIX + "/runs", "start_run_route"),
     ("GET", API_PREFIX + "/runs", "list_runs"),
     ("GET", API_PREFIX + "/runs/{public_ref}", "get_run_route"),
+    ("POST", RUN_FORK_PATH, "fork_run_route"),
     ("GET", NODE_DETAIL_PATH, "get_node_detail_route"),
     ("GET", RECEIPT_PATH, "get_run_receipt_route"),
     ("POST", CANCELLATION_PATH, "cancel_agent_attempt_route"),
@@ -303,6 +306,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/runs", "post"): {"200", "201"},
     (API_PREFIX + "/runs", "get"): {"200"},
     (API_PREFIX + "/runs/{public_ref}", "get"): {"200"},
+    (RUN_FORK_PATH, "post"): {"200", "201"},
     (RECEIPT_PATH, "get"): {"200"},
     (API_PREFIX + "/runs/{public_ref}/answers", "post"): {"200", "202"},
     (API_PREFIX + "/runs/{public_ref}/reconciliations", "post"): {"200", "202"},
@@ -559,6 +563,38 @@ def test_the_start_door_publishes_the_tracker_problems_a_work_item_order_earns()
         ]["application/problem+json"]["schema"]["oneOf"]
 
 
+def test_the_fork_door_publishes_server_owned_identity_and_closed_refusals() -> None:
+    schema = served_app().openapi()
+    operation = schema["paths"][RUN_FORK_PATH]["post"]
+    request = _referenced_schema(schema, operation["requestBody"]["content"])
+
+    assert request["additionalProperties"] is False
+    assert set(request["properties"]) == {
+        "idempotency_key",
+        "restart_from_node_id",
+    }
+    assert set(request["required"]) == {
+        "idempotency_key",
+        "restart_from_node_id",
+    }
+    assert set(openapi_module.OPERATION_PROBLEMS[(RUN_FORK_PATH, "post")]) == {
+        "invalid-public-run-reference",
+        "invalid-request",
+        "unsupported-media-type",
+        "run-not-found",
+        "run-fork-origin-not-terminal",
+        "run-fork-node-missing",
+        "run-fork-loop-unsupported",
+        "run-fork-prefix-not-reusable",
+        "run-fork-command-conflict",
+        "agent-executor-binding-unavailable",
+        "durable-projection-unrepresentable",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    }
+
+
 def test_every_declared_error_response_is_problem_json_one_of() -> None:
     schema = served_app().openapi()
 
@@ -658,6 +694,7 @@ def test_openapi_declares_every_success_and_exact_request_media_type() -> None:
         API_PREFIX + "/runs/{public_ref}/answers",
         API_PREFIX + "/runs/{public_ref}/reconciliations",
         CANCELLATION_PATH,
+        RUN_FORK_PATH,
     ):
         assert set(schema["paths"][path]["post"]["requestBody"]["content"]) == {
             "application/json"

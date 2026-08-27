@@ -20,6 +20,10 @@ from atelier2.adapters.dbos.effect_store import (
     intent_snapshot_from_record,
     receipt_from_record,
 )
+from atelier2.adapters.dbos.run_fork_store import (
+    _stored_fork_for_command,
+    validate_stored_fork,
+)
 from atelier2.adapters.dbos.run_store import (
     NodeOutputNotWritten,
     NodeOutputSchemaRefused,
@@ -44,6 +48,7 @@ from atelier2.adapters.dbos.schema import (
     node_receipts_v3,
     reconcile_commands,
     run_events,
+    run_forks,
     run_instants,
     runs,
     workflow_revisions,
@@ -94,12 +99,19 @@ from atelier2.contracts.run_events import (
     PersistedRunEvent,
     RunEventPage,
 )
+from atelier2.contracts.run_forks import (
+    MAXIMUM_RUN_FORK_SUCCESSORS,
+    RunForkCommandId,
+)
 from atelier2.contracts.run_projections import (
     AgentAttemptCancellationProjection,
     AgentAttemptProjection,
     NodeAnswer,
     NodeDetail,
     NodeProvenance,
+    ReusedNodeProjection,
+    RunForkOriginProjection,
+    RunForkSuccessorProjection,
     RunPage,
     RunProjection,
     WaitingReconciliationProjection,
@@ -222,6 +234,9 @@ _RECEIPT_FIELD_COLUMNS = frozenset(
         "effect_id",
         "reconcile_command_id",
     )
+)
+_RUN_FORK_FIELD_COLUMNS = frozenset(
+    ("origin_run_id", "successor_run_id", "restart_from_node_id")
 )
 
 
@@ -1316,6 +1331,96 @@ class DbosQueries:
         loaded_runs = tuple(
             run_from_record_with_bindings(connection, record) for record in records
         )
+        run_ids = tuple(run.run_id.value for run in loaded_runs)
+        successor_fork_records = tuple(
+            connection.execute(
+                _bounded_projection_select(
+                    run_forks,
+                    self._projection_limit,
+                    field_columns=_RUN_FORK_FIELD_COLUMNS,
+                ).where(run_forks.c.successor_run_id.in_(run_ids))
+            ).mappings()
+        )
+        maximum_successor_records = len(run_ids) * MAXIMUM_RUN_FORK_SUCCESSORS
+        origin_fork_records = tuple(
+            connection.execute(
+                _bounded_projection_select(
+                    run_forks,
+                    self._projection_limit,
+                    field_columns=_RUN_FORK_FIELD_COLUMNS,
+                )
+                .where(run_forks.c.origin_run_id.in_(run_ids))
+                .order_by(run_forks.c.origin_run_id, run_forks.c.successor_run_id)
+                .limit(maximum_successor_records + 1)
+            ).mappings()
+        )
+        if len(origin_fork_records) > maximum_successor_records:
+            raise ProjectionLimitExceeded(
+                "run fork successor projection exceeds its limit"
+            )
+        successor_counts: dict[str, int] = {}
+        for record in origin_fork_records:
+            origin_id = str(record["origin_run_id"])
+            successor_counts[origin_id] = successor_counts.get(origin_id, 0) + 1
+            if successor_counts[origin_id] > MAXIMUM_RUN_FORK_SUCCESSORS:
+                raise ProjectionLimitExceeded(
+                    "run fork successor projection exceeds its limit"
+                )
+        fork_records = tuple(
+            {
+                str(record["command_id"]): record
+                for record in (*successor_fork_records, *origin_fork_records)
+            }.values()
+        )
+        for fork_record in fork_records:
+            _validate_bounded_record(
+                fork_record,
+                self._projection_limit,
+                field_columns=_RUN_FORK_FIELD_COLUMNS,
+            )
+        stored_forks = []
+        for record in fork_records:
+            fork = _stored_fork_for_command(
+                connection, RunForkCommandId(str(record["command_id"]))
+            )
+            if fork is None:
+                raise RunTransitionConflict("run fork disappeared during projection")
+            validate_stored_fork(connection, fork)
+            stored_forks.append(fork)
+        origin_by_successor = {
+            fork.successor_run_id.value: RunForkOriginProjection(
+                fork.origin_run_id,
+                fork.origin_terminal_hash,
+                fork.restart_from_node_id,
+                fork.fork_hash,
+            )
+            for fork in stored_forks
+            if fork.successor_run_id.value in run_ids
+        }
+        successors_by_origin: dict[str, list[RunForkSuccessorProjection]] = {}
+        reused_by_successor: dict[str, list[ReusedNodeProjection]] = {}
+        for fork in stored_forks:
+            if fork.origin_run_id.value in run_ids:
+                successors_by_origin.setdefault(fork.origin_run_id.value, []).append(
+                    RunForkSuccessorProjection(
+                        fork.successor_run_id,
+                        fork.restart_from_node_id,
+                        fork.fork_hash,
+                    )
+                )
+            if fork.successor_run_id.value in run_ids:
+                reused_by_successor[fork.successor_run_id.value] = [
+                    ReusedNodeProjection(
+                        entry.node_id,
+                        entry.source_run_id,
+                        entry.source_event_hash,
+                        entry.source_receipt_hash,
+                        entry.source_declared_context_package_hash,
+                    )
+                    for entry in fork.reused_nodes
+                ]
+        for successors in successors_by_origin.values():
+            successors.sort(key=lambda item: item.successor_run_id.value.encode())
         revision_hashes = {run.revision_hash for run in loaded_runs}
         revision_rows = tuple(
             connection.execute(
@@ -1611,6 +1716,11 @@ class DbosQueries:
                     None if instant is None else instant[0],
                     None if instant is None else instant[1],
                     orders=orders_by_run.get(run.run_id.value, ()),
+                    fork_origin=origin_by_successor.get(run.run_id.value),
+                    fork_successors=tuple(
+                        successors_by_origin.get(run.run_id.value, ())
+                    ),
+                    reused_nodes=tuple(reused_by_successor.get(run.run_id.value, ())),
                 )
             )
         return tuple(projections)

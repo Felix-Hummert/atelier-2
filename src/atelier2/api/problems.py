@@ -560,6 +560,31 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Run identity conflict",
         "Use a new run_id or retry the exact original revision.",
     ),
+    "run-fork-origin-not-terminal": ProblemDefinition(
+        409,
+        "Run fork origin is not terminal",
+        "Fork only a completed, failed, or cancelled run.",
+    ),
+    "run-fork-node-missing": ProblemDefinition(
+        409,
+        "Run fork node is missing",
+        "Restart from a node in the origin's bound workflow revision.",
+    ),
+    "run-fork-loop-unsupported": ProblemDefinition(
+        409,
+        "Run fork loop is unsupported",
+        "This API version forks only a linear workflow without loop rounds.",
+    ),
+    "run-fork-prefix-not-reusable": ProblemDefinition(
+        409,
+        "Run fork prefix is not reusable",
+        "Restart at or before the first predecessor without a verified success fact.",
+    ),
+    "run-fork-command-conflict": ProblemDefinition(
+        409,
+        "Run fork command conflict",
+        "Use a new idempotency_key or retry the exact original fork target.",
+    ),
     "answer-revision-conflict": ProblemDefinition(
         409, "Answer revision conflict", "Retry with the run's exact workflow revision."
     ),

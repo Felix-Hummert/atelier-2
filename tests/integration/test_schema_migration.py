@@ -48,6 +48,7 @@ from atelier2.adapters.dbos.schema import (
     V37_SCHEMA_HANDOFF,
     V38_SCHEMA_HANDOFF,
     V39_SCHEMA_HANDOFF,
+    V40_SCHEMA_HANDOFF,
     MigrationRequired,
     UnsupportedSchemaVersion,
     _product_schema_fingerprint,
@@ -68,6 +69,9 @@ from atelier2.adapters.dbos.schema import (
     reconcile_commands,
     run_configuration_revisions,
     run_events,
+    run_fork_effect_fences,
+    run_fork_reused_nodes,
+    run_forks,
     runs,
     workflow_revisions,
 )
@@ -231,6 +235,9 @@ def test_empty_database_creates_the_exact_current_schema_and_reopens(
             node_artifacts_v3.name,
             node_receipts_v3.name,
             node_receipt_outputs_v3.name,
+            run_forks.name,
+            run_fork_reused_nodes.name,
+            run_fork_effect_fences.name,
         }
         access_objects = connection.exec_driver_sql(
             "SELECT name FROM sqlite_master WHERE name LIKE 'node_receipt_access_v3%'"
@@ -449,11 +456,17 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[39]
         == "3c0cc05dd977fd61d2c88d78ba7566fdc0146e2d7af27df61aea636a4ac2c4be"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 40
+    assert V40_SCHEMA_HANDOFF.version == 40
     assert (
-        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        V40_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[40]
         == "d8d7b89cc0cacd15dfde84bf15f796f0e03d9b571c26be0309ed87a60960071d"
+    )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 41
+    assert (
+        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[41]
+        == "7c4bc13ceb1db7533bfdf9697c1e6b262032a516275b488eac73af9969446b68"
     )
 
 
@@ -1620,10 +1633,76 @@ def test_receipt_round_trips_full_provenance_once_per_logical_key(
             hashlib.sha256(result).hexdigest(),
             "OPERATOR_AUTHORIZED_EXECUTION",
             "command-1",
+            None,
+            None,
+            None,
+            None,
         )
 
     with pytest.raises(exc.IntegrityError), ledger_engine.begin() as connection:
         _add_receipt(connection, result=b"different")
+
+
+def test_fork_reference_receipt_requires_one_existing_composite_source(
+    ledger_engine: Engine,
+) -> None:
+    source_result = b"source-result"
+    with ledger_engine.begin() as connection:
+        _add_intent(connection, logical_key="effect-source")
+        _add_receipt(
+            connection,
+            logical_key="effect-source",
+            confirmation_source="ADAPTER_EXECUTION",
+            command_id=None,
+            result=source_result,
+        )
+        _add_intent(connection, logical_key="effect-successor")
+
+    source = {
+        "fork_source_logical_key": "effect-source",
+        "fork_source_run_id": "run-1",
+        "fork_source_workflow_revision_hash": hashlib.sha256(
+            b"workflow-v1"
+        ).hexdigest(),
+        "fork_source_result_hash": hashlib.sha256(source_result).hexdigest(),
+    }
+    with pytest.raises(exc.IntegrityError), ledger_engine.begin() as connection:
+        _add_receipt(
+            connection,
+            logical_key="effect-successor",
+            confirmation_source="FORK_REFERENCE",
+            command_id=None,
+            result=source_result,
+            overrides=source | {"fork_source_logical_key": "missing-source"},
+        )
+    with pytest.raises(exc.IntegrityError), ledger_engine.begin() as connection:
+        _add_receipt(
+            connection,
+            logical_key="effect-successor",
+            confirmation_source="FORK_REFERENCE",
+            command_id=None,
+            result=b"different-result",
+            overrides=source,
+        )
+
+    with ledger_engine.begin() as connection:
+        _add_receipt(
+            connection,
+            logical_key="effect-successor",
+            confirmation_source="FORK_REFERENCE",
+            command_id=None,
+            result=source_result,
+            overrides=source,
+        )
+    with ledger_engine.connect() as connection:
+        assert (
+            connection.scalar(
+                sa.select(effect_receipts.c.confirmation_source).where(
+                    effect_receipts.c.logical_key == "effect-successor"
+                )
+            )
+            == "FORK_REFERENCE"
+        )
 
 
 @pytest.mark.parametrize(

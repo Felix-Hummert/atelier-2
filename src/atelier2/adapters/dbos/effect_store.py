@@ -16,6 +16,9 @@ from atelier2.adapters.dbos.schema import (
     effect_intents,
     effect_receipts,
     reconcile_commands,
+    run_fork_effect_fences,
+    run_fork_reused_nodes,
+    run_forks,
     runs,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
@@ -25,6 +28,7 @@ from atelier2.adapters.dbos.uncontinuable_runs import (
 )
 from atelier2.adapters.dbos.workflow_ids import (
     effect_workflow_id_for,
+    fork_bootstrap_workflow_id_for,
     node_workflow_id_for,
     reconcile_workflow_id_for,
 )
@@ -49,6 +53,7 @@ from atelier2.contracts.effects import (
     EffectIntentStateVersion,
     EffectOutcome,
     EffectReceipt,
+    EffectReceiptReference,
     EffectRequestHash,
     EffectResult,
     EffectUnknownOutcome,
@@ -117,6 +122,26 @@ def receipt_from_record(record: Mapping[Any, Any]) -> EffectReceipt:
         reconcile_command_id=(
             None if command_id is None else ReconcileCommandId(str(command_id))
         ),
+        source_receipt=_fork_source_reference(record),
+    )
+
+
+def _fork_source_reference(record: Mapping[Any, Any]) -> EffectReceiptReference | None:
+    values = (
+        record.get("fork_source_logical_key"),
+        record.get("fork_source_run_id"),
+        record.get("fork_source_workflow_revision_hash"),
+        record.get("fork_source_result_hash"),
+    )
+    if any(value is None for value in values):
+        if not all(value is None for value in values):
+            raise ValueError("fork receipt source identity is incomplete")
+        return None
+    return EffectReceiptReference(
+        LogicalEffectKey(str(values[0])),
+        RunId(str(values[1])),
+        WorkflowRevisionHash(str(values[2])),
+        Sha256Hash(str(values[3])),
     )
 
 
@@ -180,6 +205,7 @@ def encode_found(
     performed: PerformedEffect,
     source: ConfirmationSource,
     command_id: ReconcileCommandId | None = None,
+    source_receipt: EffectReceiptReference | None = None,
 ) -> EncodedEffectResolution:
     return {
         "outcome": "FOUND",
@@ -188,6 +214,20 @@ def encode_found(
         "result_hash": performed.result.payload_hash.value,
         "confirmation_source": source.value,
         "reconcile_command_id": None if command_id is None else command_id.value,
+        "fork_source_logical_key": (
+            None if source_receipt is None else source_receipt.logical_key.value
+        ),
+        "fork_source_run_id": None
+        if source_receipt is None
+        else source_receipt.run_id.value,
+        "fork_source_workflow_revision_hash": (
+            None
+            if source_receipt is None
+            else source_receipt.workflow_revision_hash.value
+        ),
+        "fork_source_result_hash": (
+            None if source_receipt is None else source_receipt.result_hash.value
+        ),
     }
 
 
@@ -199,6 +239,7 @@ def encode_readback(
             PerformedEffect(readback.effect_id, readback.result),
             readback.confirmation_source,
             readback.reconcile_command_id,
+            readback.source_receipt,
         )
     return {"outcome": readback.outcome.value}
 
@@ -217,6 +258,142 @@ def decode_found(intent: EffectIntent, encoded: Mapping[str, Any]) -> EffectRece
         reconcile_command_id=(
             None if command_id is None else ReconcileCommandId(str(command_id))
         ),
+        source_receipt=_fork_source_reference(encoded),
+    )
+
+
+def fork_fenced_resolution(
+    session: Any, logical_key: str, revision_hash: str
+) -> EncodedEffectResolution | None:
+    """Resolve a successor effect from its source fence, before any adapter call."""
+
+    intent = load_intent(session, logical_key, revision_hash)
+    run_record = (
+        session.execute(
+            sa.select(
+                runs.c.bootstrap_workflow_id,
+                runs.c.current_node_id,
+                runs.c.current_round_ordinal,
+            ).where(runs.c.run_id == intent.binding.run_id.value)
+        )
+        .mappings()
+        .one()
+    )
+    fork_record = (
+        session.execute(
+            sa.select(run_forks).where(
+                run_forks.c.successor_run_id == intent.binding.run_id.value
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    fork_workflow_id = fork_bootstrap_workflow_id_for(intent.binding.run_id)
+    if fork_record is None:
+        if str(run_record["bootstrap_workflow_id"]) == fork_workflow_id:
+            raise DurableEffectConflict(
+                "fork successor is visible without its committed fence transaction"
+            )
+        return None
+    if (
+        str(run_record["bootstrap_workflow_id"]) != fork_workflow_id
+        or str(fork_record["workflow_revision_hash"]) != revision_hash
+    ):
+        raise DurableEffectConflict("fork successor header disagrees with its run")
+    node_id = str(run_record["current_node_id"])
+    round_ordinal = int(run_record["current_round_ordinal"])
+    if (
+        logical_effect_key_for_node(
+            intent.binding.run_id,
+            intent.binding.workflow_revision_hash,
+            node_id,
+            round_ordinal,
+        ).value
+        != logical_key
+    ):
+        raise DurableEffectConflict("fork effect intent is not at the current node")
+    fence = (
+        session.execute(
+            sa.select(run_fork_effect_fences).where(
+                run_fork_effect_fences.c.successor_run_id
+                == intent.binding.run_id.value,
+                run_fork_effect_fences.c.node_id == node_id,
+                run_fork_effect_fences.c.round_ordinal == round_ordinal,
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if fence is None:
+        source_run_id = str(fork_record["origin_run_id"])
+        source_revision_hash = revision_hash
+        reused = (
+            session.execute(
+                sa.select(run_fork_reused_nodes).where(
+                    run_fork_reused_nodes.c.successor_run_id == source_run_id,
+                    run_fork_reused_nodes.c.node_id == node_id,
+                    run_fork_reused_nodes.c.round_ordinal == round_ordinal,
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if reused is not None:
+            source_run_id = str(reused["source_run_id"])
+            source_revision_hash = str(reused["source_workflow_revision_hash"])
+        source_logical_key = logical_effect_key_for_node(
+            RunId(source_run_id),
+            WorkflowRevisionHash(source_revision_hash),
+            node_id,
+            round_ordinal,
+        )
+        source_receipt_exists = session.scalar(
+            sa.select(sa.literal(True)).where(
+                sa.exists().where(
+                    effect_receipts.c.logical_key == source_logical_key.value,
+                    effect_receipts.c.run_id == source_run_id,
+                    effect_receipts.c.workflow_revision_hash == source_revision_hash,
+                )
+            )
+        )
+        if source_receipt_exists:
+            return {"outcome": EffectOutcome.UNKNOWN.value}
+        return None
+    source_record = (
+        session.execute(
+            sa.select(effect_receipts).where(
+                effect_receipts.c.logical_key == str(fence["source_logical_key"]),
+                effect_receipts.c.run_id == str(fence["source_run_id"]),
+                effect_receipts.c.workflow_revision_hash
+                == str(fence["source_workflow_revision_hash"]),
+                effect_receipts.c.result_hash == str(fence["source_result_hash"]),
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if source_record is None:
+        raise DurableEffectConflict("fork effect fence source receipt is missing")
+    source = receipt_from_record(source_record)
+    exact = (
+        source.intent.request == intent.request
+        and source.intent.binding.adapter_revision == intent.binding.adapter_revision
+        and source.intent.binding.destination == intent.binding.destination
+        and source.intent.binding.adapter_operational_identity
+        == intent.binding.adapter_operational_identity
+    )
+    if not exact:
+        return {"outcome": EffectOutcome.UNKNOWN.value}
+    source_reference = EffectReceiptReference(
+        source.intent.binding.logical_key,
+        source.intent.binding.run_id,
+        source.intent.binding.workflow_revision_hash,
+        source.result.payload_hash,
+    )
+    return encode_found(
+        PerformedEffect(source.effect_id, source.result),
+        ConfirmationSource.FORK_REFERENCE,
+        source_receipt=source_reference,
     )
 
 
@@ -230,6 +407,20 @@ def observe_adapter(
     readback = adapter.readback(intent)
     intent.authorize_adapter_readback(readback)
     return encode_readback(readback)
+
+
+def observe_adapter_with_fork_fence(
+    session: Any,
+    adapter: EffectAdapter,
+    logical_key: str,
+    revision_hash: str,
+) -> EncodedEffectResolution:
+    """Apply the cross-run fence before allowing an adapter readback or execution."""
+
+    fenced = fork_fenced_resolution(session, logical_key, revision_hash)
+    if fenced is not None:
+        return fenced
+    return observe_adapter(session, adapter, logical_key, revision_hash)
 
 
 def resolve_observation(
@@ -322,6 +513,7 @@ def observe_reconcile_command(
 
 def _receipt_values(receipt: EffectReceipt) -> dict[str, object]:
     binding = receipt.intent.binding
+    source = receipt.source_receipt
     return {
         "logical_key": binding.logical_key.value,
         "run_id": binding.run_id.value,
@@ -340,6 +532,12 @@ def _receipt_values(receipt: EffectReceipt) -> dict[str, object]:
             if receipt.reconcile_command_id is None
             else receipt.reconcile_command_id.value
         ),
+        "fork_source_logical_key": None if source is None else source.logical_key.value,
+        "fork_source_run_id": None if source is None else source.run_id.value,
+        "fork_source_workflow_revision_hash": (
+            None if source is None else source.workflow_revision_hash.value
+        ),
+        "fork_source_result_hash": None if source is None else source.result_hash.value,
     }
 
 
@@ -388,6 +586,7 @@ def commit_resolution(
             not in {
                 ConfirmationSource.ADAPTER_READBACK,
                 ConfirmationSource.ADAPTER_EXECUTION,
+                ConfirmationSource.FORK_REFERENCE,
             }
             or receipt.reconcile_command_id is not None
         ):

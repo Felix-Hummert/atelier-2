@@ -1387,6 +1387,10 @@ def test_http_reconciliation_exact_applied_retry_survives_run_advancement(
         "result_hash": result_hash,
         "confirmation_source": "OPERATOR_FOUND",
         "reconcile_command_id": "applied-command",
+        "fork_source_logical_key": None,
+        "fork_source_run_id": None,
+        "fork_source_workflow_revision_hash": None,
+        "fork_source_result_hash": None,
     }
     assert dict(applied_command_row) == {**expected_command, "state": "APPLIED"}
     assert dict(confirmed_intent_row) == {

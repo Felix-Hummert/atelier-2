@@ -303,3 +303,14 @@ class CancelRunRequestResource(ApiModel):
         min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS
     )
     expected_node_execution_id: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class ForkRunRequestResource(ApiModel):
+    """The caller-owned retry key and the node where the successor begins."""
+
+    idempotency_key: str = Field(
+        min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS
+    )
+    restart_from_node_id: str = Field(
+        min_length=1, max_length=MAXIMUM_AGENT_FIELD_CHARACTERS
+    )

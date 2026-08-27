@@ -33,6 +33,7 @@ from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.runs import RunId
 
 BOOTSTRAP_WORKFLOW_ID_PREFIX = "atelier2-run-"
+FORK_BOOTSTRAP_WORKFLOW_ID_PREFIX = "atelier2-run-fork-"
 EFFECT_WORKFLOW_ID_PREFIX = "atelier2-effect-"
 RECONCILE_WORKFLOW_ID_PREFIX = "atelier2-reconcile-"
 REPLACEMENT_WORKFLOW_ID_PREFIX = "atelier2-agent-replacement-"
@@ -42,6 +43,15 @@ RUNNER_LEASE_WORKFLOW_ID_PREFIX = "atelier2-runner-lease-"
 def bootstrap_workflow_id_for(run_id: RunId) -> str:
     return (
         BOOTSTRAP_WORKFLOW_ID_PREFIX + hashlib.sha256(run_id.value.encode()).hexdigest()
+    )
+
+
+def fork_bootstrap_workflow_id_for(run_id: RunId) -> str:
+    """The driver identity reserved for a successor that may start after entry."""
+
+    return (
+        FORK_BOOTSTRAP_WORKFLOW_ID_PREFIX
+        + hashlib.sha256(run_id.value.encode()).hexdigest()
     )
 
 

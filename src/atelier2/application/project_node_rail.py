@@ -35,6 +35,7 @@ from atelier2.contracts.run_projections import (
     AgentAttemptProjection,
     NodeState,
     PublicAgentAttemptState,
+    ReusedNodeProjection,
     RunProjection,
     public_agent_attempt_state,
 )
@@ -118,6 +119,7 @@ class NodeRailEntry:
     state: NodeState
     last_event: PersistedRunEvent | None
     attempt: NodeRailAttempt | None
+    reused: ReusedNodeProjection | None = None
 
 
 def project_node_rail(
@@ -168,6 +170,14 @@ class _RailDerivation:
 
     def entry(self, index: int) -> NodeRailEntry:
         node = self.nodes[index]
+        reused = next(
+            (
+                reference
+                for reference in self.projection.reused_nodes
+                if reference.node_id == node.id
+            ),
+            None,
+        )
         last_event = self._last_event_of(node.id)
         leading_event = self.leading_event
         state = (
@@ -175,8 +185,10 @@ class _RailDerivation:
             if leading_event is not None
             else self._snapshot_state(node, index, last_event)
         )
+        if reused is not None:
+            state = NodeState.SUCCEEDED
         return NodeRailEntry(
-            node.id, state, last_event, self._attempt(node, last_event)
+            node.id, state, last_event, self._attempt(node, last_event), reused
         )
 
     def _last_event_of(self, node_id: str) -> PersistedRunEvent | None:

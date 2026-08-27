@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -49,6 +50,7 @@ from atelier2.application.cancel_run import cancel_run_result
 from atelier2.application.classify_definition_document import (
     classify_definition_document,
 )
+from atelier2.application.fork_run import fork_run
 from atelier2.application.import_project_source_issues import (
     import_project_source_issues,
     list_observed_queue_items,
@@ -119,6 +121,7 @@ from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.workflow_projections import (
     EnrichedPageBudget,
 )
+from atelier2.ports.durable_run_forks import DurableRunForker
 
 
 def bound_use_cases(
@@ -380,6 +383,12 @@ def bound_use_cases(
                 served_project_id,
                 ports.tracker_item_source,
             )
+        ),
+        fork_run=lambda origin_run_id, idempotency_key, restart_from_node_id: fork_run(
+            origin_run_id,
+            idempotency_key,
+            restart_from_node_id,
+            cast(DurableRunForker, ports.published_run_starter),
         ),
         answer_wait=lambda run_id, revision_hash, node_id, answer_bytes: (
             answer_wait_result(

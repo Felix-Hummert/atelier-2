@@ -30,8 +30,8 @@ system tables, and `datasource_outputs`. The persistent loopback adapter uses a
 separately configured SQLite file as its external destination; it is not a
 second Atelier store.
 
-The runtime creates schema V26 only in a truly empty canonical store and reopens
-only an exact V26 product schema. Every schema from V9 up to the one just below
+The runtime creates schema V41 only in a truly empty canonical store and reopens
+only an exact V41 product schema. Every schema from V9 up to the one just below
 current remains a published predecessor object -- `schema.py` names each as its
 own `V*_SCHEMA_HANDOFF` constant -- and none of them are opened or migrated by
 runtime. An exact store on any source version `schema.py`'s
@@ -39,9 +39,9 @@ runtime. An exact store on any source version `schema.py`'s
 through the offline `atelier2 migrate` command, one published step at a time;
 older published predecessors stay refused by name. Older, future,
 malformed, or nonempty unowned stores are rejected without mutation. There is no
-runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 26 with
+runtime downgrade. The published `PRODUCT_SCHEMA_HANDOFF` is version 41 with
 product-schema fingerprint
-`0af3ca8bbbbe06a56c56bb0988de384fde2a807b1e409152a02e1e226e917ab8`.
+`7c4bc13ceb1db7533bfdf9697c1e6b262032a516275b488eac73af9969446b68`.
 
 Atelier product rows are cockpit truth. DBOS `operation_outputs` and
 `workflow_status` are a recoverable executor ledger, so they may lag a committed
@@ -111,6 +111,20 @@ becomes durable `WAITING_RECONCILIATION`, never a blind retry. An immutable
 operator command resolves the exact waiting state by confirming a found effect
 or authorizing that same request's execution.
 
+Forking a terminal linear V3 run is another caller decision owned by this
+adapter. The command id is derived from the origin run and caller idempotency key;
+the successor run id is derived from that command. One canonical transaction
+writes the successor bootstrap and enqueue, the immutable `run-fork/v1` header,
+its strict-prefix references, and every cross-run effect fence. An exact retry
+reads that record and enqueues nothing; the same command with another restart node
+is a conflict. Prefix receipts, attempts and events are never copied. A successor
+loads a reused output only through the validated source reference, and writes new
+requests and declared Context-Packages from its restart node onward. Any confirmed
+origin effect at or after that node is fenced: equal canonical request bytes write
+a `FORK_REFERENCE` receipt without invoking the adapter, while unequal bytes enter
+`WAITING_RECONCILIATION`. This applies equally to Action and agent-granted
+`open-pr`, so a pull request already opened by the origin is never replayed.
+
 ## Production boundary
 
 The runtime lives behind `atelier2.adapters.dbos`. Contracts own immutable
@@ -172,6 +186,7 @@ provider contract.
 | V25 host configuration channel | A fresh exact V25 store adds append-only `host_project_root_revisions`, the first entry of the host's live-versioned configuration channel: `project id → root path`. The runtime reads that mapping from the channel. Compose and the runtime refuse a bad project id, and a project with no configured root, as `project-unknown`; the channel's own missing row remains `project-root-missing`; an unreadable channel is `host-configuration-unreadable`. A populated exact V24 store migrates by adding the empty table; V24 joins the refused predecessors at runtime. The HTTP door that would write or read the channel is not this hop. |
 | V26 occupancy on the host channel | A fresh exact V26 store adds append-only `host_occupancy_revisions` and `host_occupancy_bindings`, the recommended occupancy per workflow lineage: `project id + CatalogLineageId → role → agent configuration hash`, at most `MAXIMUM_OCCUPANCY_BINDINGS` roles. GET and PUT `/atelier/api/v1/projects/{public_project_reference}/occupancy/{lineage_id}` write and read the latest revision for the first project; the path carries a `project1.` public reference so a configured id such as `team/red` is addressable. Both doors require an existing workflow lineage through one application-level catalog check; a well-formed unknown lineage is `catalog-lineage-missing`, and PUT leaves both occupancy tables unchanged. Same bytes at the same key are idempotent; a different payload at the same key is `occupancy-revision-conflict`; a missing recommendation for an existing lineage is `occupancy-missing`; an unknown project is `project-unknown`; a malformed public reference is `invalid-public-project-reference`; a malformed lineage id is `catalog-lineage-missing`; stored fields that disagree with their hash are `durable-state-corrupt`. A populated exact V25 store migrates by adding the empty tables; a name already holding the second occupancy object refuses the hop and rolls back the first table and the version CAS; V25 joins the refused predecessors at runtime. That hop added no reader; the start path's own cast came later. |
 | V28 writerless Access removal | A fresh exact V28 store has no `node_receipt_access_v3` table or trigger and `NodeReceipt` has no Access input. The V3 receipt identity retains its literal empty Access subframe. An exact V27 store advances only when the retired table is empty; any row is untranslatable and refuses the whole migration transaction without logical mutation. |
+| V41 immutable run forks | A fresh exact V41 store adds append-only `run_forks`, `run_fork_reused_nodes`, and `run_fork_effect_fences`. A `FORK_REFERENCE` effect receipt must name one existing source receipt by its composite effect identity and must carry that source result unchanged. Populated V40 rows survive the additive hop; a name collision or injected failure rolls back the tables and version CAS together. Fork creation and enqueue are one transaction, and process-loss proofs around that transaction and the effect-reference commit recover one successor with no duplicate pull request. |
 | First project read door | The serve composition binds its one active `ProjectId` once and reads that id through the existing host-configuration channel. `GET /atelier/api/v1/projects` therefore answers zero or one resource, and `GET /atelier/api/v1/projects/{public_project_reference}` follows the server-generated `project1.` identity from that collection. The resource carries only that public reference: the internal id and root path stay behind the boundary. A different well-formed reference is `project-unknown`; malformed is `invalid-public-project-reference`; missing, unavailable, and corrupt configured mappings remain named rather than becoming an empty collection. `ProjectId` itself admits only bounded exact UTF-8 Unicode scalar text, so hashing, storage and projection no longer discover lone surrogates later. This adds no table, channel, write, pagination, second project, or picker. |
 | V2 provider-neutral Agent | Two test provider factories execute their exact role/configuration bindings across restart; fixed hash vectors, atomic size-bound completion, unavailable-factory refusal, and a real process kill after Agent commit preserve one receipt, one event, the original binding, and one successor. |
 | V2 attempt boundary | A real controlled process proves pre-arm reclaim versus post-arm non-replay; concurrent claimers invoke once; terminal failpoints roll back; exact query reconstruction detects forged attempt bindings; public failure state remains bounded and secret-free. |

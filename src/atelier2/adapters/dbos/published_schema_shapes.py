@@ -394,7 +394,47 @@ CREATE TABLE host_occupancy_bindings (
 """What V26 through V39 published before #711 retired lineage occupancy."""
 
 
+_EFFECT_RECEIPTS_BEFORE_FORK_REFERENCE = """
+CREATE TABLE effect_receipts (
+	logical_key TEXT NOT NULL, 
+	run_id TEXT NOT NULL, 
+	canonical_request BLOB NOT NULL, 
+	request_hash TEXT NOT NULL, 
+	workflow_revision_hash TEXT NOT NULL, 
+	adapter_revision TEXT NOT NULL, 
+	destination_identity TEXT NOT NULL, 
+	adapter_operational_identity TEXT NOT NULL, 
+	effect_id TEXT NOT NULL, 
+	result BLOB NOT NULL, 
+	result_hash TEXT NOT NULL, 
+	confirmation_source TEXT NOT NULL, 
+	reconcile_command_id TEXT, 
+	PRIMARY KEY (logical_key), 
+	UNIQUE (logical_key, run_id, workflow_revision_hash, result_hash), 
+	FOREIGN KEY(logical_key, run_id, workflow_revision_hash) REFERENCES effect_intents (logical_key, run_id, workflow_revision_hash), 
+	CHECK (length(logical_key) > 0), 
+	CHECK (length(run_id) > 0), 
+	CHECK (length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (length(workflow_revision_hash) = 64 AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (length(adapter_revision) > 0), 
+	CHECK (length(destination_identity) > 0), 
+	CHECK (length(adapter_operational_identity) > 0), 
+	CHECK (length(effect_id) > 0), 
+	CHECK (length(result_hash) = 64 AND result_hash NOT GLOB '*[^0-9a-f]*'), 
+	CHECK (confirmation_source IN ('ADAPTER_READBACK', 'ADAPTER_EXECUTION', 'OPERATOR_FOUND', 'OPERATOR_AUTHORIZED_EXECUTION')), 
+	CHECK ((confirmation_source IN ('ADAPTER_READBACK', 'ADAPTER_EXECUTION') AND reconcile_command_id IS NULL) OR (confirmation_source IN ('OPERATOR_FOUND', 'OPERATOR_AUTHORIZED_EXECUTION') AND reconcile_command_id IS NOT NULL AND length(reconcile_command_id) > 0)), 
+	FOREIGN KEY(logical_key) REFERENCES effect_intents (logical_key), 
+	FOREIGN KEY(run_id) REFERENCES runs (run_id), 
+	FOREIGN KEY(workflow_revision_hash) REFERENCES workflow_revisions (revision_hash), 
+	FOREIGN KEY(reconcile_command_id) REFERENCES reconcile_commands (command_id)
+)
+
+"""
+"""The receipt table V40 published before a fork could reference one."""
+
+
 PUBLISHED_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
+    (40, "effect_receipts"): _EFFECT_RECEIPTS_BEFORE_FORK_REFERENCE,
     (26, "host_occupancy_revisions"): _HOST_OCCUPANCY_REVISIONS,
     (26, "host_occupancy_bindings"): _HOST_OCCUPANCY_BINDINGS,
     (39, "host_occupancy_revisions"): _HOST_OCCUPANCY_REVISIONS,
