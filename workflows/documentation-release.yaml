@@ -1,0 +1,27 @@
+format_version: 3
+name: documentation-release
+description: >-
+  One separately operator-authorized release of an already independently
+  approved documentation candidate. This workflow has no revise route.
+graph_inputs:
+  - name: candidate
+    schema:
+      ref: documentation_release_candidate
+      revision: "bfe4a66e1596b17e6d7ab59f05423662ebf33d7c9b8cadbda8a59e74af1fbd8a"
+  - name: approved_verdict
+    schema:
+      ref: documentation_release_verdict
+      revision: "7ae72006d69631ee4421fc50b69bb24ca4815c271307b19b88948c48d0ef9d2f"
+nodes:
+  - id: open-reviewed-draft
+    type: action
+    operation:
+      ref: open-pr
+      revision: "420440a07ba8d6f2ba953d02e50d3889a4128ce42fe3e8562fead9523e341f37"
+    inputs:
+      - name: candidate
+        from:
+          graph_input: candidate
+      - name: approved_verdict
+        from:
+          graph_input: approved_verdict

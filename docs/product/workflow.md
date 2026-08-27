@@ -139,7 +139,10 @@ that exact published operation revision.
 `POST /adapter-operation-revisions` is the publication door (bytes in, hash out,
 idempotent), and a start whose `operation.revision` is that hash gets past the
 reference that used to refuse as unpublished. A project-bound open-PR request carries
-the predecessor Agent's output as its body and the run's derived work-item branch. A
+the predecessor Agent's output as its body and the run's derived work-item branch; a
+documentation-release Action instead binds its declared candidate and independently
+approved verdict orders into ADR 0010's closed draft-release request. That is a
+separate operator-authorized run: `revise` never reaches it automatically. A
 V3 Agent request hashes the current job composition:
 declared root-string orders appear as their text while every other order keeps its
 JSON representation. Readers first recompute that composition, then prove a

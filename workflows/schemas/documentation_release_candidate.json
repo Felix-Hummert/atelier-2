@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["candidate_digest", "base_revision", "changes", "title", "body"],
+  "properties": {
+    "candidate_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "base_revision": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+    "changes": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["path", "current_digest", "replacement_utf8_content"], "properties": {"path": {"type": "string", "minLength": 1}, "current_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "replacement_utf8_content": {"type": "string"}}}},
+    "title": {"type": "string", "minLength": 1},
+    "body": {"type": "string", "minLength": 1}
+  }
+}

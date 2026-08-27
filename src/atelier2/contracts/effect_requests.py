@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from base64 import b64decode, b64encode
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, Self
@@ -115,6 +116,160 @@ class OpenPullRequest:
         if not isinstance(body, str) or not isinstance(branch, str):
             raise TypeError("open-pr body and head_branch are text")
         return cls(body, HeadBranch(branch))
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewedDocumentReplacement:
+    """One exact file replacement an independently reviewed release may publish."""
+
+    path: str
+    current_digest: str
+    replacement: bytes
+
+    def __post_init__(self) -> None:
+        if (
+            not self.path
+            or self.path.startswith("/")
+            or ".." in self.path.split("/")
+            or "\\" in self.path
+        ):
+            raise ValueError("a reviewed replacement path stays inside the repository")
+        if len(self.current_digest) != 64 or any(
+            character not in "0123456789abcdef" for character in self.current_digest
+        ):
+            raise ValueError("a reviewed replacement has a SHA-256 current digest")
+        try:
+            self.replacement.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("a reviewed replacement is UTF-8") from error
+
+    def as_json(self) -> dict[str, str]:
+        return {
+            "current_digest": self.current_digest,
+            "path": self.path,
+            "replacement_base64": b64encode(self.replacement).decode("ascii"),
+        }
+
+    @classmethod
+    def from_json(cls, value: object) -> Self:
+        if not isinstance(value, dict):
+            raise TypeError("a reviewed replacement is an object")
+        _fields(
+            value,
+            frozenset(("current_digest", "path", "replacement_base64")),
+            "reviewed replacement",
+        )
+        path = value["path"]
+        current_digest = value["current_digest"]
+        replacement = value["replacement_base64"]
+        if not all(
+            isinstance(field, str) for field in (path, current_digest, replacement)
+        ):
+            raise TypeError("a reviewed replacement carries text fields")
+        try:
+            replacement_bytes = b64decode(replacement, validate=True)
+        except ValueError as error:
+            raise ValueError("a reviewed replacement is base64") from error
+        return cls(path, current_digest, replacement_bytes)
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewedDocumentationPullRequest:
+    """The versioned, closed request for an approved documentation release."""
+
+    base_revision: str
+    candidate_digest: str
+    reviewed_verdict_digest: str
+    replacements: tuple[ReviewedDocumentReplacement, ...]
+    title: str
+    body: str
+    head_branch: HeadBranch
+    draft: bool = True
+
+    def __post_init__(self) -> None:
+        if len(self.base_revision) not in (40, 64) or any(
+            character not in "0123456789abcdef" for character in self.base_revision
+        ):
+            raise ValueError("a documentation release pins its base revision")
+        for digest, owner in (
+            (self.candidate_digest, "candidate"),
+            (self.reviewed_verdict_digest, "reviewed verdict"),
+        ):
+            if len(digest) != 64 or any(
+                character not in "0123456789abcdef" for character in digest
+            ):
+                raise ValueError(f"a documentation release pins its {owner} digest")
+        if not self.replacements or len(
+            {entry.path for entry in self.replacements}
+        ) != len(self.replacements):
+            raise ValueError("a documentation release replaces each file exactly once")
+        if not self.title or not self.body or not self.draft:
+            raise ValueError(
+                "a documentation release has a title, body, and draft flag"
+            )
+
+    def canonical_bytes(self) -> bytes:
+        return _canonical_json(
+            {
+                "base_revision": self.base_revision,
+                "body": self.body,
+                "candidate_digest": self.candidate_digest,
+                "draft": True,
+                "head_branch": self.head_branch.value,
+                "replacement_files": [entry.as_json() for entry in self.replacements],
+                "reviewed_verdict_digest": self.reviewed_verdict_digest,
+                "title": self.title,
+                "version": 2,
+            }
+        )
+
+    @classmethod
+    def from_canonical_bytes(cls, request: bytes) -> Self:
+        value = _object(request, "reviewed documentation open-pr request")
+        _fields(
+            value,
+            frozenset(
+                (
+                    "base_revision",
+                    "body",
+                    "candidate_digest",
+                    "draft",
+                    "head_branch",
+                    "replacement_files",
+                    "reviewed_verdict_digest",
+                    "title",
+                    "version",
+                )
+            ),
+            "reviewed documentation open-pr request",
+        )
+        if value["version"] != 2 or value["draft"] is not True:
+            raise ValueError("a documentation release is version 2 and draft")
+        text_names = (
+            "base_revision",
+            "body",
+            "candidate_digest",
+            "head_branch",
+            "reviewed_verdict_digest",
+            "title",
+        )
+        if any(
+            not isinstance(value[name], str) for name in text_names
+        ) or not isinstance(value["replacement_files"], list):
+            raise TypeError("a documentation release carries its closed request fields")
+        return cls(
+            value["base_revision"],
+            value["candidate_digest"],
+            value["reviewed_verdict_digest"],
+            tuple(
+                ReviewedDocumentReplacement.from_json(entry)
+                for entry in value["replacement_files"]
+            ),
+            value["title"],
+            value["body"],
+            HeadBranch(value["head_branch"]),
+            True,
+        )
 
 
 @dataclass(frozen=True, slots=True)

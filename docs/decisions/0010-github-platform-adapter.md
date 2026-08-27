@@ -713,6 +713,18 @@ nor its readback needs, so this adapter reads the two fields it actually acts
 on (`number`, `body`) from the raw JSON response instead and fails loud on a
 response shaped unlike what a real GitHub answer carries.
 
+**(2026-08-27 increment, #162 B4) A documentation release is a distinct,
+operator-authorized run, never the automatic successor of `revise`.** Its
+version-2 `open-pr` request is closed: it names the base revision, candidate
+digest, approved verdict digest, every path/current digest/replacement UTF-8
+byte sequence, title, body and `draft: true`. The Action refuses every other
+verdict or candidate-digest pairing before either the candidate tree is pushed
+or a pull request is opened. The existing `push-atelier-commit` then publishes
+that one candidate tree before `open-pr`; readback markers remain the one
+idempotency owner, so recovery after either write converges rather than making
+a second commit or pull request. Credentials remain adapter-local references:
+neither the release order nor its lease carries a token.
+
 Whichever client is chosen stays inside the adapter under the boundary
 contract of decision 1; `githubkit`'s own vocabulary — its models, its
 exception types, `httpx` — does not appear outside

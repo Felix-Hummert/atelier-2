@@ -17,7 +17,10 @@ from typing import Any
 
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effect_markers import body_carries_request_hash, marker_line
-from atelier2.contracts.effect_requests import OpenPullRequest
+from atelier2.contracts.effect_requests import (
+    OpenPullRequest,
+    ReviewedDocumentationPullRequest,
+)
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -88,9 +91,14 @@ def _body_for(request: CanonicalRequest) -> str:
         body = OpenPullRequest.from_canonical_bytes(request.payload).body
     except (TypeError, ValueError):
         try:
-            body = request.payload.decode("utf-8")
-        except UnicodeDecodeError:
-            body = request.payload.hex()
+            body = ReviewedDocumentationPullRequest.from_canonical_bytes(
+                request.payload
+            ).body
+        except (TypeError, ValueError):
+            try:
+                body = request.payload.decode("utf-8")
+            except UnicodeDecodeError:
+                body = request.payload.hex()
     return f"{body}\n\n{marker_line(request.request_hash.value)}\n"
 
 
@@ -98,7 +106,12 @@ def _branch_for(request: CanonicalRequest) -> str:
     try:
         return OpenPullRequest.from_canonical_bytes(request.payload).head_branch.value
     except (TypeError, ValueError):
-        return f"atelier2-open-pr-{request.request_hash.value[:12]}"
+        try:
+            return ReviewedDocumentationPullRequest.from_canonical_bytes(
+                request.payload
+            ).head_branch.value
+        except (TypeError, ValueError):
+            return f"atelier2-open-pr-{request.request_hash.value[:12]}"
 
 
 @dataclass(frozen=True)

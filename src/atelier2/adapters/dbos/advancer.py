@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import sqlalchemy as sa
@@ -42,6 +43,8 @@ from atelier2.contracts.effect_requests import (
     OpenPullRequest,
     PushAtelierCommit,
     PushAtelierCommitReceipt,
+    ReviewedDocumentationPullRequest,
+    ReviewedDocumentReplacement,
     head_branch_for_queue_item,
 )
 from atelier2.contracts.effects import (
@@ -81,6 +84,7 @@ from atelier2.contracts.workflows_v3 import (
     AgentNodeV3,
     AnyWorkflowDocument,
     AnyWorkflowDocumentNode,
+    GraphInputSource,
     WorkflowGraphV3,
 )
 from atelier2.ports.agent_tool_effects import (
@@ -114,6 +118,15 @@ def graph_action_intent(
         or not isinstance(action, ANY_ACTION_NODE_KINDS)
     ):
         raise RunEffectConflict("effect requires the current STARTED Action")
+    if isinstance(action, ActionNodeV3) and action.inputs:
+        return _documentation_release_action_intent(
+            session,
+            run_id,
+            revision_hash,
+            action,
+            effect_adapter_bindings,
+            project_id,
+        )
     predecessor = _action_predecessor(graph, action)
     if not isinstance(predecessor, (AgentNode, AgentNodeV2, AgentNodeV3)):
         raise RunEffectConflict("Action predecessor is not an Agent")
@@ -188,6 +201,116 @@ def graph_action_intent(
         operation.operation,
     )
     return EffectIntent(binding, request)
+
+
+def _documentation_release_action_intent(
+    session: Any,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    action: ActionNodeV3,
+    effect_adapter_bindings: EffectAdapterBinding | tuple[EffectAdapterBinding, ...],
+    project_id: ProjectId | None,
+) -> EffectIntent:
+    """Bind the independently reviewed release order at the effect boundary."""
+    if project_id is None:
+        raise RunEffectConflict("documentation release requires its project binding")
+    operation = _operation_for(session, action.operation)
+    if operation.operation is not AdapterOperationName.OPEN_PR:
+        raise RunEffectConflict("documentation release Action pins open-pr")
+    orders = _documentation_release_orders(session, run_id, action)
+    candidate = _object_order(orders["candidate"], "documentation candidate")
+    verdict_bytes = orders["approved_verdict"]
+    verdict = _object_order(verdict_bytes, "documentation trace-review verdict")
+    candidate_digest = _text_field(
+        candidate, "candidate_digest", "documentation candidate"
+    )
+    if (
+        verdict.get("verdict") != "approve"
+        or verdict.get("candidate_digest") != candidate_digest
+    ):
+        raise RunEffectConflict(
+            "documentation release requires an approved verdict for its candidate"
+        )
+    changes = candidate.get("changes")
+    if not isinstance(changes, list):
+        raise RunEffectConflict("documentation candidate carries no reviewed changes")
+    try:
+        request = ReviewedDocumentationPullRequest(
+            _text_field(candidate, "base_revision", "documentation candidate"),
+            candidate_digest,
+            Sha256Hash.of(verdict_bytes).value,
+            tuple(
+                ReviewedDocumentReplacement(
+                    _text_field(change, "path", "documentation change"),
+                    _text_field(change, "current_digest", "documentation change"),
+                    _text_field(
+                        change, "replacement_utf8_content", "documentation change"
+                    ).encode("utf-8"),
+                )
+                for change in changes
+            ),
+            _text_field(candidate, "title", "documentation candidate"),
+            _text_field(candidate, "body", "documentation candidate"),
+            _head_branch(session, run_id, project_id),
+        )
+    except (TypeError, ValueError) as error:
+        raise RunEffectConflict("documentation release request is invalid") from error
+    owner = _binding_for(effect_adapter_bindings, operation.operation)
+    binding = EffectBinding(
+        logical_effect_key_for_node(
+            run_id,
+            revision_hash,
+            action.id,
+            load_run(session, run_id).current_round_ordinal,
+        ),
+        run_id,
+        revision_hash,
+        owner.adapter_revision,
+        owner.destination,
+        owner.operational_identity,
+        operation.operation,
+    )
+    return EffectIntent(binding, CanonicalRequest(request.canonical_bytes()))
+
+
+def _documentation_release_orders(
+    session: Any, run_id: RunId, action: ActionNodeV3
+) -> dict[str, bytes]:
+    sources = {
+        entry.name: entry.source.graph_input
+        for entry in action.inputs
+        if isinstance(entry.source, GraphInputSource)
+    }
+    if set(sources) != {"candidate", "approved_verdict"}:
+        raise RunEffectConflict(
+            "documentation release Action declares candidate and approved_verdict"
+        )
+    records = session.execute(
+        sa.select(run_inputs_v3.c.name, run_inputs_v3.c.value).where(
+            run_inputs_v3.c.run_id == run_id.value,
+            run_inputs_v3.c.name.in_(sources.values()),
+        )
+    ).all()
+    stored = {str(record.name): bytes(record.value) for record in records}
+    if set(stored) != set(sources.values()):
+        raise RunEffectConflict("documentation release has a missing declared order")
+    return {name: stored[source] for name, source in sources.items()}
+
+
+def _object_order(value: bytes, owner: str) -> dict[str, object]:
+    try:
+        decoded = json.loads(value)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RunEffectConflict(f"{owner} is not JSON") from error
+    if not isinstance(decoded, dict):
+        raise RunEffectConflict(f"{owner} is not an object")
+    return decoded
+
+
+def _text_field(value: object, field: str, owner: str) -> str:
+    if not isinstance(value, dict) or not isinstance(value.get(field), str):
+        raise TypeError(f"{owner} has no text {field}")
+    return str(value[field])
 
 
 def prepare_graph_action(

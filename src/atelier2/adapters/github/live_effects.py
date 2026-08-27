@@ -37,7 +37,10 @@ from githubkit_schemas.latest.types import ReposOwnerRepoPullsPostBodyType
 
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effect_markers import body_carries_request_hash, marker_line
-from atelier2.contracts.effect_requests import OpenPullRequest
+from atelier2.contracts.effect_requests import (
+    OpenPullRequest,
+    ReviewedDocumentationPullRequest,
+)
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -134,7 +137,10 @@ class _RecordedPullRequest:
     body: str
 
 
-def _body_for(request: OpenPullRequest, request_hash: str) -> str:
+type OpenPullRequestRequest = OpenPullRequest | ReviewedDocumentationPullRequest
+
+
+def _body_for(request: OpenPullRequestRequest, request_hash: str) -> str:
     return f"{request.body}\n\n{marker_line(request_hash)}\n"
 
 
@@ -256,21 +262,26 @@ class LiveGitHubEffectAdapter:
                 "effect intent does not belong to this adapter binding"
             )
 
-    def _authorized_request(self, intent: EffectIntent) -> OpenPullRequest:
+    def _authorized_request(self, intent: EffectIntent) -> OpenPullRequestRequest:
         self._authorize_binding(intent)
         try:
             return OpenPullRequest.from_canonical_bytes(intent.request.payload)
-        except (TypeError, ValueError) as error:
-            raise GitHubEffectRefused(
-                "open-pr effect requires one canonical open-pr request"
-            ) from error
+        except (TypeError, ValueError):
+            try:
+                return ReviewedDocumentationPullRequest.from_canonical_bytes(
+                    intent.request.payload
+                )
+            except (TypeError, ValueError) as reviewed_error:
+                raise GitHubEffectRefused(
+                    "open-pr effect requires one canonical open-pr request"
+                ) from reviewed_error
 
     def _require_open(self) -> None:
         if self._closed:
             raise RuntimeError("github live effect adapter is closed")
 
     def _find_recorded_pull_request(
-        self, intent: EffectIntent, request: OpenPullRequest
+        self, intent: EffectIntent, request: OpenPullRequestRequest
     ) -> _RecordedPullRequest | None:
         branch = request.head_branch.value
         response = self._client.rest.pulls.list(
@@ -294,16 +305,22 @@ class LiveGitHubEffectAdapter:
         return _RecordedPullRequest(branch, number, body)
 
     def _create_pull_request(
-        self, intent: EffectIntent, request: OpenPullRequest
+        self, intent: EffectIntent, request: OpenPullRequestRequest
     ) -> _RecordedPullRequest:
         branch = request.head_branch.value
         body = _body_for(request, intent.request.request_hash.value)
         create_body: ReposOwnerRepoPullsPostBodyType = {
-            "title": _title_for(body),
+            "title": (
+                request.title
+                if isinstance(request, ReviewedDocumentationPullRequest)
+                else _title_for(body)
+            ),
             "head": branch,
             "base": self._repository.base_branch,
             "body": body,
         }
+        if isinstance(request, ReviewedDocumentationPullRequest):
+            create_body["draft"] = True
         try:
             response = self._client.rest.pulls.create(
                 self._repository.owner,
