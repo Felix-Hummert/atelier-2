@@ -421,8 +421,8 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
     assert failure_frame["properties"]["event"]["const"] == "STREAM_FAILED"
     assert failure_frame["properties"]["problem"] == {
         "oneOf": [
+            {"$ref": "#/components/schemas/ProblemDurableProjectionUnrepresentable"},
             {"$ref": "#/components/schemas/ProblemDurableStateCorrupt"},
-            {"$ref": "#/components/schemas/ProblemTemporarilyUnavailable"},
             {"$ref": "#/components/schemas/ProblemInternalError"},
         ]
     }

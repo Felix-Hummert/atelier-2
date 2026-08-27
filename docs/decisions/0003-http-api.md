@@ -124,8 +124,8 @@ oversize bodies before route parsing and stop undeclared or chunked bodies while
 they are received; they also bound individual fields, encoded and decoded payloads,
 workflow graphs, response projections, and concurrent query work. Durable
 control-read projections outside those limits have their encoded workflow bytes
-refused before YAML parsing and are refused before serialization as temporarily
-unavailable; their durable rows are not changed.
+refused before YAML parsing and are refused before serialization as the 500
+`durable-projection-unrepresentable` problem; their durable rows are not changed.
 After an SSE response has started, the same failures the REST surface names are
 named in the stream: a corrupt or unprojectable durable row, a durable row
 outside the configured projection limits, and a port that breaks its page
