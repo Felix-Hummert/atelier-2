@@ -6,6 +6,92 @@ const profileHash = "b".repeat(64);
 const registryHash = "c".repeat(64);
 const defaultsHash = "d".repeat(64);
 
+async function publishCheckedRegistryEntry(
+  page: Page,
+  providerId: string,
+  modelId: string,
+  agentConfigurationRevisionHash: string
+): Promise<string> {
+  const current = await page.request.get(`/atelier/api/v1/model-registries/${providerId}`);
+  const currentRegistry = current.status() === 200
+    ? await current.json() as {
+        revision_number: number;
+        model_registry_revision_hash: string;
+        entries: Array<{ model_id: string; agent_configuration_revision_hash: string }>;
+      }
+    : null;
+  if (currentRegistry === null) expect(current.status()).toBe(404);
+  const existingEntries = (currentRegistry?.entries ?? [])
+    .filter((entry) => entry.agent_configuration_revision_hash !== agentConfigurationRevisionHash)
+    .map((entry) => ({
+      model_id: entry.model_id,
+      agent_configuration_revision_hash: entry.agent_configuration_revision_hash
+    }));
+  const registry = await page.request.put(`/atelier/api/v1/model-registries/${providerId}`, {
+    data: {
+      revision_number: (currentRegistry?.revision_number ?? 0) + 1,
+      entries: [...existingEntries, {
+        model_id: modelId,
+        agent_configuration_revision_hash: agentConfigurationRevisionHash
+      }]
+    }
+  });
+  expect([200, 201]).toContain(registry.status());
+  const checked = await page.request.post(`/atelier/api/v1/model-registries/${providerId}/validations`, {
+    data: { agent_configuration_revision_hash: agentConfigurationRevisionHash }
+  });
+  expect([200, 201]).toContain(checked.status());
+  const checkedRegistry = await checked.json() as { model_registry_revision_hash: string };
+  return checkedRegistry.model_registry_revision_hash;
+}
+
+async function publishStartableProvider(
+  page: Page,
+  providerId: string,
+  executorRevision: string,
+  stamp: string
+): Promise<{
+  providerId: string;
+  modelId: string;
+  agentConfigurationRevisionHash: string;
+  modelRegistryRevisionHash: string;
+}> {
+  const profileId = `settings-${providerId}-${stamp}`;
+  const modelId = `settings-${providerId}-model-${stamp}`;
+  const auth = await page.request.post("/atelier/api/v1/auth-profile-revisions", {
+    data: {
+      profile_id: profileId,
+      revision_number: 1,
+      provider_id: providerId,
+      auth_mode: "subscription"
+    }
+  });
+  expect(auth.status()).toBe(201);
+  const configuration = await page.request.post("/atelier/api/v1/agent-configuration-revisions", {
+    data: {
+      model: modelId,
+      auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash as string,
+      executor_revision: executorRevision,
+      requested_capability: "headless"
+    }
+  });
+  expect(configuration.status()).toBe(201);
+  const agentConfigurationRevisionHash =
+    (await configuration.json()).agent_configuration_revision_hash as string;
+  const modelRegistryRevisionHash = await publishCheckedRegistryEntry(
+    page,
+    providerId,
+    modelId,
+    agentConfigurationRevisionHash
+  );
+  return {
+    providerId,
+    modelId,
+    agentConfigurationRevisionHash,
+    modelRegistryRevisionHash
+  };
+}
+
 function delayedReadGate(): { promise: Promise<void>; release: () => void } {
   let release: (() => void) | undefined;
   const promise = new Promise<void>((resolve) => { release = resolve; });
@@ -54,8 +140,8 @@ async function routeSettings(
         provider_id: "anthropic",
         auth_mode: "subscription",
         agent_configuration_revision_hash: configurationHash,
-        startable: false,
-        not_startable_reason: "agent-executor-binding-unavailable"
+        startable: providerCheck === "checked",
+        not_startable_reason: providerCheck === "checked" ? null : "agent-executor-binding-unavailable"
       }],
       next_after_revision_hash: null
     }
@@ -296,3 +382,101 @@ test("Settings tells the truth while reads load, fail, and recover at desktop an
       .toHaveText("claude-opus-4-1 · Account Max account");
   }
 });
+
+for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+  test(`Settings lists every startable model and saves a default at ${viewport.width}`, async ({ page }) => {
+  const stamp = `${Date.now()}-${test.info().repeatEachIndex}-${viewport.width}`;
+  const first = await publishStartableProvider(page, "e2e-v3", "immediate/v1", stamp);
+  const second = await publishStartableProvider(page, "e2e-v3-slow", "delayed/v1", stamp);
+  const projects = await page.request.get("/atelier/api/v1/projects");
+  expect(projects.status()).toBe(200);
+  const servedProjectReference = (await projects.json() as {
+    items: Array<{ public_project_reference: string }>;
+  }).items[0]?.public_project_reference;
+  expect(servedProjectReference).toEqual(expect.any(String));
+
+  const putBodies: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "PUT" && request.url().includes("/model-defaults")) {
+      putBodies.push(request.postData() ?? "");
+    }
+  });
+
+  await page.setViewportSize(viewport);
+  await page.goto("/atelier/settings");
+  await expect(page.getByText(first.providerId, { exact: true })).toBeVisible();
+  await expect(page.getByText(second.providerId, { exact: true })).toBeVisible();
+  await expect(page.getByText(first.modelId, { exact: true })).toBeVisible();
+  await expect(page.getByText(second.modelId, { exact: true })).toBeVisible();
+
+  for (const difficulty of [3, 2, 1]) {
+    const select = page.getByRole("combobox", { name: `Difficulty ${difficulty}` });
+    await expect(select.locator(`option[value="${first.agentConfigurationRevisionHash}"]`)).toHaveCount(1);
+    await expect(select.locator(`option[value="${second.agentConfigurationRevisionHash}"]`)).toHaveCount(1);
+  }
+
+  await page.getByRole("combobox", { name: "Difficulty 3" }).selectOption(
+    first.agentConfigurationRevisionHash
+  );
+  await expect.poll(() => putBodies.length).toBe(1);
+  await expect(page.getByRole("combobox", { name: "Difficulty 3" })).toBeEnabled();
+  await expect(page.getByText("Change not saved")).toHaveCount(0);
+  const body = JSON.parse(putBodies[0] ?? "") as {
+    revision_number: number;
+    defaults: Array<{
+      difficulty: number;
+      model_registry_revision_hash: string;
+      provider_id: string;
+      model_id: string;
+      agent_configuration_revision_hash: string;
+    }>;
+  };
+  expect(Object.keys(body).sort()).toEqual(["defaults", "revision_number"]);
+  expect(body.revision_number).toBeGreaterThanOrEqual(1);
+  expect(body.defaults.length).toBeGreaterThanOrEqual(1);
+  expect(body.defaults.length).toBeLessThanOrEqual(3);
+  for (const item of body.defaults) {
+    expect(Object.keys(item).sort()).toEqual([
+      "agent_configuration_revision_hash",
+      "difficulty",
+      "model_id",
+      "model_registry_revision_hash",
+      "provider_id"
+    ]);
+    expect([1, 2, 3]).toContain(item.difficulty);
+    expect(item.model_registry_revision_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(item.agent_configuration_revision_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(item.provider_id).toMatch(/^[a-z][a-z0-9._-]{0,63}$/);
+    expect(item.model_id).toMatch(/^\S+$/);
+  }
+  expect(body.defaults).toEqual(expect.arrayContaining([{
+    difficulty: 3,
+    model_registry_revision_hash: first.modelRegistryRevisionHash,
+    provider_id: first.providerId,
+    model_id: first.modelId,
+    agent_configuration_revision_hash: first.agentConfigurationRevisionHash
+  }]));
+  await expect(page.getByRole("combobox", { name: "Difficulty 3" }).locator("option:checked"))
+    .toHaveText(new RegExp(first.modelId));
+
+  const saved = await page.request.get(
+    `/atelier/api/v1/projects/${servedProjectReference}/model-defaults`
+  );
+  expect(saved.status()).toBe(200);
+  const savedBody = await saved.json() as {
+    defaults: Array<{
+      difficulty: number;
+      provider_id: string;
+      model_id: string;
+      agent_configuration_revision_hash: string;
+    }>;
+  };
+  expect(savedBody.defaults).toEqual(expect.arrayContaining([{
+    difficulty: 3,
+    model_registry_revision_hash: first.modelRegistryRevisionHash,
+    provider_id: first.providerId,
+    model_id: first.modelId,
+    agent_configuration_revision_hash: first.agentConfigurationRevisionHash
+  }]));
+});
+}

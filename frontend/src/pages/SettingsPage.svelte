@@ -48,6 +48,12 @@
       write: ExactModelRegistryRevisionWrite;
       }
     | {
+        kind: "check-publish";
+        providerId: string;
+        write: ExactModelRegistryRevisionWrite;
+        configurationHash: string;
+      }
+    | {
         kind: "validation";
         providerId: string;
         configurationHash: string;
@@ -183,6 +189,19 @@
     };
   }
 
+  async function publishRegistry(
+    providerId: string,
+    write: ExactModelRegistryRevisionWrite
+  ): Promise<"ok" | "uncertain"> {
+    try {
+      const result = await cockpitApi.putModelRegistry(providerId, write);
+      updateRegistry(result.value);
+      return "ok";
+    } catch {
+      return "uncertain";
+    }
+  }
+
   async function sendRegistryWrite(
     providerId: string,
     write: ExactModelRegistryRevisionWrite,
@@ -191,27 +210,16 @@
     if (writing || (failedWrite !== null && !retrying)) return;
     writing = true;
     try {
-      const result = await cockpitApi.putModelRegistry(providerId, write);
-      updateRegistry(result.value);
-      failedWrite = null;
-    } catch {
-      if (!retrying) failedWrite = { kind: "registry", providerId, write };
+      const outcome = await publishRegistry(providerId, write);
+      if (outcome === "ok") failedWrite = null;
+      else if (!retrying) failedWrite = { kind: "registry", providerId, write };
     } finally {
       writing = false;
     }
   }
 
   async function addModel(configuration: AgentConfigurationRevisionListItem): Promise<void> {
-    const registry = registryFor(configuration.provider_id);
-    const entries = [
-      ...(registry?.entries ?? []).map(registryEntryInput),
-      {
-        model_id: configuration.model,
-        agent_configuration_revision_hash: configuration.agent_configuration_revision_hash
-      }
-    ];
-    const input = { revision_number: (registry?.revision_number ?? 0) + 1, entries };
-    await sendRegistryWrite(configuration.provider_id, { input, body: JSON.stringify(input) });
+    await sendRegistryWrite(configuration.provider_id, additionWrite(configuration));
   }
 
   async function removeModel(
@@ -236,19 +244,69 @@
     };
   }
 
+  function additionWrite(configuration: AgentConfigurationRevisionListItem): ExactModelRegistryRevisionWrite {
+    const registry = registryFor(configuration.provider_id);
+    const entries = [
+      ...(registry?.entries ?? []).map(registryEntryInput),
+      {
+        model_id: configuration.model,
+        agent_configuration_revision_hash: configuration.agent_configuration_revision_hash
+      }
+    ];
+    const input = { revision_number: (registry?.revision_number ?? 0) + 1, entries };
+    return { input, body: JSON.stringify(input) };
+  }
+
+  async function applyValidation(
+    providerId: string,
+    configurationHash: string
+  ): Promise<"checked" | "unknown" | "missing" | "uncertain"> {
+    try {
+      const result = await cockpitApi.validateModelRegistryEntry(providerId, configurationHash);
+      updateRegistry(result.value);
+      const found = entryFor(configurationHash);
+      if (found?.entry.provider_check === "checked") return "checked";
+      if (found?.entry.provider_check === "unknown-at-provider") return "unknown";
+      return "missing";
+    } catch {
+      return "uncertain";
+    }
+  }
+
   async function validateModel(
     providerId: string,
     configurationHash: string,
-    retrying = false
+    retrying = false,
+    exactPublish: ExactModelRegistryRevisionWrite | null = null
   ): Promise<void> {
     if (writing || (failedWrite !== null && !retrying)) return;
     writing = true;
     try {
-      const result = await cockpitApi.validateModelRegistryEntry(providerId, configurationHash);
-      updateRegistry(result.value);
-      failedWrite = null;
-    } catch {
-      if (!retrying) failedWrite = { kind: "validation", providerId, configurationHash };
+      if (entryFor(configurationHash) === null) {
+        const configuration = settings.confirmed?.configurations.find(
+          (candidate) =>
+            candidate.agent_configuration_revision_hash === configurationHash
+            && candidate.provider_id === providerId
+        );
+        if (configuration === undefined) return;
+        const write = exactPublish ?? additionWrite(configuration);
+        const published = await publishRegistry(providerId, write);
+        if (published === "uncertain") {
+          failedWrite = { kind: "check-publish", providerId, write, configurationHash };
+          return;
+        }
+      }
+      const found = entryFor(configurationHash);
+      if (found === null || found.entry.provider_check !== "not-checked") {
+        failedWrite = null;
+        return;
+      }
+      const outcome = await applyValidation(providerId, configurationHash);
+      if (outcome === "uncertain") {
+        failedWrite = { kind: "validation", providerId, configurationHash };
+      } else {
+        failedWrite = null;
+      }
     } finally {
       writing = false;
     }
@@ -281,21 +339,36 @@
     }
   }
 
-  async function choose(difficulty: Difficulty, configurationHash: string): Promise<void> {
-    const snapshot = settings.confirmed;
-    if (snapshot === null) return;
-    const untouched = snapshot.defaults?.defaults.filter(
-      (item) => item.difficulty !== difficulty
-    ) ?? [];
-    const found = configurationHash === "" ? null : entryFor(configurationHash);
-    const replacement = found === null ? [] : [{
+  function defaultReplacement(
+    difficulty: Difficulty,
+    found: NonNullable<ReturnType<typeof entryFor>>
+  ) {
+    return {
       difficulty,
       model_registry_revision_hash: found.registry.model_registry_revision_hash,
       provider_id: found.registry.provider_id,
       model_id: found.entry.model_id,
       agent_configuration_revision_hash: found.entry.agent_configuration_revision_hash
-    }];
-    const defaults = [...untouched, ...replacement];
+    };
+  }
+
+  async function choose(difficulty: Difficulty, configurationHash: string): Promise<void> {
+    if (writing || failedWrite !== null) return;
+    const snapshot = settings.confirmed;
+    if (snapshot === null) return;
+    const untouched = snapshot.defaults?.defaults.filter(
+      (item) => item.difficulty !== difficulty
+    ) ?? [];
+    let defaults = untouched;
+    if (configurationHash !== "") {
+      const found = entryFor(configurationHash);
+      if (found === null || found.entry.provider_check !== "checked") return;
+      const configuration = snapshot.configurations.find(
+        (candidate) => candidate.agent_configuration_revision_hash === configurationHash
+      );
+      if (configuration === undefined || !configuration.startable) return;
+      defaults = [...untouched, defaultReplacement(difficulty, found)];
+    }
     const input = { revision_number: (snapshot.defaults?.revision_number ?? 0) + 1, defaults };
     await sendDefaultsWrite(snapshot.projectReference, { input, body: JSON.stringify(input) });
   }
@@ -304,20 +377,24 @@
     const retry = failedWrite;
     if (retry === null) return;
     if (retry.kind === "registry") await sendRegistryWrite(retry.providerId, retry.write, true);
-    else if (retry.kind === "validation") {
+    else if (retry.kind === "check-publish") {
+      await validateModel(retry.providerId, retry.configurationHash, true, retry.write);
+    } else if (retry.kind === "validation") {
       await validateModel(retry.providerId, retry.configurationHash, true);
     } else await sendDefaultsWrite(retry.projectReference, retry.write, true);
   }
 
   $: registeredChoices = (settings.confirmed?.registries ?? []).flatMap((registry) =>
-    registry.entries.filter((entry) => entry.provider_check === "checked").map((entry) => {
+    registry.entries.flatMap((entry) => {
+      if (entry.provider_check !== "checked") return [];
       const configuration = settings.confirmed?.configurations.find(
         (candidate) => candidate.agent_configuration_revision_hash === entry.agent_configuration_revision_hash
       );
-      return {
+      if (configuration === undefined || !configuration.startable) return [];
+      return [{
         value: entry.agent_configuration_revision_hash,
-        label: `${entry.model_id} · Account ${configuration === undefined ? "Unknown account" : accountFor(configuration)}`
-      };
+        label: `${entry.model_id} · Account ${accountFor(configuration)}`
+      }];
     })
   );
 
@@ -335,7 +412,12 @@
   }
 
   $: availableConfigurations = (settings.confirmed?.configurations ?? []).filter(
-    (configuration) => entryFor(configuration.agent_configuration_revision_hash) === null
+    (configuration) =>
+      entryFor(configuration.agent_configuration_revision_hash) === null
+      && !(configuration.startable && registryFor(configuration.provider_id) === null)
+  );
+  $: missingRegistryStartable = (settings.confirmed?.configurations ?? []).filter(
+    (configuration) => configuration.startable && registryFor(configuration.provider_id) === null
   );
   $: registryEntries = (settings.confirmed?.registries ?? []).flatMap(
     (registry) => registry.entries
@@ -343,6 +425,13 @@
   $: checkableEntries = registryEntries.filter(
     (entry) => entry.provider_check === "not-checked"
   );
+  $: listedModelCount = registryEntries.length + missingRegistryStartable.length;
+  $: modelProviders = [...new Set([
+    ...(settings.confirmed?.registries ?? [])
+      .filter((registry) => registry.entries.length > 0)
+      .map((registry) => registry.provider_id),
+    ...missingRegistryStartable.map((configuration) => configuration.provider_id)
+  ])].sort();
 </script>
 
 <section class="settings-page" aria-labelledby="settings-title">
@@ -367,29 +456,43 @@
 
     <section class="settings-block" aria-labelledby="models-title">
       <h2 id="models-title">{wrapDisplayCopy(settingsPageCopy.modelsTitle)}</h2>
-      {#if settings.confirmed.registries.flatMap((registry) => registry.entries).length === 0}
+      {#if listedModelCount === 0}
         <div class="empty-state" role="status"><span aria-hidden="true">◇</span><strong>{settingsPageCopy.modelsEmpty}</strong></div>
       {:else}
         <div class="table-wrap">
           <table>
             <thead><tr><th>Model</th><th>Account</th><th><span class="sr-only">Registry</span></th></tr></thead>
             <tbody>
-              {#each settings.confirmed.registries as registry (registry.model_registry_revision_hash)}
-                <tr class="provider-row"><td colspan="3">{registry.provider_id}</td></tr>
-                {#each registry.entries as entry (entry.agent_configuration_revision_hash)}
-                  {@const configuration = settings.confirmed.configurations.find((candidate) => candidate.agent_configuration_revision_hash === entry.agent_configuration_revision_hash)}
-                  <tr>
-                    <td data-label="Model"><code>{entry.model_id}</code></td>
-                    <td data-label="Account">{configuration === undefined ? "Unknown account" : accountFor(configuration)}</td>
-                    <td data-label="Registry">
-                      {#if registryEntryDetails(entry) !== ""}<span class:unchecked={entry.provider_check !== "checked"}>{registryEntryDetails(entry)}</span>{/if}
-                      {#if entry.provider_check === "not-checked"}
-                        <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void validateModel(registry.provider_id, entry.agent_configuration_revision_hash); }}>Check</button>
-                      {/if}
-                      <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void removeModel(registry, entry); }}>Remove</button>
-                    </td>
-                  </tr>
-                {/each}
+              {#each modelProviders as providerId (providerId)}
+                {@const registry = registryFor(providerId)}
+                <tr class="provider-row"><td colspan="3">{providerId}</td></tr>
+                {#if registry !== null}
+                  {#each registry.entries as entry (entry.agent_configuration_revision_hash)}
+                    {@const configuration = settings.confirmed.configurations.find((candidate) => candidate.agent_configuration_revision_hash === entry.agent_configuration_revision_hash)}
+                    <tr>
+                      <td data-label="Model"><code>{entry.model_id}</code></td>
+                      <td data-label="Account">{configuration === undefined ? "Unknown account" : accountFor(configuration)}</td>
+                      <td data-label="Registry">
+                        {#if registryEntryDetails(entry) !== ""}<span class:unchecked={entry.provider_check !== "checked"}>{registryEntryDetails(entry)}</span>{/if}
+                        {#if entry.provider_check === "not-checked"}
+                          <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void validateModel(registry.provider_id, entry.agent_configuration_revision_hash); }}>Check</button>
+                        {/if}
+                        <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void removeModel(registry, entry); }}>Remove</button>
+                      </td>
+                    </tr>
+                  {/each}
+                {:else}
+                  {#each missingRegistryStartable.filter((configuration) => configuration.provider_id === providerId) as configuration (configuration.agent_configuration_revision_hash)}
+                    <tr>
+                      <td data-label="Model"><code>{configuration.model}</code></td>
+                      <td data-label="Account">{accountFor(configuration)}</td>
+                      <td data-label="Registry">
+                        <span class="unchecked">◇ not checked yet</span>
+                        <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void validateModel(configuration.provider_id, configuration.agent_configuration_revision_hash); }}>Check</button>
+                      </td>
+                    </tr>
+                  {/each}
+                {/if}
               {/each}
             </tbody>
           </table>
@@ -421,7 +524,7 @@
     <section class="settings-block" aria-labelledby="defaults-title">
       <h2 id="defaults-title">{wrapDisplayCopy(settingsPageCopy.defaultsTitle)}</h2>
       {#if registeredChoices.length === 0}
-        <div class="empty-state" role="status"><span aria-hidden="true">◇</span><strong>{registryEntries.length === 0 ? settingsPageCopy.defaultsEmptyRegistry : checkableEntries.length > 0 ? settingsPageCopy.defaultsNoCheckedModels : settingsPageCopy.defaultsUnavailableModels}</strong></div>
+        <div class="empty-state" role="status"><span aria-hidden="true">◇</span><strong>{listedModelCount === 0 ? settingsPageCopy.defaultsEmptyRegistry : checkableEntries.length > 0 || missingRegistryStartable.length > 0 ? settingsPageCopy.defaultsNoCheckedModels : settingsPageCopy.defaultsUnavailableModels}</strong></div>
       {/if}
       <div class="table-wrap">
         <table class="defaults-table">

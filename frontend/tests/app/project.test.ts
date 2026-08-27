@@ -2,17 +2,40 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import type {
-  AgentConfigurationRevisionListItem,
-  AuthProfileRevision,
-  CockpitApi,
-  ModelRegistryRevision,
-  ProjectModelDefaultsRevision
+import {
+  CockpitRequestError,
+  createCockpitApi,
+  type AgentConfigurationRevisionListItem,
+  type AuthProfileRevision,
+  type CockpitApi,
+  type ModelRegistryRevision,
+  type Problem,
+  type ProjectModelDefaultsRevision
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
 import { cockpitApiStub } from "../support/cockpitApi";
+
+/** Live 2026-08-27 Settings payloads from GET http://127.0.0.1:8422, copied verbatim. */
+const LIVE_AGENT_CONFIGURATION_REVISIONS =
+  '{"items":[{"model":"claude-opus-4-6","auth_profile_revision_hash":"294db7c5313a29d936efc3684dbce0e85710bb22afb8aeace087310bd75732e8","executor_revision":"claude-atelier-doors/v1","provider_id":"anthropic","auth_mode":"subscription","requested_capability":"headless_with_tools","agent_configuration_revision_hash":"1a9498d43ace23b3cb9e56d374734b0a17648a5e092205b52497535a1749dfff","startable":true,"not_startable_reason":null},{"model":"grok-4.6","auth_profile_revision_hash":"dc5b676d2f6dca42984f6d5ceaefad58455b748a15cc85a08b1a476308f23616","executor_revision":"grok-subscription/v1","provider_id":"xai","auth_mode":"subscription","requested_capability":"headless","agent_configuration_revision_hash":"6ee1d546804f5f18eb6da493905e6eefce27d12a4f6af82b804ee2359b9ba7e0","startable":true,"not_startable_reason":null}],"next_after_revision_hash":null}';
+const LIVE_AUTH_PROFILE_REVISIONS =
+  '{"items":[{"profile_id":"operator-anthropic-subscription","revision_number":1,"provider_id":"anthropic","auth_mode":"subscription","auth_profile_revision_hash":"294db7c5313a29d936efc3684dbce0e85710bb22afb8aeace087310bd75732e8"},{"profile_id":"grok-felix","revision_number":1,"provider_id":"xai","auth_mode":"subscription","auth_profile_revision_hash":"dc5b676d2f6dca42984f6d5ceaefad58455b748a15cc85a08b1a476308f23616"}],"next_after_revision_hash":null}';
+const LIVE_PROJECTS = '{"items":[{"public_project_reference":"project1.YXRlbGllcg"}]}';
+const LIVE_SOURCE_CONNECTION =
+  '{"public_project_reference":"project1.YXRlbGllcg","revision_number":2,"source_kind":"github","source_address":"FlexOr2/atelier-2@main","auth_method":"personal-access-token","project_source_connection_revision_hash":"a8e3ef4bf17dcb0262d2cc5ad2073133437a189a69d437f4b50c072fab31a7bc"}';
+const LIVE_REGISTRY_XAI =
+  '{"provider_id":"xai","revision_number":1,"model_registry_revision_hash":"fc2d1c4a3aeaf8233fb0c692168339ac355d911cad9933aaae367ac5c7637e21","entries":[{"model_id":"grok-4.6","agent_configuration_revision_hash":"6ee1d546804f5f18eb6da493905e6eefce27d12a4f6af82b804ee2359b9ba7e0","source":"discovered","provider_check":"checked"}]}';
+const LIVE_REGISTRY_ANTHROPIC =
+  '{"provider_id":"anthropic","revision_number":1,"model_registry_revision_hash":"ac511b61604fff9ca85de239f2b4e4c21c2bd9ef252fca5cfc66b4617fd0535f","entries":[{"model_id":"claude-opus-4-6","agent_configuration_revision_hash":"1a9498d43ace23b3cb9e56d374734b0a17648a5e092205b52497535a1749dfff","source":"operator","provider_check":"not-checked"}]}';
+const LIVE_MODEL_DEFAULTS_MISSING =
+  '{"type":"urn:atelier2:problem:v1:project-model-defaults-missing","title":"Project model defaults not found","status":404,"detail":"Choose the project\'s model defaults for difficulty 1, 2, and 3."}';
+const LIVE_PROJECT_REFERENCE = "project1.YXRlbGllcg";
+const LIVE_XAI_CONFIGURATION_HASH =
+  "6ee1d546804f5f18eb6da493905e6eefce27d12a4f6af82b804ee2359b9ba7e0";
+const LIVE_XAI_REGISTRY_HASH =
+  "fc2d1c4a3aeaf8233fb0c692168339ac355d911cad9933aaae367ac5c7637e21";
 
 const configurationHash = "a".repeat(64);
 const profileHash = "b".repeat(64);
@@ -79,6 +102,74 @@ afterEach(() => {
   vi.restoreAllMocks();
   cleanup();
 });
+
+function jsonResponse(body: string, status = 200, contentType = "application/json"): Response {
+  return new Response(body, { status, headers: { "content-type": contentType } });
+}
+
+function liveSettingsFetcher(
+  writes: { defaults: string[] } = { defaults: [] }
+): typeof fetch {
+  return async (input, init) => {
+    const url = new URL(String(input), "http://atelier.test");
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (method === "GET" && url.pathname === "/atelier/api/v1/projects") {
+      return jsonResponse(LIVE_PROJECTS);
+    }
+    if (
+      method === "GET"
+      && url.pathname === `/atelier/api/v1/projects/${LIVE_PROJECT_REFERENCE}/source-connection`
+    ) {
+      return jsonResponse(LIVE_SOURCE_CONNECTION);
+    }
+    if (method === "GET" && url.pathname === "/atelier/api/v1/agent-configuration-revisions") {
+      return jsonResponse(LIVE_AGENT_CONFIGURATION_REVISIONS);
+    }
+    if (method === "GET" && url.pathname === "/atelier/api/v1/auth-profile-revisions") {
+      return jsonResponse(LIVE_AUTH_PROFILE_REVISIONS);
+    }
+    if (method === "GET" && url.pathname === "/atelier/api/v1/model-registries/xai") {
+      return jsonResponse(LIVE_REGISTRY_XAI);
+    }
+    if (method === "GET" && url.pathname === "/atelier/api/v1/model-registries/anthropic") {
+      return jsonResponse(LIVE_REGISTRY_ANTHROPIC);
+    }
+    if (
+      method === "GET"
+      && url.pathname === `/atelier/api/v1/projects/${LIVE_PROJECT_REFERENCE}/model-defaults`
+    ) {
+      return jsonResponse(LIVE_MODEL_DEFAULTS_MISSING, 404, "application/problem+json");
+    }
+    if (
+      method === "PUT"
+      && url.pathname === `/atelier/api/v1/projects/${LIVE_PROJECT_REFERENCE}/model-defaults`
+    ) {
+      const body = typeof init?.body === "string" ? init.body : "";
+      writes.defaults.push(body);
+      const input = JSON.parse(body) as {
+        revision_number: number;
+        defaults: ProjectModelDefaultsRevision["defaults"];
+      };
+      return jsonResponse(JSON.stringify({
+        project_id: "atelier",
+        public_project_reference: LIVE_PROJECT_REFERENCE,
+        revision_number: input.revision_number,
+        project_model_defaults_revision_hash: "d".repeat(64),
+        defaults: input.defaults
+      }), 201);
+    }
+    throw new Error(`unmocked ${method} ${url.pathname}`);
+  };
+}
+
+function modelRegistryMissing(): CockpitRequestError {
+  return new CockpitRequestError("missing", {
+    type: "urn:atelier2:problem:v1:model-registry-missing",
+    title: "Model registry not found",
+    status: 404,
+    detail: "Publish a model-registry revision for this provider."
+  } as Problem, true);
+}
 
 function openSettings(overrides: Partial<CockpitApi> = {}) {
   return render(App, {
@@ -273,6 +364,10 @@ describe("Settings owns project sources, models, and defaults", () => {
     });
 
     expect(await screen.findByText(settingsPageCopy.defaultsNoCheckedModels)).toBeTruthy();
+    expect(within(screen.getByRole("combobox", { name: "Difficulty 2" })).queryByRole(
+      "option",
+      { name: new RegExp(configuration.model) }
+    )).toBeNull();
     await fireEvent.click(screen.getByRole("button", { name: "Check" }));
 
     await waitFor(() => expect(validateModelRegistryEntry).toHaveBeenCalledWith(
@@ -283,6 +378,207 @@ describe("Settings owns project sources, models, and defaults", () => {
       "option",
       { name: new RegExp(configuration.model) }
     )).toBeTruthy();
+  });
+
+  it("renders a startable provider with no registry as unavailable with Check", async () => {
+    const putModelRegistry = vi.fn(async (_providerId, write) => ({
+      status: 201,
+      value: {
+        ...registry([{ ...registeredEntry, provider_check: "not-checked" as const }]),
+        revision_number: write.input.revision_number,
+        model_registry_revision_hash: "f".repeat(64)
+      }
+    }));
+    const validateModelRegistryEntry = vi.fn(async () => ({
+      status: 201,
+      value: {
+        ...registry([{ ...registeredEntry, provider_check: "checked" as const }]),
+        revision_number: 2,
+        model_registry_revision_hash: "f".repeat(64)
+      }
+    }));
+    openSettings({
+      getModelRegistry: vi.fn(async () => { throw modelRegistryMissing(); }),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      putModelRegistry,
+      validateModelRegistryEntry
+    });
+
+    expect(await screen.findByText("anthropic")).toBeTruthy();
+    expect(screen.getByText(configuration.model)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check" })).toBeTruthy();
+    expect(screen.getByText(settingsPageCopy.defaultsNoCheckedModels)).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: "Add a model" })).toBeNull();
+    expect(within(screen.getByRole("combobox", { name: "Difficulty 3" })).queryByRole(
+      "option",
+      { name: new RegExp(configuration.model) }
+    )).toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Check" }));
+
+    await waitFor(() => {
+      expect(putModelRegistry).toHaveBeenCalledTimes(1);
+      expect(validateModelRegistryEntry).toHaveBeenCalledWith("anthropic", configurationHash);
+      expect(within(screen.getByRole("combobox", { name: "Difficulty 3" })).getByRole(
+        "option",
+        { name: new RegExp(configuration.model) }
+      )).toBeTruthy();
+    });
+  });
+
+  it("continues Check through validation after a retried uncertain publish", async () => {
+    const putModelRegistry = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("uncertain"))
+      .mockImplementation(async (_providerId, write) => ({
+        status: 201,
+        value: {
+          ...registry([{ ...registeredEntry, provider_check: "not-checked" as const }]),
+          revision_number: write.input.revision_number,
+          model_registry_revision_hash: "f".repeat(64)
+        }
+      }));
+    const validateModelRegistryEntry = vi.fn(async () => ({
+      status: 201,
+      value: {
+        ...registry([{ ...registeredEntry, provider_check: "checked" as const }]),
+        revision_number: 2,
+        model_registry_revision_hash: "f".repeat(64)
+      }
+    }));
+    openSettings({
+      getModelRegistry: vi.fn(async () => { throw modelRegistryMissing(); }),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      putModelRegistry,
+      validateModelRegistryEntry
+    });
+
+    await fireEvent.click(await screen.findByRole("button", { name: "Check" }));
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(screen.getByText(settingsPageCopy.writeFailed)).toBeTruthy();
+    expect(validateModelRegistryEntry).not.toHaveBeenCalled();
+    await waitFor(() => expect((retry as HTMLButtonElement).disabled).toBe(false));
+
+    await fireEvent.click(retry);
+
+    await waitFor(() => {
+      expect(putModelRegistry).toHaveBeenCalledTimes(2);
+      expect(putModelRegistry.mock.calls[1]).toEqual(putModelRegistry.mock.calls[0]);
+      expect(validateModelRegistryEntry).toHaveBeenCalledWith("anthropic", configurationHash);
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(within(screen.getByRole("combobox", { name: "Difficulty 3" })).getByRole(
+        "option",
+        { name: new RegExp(configuration.model) }
+      )).toBeTruthy();
+    });
+  });
+
+  it("names a validation failure after a retried Check publish so the next Retry only validates", async () => {
+    const putModelRegistry = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("uncertain"))
+      .mockImplementation(async (_providerId, write) => ({
+        status: 201,
+        value: {
+          ...registry([{ ...registeredEntry, provider_check: "not-checked" as const }]),
+          revision_number: write.input.revision_number,
+          model_registry_revision_hash: "f".repeat(64)
+        }
+      }));
+    const validateModelRegistryEntry = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("uncertain"))
+      .mockResolvedValueOnce({
+        status: 201,
+        value: {
+          ...registry([{ ...registeredEntry, provider_check: "checked" as const }]),
+          revision_number: 2,
+          model_registry_revision_hash: "f".repeat(64)
+        }
+      });
+    openSettings({
+      getModelRegistry: vi.fn(async () => { throw modelRegistryMissing(); }),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      putModelRegistry,
+      validateModelRegistryEntry
+    });
+
+    await fireEvent.click(await screen.findByRole("button", { name: "Check" }));
+    const firstRetry = await screen.findByRole("button", { name: "Retry" });
+    await waitFor(() => expect((firstRetry as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(firstRetry);
+
+    const secondRetry = await screen.findByRole("button", { name: "Retry" });
+    await waitFor(() => {
+      expect(putModelRegistry).toHaveBeenCalledTimes(2);
+      expect(validateModelRegistryEntry).toHaveBeenCalledTimes(1);
+      expect((secondRetry as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    await fireEvent.click(secondRetry);
+
+    await waitFor(() => {
+      expect(putModelRegistry).toHaveBeenCalledTimes(2);
+      expect(validateModelRegistryEntry).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(within(screen.getByRole("combobox", { name: "Difficulty 3" })).getByRole(
+        "option",
+        { name: new RegExp(configuration.model) }
+      )).toBeTruthy();
+    });
+  });
+
+  it("lists every live startable model and writes the first default through the real decoder", async () => {
+    const writes = { defaults: [] as string[] };
+    const api = createCockpitApi(liveSettingsFetcher(writes));
+    const putProjectModelDefaults = vi.fn(api.putProjectModelDefaults);
+    const validateModelRegistryEntry = vi.fn(api.validateModelRegistryEntry);
+    render(App, {
+      props: {
+        cockpitApi: { ...api, putProjectModelDefaults, validateModelRegistryEntry },
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+
+    expect((await screen.findByText("anthropic")).isConnected).toBe(true);
+    expect(screen.getByText("xai")).toBeTruthy();
+    expect(screen.getByText("claude-opus-4-6")).toBeTruthy();
+    expect(screen.getByText("operator-anthropic-subscription")).toBeTruthy();
+    expect(screen.getByText("grok-4.6")).toBeTruthy();
+    expect(screen.getByText("grok-felix")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check" })).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: "Add a model" })).toBeNull();
+
+    for (const difficulty of [3, 2, 1]) {
+      const select = screen.getByRole("combobox", { name: `Difficulty ${difficulty}` });
+      expect(within(select).queryByRole("option", {
+        name: "claude-opus-4-6 · Account operator-anthropic-subscription"
+      })).toBeNull();
+      expect(within(select).getByRole("option", {
+        name: "grok-4.6 · Account grok-felix"
+      })).toBeTruthy();
+    }
+
+    await fireEvent.change(screen.getByRole("combobox", { name: "Difficulty 3" }), {
+      target: { value: LIVE_XAI_CONFIGURATION_HASH }
+    });
+
+    await waitFor(() => expect(putProjectModelDefaults).toHaveBeenCalledTimes(1));
+    expect(validateModelRegistryEntry).not.toHaveBeenCalled();
+    const write = putProjectModelDefaults.mock.calls[0]?.[1];
+    if (write === undefined) throw new Error("expected a defaults write");
+    expect(write.body).toBe(JSON.stringify(write.input));
+    expect(write.input).toEqual({
+      revision_number: 1,
+      defaults: [{
+        difficulty: 3,
+        model_registry_revision_hash: LIVE_XAI_REGISTRY_HASH,
+        provider_id: "xai",
+        model_id: "grok-4.6",
+        agent_configuration_revision_hash: LIVE_XAI_CONFIGURATION_HASH
+      }]
+    });
+    expect(writes.defaults).toEqual([write.body]);
   });
 
   it("does not promise an absent add control for an empty registry", async () => {
