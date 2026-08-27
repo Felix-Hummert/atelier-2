@@ -41,6 +41,7 @@ from atelier2.contracts.agent_definitions import (
     MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS,
     MAXIMUM_AGENT_DEFINITION_TOOL_COUNT,
 )
+from atelier2.contracts.agent_transcripts import MAXIMUM_TRANSCRIPT_STEP_CHARACTERS
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_PROVIDER_ID_CHARACTERS,
@@ -237,6 +238,12 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
         MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
     ),
     "NodeRefusalOutputResource.value_base64": MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS,
+    "AssistantTurnEventResource.text": MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
+    "ToolCalledEventResource.arguments": MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
+    "ToolCalledEventResource.name": MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
+    "ToolReturnedEventResource.name": MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
+    "ToolReturnedEventResource.result": MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
+    "UnrecognisedProviderOutputEventResource.text": MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
 }
 
 
