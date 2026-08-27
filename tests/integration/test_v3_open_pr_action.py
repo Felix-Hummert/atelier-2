@@ -6,14 +6,25 @@ import json
 import sys
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
 
+from atelier2.adapters.dbos.advancer import (
+    RunEffectConflict,
+    graph_action_intent,
+    prepared_effect_intent,
+)
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
-from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
+from atelier2.adapters.dbos.effect_store import (
+    commit_resolution,
+    encode_found,
+    intent_snapshot_from_record,
+)
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
     effect_intents,
@@ -32,7 +43,6 @@ from atelier2.adapters.github.effects import (
     GitHubEffectAdapterFactory,
     RecordedPullRequest,
 )
-from atelier2.adapters.github.marker import body_carries_request_hash
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import encode_public_run_reference
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
@@ -48,15 +58,30 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
+from atelier2.contracts.effect_markers import body_carries_request_hash
+from atelier2.contracts.effect_requests import (
+    GitCommitIdentity,
+    HeadBranch,
+    PushAtelierCommit,
+    PushAtelierCommitReceipt,
+)
 from atelier2.contracts.effects import (
+    AdapterOperationalIdentity,
     AdapterRevision,
+    CanonicalRequest,
+    ConfirmationSource,
     EffectAdapterBinding,
+    EffectBinding,
     EffectDestination,
+    EffectId,
     EffectIntent,
     EffectReadback,
+    EffectResult,
+    EffectUnknownOutcome,
     PerformedEffect,
 )
-from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.executions import RunEventKind, logical_effect_key_for_node
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_forks import RunForkCommandId, successor_run_id_for
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
@@ -108,7 +133,7 @@ class CountingGitHubEffectAdapter:
         self._owner.readback_calls += 1
         return self._delegate.readback(intent)
 
-    def execute(self, intent: EffectIntent) -> PerformedEffect:
+    def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
         self._owner.execute_calls += 1
         return self._delegate.execute(intent)
 
@@ -605,6 +630,216 @@ def test_unreached_action_without_a_receipt_does_not_block_a_full_fork(
     assert len(github.recorded_pull_requests()) == 1
 
 
+@dataclass(frozen=True, slots=True)
+class _PushReceiptMutation:
+    operation: AdapterOperationName = AdapterOperationName.PUSH_ATELIER_COMMIT
+    branch: HeadBranch | None = None
+    full_ref: str | None = None
+    commit_oid: str | None = None
+    effect_id: str | None = None
+    remote_identity: str = "remote"
+    author: GitCommitIdentity | None = None
+    committer: GitCommitIdentity | None = None
+    candidate_tree: str | None = None
+    parent: str | None = None
+
+
+def _push_intent(
+    workflow: WorkflowRevision,
+    mutation: _PushReceiptMutation | None = None,
+) -> tuple[EffectIntent, PushAtelierCommit]:
+    mutation = mutation or _PushReceiptMutation()
+    request = PushAtelierCommit(
+        "a1" * 32,
+        "b2" * 20,
+        "c3" * 20,
+        HeadBranch("atelier2/work-item/confirmed-push"),
+        GitCommitIdentity("Atelier Agent", "agent@example.test"),
+        GitCommitIdentity("Atelier Core", "core@example.test"),
+        "2026-08-27T12:34:56Z",
+    )
+    return (
+        EffectIntent(
+            EffectBinding(
+                logical_effect_key_for_node(
+                    RUN, workflow.revision_hash, "implement", 1
+                ),
+                RUN,
+                workflow.revision_hash,
+                AdapterRevision("git-push-v1"),
+                EffectDestination("git"),
+                AdapterOperationalIdentity("remote"),
+                mutation.operation,
+            ),
+            CanonicalRequest(request.canonical_bytes()),
+        ),
+        request,
+    )
+
+
+def _confirm_push_receipt(
+    connection: Any,
+    workflow: WorkflowRevision,
+    mutation: _PushReceiptMutation,
+) -> None:
+    intent, request = _push_intent(workflow, mutation)
+    prepared_effect_intent(connection, intent)
+    expected = request.expected_commit_oid(intent.request.request_hash.value)
+    branch = mutation.branch or request.head_branch
+    commit_oid = mutation.commit_oid or expected
+    performed = PerformedEffect(
+        EffectId(mutation.effect_id or commit_oid),
+        EffectResult(
+            PushAtelierCommitReceipt(
+                mutation.remote_identity,
+                mutation.full_ref or branch.full_ref,
+                commit_oid,
+                mutation.parent or request.base_commit,
+                mutation.candidate_tree or request.candidate_tree,
+                branch.value,
+                mutation.author or request.author,
+                mutation.committer or request.committer,
+            ).result_bytes()
+        ),
+    )
+    assert (
+        commit_resolution(
+            connection,
+            intent.binding.logical_key.value,
+            workflow.revision_hash.value,
+            encode_found(performed, ConfirmationSource.ADAPTER_EXECUTION),
+        )
+        is RunState.STARTED
+    )
+
+
+@pytest.mark.parametrize(
+    "unconfirmed_push",
+    [
+        pytest.param(False, id="absent-push-intent"),
+        pytest.param(True, id="unconfirmed-push-intent"),
+    ],
+)
+def test_a_project_open_pr_action_refuses_without_a_confirmed_push_receipt(
+    runtime: tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path, Path],
+    unconfirmed_push: bool,
+) -> None:
+    started_runtime, github, _listing, _atelier_sqlite = runtime
+    workflow, bindings = publish_line(started_runtime)
+    starter = DbosDurableRunStarter(
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
+    )
+    assert isinstance(
+        starter.start_published(
+            StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
+        ),
+        DurableRunCreated,
+    )
+    started_runtime.launch()
+    wait_for_state(started_runtime, RunState.COMPLETED)
+    calls_before_retry = (github.readback_calls, github.execute_calls)
+    with started_runtime.engine.begin() as connection:
+        if unconfirmed_push:
+            push_intent, _request = _push_intent(workflow)
+            prepared_effect_intent(
+                connection,
+                push_intent,
+            )
+        connection.execute(
+            runs.update()
+            .where(runs.c.run_id == RUN.value)
+            .values(state=RunState.STARTED.value, terminal_hash=None)
+        )
+        with pytest.raises(RunEffectConflict, match="confirmed push receipt"):
+            graph_action_intent(
+                connection,
+                RUN,
+                workflow.revision_hash,
+                github.binding,
+                ProjectId("project-without-a-push"),
+            )
+
+    assert (github.readback_calls, github.execute_calls) == calls_before_retry
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param(
+            _PushReceiptMutation(operation=AdapterOperationName.OPEN_PR),
+            id="wrong-operation-binding",
+        ),
+        pytest.param(
+            _PushReceiptMutation(
+                branch=HeadBranch("atelier2/work-item/other"),
+                full_ref="refs/heads/atelier2/work-item/other",
+            ),
+            id="branch-and-full-ref",
+        ),
+        pytest.param(
+            _PushReceiptMutation(commit_oid="d4" * 20, effect_id="d4" * 20),
+            id="commit-effect-and-deterministic-identity",
+        ),
+        pytest.param(
+            _PushReceiptMutation(effect_id="f6" * 20),
+            id="result-commit-and-effect-identity",
+        ),
+        pytest.param(
+            _PushReceiptMutation(remote_identity="other-remote"),
+            id="remote-identity",
+        ),
+        pytest.param(
+            _PushReceiptMutation(
+                author=GitCommitIdentity("Another Agent", "other@example.test"),
+                committer=GitCommitIdentity("Another Core", "other-core@example.test"),
+                candidate_tree="d4" * 20,
+                parent="e5" * 20,
+            ),
+            id="author-tree-and-base",
+        ),
+    ],
+)
+def test_a_project_open_pr_action_refuses_a_corrupt_confirmed_push_receipt(
+    runtime: tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path, Path],
+    mutation: _PushReceiptMutation,
+) -> None:
+    started_runtime, github, _listing, _atelier_sqlite = runtime
+    workflow, bindings = publish_line(started_runtime)
+    starter = DbosDurableRunStarter(
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
+    )
+    assert isinstance(
+        starter.start_published(
+            StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
+        ),
+        DurableRunCreated,
+    )
+    started_runtime.launch()
+    wait_for_state(started_runtime, RunState.COMPLETED)
+    calls_before_retry = (github.readback_calls, github.execute_calls)
+    with started_runtime.engine.begin() as connection:
+        _confirm_push_receipt(connection, workflow, mutation)
+        connection.execute(
+            runs.update()
+            .where(runs.c.run_id == RUN.value)
+            .values(state=RunState.STARTED.value, terminal_hash=None)
+        )
+        with pytest.raises(RunEffectConflict, match="confirmed push receipt"):
+            graph_action_intent(
+                connection,
+                RUN,
+                workflow.revision_hash,
+                github.binding,
+                ProjectId("project-with-a-corrupt-push"),
+            )
+
+    assert (github.readback_calls, github.execute_calls) == calls_before_retry
+
+
 def durable_bytes_contain(database: Path, token: str) -> bool:
     needle = token.encode("utf-8")
     for candidate in (
@@ -672,6 +907,7 @@ def test_a_v3_agent_then_action_opens_one_pull_request_through_the_github_adapte
         replayed = adapter.execute(intent)
     finally:
         adapter.close()
+    assert isinstance(replayed, PerformedEffect)
     assert json.loads(replayed.result.payload.decode("utf-8")) == result
     assert len(github.recorded_pull_requests()) == 1
 

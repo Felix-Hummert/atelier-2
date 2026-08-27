@@ -270,7 +270,7 @@ class UnknownReadbackAdapter:
     def readback(self, intent: EffectIntent) -> EffectReadback:
         return EffectUnknownOutcome(intent.reference)
 
-    def execute(self, intent: EffectIntent) -> PerformedEffect:
+    def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
         return self._delegate.execute(intent)
 
     def close(self) -> None:

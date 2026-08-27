@@ -619,7 +619,7 @@ def test_v2_start_against_an_empty_registry_creates_no_durable_run_or_attempt(
         binding = runtime.settings.binding(
             runtime.agent_executor_binding,
             runtime.agent_executor_registry.manifest,
-            runtime.effect_adapter_binding,
+            (runtime.effect_adapter_binding,),
         )
         assert binding.agent_process_control_root is None
         assert binding.agent_process_cgroup_root is None

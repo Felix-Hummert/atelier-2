@@ -17,6 +17,7 @@ from atelier2.contracts.effects import (
     EffectDestination,
     EffectIntent,
     EffectReadback,
+    EffectUnknownOutcome,
     PerformedEffect,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevision
@@ -50,7 +51,7 @@ class HarnessEffectAdapter:
     def readback(self, intent: EffectIntent) -> EffectReadback:
         return self._delegate.readback(intent)
 
-    def execute(self, intent: EffectIntent) -> PerformedEffect:
+    def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
         performed = self._delegate.execute(intent)
         if self._after_execute_crash_marker is not None:
             from tests.crash.effect_harness import _crash_once

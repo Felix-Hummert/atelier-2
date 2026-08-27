@@ -46,13 +46,13 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
-from atelier2.adapters.github.marker import body_carries_request_hash
 from atelier2.application.compose_node_job import node_job
 from atelier2.contracts.agents import (
     AgentBindingSet,
     AgentExecutionRequestV2,
     AgentExecutorOperationalIdentity,
 )
+from atelier2.contracts.effect_markers import body_carries_request_hash
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -423,6 +423,7 @@ def test_a_granted_agent_node_opens_one_pull_request_and_leaves_one_receipt(
         replayed = adapter.execute(intent)
     finally:
         adapter.close()
+    assert isinstance(replayed, PerformedEffect)
     assert json.loads(replayed.result.payload.decode("utf-8")) == {
         "branch": pull_request.branch,
         "pr_number": pull_request.pr_number,

@@ -20,6 +20,7 @@ from atelier2.adapters.bounded_processes import (
     BoundedProcessFailure,
     bounded_process_streams,
 )
+from atelier2.adapters.candidate_store import CANDIDATE_STORE_DIRECTORY_NAME
 from atelier2.adapters.claude_subscription import (
     ClaudeAtelierDoorsExecutorFactory,
     ClaudeAtelierDoorsSettings,
@@ -33,7 +34,7 @@ from atelier2.adapters.codex_subscription import (
     CodexSubscriptionSettings,
 )
 from atelier2.adapters.dbos.advancer import (
-    legacy_agent_open_pr_runs_without_receipt,
+    legacy_agent_effect_runs_without_receipt,
 )
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
@@ -60,7 +61,7 @@ from atelier2.adapters.dbos.webhook_delivery import DbosWebhookDeliveryPublisher
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.free_runner_executor import FreeRunnerExecutorFactory
 from atelier2.adapters.github import (
-    live_github_effect_adapter_factory,
+    live_github_effect_registry,
     live_github_issue_source,
 )
 from atelier2.adapters.grok_subscription import (
@@ -136,7 +137,7 @@ from atelier2.ports.agent_executions import (
     AgentProcessCompletion,
     AgentProcessInvocation,
 )
-from atelier2.ports.effects import EffectAdapterFactory
+from atelier2.ports.effects import EffectAdapterFactory, EffectAdapterRegistry
 from atelier2.ports.host_configuration import (
     ProviderModelDiscovery,
     ProviderModelDiscoveryResult,
@@ -1006,8 +1007,8 @@ class LegacyAgentOpenPrCompletionWithoutReceipt(RuntimeError):
     """A pre-reconciliation agent effect advanced its run without a receipt."""
 
 
-def _refuse_legacy_agent_open_pr_runs_without_receipt(runtime: DbosRuntime) -> None:
-    blocking = legacy_agent_open_pr_runs_without_receipt(runtime.engine)
+def _refuse_legacy_agent_effect_runs_without_receipt(runtime: DbosRuntime) -> None:
+    blocking = legacy_agent_effect_runs_without_receipt(runtime.engine)
     if blocking:
         named = ", ".join(run.value for run in blocking)
         raise LegacyAgentOpenPrCompletionWithoutReceipt(
@@ -1057,12 +1058,12 @@ def _project_source_connection(
         engine.dispose()
 
 
-def _effect_adapter_factory(
+def _effect_adapters(
     settings: HostSettings, connection: ProjectSourceConnectionRevision | None
-) -> EffectAdapterFactory:
-    """The one effect adapter this instance drives.
+) -> EffectAdapterFactory | EffectAdapterRegistry:
+    """The effect adapters this instance drives.
 
-    The live adapter composes from the served project's source-connection
+    The live registry composes from the served project's source-connection
     record (`atelier2 connect`, ADR 0010 decision 2): the connected platform's
     own adapter package decodes the record's opaque source address and yields
     the factory, so no platform identifier surfaces here. An unconnected
@@ -1085,8 +1086,11 @@ def _effect_adapter_factory(
                 "on this API, so the operator's GitHub token stays on this "
                 "machine until an authenticated boundary exists"
             )
-        return live_github_effect_adapter_factory(
-            connection, adapter_revision, destination
+        return live_github_effect_registry(
+            connection,
+            settings.database_path.parent / CANDIDATE_STORE_DIRECTORY_NAME,
+            adapter_revision,
+            destination,
         )
     return LoopbackEffectAdapterFactory(
         settings.effect_store_path, adapter_revision, destination
@@ -1103,13 +1107,13 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
     source_connection = _project_source_connection(settings)
     runtime = DbosRuntime(
         settings.runtime_settings(),
-        _effect_adapter_factory(settings, source_connection),
+        _effect_adapters(settings, source_connection),
         ExactOutputAgentExecutorFactory(),
         subscription_executors,
     )
     try:
         if source_connection is not None:
-            _refuse_legacy_agent_open_pr_runs_without_receipt(runtime)
+            _refuse_legacy_agent_effect_runs_without_receipt(runtime)
         # One expression feeds both the reader's bound and the API's own, so the
         # promise that they cannot describe different numbers holds by
         # construction rather than by two readings agreeing today.
