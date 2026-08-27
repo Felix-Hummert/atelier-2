@@ -134,8 +134,60 @@ export const workflowStartCopy = {
   tryAgain: "Try again",
   cancel: "Cancel",
   retry: "Retry",
-  startUnavailable: "The run could not be started."
+  startUnavailable: "The run could not be started.",
+  github: "GitHub",
+  gitlab: "GitLab",
+  configurationsIncomplete: "Agent configurations are incomplete.",
+  accountsIncomplete: "Accounts are incomplete.",
+  servedProjectMissing: "Served project missing.",
+  rolesUnresolved: "Model resolution did not name exactly these roles.",
+  observedQueueIncomplete: "Observed queue items are incomplete.",
+  startResponseChangedRoles: "The start response changed the selected roles.",
+  startResponseUnproven: "The start response did not prove the exact request."
 } as const;
+
+export function startConfigurationLabel(
+  providerId: string,
+  modelId: string,
+  accountId: string
+): string {
+  return `${providerId} · ${modelId} · Account ${accountId}`;
+}
+
+export function startAccountSuffix(accountId: string): string {
+  return ` · Account ${accountId}`;
+}
+
+export function startUnavailableSuffix(): string {
+  return ` · ◇ ${workflowStartCopy.unavailable}`;
+}
+
+export function pinnedModelLine(model: string, account: string, unavailable: string): string {
+  return `${workflowStartCopy.pinnedInWorkflow} → ${model}${account}${unavailable}`;
+}
+
+export function projectDefaultLine(
+  difficulty: number,
+  model: string,
+  nextHigher: boolean,
+  account: string,
+  unavailable: string
+): string {
+  const fallback = nextHigher ? ` (${workflowStartCopy.nextHigher})` : "";
+  return `difficulty ${difficulty} → ${model}${fallback}${account}${unavailable}`;
+}
+
+export function startOrderGroup(name: string): string {
+  return `Order ${name}`;
+}
+
+export function workItemFor(orderName: string): string {
+  return `${workflowStartCopy.workItem} for ${orderName}`;
+}
+
+export function observedSourceHeading(projectId: string, platform: string): string {
+  return `${projectId} · ${platform}`;
+}
 
 /**
  * The short state a card or detail header wears beside a name that is not

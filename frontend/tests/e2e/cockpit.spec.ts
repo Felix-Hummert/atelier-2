@@ -2,7 +2,11 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { backLinkCopy } from "../../src/lib/backLinkCopy";
-import { catalogPageCopy, workflowStartCopy } from "../../src/lib/catalogPageCopy";
+import {
+  catalogPageCopy,
+  startConfigurationLabel,
+  workflowStartCopy
+} from "../../src/lib/catalogPageCopy";
 import { shortFingerprint } from "../../src/lib/fingerprint";
 import { PRODUCT_NAME } from "../../src/lib/productName";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
@@ -11,6 +15,7 @@ import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { standingWords } from "../../src/lib/runState";
 import { workbenchQuestions } from "../../src/lib/workbenchQuestions";
+import { nodeAriaName, stateLabels } from "../../src/lib/stateMarkCopy";
 import { workflowGraphCopy } from "../../src/lib/workflowGraphCopy";
 
 const foundReference = "run1.Zm91bmQtcnVu";
@@ -902,8 +907,8 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
 
   await expect(page.getByRole("heading", { level: 1, name: "Two agents in a line" })).toBeVisible();
   const graph = page.getByRole("region", { name: workflowGraphCopy.label });
-  await expect(graph.getByRole("button", { name: "implement — Done" })).toBeVisible();
-  await expect(graph.getByRole("button", { name: "review — Done" })).toBeVisible();
+  await expect(graph.getByRole("button", { name: nodeAriaName("implement", "succeeded") })).toBeVisible();
+  await expect(graph.getByRole("button", { name: nodeAriaName("review", "succeeded") })).toBeVisible();
   await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText("Done");
   await expect(page.getByLabel(runPageCopy.whereThisRunStands)).not.toContainText("Snapshot");
   // Not one fingerprint and not the run id stands on the main surface; they
@@ -913,7 +918,7 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
   await expect(page.getByText(terminal)).toHaveCount(0);
   await expect(page.getByRole("button", { name: runPageCopy.readAgain })).toHaveCount(0);
 
-  await graph.getByRole("button", { name: "implement — Done" }).click();
+  await graph.getByRole("button", { name: nodeAriaName("implement", "succeeded") }).click();
   await page.getByRole("tab", { name: runPageCopy.tabEvidence }).click();
   await expect(page.getByRole("group", { name: "Run id" })).toContainText(
     "v3/seen-in-the-browser"
@@ -1087,11 +1092,11 @@ test("Catalog start sheet names current startability for checked configurations"
   await page.getByRole("button", { name: "Start" }).click();
   const picker = page.getByRole("dialog", { name: workflowStartCopy.startTitle(name) }).getByLabel(workflowStartCopy.configurationFor("builder"));
   await expect(picker.getByRole("option", {
-    name: "e2e · available · Account operator-2",
+    name: startConfigurationLabel("e2e", "available", "operator-2"),
     exact: true
   })).toHaveCount(1);
   await expect(picker.getByRole("option", {
-    name: "e2e · unavailable · Account operator-1",
+    name: startConfigurationLabel("e2e", "unavailable", "operator-1"),
     exact: true
   })).toHaveAttribute("disabled", "");
   await picker.selectOption(availableHash);
@@ -1206,10 +1211,10 @@ test("watches a V3 chain move, node by node, without a reload", async ({ page })
   // The graph is the one picture of where the run stands: each node turns
   // Done on it as its event arrives, and nothing repeats that as a second list.
   const chain = page.getByRole("region", { name: workflowGraphCopy.label });
-  await expect(chain.getByRole("button", { name: "implement — Done" })).toBeVisible({
+  await expect(chain.getByRole("button", { name: nodeAriaName("implement", "succeeded") })).toBeVisible({
     timeout: 20_000
   });
-  await expect(chain.getByRole("button", { name: "review — Done" })).toBeVisible({
+  await expect(chain.getByRole("button", { name: nodeAriaName("review", "succeeded") })).toBeVisible({
     timeout: 20_000
   });
   await expect(page.getByRole("list", { name: "What finished" })).toHaveCount(0);
@@ -1291,7 +1296,7 @@ test("draws a running V3 chain as a graph while a node is still working", async 
   await expect(graph).toBeVisible();
   await expect(graph.getByRole("button", { name: /implement/ })).toBeVisible();
   await expect(graph.getByRole("button", { name: /review/ })).toBeVisible();
-  const working = graph.getByRole("button", { name: /Working$/ });
+  const working = graph.getByRole("button", { name: new RegExp(`${stateLabels.working}$`) });
   await expect(working).toBeVisible({ timeout: 10_000 });
   await expect(working).toHaveAttribute("data-live", "true");
   await expect(page.getByRole("progressbar")).toHaveCount(0);
@@ -1308,7 +1313,7 @@ test("draws a running V3 chain as a graph while a node is still working", async 
   await assertNoSeriousAccessibilityFindings(page);
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(graph.getByRole("button", { name: /Working$/ })).toBeVisible();
+  await expect(graph.getByRole("button", { name: new RegExp(`${stateLabels.working}$`) })).toBeVisible();
   await assertMobileSurface(page);
   await page.screenshot({ path: "test-results/v3-graph-running-390x844.png", fullPage: true });
 });
@@ -1621,10 +1626,10 @@ test("a node whose answer its own contract refuses never reports success", async
   await expect(page.getByText(runId)).toHaveCount(0);
   await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText("Failed");
   await expect(page.getByLabel(runPageCopy.whereThisRunStands)).not.toContainText("Done");
-  await expect(page.getByRole("button", { name: "implement — Failed" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Working/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: nodeAriaName("implement", "failed") })).toBeVisible();
+  await expect(page.getByRole("button", { name: new RegExp(stateLabels.working) })).toHaveCount(0);
 
-  await page.getByRole("button", { name: "implement — Failed" }).click();
+  await page.getByRole("button", { name: nodeAriaName("implement", "failed") }).click();
   // A node that stopped opens on Result, where the refusal that stopped it
   // stands. Nothing was written, and the panel says so rather than dressing
   // the silence as a value.

@@ -173,7 +173,7 @@
   /** Asked of every format: the identity check runs before the run is narrowed. */
   function requireRequestedRun(run: AnyRun): void {
     if (run.public_run_reference !== publicReference) {
-      throw new CockpitRequestError("The API returned a different durable run.");
+      throw new CockpitRequestError(runPageCopy.differentDurableRun);
     }
   }
 
@@ -186,7 +186,7 @@
       currentNode === undefined ||
       JSON.stringify(currentNode) !== JSON.stringify(run.current_node)
     ) {
-      throw new CockpitRequestError("The workflow revision did not match the durable run.");
+      throw new CockpitRequestError(runPageCopy.workflowRevisionMismatch);
     }
   }
 
@@ -214,7 +214,7 @@
         }
       });
     } catch (error) {
-      failureMessage = error instanceof Error ? error.message : "The durable event stream could not start.";
+      failureMessage = error instanceof Error ? error.message : runPageCopy.eventStreamUnstartable;
       if (projection !== null) projection = markConnecting(projection, true);
     }
   }
@@ -245,7 +245,7 @@
       if (projection !== null) projection = markFailed(projection, null);
       failureMessage = error instanceof Error
         ? error.message
-        : "The durable event could not be verified.";
+        : runPageCopy.eventUnverified;
     });
   }
 
@@ -366,7 +366,7 @@
     } catch (error) {
       journalFailure = error instanceof Error
         ? error.message
-        : "The durable event could not reconcile the saved exact answer.";
+        : runPageCopy.eventCouldNotReconcileAnswer;
     }
     await load();
     if (event.event === "WAIT_ANSWERED") await focusRunState();
@@ -383,7 +383,7 @@
     const mutationId = waitMutationId(run.public_run_reference, run.waiting.node_id);
     const entry = await mutationJournal.get(mutationId);
     if (entry !== null && entry.kind !== "wait") {
-      throw new Error("The saved request identity belongs to another operation.");
+      throw new Error(runPageCopy.savedRequestWrongOperation);
     }
     if (entry === null) {
       pendingWait = null;
@@ -395,7 +395,7 @@
       entry.node_id !== run.waiting.node_id ||
       entry.public_run_reference !== run.public_run_reference
     ) {
-      throw new Error("The saved exact answer does not belong to this waiting node.");
+      throw new Error(runPageCopy.savedAnswerWrongNode);
     }
     if (pendingWait?.mutation_id !== entry.mutation_id) waitAccepted = false;
     pendingWait = entry;
@@ -415,7 +415,7 @@
         entry.node_id === waiting.node_id
     );
     if (entries.length > 1) {
-      throw new Error("More than one exact reconciliation is saved for this node.");
+      throw new Error(runPageCopy.multipleReconciliationsSaved);
     }
     const entry = entries[0] ?? null;
     if (entry === null) {
@@ -428,13 +428,13 @@
       entry.request_base64 !== waiting.request_base64 ||
       entry.request_hash !== waiting.request_hash
     ) {
-      throw new Error("The saved exact decision does not belong to this reconciliation.");
+      throw new Error(runPageCopy.savedDecisionWrongReconciliation);
     }
     const pendingCommand = waiting.pending_command;
     const command = reconciliationCommand(entry);
     if (pendingCommand !== null) {
       if (!pendingCommandMatches(pendingCommand, command)) {
-        throw new Error("The pending durable command differs from the saved exact decision.");
+        throw new Error(runPageCopy.pendingCommandDiffersFromDecision);
       }
     }
     if (pendingReconciliation?.mutation_id !== entry.mutation_id) {
@@ -462,7 +462,7 @@
         answer
       );
       const prepared = await mutationJournal.prepare(mutation);
-      if (prepared.kind !== "wait") throw new Error("The exact request has the wrong kind.");
+      if (prepared.kind !== "wait") throw new Error(runPageCopy.exactRequestWrongKind);
       pendingWait = prepared;
       waitAccepted = false;
       await deliverWait(mutation);
@@ -536,7 +536,7 @@
       );
       const prepared = await mutationJournal.prepare(mutation);
       if (prepared.kind !== "reconciliation") {
-        throw new Error("The exact request has the wrong kind.");
+        throw new Error(runPageCopy.exactRequestWrongKind);
       }
       pendingReconciliation = prepared;
       reconciliationAccepted = false;
@@ -603,14 +603,14 @@
     });
     const eventAlreadyProvedDecision = matchingReconciliationEventExists(mutation);
     if (result.status === 200 && !resolved && !eventAlreadyProvedDecision) {
-      throw new Error("The reconciliation response did not prove the exact request.");
+      throw new Error(runPageCopy.reconciliationResponseUnproven);
     }
     if (result.status === 202 && resolved) {
-      throw new Error("A pending decision was incorrectly treated as durable completion.");
+      throw new Error(runPageCopy.pendingDecisionTreatedComplete);
     }
     requireRequestedRun(result.value);
     const revision = snapshot.confirmed?.revision;
-    if (revision === undefined) throw new Error("The bound workflow revision is unavailable.");
+    if (revision === undefined) throw new Error(runPageCopy.boundWorkflowUnavailable);
     requireBoundRevision(result.value, revision);
     if (eventAlreadyProvedDecision) {
       pendingReconciliation = null;
@@ -637,7 +637,7 @@
         throw error;
       }
       if (uncertain.kind !== "reconciliation") {
-        throw new Error("The accepted request changed kind.");
+        throw new Error(runPageCopy.acceptedRequestChangedKind);
       }
       pendingReconciliation = uncertain;
       reconciliationAccepted = true;
@@ -649,14 +649,14 @@
 
   function requireMatchingPendingCommand(run: Run, mutation: ReconciliationMutation): void {
     if (run.state !== "WAITING_RECONCILIATION" || run.waiting.type !== "WAITING_RECONCILIATION") {
-      throw new Error("The accepted decision did not remain bound to its reconciliation.");
+      throw new Error(runPageCopy.acceptedDecisionUnbound);
     }
     const command = reconciliationCommand(mutation);
     if (
       run.waiting.pending_command === null ||
       !pendingCommandMatches(run.waiting.pending_command, command)
     ) {
-      throw new Error("The accepted durable command differs from the exact request.");
+      throw new Error(runPageCopy.acceptedCommandDiffers);
     }
   }
 
@@ -764,18 +764,18 @@
     });
     const eventAlreadyProvedAnswer = matchingWaitEventExists(mutation);
     if (result.status === 200 && !resolved && !eventAlreadyProvedAnswer) {
-      throw new Error("The answer response did not prove the exact request.");
+      throw new Error(runPageCopy.answerResponseUnproven);
     }
     if (result.status === 202 && resolved) {
-      throw new Error("A pending answer was incorrectly treated as durable completion.");
+      throw new Error(runPageCopy.pendingAnswerTreatedComplete);
     }
     requireRequestedRun(result.value);
     if (isRunV3(result.value)) {
-      throw new Error("The answer response was not this run's format.");
+      throw new Error(runPageCopy.answerResponseWrongFormat);
     }
     const answered = result.value;
     const revision = snapshot.confirmed?.revision;
-    if (revision === undefined) throw new Error("The bound workflow revision is unavailable.");
+    if (revision === undefined) throw new Error(runPageCopy.boundWorkflowUnavailable);
     requireBoundRevision(answered, revision);
     if (eventAlreadyProvedAnswer) {
       pendingWait = null;
@@ -797,7 +797,7 @@
         }
         throw error;
       }
-      if (uncertain.kind !== "wait") throw new Error("The accepted request changed kind.");
+      if (uncertain.kind !== "wait") throw new Error(runPageCopy.acceptedRequestChangedKind);
       pendingWait = uncertain;
       waitAccepted = true;
     } else {

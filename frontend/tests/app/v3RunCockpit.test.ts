@@ -15,6 +15,7 @@ import { cancelMutationId, MutationJournal } from "../../src/lib/mutationJournal
 import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import { runHeaderCopy } from "../../src/lib/runPages";
 import { cancelReasonSentence, runPageCopy } from "../../src/lib/runPageCopy";
+import { nodeAriaName, stateLabels } from "../../src/lib/stateMarkCopy";
 import { workflowGraphCopy } from "../../src/lib/workflowGraphCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import { cancellableBlock, notCancellableBlock } from "../support/runV3";
@@ -118,8 +119,8 @@ describe("a version 3 run in the cockpit", () => {
       (await screen.findByRole("heading", { level: 1, name: "Two agents in a line" })).isConnected
     ).toBe(true);
     const graph = await screen.findByRole("region", { name: workflowGraphCopy.label });
-    expect(within(graph).getByRole("button", { name: "implement — Done" }).isConnected).toBe(true);
-    expect(within(graph).getByRole("button", { name: "review — Working" }).isConnected).toBe(true);
+    expect(within(graph).getByRole("button", { name: nodeAriaName("implement", "succeeded") }).isConnected).toBe(true);
+    expect(within(graph).getByRole("button", { name: nodeAriaName("review", "working") }).isConnected).toBe(true);
     expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).toContain("Running");
     // The main surface carries no fingerprints and no "not yet" placeholder:
     // every proof lives one click away, in the node's Evidence tab (operator
@@ -200,7 +201,7 @@ describe("a version 3 run in the cockpit", () => {
 
     const graph = await screen.findByRole("region", { name: workflowGraphCopy.label });
     await waitFor(() =>
-      expect(within(graph).getByRole("button", { name: "implement — Done" }).isConnected).toBe(true)
+      expect(within(graph).getByRole("button", { name: nodeAriaName("implement", "succeeded") }).isConnected).toBe(true)
     );
     // The graph is the one truth about where the run stands; the finished
     // node's output is not pasted beside it.
@@ -231,7 +232,7 @@ describe("a version 3 run in the cockpit", () => {
 
     const graph = await screen.findByRole("region", { name: workflowGraphCopy.label });
     await waitFor(() =>
-      expect(within(graph).getByRole("button", { name: "implement — Done" }).isConnected).toBe(true)
+      expect(within(graph).getByRole("button", { name: nodeAriaName("implement", "succeeded") }).isConnected).toBe(true)
     );
     expect(feed.close).not.toHaveBeenCalled();
 
@@ -344,9 +345,9 @@ describe("a started run shows the working node live", () => {
 
     await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
     const graph = await screen.findByRole("region", { name: workflowGraphCopy.label });
-    const working = within(graph).getByRole("button", { name: "review — Working" });
+    const working = within(graph).getByRole("button", { name: nodeAriaName("review", "working") });
     expect(working.getAttribute("data-live")).toBe("true");
-    expect(within(graph).getByRole("button", { name: "implement — Done" }).getAttribute("data-live")).toBeNull();
+    expect(within(graph).getByRole("button", { name: nodeAriaName("implement", "succeeded") }).getAttribute("data-live")).toBeNull();
     expect(screen.queryByRole("progressbar")).toBeNull();
     // Connecting is ordinary loading, not a problem worth a line of its own.
     expect(screen.queryByText(runPageCopy.streamStale)).toBeNull();
@@ -354,7 +355,7 @@ describe("a started run shows the working node live", () => {
     feed.handlers?.opened();
     feed.handlers?.event(JSON.stringify(await completedEvent("implement", "the draft", 1)));
 
-    await openNodeTab("review — Working", runPageCopy.tabLog);
+    await openNodeTab(nodeAriaName("review", "working"), runPageCopy.tabLog);
     expect(screen.getByText(runPageCopy.processLogInLease).isConnected).toBe(true);
     expect(screen.getByText(runPageCopy.logAbsent).isConnected).toBe(true);
   });
@@ -555,10 +556,10 @@ describe("a version 3 run that stops for a person", () => {
     });
 
     const graph = await screen.findByRole("region", { name: workflowGraphCopy.label });
-    expect(within(graph).getByRole("button", { name: "approve — Needs you" }).isConnected).toBe(
+    expect(within(graph).getByRole("button", { name: nodeAriaName("approve", "needs_you") }).isConnected).toBe(
       true
     );
-    expect(within(graph).getByRole("button", { name: "implement — Done" }).isConnected).toBe(true);
+    expect(within(graph).getByRole("button", { name: nodeAriaName("implement", "succeeded") }).isConnected).toBe(true);
     expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).toContain(
       "Waiting for you"
     );
@@ -583,12 +584,12 @@ describe("a version 3 run that stops for a person", () => {
     const cockpitApi = waitingApi({ getRun, openRunEvents: feed.open });
 
     render(App, { props: { cockpitApi, mutationJournal: journal } });
-    await screen.findByRole("button", { name: "approve — Needs you" });
+    await screen.findByRole("button", { name: nodeAriaName("approve", "needs_you") });
     feed.handlers?.opened();
     feed.handlers?.event(JSON.stringify(await waitAnsweredEvent(1)));
 
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "approve — Done" }).isConnected).toBe(true)
+      expect(screen.getByRole("button", { name: nodeAriaName("approve", "succeeded") }).isConnected).toBe(true)
     );
     expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).toContain("Done");
     expect(await journal.entries()).toEqual([]);
@@ -1188,11 +1189,11 @@ describe("a failed node on the run page", () => {
     await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
 
     expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).toContain("Failed");
-    expect(screen.getByRole("button", { name: "implement — Failed" }).isConnected).toBe(true);
-    expect(screen.queryByRole("button", { name: /Working/ })).toBeNull();
+    expect(screen.getByRole("button", { name: nodeAriaName("implement", "failed") }).isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: new RegExp(stateLabels.working) })).toBeNull();
 
     // A node that stopped opens on the reason it stopped, not on the first tab.
-    await fireEvent.click(screen.getByRole("button", { name: "implement — Failed" }));
+    await fireEvent.click(screen.getByRole("button", { name: nodeAriaName("implement", "failed") }));
     expect((await screen.findByRole("tab", { name: runPageCopy.tabResult })).getAttribute("aria-selected")).toBe("true");
     await screen.findByText("Nothing written.");
 
@@ -1238,7 +1239,7 @@ describe("a failed node on the run page", () => {
     // The graph stays quiet: it carries state, never a paragraph of prose.
     const graph = screen.getByRole("region", { name: workflowGraphCopy.label });
     expect(
-      within(graph).getByRole("button", { name: "implement — Failed" }).textContent
+      within(graph).getByRole("button", { name: nodeAriaName("implement", "failed") }).textContent
     ).not.toContain(reason);
   });
 });
@@ -1551,7 +1552,7 @@ describe("the click into a node", () => {
       }
     });
 
-    await fireEvent.click(await screen.findByRole("button", { name: "review — Needs you" }));
+    await fireEvent.click(await screen.findByRole("button", { name: nodeAriaName("review", "needs_you") }));
 
     expect(
       screen.getByRole("tab", { name: runPageCopy.tabPrompt }).getAttribute("aria-selected")
@@ -1570,13 +1571,13 @@ describe("the click into a node", () => {
       }
     });
 
-    await openNodeTab("review — Working", runPageCopy.tabInput);
+    await openNodeTab(nodeAriaName("review", "working"), runPageCopy.tabInput);
     const reads = await screen.findByRole("tabpanel");
     expect(within(reads).getByText(runPageCopy.inputReads).isConnected).toBe(true);
     expect(within(reads).getByText("implement").isConnected).toBe(true);
 
-    await fireEvent.click(screen.getByRole("button", { name: "review — Working" }));
-    await openNodeTab("implement — Done", runPageCopy.tabInput);
+    await fireEvent.click(screen.getByRole("button", { name: nodeAriaName("review", "working") }));
+    await openNodeTab(nodeAriaName("implement", "succeeded"), runPageCopy.tabInput);
     expect(
       within(screen.getByRole("tabpanel")).getByText(runPageCopy.inputNone).isConnected
     ).toBe(true);
@@ -1621,7 +1622,7 @@ describe("the click into a node", () => {
         mutationJournal: new MutationJournal(sessionStorage)
       }
     });
-    await openNodeTab("review — Working", runPageCopy.tabEvidence);
+    await openNodeTab(nodeAriaName("review", "working"), runPageCopy.tabEvidence);
 
     const who = await screen.findByRole("region", { name: "Who" });
     expect(within(who).getByText("No receipt yet.").isConnected).toBe(true);
@@ -1677,7 +1678,7 @@ describe("the run page speaking the target words", () => {
 
     const graph = await screen.findByRole("region", { name: workflowGraphCopy.label });
     await waitFor(() =>
-      expect(within(graph).getByRole("button", { name: "implement — Done" }).isConnected).toBe(true)
+      expect(within(graph).getByRole("button", { name: nodeAriaName("implement", "succeeded") }).isConnected).toBe(true)
     );
     expect(document.body.textContent).not.toContain("schreiben");
     expect(screen.queryByText("As it happened")).toBeNull();

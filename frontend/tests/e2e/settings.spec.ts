@@ -1,7 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { readStateCopy, retryLabel } from "../../src/lib/readStateCopy";
-import { difficultyLabel, settingsPageCopy } from "../../src/lib/settingsPageCopy";
+import {
+  accountChoice,
+  difficultyLabel,
+  retainedAccountChoice,
+  settingsPageCopy
+} from "../../src/lib/settingsPageCopy";
 
 const projectReference = "project1.dGVzdA";
 const configurationHash = "a".repeat(64);
@@ -253,7 +258,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     }
     const selected = page.getByRole("combobox", { name: difficultyLabel(3) });
     const retained = page.getByText(
-      "claude-opus-4-1 · Account Max account — Unavailable",
+      retainedAccountChoice("claude-opus-4-1", "Max account"),
       { exact: true }
     );
     await expect(retained).toBeVisible();
@@ -265,7 +270,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
       }))).toEqual({
         right: expect.any(Number),
         whiteSpace: "normal",
-        text: "claude-opus-4-1 · Account Max account — Unavailable"
+        text: retainedAccountChoice("claude-opus-4-1", "Max account")
       });
       expect(await retained.evaluate((element) => element.getBoundingClientRect().right)).toBeLessThanOrEqual(390);
     }
@@ -298,10 +303,10 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await expect(page.getByRole("heading", { name: "Sources" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Model defaults" })).toBeVisible();
-    await expect(page.getByText("added by you")).toBeVisible();
+    await expect(page.getByText(settingsPageCopy.addedByYouChecked)).toBeVisible();
     await expect(page.getByText("✓ checked")).toBeVisible();
     await expect(page.getByRole("combobox", { name: difficultyLabel(3) }).locator("option:checked"))
-      .toHaveText("claude-opus-4-1 · Account Max account");
+      .toHaveText(accountChoice("claude-opus-4-1", "Max account"));
     await expect(page.getByText(/Saving|Saved/)).toHaveCount(0);
     await expect(page.getByText("Work in this project")).toHaveCount(0);
     if (viewport.width === 1280) {
@@ -382,7 +387,7 @@ test("Settings tells the truth while reads load, fail, and recover at desktop an
     await page.getByRole("button", { name: retryLabel(settingsPageCopy.label) }).click();
     await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
     await expect(page.getByRole("combobox", { name: difficultyLabel(3) }).locator("option:checked"))
-      .toHaveText("claude-opus-4-1 · Account Max account");
+      .toHaveText(accountChoice("claude-opus-4-1", "Max account"));
   }
 });
 

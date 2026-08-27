@@ -16,6 +16,7 @@ import {
 } from "../../src/lib/mutationJournal";
 import { PRODUCT_NAME } from "../../src/lib/productName";
 import { runPageCopy } from "../../src/lib/runPageCopy";
+import { nodeAriaName } from "../../src/lib/stateMarkCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import {
   agentCompleted,
@@ -104,7 +105,7 @@ describe("reconciliation control", () => {
     expect(first.result_hash).toBe(emptyResultHash);
     expect(createCommandId).toHaveBeenCalledTimes(1);
     expect(screen.getByText(runPageCopy.reconciliation.emptyResult)).toBeTruthy();
-    const stilledAction = screen.getByRole("article", { name: "action — Working" });
+    const stilledAction = screen.getByRole("article", { name: nodeAriaName("action", "working") });
     expect(stilledAction.querySelector(".state-mark")?.classList).toContain("state-still");
 
     await fireEvent.click(screen.getByRole("button", { name: runPageCopy.retry }));
@@ -128,7 +129,7 @@ describe("reconciliation control", () => {
     // resolve() that closed the heading already finished by the time it did.
     await waitFor(() => expect(screen.queryByRole("heading", { name: /Decision/ })).toBeNull());
     expect(await journal.get(first.mutation_id)).toBeNull();
-    expect(screen.getByRole("article", { name: "action — Working" })).toBeTruthy();
+    expect(screen.getByRole("article", { name: nodeAriaName("action", "working") })).toBeTruthy();
   });
 
   it("keeps a durable reconciliation authoritative when its event arrives before the 202 response", async () => {
@@ -182,7 +183,7 @@ describe("reconciliation control", () => {
     // never re-adds what the durable event already resolved.
     await waitFor(async () => expect(await journal.entries()).toEqual([]));
     expect(screen.queryByRole("heading", { name: /Decision/ })).toBeNull();
-    expect(screen.getByRole("article", { name: "action — Working" })).toBeTruthy();
+    expect(screen.getByRole("article", { name: nodeAriaName("action", "working") })).toBeTruthy();
   });
 
   it("reconcile_absent_requires_execute_confirmation", async () => {
@@ -276,7 +277,7 @@ describe("reconciliation control", () => {
     expect(screen.getByText("effect-empty")).toBeTruthy();
     expect(screen.getByText(runPageCopy.reconciliation.emptyResult)).toBeTruthy();
     expect(screen.queryByLabelText("Actor")).toBeNull();
-    expect(screen.getByRole("article", { name: "action — Working" })).toBeTruthy();
+    expect(screen.getByRole("article", { name: nodeAriaName("action", "working") })).toBeTruthy();
   });
 
   it("sends the journalled reconciliation body as exact bytes to the R2 endpoint", async () => {

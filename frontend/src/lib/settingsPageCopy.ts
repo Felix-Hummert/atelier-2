@@ -33,11 +33,19 @@ export const settingsPageCopy = {
   difficulty: "Difficulty",
   changeSavedDefault: "Change saved default",
   noDefault: "No default",
-  retry: "Retry"
+  retry: "Retry",
+  unknownAtProvider: "◇ unknown at provider",
+  addedByYouChecked: "added by you · ✓ checked",
+  addedByYouNotChecked: "added by you · ◇ not checked yet",
+  unavailableSavedModel: "Unavailable saved model"
 } as const;
 
 export function accountChoice(modelId: string, account: string): string {
   return `${modelId} · Account ${account}`;
+}
+
+export function retainedAccountChoice(modelId: string, account: string): string {
+  return `${accountChoice(modelId, account)} — Unavailable`;
 }
 
 export function difficultyLabel(difficulty: number): string {

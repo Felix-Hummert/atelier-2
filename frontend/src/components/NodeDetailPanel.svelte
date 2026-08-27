@@ -37,7 +37,7 @@
   import { runHeaderCopy } from "../lib/runPages";
   import { runResultCopy } from "../lib/runResultCopy";
   import { whenFacts, type NodeState } from "../lib/runProjection";
-  import { stateLabels } from "./StateMark.svelte";
+  import { stateLabels } from "../lib/stateMarkCopy";
   import AttemptTranscript from "./AttemptTranscript.svelte";
   import InfoHint from "./InfoHint.svelte";
   import ProofAnchor from "./ProofAnchor.svelte";

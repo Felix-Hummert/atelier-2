@@ -24,7 +24,12 @@
     type RetainedRead
   } from "../lib/readResource";
   import { readEveryAgentConfiguration } from "../lib/runPages";
-  import { accountChoice, difficultyLabel, settingsPageCopy } from "../lib/settingsPageCopy";
+  import {
+    accountChoice,
+    difficultyLabel,
+    retainedAccountChoice,
+    settingsPageCopy
+  } from "../lib/settingsPageCopy";
 
   export let cockpitApi: CockpitApi;
 
@@ -166,11 +171,11 @@
   }
 
   function registryEntryDetails(entry: ModelRegistryRevision["entries"][number]): string {
-    if (entry.provider_check === "unknown-at-provider") return "◇ unknown at provider";
+    if (entry.provider_check === "unknown-at-provider") return settingsPageCopy.unknownAtProvider;
     if (entry.source === "operator" && entry.provider_check === "checked") {
-      return "added by you · ✓ checked";
+      return settingsPageCopy.addedByYouChecked;
     }
-    if (entry.source === "operator") return "added by you · ◇ not checked yet";
+    if (entry.source === "operator") return settingsPageCopy.addedByYouNotChecked;
     return "";
   }
 
@@ -401,13 +406,16 @@
   function retainedDefaultChoice(configurationHash: string): { value: string; label: string } | null {
     if (registeredChoices.some((choice) => choice.value === configurationHash)) return null;
     const found = entryFor(configurationHash);
-    if (found === null) return { value: configurationHash, label: "Unavailable saved model" };
+    if (found === null) return { value: configurationHash, label: settingsPageCopy.unavailableSavedModel };
     const configuration = settings.confirmed?.configurations.find(
       (candidate) => candidate.agent_configuration_revision_hash === configurationHash
     );
     return {
       value: configurationHash,
-      label: `${accountChoice(found.entry.model_id, configuration === undefined ? settingsPageCopy.unknownAccount : accountFor(configuration))} — Unavailable`
+      label: retainedAccountChoice(
+        found.entry.model_id,
+        configuration === undefined ? settingsPageCopy.unknownAccount : accountFor(configuration)
+      )
     };
   }
 

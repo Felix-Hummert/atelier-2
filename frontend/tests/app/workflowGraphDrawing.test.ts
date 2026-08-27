@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import WorkflowGraphDrawing from "../../src/components/WorkflowGraphDrawing.svelte";
 import { stateGlyphs } from "../../src/components/StateMark.svelte";
+import { nodeAriaName } from "../../src/lib/stateMarkCopy";
 import {
   loopBoundLabel,
   loopRoundBound,
@@ -57,8 +58,8 @@ describe("the V3 graph drawing", () => {
     });
 
     const graph = screen.getByRole("region", { name: workflowGraphCopy.label });
-    const implement = within(graph).getByRole("button", { name: "implement — Done" });
-    const review = within(graph).getByRole("button", { name: "review — Working" });
+    const implement = within(graph).getByRole("button", { name: nodeAriaName("implement", "succeeded") });
+    const review = within(graph).getByRole("button", { name: nodeAriaName("review", "working") });
 
     expect(implement.getAttribute("data-state")).toBe("succeeded");
     expect(implement.textContent).toContain(stateGlyphs.succeeded);

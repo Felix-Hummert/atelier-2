@@ -12,6 +12,7 @@ import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import { shortFingerprint } from "../../src/lib/fingerprint";
 import { proofAnchorCopy } from "../../src/lib/proofAnchorCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
+import { nodeAriaName } from "../../src/lib/stateMarkCopy";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import {
@@ -46,7 +47,7 @@ describe("read-only run cockpit", () => {
       }
     });
 
-    const working = await screen.findByRole("article", { name: "agent — Working" });
+    const working = await screen.findByRole("article", { name: nodeAriaName("agent", "working") });
     expect(working.classList.contains("live-work")).toBe(true);
     expect(working.getAttribute("data-live")).toBe("true");
     expect(screen.getByText(runPageCopy.processLogInLease).isConnected).toBe(true);
@@ -69,10 +70,10 @@ describe("read-only run cockpit", () => {
     expect((await screen.findByRole("heading", { name: "Unnamed workflow" })).isConnected).toBe(true);
     expect(cockpitApi.getWorkflowRevision).toHaveBeenCalledWith(digest);
     expect(feed.open).toHaveBeenCalledWith(publicReference, expect.any(Object));
-    expect(screen.getByRole("article", { name: "agent — Done" }).textContent).toContain("Build it");
-    expect(screen.getByRole("article", { name: "action — Done" }).isConnected).toBe(true);
-    expect(screen.getByRole("article", { name: "wait — Needs you" }).isConnected).toBe(true);
-    expect(screen.getByRole("article", { name: "final — Queued" }).isConnected).toBe(true);
+    expect(screen.getByRole("article", { name: nodeAriaName("agent", "succeeded") }).textContent).toContain("Build it");
+    expect(screen.getByRole("article", { name: nodeAriaName("action", "succeeded") }).isConnected).toBe(true);
+    expect(screen.getByRole("article", { name: nodeAriaName("wait", "needs_you") }).isConnected).toBe(true);
+    expect(screen.getByRole("article", { name: nodeAriaName("final", "queued") }).isConnected).toBe(true);
     expect(screen.getByText(runPageCopy.noDurableEvents).isConnected).toBe(true);
   });
 
@@ -100,7 +101,7 @@ describe("read-only run cockpit", () => {
 
     feed.handlers?.opened();
     await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
-    expect(screen.getByRole("article", { name: "agent — Done" }).isConnected).toBe(true);
+    expect(screen.getByRole("article", { name: nodeAriaName("agent", "succeeded") }).isConnected).toBe(true);
   });
 
   it("stops a gapped stream without replacing the last confirmed event", async () => {
@@ -145,8 +146,8 @@ describe("read-only run cockpit", () => {
 
     expect(await screen.findByText("started")).toBeTruthy();
     expect(getRun).toHaveBeenCalledTimes(3);
-    expect(screen.getByRole("article", { name: "wait — Done" }).isConnected).toBe(true);
-    expect(screen.getByRole("article", { name: "final — Working" }).isConnected).toBe(true);
+    expect(screen.getByRole("article", { name: nodeAriaName("wait", "succeeded") }).isConnected).toBe(true);
+    expect(screen.getByRole("article", { name: nodeAriaName("final", "working") }).isConnected).toBe(true);
   });
 
   it("retries a stopped stream without ever clearing its confirmed event truth", async () => {
@@ -328,7 +329,7 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
 function expectOneConfirmedAgentEvent(): void {
   expect(screen.getByText(runPageCopy.events, { exact: false, selector: "summary" }).textContent).toContain("1");
   expect(screen.queryByText(runPageCopy.noDurableEvents)).toBeNull();
-  expect(screen.getByRole("article", { name: "agent — Done" }).isConnected).toBe(true);
-  expect(screen.getByRole("article", { name: "action — Working" }).isConnected).toBe(true);
+  expect(screen.getByRole("article", { name: nodeAriaName("agent", "succeeded") }).isConnected).toBe(true);
+  expect(screen.getByRole("article", { name: nodeAriaName("action", "working") }).isConnected).toBe(true);
   expect(screen.getAllByText("AGENT COMPLETED")).toHaveLength(2);
 }

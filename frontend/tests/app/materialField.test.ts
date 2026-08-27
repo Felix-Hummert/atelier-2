@@ -9,7 +9,15 @@ import type {
   RunV3,
   WorkflowRevisionDetail
 } from "../../src/api/client";
-import { workflowStartCopy } from "../../src/lib/catalogPageCopy";
+import {
+  observedSourceHeading,
+  pinnedModelLine,
+  projectDefaultLine,
+  startAccountSuffix,
+  startUnavailableSuffix,
+  workItemFor,
+  workflowStartCopy
+} from "../../src/lib/catalogPageCopy";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { WORK_ITEM_ORDER_SCHEMA_REVISION } from "../../src/lib/orderSchema";
 import { cockpitApiStub } from "../support/cockpitApi";
@@ -278,20 +286,20 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     });
     await openStart(cockpitApi);
 
-    const picker = screen.getByRole("combobox", { name: "Work item for work" });
-    const workItemOrderGroup = screen.getByRole("group", { name: "Work item" });
+    const picker = screen.getByRole("combobox", { name: workItemFor("work") });
+    const workItemOrderGroup = screen.getByRole("group", { name: workflowStartCopy.workItem });
     expect(workItemOrderGroup.textContent).not.toContain(`work-item-schema@${WORK_ITEM_ORDER_SCHEMA_REVISION}`);
     await fireEvent.click(picker);
-    expect(screen.getByText("atelier · GitHub")).toBeTruthy();
-    expect(screen.getByText("infra · GitLab")).toBeTruthy();
+    expect(screen.getByText(observedSourceHeading("atelier", workflowStartCopy.github))).toBeTruthy();
+    expect(screen.getByText(observedSourceHeading("infra", workflowStartCopy.gitlab))).toBeTruthy();
     expect(screen.getByRole("option", { name: "#450" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "#446" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "!12" })).toBeTruthy();
-    expect(screen.queryByText("GitHub · gh:450")).toBeNull();
+    expect(screen.queryByText(`${workflowStartCopy.github} · gh:450`)).toBeNull();
     expect(screen.queryByRole("note")).toBeNull();
     expect(screen.getByRole("group", { name: "Roles" })).toBeTruthy();
 
-    expect(screen.getByRole("listbox", { name: "Work item for work" })).toBeTruthy();
+    expect(screen.getByRole("listbox", { name: workItemFor("work") })).toBeTruthy();
     await fireEvent.click(screen.getByRole("option", { name: "#450" }));
     expect(picker.textContent).toContain("#450");
     await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
@@ -317,12 +325,12 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     });
     await openStart(cockpitApi);
 
-    const picker = screen.getByRole("combobox", { name: "Work item for work" });
+    const picker = screen.getByRole("combobox", { name: workItemFor("work") });
     picker.focus();
     expect(document.activeElement).toBe(picker);
 
     await fireEvent.keyDown(picker, { key: "ArrowDown" });
-    const listbox = screen.getByRole("listbox", { name: "Work item for work" });
+    const listbox = screen.getByRole("listbox", { name: workItemFor("work") });
     expect(listbox).toBeTruthy();
     const first = screen.getByRole("option", { name: "#450" });
     const second = screen.getByRole("option", { name: "#446" });
@@ -338,18 +346,18 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     expect(picker.getAttribute("aria-activedescendant")).toBe(second.id);
 
     await fireEvent.keyDown(picker, { key: "Escape" });
-    expect(screen.queryByRole("listbox", { name: "Work item for work" })).toBeNull();
+    expect(screen.queryByRole("listbox", { name: workItemFor("work") })).toBeNull();
     expect(screen.getByRole("dialog", { name: workflowStartCopy.startTitle(workflowName) })).toBeTruthy();
     expect(document.activeElement).toBe(picker);
     expect(picker.textContent).toContain("Choose");
 
     await fireEvent.keyDown(picker, { key: "ArrowUp" });
-    expect(screen.getByRole("listbox", { name: "Work item for work" })).toBeTruthy();
+    expect(screen.getByRole("listbox", { name: workItemFor("work") })).toBeTruthy();
     expect(picker.getAttribute("aria-activedescendant")).toBe(
       screen.getByRole("option", { name: "!12" }).id
     );
     await fireEvent.keyDown(picker, { key: " " });
-    expect(screen.queryByRole("listbox", { name: "Work item for work" })).toBeNull();
+    expect(screen.queryByRole("listbox", { name: workItemFor("work") })).toBeNull();
     expect(picker.textContent).toContain("!12");
     expect(document.activeElement).toBe(picker);
 
@@ -362,7 +370,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
       screen.getByRole("option", { name: "#446" }).id
     );
     await fireEvent.keyDown(picker, { key: "Enter" });
-    expect(screen.queryByRole("listbox", { name: "Work item for work" })).toBeNull();
+    expect(screen.queryByRole("listbox", { name: workItemFor("work") })).toBeNull();
     expect(picker.textContent).toContain("#446");
     expect(document.activeElement).toBe(picker);
   });
@@ -546,7 +554,7 @@ describe("the catalog start sheet's project model resolution", () => {
     await openStart(cockpitApi);
 
     expect(screen.getByRole("alert").textContent).toContain(
-      "Model resolution did not name exactly these roles"
+      workflowStartCopy.rolesUnresolved
     );
     expect(cockpitApi.start).not.toHaveBeenCalled();
   });
@@ -562,7 +570,7 @@ describe("the catalog start sheet's project model resolution", () => {
     const picker = screen.getByLabelText(workflowStartCopy.configurationFor("cook"));
     expect((picker as HTMLSelectElement).value).toBe(configurationHash);
     expect(within(picker).getByRole("option", {
-      name: "difficulty 2 → cook-model (next higher) · Account test"
+      name: projectDefaultLine(2, "cook-model", true, startAccountSuffix("test"), "")
     })).toBeTruthy();
     expect(screen.queryByText("Next higher difficulty")).toBeNull();
     await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
@@ -587,7 +595,7 @@ describe("the catalog start sheet's project model resolution", () => {
     await openStart(cockpitApi);
 
     expect(within(screen.getByLabelText(workflowStartCopy.configurationFor("cook"))).getByRole("option", {
-      name: "pinned in workflow → cook-model · Account test"
+      name: pinnedModelLine("cook-model", startAccountSuffix("test"), "")
     })).toBeTruthy();
     await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
       target: { value: configurationHash }
@@ -699,7 +707,7 @@ describe("the catalog start sheet's project model resolution", () => {
     expect(picker.value).toBe(configurationHash);
     expect(picker.selectedOptions[0]?.disabled).toBe(true);
     expect(picker.selectedOptions[0]?.textContent).toBe(
-      "difficulty 2 → cook-model · Account test · ◇ Unavailable"
+      projectDefaultLine(2, "cook-model", false, startAccountSuffix("test"), startUnavailableSuffix())
     );
     expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled)
       .toBe(true);
@@ -728,7 +736,9 @@ describe("the catalog start sheet's project model resolution", () => {
     await openStart(cockpitApi);
 
     expect((screen.getByLabelText(workflowStartCopy.configurationFor("cook")) as HTMLSelectElement)
-      .selectedOptions[0]?.textContent).toBe("difficulty 2 → cook-model · Account test");
+      .selectedOptions[0]?.textContent).toBe(
+      projectDefaultLine(2, "cook-model", false, startAccountSuffix("test"), "")
+    );
     await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
 
     await waitFor(() => expect(

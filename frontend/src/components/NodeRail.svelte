@@ -14,6 +14,7 @@
     runPageCopy,
     sealsTheseBytes
   } from "../lib/runPageCopy";
+  import { nodeAriaName, stateLabels } from "../lib/stateMarkCopy";
   import {
     projectNodeRail,
     type AgentOutputProjection,
@@ -21,7 +22,7 @@
   } from "../lib/runProjection";
   import InfoHint from "./InfoHint.svelte";
   import ProofAnchor from "./ProofAnchor.svelte";
-  import StateMark, { stateLabels } from "./StateMark.svelte";
+  import StateMark from "./StateMark.svelte";
 
   export let run: Run;
   export let graph: ExecutableWorkflowGraph;
@@ -139,7 +140,7 @@
           class="node-card node-{projection.state}"
           class:live-work={projection.state === "working"}
           data-live={projection.state === "working" ? "true" : undefined}
-          aria-label={`${projection.node.node_id} — ${stateLabels[projection.state]}`}
+          aria-label={nodeAriaName(projection.node.node_id, projection.state)}
         >
           <header class="node-header">
             <span class="node-kind">{projection.node.type}</span>

@@ -1,20 +1,12 @@
 <script lang="ts" context="module">
   import type { NodeState } from "../lib/runProjection";
+  import { stateLabels } from "../lib/stateMarkCopy";
 
-  /** What the operator reads for a state the server named. One owner, one word. */
-  export const stateLabels: Record<NodeState, string> = {
-    queued: "Queued",
-    working: "Working",
-    needs_you: "Needs you",
-    succeeded: "Done",
-    failed: "Failed",
-    cancelled: "Cancelled",
-    interrupted: "Interrupted"
-  };
+  export { stateLabels };
 
   /**
    * The glyph that carries a state without colour, for eyes that read no
-   * colour. It is owned here beside the words so the run graph's small shapes
+   * colour. It sits beside `stateLabels` so the run graph's small shapes
    * and this mark can never disagree about what "done" looks like.
    */
   export const stateGlyphs: Record<NodeState, string> = {

@@ -3,6 +3,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
+import { nodeAriaName } from "../../src/lib/stateMarkCopy";
 import { standingWords } from "../../src/lib/runState";
 import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
@@ -527,7 +528,7 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
     );
 
     const nodeLogPath = clickBudget();
-    const node = page.getByRole("button", { name: "work — Done" });
+    const node = page.getByRole("button", { name: nodeAriaName("work", "succeeded") });
     await expect(node).toBeVisible();
     await expect(node, `open-node-log node glance at ${viewport.width}`).toBeInViewport();
     let nodeLogGlances = 1;

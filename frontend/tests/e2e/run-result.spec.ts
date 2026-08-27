@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 
 import { conductorChatCopy } from "../../src/lib/conductorChatCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
+import { nodeAriaName } from "../../src/lib/stateMarkCopy";
 import { runResultCopy } from "../../src/lib/runResultCopy";
 import { standingWords } from "../../src/lib/runState";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
@@ -111,7 +112,7 @@ test("the Result tab carries the decoded result; the run head is only the standi
   await expect(page.getByText(CONDUCTOR_FAKE_ANSWER, { exact: true })).toHaveCount(0);
   await shoot(page, "head");
 
-  await page.getByRole("button", { name: "conduct — Done" }).click();
+  await page.getByRole("button", { name: nodeAriaName("conduct", "succeeded") }).click();
   const panel = page.getByRole("complementary");
   await expect(panel.getByRole("heading", { name: "conduct" })).toBeVisible();
   await expect(panel.getByRole("tab", { name: runPageCopy.tabResult })).toHaveAttribute(

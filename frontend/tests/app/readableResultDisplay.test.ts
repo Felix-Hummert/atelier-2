@@ -8,6 +8,7 @@ import V3AnswerCard from "../../src/components/V3AnswerCard.svelte";
 import V3RunView from "../../src/components/V3RunView.svelte";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { runPageCopy } from "../../src/lib/runPageCopy";
+import { nodeAriaName } from "../../src/lib/stateMarkCopy";
 import { runResultCopy } from "../../src/lib/runResultCopy";
 import { standingWords } from "../../src/lib/runState";
 import { cockpitApiStub } from "../support/cockpitApi";
@@ -149,7 +150,7 @@ describe("a finished run's page shows the standing sentence, not the result (#66
 
     const standing = await screen.findByLabelText(runPageCopy.whereThisRunStands);
     expect(standing.textContent).toContain(standingWords.done);
-    await screen.findByRole("button", { name: "report — Done" });
+    await screen.findByRole("button", { name: nodeAriaName("report", "succeeded") });
 
     expect(screen.queryByRole("region", { name: runPageCopy.tabResult })).toBeNull();
     expect(screen.queryByText("The workflow could not be started: format not executable.")).toBeNull();
@@ -160,7 +161,7 @@ describe("a finished run's page shows the standing sentence, not the result (#66
     const raw = '{"answer":"Reviewed the diff.","started_run_ids":["run1.ZHJhZnQ"]}';
     const { getNodeDetail } = renderRun(v3Run(), withAnswer(raw));
 
-    await fireEvent.click(await screen.findByRole("button", { name: "report — Done" }));
+    await fireEvent.click(await screen.findByRole("button", { name: nodeAriaName("report", "succeeded") }));
 
     const panel = await screen.findByRole("complementary");
     expect(within(panel).getByText("Reviewed the diff.", { exact: true }).isConnected).toBe(true);
@@ -189,7 +190,7 @@ describe("a finished run's page shows the standing sentence, not the result (#66
     );
 
     await screen.findByLabelText(runPageCopy.whereThisRunStands);
-    await screen.findByRole("button", { name: "report — Working" });
+    await screen.findByRole("button", { name: nodeAriaName("report", "working") });
     expect(screen.queryByRole("region", { name: runPageCopy.tabResult })).toBeNull();
     expect(getNodeDetail).not.toHaveBeenCalled();
   });

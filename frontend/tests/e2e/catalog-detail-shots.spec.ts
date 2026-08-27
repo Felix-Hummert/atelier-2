@@ -2,7 +2,12 @@ import { mkdirSync } from "node:fs";
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { workflowDetailCopy, workflowStartCopy } from "../../src/lib/catalogPageCopy";
+import {
+  observedSourceHeading,
+  workItemFor,
+  workflowDetailCopy,
+  workflowStartCopy
+} from "../../src/lib/catalogPageCopy";
 
 const shotDirectory = process.env.ATELIER2_SHOT_DIR ?? "";
 
@@ -15,7 +20,7 @@ const colorSchemes = ["light", "dark"] as const;
 
 const workItemSchemaDocument =
   '{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"body":{"type":"string"},"change_marker":{"maxLength":1024,"minLength":1,"type":"string"},"digest":{"pattern":"^[0-9a-f]{64}$","type":"string"},"kind":{"enum":["issue","change_request"],"type":"string"},"observed_at":{"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$","type":"string"},"reference":{"maxLength":1024,"minLength":1,"type":"string"}},"required":["body","change_marker","digest","kind","observed_at","reference"],"title":"work item","type":"object"}';
-const workItemPickerName = `${workflowStartCopy.workItem} for work_item`;
+const workItemPickerName = workItemFor("work_item");
 const groupedObservedQueueItems = {
   items: [
     {
@@ -44,8 +49,8 @@ async function openGroupedWorkItemPicker(sheet: Locator): Promise<void> {
   const picker = sheet.getByRole("combobox", { name: workItemPickerName });
   await picker.click();
   await expect(sheet.getByRole("listbox", { name: workItemPickerName })).toBeVisible();
-  await expect(sheet.getByText("atelier-2 · GitHub")).toBeVisible();
-  await expect(sheet.getByText("infra · GitLab")).toBeVisible();
+  await expect(sheet.getByText(observedSourceHeading("atelier-2", workflowStartCopy.github))).toBeVisible();
+  await expect(sheet.getByText(observedSourceHeading("infra", workflowStartCopy.gitlab))).toBeVisible();
   await expect(sheet.getByRole("option", { name: "#450", exact: true })).toBeVisible();
   await expect(sheet.getByRole("option", { name: "#446", exact: true })).toBeVisible();
   await expect(sheet.getByRole("option", { name: "!12", exact: true })).toBeVisible();

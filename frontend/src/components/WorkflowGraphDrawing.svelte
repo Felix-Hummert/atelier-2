@@ -23,7 +23,8 @@
   import type { NodeState } from "../lib/runProjection";
   import { layerWorkflowGraph } from "../lib/workflowGraph";
   import { loopLabel, workflowGraphCopy } from "../lib/workflowGraphCopy";
-  import { stateGlyphs, stateLabels } from "./StateMark.svelte";
+  import { nodeAriaName } from "../lib/stateMarkCopy";
+  import { stateGlyphs } from "./StateMark.svelte";
 
   type WorkflowGraphPreview = {
     id: string;
@@ -109,7 +110,7 @@
   }
 
   function nodeLabel(id: string, state: NodeState | undefined): string {
-    return state === undefined ? id : `${id} — ${stateLabels[state]}`;
+    return state === undefined ? id : nodeAriaName(id, state);
   }
 
   /**

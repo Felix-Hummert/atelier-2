@@ -11,8 +11,15 @@ import {
 /**
  * REQ-UIQ-03: terms of a surface come from one source. Room pages render
  * through `wrapDisplayCopy` and the `*Copy` / shared display-copy owners;
- * a hand-written operator-facing literal in those templates is a second
- * source. Structural glyphs and whitespace are not terms.
+ * a hand-written operator-facing literal in those templates *or* in the
+ * `<script>` that feeds them is a second source. Structural glyphs,
+ * protocol tokens, and whitespace are not terms.
+ *
+ * A script literal is display copy when it is not a proven non-display
+ * context (import, comparand, key, path, selector, protocol token,
+ * swallowed throw) — assigned to a rendered identifier, returned,
+ * pushed into a label/title/message, or thrown where the script shows
+ * `error.message`. Ambiguous leftovers are reported.
  *
  * The file list is every room page and every `.svelte` file those pages
  * import, transitively.
@@ -33,17 +40,59 @@ const VISIBLE_ATTRIBUTE_KEYS = new Set([
 ]);
 
 const SCRIPT_OR_STYLE = /<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi;
+const SCRIPT_OPEN = /<script\b[^>]*>/gi;
+const SCRIPT_CLOSE = "</script>";
 const HTML_COMMENT = /<!--[\s\S]*?-->/g;
 const ATTRIBUTE_NAME = /[A-Za-z_:][\w:.-]*/y;
 const COMPARAND_PREFIX = /(?:===|!==|==|!=|case)$/;
 const TOKEN_ARGUMENT = /^[a-z]+(?:-[a-z]+)*$/;
+const PROTOCOL_TOKEN = /^\[?[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*-?\]?$|^[A-Z][A-Z0-9_]+$/;
+const PATH_OR_URL = /^(?:\.{0,2}\/|[a-z][a-z0-9+.-]*:)/i;
+const SURFACES_ERROR = /\berror\.message\b|\bhumanErrorMessage\s*\(/;
+const NEEDLE_CALLEES = new Set([
+  "closest",
+  "endsWith",
+  "getElementById",
+  "getElementsByClassName",
+  "getElementsByTagName",
+  "includes",
+  "indexOf",
+  "lastIndexOf",
+  "match",
+  "matches",
+  "matchMedia",
+  "querySelector",
+  "querySelectorAll",
+  "replace",
+  "replaceAll",
+  "search",
+  "split",
+  "startsWith"
+]);
+const DISPLAY_FIELDS = new Set([
+  "alt",
+  "ariadescription",
+  "arialabel",
+  "ariaplaceholder",
+  "ariaroledescription",
+  "ariavaluetext",
+  "datalabel",
+  "heading",
+  "label",
+  "message",
+  "placeholder",
+  "prose",
+  "seals",
+  "text",
+  "title"
+]);
 
 function roomTemplates(): string[] {
   return svelteImportClosure(svelteSourcesIn("pages"));
 }
 
 function unownedCopyIn(file: string, source: string): string[] {
-  return scanTemplate(file, blankNonTemplate(source));
+  return [...scanTemplate(file, blankNonTemplate(source)), ...scanScripts(file, source)];
 }
 
 function blankNonTemplate(source: string): string {
@@ -156,6 +205,247 @@ function isTokenArgument(source: string, stringStart: number, value: string): bo
   if (!TOKEN_ARGUMENT.test(value.trim())) return false;
   const previous = precedingNonSpace(source, stringStart);
   return previous === "(" || previous === ",";
+}
+
+function hasWord(text: string): boolean {
+  return /\p{L}{2,}/u.test(text);
+}
+
+function skipSpaceBack(source: string, index: number): number {
+  let i = index;
+  while (i >= 0 && /\s/.test(source[i] ?? "")) i -= 1;
+  return i;
+}
+
+function isImportSpecifier(source: string, stringStart: number): boolean {
+  return /\b(?:from|import)$/.test(source.slice(0, stringStart).trimEnd());
+}
+
+function isObjectKey(source: string, stringStart: number): boolean {
+  const end = skipJsQuoted(source, stringStart);
+  let i = end;
+  while (i < source.length && /\s/.test(source[i] ?? "")) i += 1;
+  if (source[i] === "?") i += 1;
+  while (i < source.length && /\s/.test(source[i] ?? "")) i += 1;
+  if (source[i] !== ":") return false;
+  const previous = precedingNonSpace(source, stringStart);
+  return previous === "{" || previous === ",";
+}
+
+function isPropertyAccessKey(source: string, stringStart: number): boolean {
+  if (precedingNonSpace(source, stringStart) !== "[") return false;
+  const end = skipJsQuoted(source, stringStart);
+  let i = end;
+  while (i < source.length && /\s/.test(source[i] ?? "")) i += 1;
+  return source[i] === "]";
+}
+
+function isPathOrUrl(value: string): boolean {
+  const trimmed = value.trim();
+  if (PATH_OR_URL.test(trimmed)) return true;
+  return !/\s/.test(trimmed) && trimmed.includes("/");
+}
+
+function isCssSelector(value: string): boolean {
+  return /\[(?:data-|class|id|aria-|role\b)/.test(value) || /:[a-z-]+\(/.test(value);
+}
+
+function isProtocolToken(value: string): boolean {
+  if (/\s/.test(value)) return false;
+  return PROTOCOL_TOKEN.test(value);
+}
+
+function isDisplayFieldValue(source: string, stringStart: number): boolean {
+  let i = skipSpaceBack(source, stringStart - 1);
+  if (source[i] !== ":") return false;
+  i = skipSpaceBack(source, i - 1);
+  const end = i + 1;
+  while (i >= 0 && /[\w$-]/.test(source[i] ?? "")) i -= 1;
+  return DISPLAY_FIELDS.has(attributeKey(source.slice(i + 1, end)));
+}
+
+function identifierBeforeCall(source: string, openParen: number): string {
+  let i = skipSpaceBack(source, openParen - 1);
+  if (source[i] === ">") {
+    let depth = 1;
+    i -= 1;
+    while (i >= 0 && depth > 0) {
+      if (source[i] === ">") depth += 1;
+      else if (source[i] === "<") depth -= 1;
+      i -= 1;
+    }
+    i = skipSpaceBack(source, i);
+  }
+  const end = i + 1;
+  while (i >= 0 && /[\w$]/.test(source[i] ?? "")) i -= 1;
+  return source.slice(i + 1, end);
+}
+
+function enclosingCallOpen(source: string, stringStart: number): number | null {
+  let i = stringStart - 1;
+  let depth = 0;
+  while (i >= 0) {
+    const character = source[i];
+    if (character === "'" || character === '"' || character === "`") {
+      let start = i - 1;
+      while (start >= 0) {
+        const quote = source[start];
+        if ((quote === "'" || quote === '"' || quote === "`") && skipJsQuoted(source, start) === i + 1) {
+          i = start - 1;
+          break;
+        }
+        start -= 1;
+      }
+      if (start < 0) return null;
+      continue;
+    }
+    if (character === ")") depth += 1;
+    else if (character === "(") {
+      if (depth === 0) return i;
+      depth -= 1;
+    }
+    i -= 1;
+  }
+  return null;
+}
+
+function isNeedleArg(source: string, stringStart: number): boolean {
+  const previous = precedingNonSpace(source, stringStart);
+  if (previous !== "(" && previous !== ",") return false;
+  const open = enclosingCallOpen(source, stringStart);
+  if (open === null) return false;
+  return NEEDLE_CALLEES.has(identifierBeforeCall(source, open));
+}
+
+function isThrownLiteral(source: string, stringStart: number): boolean {
+  const before = source.slice(0, stringStart).replace(/\s+/g, " ").trimEnd();
+  return /throw(?: new (?:Error|CockpitRequestError))? ?\($/.test(before);
+}
+
+function scriptLiteralIsDisplay(
+  script: string,
+  stringStart: number,
+  value: string,
+  surfacesError: boolean
+): boolean {
+  const trimmed = value.replace(/\s+/g, " ").trim();
+  if (!hasWord(trimmed)) return false;
+  if (isImportSpecifier(script, stringStart)) return false;
+  if (isComparand(script, stringStart)) return false;
+  if (isObjectKey(script, stringStart)) return false;
+  if (isPropertyAccessKey(script, stringStart)) return false;
+  if (isPathOrUrl(trimmed)) return false;
+  if (isNeedleArg(script, stringStart)) return false;
+  if (isCssSelector(trimmed)) return false;
+  if (isThrownLiteral(script, stringStart) && !surfacesError) return false;
+  if (isProtocolToken(value) && !isDisplayFieldValue(script, stringStart)) return false;
+  if (isTokenArgument(script, stringStart, trimmed)) return false;
+  return true;
+}
+
+function scriptBodies(source: string): Array<{ start: number; body: string }> {
+  const bodies: Array<{ start: number; body: string }> = [];
+  SCRIPT_OPEN.lastIndex = 0;
+  let match = SCRIPT_OPEN.exec(source);
+  while (match !== null) {
+    const start = match.index + match[0].length;
+    const close = source.toLowerCase().indexOf(SCRIPT_CLOSE, start);
+    if (close === -1) {
+      bodies.push({ start, body: source.slice(start) });
+      break;
+    }
+    bodies.push({ start, body: source.slice(start, close) });
+    SCRIPT_OPEN.lastIndex = close + SCRIPT_CLOSE.length;
+    match = SCRIPT_OPEN.exec(source);
+  }
+  return bodies;
+}
+
+function scanScripts(file: string, source: string): string[] {
+  const surfacesError = SURFACES_ERROR.test(source);
+  return scriptBodies(source).flatMap(({ start, body }) =>
+    scanScriptBody(file, source, start, body, surfacesError)
+  );
+}
+
+function scanScriptBody(
+  file: string,
+  source: string,
+  bodyStart: number,
+  body: string,
+  surfacesError: boolean
+): string[] {
+  const found: string[] = [];
+  let i = 0;
+  while (i < body.length) {
+    const character = body[i];
+    if (character === "'" || character === '"') {
+      const end = skipJsQuoted(body, i);
+      const value = body.slice(i + 1, end - 1);
+      if (scriptLiteralIsDisplay(body, i, value, surfacesError)) {
+        const reported = report(file, source, bodyStart + i + 1, value);
+        if (reported !== null) found.push(reported);
+      }
+      i = end;
+      continue;
+    }
+    if (character === "`") {
+      found.push(...copyInScriptTemplate(file, source, bodyStart, body, i, surfacesError));
+      i = skipJsQuoted(body, i);
+      continue;
+    }
+    if (character === "/" && body[i + 1] === "/") {
+      const newline = body.indexOf("\n", i);
+      i = newline === -1 ? body.length : newline;
+      continue;
+    }
+    if (character === "/" && body[i + 1] === "*") {
+      const close = body.indexOf("*/", i + 2);
+      i = close === -1 ? body.length : close + 2;
+      continue;
+    }
+    i += 1;
+  }
+  return found;
+}
+
+function copyInScriptTemplate(
+  file: string,
+  source: string,
+  bodyStart: number,
+  body: string,
+  start: number,
+  surfacesError: boolean
+): string[] {
+  const found: string[] = [];
+  let i = start + 1;
+  let quasiStart = i;
+  while (i < body.length) {
+    if (body[i] === "\\") {
+      i += 2;
+      continue;
+    }
+    if (body[i] === "`") {
+      const value = body.slice(quasiStart, i);
+      if (scriptLiteralIsDisplay(body, start, value, surfacesError)) {
+        const reported = report(file, source, bodyStart + quasiStart, value);
+        if (reported !== null) found.push(reported);
+      }
+      return found;
+    }
+    if (body[i] === "$" && body[i + 1] === "{") {
+      const value = body.slice(quasiStart, i);
+      if (scriptLiteralIsDisplay(body, start, value, surfacesError)) {
+        const reported = report(file, source, bodyStart + quasiStart, value);
+        if (reported !== null) found.push(reported);
+      }
+      i = matchingBrace(body, i + 1);
+      quasiStart = i;
+      continue;
+    }
+    i += 1;
+  }
+  return found;
 }
 
 function isDisplayMustache(body: string): boolean {
@@ -352,6 +642,97 @@ describe("a surface's terms come from one copy owner", () => {
     expect(
       unownedCopyIn("pages/Example.svelte", '<x seals="exactly these output bytes" />')
     ).toEqual(["pages/Example.svelte:1:exactly these output bytes"]);
+  });
+
+  it("reports a script literal assigned to a variable the template renders", () => {
+    expect(
+      unownedCopyIn(
+        "pages/Example.svelte",
+        ["<script>", '  const heading = "Workbench";', "</script>", "<h1>{heading}</h1>"].join("\n")
+      )
+    ).toEqual(["pages/Example.svelte:2:Workbench"]);
+  });
+
+  it("reports a script literal returned from a function the template renders", () => {
+    expect(
+      unownedCopyIn(
+        "pages/Example.svelte",
+        [
+          "<script>",
+          '  function details() { return "added by you · ✓ checked"; }',
+          "</script>",
+          "<span>{details()}</span>"
+        ].join("\n")
+      )
+    ).toEqual(["pages/Example.svelte:2:added by you · ✓ checked"]);
+  });
+
+  it("reports a script literal sitting in a label field", () => {
+    expect(
+      unownedCopyIn(
+        "pages/Example.svelte",
+        [
+          "<script>",
+          '  const choice = { value: "x", label: "Unavailable saved model" };',
+          "</script>",
+          "<span>{choice.label}</span>"
+        ].join("\n")
+      )
+    ).toEqual(["pages/Example.svelte:2:Unavailable saved model"]);
+  });
+
+  it("reports a thrown string when the script shows error.message as user text", () => {
+    expect(
+      unownedCopyIn(
+        "pages/Example.svelte",
+        [
+          "<script>",
+          "  let failure = null;",
+          "  function load() {",
+          "    try { throw new Error(\"The durable event stream could not start.\"); }",
+          "    catch (error) { failure = error instanceof Error ? error.message : \"\"; }",
+          "  }",
+          "</script>",
+          "<p>{failure}</p>"
+        ].join("\n")
+      )
+    ).toEqual(["pages/Example.svelte:4:The durable event stream could not start."]);
+  });
+
+  it("reports a word-bearing format fragment inside a script template literal", () => {
+    const source = [
+      "<script>",
+      "  function heading(name) { return `${owned} for ${name}`; }",
+      "</script>",
+      "<span>{heading(item)}</span>"
+    ].join("\n");
+    expect(source).toContain("${owned} for ${name}");
+    expect(unownedCopyIn("pages/Example.svelte", source)).toEqual([
+      "pages/Example.svelte:2:for"
+    ]);
+  });
+
+  it("does not report a swallowed throw, import, comparand, key, path, or protocol token", () => {
+    expect(
+      unownedCopyIn(
+        "pages/Example.svelte",
+        [
+          "<script>",
+          '  import { copy } from "../lib/exampleCopy";',
+          '  const kind = "unavailable";',
+          "  try {",
+          '    if (kind === "unavailable") throw new Error("profile cursor repeated");',
+          "  } catch {",
+          "    title = copy.unavailable;",
+          "  }",
+          '  const tabs = { result: "result" };',
+          '  navigate("/atelier/settings");',
+          '  matchMedia("(max-width: 48rem)");',
+          "</script>",
+          "<h1>{title}</h1>"
+        ].join("\n")
+      )
+    ).toEqual([]);
   });
 
   it("follows each room page's .svelte imports into the components those rooms host", () => {

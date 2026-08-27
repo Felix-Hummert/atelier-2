@@ -11,7 +11,17 @@
     ProjectModelResolution,
     WorkflowRevisionDetail
   } from "../api/client";
-  import { workflowStartCopy } from "../lib/catalogPageCopy";
+  import {
+    observedSourceHeading,
+    pinnedModelLine,
+    projectDefaultLine,
+    startAccountSuffix,
+    startConfigurationLabel,
+    startOrderGroup,
+    startUnavailableSuffix,
+    workItemFor,
+    workflowStartCopy
+  } from "../lib/catalogPageCopy";
   import { problemCode } from "../lib/catalogName";
   import { humanErrorMessage } from "../lib/humanRefusal";
   import {
@@ -118,10 +128,12 @@
         readEveryAuthProfile((after) => cockpitApi.listAuthProfileRevisions(after)),
         Promise.all(declaredOrders().map(loadOrder))
       ]);
-      if (!configurationsPage.complete) throw new Error("Agent configurations are incomplete.");
-      if (!profilesPage.complete) throw new Error("Accounts are incomplete.");
+      if (!configurationsPage.complete) throw new Error(workflowStartCopy.configurationsIncomplete);
+      if (!profilesPage.complete) throw new Error(workflowStartCopy.accountsIncomplete);
       projectReference = projects.items[0]?.public_project_reference ?? null;
-      if (projectReference === null && roles.length > 0) throw new Error("Served project missing.");
+      if (projectReference === null && roles.length > 0) {
+        throw new Error(workflowStartCopy.servedProjectMissing);
+      }
       configurations = configurationsPage.configurations;
       registeredConfigurations = await registeredConfigurationsOf(
         configurations,
@@ -208,7 +220,7 @@
   async function resolveModels(forStart: boolean): Promise<Record<string, RoleResolution> | null> {
     if (roles.length === 0) return {};
     const reference = projectReference;
-    if (reference === null) throw new Error("Served project missing.");
+    if (reference === null) throw new Error(workflowStartCopy.servedProjectMissing);
     const generation = ++resolutionGeneration;
     resolving = true;
     try {
@@ -218,7 +230,7 @@
         modelOverrides()
       );
       const exact = exactResolutions(response);
-      if (exact === null) throw new Error("Model resolution did not name exactly these roles.");
+      if (exact === null) throw new Error(workflowStartCopy.rolesUnresolved);
       if (generation !== resolutionGeneration) return null;
       resolutions = exact;
       return exact;
@@ -247,7 +259,11 @@
   }
 
   function configurationLabel(registered: RegisteredConfiguration): string {
-    return `${registered.configuration.provider_id} · ${registered.modelId} · Account ${registered.accountId}`;
+    return startConfigurationLabel(
+      registered.configuration.provider_id,
+      registered.modelId,
+      registered.accountId
+    );
   }
 
   function resolvedConfigurationLabel(
@@ -255,18 +271,21 @@
     registered: RegisteredConfiguration | undefined
   ): string {
     const model = resolution.model_id ?? workflowStartCopy.unavailable;
-    const account = registered === undefined ? "" : ` · Account ${registered.accountId}`;
+    const account = registered === undefined ? "" : startAccountSuffix(registered.accountId);
     const unavailable = registered?.configuration.startable === false
-      ? ` · ◇ ${workflowStartCopy.unavailable}`
+      ? startUnavailableSuffix()
       : "";
     if (resolution.source === "pinned-in-workflow") {
-      return `${workflowStartCopy.pinnedInWorkflow} → ${model}${account}${unavailable}`;
+      return pinnedModelLine(model, account, unavailable);
     }
     if (resolution.source === "from-project") {
-      const fallback = resolution.default_difficulty === resolution.declared_difficulty
-        ? ""
-        : ` (${workflowStartCopy.nextHigher})`;
-      return `difficulty ${resolution.declared_difficulty} → ${model}${fallback}${account}${unavailable}`;
+      return projectDefaultLine(
+        resolution.declared_difficulty,
+        model,
+        resolution.default_difficulty !== resolution.declared_difficulty,
+        account,
+        unavailable
+      );
     }
     return registered === undefined ? model : configurationLabel(registered);
   }
@@ -291,7 +310,7 @@
       items.push(...page.items);
       nextAfter = page.next_after;
       if (nextAfter === null) continue;
-      if (seenCursors.includes(nextAfter)) throw new Error("Observed queue items are incomplete.");
+      if (seenCursors.includes(nextAfter)) throw new Error(workflowStartCopy.observedQueueIncomplete);
       seenCursors.push(nextAfter);
       after = nextAfter;
     }
@@ -327,7 +346,7 @@
   }
 
   function orderGroupLabel(order: OrderDraft): string {
-    return order.shape?.kind === "work_item" ? workflowStartCopy.workItem : `Order ${order.name}`;
+    return order.shape?.kind === "work_item" ? workflowStartCopy.workItem : startOrderGroup(order.name);
   }
 
   function startDisabledReason(
@@ -405,13 +424,13 @@
   }
 
   function platformOf(reference: string): string {
-    if (reference.startsWith("gh:")) return "GitHub";
-    if (reference.startsWith("gl:")) return "GitLab";
+    if (reference.startsWith("gh:")) return workflowStartCopy.github;
+    if (reference.startsWith("gl:")) return workflowStartCopy.gitlab;
     return workflowStartCopy.unknownSource;
   }
 
   function observedGroupHeading(item: ObservedQueueItem): string {
-    return `${item.project_id} · ${platformOf(item.tracker_item_reference)}`;
+    return observedSourceHeading(item.project_id, platformOf(item.tracker_item_reference));
   }
 
   function groupObservedItemsBySource(
@@ -433,7 +452,7 @@
   }
 
   function workItemListName(orderName: string): string {
-    return `${workflowStartCopy.workItem} for ${orderName}`;
+    return workItemFor(orderName);
   }
 
   function workItemOptionId(orderName: string, itemId: string): string {
@@ -591,7 +610,7 @@
               ?.agent_configuration_revision_hash !== binding.agent_configuration_revision_hash
         )
       ) {
-        throw new Error("The start response changed the selected roles.");
+        throw new Error(workflowStartCopy.startResponseChangedRoles);
       }
       const resolved = await mutationJournal.resolve(mutation.mutation_id, {
         type: "start_response",
@@ -602,7 +621,7 @@
         public_run_reference: result.value.public_run_reference,
         workflow_revision_hash: result.value.workflow_revision_hash
       });
-      if (!resolved) throw new Error("The start response did not prove the exact request.");
+      if (!resolved) throw new Error(workflowStartCopy.startResponseUnproven);
       navigate(`/atelier/runs/${result.value.public_run_reference}`);
     } catch (error) {
       startFailure = humanErrorMessage(error, workflowStartCopy.startUnavailable);

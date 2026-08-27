@@ -15,6 +15,7 @@ import {
   type WaitMutation
 } from "../../src/lib/mutationJournal";
 import { runPageCopy } from "../../src/lib/runPageCopy";
+import { nodeAriaName } from "../../src/lib/stateMarkCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import { exactBody } from "../support/exactBytes";
 import {
@@ -72,8 +73,8 @@ describe("Wait control", () => {
       JSON.stringify({ workflow_revision_hash: digest, node_id: "wait", answer_base64: "MTc=" })
     );
     expect(firstRequest.answer_hash).toBe(answerHash);
-    expect(screen.getByRole("article", { name: "wait — Working" })).toBeTruthy();
-    expect(screen.getByRole("article", { name: "wait — Working" }).querySelector(".state-mark")?.classList).toContain("state-still");
+    expect(screen.getByRole("article", { name: nodeAriaName("wait", "working") })).toBeTruthy();
+    expect(screen.getByRole("article", { name: nodeAriaName("wait", "working") }).querySelector(".state-mark")?.classList).toContain("state-still");
     expect(screen.getByRole("region", { name: "Answer uncertain" }).querySelector(".human-action-shape-working")).toBeTruthy();
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: runPageCopy.retry })));
 
@@ -95,8 +96,8 @@ describe("Wait control", () => {
 
     await waitFor(async () => expect(await journal.get(firstRequest.mutation_id)).toBeNull());
     expect(screen.queryByRole("heading", { name: /Answer/ })).toBeNull();
-    expect(screen.getByRole("article", { name: "wait — Done" })).toBeTruthy();
-    expect(screen.getByRole("article", { name: "final — Working" })).toBeTruthy();
+    expect(screen.getByRole("article", { name: nodeAriaName("wait", "succeeded") })).toBeTruthy();
+    expect(screen.getByRole("article", { name: nodeAriaName("final", "working") })).toBeTruthy();
     await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("run-state")));
   });
 
@@ -129,12 +130,12 @@ describe("Wait control", () => {
 
     expect(await screen.findByRole("heading", { name: "Answer uncertain" })).toBeTruthy();
     expect(screen.getByText("17")).toBeTruthy();
-    expect(screen.getByRole("article", { name: "wait — Working" })).toBeTruthy();
+    expect(screen.getByRole("article", { name: nodeAriaName("wait", "working") })).toBeTruthy();
     await fireEvent.click(screen.getByRole("button", { name: runPageCopy.discard }));
 
     await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText(runPageCopy.integerAnswer)));
     expect(screen.getByRole("region", { name: runPageCopy.answerNeeded }).querySelector(".human-action-shape-needs")).toBeTruthy();
-    expect(screen.getByRole("article", { name: "wait — Needs you" })).toBeTruthy();
+    expect(screen.getByRole("article", { name: nodeAriaName("wait", "needs_you") })).toBeTruthy();
     expect(await journal.get(waitMutationId(publicReference, "wait"))).toBeNull();
   });
 
@@ -167,7 +168,7 @@ describe("Wait control", () => {
     expect(await screen.findByText("started")).toBeTruthy();
     await waitFor(async () => expect(await journal.entries()).toEqual([]));
     expect(screen.queryByRole("heading", { name: /Answer/ })).toBeNull();
-    expect(screen.getByRole("article", { name: "wait — Done" })).toBeTruthy();
+    expect(screen.getByRole("article", { name: nodeAriaName("wait", "succeeded") })).toBeTruthy();
   });
 
   it("names a definitively refused answer as failed and hands the form back with nothing pending", async () => {

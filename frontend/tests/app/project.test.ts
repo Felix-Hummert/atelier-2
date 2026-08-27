@@ -16,7 +16,12 @@ import { MutationJournal } from "../../src/lib/mutationJournal";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import { retryLabel } from "../../src/lib/readStateCopy";
-import { difficultyLabel, settingsPageCopy } from "../../src/lib/settingsPageCopy";
+import {
+  accountChoice,
+  difficultyLabel,
+  retainedAccountChoice,
+  settingsPageCopy
+} from "../../src/lib/settingsPageCopy";
 import { cockpitApiStub } from "../support/cockpitApi";
 
 /** Live 2026-08-27 Settings payloads from GET http://127.0.0.1:8422, copied verbatim. */
@@ -216,7 +221,7 @@ describe("Settings owns project sources, models, and defaults", () => {
     expect(screen.queryByText(/Work in this project/)).toBeNull();
     expect(screen.getByText(configuration.model)).toBeTruthy();
     expect(screen.getByText(profile.profile_id)).toBeTruthy();
-    expect(screen.getByText("added by you · ✓ checked")).toBeTruthy();
+    expect(screen.getByText(settingsPageCopy.addedByYouChecked)).toBeTruthy();
     expect(screen.queryByText("✓ startable")).toBeNull();
     expect(screen.getAllByRole("combobox").map((item) => item.getAttribute("aria-label"))).toEqual([
       difficultyLabel(3),
@@ -269,9 +274,9 @@ describe("Settings owns project sources, models, and defaults", () => {
       }]))
     });
 
-    expect((await screen.findByText("◇ unknown at provider")).isConnected).toBe(true);
+    expect((await screen.findByText(settingsPageCopy.unknownAtProvider)).isConnected).toBe(true);
     expect(screen.getByText(settingsPageCopy.defaultsUnavailableModels)).toBeTruthy();
-    expect(screen.getByText(`${configuration.model} · Account ${profile.profile_id} — Unavailable`)).toBeTruthy();
+    expect(screen.getByText(retainedAccountChoice(configuration.model, profile.profile_id))).toBeTruthy();
     const difficultyThree = screen.getByRole("combobox", { name: difficultyLabel(3) });
     expect(difficultyThree).toHaveProperty("value", "");
     expect(within(difficultyThree).getByRole("option", { name: settingsPageCopy.changeSavedDefault })).toBeTruthy();
@@ -554,10 +559,10 @@ describe("Settings owns project sources, models, and defaults", () => {
     for (const difficulty of [3, 2, 1]) {
       const select = screen.getByRole("combobox", { name: difficultyLabel(difficulty) });
       expect(within(select).queryByRole("option", {
-        name: "claude-opus-4-6 · Account operator-anthropic-subscription"
+        name: accountChoice("claude-opus-4-6", "operator-anthropic-subscription")
       })).toBeNull();
       expect(within(select).getByRole("option", {
-        name: "grok-4.6 · Account grok-felix"
+        name: accountChoice("grok-4.6", "grok-felix")
       })).toBeTruthy();
     }
 
