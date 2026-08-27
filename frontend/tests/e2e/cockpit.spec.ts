@@ -2158,11 +2158,11 @@ test("the Catalog keeps unpublished and unnamable workflows visible", async ({
   await expect(stateHint).toBeVisible();
   await stateHint.click();
   await expect(unpublished.getByRole("status")).toHaveText(catalogPageCopy.notAdmittedHint);
-  await expect(unpublished.getByRole("button", { name: "Admit into catalog" })).toBeVisible();
+  await expect(unpublished.getByRole("button", { name: /Admit/ })).toHaveCount(0);
   const unnamed = page.getByRole("listitem").filter({ hasText: unnamable });
   await expect(unnamed).toBeVisible();
   await expect(unnamed.getByRole("link", { name: "Details" })).toBeVisible();
-  await expect(unnamed.getByRole("button", { name: "Admit into catalog" })).toHaveCount(0);
+  await expect(unnamed.getByRole("button", { name: /Admit/ })).toHaveCount(0);
 });
 
 test("a waiting V3 run is answerable on its own run page", async ({ page }) => {

@@ -26,7 +26,6 @@ const LINEAGE_ID = "e".repeat(64);
 const WORKFLOW_NAME = "iterate-code";
 const SECOND_WORKFLOW_NAME = "review-code";
 const EXACT_YAML = "format_version: 3\nname: iterate-code\n";
-const EXACT_AGENT = "---\nname: scribe\ndescription: Writes.\n---\n\nYou write.\n";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -123,15 +122,15 @@ describe("the catalog room", () => {
 
     expect((await screen.findByText(WORKFLOW_NAME)).isConnected).toBe(true);
     const facts = await screen.findByText(/Manual import/);
-    expect(facts.textContent).toContain("bbbbbbbb…bbbb");
+    expect(facts.textContent).toBe(catalogPageCopy.provenanceManual);
   });
 
-  it("leaves an admitted workflow calm and offers it no second admission", async () => {
+  it("leaves an admitted workflow calm with no second admission door", async () => {
     openCatalog({ ...listing([workflowSummary()]), ...admittedName() });
 
     const card = (await screen.findByText(WORKFLOW_NAME)).closest("li");
     expect(card).not.toBeNull();
-    expect(screen.queryByRole("button", { name: catalogPageCopy.admit })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Admit/ })).toBeNull();
   });
 
   it("carries a newer revision with one solid attention shape and a Why hint, not a state band", async () => {
@@ -328,22 +327,23 @@ describe("the catalog room", () => {
     expect(screen.queryByRole("link", { name: catalogPageCopy.details })).toBeNull();
   });
 
-  it("proves(an-unadmitted-or-uncatalogable-published-name-is-named-in-the-picker): offers admission for a published workflow the catalog does not hold yet", async () => {
+  it("keeps a published workflow outside the catalog without a second admission door", async () => {
     openCatalog({ ...listing([workflowSummary()]), ...unlistedName() });
 
-    expect(
-      (await screen.findByRole("button", { name: catalogPageCopy.admit })).isConnected
-    ).toBe(true);
+    await screen.findByText(WORKFLOW_NAME);
+    expect(screen.queryByRole("button", { name: /Admit/ })).toBeNull();
   });
 
-  it("makes a workflow startable through the admission door", async () => {
+  it("recognizes and admits a workflow in one import confirmation", async () => {
     let admitted = false;
-    const foundCatalogLineage = vi.fn(async () => {
+    const addLibraryDocument = vi.fn(async () => {
       admitted = true;
       return {
         status: 201,
         value: {
-          display_name: WORKFLOW_NAME,
+          kind: "workflow" as const,
+          name: WORKFLOW_NAME,
+          description: null,
           lineage_id: LINEAGE_ID,
           workflow_revision_hash: WORKFLOW_HASH,
           revision_number: 1
@@ -368,33 +368,25 @@ describe("the catalog room", () => {
           revision_number: 1
         };
       }),
-      getWorkflowRevision: vi.fn(async () => ({
-        workflow_revision_hash: WORKFLOW_HASH,
-        document_base64: "YQ==",
-        graph: {
-          workflow_format_version: 3 as const,
-          executable: true,
-          not_executable_reason: null,
-          node_count: 1,
-          agent_roles: [],
-          orders: [],
-          wait_answer_schemas: [],
-          node_previews: [],
-          loops: [],
-          name: WORKFLOW_NAME,
-          description: null
-        }
+      recognizeLibraryDocument: vi.fn(async () => ({
+        outcome: "workflow" as const,
+        workflow_format_version: 3 as const,
+        name: WORKFLOW_NAME,
+        description: null
       })),
-      foundCatalogLineage
+      addLibraryDocument
     });
 
-    await fireEvent.click(await screen.findByRole("button", { name: catalogPageCopy.admit }));
+    await fireEvent.click(await screen.findByRole("button", { name: catalogPageCopy.import }));
+    const file = { name: "iterate-code.yaml", arrayBuffer: async () => new TextEncoder().encode(EXACT_YAML).buffer };
+    await fireEvent.change(screen.getByLabelText(catalogPageCopy.chooseFile), { target: { files: [file] } });
+    await fireEvent.click(await screen.findByRole("button", { name: catalogPageCopy.addToCatalog }));
 
     expect((await screen.findByText(WORKFLOW_NAME)).isConnected).toBe(true);
-    expect(foundCatalogLineage).toHaveBeenCalledOnce();
+    expect(addLibraryDocument).toHaveBeenCalledOnce();
   });
 
-  it("offers no admission for a workflow the admission door would refuse", async () => {
+  it("offers no admission door for a workflow the library would refuse", async () => {
     openCatalog({
       ...listing([workflowSummary({ name: null })]),
       ...unlistedName()
@@ -403,7 +395,7 @@ describe("the catalog room", () => {
     expect(
       (await screen.findByText(catalogPageCopy.unnamedWorkflow)).isConnected
     ).toBe(true);
-    expect(screen.queryByRole("button", { name: catalogPageCopy.admit })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Admit/ })).toBeNull();
     expect(screen.queryByRole("button", { name: catalogPageCopy.stateHint })).toBeNull();
   });
 
@@ -424,7 +416,7 @@ describe("the catalog room", () => {
     expect((await screen.findByText(
       "This workflow declares no output. Add one outputs: entry on the agent node and publish again."
     )).isConnected).toBe(true);
-    expect(screen.queryByRole("button", { name: catalogPageCopy.admit })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Admit/ })).toBeNull();
   });
 
   it("proves(the-picker-offers-every-saved-workflow-not-only-its-first-page): lists a workflow that arrives only after the first page", async () => {
@@ -482,103 +474,22 @@ describe("the catalog room", () => {
     ).toBe(true);
   });
 
-  it("publishes pasted workflow bytes and lists what came back", async () => {
-    const publish = vi.fn(async () => ({
-      status: 201,
-      value: {
-        workflow_revision_hash: WORKFLOW_HASH,
-        document_base64: "YQ==",
-        graph: {
-          workflow_format_version: 1 as const,
-          start_node_id: "only",
-          nodes: [
-            {
-              type: "action" as const,
-              node_id: "only",
-              next_node_id: "only"
-            }
-          ]
-        }
-      }
-    }));
-    let published = false;
+  it("names a document the library cannot recognize without publishing it", async () => {
+    const addLibraryDocument = vi.fn();
     openCatalog({
-      publish,
-      listWorkflowRevisions: vi.fn(async () => ({
-        items: published ? [workflowSummary()] : [],
-        next_after_revision_hash: null
+      recognizeLibraryDocument: vi.fn(async () => ({
+        outcome: "unrecognized" as const,
+        refusals: [{ kind: "workflow" as const, expected: "format_version", refused_because: "missing" }]
       })),
-      ...unlistedName()
+      addLibraryDocument
     });
-    await screen.findByText(catalogPageCopy.workflowsEmpty);
 
-    const field = screen.getByLabelText(catalogPageCopy.importWorkflowLabel);
-    await fireEvent.input(field, { target: { value: EXACT_YAML } });
-    published = true;
-    await fireEvent.click(screen.getAllByRole("button", { name: catalogPageCopy.importAction })[0]!);
+    await fireEvent.click(await screen.findByRole("button", { name: catalogPageCopy.import }));
+    const file = { name: "notes.txt", arrayBuffer: async () => new TextEncoder().encode("notes").buffer };
+    await fireEvent.change(screen.getByLabelText(catalogPageCopy.chooseFile), { target: { files: [file] } });
 
-    expect((await screen.findByText(WORKFLOW_NAME)).isConnected).toBe(true);
-    expect(publish).toHaveBeenCalledOnce();
-  });
-
-  it("publishes a pasted agent definition and lists what came back", async () => {
-    const publishAgentDefinition = vi.fn(async () => ({
-      status: 201,
-      value: { agent_definition_revision_hash: AGENT_HASH }
-    }));
-    let published = false;
-    openCatalog({
-      publishAgentDefinition,
-      listAgentDefinitionRevisions: vi.fn(async () => ({
-        items: published ? [agentItem()] : [],
-        next_after_revision_hash: null
-      }))
-    });
-    await screen.findByText(catalogPageCopy.agentsEmpty);
-
-    const field = screen.getByLabelText(catalogPageCopy.importAgentLabel);
-    await fireEvent.input(field, { target: { value: EXACT_AGENT } });
-    published = true;
-    await fireEvent.click(screen.getAllByRole("button", { name: catalogPageCopy.importAction })[1]!);
-
-    expect((await screen.findByText("scribe")).isConnected).toBe(true);
-    expect(publishAgentDefinition).toHaveBeenCalledWith(EXACT_AGENT);
-  });
-
-  it("shows the refusal the API named rather than a sentence of its own", async () => {
-    openCatalog({
-      publishAgentDefinition: vi.fn(async () => {
-        throw new CockpitRequestError("agent-definition-field-unknown: color", {
-          type: "urn:atelier2:problem:v1:agent-definition-field-unknown",
-          title: "Invalid agent definition document",
-          status: 422,
-          detail: "agent-definition-field-unknown: color"
-        } as Problem);
-      })
-    });
-    await screen.findByText(catalogPageCopy.agentsEmpty);
-
-    const field = screen.getByLabelText(catalogPageCopy.importAgentLabel);
-    await fireEvent.input(field, { target: { value: EXACT_AGENT } });
-    await fireEvent.click(screen.getAllByRole("button", { name: catalogPageCopy.importAction })[1]!);
-
-    expect(
-      (await screen.findByText("agent-definition-field-unknown: color")).isConnected
-    ).toBe(true);
-    expect(
-      (await screen.findByText("Invalid agent definition document")).isConnected
-    ).toBe(true);
-  });
-
-  it("refuses to send an empty document instead of asking the API about nothing", async () => {
-    const publishAgentDefinition = vi.fn();
-    openCatalog({ publishAgentDefinition });
-    await screen.findByText(catalogPageCopy.agentsEmpty);
-
-    await fireEvent.click(screen.getAllByRole("button", { name: catalogPageCopy.importAction })[1]!);
-
-    expect((await screen.findByText(catalogPageCopy.emptyDocument)).isConnected).toBe(true);
-    expect(publishAgentDefinition).not.toHaveBeenCalled();
+    expect((await screen.findByText(catalogPageCopy.unrecognized)).isConnected).toBe(true);
+    expect(addLibraryDocument).not.toHaveBeenCalled();
   });
 
   it("says the workflow list is unavailable rather than showing it as empty", async () => {

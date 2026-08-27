@@ -17,9 +17,12 @@ export const catalogPageCopy = {
   // door that starts a piece by hand -- what the house can do, from where, and
   // how to get more. There is no second room that starts a run.
   lead: "What the workshop has — every published workflow, agent, and skill, each with its provenance.",
+  import: "Import",
+  workflow: "Workflow",
+  agent: "Agent",
 
   workflowsTitle: "Available workflows",
-  workflowsEmpty: "Nothing published yet — import a workflow file below.",
+  workflowsEmpty: "Drop a workflow, an agent, or a plugin folder — anywhere on this page.",
   workflowsUnavailable: "Workflows unavailable",
   workflowsIncomplete: "Workflows incomplete",
 
@@ -27,7 +30,7 @@ export const catalogPageCopy = {
   // translates nothing. Neutrality lives in a workflow's role and its casting,
   // never in the file, so the heading says which axis this list is sorted on.
   agentsTitle: "Available agents (by provider)",
-  agentsEmpty: "No agent published yet — import an .agent.md file below.",
+  agentsEmpty: "No agent published yet.",
   agentsUnavailable: "Agents unavailable",
   agentsIncomplete: "Agents incomplete",
 
@@ -53,10 +56,6 @@ export const catalogPageCopy = {
   stateHint: "Why this card is marked",
   why: "Why",
 
-  admit: "Admit into catalog",
-  admitting: "Admitting…",
-  admitFailed: "This workflow could not be admitted.",
-  admitted: "Admitted — you can open it by name now.",
   // The catalog detail owns the only manual start door (ADR 0019 §1).
   start: "Start",
   // The one door into the workflow detail page (#695): a named revision's
@@ -66,21 +65,15 @@ export const catalogPageCopy = {
   // exactly what this door is for.
   details: "Details",
 
-  importWorkflowTitle: "Import a workflow",
-  importWorkflowHint: "Choose a .yaml file, or paste the exact document.",
-  importWorkflowLabel: "Exact workflow YAML",
-  importWorkflowFailed: "This workflow could not be imported.",
-
-  importAgentTitle: "Import an agent",
-  importAgentHint: "Choose an .agent.md file, or paste the exact document.",
-  importAgentLabel: "Exact agent definition",
-  importAgentFailed: "This agent could not be imported.",
-
   chooseFile: "Choose a file",
-  importing: "Importing…",
-  importAction: "Import",
-  imported: "Imported.",
-  emptyDocument: "There is nothing to import yet — choose a file or paste a document.",
+  cancel: "Cancel",
+  close: "Close",
+  recognizing: "Recognizing…",
+  addToCatalog: "Add to catalog",
+  addingToCatalog: "Adding…",
+  importFailed: "This file could not be imported.",
+  recognitionFailed: "This file could not be recognized.",
+  unrecognized: "This doesn't look like a workflow, an agent, or a plugin — nothing was added.",
   fileUnreadable: "That file could not be read."
 } as const;
 

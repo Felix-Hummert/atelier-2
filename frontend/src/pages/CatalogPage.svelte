@@ -2,14 +2,10 @@
   import { onMount } from "svelte";
 
   import type { CockpitApi } from "../api/client";
-  import CatalogImportDoor from "../components/CatalogImportDoor.svelte";
+  import CatalogImportSheet from "../components/CatalogImportSheet.svelte";
   import InfoHint from "../components/InfoHint.svelte";
   import ReadState from "../components/ReadState.svelte";
-  import {
-    admitPublishedRevision,
-    catalogActivatedAt,
-    COCKPIT_CATALOG_ACTOR
-  } from "../lib/catalogAdmission";
+  import { catalogActivatedAt, COCKPIT_CATALOG_ACTOR } from "../lib/catalogAdmission";
   import { catalogHeadsOf, catalogNameStateOf, type CatalogNameState } from "../lib/catalogName";
   import { catalogPageCopy } from "../lib/catalogPageCopy";
   import {
@@ -21,8 +17,6 @@
   } from "../lib/catalogRows";
   import { onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
-  import { humanErrorMessage } from "../lib/humanRefusal";
-  import { publicationMutation } from "../lib/mutationJournal";
   import {
     beginRead,
     confirmRead,
@@ -44,8 +38,7 @@
     retainedRead<CatalogWorkflowRow[], ReadFailure>();
   let agents: RetainedRead<CatalogAgentRow[], ReadFailure> =
     retainedRead<CatalogAgentRow[], ReadFailure>();
-  let admittingHash: string | null = null;
-  let admissionFailure: string | null = null;
+  let importSheetOpen = false;
 
   onMount(() => {
     // Navigating into the Catalog focuses the stage. On a phone that focus can
@@ -131,41 +124,18 @@
     }
   }
 
-  /**
-   * Publication is idempotent by hash, so this door needs no journal.
-   *
-   * The start door journals its publication because a lost response there
-   * leaves an exact request nobody can replay. Here the operator still holds
-   * the file, and importing it again answers with the same revision — so the
-   * retry is the Import button, not a pending-request list.
-   */
-  async function importWorkflow(exactYaml: string): Promise<void> {
-    await cockpitApi.publish(await publicationMutation(exactYaml));
-    await loadWorkflows();
+  async function recognizeLibraryDocument(document: Uint8Array, fileName: string | null) {
+    return cockpitApi.recognizeLibraryDocument(document, fileName);
   }
 
-  async function importAgent(exactMarkdown: string): Promise<void> {
-    await cockpitApi.publishAgentDefinition(exactMarkdown);
-    await loadAgents();
-  }
-
-  async function admit(revisionHash: string): Promise<void> {
-    admittingHash = revisionHash;
-    admissionFailure = null;
-    try {
-      const revision = await cockpitApi.getWorkflowRevision(revisionHash);
-      await admitPublishedRevision(
-        cockpitApi,
-        revision,
-        COCKPIT_CATALOG_ACTOR,
-        catalogActivatedAt()
-      );
-      await loadWorkflows();
-    } catch (error) {
-      admissionFailure = humanErrorMessage(error, catalogPageCopy.admitFailed);
-    } finally {
-      admittingHash = null;
-    }
+  async function addLibraryDocument(document: Uint8Array, fileName: string | null): Promise<void> {
+    await cockpitApi.addLibraryDocument(
+      document,
+      fileName,
+      COCKPIT_CATALOG_ACTOR,
+      catalogActivatedAt()
+    );
+    await Promise.all([loadWorkflows(), loadAgents()]);
   }
 
   function workflowStateHint(row: CatalogWorkflowRow): string | null {
@@ -179,16 +149,19 @@
 </script>
 
 <section class="surface" aria-labelledby="catalog-title">
-  <header class="surface-head">
-    <h1 id="catalog-title">{wrapDisplayCopy(catalogPageCopy.title)}</h1>
-    <p>{wrapDisplayCopy(catalogPageCopy.lead)}</p>
+  <header class="surface-head catalog-head">
+    <div>
+      <h1 id="catalog-title">{wrapDisplayCopy(catalogPageCopy.title)}</h1>
+      <p>{wrapDisplayCopy(catalogPageCopy.lead)}</p>
+    </div>
+    <button type="button" onclick={() => { importSheetOpen = true; }}>
+      {wrapDisplayCopy(catalogPageCopy.import)}
+    </button>
   </header>
 
   <section aria-labelledby="catalog-workflows-title">
     <h2 id="catalog-workflows-title">{wrapDisplayCopy(catalogPageCopy.workflowsTitle)}</h2>
     <ReadState read={workflows} label="workflows" onRetry={() => { void loadWorkflows(); }} />
-    {#if admissionFailure !== null}<p class="failure" role="alert">{admissionFailure}</p>{/if}
-
     {#if workflows.confirmed !== null && workflows.confirmed.length === 0}
       <p class="empty">{wrapDisplayCopy(catalogPageCopy.workflowsEmpty)}</p>
     {/if}
@@ -203,32 +176,20 @@
         >
           <div class="entry-head">
             <strong>{row.title}</strong>
-            {#if stateHint !== null}
-              <InfoHint
-                label={wrapDisplayCopy(catalogPageCopy.stateHint)}
-                prose={wrapDisplayCopy(stateHint)}
-                text={wrapDisplayCopy(catalogPageCopy.why)}
-                pinToCard={true}
-              />
-            {/if}
           </div>
+          {#if stateHint !== null}
+            <InfoHint
+              label={wrapDisplayCopy(catalogPageCopy.stateHint)}
+              prose={wrapDisplayCopy(stateHint)}
+              text={wrapDisplayCopy(catalogPageCopy.why)}
+              pinToCard={true}
+            />
+          {/if}
           <p class="entry-line">{row.description ?? wrapDisplayCopy(catalogPageCopy.noDescription)}</p>
-          <p class="entry-facts">{catalogRowFacts(row.revisionHash).join(" · ")}</p>
+          <p class="entry-facts">{catalogRowFacts().join(" · ")}</p>
           {#if row.name !== null}
             {@const detailPath = workflowPath(row.name)}
             <div class="entry-actions">
-              {#if row.state?.kind === "not-admitted" && row.admittable}
-                <button
-                  type="button"
-                  disabled={admittingHash !== null}
-                  onclick={() => { void admit(row.revisionHash); }}
-                  >{wrapDisplayCopy(
-                    admittingHash === row.revisionHash
-                      ? catalogPageCopy.admitting
-                      : catalogPageCopy.admit
-                  )}</button
-                >
-              {/if}
               <a
                 class="button"
                 href={detailPath}
@@ -241,15 +202,6 @@
       {/each}
     </ul>
 
-    <CatalogImportDoor
-      title={catalogPageCopy.importWorkflowTitle}
-      hint={catalogPageCopy.importWorkflowHint}
-      label={catalogPageCopy.importWorkflowLabel}
-      accept=".yaml,.yml,text/yaml,application/yaml"
-      fieldId="import-workflow"
-      failureTitle={catalogPageCopy.importWorkflowFailed}
-      onImport={importWorkflow}
-    />
   </section>
 
   <section aria-labelledby="catalog-agents-title">
@@ -266,34 +218,33 @@
           <div class="entry-head">
             <strong>{row.title}</strong>
             <span class="entry-provider">{wrapDisplayCopy(row.provider)}</span>
-            <InfoHint
-              label={wrapDisplayCopy(catalogPageCopy.stateHint)}
-              prose={wrapDisplayCopy(catalogPageCopy.agentUnavailableHint)}
-              text={wrapDisplayCopy(catalogPageCopy.why)}
-              pinToCard={true}
-            />
           </div>
+          <InfoHint
+            label={wrapDisplayCopy(catalogPageCopy.stateHint)}
+            prose={wrapDisplayCopy(catalogPageCopy.agentUnavailableHint)}
+            text={wrapDisplayCopy(catalogPageCopy.why)}
+            pinToCard={true}
+          />
           <p class="entry-line">{row.description}</p>
-          <p class="entry-facts">{catalogRowFacts(row.revisionHash).join(" · ")}</p>
+          <p class="entry-facts">{catalogRowFacts().join(" · ")}</p>
         </li>
       {/each}
     </ul>
 
-    <CatalogImportDoor
-      title={catalogPageCopy.importAgentTitle}
-      hint={catalogPageCopy.importAgentHint}
-      label={catalogPageCopy.importAgentLabel}
-      accept=".md,text/markdown"
-      fieldId="import-agent"
-      failureTitle={catalogPageCopy.importAgentFailed}
-      onImport={importAgent}
-    />
   </section>
 
   <section aria-labelledby="catalog-skills-title">
     <h2 id="catalog-skills-title">{wrapDisplayCopy(catalogPageCopy.skillsTitle)}</h2>
     <p class="empty">{wrapDisplayCopy(catalogPageCopy.skillsNone)}</p>
   </section>
+
+  {#if importSheetOpen}
+    <CatalogImportSheet
+      recognize={recognizeLibraryDocument}
+      add={addLibraryDocument}
+      onClose={() => { importSheetOpen = false; }}
+    />
+  {/if}
 </section>
 
 <style>
@@ -304,6 +255,23 @@
 
   p {
     margin: 0;
+  }
+
+  .catalog-head {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  .catalog-head > div {
+    display: grid;
+    gap: var(--space-1);
+  }
+
+  .catalog-head p {
+    max-width: var(--reading-width);
+    color: var(--ink-dim);
   }
 
   .empty {

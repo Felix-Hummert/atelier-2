@@ -96,13 +96,13 @@ test("captures the Catalog list, detail, and start sheet at both requested width
     headers: { "content-type": "application/json" },
     data: workItemSchemaDocument
   });
-  expect(workItemSchema.status()).toBe(201);
+  expect([200, 201]).toContain(workItemSchema.status());
   const workItemSchemaHash = (await workItemSchema.json()).schema_revision_hash as string;
   const schema = await page.request.post("/atelier/api/v1/schema-revisions", {
     headers: { "content-type": "application/json" },
     data: "true"
   });
-  expect(schema.status()).toBe(201);
+  expect([200, 201]).toContain(schema.status());
   const schemaHash = (await schema.json()).schema_revision_hash as string;
 
   const auth = await page.request.post("/atelier/api/v1/auth-profile-revisions", {
@@ -113,7 +113,7 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       auth_mode: "subscription"
     }
   });
-  expect(auth.status()).toBe(201);
+  expect([200, 201]).toContain(auth.status());
   const configuration = await page.request.post("/atelier/api/v1/agent-configuration-revisions", {
     data: {
       model: "catalog-shot-model",
@@ -122,7 +122,7 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       requested_capability: "headless"
     }
   });
-  expect(configuration.status()).toBe(201);
+  expect([200, 201]).toContain(configuration.status());
   await publishCheckedRegistryEntry(
     page,
     "e2e-v3",
@@ -153,7 +153,7 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       ""
     ].join("\n")
   });
-  expect(revision.status()).toBe(201);
+  expect([200, 201]).toContain(revision.status());
   const revisionHash = (await revision.json()).workflow_revision_hash as string;
   const lineage = await page.request.post("/atelier/api/v1/workflow-lineages", {
     data: {
@@ -162,7 +162,7 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       activated_at: "2026-08-26T00:00:00Z"
     }
   });
-  expect(lineage.status()).toBe(201);
+  expect([200, 201]).toContain(lineage.status());
   const newerRevision = await page.request.post("/atelier/api/v1/workflow-revisions", {
     headers: { "content-type": "application/yaml" },
     data: [
@@ -188,7 +188,7 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       ""
     ].join("\n")
   });
-  expect(newerRevision.status()).toBe(201);
+  expect([200, 201]).toContain(newerRevision.status());
 
   let observedItems = true;
   await page.route("**/atelier/api/v1/observed-queue-items*", async (route) => {

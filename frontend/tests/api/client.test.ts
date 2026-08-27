@@ -1145,6 +1145,68 @@ describe("the published agent definitions the catalog reads", () => {
   });
 });
 
+describe("the one-step catalog import", () => {
+  const document = new TextEncoder().encode("format_version: 3\nname: import-proof\n");
+
+  it("recognizes opaque file bytes before the operator confirms an addition", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        outcome: "workflow",
+        workflow_format_version: 3,
+        name: "import-proof",
+        description: null
+      }), { status: 200, headers: { "content-type": "application/json" } })
+    );
+
+    const recognition = await createCockpitApi(fetcher).recognizeLibraryDocument(
+      document,
+      "import-proof.yaml"
+    );
+
+    const request = fetcher.mock.calls[0]?.[1];
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      "/atelier/api/v1/library/recognitions?file_name=import-proof.yaml"
+    );
+    expect((request?.headers as Record<string, string>)["content-type"]).toBe(
+      "application/octet-stream"
+    );
+    expect(new TextDecoder().decode(request?.body as ArrayBuffer)).toBe(
+      new TextDecoder().decode(document)
+    );
+    expect(recognition.outcome).toBe("workflow");
+  });
+
+  it("adds a recognized file through the atomic library admission door", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        kind: "workflow",
+        name: "import-proof",
+        description: null,
+        lineage_id: digest,
+        workflow_revision_hash: "b".repeat(64),
+        revision_number: 1
+      }), { status: 201, headers: { "content-type": "application/json" } })
+    );
+
+    const addition = await createCockpitApi(fetcher).addLibraryDocument(
+      document,
+      "import-proof.yaml",
+      "atelier2-cockpit",
+      "2026-08-27T10:00:00Z"
+    );
+
+    const request = fetcher.mock.calls[0]?.[1];
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      "/atelier/api/v1/library/additions?actor=atelier2-cockpit&activated_at=2026-08-27T10%3A00%3A00Z&file_name=import-proof.yaml"
+    );
+    expect(new TextDecoder().decode(request?.body as ArrayBuffer)).toBe(
+      new TextDecoder().decode(document)
+    );
+    expect(addition.status).toBe(201);
+    expect(addition.value.kind).toBe("workflow");
+  });
+});
+
 describe("the graph a run is allowed to hold", () => {
   it("refuses a published V3 graph by name instead of reading it as an empty workflow", () => {
     const published = {

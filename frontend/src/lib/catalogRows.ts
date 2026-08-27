@@ -5,7 +5,6 @@ import type {
 import { catalogPageCopy } from "./catalogPageCopy";
 import type { CatalogNameState } from "./catalogName";
 import { catalogHeadsOf, isCatalogDisplayName } from "./catalogName";
-import { shortFingerprint } from "./fingerprint";
 import { humanStartRefusal } from "./humanRefusal";
 import { groupSavedWorkflows } from "./savedWorkflows";
 
@@ -74,8 +73,8 @@ export interface CatalogAgentRow {
  * here by hand. When the Git link (#660) starts recording a source, ref, commit
  * and path, it replaces that one sentence -- the row's shape does not change.
  */
-export function catalogRowFacts(revisionHash: string): readonly string[] {
-  return [catalogPageCopy.provenanceManual, shortFingerprint(revisionHash)];
+export function catalogRowFacts(): readonly string[] {
+  return [catalogPageCopy.provenanceManual];
 }
 
 /**

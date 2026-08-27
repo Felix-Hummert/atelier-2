@@ -17,19 +17,28 @@
 
   let open = false;
   let pinnedOpen = false;
+  let closeTimeout: number | null = null;
+
+  function closeAfterLeavingHint(): void {
+    if (closeTimeout !== null) window.clearTimeout(closeTimeout);
+    closeTimeout = window.setTimeout(() => {
+      open = false;
+      pinnedOpen = false;
+      closeTimeout = null;
+    });
+  }
 </script>
 
 <span
+  class:pin-to-card={pinToCard}
   class="info-hint"
-  style:position={pinToCard ? "static" : undefined}
   role="group"
   aria-label={label}
   onmouseenter={() => { open = true; }}
   onmouseleave={() => { if (!pinnedOpen) open = false; }}
   onfocusout={(event) => {
     if (!event.currentTarget.contains(event.relatedTarget as never)) {
-      open = false;
-      pinnedOpen = false;
+      closeAfterLeavingHint();
     }
   }}
 >
@@ -39,17 +48,13 @@
     aria-label={label}
     aria-expanded={open}
     onclick={() => {
+      if (closeTimeout !== null) window.clearTimeout(closeTimeout);
       open = true;
       pinnedOpen = true;
     }}
   >{text}</button>
   {#if open}
-    <span
-      class="info-popover"
-      role="status"
-      style:right={pinToCard ? "auto" : undefined}
-      style:left={pinToCard ? "var(--space-5)" : undefined}
-    >
+    <span class="info-popover" role="status">
       {#if prose !== null}
         {prose}
       {:else if exact !== null}
@@ -58,3 +63,20 @@
     </span>
   {/if}
 </span>
+
+<style>
+  /* The hint itself stays positioned. Card-bound prose joins the card's flow,
+     so at phone width it fits inside the card and moves its doors down instead
+     of overlaying them. */
+  .pin-to-card {
+    display: grid;
+    justify-self: stretch;
+    justify-items: start;
+  }
+
+  .pin-to-card .info-popover {
+    position: static;
+    width: min(var(--popover-width), calc(100vw - var(--space-6)));
+    max-width: 100%;
+  }
+</style>
