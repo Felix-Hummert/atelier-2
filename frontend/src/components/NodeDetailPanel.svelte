@@ -34,13 +34,17 @@
   } from "../lib/runPageCopy";
   import { runHeaderCopy } from "../lib/runPages";
   import { runResultCopy } from "../lib/runResultCopy";
-  import { whenFacts } from "../lib/runProjection";
+  import { whenFacts, type NodeState } from "../lib/runProjection";
   import { stateLabels } from "./StateMark.svelte";
+  import AttemptTranscript from "./AttemptTranscript.svelte";
   import InfoHint from "./InfoHint.svelte";
   import ProofAnchor from "./ProofAnchor.svelte";
   import ReadableResult from "./ReadableResult.svelte";
 
-  export let detail: NodeDetail;
+  export let detail: NodeDetail | null = null;
+  /** From the rail while node detail is still arriving — never an invented field. */
+  export let nodeId: string | undefined = undefined;
+  export let railState: NodeState | undefined = undefined;
   export let onClose: () => void;
   /** The earlier nodes this one reads, as the published document declares them. */
   export let readsFrom: readonly string[] = [];
@@ -68,9 +72,11 @@
    * no round datum yet (`RunResourceV3` has none), so this line never guesses
    * one.
    */
-  $: nodeFacts = whenFacts(detail.started_at ?? null, detail.ended_at ?? null, new Date());
+  $: panelNodeId = detail?.node_id ?? nodeId ?? "";
+  $: panelState = detail?.state ?? railState ?? null;
+  $: nodeFacts = whenFacts(detail?.started_at ?? null, detail?.ended_at ?? null, new Date());
   $: nodeFactLine = [
-    wrapDisplayCopy(stateLabels[detail.state]),
+    panelState === null ? null : wrapDisplayCopy(stateLabels[panelState]),
     nodeFacts.startedExact === null
       ? null
       : `${wrapDisplayCopy(runPageCopy.started)} ${nodeFacts.startedExact}`,
@@ -101,11 +107,11 @@
    *
    * A node that produced something opens on that. A node that stopped opens on
    * Result too, because that is where the refusal that stopped it stands — the
-   * mockup opens a failure on its log, and the log does not exist yet (#104),
-   * so opening there would greet the operator with an empty tab instead of the
-   * reason. Anything still ahead of its work opens on what it was asked.
+   * failed mockup frame does that. The log frame has Log selected because that
+   * frame's subject is the log, not because a failure should greet the
+   * operator there. Anything still ahead of its work opens on what it was asked.
    */
-  const OPENING_TAB: Record<NodeDetail["state"], NodeTab> = {
+  const OPENING_TAB: Record<NodeState, NodeTab> = {
     succeeded: "result",
     failed: "result",
     cancelled: "result",
@@ -118,9 +124,9 @@
   let openedNodeId: string | null = null;
   let tab: NodeTab = "result";
 
-  $: if (openedNodeId !== detail.node_id) {
-    openedNodeId = detail.node_id;
-    tab = OPENING_TAB[detail.state];
+  $: if (panelNodeId !== "" && openedNodeId !== panelNodeId) {
+    openedNodeId = panelNodeId;
+    tab = panelState === null ? "result" : OPENING_TAB[panelState];
   }
 
   /**
@@ -137,11 +143,13 @@
    * itself answers as a problem, and the page shows that instead of this panel.
    */
   $: situation =
-    detail.refusal !== null
-      ? "refused"
-      : detail.answer === null && detail.job_base64 === null
-        ? "waiting"
-        : "ran";
+    detail === null
+      ? "loading"
+      : detail.refusal !== null
+        ? "refused"
+        : detail.answer === null && detail.job_base64 === null
+          ? "waiting"
+          : "ran";
 
   /**
    * A wait node the operator already answered, whose answer this reader still
@@ -156,7 +164,10 @@
    * gate the operator already closed rather than a node that wrote nothing.
    */
   $: endedWaitAnswerGap =
-    detail.state === "succeeded" && detail.answer === null && detail.provenance === null;
+    detail !== null &&
+    detail.state === "succeeded" &&
+    detail.answer === null &&
+    detail.provenance === null;
 
   /**
    * The wire carries base64 so arbitrary provider output never passes through
@@ -168,15 +179,21 @@
    * checked against the receipt rather than trusted. Bytes that fail to
    * decode read as unreadable rather than as replacement characters.
    */
-  $: answerText = detail.answer === null ? null : decodeUtf8Base64(detail.answer.value_base64);
-  $: jobText = detail.job_base64 === null ? null : decodeUtf8Base64(detail.job_base64);
+  $: answerText =
+    detail === null || detail.answer === null
+      ? null
+      : decodeUtf8Base64(detail.answer.value_base64);
+  $: jobText =
+    detail === null || detail.job_base64 === null
+      ? null
+      : decodeUtf8Base64(detail.job_base64);
   /**
    * `refusal_output` is optional on the wire (#664), the same way `started_at`
    * / `ended_at` above already are: an older fixture or a server build before
    * this field existed omits the key rather than sending `null`, and that
    * reads as the same absence here, never a crash on `undefined`.
    */
-  $: refusalOutput = detail.refusal_output ?? null;
+  $: refusalOutput = detail === null ? null : (detail.refusal_output ?? null);
   $: refusalOutputText =
     refusalOutput === null ? null : decodeUtf8Base64(refusalOutput.value_base64);
 
@@ -193,7 +210,7 @@
 
 <aside class="node-panel" aria-labelledby="node-panel-title">
   <header>
-    <h2 id="node-panel-title">{detail.node_id}</h2>
+    <h2 id="node-panel-title">{panelNodeId}</h2>
     <button type="button" class="close" on:click={onClose} aria-label="Close node detail">
       ×
     </button>
@@ -221,6 +238,13 @@
     id={`node-tabpanel-${tab}`}
     aria-labelledby={`node-tab-${tab}`}
   >
+    {#if detail === null}
+      {#if tab === "log"}
+        <AttemptTranscript loading />
+      {:else}
+        <p class="muted">{wrapDisplayCopy(runPageCopy.questionLooking)}</p>
+      {/if}
+    {:else}
     {#if tab === "result"}
       {#if situation === "refused"}
         <p class="refusal" role="alert">
@@ -286,8 +310,19 @@
         >{jobText}</pre>
       {/if}
     {:else if tab === "log"}
-      <p class="muted">{wrapDisplayCopy(runPageCopy.processLogInLease)}</p>
-      <p class="muted">{wrapDisplayCopy(runPageCopy.logAbsent)}</p>
+      {#if detail.transcript != null}
+        <AttemptTranscript
+          transcript={detail.transcript}
+          nodeState={detail.state}
+          startedAt={detail.started_at ?? null}
+          endedAt={detail.ended_at ?? null}
+        />
+      {:else if detail.state === "working"}
+        <p class="muted">{wrapDisplayCopy(runPageCopy.processLogInLease)}</p>
+        <p class="muted">{wrapDisplayCopy(runPageCopy.logAbsent)}</p>
+      {:else}
+        <AttemptTranscript nodeState={detail.state} />
+      {/if}
     {:else}
       <section aria-labelledby="node-panel-who">
         <h3 id="node-panel-who">{wrapDisplayCopy(runPageCopy.who)}</h3>
@@ -384,6 +419,7 @@
         {/if}
         <p class="muted">{wrapDisplayCopy(runPageCopy.evidenceGap)}</p>
       </section>
+    {/if}
     {/if}
   </div>
 </aside>
