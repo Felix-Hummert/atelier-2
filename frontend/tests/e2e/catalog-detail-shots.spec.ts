@@ -247,9 +247,9 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       await expect(importSheet).toBeVisible();
       await expect(importSheet.getByText("⧉")).toBeVisible();
       if (viewport.name === "390") {
-        await expect(importSheet.getByText("1 workflow")).toBeVisible();
-      } else {
         await expect(importSheet.getByText("1 workflow")).toBeHidden();
+      } else {
+        await expect(importSheet.getByText("1 workflow")).toBeVisible();
       }
       await expect(importSheet.getByText("catalog-recognition-shot")).toBeVisible();
       await expect(importSheet.getByRole("button", { name: "Add to catalog" })).toBeFocused();

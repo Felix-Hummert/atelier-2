@@ -129,6 +129,6 @@
   .glyph { color: var(--ink-dim); }
   .count { color: var(--ink-dim); font-size: var(--text-2xs); }
   .failure { color: var(--signal-failure); }
-  @media (min-width: 481px) { .count { display: none; } }
+  @media (max-width: 480px) { .count { display: none; } }
   @media (max-width: 480px) { .sheet { inset: auto 0 0 0; width: 100%; max-height: 85vh; border-radius: var(--r-lg) var(--r-lg) 0 0; } }
 </style>
