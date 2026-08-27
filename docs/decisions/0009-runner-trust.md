@@ -757,22 +757,25 @@ this record borrows that owner rather than opening a second vocabulary.
   receiver success the host private keys were unlinked through held directory
   FDs; the retained trees hold public certificate metadata only. A retained
   Core-restart leg at
-  `/var/tmp/atelier2-301a-runner-witness.usw8SL` proved one provider child
-  (PID `2247405`, start tick `24586124`) in Runner container
-  `0e22828383fa8cbf6ae945c33c36e9eb869aa163190a4ef4458cabda7d26852c`
+  `/var/tmp/atelier2-301a-runner-witness.jZs0NF` proved one provider child
+  (PID `2372845`, start tick `24859444`) in Runner container
+  `ba621229c2e449e2cd5782eb0f934e1cada22f21673da49eaf00ffe4f2b436a0`
   from the fenced `STARTED` cut through Core death and reconnect `STARTED`,
   with `pids.current == pids.max == 2`, unchanged `pids.events:max == 0`, and
   one `FAILED`/`ACKNOWLEDGED` terminal record. Its Core store SHA-256 is
-  `8b63e1b193ef669f3819d598e8098ff0a947579f553937af6336bbce7cfa47d9`;
+  `a9b14d78b632804ea82bb36d780b0ea4cdc4033be46f497c230de3106d8869a7`;
   its cut, child-survival and terminal-proof records have SHA-256 values
-  `70ac96d1bb6fef92b50566fe3a59ab423a01a015aea82eee10f7bbbbfa2e0778`,
-  `b06a2fbdadee95daf3ee980d4f88a9d356233351cbd33e4c324ee908bafdad45`
+  `969170f5341ceb750fc44a59ee48c19dc1df20b9dd13a9fa6614b96fad487787`,
+  `2abe74e56683a17c8b596a08dba2a2f268d3856ae5326bf49b75a5c83172590f`
   and
-  `9417c944d00a7247d21fc9bc1e506070ba814425465386b79a4f851d79032364`.
+  `e5e742c1786860d67fecb217f0bc00d93900b18d983c9ab2a8a6ead62dadb707`.
   Exact labelled Docker objects were empty after `RELEASED`. Together these
   legs do not prove live A.1 availability, cancel races, replacement `ONE`, a
-  wrong-CA live refusal, or packaged cutover. Focused tests cover peer
-  EKU/SAN/CA refusal, Landlock identity denial, journal ACK/RELEASE order,
+  wrong-CA live refusal, or packaged cutover. They also do not close the
+  STARTED-fence TOCTOU window: from Core writing its STARTED FIFO request until
+  the host completes the `pids.max` reduction, a provider crash and respawn can
+  make the replacement the identity that the fence records. Focused tests cover
+  peer EKU/SAN/CA refusal, Landlock identity denial, journal ACK/RELEASE order,
   and the A request-subset/refusal vocabulary.
 - A runner identity is not satisfied by a reused name: an identifier that
   outlives the runner it named never binds a later attempt.

@@ -29,6 +29,7 @@ from tests.witness.runner_candidate_core import (
     _SCENARIO_CORE_RESTART,
     _WITNESS_RECORD_FAMILY,
     _bootstrap,
+    _fence_started_child,
     _read_witness_document,
     _require_exact_string_fields,
     _wait_for_reconnected_child_observation,
@@ -52,6 +53,14 @@ class ChildObservation:
     runner_cgroup_pids_current: str
     runner_cgroup_pids_limit: str
     runner_cgroup_limit_hit_count: str
+
+
+@dataclass(frozen=True, slots=True)
+class CgroupProcessEvidence:
+    process_ids: tuple[str, ...]
+    current_process_count: str
+    process_limit: str
+    limit_hit_count: str
 
 
 def _atomic_json(path: Path, document: object) -> None:
@@ -78,41 +87,36 @@ def _process_identity(stat_path: Path) -> tuple[str, str]:
 def observe_provider_child(
     runner_container_id: str,
     runner_process_id: int,
-    runner_cgroup_pids_current: str,
-    runner_cgroup_pids_limit: str,
-    runner_cgroup_limit_hit_count: str,
+    cgroup_evidence: CgroupProcessEvidence,
     proc_root: Path = Path("/proc"),
 ) -> ChildObservation:
     try:
-        current_process_count = int(runner_cgroup_pids_current)
-        process_limit = int(runner_cgroup_pids_limit)
-        limit_hit_count = int(runner_cgroup_limit_hit_count)
+        process_ids = tuple(
+            int(process_id) for process_id in cgroup_evidence.process_ids
+        )
+        current_process_count = int(cgroup_evidence.current_process_count)
+        process_limit = int(cgroup_evidence.process_limit)
+        limit_hit_count = int(cgroup_evidence.limit_hit_count)
     except ValueError as error:
         raise RuntimeError(
             "runner-core-reconnect-cgroup-evidence-unreadable"
         ) from error
     if (
-        current_process_count < 1
+        len(process_ids) != len(set(process_ids))
+        or current_process_count != len(process_ids)
         or process_limit != current_process_count
         or limit_hit_count < 0
+        or runner_process_id not in process_ids
     ):
         raise RuntimeError("runner-core-reconnect-cgroup-evidence-unreadable")
-    children_path = (
-        proc_root
-        / str(runner_process_id)
-        / "task"
-        / str(runner_process_id)
-        / "children"
+    provider_process_ids = tuple(
+        process_id for process_id in process_ids if process_id != runner_process_id
     )
-    try:
-        children = children_path.read_text(encoding="ascii").split()
-    except FileNotFoundError as error:
-        raise RuntimeError("runner-core-reconnect-child-gone") from error
-    if not children:
+    if not provider_process_ids:
         raise RuntimeError("runner-core-reconnect-child-gone")
-    if len(children) != 1:
+    if len(provider_process_ids) != 1:
         raise RuntimeError("runner-core-reconnect-duplicate-provider-processes")
-    child_pid = children[0]
+    child_pid = str(provider_process_ids[0])
     state, start_time_ticks = _process_identity(proc_root / child_pid / "stat")
     if state == "Z":
         raise RuntimeError("runner-core-reconnect-child-zombie")
@@ -123,9 +127,9 @@ def observe_provider_child(
         start_time_ticks,
         state,
         "1",
-        runner_cgroup_pids_current,
-        runner_cgroup_pids_limit,
-        runner_cgroup_limit_hit_count,
+        cgroup_evidence.current_process_count,
+        cgroup_evidence.process_limit,
+        cgroup_evidence.limit_hit_count,
     )
 
 
@@ -233,7 +237,7 @@ def _runner_cgroup_process_evidence(
     runner_process_id: int,
     proc_root: Path = Path("/proc"),
     cgroup_root: Path = Path("/sys/fs/cgroup"),
-) -> tuple[str, str, str]:
+) -> CgroupProcessEvidence:
     try:
         cgroup_lines = (
             (proc_root / str(runner_process_id) / "cgroup")
@@ -267,7 +271,19 @@ def _runner_cgroup_process_evidence(
         raise RuntimeError(
             "runner-core-reconnect-cgroup-evidence-unreadable"
         ) from error
-    return (
+    try:
+        process_ids = tuple(
+            sorted(
+                (cgroup / "cgroup.procs").read_text(encoding="ascii").split(),
+                key=int,
+            )
+        )
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        raise RuntimeError(
+            "runner-core-reconnect-cgroup-evidence-unreadable"
+        ) from error
+    return CgroupProcessEvidence(
+        process_ids,
         _read_cgroup_count(cgroup / "pids.current"),
         _read_cgroup_limit(cgroup / "pids.max"),
         _read_cgroup_count_value(limit_hit_count, minimum=0),
@@ -298,22 +314,18 @@ def _docker_provider_child_observation(
     policy_image: str | None = None,
 ) -> ChildObservation:
     container_id, runner_process_id = _docker_runner_identity(container)
-    current_process_count, process_limit, limit_hit_count = (
-        _runner_cgroup_process_evidence(runner_process_id)
-    )
+    cgroup_evidence = _runner_cgroup_process_evidence(runner_process_id)
     if policy_image is not None:
-        _enforce_runner_process_ceiling(policy_image, container, current_process_count)
-        current_process_count, process_limit, limit_hit_count = (
-            _runner_cgroup_process_evidence(runner_process_id)
+        _enforce_runner_process_ceiling(
+            policy_image, container, cgroup_evidence.current_process_count
         )
-    if process_limit != current_process_count:
+        cgroup_evidence = _runner_cgroup_process_evidence(runner_process_id)
+    if cgroup_evidence.process_limit != cgroup_evidence.current_process_count:
         raise RuntimeError("runner-core-reconnect-cgroup-process-limit-mismatch")
     return observe_provider_child(
         container_id,
         runner_process_id,
-        current_process_count,
-        process_limit,
-        limit_hit_count,
+        cgroup_evidence,
     )
 
 
@@ -403,7 +415,11 @@ def _started_provider_identity(connection: socket.socket) -> ChildObservation:
     )
 
 
-def _seed_and_crash(root: Path, connection_file_descriptor: int | None) -> None:
+def _seed_and_crash(
+    root: Path,
+    connection_file_descriptor: int | None,
+    crash_after_fence_ack: bool,
+) -> None:
     bootstrap = _bootstrap(
         root / "core-store", _prepare_handoff(root), _SCENARIO_CORE_RESTART
     )
@@ -415,7 +431,23 @@ def _seed_and_crash(root: Path, connection_file_descriptor: int | None) -> None:
     )
     if connection_file_descriptor is not None:
         with socket.socket(fileno=connection_file_descriptor) as connection:
-            started_child = _started_provider_identity(connection)
+            _started_provider_identity(connection)
+            started_child = ChildObservation(
+                **cast(
+                    dict[str, str],
+                    _fence_started_child(root / "core-store"),
+                )
+            )
+            if crash_after_fence_ack:
+                os._exit(CORE_STARTED_CUT_EXIT_CODE)
+            _write_core_started_cut(
+                root / "core-store",
+                bootstrap.binding,
+                _INVOCATION,
+                _SCENARIO_CORE_RESTART,
+                asdict(started_child),
+            )
+            os._exit(CORE_STARTED_CUT_EXIT_CODE)
     _write_core_started_cut(
         root / "core-store",
         bootstrap.binding,
@@ -598,6 +630,8 @@ def main(arguments: list[str] | None = None) -> int:
         command = commands.add_parser(name)
         command.add_argument("--root", type=Path, required=True)
         command.add_argument("--connection", type=int)
+        if name == "seed-and-crash":
+            command.add_argument("--crash-after-fence-ack", action="store_true")
     observe = commands.add_parser("observe-child")
     observe.add_argument("--container", required=True)
     observe.add_argument("--lease-directory", type=Path, required=True)
@@ -628,7 +662,11 @@ def main(arguments: list[str] | None = None) -> int:
     restart_private.add_argument("--attempt-network", required=True)
     parsed = parser.parse_args(arguments)
     if parsed.command == "seed-and-crash":
-        _seed_and_crash(parsed.root, parsed.connection)
+        _seed_and_crash(
+            parsed.root,
+            parsed.connection,
+            parsed.crash_after_fence_ack,
+        )
     elif parsed.command == "restart":
         _restart(parsed.root, parsed.connection)
     elif parsed.command == "runner":

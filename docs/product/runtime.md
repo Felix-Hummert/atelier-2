@@ -94,10 +94,11 @@ Fake and, for the #301-A disposable witness candidate (`src/atelier2/runner/`,
 its adapters, and `application/run_runner_session.py`), a real session codec,
 TLS-authenticated transport, journal, and Landlock-confined child. Its live
 restart leg also reaches `STARTED` under a pre-opened host fence. Core emits the
-cut event but does not write its cut record or exit until the host has lowered
-the controlled Runner cgroup's `pids.max` to its two live tasks (Runner and
-provider child), recorded that container/PID/start-tick identity, and
-acknowledged the fence. Core embeds that identity in `core-started-cut.json`.
+cut event but does not write its cut record or exit until the host has read the
+Runner cgroup's complete `cgroup.procs` set, required exactly the Runner and one
+provider process, lowered `pids.max` to those two live tasks, recorded their
+container/PID/start-tick identity, and acknowledged the fence. Core embeds that
+identity in `core-started-cut.json`.
 The shell reads it back and requires both the post-exit observation and the
 observation after reconnect `STARTED` to match it exactly, with one child,
 `pids.current == pids.max`, and an unchanged `pids.events:max` counter. The
