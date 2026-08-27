@@ -22,7 +22,6 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -48,11 +47,6 @@ from atelier2.contracts.schemas_v3 import (
     read_instance_document,
     read_schema_document,
 )
-from atelier2.contracts.workflows_v3 import (
-    AgentNodeV3,
-    GraphInputSource,
-    WorkflowGraphV3,
-)
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
@@ -61,7 +55,9 @@ from atelier2.ports.artifacts import ArtifactCreated, ArtifactExisting
 from atelier2.ports.durable_runs import (
     AuthoredOrder,
     DurableRunCreated,
+    DurableV3StartInputRefused,
     StartPublishedRunRequestV3,
+    V3InputRefusal,
 )
 from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
@@ -238,53 +234,28 @@ def wait_for_completion(runtime: DbosRuntime, run_id: RunId) -> None:
     raise AssertionError("code review run did not complete")
 
 
-def _context_contract_cases() -> dict[str, tuple[object, object]]:
-    graph = parse_executable_workflow_document(CODE_REVIEW_DOCUMENT)
-    assert isinstance(graph, WorkflowGraphV3)
-    context_input = next(
-        entry for entry in graph.graph_inputs if entry.name == "context"
-    )
-    review = graph.node("review")
-    assert isinstance(review, AgentNodeV3)
-    context_read = next(entry for entry in review.inputs if entry.name == "context")
-    assert context_read.source is not None
-    assert isinstance(context_read.source, GraphInputSource)
-    return {
-        "graph input schema ref": (
-            context_input.schema_reference.ref,
-            "nonempty_string",
-        ),
-        "graph input schema revision": (
-            context_input.schema_reference.revision,
-            TEXT_SCHEMA.revision_hash.value,
-        ),
-        "review node input source": (
-            context_read.source.graph_input,
-            "context",
-        ),
-        "instruction names the context contract": (
-            "context" in review.instruction,
-            True,
-        ),
-        "instruction states the none rule": (
-            "none" in review.instruction,
-            True,
-        ),
-    }
-
-
-CONTEXT_CONTRACT_CASES = _context_contract_cases()
-
-
-@pytest.mark.parametrize(
-    ("actual", "expected"),
-    CONTEXT_CONTRACT_CASES.values(),
-    ids=CONTEXT_CONTRACT_CASES.keys(),
-)
-def test_the_code_review_context_order_is_wired_and_judged(
-    actual: object, expected: object
+def test_a_code_review_without_context_is_refused_before_a_run_exists(
+    runtime: DbosRuntime,
 ) -> None:
-    assert actual == expected
+    workflow, bindings = publish(runtime)
+    refused = DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_published(
+        StartPublishedRunRequestV3(
+            RunId("v3/code-review-without-context"),
+            workflow.revision_hash,
+            bindings,
+            orders=(
+                artifact_order(runtime),
+                AuthoredOrder("review_questions", InlineOrderValue(QUESTIONS)),
+            ),
+        )
+    )
+    assert isinstance(refused, DurableV3StartInputRefused), refused
+    assert refused.name == "context"
+    assert refused.refusal is V3InputRefusal.MISSING
+    with runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
 
 
 def test_a_code_review_round_trips_an_artifact_and_inline_question_to_an_object_result(

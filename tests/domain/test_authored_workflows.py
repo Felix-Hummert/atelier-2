@@ -13,6 +13,9 @@ that a document shipped in `workflows/schemas/` actually hashes to, and that
 document is itself a schema the production profile accepts. A workflow whose
 pin nobody could ever publish is exactly as unstartable as one that fails to
 parse, so this suite treats both as the same class of defect.
+
+The catalog review workflows additionally pin the instruction that answers
+against the required context order.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.schemas_v3 import SchemaAccepted, read_schema_document
 from atelier2.contracts.workflows_v3 import (
+    AgentNodeV3,
     VersionedReference,
     WorkflowGraphV3,
     what_a_v3_document_still_waits_for,
@@ -110,4 +114,30 @@ def test_a_pinned_schema_reference_resolves_to_a_shipped_document(
     verdict = read_schema_document(document)
     assert isinstance(verdict, SchemaAccepted), (
         f"{document_path} is not a schema the production profile accepts: {verdict}"
+    )
+
+
+CATALOG_REVIEW_WORKFLOW_PATHS = (
+    WORKFLOWS_DIRECTORY / "code-review.yaml",
+    WORKFLOWS_DIRECTORY / "plan-review.yaml",
+)
+
+
+@pytest.mark.parametrize(
+    "workflow_path",
+    CATALOG_REVIEW_WORKFLOW_PATHS,
+    ids=("code-review", "plan-review"),
+)
+def test_a_catalog_review_instruction_judges_against_required_context(
+    workflow_path: Path,
+) -> None:
+    graph = parse_executable_workflow_document(workflow_path.read_bytes())
+    assert isinstance(graph, WorkflowGraphV3)
+    review = graph.node("review")
+    assert isinstance(review, AgentNodeV3)
+    assert 'against the contract carried under "context"' in review.instruction
+    assert "say which one wins and why" in review.instruction
+    assert (
+        'the head passes the explicit word "none" when it is truly absent'
+        in review.instruction
     )
