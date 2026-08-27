@@ -2501,10 +2501,28 @@ const streamFailureSchema = z
   .object({ event: z.literal("STREAM_FAILED"), problem: problemSchema })
   .strict();
 
-const streamFrameSchema = z.union([streamFailureSchema, runEventSchema]);
+const durableStateCorruptProblemSchema = problemVariant(
+  "durable-state-corrupt",
+  problemDefinitions["durable-state-corrupt"],
+);
+
+const runProjectionCorruptSchema = z
+  .object({
+    event: z.literal("RUN_PROJECTION_CORRUPT"),
+    public_run_reference: publicRunReference,
+    problem: durableStateCorruptProblemSchema,
+  })
+  .strict();
+
+const streamFrameSchema = z.union([
+  streamFailureSchema,
+  runProjectionCorruptSchema,
+  runEventSchema,
+]);
 
 export type Problem = z.infer<typeof problemSchema>;
 export type StreamFailure = z.infer<typeof streamFailureSchema>;
+export type RunProjectionCorrupt = z.infer<typeof runProjectionCorruptSchema>;
 export type StreamFrame = z.infer<typeof streamFrameSchema>;
 export type Run = z.infer<typeof runSchema>;
 export type RunV1 = z.infer<typeof runV1Schema>;
@@ -3267,6 +3285,12 @@ export function decodeStreamFrame(value: unknown): StreamFrame {
 
 export function isStreamFailure(frame: StreamFrame): frame is StreamFailure {
   return frame.event === "STREAM_FAILED";
+}
+
+export function isRunProjectionCorrupt(
+  frame: StreamFrame,
+): frame is RunProjectionCorrupt {
+  return frame.event === "RUN_PROJECTION_CORRUPT";
 }
 
 export function decodeWorkflowRevisionDetail(

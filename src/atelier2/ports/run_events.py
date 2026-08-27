@@ -59,8 +59,23 @@ class AttentionEvent:
 
 
 @dataclass(frozen=True)
+class AttentionEventCorrupt:
+    """A stored attention row whose event cannot be projected.
+
+    Identity and instant are enough to name the run and resume past the row.
+    """
+
+    run_id: RunId
+    event_sequence: int
+    recorded_at: RecordedAt
+
+
+type AttentionPageItem = AttentionEvent | AttentionEventCorrupt
+
+
+@dataclass(frozen=True)
 class AttentionEventPage:
-    events: tuple[AttentionEvent, ...]
+    events: tuple[AttentionPageItem, ...]
 
 
 @dataclass(frozen=True)
