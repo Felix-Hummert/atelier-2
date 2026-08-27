@@ -6,7 +6,7 @@ from http import HTTPStatus
 import pytest
 from fastapi.testclient import TestClient
 
-from atelier2.api.app import create_app
+from atelier2.api.app import COCKPIT_HOME_PATH, create_app
 from atelier2.api.context import ApiPorts
 from atelier2.api.openapi import OPERATION_PROBLEMS
 from atelier2.api.problems import (
@@ -123,6 +123,42 @@ def test_framework_and_media_errors_are_normalized(
         assert response.json()["invalid_fields"][0]["reason"]
     else:
         assert set(response.json()) == {"type", "title", "status", "detail"}
+
+
+@pytest.mark.parametrize(
+    ("path", "status", "location", "problem_code"),
+    (
+        ("/", 307, COCKPIT_HOME_PATH, None),
+        ("/nope", 404, None, "route-not-found"),
+    ),
+)
+def test_the_bare_host_root_sends_the_operator_to_the_ui_and_an_unknown_path_stays_a_named_problem(
+    path: str,
+    status: int,
+    location: str | None,
+    problem_code: str | None,
+) -> None:
+    client = TestClient(
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=empty_ports(),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        ),
+        follow_redirects=False,
+        raise_server_exceptions=False,
+    )
+    response = client.get(path)
+
+    assert response.status_code == status
+    if location is not None:
+        assert response.headers["location"] == location
+        return
+    assert problem_code is not None
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.json()["type"] == PROBLEM_TYPE_PREFIX + problem_code
+    assert set(response.json()) == {"type", "title", "status", "detail"}
 
 
 def test_app_requires_both_source_identities_at_construction() -> None:
