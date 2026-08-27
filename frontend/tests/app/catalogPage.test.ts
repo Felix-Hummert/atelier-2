@@ -217,12 +217,144 @@ describe("the catalog room", () => {
     await screen.findByText(WORKFLOW_NAME);
     await fireEvent.click(screen.getByRole("link", { name: WORKFLOW_NAME }));
 
+    expect(screen.queryByRole("group", { name: workflowDetailCopy.workflowRevision })).toBeNull();
+    const technicalSummary = await screen.findByText("Technical", { selector: "summary" });
+    const technical = technicalSummary.closest("details");
+    expect(technical?.open).toBe(false);
+
+    await fireEvent.click(technicalSummary);
+
     const revision = await screen.findByRole("group", { name: workflowDetailCopy.workflowRevision });
+    expect(technical?.open).toBe(true);
     expect(revision.textContent).toContain(shortFingerprint(WORKFLOW_HASH));
     expect(revision.textContent).toContain(workflowDetailCopy.sealsWorkflowRevision);
     expect((await screen.findByRole("heading", { name: workflowDetailCopy.orders })).isConnected).toBe(true);
     expect(screen.getByText(/portions-schema/).isConnected).toBe(true);
     expect(screen.getByText(/portions · integer · required/).isConnected).toBe(true);
+  });
+
+  it("counts the workflow tiles after collapsing a real-shaped library listing", async () => {
+    const secondHash = "1".repeat(64);
+    const thirdHash = "2".repeat(64);
+    const fourthHash = "3".repeat(64);
+    const firstLineageId = "5".repeat(64);
+    const thirdLineageId = "6".repeat(64);
+    const firstName = "catalog-first";
+    const secondName = "catalog-second";
+    const thirdName = "catalog-third";
+    openCatalog({
+      ...listing([
+        workflowSummary({ name: firstName, workflow_revision_hash: WORKFLOW_HASH }),
+        workflowSummary({ name: firstName, workflow_revision_hash: SIBLING_HASH }),
+        workflowSummary({ name: secondName, workflow_revision_hash: secondHash }),
+        workflowSummary({ name: thirdName, workflow_revision_hash: thirdHash }),
+        workflowSummary({ name: thirdName, workflow_revision_hash: fourthHash })
+      ]),
+      getRevisionByName: vi.fn(async (name) => {
+        if (name === firstName || name === thirdName) {
+          return {
+            display_name: name,
+            lineage_id: name === firstName ? firstLineageId : thirdLineageId,
+            workflow_revision_hash: name === firstName ? WORKFLOW_HASH : thirdHash,
+            revision_number: 1
+          };
+        }
+        throw new CockpitRequestError("no such name", {
+          type: "urn:atelier2:problem:v1:catalog-name-not-found",
+          title: "Catalog name not found",
+          status: 404,
+          detail: "no such name"
+        } as Problem);
+      }),
+      listAgentDefinitionRevisions: vi.fn(async () => ({
+        items: [agentItem(), agentItem({ agent_definition_revision_hash: "4".repeat(64), name: "reviewer" })],
+        next_after_revision_hash: null
+      }))
+    });
+
+    await screen.findByRole("link", { name: firstName });
+    expect(screen.getByRole("button", { name: /Workflows\s*3/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Agents\s*2/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Skills\s*0/ })).toBeTruthy();
+    expect(screen.getAllByRole("link", { name: /catalog-(first|second|third)/ })).toHaveLength(3);
+  });
+
+  it("withholds catalog group counts until both collections confirm", async () => {
+    let resolveWorkflows!: (page: { items: WorkflowRevisionSummary[]; next_after_revision_hash: null }) => void;
+    const workflowsPending = new Promise<{ items: WorkflowRevisionSummary[]; next_after_revision_hash: null }>((resolve) => {
+      resolveWorkflows = resolve;
+    });
+    let resolveAgents!: (page: { items: AgentDefinitionRevisionListItem[]; next_after_revision_hash: null }) => void;
+    const agentsPending = new Promise<{ items: AgentDefinitionRevisionListItem[]; next_after_revision_hash: null }>((resolve) => {
+      resolveAgents = resolve;
+    });
+
+    const listWorkflowRevisions = vi.fn(() => workflowsPending);
+    const listAgentDefinitionRevisions = vi.fn(() => agentsPending);
+    openCatalog({ listWorkflowRevisions, listAgentDefinitionRevisions });
+
+    await waitFor(() => expect(listWorkflowRevisions).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(listAgentDefinitionRevisions).toHaveBeenCalledTimes(1));
+
+    resolveAgents({ items: [agentItem()], next_after_revision_hash: null });
+    await waitFor(() => expect(screen.getAllByRole("status")).toHaveLength(1));
+
+    expect(screen.queryByRole("group", { name: catalogPageCopy.catalogGroups })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Workflows\s*0/ })).toBeNull();
+
+    resolveWorkflows({ items: [], next_after_revision_hash: null });
+    expect((await screen.findByRole("button", { name: /Workflows\s*0/ })).isConnected).toBe(true);
+  });
+
+  it("keeps confirmed tiles visible and names a failed workflow refresh", async () => {
+    let leaveAgentRefreshPending!: () => void;
+    const agentRefresh = new Promise<{
+      items: AgentDefinitionRevisionListItem[];
+      next_after_revision_hash: null;
+    }>((resolve) => {
+      leaveAgentRefreshPending = () => {
+        resolve({ items: [], next_after_revision_hash: null });
+      };
+    });
+    const listWorkflowRevisions = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [workflowSummary()], next_after_revision_hash: null })
+      .mockRejectedValueOnce(new CockpitRequestError("the store is asleep"));
+    openCatalog({
+      listWorkflowRevisions,
+      listAgentDefinitionRevisions: vi
+        .fn()
+        .mockResolvedValueOnce({ items: [], next_after_revision_hash: null })
+        .mockImplementationOnce(() => agentRefresh),
+      ...admittedName()
+    });
+
+    expect((await screen.findByRole("link", { name: WORKFLOW_NAME })).isConnected).toBe(true);
+    reportConnectionLost();
+    reportConnectionRestored();
+
+    expect((await screen.findByText(catalogPageCopy.workflowsUnavailable)).isConnected).toBe(true);
+    expect(screen.getByRole("button", { name: "Retry workflows" }).isConnected).toBe(true);
+    expect(screen.getByRole("link", { name: WORKFLOW_NAME }).isConnected).toBe(true);
+    expect(screen.queryByText(catalogPageCopy.catalogEmpty)).toBeNull();
+
+    leaveAgentRefreshPending();
+  });
+
+  it("does not replace a confirmed-empty catalog with an empty message after a failed refresh", async () => {
+    const listWorkflowRevisions = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [], next_after_revision_hash: null })
+      .mockRejectedValueOnce(new CockpitRequestError("the store is asleep"));
+    openCatalog({ listWorkflowRevisions });
+
+    expect((await screen.findByText(catalogPageCopy.catalogEmpty)).isConnected).toBe(true);
+    reportConnectionLost();
+    reportConnectionRestored();
+
+    expect((await screen.findByText(catalogPageCopy.workflowsUnavailable)).isConnected).toBe(true);
+    expect(screen.getByRole("button", { name: "Retry workflows" }).isConnected).toBe(true);
+    expect(screen.queryByText(catalogPageCopy.catalogEmpty)).toBeNull();
   });
 
   it("opens the selected workflow's start sheet instead of leaving the catalog detail", async () => {

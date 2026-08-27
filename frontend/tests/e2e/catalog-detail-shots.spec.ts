@@ -258,7 +258,13 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       const workflowEntry = page.getByRole("listitem").filter({ hasText: workflowName });
       await workflowEntry.getByRole("link", { name: workflowName }).click();
       await expect(page.getByRole("heading", { name: workflowName })).toBeVisible();
+      await expect(page.getByRole("group", { name: "Workflow revision" })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Copy Workflow revision" })).toHaveCount(0);
       await page.screenshot({ path: `${shotDirectory}/catalog-detail-${viewport.name}-${colorScheme}.png`, fullPage: true });
+
+      await page.locator("summary", { hasText: "Technical" }).click();
+      await expect(page.getByRole("group", { name: "Workflow revision" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Copy Workflow revision" })).toBeVisible();
 
       await page.getByRole("button", { name: "Start" }).click();
       const sheet = page.getByRole("dialog", { name: `Start ${workflowName}` });
