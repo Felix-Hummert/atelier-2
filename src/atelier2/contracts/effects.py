@@ -187,6 +187,7 @@ class ConfirmationSource(StrEnum):
     ADAPTER_EXECUTION = "ADAPTER_EXECUTION"
     OPERATOR_FOUND = "OPERATOR_FOUND"
     OPERATOR_AUTHORIZED_EXECUTION = "OPERATOR_AUTHORIZED_EXECUTION"
+    FORK_REFERENCE = "FORK_REFERENCE"
 
 
 _OPERATOR_CONFIRMATION_SOURCES: Final[frozenset[ConfirmationSource]] = frozenset(
@@ -234,6 +235,7 @@ class EffectReceipt:
     result: EffectResult
     confirmation_source: ConfirmationSource
     reconcile_command_id: ReconcileCommandId | None = None
+    source_receipt: EffectReceiptReference | None = None
 
     def __post_init__(self) -> None:
         operator_confirmed = self.confirmation_source in _OPERATOR_CONFIRMATION_SOURCES
@@ -242,6 +244,21 @@ class EffectReceipt:
                 f"{self.confirmation_source} names its reconcile command if and only "
                 "if an operator established or authorized the effect"
             )
+        fork_reference = self.confirmation_source is ConfirmationSource.FORK_REFERENCE
+        if fork_reference != (self.source_receipt is not None):
+            raise ValueError(
+                "FORK_REFERENCE names one exact source receipt and no other source does"
+            )
+
+
+@dataclass(frozen=True)
+class EffectReceiptReference:
+    """The composite durable identity of an already-confirmed effect receipt."""
+
+    logical_key: LogicalEffectKey
+    run_id: RunId
+    workflow_revision_hash: WorkflowRevisionHash
+    result_hash: Sha256Hash
 
 
 @dataclass(frozen=True)

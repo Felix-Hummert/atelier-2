@@ -49,6 +49,7 @@ from atelier2.contracts.effects import (
     EffectIntentStateVersion,
     EffectOutcome,
     EffectReceipt,
+    EffectReceiptReference,
     EffectRequestHash,
     EffectResult,
     EffectUnknownOutcome,
@@ -107,6 +108,20 @@ def intent_snapshot_from_record(record: Mapping[Any, Any]) -> EffectIntentSnapsh
 
 def receipt_from_record(record: Mapping[Any, Any]) -> EffectReceipt:
     command_id = record["reconcile_command_id"]
+    source_logical_key = record.get("fork_source_logical_key")
+    source_run_id = record.get("fork_source_run_id")
+    source_revision = record.get("fork_source_workflow_revision_hash")
+    source_result_hash = record.get("fork_source_result_hash")
+    source_values = (
+        source_logical_key,
+        source_run_id,
+        source_revision,
+        source_result_hash,
+    )
+    if any(value is None for value in source_values) and not all(
+        value is None for value in source_values
+    ):
+        raise ValueError("fork receipt source identity is incomplete")
     return EffectReceipt(
         intent=intent_from_record(record),
         effect_id=EffectId(str(record["effect_id"])),
@@ -116,6 +131,16 @@ def receipt_from_record(record: Mapping[Any, Any]) -> EffectReceipt:
         confirmation_source=ConfirmationSource(str(record["confirmation_source"])),
         reconcile_command_id=(
             None if command_id is None else ReconcileCommandId(str(command_id))
+        ),
+        source_receipt=(
+            None
+            if source_logical_key is None
+            else EffectReceiptReference(
+                LogicalEffectKey(str(source_logical_key)),
+                RunId(str(source_run_id)),
+                WorkflowRevisionHash(str(source_revision)),
+                Sha256Hash(str(source_result_hash)),
+            )
         ),
     )
 
@@ -322,6 +347,7 @@ def observe_reconcile_command(
 
 def _receipt_values(receipt: EffectReceipt) -> dict[str, object]:
     binding = receipt.intent.binding
+    source = receipt.source_receipt
     return {
         "logical_key": binding.logical_key.value,
         "run_id": binding.run_id.value,
@@ -340,6 +366,12 @@ def _receipt_values(receipt: EffectReceipt) -> dict[str, object]:
             if receipt.reconcile_command_id is None
             else receipt.reconcile_command_id.value
         ),
+        "fork_source_logical_key": None if source is None else source.logical_key.value,
+        "fork_source_run_id": None if source is None else source.run_id.value,
+        "fork_source_workflow_revision_hash": (
+            None if source is None else source.workflow_revision_hash.value
+        ),
+        "fork_source_result_hash": None if source is None else source.result_hash.value,
     }
 
 

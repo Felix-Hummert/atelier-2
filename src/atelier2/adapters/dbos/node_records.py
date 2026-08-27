@@ -18,6 +18,7 @@ precisely so a receipt cannot name a request nobody wrote.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import sqlalchemy as sa
@@ -34,6 +35,7 @@ from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
     DeclaredContextPackageHash,
+    InputEnvelope,
     NodeArtifact,
     NodeExecutionRequestHash,
     NodeReceipt,
@@ -65,6 +67,9 @@ def persist_bound_node_executions(
     graph: WorkflowGraphV3,
     run_configuration: RunConfigurationRevision,
     orders: tuple[RunInput, ...],
+    *,
+    node_ids: frozenset[str] | None = None,
+    inherited_inputs: Mapping[str, tuple[InputEnvelope, ...]] = {},
 ) -> None:
     """Write what every node of this run was asked to do, before any of them runs.
 
@@ -87,6 +92,8 @@ def persist_bound_node_executions(
     something else is the run identity check this write sits behind.
     """
     for node in graph.nodes:
+        if node_ids is not None and node.id not in node_ids:
+            continue
         bound = bind_node_execution(
             run_id,
             workflow_revision_hash,
@@ -94,6 +101,7 @@ def persist_bound_node_executions(
             node.id,
             run_configuration,
             orders,
+            inherited_inputs.get(node.id, ()),
         )
         connection.execute(
             context_packages_v3.insert()

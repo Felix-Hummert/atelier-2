@@ -59,11 +59,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head replaces lineage occupancy with the host model registry
-# and the project's three difficulty defaults (#711). The old rows are dropped:
-# no value in the new project-scoped model can honestly retain their lineage key.
+# Movable hop: this head adds the immutable run-fork lineage and reuse evidence,
+# and widens effect-receipt provenance for a cross-run reference (#105).
 # Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 39
+_HOP_PREDECESSOR_VERSION = 40
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -97,6 +96,7 @@ _VERSION_THIRTY_SEVEN = 37
 _VERSION_THIRTY_EIGHT = 38
 _VERSION_THIRTY_NINE = 39
 _VERSION_FORTY = 40
+_VERSION_FORTY_ONE = 41
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -239,6 +239,10 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # configuration families: exact model ids per provider and three optional
 # project defaults keyed by difficulty. Occupancy rows are deliberately not
 # migrated because the replacement has no lineage dimension.
+# V41 gives a fork command its immutable lineage header, strict-prefix source
+# references, and confirmed-effect replay fences. Effect receipts admit one
+# additional confirmation source only when all four columns identify an existing
+# source receipt from an earlier run.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -276,6 +280,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     38: "aebd8b6bad8a719864f0c02828db643dd3dcbe7c89198beb6a8c1c4c30100824",
     39: "3c0cc05dd977fd61d2c88d78ba7566fdc0146e2d7af27df61aea636a4ac2c4be",
     40: "d8d7b89cc0cacd15dfde84bf15f796f0e03d9b571c26be0309ed87a60960071d",
+    41: "f7992c05c349c81e20f49ad437f0407435798dcf65592c8528897637c7ee2f6d",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -400,6 +405,10 @@ V38_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V39_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_THIRTY_NINE,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_NINE],
+)
+V40_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_FORTY,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FORTY],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -726,6 +735,10 @@ effect_receipts = sa.Table(
         sa.ForeignKey("reconcile_commands.command_id"),
         nullable=True,
     ),
+    sa.Column("fork_source_logical_key", sa.Text, nullable=True),
+    sa.Column("fork_source_run_id", sa.Text, nullable=True),
+    sa.Column("fork_source_workflow_revision_hash", sa.Text, nullable=True),
+    sa.Column("fork_source_result_hash", sa.Text, nullable=True),
     sa.UniqueConstraint(
         "logical_key", "run_id", "workflow_revision_hash", "result_hash"
     ),
@@ -735,6 +748,20 @@ effect_receipts = sa.Table(
             "effect_intents.logical_key",
             "effect_intents.run_id",
             "effect_intents.workflow_revision_hash",
+        ),
+    ),
+    sa.ForeignKeyConstraint(
+        (
+            "fork_source_logical_key",
+            "fork_source_run_id",
+            "fork_source_workflow_revision_hash",
+            "fork_source_result_hash",
+        ),
+        (
+            "effect_receipts.logical_key",
+            "effect_receipts.run_id",
+            "effect_receipts.workflow_revision_hash",
+            "effect_receipts.result_hash",
         ),
     ),
     sa.CheckConstraint("length(logical_key) > 0"),
@@ -756,7 +783,7 @@ effect_receipts = sa.Table(
     sa.CheckConstraint(
         "confirmation_source IN "
         "('ADAPTER_READBACK', 'ADAPTER_EXECUTION', "
-        "'OPERATOR_FOUND', 'OPERATOR_AUTHORIZED_EXECUTION')"
+        "'OPERATOR_FOUND', 'OPERATOR_AUTHORIZED_EXECUTION', 'FORK_REFERENCE')"
     ),
     sa.CheckConstraint(
         "(confirmation_source IN ('ADAPTER_READBACK', 'ADAPTER_EXECUTION') "
@@ -764,7 +791,21 @@ effect_receipts = sa.Table(
         "OR (confirmation_source IN "
         "('OPERATOR_FOUND', 'OPERATOR_AUTHORIZED_EXECUTION') "
         "AND reconcile_command_id IS NOT NULL "
-        "AND length(reconcile_command_id) > 0)"
+        "AND length(reconcile_command_id) > 0) "
+        "OR (confirmation_source = 'FORK_REFERENCE' "
+        "AND reconcile_command_id IS NULL)"
+    ),
+    sa.CheckConstraint(
+        "(confirmation_source = 'FORK_REFERENCE' "
+        "AND fork_source_logical_key IS NOT NULL "
+        "AND fork_source_run_id IS NOT NULL "
+        "AND fork_source_workflow_revision_hash IS NOT NULL "
+        "AND fork_source_result_hash IS NOT NULL) "
+        "OR (confirmation_source <> 'FORK_REFERENCE' "
+        "AND fork_source_logical_key IS NULL "
+        "AND fork_source_run_id IS NULL "
+        "AND fork_source_workflow_revision_hash IS NULL "
+        "AND fork_source_result_hash IS NULL)"
     ),
 )
 agent_receipts = sa.Table(
@@ -1529,6 +1570,7 @@ node_receipts_v3 = sa.Table(
         nullable=False,
     ),
     sa.Column("receipt_hash", sa.Text, unique=True, nullable=False),
+    sa.UniqueConstraint("node_execution_id", "receipt_hash"),
     sa.CheckConstraint(
         "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
     ),
@@ -1636,6 +1678,173 @@ context_packages_v3 = sa.Table(
     sa.Column("manifest", sa.LargeBinary, nullable=False),
     sa.CheckConstraint(
         "length(package_hash) = 64 AND package_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
+run_forks = sa.Table(
+    "run_forks",
+    metadata,
+    sa.Column("command_id", sa.Text, primary_key=True),
+    sa.Column("origin_run_id", sa.Text, sa.ForeignKey("runs.run_id"), nullable=False),
+    sa.Column("origin_terminal_hash", sa.Text, nullable=False),
+    sa.Column(
+        "successor_run_id",
+        sa.Text,
+        sa.ForeignKey("runs.run_id"),
+        unique=True,
+        nullable=False,
+    ),
+    sa.Column(
+        "workflow_revision_hash",
+        sa.Text,
+        sa.ForeignKey("workflow_revisions.revision_hash"),
+        nullable=False,
+    ),
+    sa.Column(
+        "run_configuration_revision_hash",
+        sa.Text,
+        sa.ForeignKey("run_configuration_revisions.revision_hash"),
+        nullable=False,
+    ),
+    sa.Column("restart_from_node_id", sa.Text, nullable=False),
+    sa.Column("fork_hash", sa.Text, unique=True, nullable=False),
+    sa.ForeignKeyConstraint(
+        ("origin_run_id", "workflow_revision_hash"),
+        ("runs.run_id", "runs.revision_hash"),
+    ),
+    sa.ForeignKeyConstraint(
+        ("successor_run_id", "workflow_revision_hash"),
+        ("runs.run_id", "runs.revision_hash"),
+    ),
+    sa.CheckConstraint(
+        "length(command_id) = 64 AND command_id NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(origin_run_id) > 0"),
+    sa.CheckConstraint(
+        "length(origin_terminal_hash) = 64 "
+        "AND origin_terminal_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(successor_run_id) > 0"),
+    sa.CheckConstraint(
+        "length(workflow_revision_hash) = 64 "
+        "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(run_configuration_revision_hash) = 64 "
+        "AND run_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(restart_from_node_id) > 0"),
+    sa.CheckConstraint(
+        "length(fork_hash) = 64 AND fork_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+)
+run_fork_reused_nodes = sa.Table(
+    "run_fork_reused_nodes",
+    metadata,
+    sa.Column("successor_run_id", sa.Text, nullable=False),
+    sa.Column("position", sa.Integer, nullable=False),
+    sa.Column("node_id", sa.Text, nullable=False),
+    sa.Column("round_ordinal", sa.Integer, nullable=False),
+    sa.Column("source_run_id", sa.Text, nullable=False),
+    sa.Column("source_workflow_revision_hash", sa.Text, nullable=False),
+    sa.Column("source_node_execution_id", sa.Text, nullable=False),
+    sa.Column("source_event_hash", sa.Text, nullable=False),
+    sa.Column("source_receipt_hash", sa.Text, nullable=False),
+    sa.Column("source_declared_context_package_hash", sa.Text, nullable=False),
+    sa.Column(
+        "source_agent_receipt_hash",
+        sa.Text,
+        sa.ForeignKey("agent_receipts_v2.receipt_hash"),
+        nullable=True,
+    ),
+    sa.PrimaryKeyConstraint("successor_run_id", "position"),
+    sa.UniqueConstraint("successor_run_id", "node_id", "round_ordinal"),
+    sa.ForeignKeyConstraint(
+        ("successor_run_id",), ("run_forks.successor_run_id",)
+    ),
+    sa.ForeignKeyConstraint(
+        ("source_run_id", "source_workflow_revision_hash"),
+        ("runs.run_id", "runs.revision_hash"),
+    ),
+    sa.ForeignKeyConstraint(
+        ("source_node_execution_id", "source_receipt_hash"),
+        ("node_receipts_v3.node_execution_id", "node_receipts_v3.receipt_hash"),
+    ),
+    sa.ForeignKeyConstraint(
+        ("source_declared_context_package_hash",),
+        ("context_packages_v3.package_hash",),
+    ),
+    sa.CheckConstraint("position >= 0"),
+    sa.CheckConstraint("length(node_id) > 0"),
+    sa.CheckConstraint(f"round_ordinal >= {FIRST_ROUND_ORDINAL}"),
+    sa.CheckConstraint("length(source_run_id) > 0"),
+    sa.CheckConstraint(
+        "length(source_workflow_revision_hash) = 64 "
+        "AND source_workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(source_node_execution_id) = 64 "
+        "AND source_node_execution_id NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(source_event_hash) = 64 "
+        "AND source_event_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(source_receipt_hash) = 64 "
+        "AND source_receipt_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(source_declared_context_package_hash) = 64 "
+        "AND source_declared_context_package_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "source_agent_receipt_hash IS NULL OR "
+        "(length(source_agent_receipt_hash) = 64 "
+        "AND source_agent_receipt_hash NOT GLOB '*[^0-9a-f]*')"
+    ),
+)
+run_fork_effect_fences = sa.Table(
+    "run_fork_effect_fences",
+    metadata,
+    sa.Column("successor_run_id", sa.Text, nullable=False),
+    sa.Column("position", sa.Integer, nullable=False),
+    sa.Column("node_id", sa.Text, nullable=False),
+    sa.Column("round_ordinal", sa.Integer, nullable=False),
+    sa.Column("source_logical_key", sa.Text, nullable=False),
+    sa.Column("source_run_id", sa.Text, nullable=False),
+    sa.Column("source_workflow_revision_hash", sa.Text, nullable=False),
+    sa.Column("source_result_hash", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("successor_run_id", "position"),
+    sa.UniqueConstraint("successor_run_id", "node_id", "round_ordinal"),
+    sa.ForeignKeyConstraint(
+        ("successor_run_id",), ("run_forks.successor_run_id",)
+    ),
+    sa.ForeignKeyConstraint(
+        (
+            "source_logical_key",
+            "source_run_id",
+            "source_workflow_revision_hash",
+            "source_result_hash",
+        ),
+        (
+            "effect_receipts.logical_key",
+            "effect_receipts.run_id",
+            "effect_receipts.workflow_revision_hash",
+            "effect_receipts.result_hash",
+        ),
+    ),
+    sa.CheckConstraint("position >= 0"),
+    sa.CheckConstraint("length(node_id) > 0"),
+    sa.CheckConstraint(f"round_ordinal >= {FIRST_ROUND_ORDINAL}"),
+    sa.CheckConstraint("length(source_logical_key) > 0"),
+    sa.CheckConstraint("length(source_run_id) > 0"),
+    sa.CheckConstraint(
+        "length(source_workflow_revision_hash) = 64 "
+        "AND source_workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        "length(source_result_hash) = 64 "
+        "AND source_result_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
 node_receipt_outputs_v3 = sa.Table(
@@ -2111,6 +2320,42 @@ _PRODUCT_TRIGGERS = {
         CREATE TRIGGER effect_receipts_no_delete
         BEFORE DELETE ON effect_receipts BEGIN
           SELECT RAISE(ABORT, 'effect receipts are immutable');
+        END
+    """,
+    "run_forks_no_update": """
+        CREATE TRIGGER run_forks_no_update
+        BEFORE UPDATE ON run_forks BEGIN
+          SELECT RAISE(ABORT, 'run forks are immutable');
+        END
+    """,
+    "run_forks_no_delete": """
+        CREATE TRIGGER run_forks_no_delete
+        BEFORE DELETE ON run_forks BEGIN
+          SELECT RAISE(ABORT, 'run forks are immutable');
+        END
+    """,
+    "run_fork_reused_nodes_no_update": """
+        CREATE TRIGGER run_fork_reused_nodes_no_update
+        BEFORE UPDATE ON run_fork_reused_nodes BEGIN
+          SELECT RAISE(ABORT, 'run fork reused nodes are immutable');
+        END
+    """,
+    "run_fork_reused_nodes_no_delete": """
+        CREATE TRIGGER run_fork_reused_nodes_no_delete
+        BEFORE DELETE ON run_fork_reused_nodes BEGIN
+          SELECT RAISE(ABORT, 'run fork reused nodes are immutable');
+        END
+    """,
+    "run_fork_effect_fences_no_update": """
+        CREATE TRIGGER run_fork_effect_fences_no_update
+        BEFORE UPDATE ON run_fork_effect_fences BEGIN
+          SELECT RAISE(ABORT, 'run fork effect fences are immutable');
+        END
+    """,
+    "run_fork_effect_fences_no_delete": """
+        CREATE TRIGGER run_fork_effect_fences_no_delete
+        BEFORE DELETE ON run_fork_effect_fences BEGIN
+          SELECT RAISE(ABORT, 'run fork effect fences are immutable');
         END
     """,
     "agent_receipts_no_update": """
@@ -2941,7 +3186,13 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         host_project_model_defaults.name,
     }
     connections = {host_project_source_connection_revisions.name}
-    before_model_configuration = (PRODUCT_TABLE_NAMES - model_configuration) | occupancy
+    fork_tables = {
+        run_forks.name,
+        run_fork_reused_nodes.name,
+        run_fork_effect_fences.name,
+    }
+    before_forks = PRODUCT_TABLE_NAMES - fork_tables
+    before_model_configuration = (before_forks - model_configuration) | occupancy
     predecessor_tables = (
         before_model_configuration
         - {queue_items.name, webhook_delivery_cursor.name}
@@ -2949,6 +3200,8 @@ def _table_names_for_version(version: int) -> frozenset[str]:
     ) | {_V27_ACCESS_TABLE_NAME}
     if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
+    if version == _VERSION_FORTY:
+        return before_forks
     # V33 to V39 hold the same tables: the hops between
     # them moved one table's key and columns, three tables' state vocabulary, one
     # table's index and one table's column set, never the set of tables.
@@ -4801,6 +5054,56 @@ def _apply_v39_to_v40(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_THIRTY_NINE, _VERSION_FORTY)
 
 
+_RUN_FORK_TABLES = (run_forks, run_fork_reused_nodes, run_fork_effect_fences)
+_RUN_FORK_TRIGGERS = (
+    "run_forks_no_update",
+    "run_forks_no_delete",
+    "run_fork_reused_nodes_no_update",
+    "run_fork_reused_nodes_no_delete",
+    "run_fork_effect_fences_no_update",
+    "run_fork_effect_fences_no_delete",
+)
+_EFFECT_RECEIPTS_TRIGGERS = (
+    "effect_receipts_no_update",
+    "effect_receipts_no_delete",
+)
+_PREDECESSOR_EFFECT_RECEIPTS_BEFORE_FORK_REFERENCE = (
+    "effect_receipts_before_fork_reference"
+)
+
+
+def _apply_v40_to_v41(connection: sqlite3.Connection) -> None:
+    """Add immutable fork evidence and admit a receipt's exact source reference."""
+
+    for name in (
+        *(table.name for table in _RUN_FORK_TABLES),
+        *_RUN_FORK_TRIGGERS,
+        _PREDECESSOR_EFFECT_RECEIPTS_BEFORE_FORK_REFERENCE,
+    ):
+        if connection.execute(
+            "SELECT type FROM sqlite_master WHERE name=?", (name,)
+        ).fetchone() is not None:
+            raise StoreMigrationRefused(
+                f"schema version {_VERSION_FORTY} already has {name}; "
+                "this command will not alter it"
+            )
+    _rebuild_product_table(
+        connection,
+        effect_receipts,
+        _PREDECESSOR_EFFECT_RECEIPTS_BEFORE_FORK_REFERENCE,
+        _EFFECT_RECEIPTS_TRIGGERS,
+        _VERSION_FORTY,
+        _VERSION_FORTY_ONE,
+    )
+    for table in _RUN_FORK_TABLES:
+        connection.execute(
+            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
+        )
+    for trigger_name in _RUN_FORK_TRIGGERS:
+        connection.execute(_PRODUCT_TRIGGERS[trigger_name])
+    _raise_declared_version(connection, _VERSION_FORTY, _VERSION_FORTY_ONE)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -4943,6 +5246,11 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _VERSION_THIRTY_NINE,
         _VERSION_FORTY,
         _apply_v39_to_v40,
+    ),
+    _SchemaMigrationStep(
+        _VERSION_FORTY,
+        _VERSION_FORTY_ONE,
+        _apply_v40_to_v41,
     ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
