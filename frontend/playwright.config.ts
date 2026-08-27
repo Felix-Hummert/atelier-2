@@ -39,7 +39,7 @@ export default defineConfig({
     trace: "retain-on-failure"
   },
   webServer: {
-    command: "uv run --locked python tests/e2e/serve_cockpit.py",
+    command: "npm --prefix frontend run build && uv run --locked python tests/e2e/serve_cockpit.py",
     cwd: repositoryRoot,
     env: {
       ATELIER2_E2E_ROOT: runtimeRoot,

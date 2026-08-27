@@ -356,6 +356,23 @@ describe("read-only node rail", () => {
     expect(newlyWaiting.map(({ state }) => state)).toEqual(["succeeded", "needs_you", "queued", "queued"]);
     expect(advanced.map(({ state }) => state)).toEqual(["succeeded", "succeeded", "working", "queued"]);
   });
+  it("names a RUN_PROJECTION_CORRUPT frame on a per-run stream as a decoder failure", async () => {
+    const next = await decodeAndApplyDurableEvent(
+      projection(),
+      JSON.stringify({
+        event: "RUN_PROJECTION_CORRUPT",
+        public_run_reference: publicReference,
+        problem: {
+          type: "urn:atelier2:problem:v1:durable-state-corrupt",
+          title: "Durable state is corrupt",
+          status: 500,
+          detail: "Stop mutation and inspect the durable store."
+        }
+      })
+    );
+    expect(next.protocol_problem).toEqual({ type: "decoder" });
+  });
+
 });
 
 function projection() {

@@ -13,32 +13,27 @@ import type { CatalogNameState } from "./catalogName";
  */
 export const catalogPageCopy = {
   title: "Catalog",
-  // The room sentence (ADR 0019 §1): the catalog is the library and the one
-  // door that starts a piece by hand -- what the house can do, from where, and
-  // how to get more. There is no second room that starts a run.
-  lead: "What the workshop has — every published workflow, agent, and skill, each with its provenance.",
+  import: "Import",
+  filePicker: "Catalog file picker",
+  oneWorkflow: "1 workflow",
+  oneAgent: "1 agent",
 
-  workflowsTitle: "Available workflows",
-  workflowsEmpty: "Nothing published yet — import a workflow file below.",
+  all: "All",
+  workflowsTitle: "Workflows",
+  agentsTitle: "Agents",
+  agentsByProvider: "Agents by provider",
+  skillsTitle: "Skills",
+  catalogGroups: "Catalog groups",
+  search: "Search…",
+  searchLabel: "Search the catalog",
+  catalogEmpty: "Drop a workflow, an agent, or a plugin folder — anywhere on this page.",
   workflowsUnavailable: "Workflows unavailable",
   workflowsIncomplete: "Workflows incomplete",
 
-  // An imported agent is provider-bound and passed through whole; the atelier
-  // translates nothing. Neutrality lives in a workflow's role and its casting,
-  // never in the file, so the heading says which axis this list is sorted on.
-  agentsTitle: "Available agents (by provider)",
-  agentsEmpty: "No agent published yet — import an .agent.md file below.",
-  // A published definition is not yet something any executor runs: it ends at
-  // the agent configuration, and nothing binds a run to it. The row says so
-  // rather than wearing a state that would read as "ready".
-  agentPublishedOnly: "Published — no executor runs it yet",
   agentsUnavailable: "Agents unavailable",
   agentsIncomplete: "Agents incomplete",
 
-  skillsTitle: "Available skills",
-  // Honest, not apologetic: there is no publishing door for a skill in this
-  // build, and #660's Git link is the one that will bring them.
-  skillsNone: "Skills arrive with the Git link this atelier does not hold yet.",
+  skillsNone: "A plugin folder brings skills.",
 
   provenanceManual: "Manual import",
   // The provider an imported agent belongs to. The import door takes exactly
@@ -51,42 +46,22 @@ export const catalogPageCopy = {
   // name, so one thing is called one thing across the workshop.
   unnamedWorkflow: "Unnamed workflow",
 
-  startable: "Startable",
-  notAdmitted: "Not in the catalog yet",
+  newerRevisionHint: "A newer published revision is available.",
+  notAdmittedHint: "This published workflow is not in the catalog yet.",
+  newerRevision: "Newer revision",
+  notAdmitted: "Not in catalog",
   notExecutable: "Not executable",
-  // The live duplicate-card finding's fix (#659, sharpened by #684): a
-  // published sibling of an admitted name shows here, under that one card,
-  // instead of wearing a second card with the same name.
-  newerRevisionAvailable: "Newer revision available",
 
-  admit: "Admit into catalog",
-  admitting: "Admitting…",
-  admitFailed: "This workflow could not be admitted.",
-  admitted: "Admitted — you can open it by name now.",
   // The catalog detail owns the only manual start door (ADR 0019 §1).
   start: "Start",
-  // The one door into the workflow detail page (#695): a named revision's
-  // node-graph preview and per-node facts, which this entry itself does not
-  // carry. Shown for any named revision -- admitted, not yet admitted, or not
-  // executable -- since seeing the graph and why a node refuses to run is
-  // exactly what this door is for.
-  details: "Details",
 
-  importWorkflowTitle: "Import a workflow",
-  importWorkflowHint: "Choose a .yaml file, or paste the exact document.",
-  importWorkflowLabel: "Exact workflow YAML",
-  importWorkflowFailed: "This workflow could not be imported.",
-
-  importAgentTitle: "Import an agent",
-  importAgentHint: "Choose an .agent.md file, or paste the exact document.",
-  importAgentLabel: "Exact agent definition",
-  importAgentFailed: "This agent could not be imported.",
-
-  chooseFile: "Choose a file",
-  importing: "Importing…",
-  importAction: "Import",
-  imported: "Imported.",
-  emptyDocument: "There is nothing to import yet — choose a file or paste a document.",
+  cancel: "Cancel",
+  close: "Close",
+  addToCatalog: "Add to catalog",
+  addingToCatalog: "Adding…",
+  importFailed: "This file could not be imported.",
+  recognitionFailed: "This file could not be recognized.",
+  unrecognized: "This doesn't look like a workflow, an agent, or a plugin — nothing was added.",
   fileUnreadable: "That file could not be read."
 } as const;
 
@@ -130,7 +105,6 @@ export const workflowStartCopy = {
   unknownSource: "Other source",
   orderUnavailable: "This order shape cannot be started here.",
   roles: "Roles",
-  info: "Info",
   choose: "Choose",
   chosenNow: "Chosen now",
   pinnedInWorkflow: "pinned in workflow",
@@ -146,6 +120,11 @@ export const workflowStartCopy = {
   trueLabel: "True",
   falseLabel: "False",
   startRun: "Start run",
+  startNeedsWorkItem: "Choose a work item before starting.",
+  startNeedsWorkItemSource: "Connect a source in Settings before starting.",
+  startNeedsOrder: "Complete each required order before starting.",
+  startPreparing: "Preparing the start options.",
+  startNeedsConfiguration: (role: string) => `Choose a configuration for ${role} before starting.`,
   tryAgain: "Try again",
   cancel: "Cancel",
   retry: "Retry",

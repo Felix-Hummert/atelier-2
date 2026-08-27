@@ -71,6 +71,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptReplacement,
     AgentAttemptState,
 )
+from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import (
     AgentExecutionRequestHash,
     AgentExecutionRequestV2,
@@ -463,6 +464,9 @@ def _current_attempt_projection(
             )
     attempt_id = AgentAttemptId(str(record["attempt_id"]))
     ordinal = int(record["attempt_ordinal"])
+    expected_attempt_id = AgentAttemptId.for_execution(
+        execution_id, exact_request.request_hash, ordinal
+    )
     if (
         ordinal not in (1, 2)
         or NodeExecutionId(str(record["node_execution_id"])) != execution_id
@@ -471,12 +475,21 @@ def _current_attempt_projection(
         != run.revision_hash
         or str(record["node_id"]) != run.current_node_id
         or request_hash != exact_request.request_hash
-        or attempt_id
-        != AgentAttemptId.for_execution(
-            execution_id, exact_request.request_hash, ordinal
-        )
+        or attempt_id != expected_attempt_id
     ):
-        raise RunTransitionConflict("current agent attempt binding disagrees")
+        raise RunTransitionConflict(
+            "current agent attempt binding disagrees "
+            f"run_id durable={str(record['run_id'])!r} expected={run.run_id.value!r} "
+            f"node_id durable={str(record['node_id'])!r} expected={run.current_node_id!r} "
+            f"ordinal={ordinal!r} "
+            f"request_hash durable={request_hash.value!r} "
+            f"expected={exact_request.request_hash.value!r} "
+            f"attempt_id durable={attempt_id.value!r} expected={expected_attempt_id.value!r} "
+            f"node_execution_id durable={str(record['node_execution_id'])!r} "
+            f"expected={execution_id.value!r} "
+            f"workflow_revision_hash durable={str(record['workflow_revision_hash'])!r} "
+            f"expected={run.revision_hash.value!r}"
+        )
     durable_state = _durable_attempt_state(record["state"])
     public_state = public_agent_attempt_state(durable_state)
     if public_state is None:
@@ -615,6 +628,37 @@ def _node_receipt_refusal_output(
     except UnicodeDecodeError:
         return None
     return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
+
+
+def _node_transcript(
+    connection: Connection,
+    execution_id: NodeExecutionId,
+) -> AttemptTranscript | None:
+    """The current execution's highest attempt that named a transcript.
+
+    A null pointer is honest absence: this attempt decoded nothing, or none of
+    its attempts have ended with a transcript yet. A named address whose
+    artifact is missing, whose stored bytes do not hash to that address, or
+    whose document `from_document` refuses is a store disagreeing with itself
+    -- not an omitted transcript. The surrounding query maps that loud failure
+    to durable corruption.
+    """
+
+    named = connection.scalar(
+        sa.select(agent_attempts.c.transcript_artifact_hash)
+        .where(
+            agent_attempts.c.node_execution_id == execution_id.value,
+            agent_attempts.c.transcript_artifact_hash.is_not(None),
+        )
+        .order_by(agent_attempts.c.attempt_ordinal.desc())
+        .limit(1)
+    )
+    if named is None:
+        return None
+    artifact = read_stored_artifact(connection, ArtifactHash(str(named)))
+    if artifact is None:
+        raise ValueError(f"named transcript artifact {named} is missing from the store")
+    return AttemptTranscript.from_document(artifact.content)
 
 
 def _abandoned_intent_refusal(projection: RunProjection, node_id: str) -> str | None:
@@ -1120,6 +1164,7 @@ class DbosQueries:
                         ),
                         started_at=started_at,
                         ended_at=ended_at,
+                        transcript=_node_transcript(connection, execution_id),
                     )
                 )
         except ProjectionLimitExceeded:
@@ -1185,9 +1230,14 @@ class DbosQueries:
             return ReadUnavailable()
         except (ValueError, RuntimeError, DatabaseError) as error:
             _LOG.error(
-                "run get projection failed",
+                "run get projection failed for run_id=%s: %s",
+                run_id.value,
+                error,
                 exc_info=error,
-                extra={"event": "run_get_projection_corrupt"},
+                extra={
+                    "event": "run_get_projection_corrupt",
+                    "run_id": run_id.value,
+                },
             )
             return QueryDurableStateCorrupt()
 

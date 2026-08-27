@@ -1,7 +1,8 @@
 # Requirements
 
 Audience: operator deciding intent, and engineer or agent binding approved work.
-This index owns the rules; [`revisions.toml`](revisions.toml) owns active byte bindings.
+This index owns the rules; [`revisions.toml`](revisions.toml) owns active byte
+and source-watermark bindings.
 
 Trace is one-way: `Vision → Requirement → Acceptance → executed test`.
 
@@ -71,6 +72,15 @@ Changing approved bytes always creates a successor. Supersession or retirement
 is added only when a real revision needs it; no unused registry field is
 reserved in advance.
 
+## Source freshness bindings
+
+`revisions.toml` binds an approved requirement revision's exact digest to one
+source thread and its last observed object. Bindings are append-only: a changed
+watermark belongs to a new requirement revision, while the prior binding stays
+field-identical. The documentation-order gate verifies those bindings without
+fetching a source or judging what it means; the pure freshness reader consumes
+an in-memory source snapshot. It never parses `Distilled-From` prose.
+
 The `[[legacy]]` entries are temporary metadata for pre-lifecycle
 documents. `revisions.toml` alone owns current shelf metadata. Against an exact
 VCS base, CI admits no new legacy, keeps every prior registry field identical,
@@ -94,8 +104,10 @@ proves: with an exact VCS base, legacy pins cannot grow or change, and may only 
 proves: with an exact VCS base, every existing revision remains field-identical and history grows only by a valid successor
 proves: every strict requirement has only title, nonempty Intent, nonempty unique sourced rule sentences, and optional nonempty Non-goals
 proves: every approval-backed revision line is predecessor-complete, unbranched, and has one tip on one numbered path
+proves: every source binding names one exact approval-backed requirement revision, and with an exact VCS base prior bindings stay field-identical
 does not prove: that a cited source or approval comment exists or says what the registry claims - review judges that
 does not fetch: GitHub or another live authority
+does not judge: source meaning or freshness
 does not make: a frozen legacy document an approved revision
 ```
 <!-- documentation-order-gate-bound:end -->

@@ -190,10 +190,7 @@ describe("what the catalog says about an agent", () => {
 });
 
 describe("the facts under an entry's name", () => {
-  it("names where the bytes came from before the digest that identifies them", () => {
-    expect(catalogRowFacts(HASH)).toEqual([
-      catalogPageCopy.provenanceManual,
-      "bbbbbbbb…bbbb"
-    ]);
+  it("names provenance without putting a machine fingerprint on the card", () => {
+    expect(catalogRowFacts()).toEqual([catalogPageCopy.provenanceManual]);
   });
 });

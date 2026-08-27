@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["documents"],
+  "properties": {
+    "documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "digest", "content_utf8"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "content_utf8": {"type": "string"}
+        }
+      }
+    }
+  }
+}

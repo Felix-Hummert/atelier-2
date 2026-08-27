@@ -105,7 +105,7 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.run_projections import NodeState, RunPage
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
-from atelier2.ports.run_events import AttentionEventPage
+from atelier2.ports.run_events import AttentionEvent, AttentionEventPage
 from atelier2.ports.run_queries import NodeDetailFound, RunFound
 from tests.scenarios.agents import commit_configured_agent
 from tests.scenarios.api import durable_queries
@@ -414,9 +414,13 @@ def test_prepared_intent_no_workflow_will_move_reaches_the_operator_door(
 
     page = durable_queries(runtime.engine).read_attention_event_page(None, None, 10, ())
     assert isinstance(page, AttentionEventPage)
-    assert [
-        (item.event.event.run_id, item.event.event.event_kind) for item in page.events
-    ] == [(RunId("run-1"), RunEventKind.ACTION_RECONCILIATION_REQUIRED)]
+    assert len(page.events) == 1
+    item = page.events[0]
+    assert isinstance(item, AttentionEvent)
+    assert (item.event.event.run_id, item.event.event.event_kind) == (
+        RunId("run-1"),
+        RunEventKind.ACTION_RECONCILIATION_REQUIRED,
+    )
 
     accepted = reconcile_effect_result(
         command(intent), DbosEffectReconcileCommander(runtime.engine, runtime.settings)

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   decodeStreamFrame,
+  isRunProjectionCorrupt,
   isStreamFailure,
   type CockpitApi,
   type RunEvent,
@@ -242,6 +243,10 @@ function settleFromEvent(rawData: string, pendingId: string): boolean {
       // The stream broke, not the episode: the line says so, and its run link
       // stays the honest way to the reply.
       settleConductorLine(pendingId, conductorChatCopy.streamLost);
+      return true;
+    }
+    if (isRunProjectionCorrupt(frame)) {
+      settleConductorLine(pendingId, conductorChatCopy.replyUnreadable);
       return true;
     }
     event = frame;

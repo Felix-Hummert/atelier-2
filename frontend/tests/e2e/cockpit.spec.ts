@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
+import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
 import { shortFingerprint } from "../../src/lib/fingerprint";
 import { PRODUCT_NAME } from "../../src/lib/productName";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
@@ -327,10 +328,8 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): chooses a che
   await expect(sheet).toBeVisible();
   const picker = sheet.getByLabel("Configuration for builder");
   await expect(picker).toHaveValue("");
-  await sheet.getByRole("button", { name: "Why builder needs a configuration" }).hover();
-  await expect(sheet.getByRole("status")).toContainText("No project default");
   await picker.selectOption(configurationHash);
-  await expect(sheet.locator(".role-source")).toHaveText("Chosen now");
+  await expect(sheet.getByText("Chosen now", { exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(sheet).toHaveCount(0);
   await expect(opener).toBeFocused();
@@ -1733,9 +1732,12 @@ test("opening a Catalog detail draws its nodes before a run exists", async ({
 
 test("a declared order is a material field on start, and the typed value travels as that order", async ({
   page
-}) => {
+}, testInfo) => {
   const api = "/atelier/api/v1";
-  const workflowName = "cook-to-order";
+  const repetition = testInfo.repeatEachIndex;
+  const workflowName = `cook-to-order-${repetition}`;
+  const profileId = `cook-order-${repetition}`;
+  const modelId = `cook-sonnet-${repetition}`;
   const schema = await page.request.post(`${api}/schema-revisions`, {
     headers: { "content-type": "application/json" },
     data: '{"type":"object","properties":{"portions":{"type":"integer","minimum":1}},"required":["portions"],"additionalProperties":false}'
@@ -1745,7 +1747,7 @@ test("a declared order is a material field on start, and the typed value travels
 
   const auth = await page.request.post(`${api}/auth-profile-revisions`, {
     data: {
-      profile_id: "cook-order",
+      profile_id: profileId,
       revision_number: 1,
       provider_id: "e2e-v3",
       auth_mode: "subscription"
@@ -1754,7 +1756,7 @@ test("a declared order is a material field on start, and the typed value travels
   expect(auth.status()).toBe(201);
   const configuration = await page.request.post(`${api}/agent-configuration-revisions`, {
     data: {
-      model: "cook-sonnet",
+      model: modelId,
       auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
       executor_revision: "immediate/v1",
       requested_capability: "headless"
@@ -1762,7 +1764,7 @@ test("a declared order is a material field on start, and the typed value travels
   });
   expect(configuration.status()).toBe(201);
   const configurationHash = (await configuration.json()).agent_configuration_revision_hash as string;
-  await publishCheckedRegistryEntry(page, "e2e-v3", "cook-sonnet", configurationHash);
+  await publishCheckedRegistryEntry(page, "e2e-v3", modelId, configurationHash);
 
   const answerSchemaHash = await anyJsonSchema(page);
   const workflowYaml = [
@@ -1804,8 +1806,8 @@ test("a declared order is a material field on start, and the typed value travels
   await page.getByRole("button", { name: "Start" }).click();
   const sheet = page.getByRole("dialog", { name: `Start ${workflowName}` });
   const order = sheet.getByRole("group", { name: "Order portions" });
-  await expect(order).toContainText(`portions-schema@${schemaHash}`);
-  const material = order.getByRole("spinbutton", { name: /portions/ });
+  const material = order.getByRole("spinbutton", { name: "portions (integer) *", exact: true });
+  await expect(material).toBeVisible();
   await expect(material).toHaveValue("");
   await expect(sheet.getByRole("button", { name: "Start run" })).toBeDisabled();
   await material.fill("7");
@@ -1902,7 +1904,7 @@ test("the Catalog detail names the admitted head of a V3 lineage", async ({
   const row = page.getByRole("listitem").filter({ hasText: lineageName });
   await expect(row).toContainText("The catalog head.");
   await expect(row).not.toContainText("The first admitted member.");
-  await row.getByRole("link", { name: "Details" }).click();
+  await row.getByRole("link", { name: lineageName }).click();
   await expect(page).toHaveURL(`/atelier/catalog/${lineageName}`);
   await expect(page.getByRole("heading", { level: 1, name: lineageName })).toBeVisible();
   await expect(page.getByRole("button", { name: "Start" })).toBeDisabled();
@@ -2096,18 +2098,19 @@ test("an admitted V3 workflow is named by the Catalog", async ({
 
   await page.goto("/atelier/catalog");
   const row = page.getByRole("listitem").filter({ hasText: lineageName });
-  await expect(row.getByRole("link", { name: "Details" })).toBeVisible();
-  await row.getByRole("link", { name: "Details" }).click();
+  await expect(row.getByRole("link", { name: lineageName })).toBeVisible();
+  await row.getByRole("link", { name: lineageName }).click();
   await expect(page).toHaveURL(`/atelier/catalog/${lineageName}`);
   await expect(page.getByRole("heading", { level: 1, name: lineageName })).toBeVisible();
 });
 
 test("the Catalog keeps unpublished and unnamable workflows visible", async ({
   page
-}) => {
+}, testInfo) => {
   const api = "/atelier/api/v1";
-  const unlisted = "unlisted-213";
-  const unnamable = "Der erste Lauf auf 213";
+  const repetition = testInfo.repeatEachIndex;
+  const unlisted = `unlisted-213-${repetition}`;
+  const unnamable = `Der erste Lauf auf 213 ${repetition}`;
   const schemaHash = await anyJsonSchema(page);
   const unlistedYaml = [
     "format_version: 3",
@@ -2148,12 +2151,17 @@ test("the Catalog keeps unpublished and unnamable workflows visible", async ({
 
   await page.goto("/atelier/catalog");
   const unpublished = page.getByRole("listitem").filter({ hasText: unlisted });
-  await expect(unpublished).toContainText("Not in the catalog yet");
-  await expect(unpublished.getByRole("button", { name: "Admit into catalog" })).toBeVisible();
+  await expect(unpublished.getByText(catalogPageCopy.notAdmitted)).toBeVisible();
+  await expect(unpublished.getByRole("button", { name: /Admit/ })).toHaveCount(0);
+  await unpublished.getByRole("link", { name: unlisted }).click();
+  await expect(page.getByRole("heading", { level: 1, name: unlisted })).toBeVisible();
+  await expect(page.getByRole("button", { name: catalogPageCopy.start })).toBeDisabled();
+
+  await page.goto("/atelier/catalog");
   const unnamed = page.getByRole("listitem").filter({ hasText: unnamable });
   await expect(unnamed).toBeVisible();
-  await expect(unnamed.getByRole("link", { name: "Details" })).toBeVisible();
-  await expect(unnamed.getByRole("button", { name: "Admit into catalog" })).toHaveCount(0);
+  await expect(unnamed.getByRole("link", { name: unnamable })).toBeVisible();
+  await expect(unnamed.getByRole("button", { name: /Admit/ })).toHaveCount(0);
 });
 
 test("a waiting V3 run is answerable on its own run page", async ({ page }) => {

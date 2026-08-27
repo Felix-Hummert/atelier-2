@@ -16,6 +16,7 @@ from typing import Any, Final
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection
 
+from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 from atelier2.adapters.dbos.schema import event_instants, run_events, runs
 from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.run_events import PersistedRunEvent
@@ -25,6 +26,7 @@ from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.run_events import (
     AttentionCursorUnknown,
     AttentionEvent,
+    AttentionEventCorrupt,
     AttentionEventPage,
     ReadAttentionEventPageResult,
 )
@@ -106,17 +108,26 @@ def load_attention_event_page(
             payload_columns=_EVENT_PAYLOAD_COLUMNS,
             field_columns=_EVENT_FIELD_COLUMNS,
         )
-        events.append(
-            AttentionEvent(
-                project_event(
-                    connection,
-                    record,
-                    WorkflowFormatVersion(int(record["workflow_format_version"])),
-                    projection_limit,
-                ),
-                RecordedAt(str(record["recorded_at"])),
+        try:
+            events.append(
+                AttentionEvent(
+                    project_event(
+                        connection,
+                        record,
+                        WorkflowFormatVersion(int(record["workflow_format_version"])),
+                        projection_limit,
+                    ),
+                    RecordedAt(str(record["recorded_at"])),
+                )
             )
-        )
+        except RunTransitionConflict:
+            events.append(
+                AttentionEventCorrupt(
+                    RunId(str(record["run_id"])),
+                    int(record["event_sequence"]),
+                    RecordedAt(str(record["recorded_at"])),
+                )
+            )
     return AttentionEventPage(tuple(events))
 
 
