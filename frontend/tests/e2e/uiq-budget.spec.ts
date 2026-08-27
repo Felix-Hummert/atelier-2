@@ -14,9 +14,10 @@ import { WORKSHOP_DESTINATION } from "../../src/lib/workshop";
  * History, and Catalog's find-by-search, open-tile, reach-Start and
  * import-via-button tasks. reach-Start is Catalog + card until Start is in
  * view, not §07's 4-click start-by-hand / Start-run remainder. The Run view
- * waits on #666. Queue-admit is named in §07 and has no Workbench door yet —
- * not asserted here. Settings' connect-a-source path is a named deferral to
- * #567 until that door exists, never a silent pass.
+ * adds its standing sentence and node Log path from frame #v8-14-run-log.
+ * Queue-admit is named in §07 and has no Workbench door yet — not asserted
+ * here. Settings' connect-a-source path is a named deferral to #567 until
+ * that door exists, never a silent pass.
  *
  * Contract only: user-click count to the goal, and the named goal elements in
  * the viewport without scrolling at the picture's 390 and 1280 widths.
@@ -38,6 +39,14 @@ const FIND_THE_RUNNING_RUN_GLANCES = 1;
 /** Untitled populated History frame (§05). From another room: History + the line. */
 const OPEN_FINISHED_RUN_FROM_HISTORY_CLICKS = 2;
 const OPEN_FINISHED_RUN_FROM_HISTORY_GLANCES = 2;
+
+/** Frame #v8-14-run-log. The standing sentence is already in the Run view head. */
+const READ_RUN_STANDING_CLICKS = 0;
+const READ_RUN_STANDING_GLANCES = 1;
+
+/** Frame #v8-14-run-log. The graph node opens its panel; Log opens its stored-attempt view. */
+const OPEN_NODE_LOG_CLICKS = 2;
+const OPEN_NODE_LOG_GLANCES = 3;
 
 /** Frame "Connect a source — the sheet · and the question before a disconnect" (§06). */
 const CONNECT_A_SOURCE_CLICKS = 3;
@@ -424,7 +433,7 @@ function catalogImportDocument(schemaHash: string, name: string): string {
   ].join("\n");
 }
 
-test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History and Catalog core tasks stay inside mockup v8 click and glance budgets at 390 and 1280", async ({
+test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History, Catalog and Run view core tasks stay inside mockup v8 click and glance budgets at 390 and 1280", async ({
   page
 }, testInfo) => {
   test.setTimeout(300_000);
@@ -508,6 +517,36 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
     historyGlances += 1;
     expect(historyGlances).toBe(OPEN_FINISHED_RUN_FROM_HISTORY_GLANCES);
     expect(historyPath.count).toBeLessThanOrEqual(OPEN_FINISHED_RUN_FROM_HISTORY_CLICKS);
+
+    const readStanding = clickBudget();
+    await expect(resultSentence, `read-run-standing glance at ${viewport.width}`).toBeInViewport();
+    const standingGlances = 1;
+    expect(standingGlances).toBe(READ_RUN_STANDING_GLANCES);
+    expect(readStanding.count, `read-run-standing clicks at ${viewport.width}`).toBeLessThanOrEqual(
+      READ_RUN_STANDING_CLICKS
+    );
+
+    const nodeLogPath = clickBudget();
+    const node = page.getByRole("button", { name: "work — Done" });
+    await expect(node).toBeVisible();
+    await expect(node, `open-node-log node glance at ${viewport.width}`).toBeInViewport();
+    let nodeLogGlances = 1;
+    await nodeLogPath.click(node);
+    const panel = page.getByRole("complementary");
+    await expect(panel.getByRole("heading", { name: "work" })).toBeVisible();
+    const log = panel.getByRole("tab", { name: runPageCopy.tabLog });
+    await expect(log, `open-node-log tab glance at ${viewport.width}`).toBeInViewport();
+    nodeLogGlances += 1;
+    await nodeLogPath.click(log);
+    await expect(log).toHaveAttribute("aria-selected", "true");
+    const storedAttempt = panel.getByRole("tabpanel", { name: runPageCopy.tabLog });
+    await expect(storedAttempt).toBeVisible();
+    await expect(storedAttempt, `open-node-log transcript glance at ${viewport.width}`).toBeInViewport();
+    nodeLogGlances += 1;
+    expect(nodeLogGlances).toBe(OPEN_NODE_LOG_GLANCES);
+    expect(nodeLogPath.count, `open-node-log clicks at ${viewport.width}`).toBeLessThanOrEqual(
+      OPEN_NODE_LOG_CLICKS
+    );
   }
 
   for (const viewport of VIEWPORTS) {
