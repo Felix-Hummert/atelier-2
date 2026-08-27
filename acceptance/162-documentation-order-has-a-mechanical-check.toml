@@ -15,3 +15,7 @@ text = "The documentation-order gate states the same bound the documentation sta
 [[sentence]]
 id = "a-new-source-object-after-a-bound-watermark-names-the-document-as-stale"
 text = "For each source-bound active requirement revision, a newly observed thread or decision object after its bound watermark causes the pure freshness read to name that document exactly once as stale; no later object yields a current reading, and an unresolved watermark yields no freshness report."
+
+[[sentence]]
+id = "a-curator-candidate-is-bound-to-exact-stale-view-and-owner-artifacts"
+text = "A headless curator receives typed stale-report, current-document, owner-source, and context artifacts and may return only a closed schema-valid candidate carrying stale document paths, expected current digests, UTF-8 replacement content, cited owner objects, and unresolved questions; it does not claim prose faithfulness."
