@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import ProofAnchor from "../../src/components/ProofAnchor.svelte";
 import { shortFingerprint } from "../../src/lib/fingerprint";
+import { copyLabel, proofAnchorCopy } from "../../src/lib/proofAnchorCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 
 const value = `${"a".repeat(60)}9594`;
@@ -37,12 +38,12 @@ describe("the named proof affordance", () => {
     });
 
     await fireEvent.click(
-      screen.getByRole("button", { name: `Copy ${runPageCopy.workflowRevision}` })
+      screen.getByRole("button", { name: copyLabel(runPageCopy.workflowRevision) })
     );
 
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(writeText).toHaveBeenCalledWith(value);
-    await waitFor(() => expect(screen.getByText("Copied").isConnected).toBe(true));
+    await waitFor(() => expect(screen.getByText(proofAnchorCopy.copied).isConnected).toBe(true));
   });
 
   it("proves(a-run-page-hash-is-a-named-proof-anchor): the keyboard reaches the same control", async () => {
@@ -52,7 +53,7 @@ describe("the named proof affordance", () => {
       props: { label: runPageCopy.terminalHash, seals: runPageCopy.sealsTerminal, value }
     });
 
-    const trigger = screen.getByRole("button", { name: `Copy ${runPageCopy.terminalHash}` });
+    const trigger = screen.getByRole("button", { name: copyLabel(runPageCopy.terminalHash) });
     expect(trigger.tagName).toBe("BUTTON");
     trigger.focus();
     expect(document.activeElement).toBe(trigger);

@@ -1,7 +1,8 @@
 /**
  * The display-string transform the quality contract can see.
  *
- * Owned English lives with its owner (`WORKSHOP_DESTINATIONS`, `stateLabels`).
+ * Owned English lives with its owner (`WORKSHOP_DESTINATIONS`, `stateLabels`
+ * in `stateMarkCopy`).
  * This wrapper is how a surface proves it read that owner: under
  * `?pseudo-locale=1` the same string comes back lengthened, so a hardcoded
  * copy of the English stays visible as itself.

@@ -3,6 +3,7 @@ import { expect, test, type Page, type Route } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
 import { humanMove, standingWords } from "../../src/lib/runState";
@@ -145,7 +146,7 @@ const surfaces: readonly {
       surface: "run",
       path: `/atelier/runs/${foundReference}`,
       ready: async (page) => {
-        await expect(page.getByRole("navigation", { name: "Where you are" })).toBeVisible();
+        await expect(page.getByRole("navigation", { name: backLinkCopy.whereYouAre })).toBeVisible();
         await expect(page.getByRole("heading", { name: "Unnamed workflow" })).toBeVisible();
       }
     },

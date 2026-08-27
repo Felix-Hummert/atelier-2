@@ -14,6 +14,8 @@ import {
   waitMutationId,
   type WaitMutation
 } from "../../src/lib/mutationJournal";
+import { runPageCopy } from "../../src/lib/runPageCopy";
+import { nodeAriaName } from "../../src/lib/stateMarkCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import { exactBody } from "../support/exactBytes";
 import {
@@ -58,25 +60,25 @@ describe("Wait control", () => {
       }
     });
 
-    const field = await screen.findByLabelText("Integer answer");
+    const field = await screen.findByLabelText(runPageCopy.integerAnswer);
     await fireEvent.input(field, { target: { value: "17" } });
-    await fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+    await fireEvent.click(screen.getByRole("button", { name: runPageCopy.answerSubmit }));
 
     expect(await screen.findByRole("heading", { name: "Answer uncertain" })).toBeTruthy();
     expect(screen.getByRole("alert", { name: "Send uncertain" })).toBeTruthy();
-    expect(screen.queryByText("Run unavailable")).toBeNull();
+    expect(screen.queryByText(runPageCopy.runUnavailable)).toBeNull();
     expect(answer).toHaveBeenCalledTimes(1);
     const firstRequest = answer.mock.calls[0]?.[0] as WaitMutation;
     expect(exactBody(firstRequest)).toBe(
       JSON.stringify({ workflow_revision_hash: digest, node_id: "wait", answer_base64: "MTc=" })
     );
     expect(firstRequest.answer_hash).toBe(answerHash);
-    expect(screen.getByRole("article", { name: "wait — Working" })).toBeTruthy();
-    expect(screen.getByRole("article", { name: "wait — Working" }).querySelector(".state-mark")?.classList).toContain("state-still");
+    expect(screen.getByRole("article", { name: nodeAriaName("wait", "working") })).toBeTruthy();
+    expect(screen.getByRole("article", { name: nodeAriaName("wait", "working") }).querySelector(".state-mark")?.classList).toContain("state-still");
     expect(screen.getByRole("region", { name: "Answer uncertain" }).querySelector(".human-action-shape-working")).toBeTruthy();
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Retry" })));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: runPageCopy.retry })));
 
-    await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await fireEvent.click(screen.getByRole("button", { name: runPageCopy.retry }));
 
     expect(answer).toHaveBeenCalledTimes(2);
     expect(answer.mock.calls[1]?.[0]).toMatchObject(firstRequest);
@@ -94,8 +96,8 @@ describe("Wait control", () => {
 
     await waitFor(async () => expect(await journal.get(firstRequest.mutation_id)).toBeNull());
     expect(screen.queryByRole("heading", { name: /Answer/ })).toBeNull();
-    expect(screen.getByRole("article", { name: "wait — Done" })).toBeTruthy();
-    expect(screen.getByRole("article", { name: "final — Working" })).toBeTruthy();
+    expect(screen.getByRole("article", { name: nodeAriaName("wait", "succeeded") })).toBeTruthy();
+    expect(screen.getByRole("article", { name: nodeAriaName("final", "working") })).toBeTruthy();
     await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("run-state")));
   });
 
@@ -108,11 +110,11 @@ describe("Wait control", () => {
         props: { cockpitApi: api({ answer }), mutationJournal: journal }
       });
 
-      const field = await screen.findByLabelText("Integer answer");
+      const field = await screen.findByLabelText(runPageCopy.integerAnswer);
       await fireEvent.input(field, { target: { value } });
-      await fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+      await fireEvent.click(screen.getByRole("button", { name: runPageCopy.answerSubmit }));
 
-      expect(await screen.findByText("Use one canonical integer.")).toBeTruthy();
+      expect(await screen.findByText(runPageCopy.canonicalInteger)).toBeTruthy();
       expect(answer).not.toHaveBeenCalled();
       expect(await journal.entries()).toEqual([]);
     }
@@ -128,12 +130,12 @@ describe("Wait control", () => {
 
     expect(await screen.findByRole("heading", { name: "Answer uncertain" })).toBeTruthy();
     expect(screen.getByText("17")).toBeTruthy();
-    expect(screen.getByRole("article", { name: "wait — Working" })).toBeTruthy();
-    await fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    expect(screen.getByRole("article", { name: nodeAriaName("wait", "working") })).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: runPageCopy.discard }));
 
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Integer answer")));
-    expect(screen.getByRole("region", { name: "Answer needed" }).querySelector(".human-action-shape-needs")).toBeTruthy();
-    expect(screen.getByRole("article", { name: "wait — Needs you" })).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText(runPageCopy.integerAnswer)));
+    expect(screen.getByRole("region", { name: runPageCopy.answerNeeded }).querySelector(".human-action-shape-needs")).toBeTruthy();
+    expect(screen.getByRole("article", { name: nodeAriaName("wait", "needs_you") })).toBeTruthy();
     expect(await journal.get(waitMutationId(publicReference, "wait"))).toBeNull();
   });
 
@@ -151,10 +153,10 @@ describe("Wait control", () => {
         mutationJournal: journal
       }
     });
-    await fireEvent.input(await screen.findByLabelText("Integer answer"), {
+    await fireEvent.input(await screen.findByLabelText(runPageCopy.integerAnswer), {
       target: { value: "17" }
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+    await fireEvent.click(screen.getByRole("button", { name: runPageCopy.answerSubmit }));
     expect(await screen.findByRole("heading", { name: "Sending answer" })).toBeTruthy();
 
     feed.handlers?.event(JSON.stringify(agentCompleted(1)));
@@ -166,7 +168,7 @@ describe("Wait control", () => {
     expect(await screen.findByText("started")).toBeTruthy();
     await waitFor(async () => expect(await journal.entries()).toEqual([]));
     expect(screen.queryByRole("heading", { name: /Answer/ })).toBeNull();
-    expect(screen.getByRole("article", { name: "wait — Done" })).toBeTruthy();
+    expect(screen.getByRole("article", { name: nodeAriaName("wait", "succeeded") })).toBeTruthy();
   });
 
   it("names a definitively refused answer as failed and hands the form back with nothing pending", async () => {
@@ -181,16 +183,16 @@ describe("Wait control", () => {
     );
     render(App, { props: { cockpitApi: api({ answer }), mutationJournal: journal } });
 
-    await fireEvent.input(await screen.findByLabelText("Integer answer"), {
+    await fireEvent.input(await screen.findByLabelText(runPageCopy.integerAnswer), {
       target: { value: "17" }
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+    await fireEvent.click(screen.getByRole("button", { name: runPageCopy.answerSubmit }));
 
     const alert = await screen.findByRole("alert", { name: "Send failed" });
     expect(alert.textContent).toContain("The answer state conflicts with the durable run.");
-    expect(screen.getByRole("heading", { name: "Answer needed" }).isConnected).toBe(true);
-    expect(screen.getByLabelText("Integer answer").isConnected).toBe(true);
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.getByRole("heading", { name: runPageCopy.answerNeeded }).isConnected).toBe(true);
+    expect(screen.getByLabelText(runPageCopy.integerAnswer).isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: runPageCopy.retry })).toBeNull();
     expect(await journal.entries()).toEqual([]);
   });
 
@@ -198,8 +200,8 @@ describe("Wait control", () => {
     render(App, { props: { cockpitApi: api({ getRun: vi.fn(async () => startedRun()) }) } });
 
     await screen.findByRole("heading", { name: "Unnamed workflow" });
-    expect(screen.queryByLabelText("Integer answer")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Answer" })).toBeNull();
+    expect(screen.queryByLabelText(runPageCopy.integerAnswer)).toBeNull();
+    expect(screen.queryByRole("button", { name: runPageCopy.answerSubmit })).toBeNull();
   });
 
   it("sends the saved exact JSON bytes to the R2 answer endpoint", async () => {

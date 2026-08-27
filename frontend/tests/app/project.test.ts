@@ -14,7 +14,14 @@ import {
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
-import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
+import { backLinkCopy } from "../../src/lib/backLinkCopy";
+import { retryLabel } from "../../src/lib/readStateCopy";
+import {
+  accountChoice,
+  difficultyLabel,
+  retainedAccountChoice,
+  settingsPageCopy
+} from "../../src/lib/settingsPageCopy";
 import { cockpitApiStub } from "../support/cockpitApi";
 
 /** Live 2026-08-27 Settings payloads from GET http://127.0.0.1:8422, copied verbatim. */
@@ -214,12 +221,12 @@ describe("Settings owns project sources, models, and defaults", () => {
     expect(screen.queryByText(/Work in this project/)).toBeNull();
     expect(screen.getByText(configuration.model)).toBeTruthy();
     expect(screen.getByText(profile.profile_id)).toBeTruthy();
-    expect(screen.getByText("added by you · ✓ checked")).toBeTruthy();
+    expect(screen.getByText(settingsPageCopy.addedByYouChecked)).toBeTruthy();
     expect(screen.queryByText("✓ startable")).toBeNull();
     expect(screen.getAllByRole("combobox").map((item) => item.getAttribute("aria-label"))).toEqual([
-      "Difficulty 3",
-      "Difficulty 2",
-      "Difficulty 1"
+      difficultyLabel(3),
+      difficultyLabel(2),
+      difficultyLabel(1)
     ]);
     expect(screen.queryByText(/Saving|Saved/)).toBeNull();
   });
@@ -235,7 +242,7 @@ describe("Settings owns project sources, models, and defaults", () => {
       putModelRegistry
     });
 
-    await fireEvent.change(await screen.findByRole("combobox", { name: "Add a model" }), {
+    await fireEvent.change(await screen.findByRole("combobox", { name: settingsPageCopy.addModel }), {
       target: { value: configurationHash }
     });
 
@@ -267,14 +274,14 @@ describe("Settings owns project sources, models, and defaults", () => {
       }]))
     });
 
-    expect((await screen.findByText("◇ unknown at provider")).isConnected).toBe(true);
+    expect((await screen.findByText(settingsPageCopy.unknownAtProvider)).isConnected).toBe(true);
     expect(screen.getByText(settingsPageCopy.defaultsUnavailableModels)).toBeTruthy();
-    expect(screen.getByText(`${configuration.model} · Account ${profile.profile_id} — Unavailable`)).toBeTruthy();
-    const difficultyThree = screen.getByRole("combobox", { name: "Difficulty 3" });
+    expect(screen.getByText(retainedAccountChoice(configuration.model, profile.profile_id))).toBeTruthy();
+    const difficultyThree = screen.getByRole("combobox", { name: difficultyLabel(3) });
     expect(difficultyThree).toHaveProperty("value", "");
-    expect(within(difficultyThree).getByRole("option", { name: "Change saved default" })).toBeTruthy();
-    expect(screen.getByRole("combobox", { name: "Difficulty 2" })).toBeTruthy();
-    expect(screen.getByRole("combobox", { name: "Difficulty 1" })).toBeTruthy();
+    expect(within(difficultyThree).getByRole("option", { name: settingsPageCopy.changeSavedDefault })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: difficultyLabel(2) })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: difficultyLabel(1) })).toBeTruthy();
     expect(screen.queryByText("✓ checked")).toBeNull();
     expect(screen.queryByText("✓ startable")).toBeNull();
   });
@@ -296,7 +303,7 @@ describe("Settings owns project sources, models, and defaults", () => {
       putProjectModelDefaults
     });
 
-    await fireEvent.change(await screen.findByRole("combobox", { name: "Difficulty 3" }), {
+    await fireEvent.change(await screen.findByRole("combobox", { name: difficultyLabel(3) }), {
       target: { value: "" }
     });
 
@@ -323,7 +330,7 @@ describe("Settings owns project sources, models, and defaults", () => {
       putProjectModelDefaults
     });
 
-    await fireEvent.change(await screen.findByRole("combobox", { name: "Difficulty 2" }), {
+    await fireEvent.change(await screen.findByRole("combobox", { name: difficultyLabel(2) }), {
       target: { value: configurationHash }
     });
 
@@ -338,9 +345,9 @@ describe("Settings owns project sources, models, and defaults", () => {
       getProjectModelDefaults: vi.fn(async () => defaults([]))
     });
 
-    const addModel = await screen.findByRole("combobox", { name: "Add a model" });
+    const addModel = await screen.findByRole("combobox", { name: settingsPageCopy.addModel });
     expect(within(addModel).getByRole("option", { name: new RegExp(configuration.model) })).toBeTruthy();
-    expect(within(screen.getByRole("combobox", { name: "Difficulty 3" })).queryByRole(
+    expect(within(screen.getByRole("combobox", { name: difficultyLabel(3) })).queryByRole(
       "option",
       { name: new RegExp(configuration.model) }
     )).toBeNull();
@@ -364,17 +371,17 @@ describe("Settings owns project sources, models, and defaults", () => {
     });
 
     expect(await screen.findByText(settingsPageCopy.defaultsNoCheckedModels)).toBeTruthy();
-    expect(within(screen.getByRole("combobox", { name: "Difficulty 2" })).queryByRole(
+    expect(within(screen.getByRole("combobox", { name: difficultyLabel(2) })).queryByRole(
       "option",
       { name: new RegExp(configuration.model) }
     )).toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: "Check" }));
+    await fireEvent.click(screen.getByRole("button", { name: settingsPageCopy.check }));
 
     await waitFor(() => expect(validateModelRegistryEntry).toHaveBeenCalledWith(
       "anthropic",
       configurationHash
     ));
-    expect(within(screen.getByRole("combobox", { name: "Difficulty 2" })).getByRole(
+    expect(within(screen.getByRole("combobox", { name: difficultyLabel(2) })).getByRole(
       "option",
       { name: new RegExp(configuration.model) }
     )).toBeTruthy();
@@ -406,20 +413,20 @@ describe("Settings owns project sources, models, and defaults", () => {
 
     expect(await screen.findByText("anthropic")).toBeTruthy();
     expect(screen.getByText(configuration.model)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Check" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: settingsPageCopy.check })).toBeTruthy();
     expect(screen.getByText(settingsPageCopy.defaultsNoCheckedModels)).toBeTruthy();
-    expect(screen.queryByRole("combobox", { name: "Add a model" })).toBeNull();
-    expect(within(screen.getByRole("combobox", { name: "Difficulty 3" })).queryByRole(
+    expect(screen.queryByRole("combobox", { name: settingsPageCopy.addModel })).toBeNull();
+    expect(within(screen.getByRole("combobox", { name: difficultyLabel(3) })).queryByRole(
       "option",
       { name: new RegExp(configuration.model) }
     )).toBeNull();
 
-    await fireEvent.click(screen.getByRole("button", { name: "Check" }));
+    await fireEvent.click(screen.getByRole("button", { name: settingsPageCopy.check }));
 
     await waitFor(() => {
       expect(putModelRegistry).toHaveBeenCalledTimes(1);
       expect(validateModelRegistryEntry).toHaveBeenCalledWith("anthropic", configurationHash);
-      expect(within(screen.getByRole("combobox", { name: "Difficulty 3" })).getByRole(
+      expect(within(screen.getByRole("combobox", { name: difficultyLabel(3) })).getByRole(
         "option",
         { name: new RegExp(configuration.model) }
       )).toBeTruthy();
@@ -453,8 +460,8 @@ describe("Settings owns project sources, models, and defaults", () => {
       validateModelRegistryEntry
     });
 
-    await fireEvent.click(await screen.findByRole("button", { name: "Check" }));
-    const retry = await screen.findByRole("button", { name: "Retry" });
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.check }));
+    const retry = await screen.findByRole("button", { name: settingsPageCopy.retry });
     expect(screen.getByText(settingsPageCopy.writeFailed)).toBeTruthy();
     expect(validateModelRegistryEntry).not.toHaveBeenCalled();
     await waitFor(() => expect((retry as HTMLButtonElement).disabled).toBe(false));
@@ -465,8 +472,8 @@ describe("Settings owns project sources, models, and defaults", () => {
       expect(putModelRegistry).toHaveBeenCalledTimes(2);
       expect(putModelRegistry.mock.calls[1]).toEqual(putModelRegistry.mock.calls[0]);
       expect(validateModelRegistryEntry).toHaveBeenCalledWith("anthropic", configurationHash);
-      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
-      expect(within(screen.getByRole("combobox", { name: "Difficulty 3" })).getByRole(
+      expect(screen.queryByRole("button", { name: settingsPageCopy.retry })).toBeNull();
+      expect(within(screen.getByRole("combobox", { name: difficultyLabel(3) })).getByRole(
         "option",
         { name: new RegExp(configuration.model) }
       )).toBeTruthy();
@@ -503,12 +510,12 @@ describe("Settings owns project sources, models, and defaults", () => {
       validateModelRegistryEntry
     });
 
-    await fireEvent.click(await screen.findByRole("button", { name: "Check" }));
-    const firstRetry = await screen.findByRole("button", { name: "Retry" });
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.check }));
+    const firstRetry = await screen.findByRole("button", { name: settingsPageCopy.retry });
     await waitFor(() => expect((firstRetry as HTMLButtonElement).disabled).toBe(false));
     await fireEvent.click(firstRetry);
 
-    const secondRetry = await screen.findByRole("button", { name: "Retry" });
+    const secondRetry = await screen.findByRole("button", { name: settingsPageCopy.retry });
     await waitFor(() => {
       expect(putModelRegistry).toHaveBeenCalledTimes(2);
       expect(validateModelRegistryEntry).toHaveBeenCalledTimes(1);
@@ -520,8 +527,8 @@ describe("Settings owns project sources, models, and defaults", () => {
     await waitFor(() => {
       expect(putModelRegistry).toHaveBeenCalledTimes(2);
       expect(validateModelRegistryEntry).toHaveBeenCalledTimes(2);
-      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
-      expect(within(screen.getByRole("combobox", { name: "Difficulty 3" })).getByRole(
+      expect(screen.queryByRole("button", { name: settingsPageCopy.retry })).toBeNull();
+      expect(within(screen.getByRole("combobox", { name: difficultyLabel(3) })).getByRole(
         "option",
         { name: new RegExp(configuration.model) }
       )).toBeTruthy();
@@ -546,20 +553,20 @@ describe("Settings owns project sources, models, and defaults", () => {
     expect(screen.getByText("operator-anthropic-subscription")).toBeTruthy();
     expect(screen.getByText("grok-4.6")).toBeTruthy();
     expect(screen.getByText("grok-felix")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Check" })).toBeTruthy();
-    expect(screen.queryByRole("combobox", { name: "Add a model" })).toBeNull();
+    expect(screen.getByRole("button", { name: settingsPageCopy.check })).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: settingsPageCopy.addModel })).toBeNull();
 
     for (const difficulty of [3, 2, 1]) {
-      const select = screen.getByRole("combobox", { name: `Difficulty ${difficulty}` });
+      const select = screen.getByRole("combobox", { name: difficultyLabel(difficulty) });
       expect(within(select).queryByRole("option", {
-        name: "claude-opus-4-6 · Account operator-anthropic-subscription"
+        name: accountChoice("claude-opus-4-6", "operator-anthropic-subscription")
       })).toBeNull();
       expect(within(select).getByRole("option", {
-        name: "grok-4.6 · Account grok-felix"
+        name: accountChoice("grok-4.6", "grok-felix")
       })).toBeTruthy();
     }
 
-    await fireEvent.change(screen.getByRole("combobox", { name: "Difficulty 3" }), {
+    await fireEvent.change(screen.getByRole("combobox", { name: difficultyLabel(3) }), {
       target: { value: LIVE_XAI_CONFIGURATION_HASH }
     });
 
@@ -596,7 +603,7 @@ describe("Settings owns project sources, models, and defaults", () => {
 
     expect(await screen.findByText(settingsPageCopy.modelsEmpty)).toBeTruthy();
     expect(screen.getByText(settingsPageCopy.defaultsEmptyRegistry)).toBeTruthy();
-    expect(screen.queryByRole("combobox", { name: "Add a model" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: settingsPageCopy.addModel })).toBeNull();
     expect(screen.queryByText(/add a model/i)).toBeNull();
   });
 
@@ -610,10 +617,10 @@ describe("Settings owns project sources, models, and defaults", () => {
       }));
     openSettings({ putProjectModelDefaults });
 
-    await fireEvent.change(await screen.findByRole("combobox", { name: "Difficulty 3" }), {
+    await fireEvent.change(await screen.findByRole("combobox", { name: difficultyLabel(3) }), {
       target: { value: "" }
     });
-    await fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.retry }));
 
     await waitFor(() => expect(putProjectModelDefaults).toHaveBeenCalledTimes(2));
     expect(putProjectModelDefaults.mock.calls[1]).toEqual(putProjectModelDefaults.mock.calls[0]);
@@ -629,8 +636,8 @@ describe("Settings owns project sources, models, and defaults", () => {
       }));
     openSettings({ putModelRegistry });
 
-    await fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
-    await fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.remove }));
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.retry }));
 
     await waitFor(() => expect(putModelRegistry).toHaveBeenCalledTimes(2));
     expect(putModelRegistry.mock.calls[1]).toEqual(putModelRegistry.mock.calls[0]);
@@ -661,7 +668,7 @@ describe("Settings owns project sources, models, and defaults", () => {
       .mockResolvedValueOnce({ items: [{ public_project_reference: projectReference }] });
     openSettings({ listProjects });
 
-    await fireEvent.click(await screen.findByRole("button", { name: "Retry settings" }));
+    await fireEvent.click(await screen.findByRole("button", { name: retryLabel(settingsPageCopy.label) }));
 
     expect((await screen.findByRole("heading", { name: settingsPageCopy.sourcesTitle })).isConnected).toBe(true);
     expect(listProjects).toHaveBeenCalledTimes(2);
@@ -683,6 +690,6 @@ describe("Settings owns project sources, models, and defaults", () => {
   it("carries no local trail back from the rail destination", async () => {
     openSettings();
     await screen.findByRole("heading", { name: THE_ONE_PROJECT });
-    expect(screen.queryByRole("navigation", { name: "Where you are" })).toBeNull();
+    expect(screen.queryByRole("navigation", { name: backLinkCopy.whereYouAre })).toBeNull();
   });
 });

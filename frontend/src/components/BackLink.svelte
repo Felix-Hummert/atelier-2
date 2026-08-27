@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { backLinkCopy } from "../lib/backLinkCopy";
+
   /**
    * The one way back up (mockup v5 §03/§04: "← Board", "← Workflows").
    *
@@ -13,7 +15,7 @@
   export let navigate: (path: string) => void;
 </script>
 
-<nav class="back" aria-label="Where you are">
+<nav class="back" aria-label={backLinkCopy.whereYouAre}>
   <a href={path} onclick={(event) => { event.preventDefault(); navigate(path); }}>
     <span aria-hidden="true">←</span>{label}
   </a>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { connectionState } from "../lib/connectionState";
   import type { RetainedRead } from "../lib/readResource";
+  import { readStateCopy, retryLabel } from "../lib/readStateCopy";
 
   type ReadStateFailure =
     | { kind: "unavailable"; title: string }
@@ -48,7 +49,7 @@
     <div class="read-truth">
       <span class="read-progress" role="status">
         <span aria-hidden="true">↻</span>
-        {read.confirmed === null ? "Looking…" : "Refreshing…"}
+        {read.confirmed === null ? readStateCopy.looking : readStateCopy.refreshing}
       </span>
     </div>
   </div>
@@ -63,10 +64,10 @@
     <button
       class="quiet"
       type="button"
-      aria-label={`Retry ${label}`}
+      aria-label={retryLabel(label)}
       onclick={activate}
       use:focusIfRetried
-    >Retry</button>
+    >{readStateCopy.retry}</button>
   </div>
 {/if}
 

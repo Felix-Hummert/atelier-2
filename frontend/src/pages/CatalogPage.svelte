@@ -284,8 +284,8 @@
     </button>
   </header>
 
-  <ReadState read={workflows} label="workflows" onRetry={() => { void loadWorkflows(); }} />
-  <ReadState read={agents} label="agents" onRetry={() => { void loadAgents(); }} />
+  <ReadState read={workflows} label={catalogPageCopy.workflowsLabel} onRetry={() => { void loadWorkflows(); }} />
+  <ReadState read={agents} label={catalogPageCopy.agentsLabel} onRetry={() => { void loadAgents(); }} />
 
   {#if hasCatalogEntries}
     {#if catalogGroupsReady}

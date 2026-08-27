@@ -223,7 +223,7 @@ test("proves(a-v3-workflow-is-started-from-the-picker): starts an admitted Catal
     await page.goto(`/atelier/catalog/${workflowName}`);
     const opener = page.getByRole("button", { name: "Start" });
     await opener.click();
-    const sheet = page.getByRole("dialog", { name: `Start ${workflowName}` });
+    const sheet = page.getByRole("dialog", { name: workflowStartCopy.startTitle(workflowName) });
     await expect(sheet).toBeVisible();
     const workItem = sheet.getByRole("combobox", { name: workItemPickerName });
     await expect(sheet.getByRole("button", { name: workflowStartCopy.cancel })).toBeFocused();
@@ -241,7 +241,7 @@ test("proves(a-v3-workflow-is-started-from-the-picker): starts an admitted Catal
     await expect(sheet).toBeVisible();
     await expect(workItem).toBeFocused();
     await pickWorkItem(sheet, "#450");
-    const roleConfiguration = sheet.getByLabel("Configuration for builder");
+    const roleConfiguration = sheet.getByLabel(workflowStartCopy.configurationFor("builder"));
     await roleConfiguration.selectOption(configuration.agentConfigurationRevisionHash);
     await expect(sheet.getByText("Chosen now", { exact: true })).toBeVisible();
 

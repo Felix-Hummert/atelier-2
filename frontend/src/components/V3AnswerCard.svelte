@@ -99,8 +99,8 @@
     >
     {#if !accepted && !busy}
       <div class="actions">
-        <button type="button" disabled={busy} onclick={onRetry} bind:this={retryButton}>Retry</button>
-        <button class="quiet" type="button" disabled={busy} onclick={onDiscard}>Discard</button>
+        <button type="button" disabled={busy} onclick={onRetry} bind:this={retryButton}>{runPageCopy.retry}</button>
+        <button class="quiet" type="button" disabled={busy} onclick={onDiscard}>{runPageCopy.discard}</button>
       </div>
     {/if}
   {:else}

@@ -173,7 +173,7 @@
       waitAccepted = false;
       await settle(mutation);
     } catch (error) {
-      waitFailureMessage = humanErrorMessage(error, "The answer could not be confirmed.");
+      waitFailureMessage = humanErrorMessage(error, runPageCopy.answerUnconfirmed);
     } finally {
       waitBusy = false;
     }
@@ -203,7 +203,7 @@
       cockpitApi,
       mutationJournal,
       mutation,
-      "The exact retry could not be confirmed."
+      runPageCopy.exactRetryUnconfirmed
     );
     if (outcome.kind === "confirmed") {
       pendingWait = null;
@@ -302,13 +302,13 @@
           type="button"
           {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }}
           onclick={() => { void retry(); }}
-        >Retry</button>
+        >{runPageCopy.retry}</button>
         <button
           type="button"
           class="quiet"
           {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }}
           onclick={() => { void discard(); }}
-        >Discard</button>
+        >{runPageCopy.discard}</button>
       </div>
     {/if}
   {:else}

@@ -205,8 +205,8 @@
     graphRequest.state === "ready"
       ? graphRequest.name
       : graphRequest.state === "loading"
-        ? "Looking…"
-        : "Workflow unavailable";
+        ? runPageCopy.looking
+        : runPageCopy.workflowUnavailable;
   $: description = graphRequest.state === "ready" ? graphRequest.description : null;
 
   let graphRequest: GraphRequest = { state: "loading" };
@@ -295,14 +295,14 @@
       }
       const text = decodeUtf8Base64(asked.job_base64);
       if (text === null) {
-        waitQuestion = { kind: "failed", message: "The wait question could not be read." };
+        waitQuestion = { kind: "failed", message: `${runPageCopy.waitQuestionUnreadable}.` };
         return;
       }
       waitQuestion = text.length === 0 ? { kind: "absent" } : { kind: "present", text };
     } catch (error) {
       waitQuestion = {
         kind: "failed",
-        message: humanErrorMessage(error, "The wait question could not be read.")
+        message: humanErrorMessage(error, `${runPageCopy.waitQuestionUnreadable}.`)
       };
     }
   }
@@ -336,7 +336,7 @@
     waitValidationMessage = null;
     waitFailureMessage = null;
     if (typed.trim().length === 0) {
-      waitValidationMessage = "Enter an answer.";
+      waitValidationMessage = runPageCopy.enterAnswer;
       return;
     }
     if (run.state !== "WAITING_INPUT") return;
@@ -351,10 +351,10 @@
       );
       pendingWait = mutation;
       waitAccepted = false;
-      await deliverAndSettle(mutation, "The answer could not be confirmed.");
+      await deliverAndSettle(mutation, runPageCopy.answerUnconfirmed);
       await focusAfterDelivery();
     } catch (error) {
-      waitFailureMessage = humanErrorMessage(error, "The answer could not be confirmed.");
+      waitFailureMessage = humanErrorMessage(error, runPageCopy.answerUnconfirmed);
       await focusWaitFailure();
     } finally {
       waitBusy = false;
@@ -366,7 +366,7 @@
     waitFailureMessage = null;
     waitBusy = true;
     try {
-      await deliverAndSettle(pendingWait, "The exact retry could not be confirmed.");
+      await deliverAndSettle(pendingWait, runPageCopy.exactRetryUnconfirmed);
       await focusAfterDelivery();
     } finally {
       waitBusy = false;
@@ -425,10 +425,10 @@
     try {
       const revision = await cockpitApi.getWorkflowRevision(run.workflow_revision_hash);
       if (revision.workflow_revision_hash !== run.workflow_revision_hash) {
-        throw new Error("The document the workshop returned is not the one this run followed.");
+        throw new Error(runPageCopy.documentMismatch);
       }
       if (revision.graph.workflow_format_version !== 3) {
-        throw new Error("This run follows an older document format this page cannot draw.");
+        throw new Error(runPageCopy.olderDocumentFormat);
       }
       graphRequest = {
         state: "ready",
@@ -441,7 +441,7 @@
     } catch (error) {
       graphRequest = {
         state: "failed",
-        message: error instanceof Error ? error.message : "The workflow graph could not be read."
+        message: error instanceof Error ? error.message : runPageCopy.workflowGraphUnreadable
       };
     }
   }
@@ -470,7 +470,7 @@
     {#if description !== null}
       <p class="run-description">{description}</p>
     {/if}
-    <p class="run-standing" aria-label="Where this run stands">
+    <p class="run-standing" aria-label={runPageCopy.whereThisRunStands}>
       <span class="run-standing-mark run-standing-{standing}" aria-hidden="true">{standingMarks[standing]}</span>
       <strong class="run-standing-word run-standing-{standing}">{wrapDisplayCopy(standingWords[standing])}</strong>
       {#if relativeStanding !== null}<span>{relativeStanding}</span>{/if}
@@ -493,7 +493,7 @@
       <ProblemNotice problem={projection.stream_failure} />
     {:else if protocolTitle(projection) !== null}
       <ProblemNotice
-        title={protocolTitle(projection) ?? "Event invalid"}
+        title={protocolTitle(projection) ?? runPageCopy.eventInvalid}
         message={protocolDetail(projection) ?? ""}
       />
     {/if}
@@ -501,7 +501,7 @@
 
   {#if waiting}
     {#if waitQuestion.kind === "failed"}
-      <ProblemNotice title="The wait question could not be read" message={waitQuestion.message} />
+      <ProblemNotice title={runPageCopy.waitQuestionUnreadable} message={waitQuestion.message} />
     {/if}
     <V3AnswerCard
       bind:this={answerCard}
@@ -525,9 +525,9 @@
   {/if}
 
   {#if graphRequest.state === "loading"}
-    <p class="muted" role="status">Looking…</p>
+    <p class="muted" role="status">{runPageCopy.looking}</p>
   {:else if graphRequest.state === "failed"}
-    <ProblemNotice title="The graph could not be read" message={graphRequest.message} />
+    <ProblemNotice title={runPageCopy.graphUnreadable} message={graphRequest.message} />
     <ol class="rail">
       {#each rail as entry (entry.node_id)}
         <li class="rail-entry">
@@ -558,7 +558,7 @@
 
   {#if openNodeId !== null}
     {#if failure !== null}
-      <ProblemNotice title="This node could not be read" message={failure} />
+      <ProblemNotice title={runPageCopy.nodeUnreadable} message={failure} />
     {:else}
       <NodeDetailPanel
         {detail}

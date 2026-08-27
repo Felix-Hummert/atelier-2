@@ -3,6 +3,13 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import WorkflowGraphDrawing from "../../src/components/WorkflowGraphDrawing.svelte";
 import { stateGlyphs } from "../../src/components/StateMark.svelte";
+import { nodeAriaName } from "../../src/lib/stateMarkCopy";
+import {
+  loopBoundLabel,
+  loopRoundBound,
+  loopUntilLabel,
+  workflowGraphCopy
+} from "../../src/lib/workflowGraphCopy";
 
 const chain = [
   {
@@ -27,7 +34,7 @@ describe("the V3 graph drawing", () => {
   it("places nodes in deterministic layers even when the excerpt arrives reversed", () => {
     render(WorkflowGraphDrawing, { props: { previews: chain } });
 
-    const graph = screen.getByRole("region", { name: "Workflow" });
+    const graph = screen.getByRole("region", { name: workflowGraphCopy.label });
     const implement = graph.querySelector('[data-node-id="implement"]');
     const review = graph.querySelector('[data-node-id="review"]');
 
@@ -50,9 +57,9 @@ describe("the V3 graph drawing", () => {
       }
     });
 
-    const graph = screen.getByRole("region", { name: "Workflow" });
-    const implement = within(graph).getByRole("button", { name: "implement — Done" });
-    const review = within(graph).getByRole("button", { name: "review — Working" });
+    const graph = screen.getByRole("region", { name: workflowGraphCopy.label });
+    const implement = within(graph).getByRole("button", { name: nodeAriaName("implement", "succeeded") });
+    const review = within(graph).getByRole("button", { name: nodeAriaName("review", "working") });
 
     expect(implement.getAttribute("data-state")).toBe("succeeded");
     expect(implement.textContent).toContain(stateGlyphs.succeeded);
@@ -80,7 +87,7 @@ describe("the V3 graph drawing", () => {
       }
     });
 
-    const graph = screen.getByRole("region", { name: "Workflow" });
+    const graph = screen.getByRole("region", { name: workflowGraphCopy.label });
 
     expect(graph.querySelector('[data-node-id="gate"]')?.getAttribute("data-node-kind")).toBe(
       "wait"
@@ -108,7 +115,7 @@ describe("the V3 graph drawing", () => {
       }
     });
 
-    const graph = screen.getByRole("region", { name: "Workflow" });
+    const graph = screen.getByRole("region", { name: workflowGraphCopy.label });
     expect(graph.querySelector('[data-node-id="only"]')?.getAttribute("data-layer")).toBe("0");
     expect(within(graph).getByText("only").isConnected).toBe(true);
   });
@@ -128,8 +135,8 @@ describe("the V3 graph drawing", () => {
       }
     });
 
-    const graph = screen.getByRole("region", { name: "Workflow" });
-    const box = within(graph).getByRole("group", { name: "↻ max 3" });
+    const graph = screen.getByRole("region", { name: workflowGraphCopy.label });
+    const box = within(graph).getByRole("group", { name: loopBoundLabel(loopRoundBound(3)) });
 
     expect(within(box).getByText("implement").isConnected).toBe(true);
     expect(within(box).getByText("review").isConnected).toBe(true);
@@ -150,15 +157,15 @@ describe("the V3 graph drawing", () => {
       }
     });
 
-    const graph = screen.getByRole("region", { name: "Workflow" });
+    const graph = screen.getByRole("region", { name: workflowGraphCopy.label });
 
-    expect(within(graph).getByRole("group", { name: "↻ until revise · max 3" })).toBeTruthy();
+    expect(within(graph).getByRole("group", { name: loopUntilLabel("revise", loopRoundBound(3)) })).toBeTruthy();
   });
 
   it("draws no loop box when the document declares no loop", () => {
     render(WorkflowGraphDrawing, { props: { previews: chain } });
 
-    const graph = screen.getByRole("region", { name: "Workflow" });
+    const graph = screen.getByRole("region", { name: workflowGraphCopy.label });
 
     expect(within(graph).queryByRole("group")).toBeNull();
   });
@@ -187,7 +194,7 @@ describe("the V3 graph drawing", () => {
       }
     });
 
-    const graph = screen.getByRole("region", { name: "Workflow" });
+    const graph = screen.getByRole("region", { name: workflowGraphCopy.label });
 
     expect(within(graph).queryByRole("group")).toBeNull();
     expect(within(graph).getByText("unrelated").isConnected).toBe(true);

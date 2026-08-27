@@ -11,6 +11,7 @@ import {
   transcriptDroppedCopy,
   usageLine
 } from "../../src/lib/runPageCopy";
+import { nodeAriaName } from "../../src/lib/stateMarkCopy";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { notCancellableBlock } from "../support/runV3";
 import { publicReference, revisionHash as digest } from "../support/workflowV1";
@@ -381,7 +382,7 @@ describe("the run view shows panel chrome while node detail is still arriving", 
     });
 
     await screen.findByRole("heading", { level: 1, name: "One reviewer" });
-    await fireEvent.click(await screen.findByRole("button", { name: "reviewer — Failed" }));
+    await fireEvent.click(await screen.findByRole("button", { name: nodeAriaName("reviewer", "failed") }));
 
     const panel = screen.getByRole("complementary");
     expect(within(panel).getByRole("heading", { name: "reviewer" }).isConnected).toBe(true);
