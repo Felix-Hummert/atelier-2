@@ -79,8 +79,9 @@ nodes:
       operator_reaction answer into candidate requirement sentences bound to
       that answer. Every sentence has text, derives_from with kind variant
       or decision plus id, owner_document naming the owner document the
-      sentence would extend, and traceable_to set to the SHA-256 hex digest
-      of the exact wait-answer bytes the operator submitted. Derive each
+      sentence would extend, and traceable_to set to the wait node id the
+      answer was announced under (operator_reaction). Copy that id from the
+      result heading; do not hash the answer. Derive each
       sentence from a chosen variant or a decision answer. Write nothing to
       the repository. Judge the answer against the contract carried under
       "context"; when the context contradicts the answer, say which one
@@ -107,4 +108,4 @@ nodes:
       - name: result
         schema:
           ref: vision_requirement_sentences
-          revision: "ac016e78ecea6b188d495fccd241d3830410e3d62a4c0996074c5a333027f5ab"
+          revision: "938429730fa35e083f5c88f40920af8d8492f9ea78107064345fd1003cb0baf0"

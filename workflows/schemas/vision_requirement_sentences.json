@@ -23,7 +23,7 @@
             }
           },
           "owner_document": {"type": "string", "minLength": 1},
-          "traceable_to": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          "traceable_to": {"const": "operator_reaction"}
         }
       }
     }

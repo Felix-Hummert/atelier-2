@@ -50,7 +50,6 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_projections import NodeState
@@ -167,7 +166,7 @@ COMPLIANT_SENTENCES = {
             "text": "The first reaction is a choice between concrete variant cards.",
             "derives_from": {"kind": "variant", "id": "reaction-cards"},
             "owner_document": "docs/requirements/0003-ziel-ui.md",
-            "traceable_to": Sha256Hash.of(OPERATOR_ANSWER).value,
+            "traceable_to": "operator_reaction",
         }
     ]
 }
@@ -184,6 +183,20 @@ SENTENCES_WITHOUT_TRACEABLE_TO = {
             "owner_document": "docs/requirements/0003-ziel-ui.md",
         }
     ]
+}
+SENTENCES_WITH_INVENTED_DIGEST = {
+    "sentences": [
+        {
+            "text": "The first reaction is a choice between concrete variant cards.",
+            "derives_from": {"kind": "variant", "id": "reaction-cards"},
+            "owner_document": "docs/requirements/0003-ziel-ui.md",
+            "traceable_to": "a" * 64,
+        }
+    ]
+}
+UNTRACED_SENTENCES = {
+    "without traceable_to": SENTENCES_WITHOUT_TRACEABLE_TO,
+    "an invented digest": SENTENCES_WITH_INVENTED_DIGEST,
 }
 
 REFUSED_RESULTS = {
@@ -542,14 +555,16 @@ def test_an_acknowledged_reaction_carries_the_vision_line_on_to_requirement_sent
     assert b"--- order: owner_documents ---" in writer_job
     assert OWNER_DOCUMENTS_TEXT.encode() in writer_job
     assert b"Write nothing to the repository" in writer_job
+    assert b"wait node id the answer was announced under" in writer_job
+    assert b"do not hash the answer" in writer_job
+    assert b"SHA-256" not in writer_job
 
     writer_detail = node_detail(runtime, run_id, "write_requirements")
     assert writer_detail.detail.state is NodeState.SUCCEEDED
     assert writer_detail.detail.answer is not None
     assert writer_detail.detail.answer.value == WRITER_ANSWER
-    digest = Sha256Hash.of(wait_detail.detail.answer.value).value
     for sentence in json.loads(writer_detail.detail.answer.value)["sentences"]:
-        assert sentence["traceable_to"] == digest
+        assert sentence["traceable_to"] == "operator_reaction"
 
 
 @pytest.mark.parametrize(
@@ -592,24 +607,28 @@ def test_a_wait_answer_without_a_chosen_variant_leaves_the_run_waiting(
 
 
 @pytest.mark.parametrize(
-    "provider",
+    ("provider", "rejected"),
     [
-        {
-            ("develop_variants", FIRST_ROUND_ORDINAL): VISIONER_ANSWER,
-            ("write_requirements", FIRST_ROUND_ORDINAL): json.dumps(
-                SENTENCES_WITHOUT_TRACEABLE_TO, ensure_ascii=False
-            ).encode(),
-        }
+        pytest.param(
+            {
+                ("develop_variants", FIRST_ROUND_ORDINAL): VISIONER_ANSWER,
+                ("write_requirements", FIRST_ROUND_ORDINAL): json.dumps(
+                    payload, ensure_ascii=False
+                ).encode(),
+            },
+            json.dumps(payload, ensure_ascii=False).encode(),
+            id=case,
+        )
+        for case, payload in UNTRACED_SENTENCES.items()
     ],
-    indirect=True,
+    indirect=["provider"],
 )
-def test_a_writer_sentence_without_traceable_to_never_becomes_a_success(
-    runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
+def test_a_writer_sentence_without_the_wait_node_id_never_becomes_a_success(
+    runtime: DbosRuntime,
+    provider: RecordingAgentExecutorFactoryV2,
+    rejected: bytes,
 ) -> None:
-    refuse_instance(
-        REQUIREMENT_SENTENCES_SCHEMA,
-        json.dumps(SENTENCES_WITHOUT_TRACEABLE_TO, ensure_ascii=False).encode(),
-    )
+    refuse_instance(REQUIREMENT_SENTENCES_SCHEMA, rejected)
     workflow, bindings = publish_vision_variants(runtime)
     run_id = RunId("v3/vision-variants-untraced")
 
