@@ -1,6 +1,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Workshop target picture v8.13</title>
+<title>Workshop target picture v8.14</title>
 <style>
 /* ── House tokens (from frontend/src/styles.css, so the picture is the same house) ── */
 :root{
@@ -259,6 +259,38 @@ details.raw{margin-top:.5rem;font-size:.82rem;color:var(--ink-dim)}
 details.raw summary{cursor:pointer;min-height:2rem;display:flex;align-items:center}
 .prose{font-size:.92rem;max-width:44rem}
 .prose p{margin:.1rem 0 .5rem}
+/* ── Stored attempt transcript: a readable receipt, not the live executor attach ── */
+.transcript{display:grid;gap:.45rem}
+.transcript-entry{background:var(--ground);border-left:3px solid var(--line);border-radius:0 var(--r) var(--r) 0;padding:.55rem .7rem;font-size:.88rem}
+.transcript-entry.turn{border-left-color:var(--ink-dim)}
+.transcript-entry.call{border-left-color:var(--ink-dim)}
+.transcript-entry.answer{border-left-color:var(--ink-faint)}
+.transcript-entry.usage{border-left-color:var(--ink-faint);font-variant-numeric:tabular-nums}
+.transcript-entry.stdout{border-left-color:var(--fail)}
+.transcript-entry .entry-head{display:flex;align-items:baseline;gap:.45rem;flex-wrap:wrap;color:var(--ink-dim);font-size:.7rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase}
+.transcript-entry .entry-head time{margin-left:auto;font-weight:400;letter-spacing:0;text-transform:none;font-variant-numeric:tabular-nums}
+.transcript-entry p{margin:.2rem 0 0}
+.transcript-entry.turn p{font-family:var(--serif);font-size:1rem}
+.transcript-entry summary{display:flex;align-items:baseline;gap:.45rem;flex-wrap:wrap;cursor:pointer;list-style:none}
+.transcript-entry summary::-webkit-details-marker{display:none}
+.transcript-entry summary::after{content:"▸";color:var(--ink-dim);font-size:.78rem}
+.transcript-entry[open] summary::after{transform:rotate(90deg)}
+.transcript-entry .entry-kind{color:var(--ink-dim);font-size:.7rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase}
+.transcript-entry .fold{color:var(--ink-dim);font-size:.8rem}
+.transcript-entry .arguments{margin:.45rem 0 0;padding:.45rem .6rem;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r);font-family:var(--mono);font-size:.76rem;overflow-wrap:anywhere}
+.redaction{display:inline-flex;align-items:center;gap:.25rem;border:1px dashed var(--ink-dim);border-radius:999px;padding:.02rem .4rem;background:var(--panel);color:var(--ink-dim);font-family:var(--sans);font-size:.7rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
+.redaction::before{content:"▰";font-size:.72rem;line-height:1}
+.stdout .log{margin-top:.45rem;border:1px solid var(--fail);white-space:pre-wrap;overflow-wrap:anywhere}
+.transcript-states{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem;margin-top:.65rem}
+.transcript-state{display:flex;align-items:center;gap:.65rem;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:.65rem .8rem;font-size:.88rem;color:var(--ink-dim)}
+.transcript-state p{margin:0}
+.transcript-state .empty-mark{width:1.25rem;height:1.25rem;border:2px solid var(--ink-faint);border-radius:50%;flex:none}
+.transcript-state.loading{border-style:dashed;border-color:var(--live)}
+.transcript-state .loading-mark{width:1.25rem;height:1.25rem;border:2px solid var(--live);border-radius:3px;position:relative;flex:none}
+.transcript-state .loading-mark::after{content:"";position:absolute;inset:.25rem;background:var(--live);opacity:.35}
+.transcript-state .loading-lines{display:grid;gap:.25rem;flex:1}
+.transcript-state .loading-lines i{display:block;height:.4rem;border-radius:999px;background:var(--chip)}
+.transcript-state .loading-lines i:last-child{width:62%}
 
 /* ── Catalog ── */
 .filters{position:sticky;top:0;z-index:2;display:flex;flex-wrap:wrap;align-items:center;gap:.3rem 1rem;padding:.4rem 0 .5rem;margin-bottom:.6rem;background:var(--ground);border-bottom:1px solid var(--line)}
@@ -407,10 +439,16 @@ table.list tr.grp td .mark{margin-right:.2rem}
   .pipe::-webkit-scrollbar{height:6px}
   .pipe::-webkit-scrollbar-track{background:var(--chip)}
   .pipe::-webkit-scrollbar-thumb{background:var(--ink-dim);border-radius:3px}
+  /* The stored-transcript run has only three completed nodes: stack its handoff so the failed node stays whole. */
+  #v8-14-run-log .pipe{flex-direction:column;gap:.15rem;overflow:visible;padding-right:.2rem}
+  #v8-14-run-log .pipe>.link{width:2px;height:1rem;margin:.1rem 0 .1rem 1.05rem}
+  #v8-14-run-log .pipe>.loop{width:100%;margin:0}
   .row{flex-wrap:wrap}
   .row .dim{flex-basis:100%;white-space:normal;order:3}
   .found div{grid-template-columns:1.3rem minmax(0,1fr)}
   .found .n{display:none}
+  .transcript-states{grid-template-columns:minmax(0,1fr)}
+  .transcript-entry .entry-head time{margin-left:0}
 }
 
 /* ── Motion off when the system asks — stands after every animation rule, or the later one wins ── */
@@ -420,7 +458,7 @@ table.list tr.grp td .mark{margin-right:.2rem}
 </style>
 <main>
 <header class="doc-head">
-  <div class="eyebrow">v8.13 · 25.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
+  <div class="eyebrow">v8.14 · 27.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
   <h1>The workshop holds a piece out to you</h1>
   <p class="thesis">Everything the workshop says to you is a question it holds out — a wait node of some run. Everything you say is an answer to one. The decision with two buttons, the ear with its input line and the "yes" to the conductor are <b>one</b> mechanism in three sizes; so there is exactly Stage, Row, Card, Sheet, plus Graph, and every room is built from these four blocks. Four rooms — Workbench, Catalog, History, Settings — and the run as a view in three tenses. Colour only for what wants something from you.</p>
   <div class="tw"><table class="doc">
@@ -458,6 +496,7 @@ table.list tr.grp td .mark{margin-right:.2rem}
   <span class="pill"><span class="glyph">⧉</span>workflow</span><span class="pill"><span class="glyph">◯</span>agent</span><span class="pill"><span class="glyph">✦</span>skill</span>
   <span class="pill dash"><span class="glyph">⌗</span>mcp server — glyph reserved, appears with ADR 0018 §5</span>
 </div>
+<div class="words"><span class="pill"><span class="redaction">redacted</span>stored transcript value removed before saving</span></div>
 <div class="words">
   <span class="pill"><i class="mark">A</i>&nbsp;Claude</span><span class="pill"><i class="mark">O</i>&nbsp;Codex</span><span class="pill"><i class="mark">X</i>&nbsp;Grok</span>
   <span class="pill"><i class="person"></i>&nbsp;a person answers here</span>
@@ -848,6 +887,74 @@ table.list tr.grp td .mark{margin-right:.2rem}
   <div><dt>"Difficulty 2 · review · family ≠ builder"</dt><dd>"How hard did the workflow call this step?" — the workflow's words for the role (<code>difficulty: 1 | 2 | 3</code>, <code>kind: build | review</code>, optional <code>family_differs_from: builder</code>, optional a pin to one configuration), nothing of the house added. It stands here and nowhere on the graph: the node shows the role, the panel shows the brief.</dd></div>
   <div><dt>Evidence: "Model requested grok-4.6 · confirmed grok-4.6" · "Chosen at start, for this run"</dt><dd>"Which model was asked for, which one answered, and why this one?" — the receipt holds both exact ids: the one the house requested and the one the provider confirmed (#434). Where the request came from stands only when it deviates from the model default: chosen at start, pinned in workflow.</dd></div>
   <div><dt>Evidence: "requested gpt-5.6-sol · confirmed <span class="differs">gpt-5.5</span>"</dt><dd>"Did I get what I asked for?" — no: the provider fell back to another model, and the confirmed id says so in brick — the difference is the only thing coloured; the tooltip says what it means. The same brick id stands on the back of the run ("gpt-5.6-sol as builder (gpt-5.5 confirmed)"). A run is not failed by it; it wants a look.</dd></div>
+</dl>
+
+<h3 class="frame-title">Run view · Log (stored transcript)</h3>
+<div class="frame" id="v8-14-run-log">
+  <nav class="rail" data-on="history"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← History</a>
+    <div class="head"><h4>Sweep the docs</h4><span class="meta">iterate-code · <span class="word fail">Failed</span> · 44 min · today 11:05</span></div>
+    <div class="result fail"><p>The last attempt stopped while checking the changed files.</p></div>
+    <div class="pipe" style="padding-top:.4rem">
+      <div class="node"><div class="dot ok">✓</div><b>planner</b></div><div class="link ok"></div>
+      <div class="loop"><span class="lbl">↻ 3 of ≤3</span>
+        <div class="node"><div class="dot ok">✓</div><b>builder</b></div><div class="link ok"></div>
+        <div class="node"><div class="dot fail sel">✕</div><b>reviewer</b></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h6>reviewer<span class="who">grok-4.6 · attempt 3</span></h6>
+      <div class="tabs"><span>Result</span><span>Input</span><span>Prompt</span><span class="on">Log</span><span>Evidence</span></div>
+      <div class="transcript" aria-label="Stored attempt transcript">
+        <article class="transcript-entry turn">
+          <div class="entry-head"><span>Assistant turn</span><time>11:43:02</time></div>
+          <p>I will check the changed files against the review brief.</p>
+        </article>
+        <details class="transcript-entry call">
+          <summary><span class="entry-kind">Door call</span><b>Read file</b><span class="fold">arguments</span></summary>
+          <div class="arguments">path: docs/requirements/0003-ziel-ui.md</div>
+        </details>
+        <article class="transcript-entry answer">
+          <div class="entry-head"><span>Door answer</span><time>11:43:04</time></div>
+          <p>Read 128 lines.</p>
+        </article>
+        <article class="transcript-entry turn">
+          <div class="entry-head"><span>Assistant turn</span><time>11:43:08</time></div>
+          <p>The acceptance sentence and the picture still disagree.</p>
+        </article>
+        <details class="transcript-entry call">
+          <summary><span class="entry-kind">Door call</span><b>Run command</b><span class="fold">arguments</span></summary>
+          <div class="arguments">command: check changed files</div>
+        </details>
+        <article class="transcript-entry answer">
+          <div class="entry-head"><span>Door answer</span><time>11:43:11</time></div>
+          <p>Command ended before it returned an answer.</p>
+        </article>
+        <article class="transcript-entry usage">
+          <div class="entry-head"><span>Usage</span><time>11:43:12</time></div>
+          <p>12,400 input · 680 output tokens · 10 s</p>
+        </article>
+        <article class="transcript-entry stdout">
+          <div class="entry-head"><span>Attempt stdout</span><span class="word fail">Failed</span><time>11:43:12</time></div>
+          <div class="log">checking changed files
+canary credential: [<span class="redaction">redacted</span>]
+command stopped before an answer</div>
+        </article>
+      </div>
+      <div class="transcript-states">
+        <div class="transcript-state"><span class="empty-mark" aria-hidden="true"></span><p>no transcript for this attempt</p></div>
+        <div class="transcript-state loading"><span class="loading-mark" aria-hidden="true"></span><span class="loading-lines"><i></i><i></i></span><span>Looking…</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Log</dt><dd>"What happened in this attempt?" — a saved, readable sequence: assistant turns, called doors, their answers, then usage. It is not the live attach.</dd></div>
+  <div><dt>Folded arguments</dt><dd>"Which door was called without losing the thread?" — the name stays in the line; its arguments open only when needed.</dd></div>
+  <div><dt>Redaction badge</dt><dd>"Was something removed before this was saved?" — the dashed ▰ badge stays in place of the value, including the canary in failed stdout.</dd></div>
+  <div><dt>Failed stdout</dt><dd>"What did the failed attempt print?" — its dark block lives with the attempt transcript, marked in brick; it never becomes a second log surface.</dd></div>
+  <div><dt>Empty and loading</dt><dd>"Is there no stored transcript, or is it still arriving?" — the hollow mark names absence; the dashed blue shape and still lines name loading.</dd></div>
 </dl>
 
 <h3 class="frame-title">Cancel <small>— two dialogs, one per state: a hand at work, or resting at a wait</small></h3>
