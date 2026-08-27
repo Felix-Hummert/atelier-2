@@ -1,6 +1,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Workshop target picture v8.14</title>
+<title>Workshop target picture v8.15</title>
 <style>
 /* ── House tokens (from frontend/src/styles.css, so the picture is the same house) ── */
 :root{
@@ -230,6 +230,16 @@ input::placeholder{color:var(--ink-dim);opacity:1}
 .loop>.lbl{position:absolute;top:-.6rem;left:.75rem;background:var(--ground);padding:0 .4rem;font-size:.68rem;color:var(--ink-dim);white-space:nowrap;font-variant-numeric:tabular-nums}
 .rounds{font-size:.8rem;color:var(--ink-dim);margin:-.3rem 0 .7rem}
 .rounds b{color:var(--ink)}
+/* Forked runs keep a borrowed prefix visibly quieter: dashed double rings are receipts reused, never steps run again. */
+.node.reused .dot{border-style:dashed;border-color:var(--ink-faint);color:var(--ink-faint);box-shadow:inset 0 0 0 3px var(--panel2),inset 0 0 0 4px var(--ink-faint)}
+.node.reused b,.node.reused small{color:var(--ink-faint)}
+.link.reused{height:0;border-top:2px dashed var(--ink-faint);background:none}
+.lineage{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;color:var(--ink-dim);font-size:.84rem;margin:-.25rem 0 .45rem}
+.lineage b{color:var(--ink);font-weight:600}.lineage .fork-mark{font-size:1.05rem;color:var(--ink-faint)}
+.lineage a{font-weight:600;color:var(--ink);text-decoration:underline;text-underline-offset:.2em;min-height:var(--tap);display:inline-flex;align-items:center}
+.fork-actions{border-top:1px solid var(--line);margin-top:.65rem;padding-top:.65rem;display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
+.fork-actions .hint{color:var(--ink-dim);font-size:.82rem}
+.fork-sheet .fact{margin:.45rem 0}.fork-sheet .fact b{color:var(--ink-dim)}
 
 /* ── Result / node panel / the back ── */
 .result{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--ink-dim);border-radius:0 var(--r-lg) var(--r-lg) 0;padding:.8rem 1rem;margin:0 0 .6rem}
@@ -321,7 +331,7 @@ details.raw summary{cursor:pointer;min-height:2rem;display:flex;align-items:cent
 .sheeted{position:relative;min-height:30rem}
 .dimmed{opacity:.4}
 /* The sheet is as tall as its content, never as tall as the room. */
-.sheet{position:absolute;right:.7rem;top:.7rem;max-height:calc(100% - 1.4rem);width:min(23rem,88%);background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:.9rem 1rem;box-shadow:var(--shadow-lift);overflow:auto}
+.sheet{position:absolute;right:.7rem;top:.7rem;z-index:4;max-height:calc(100% - 1.4rem);width:min(23rem,88%);background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:.9rem 1rem;box-shadow:var(--shadow-lift);overflow:auto}
 .sheet.static{position:static;width:auto;box-shadow:none;max-height:none}
 .sheet h5{font-family:var(--serif);font-size:1.15rem;margin:0 0 .6rem;font-weight:600}
 .sheets{display:grid;grid-template-columns:repeat(auto-fit,minmax(18rem,1fr));gap:1rem;margin-top:.5rem;align-items:start}
@@ -443,6 +453,15 @@ table.list tr.grp td .mark{margin-right:.2rem}
   #v8-14-run-log .pipe{flex-direction:column;gap:.15rem;overflow:visible;padding-right:.2rem}
   #v8-14-run-log .pipe>.link{width:2px;height:1rem;margin:.1rem 0 .1rem 1.05rem}
   #v8-14-run-log .pipe>.loop{width:100%;margin:0}
+  /* Retry keeps every inherited and newly run node legible at the narrow width: one vertical handoff, never a faded state. */
+  #v8-15-origin .pipe,#v8-15-successor .pipe{flex-direction:column;gap:.15rem;overflow:visible;mask-image:none;padding-right:.2rem}
+  #v8-15-origin .pipe>.link,#v8-15-successor .pipe>.link{width:2px;height:1rem;margin:.1rem 0 .1rem 1.05rem}
+  #v8-15-origin .pipe>.loop,#v8-15-successor .pipe>.loop{width:100%;margin:0;flex-direction:column;gap:.15rem;padding:.75rem .6rem .35rem}
+  #v8-15-origin .pipe .loop>.link,#v8-15-successor .pipe .loop>.link{width:2px;height:1rem;margin:.1rem 0 .1rem 1.05rem}
+  #v8-15-origin .pipe .node,#v8-15-successor .pipe .node{width:100%;min-width:0;flex-direction:row;justify-content:flex-start;gap:.5rem;text-align:left}
+  #v8-15-origin .pipe .node b,#v8-15-successor .pipe .node b{margin:0}
+  #v8-15-origin .pipe .node small,#v8-15-successor .pipe .node small{margin:0}
+  #v8-15-successor .log{white-space:pre-wrap;overflow:visible;mask-image:none}
   .row{flex-wrap:wrap}
   .row .dim{flex-basis:100%;white-space:normal;order:3}
   .found div{grid-template-columns:1.3rem minmax(0,1fr)}
@@ -458,9 +477,10 @@ table.list tr.grp td .mark{margin-right:.2rem}
 </style>
 <main>
 <header class="doc-head">
-  <div class="eyebrow">v8.14 · 27.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
+  <div class="eyebrow">v8.15 · 27.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
   <h1>The workshop holds a piece out to you</h1>
   <p class="thesis">Everything the workshop says to you is a question it holds out — a wait node of some run. Everything you say is an answer to one. The decision with two buttons, the ear with its input line and the "yes" to the conductor are <b>one</b> mechanism in three sizes; so there is exactly Stage, Row, Card, Sheet, plus Graph, and every room is built from these four blocks. Four rooms — Workbench, Catalog, History, Settings — and the run as a view in three tenses. Colour only for what wants something from you.</p>
+  <p class="note"><b>Changelog v8.15</b> · Retry ab einem Knoten: Ursprung, Bestätigung und Nachfolger mit übernommenem Präfix.</p>
   <div class="tw"><table class="doc">
     <tr><th>Room</th><th>The one question it answers</th><th>What it never does</th></tr>
     <tr><td><b>Workbench</b></td><td>What needs me now, what is moving, what did we say today — and what do I want to say next?</td><td>No chronicle, no library; it never explains itself (no shelf titles); it shows nothing twice; it carries no number that does not lead to an action.</td></tr>
@@ -1040,6 +1060,87 @@ command stopped before an answer</div>
   <div><dt>Brick sentence</dt><dd>"What went wrong — in my words?" — never a refusal token as a headline; the token lives in Evidence.</dd></div>
   <div><dt>"Say what should change" — the one move</dt><dd>"What can I do now?" — one button under the brick sentence; it opens the ear with this run as the subject, and the conductor starts again from round 3. No second sentence.</dd></div>
   <div><dt>Panel opens on the failed node</dt><dd>"Where exactly?" — without you having to look for it.</dd></div>
+</dl>
+
+<section id="v8-15-fork">
+<h3 class="frame-title">Run view · Retry from node <small>— der vergangene Lauf bleibt, der nächste beginnt mit denselben Eingaben</small></h3>
+<div class="frame" id="v8-15-origin">
+  <nav class="rail" data-on="history"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← Verlauf</a>
+    <div class="head"><h4>Die Dokumentation aufräumen</h4><span class="meta">iterate-code · <span class="item">Dokumentation</span> · <span class="word fail">Fehlgeschlagen</span> · 44 Min · heute 11:05</span></div>
+    <p class="lineage"><b>Verlauf</b><span class="fork-mark" aria-hidden="true">↳</span> erneut <span aria-hidden="true">→</span> <a href="#">Lauf Dokumentation aufräumen</a></p>
+    <div class="result fail"><p class="fail">Nicht grün nach 3 Runden — die letzte Prüfung nennt noch zwei Befunde.</p></div>
+    <div class="pipe" style="padding-top:.4rem">
+      <div class="node"><div class="dot ok">✓</div><b>planner</b></div><div class="link ok"></div>
+      <div class="loop"><span class="lbl" title="repeated while the review was not green">↻ 3 von ≤3</span>
+        <div class="node"><div class="dot ok">✓</div><b>builder</b></div><div class="link ok"></div>
+        <div class="node"><div class="dot fail sel">✕</div><b>reviewer</b></div><div class="link ok"></div>
+        <div class="node"><div class="dot ok">✓</div><b>fixer</b></div>
+      </div><div class="link"></div>
+      <div class="node"><div class="dot hx"><i>?</i></div><b>merge gate</b><small><i class="person"></i></small></div>
+    </div>
+    <div class="panel">
+      <h6>reviewer · Runde 3<span class="who">grok-4.6</span></h6>
+      <div class="tabs"><span class="on">Ergebnis</span><span>Eingabe</span><span>Prompt</span><span>Log</span><span>Beleg</span></div>
+      <div class="prose"><p>Zwei Befunde bleiben offen: die Reihenfolge der Ablehnung und ein Test, der den Mock statt des Ergebnisses prüft.</p></div>
+      <div class="fork-actions"><span class="btn primary">Erneut ab hier</span><span class="hint">ab reviewer</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="frame sheeted" id="v8-15-retry-confirmation">
+  <nav class="rail" data-on="history"></nav>
+  <div class="stage dimmed">
+    <a class="trail" href="#">← Verlauf</a>
+    <div class="head"><h4>Die Dokumentation aufräumen</h4><span class="meta">iterate-code · <span class="word fail">Fehlgeschlagen</span></span></div>
+    <div class="pipe" style="padding-top:.4rem">
+      <div class="node"><div class="dot ok">✓</div><b>planner</b></div><div class="link ok"></div>
+      <div class="loop"><span class="lbl">↻ 3 von ≤3</span>
+        <div class="node"><div class="dot ok">✓</div><b>builder</b></div><div class="link ok"></div>
+        <div class="node"><div class="dot fail sel">✕</div><b>reviewer</b></div>
+      </div>
+    </div>
+    <div class="panel"><h6>reviewer · Runde 3<span class="who">grok-4.6</span></h6><div class="tabs"><span class="on">Ergebnis</span><span>Eingabe</span><span>Prompt</span><span>Log</span><span>Beleg</span></div></div>
+  </div>
+  <div class="veil" aria-hidden="true"></div>
+  <section class="sheet fork-sheet" aria-label="Erneut ab reviewer bestätigen">
+    <h5>Ab reviewer erneut starten?</h5>
+    <div class="fact"><b>Übernommen</b><span>planner und builder mit ihren bestätigten Eingaben</span></div>
+    <div class="fact"><b>Neu ausgeführt</b><span>reviewer, fixer und die folgenden Knoten</span></div>
+    <div class="fact"><b>Ursprung</b><span>Lauf Die Dokumentation aufräumen</span></div>
+    <div class="foot"><span class="btn primary">Erneut starten</span><span class="btn quiet">Zurück</span></div>
+  </section>
+</div>
+
+<div class="frame" id="v8-15-successor">
+  <nav class="rail" data-on="workbench"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← Werkbank</a>
+    <div class="head"><h4>Die Dokumentation aufräumen</h4><span class="meta">iterate-code · <span class="item">Dokumentation</span> · <span class="word live">Läuft</span> · 3 Min</span></div>
+    <p class="lineage"><b>Fork von Lauf Die Dokumentation aufräumen ab reviewer</b></p>
+    <div class="pipe" style="padding-top:.4rem">
+      <div class="node reused"><div class="dot">↳</div><b>planner</b><small>übernommen</small></div><div class="link reused"></div>
+      <div class="node reused"><div class="dot">↳</div><b>builder</b><small>übernommen</small></div><div class="link reused"></div>
+      <div class="loop"><span class="lbl">erneut ab hier</span>
+        <div class="node"><div class="dot live sel">▶</div><b>reviewer</b><small>18 s</small></div><div class="link"></div>
+        <div class="node"><div class="dot">·</div><b>fixer</b></div>
+      </div><div class="link"></div>
+      <div class="node"><div class="dot hx"><i>?</i></div><b>merge gate</b><small><i class="person"></i></small></div>
+    </div>
+    <div class="panel">
+      <h6>reviewer<span class="who">grok-4.6</span></h6>
+      <div class="tabs"><span class="on">Log · live</span><span>Eingabe</span><span>Prompt</span><span>Beleg</span></div>
+      <div class="log"><span class="t">11:49:22</span> Prüfe die beiden offenen Befunde …
+<span class="t">11:49:37</span> Vergleiche die Reihenfolge mit dem Ergebnis<span class="cursor"></span></div>
+    </div>
+  </div>
+</div>
+</section>
+<dl class="uq">
+  <div><dt>Tür am fehlgeschlagenen Knoten</dt><dd>"Wo kann ich wieder einsetzen?" — nur am geöffneten Knoten eines beendeten Laufs; die Bestätigung nennt den übernommenen Präfix und die Knoten, die neu laufen.</dd></div>
+  <div><dt>Verlauf am Ursprung</dt><dd>"Was kam daraus noch?" — der Ursprung bleibt unverändert und zeigt seinen Nachfolger als eine Linie.</dd></div>
+  <div><dt>Gestrichelter Doppelring</dt><dd>"Was wurde nicht noch einmal bezahlt oder ausgeführt?" — die ruhigen, doppelt gerahmten Knoten sind übernommene Belege; ab reviewer beginnt die neue Ausführung.</dd></div>
 </dl>
 
 <h3 class="frame-title">Waiting <small>— the same stage as on the workbench</small></h3>
