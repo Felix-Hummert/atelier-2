@@ -28,7 +28,11 @@ import sqlalchemy as sa
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import runs
+from atelier2.adapters.dbos.schema import (
+    context_packages_v3,
+    node_execution_requests_v3,
+    runs,
+)
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -48,6 +52,8 @@ from atelier2.contracts.agents import (
     ProviderId,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_projections import NodeState
@@ -63,7 +69,12 @@ from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
 )
-from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV3
+from atelier2.ports.durable_runs import (
+    DurableRunCreated,
+    DurableV3StartInputRefused,
+    StartPublishedRunRequestV3,
+    V3InputRefusal,
+)
 from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
@@ -81,6 +92,10 @@ DIFF_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
     (WORKFLOWS_DIRECTORY / "schemas" / "diff_review_diff.json").read_bytes(),
 )
+REVIEW_QUESTIONS_SCHEMA = PublishedRevision(
+    RevisionKind.SCHEMA,
+    (WORKFLOWS_DIRECTORY / "schemas" / "nonempty_string.json").read_bytes(),
+)
 FINDING_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
     (WORKFLOWS_DIRECTORY / "schemas" / "diff_review_finding.json").read_bytes(),
@@ -91,6 +106,8 @@ DIFF_ORDER_TEXT = (
     "+one guard clause added"
 )
 DIFF_ORDER_VALUE = json.dumps(DIFF_ORDER_TEXT, ensure_ascii=False).encode()
+REVIEW_QUESTIONS_TEXT = "Does this diff leave an obsolete schema reference?"
+REVIEW_QUESTIONS_VALUE = json.dumps(REVIEW_QUESTIONS_TEXT, ensure_ascii=False).encode()
 
 COMPLIANT_REVIEW = {
     "findings": [
@@ -190,7 +207,7 @@ def publish_diff_review(
 ) -> tuple[WorkflowRevision, AgentBindingSet]:
     """Everything an operator's Git-source import would publish, from the shipped bytes."""
     store = DbosCatalogStore(runtime.engine)
-    for revision in (DIFF_SCHEMA, FINDING_SCHEMA):
+    for revision in (DIFF_SCHEMA, REVIEW_QUESTIONS_SCHEMA, FINDING_SCHEMA):
         published = store.publish_revision(revision)
         assert isinstance(
             published, (PublishedRevisionCreated, PublishedRevisionExisting)
@@ -229,6 +246,7 @@ def start(
     workflow: WorkflowRevision,
     bindings: AgentBindingSet,
     run_id: RunId,
+    inputs: tuple[RunInput, ...] | None = None,
 ) -> object:
     return DbosDurableRunStarter(
         runtime.engine,
@@ -239,7 +257,16 @@ def start(
             run_id,
             workflow.revision_hash,
             bindings,
-            (RunInput("diff", DIFF_SCHEMA.revision_hash, DIFF_ORDER_VALUE),),
+            inputs
+            if inputs is not None
+            else (
+                RunInput("diff", DIFF_SCHEMA.revision_hash, DIFF_ORDER_VALUE),
+                RunInput(
+                    "review_questions",
+                    REVIEW_QUESTIONS_SCHEMA.revision_hash,
+                    REVIEW_QUESTIONS_VALUE,
+                ),
+            ),
         )
     )
 
@@ -270,15 +297,39 @@ def test_a_compliant_review_completes_the_run_with_the_diff_the_order_carried(
     created = start(runtime, workflow, bindings, run_id)
     assert isinstance(created, DurableRunCreated), created
 
+    with runtime.engine.connect() as connection:
+        package_hash = connection.scalar(
+            sa.select(node_execution_requests_v3.c.context_package_hash).where(
+                node_execution_requests_v3.c.node_execution_id
+                == NodeExecutionId.for_node(
+                    run_id, workflow.revision_hash, "review"
+                ).value,
+            )
+        )
+        manifest = connection.scalar(
+            sa.select(context_packages_v3.c.manifest).where(
+                context_packages_v3.c.package_hash == package_hash
+            )
+        )
+    assert manifest is not None
+    assert Sha256Hash.of(DIFF_ORDER_VALUE).value.encode() in manifest
+    assert Sha256Hash.of(REVIEW_QUESTIONS_VALUE).value.encode() in manifest
+
     runtime.launch()
     wait_for_state(runtime, run_id, RunState.COMPLETED)
 
     assert provider.opened is not None
     handed = provider.opened.requests[0].job_bytes
     assert b"--- order: diff ---" in handed
-    assert DIFF_ORDER_VALUE in handed
+    assert DIFF_ORDER_TEXT.encode() in handed
+    assert DIFF_ORDER_VALUE not in handed
+    assert b"--- order: review_questions ---" in handed
+    assert REVIEW_QUESTIONS_TEXT.encode() in handed
+    assert REVIEW_QUESTIONS_VALUE not in handed
     assert b"cannot read files, run anything, or use tools" in handed
     assert b"the diff text is your only evidence" in handed
+    assert b"Answer every question" in handed
+    assert b"List findings with their file and text" in handed
     assert b"Accept the diff when nothing you find blocks it" in handed
 
     detail = durable_queries(runtime.engine).get_node_detail(run_id, "review")
@@ -286,6 +337,27 @@ def test_a_compliant_review_completes_the_run_with_the_diff_the_order_carried(
     assert detail.detail.state is NodeState.SUCCEEDED
     assert detail.detail.answer is not None
     assert detail.detail.answer.value == COMPLIANT_ANSWER
+
+
+@pytest.mark.parametrize("provider", [COMPLIANT_ANSWER], indirect=True)
+def test_a_review_without_questions_is_refused_before_a_run_exists(
+    runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
+) -> None:
+    workflow, bindings = publish_diff_review(runtime)
+
+    refused = start(
+        runtime,
+        workflow,
+        bindings,
+        RunId("v3/diff-review-without-questions"),
+        (RunInput("diff", DIFF_SCHEMA.revision_hash, DIFF_ORDER_VALUE),),
+    )
+
+    assert isinstance(refused, DurableV3StartInputRefused), refused
+    assert refused.refusal is V3InputRefusal.MISSING
+    assert refused.name == "review_questions"
+    with runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
 
 
 @pytest.mark.proves("bytes-their-own-schema-refuses-never-become-a-success")
