@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.types import Lifespan
 
@@ -507,6 +507,14 @@ def create_app(
     if frontend_dist is not None:
         _mount_frontend(app, frontend_dist)
 
+    # Not an APIRoute: those paths are the browser's served page list.
+    app.add_route(
+        "/",
+        _redirect_host_root,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+
     # The order of these router includes is the order of the published
     # document's `paths` keys, which the frozen artefact pins byte for byte.
     app.include_router(health.router)
@@ -541,6 +549,13 @@ COCKPIT_INDEX_PATHS: tuple[str, ...] = (
     "/atelier/catalog/{workflow_name:path}",
     "/atelier/history",
 )
+COCKPIT_HOME_PATH = next(
+    path for path in COCKPIT_INDEX_PATHS if path.endswith("/")
+)
+
+
+async def _redirect_host_root(_request: Request) -> RedirectResponse:
+    return RedirectResponse(COCKPIT_HOME_PATH, status_code=307)
 
 
 def _mount_frontend(app: FastAPI, frontend_dist: Path) -> None:
