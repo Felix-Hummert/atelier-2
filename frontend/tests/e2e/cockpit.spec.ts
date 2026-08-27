@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
+import { catalogPageCopy, workflowStartCopy } from "../../src/lib/catalogPageCopy";
 import { shortFingerprint } from "../../src/lib/fingerprint";
 import { PRODUCT_NAME } from "../../src/lib/productName";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
@@ -1105,8 +1105,8 @@ test("Catalog work-item start sheet sends a missing source to Settings", async (
   await routeStartSheetModelContract(page, []);
   await page.goto(`/atelier/catalog/${name}`); await page.getByRole("button", { name: "Start" }).click();
   const sheet = page.getByRole("dialog", { name: `Start ${name}` });
-  await expect(sheet).toContainText("No source");
-  await sheet.getByRole("button", { name: "Settings" }).click();
+  await expect(sheet).toContainText(workflowStartCopy.noSource);
+  await sheet.getByRole("button", { name: workflowStartCopy.connectSource }).click();
   await expect(page).toHaveURL(/\/atelier\/settings$/);
 });
 test("Settings keeps the project context available to the Catalog", async ({ page }) => {

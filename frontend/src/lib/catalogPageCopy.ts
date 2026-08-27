@@ -101,7 +101,7 @@ export const workflowStartCopy = {
   noConfiguration: "No executable configuration is available.",
   workItem: "Work item",
   noSource: "No source",
-  settings: "Settings",
+  connectSource: "Connect one in Settings",
   unknownSource: "Other source",
   orderUnavailable: "This order shape cannot be started here.",
   roles: "Roles",

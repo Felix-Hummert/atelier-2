@@ -1092,13 +1092,14 @@ describe("the published agent-configuration listing", () => {
 });
 
 describe("the observed queue a start-sheet work-item picker reads", () => {
-  it("asks the served observed queue page and decodes its cursor", async () => {
-    const item = {
-      project_id: "atelier",
-      tracker_item_reference: "gh:450",
-      item_id: digest,
-      revision: 0
-    };
+  const item = {
+    project_id: "atelier",
+    tracker_item_reference: "gh:450",
+    item_id: digest,
+    revision: 0
+  };
+
+  it("asks the served observed queue page and decodes its items and cursor", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ items: [item], next_after: null }), {
         status: 200,
@@ -1111,7 +1112,39 @@ describe("the observed queue a start-sheet work-item picker reads", () => {
     expect(String(fetcher.mock.calls[0]?.[0])).toBe(
       "/atelier/api/v1/observed-queue-items?limit=50"
     );
-    expect(page.items).toEqual([item]);
+    expect(page).toEqual({ items: [item], next_after: null });
+  });
+
+  it("resumes the observed queue page at the after cursor", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ items: [item], next_after: digest }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const page = await createCockpitApi(fetcher).listObservedQueueItems(digest);
+
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      `/atelier/api/v1/observed-queue-items?limit=50&after=${digest}`
+    );
+    expect(page).toEqual({ items: [item], next_after: digest });
+  });
+
+  it("refuses an observed item that carries a title the queue does not own", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [{ ...item, title: "Preview door" }],
+          next_after: null
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+
+    await expect(createCockpitApi(fetcher).listObservedQueueItems()).rejects.toThrow(
+      "response did not match the durable wire contract"
+    );
   });
 });
 
