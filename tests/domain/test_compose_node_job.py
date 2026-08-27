@@ -58,9 +58,7 @@ def test_only_a_declared_root_string_order_is_rendered_raw() -> None:
                 RunInputSchemaKind.PLAIN_STRING,
             ),
             RunInput("metadata", SCHEMA, b'{ "files": 1 }'),
-            RunInput(
-                "summary", SCHEMA, b'"ship it"', RunInputSchemaKind.JSON
-            ),
+            RunInput("summary", SCHEMA, b'"ship it"', RunInputSchemaKind.JSON),
         ),
     )
 
