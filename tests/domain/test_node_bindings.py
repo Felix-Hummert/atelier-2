@@ -29,7 +29,7 @@ from atelier2.contracts.node_bindings import (
     SubworkflowNodeBinding,
     WaitNodeBinding,
 )
-from atelier2.contracts.node_records_v3 import RunInput
+from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
 from atelier2.contracts.project_sources import ProjectSourcePin
 from atelier2.contracts.run_bindings import AnyRun, RunBindingConflict, RunV2
 from atelier2.contracts.runs import (
@@ -86,6 +86,23 @@ V3_ACTION_DOCUMENT = (
     depends_on: [build]
 """
 )
+V3_WAIT_DOCUMENT = (
+    V3_DOCUMENT
+    + b"""  - id: pause
+    type: wait
+    prompt: Choose from the candidate.
+    depends_on: [build]
+    inputs:
+      - name: candidate
+        from: {node: build, output: result}
+    outputs:
+      - name: answer
+        schema:
+          ref: answer-schema
+          revision: """
+    + ANY_JSON_SCHEMA.revision_hash.value.encode()
+    + b"\n"
+)
 
 
 def v1_run(node_id: str = NODE_ID, state: RunState = RunState.STARTED) -> Run:
@@ -122,6 +139,7 @@ def bound(
     node_id: str = NODE_ID,
     *,
     orders: tuple[RunInput, ...] = (),
+    results: tuple[DeliveredOutput, ...] = (),
     tool_grant: DeclaredToolGrant | None = None,
     project_source: ProjectSourcePin | None = None,
     maximum_assistant_turns: int | None = None,
@@ -133,6 +151,7 @@ def bound(
         run,
         node,
         orders=orders,
+        results=results,
         tool_grant=tool_grant,
         project_source=project_source,
         maximum_assistant_turns=maximum_assistant_turns,
@@ -185,6 +204,26 @@ def test_a_wait_node_binds_the_round_its_run_is_turning() -> None:
     run = v2_run(node_id="pause", round_ordinal=A_LATER_ROUND)
 
     assert bound(run, V2_DOCUMENT, "pause") == WaitNodeBinding(A_LATER_ROUND)
+
+
+@pytest.mark.proves("a-node-binding-is-decided-where-no-store-can-be-reached")
+def test_a_v3_wait_binds_the_question_composed_from_its_declared_material() -> None:
+    result = DeliveredOutput("build", "result", b'{"choice":"one"}')
+
+    binding = bound(
+        v2_run(V3_WAIT_DOCUMENT, node_id="pause"),
+        V3_WAIT_DOCUMENT,
+        "pause",
+        results=(result,),
+    )
+
+    assert binding == WaitNodeBinding(
+        question=(
+            "Choose from the candidate.\n\n"
+            "--- result of build: result ---\n\n"
+            '{"choice":"one"}'
+        )
+    )
 
 
 @pytest.mark.proves("a-node-binding-is-decided-where-no-store-can-be-reached")
@@ -281,6 +320,7 @@ def test_a_grant_bound_without_a_pinned_source_is_not_a_binding_at_all() -> None
         ActionNodeBinding(),
         WaitNodeBinding(),
         WaitNodeBinding(A_LATER_ROUND),
+        WaitNodeBinding(question="Choose from the candidate."),
         SubworkflowNodeBinding((2, 3)),
     ),
     ids=[
@@ -292,6 +332,7 @@ def test_a_grant_bound_without_a_pinned_source_is_not_a_binding_at_all() -> None
         "action",
         "wait",
         "wait in a later round",
+        "wait with a bound question",
         "subworkflow",
     ],
 )
@@ -391,6 +432,14 @@ def test_a_wait_row_written_before_rounds_existed_still_means_the_first_round() 
     assert decode_node_binding({"type": "wait"}) == WaitNodeBinding(FIRST_ROUND_ORDINAL)
 
 
+def test_a_wait_row_written_before_bound_questions_keeps_its_authored_question() -> (
+    None
+):
+    assert decode_node_binding(
+        {"type": "wait", "round_ordinal": A_LATER_ROUND}
+    ) == WaitNodeBinding(A_LATER_ROUND)
+
+
 @pytest.mark.parametrize("round_ordinal", [0, -1], ids=["zero", "negative"])
 @pytest.mark.proves("a-node-binding-is-decided-where-no-store-can-be-reached")
 def test_a_pause_cannot_be_bound_to_a_round_no_run_can_stand_in(
@@ -436,6 +485,10 @@ def test_an_agent_node_cannot_be_bound_to_a_round_no_run_can_stand_in(
             {"type": "wait", "round_ordinal": "2"},
             "round_ordinal as a value of the wrong type",
         ),
+        (
+            {"type": "wait", "question": 2},
+            "question as a value of the wrong type",
+        ),
         ({"type": "subworkflow", "left": 2}, "a key its form declares"),
         ({"type": "subworkflow", "left": 2, "right": "3"}, "value of the wrong type"),
         (written(requested_capability=ABSENT), "contract is only partly encoded"),
@@ -470,6 +523,7 @@ def test_an_agent_node_cannot_be_bound_to_a_round_no_run_can_stand_in(
         "wait round of zero",
         "wait round below zero",
         "wait round of the wrong type",
+        "wait question of the wrong type",
         "missing key",
         "operand of the wrong type",
         "capability without its version",

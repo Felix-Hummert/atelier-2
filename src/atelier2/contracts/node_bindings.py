@@ -82,10 +82,13 @@ class ActionNodeBinding:
 
 @dataclass(frozen=True)
 class WaitNodeBinding:
-    """A Wait node: the round the pause belongs to, and nothing else.
+    """A Wait node: its round and the exact bound question, when it has one.
 
     Which answer the node admits is decided where the answer arrives, so the two
-    document formats have nothing to disagree about here.
+    document formats have nothing to disagree about here. A V3 Wait that reads
+    material carries the composed question so recovery asks exactly what the
+    original execution asked. Earlier formats and a V3 Wait with no inputs keep
+    `question` absent and continue reading the authored prompt.
     """
 
     round_ordinal: int = FIRST_ROUND_ORDINAL
@@ -96,9 +99,13 @@ class WaitNodeBinding:
     may already stand in the next round, so a recovered pause would answer for
     an execution it never was.
     """
+    question: str | None = None
+    """The exact question composed for this execution, or no bound composition."""
 
     def __post_init__(self) -> None:
         require_exact_round_ordinal(self.round_ordinal)
+        if self.question is not None and not isinstance(self.question, str):
+            raise TypeError("a bound wait question must be text")
 
 
 @dataclass(frozen=True)

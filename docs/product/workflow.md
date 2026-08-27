@@ -173,9 +173,11 @@ replaying an already-opened pull request. The run list and detail expose the sam
 origin/successor lineage and mark referenced nodes on the rail. Forking does not change
 the workflow revision, configuration, orders, budget accounting, or queue policy;
 nonterminal origins and looped workflows are refused.
-The V3 run page shows that wait as an answer card, with the authored question
-the published document already carries, and sends the typed bytes through
-the same `POST /runs/{ref}/answers` door the API already proved.
+The V3 run page shows that wait as an answer card. A Wait with no inputs shows
+the authored prompt unchanged; a Wait with inputs shows that prompt composed with
+each declared graph input or named predecessor output, and restart readback proves
+the recomposed question against the pause's durable digest. The card sends typed
+bytes through the same `POST /runs/{ref}/answers` door the API already proved.
 What that answer may be is the node's own declaration — a V1 or V2 Wait names an
 `answer_type` and admits the canonical text of an integer, while a V3 Wait declares one
 output with a schema and admits exactly what that schema admits, judged by the same

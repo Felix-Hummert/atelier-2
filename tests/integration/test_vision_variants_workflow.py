@@ -22,14 +22,17 @@ from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import runs, wait_answers
+from atelier2.adapters.dbos.schema import run_events, runs, wait_answers
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
+from atelier2.adapters.yaml_workflows import (
+    InvalidWorkflowDocument,
+    parse_executable_workflow_document,
+)
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
     UnanswerableWait,
@@ -50,6 +53,8 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_projections import NodeState
@@ -66,6 +71,7 @@ from atelier2.contracts.schemas_v3 import (
     read_instance_document,
     read_schema_document,
 )
+from atelier2.contracts.workflow_refusals import WorkflowRefusalReason
 from atelier2.contracts.workflows_v3 import WaitNodeV3, WorkflowGraphV3
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
@@ -479,12 +485,30 @@ def test_a_vision_variants_run_without_context_is_refused_before_a_run_exists(
         assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
 
 
-def test_an_acknowledged_reaction_carries_the_vision_line_on_to_requirement_sentences(
-    runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
+@pytest.mark.proves("a-wait-binds-the-value-into-the-question-it-asks")
+def test_a_bound_wait_asks_with_the_predecessor_value_and_its_answer_reaches_the_successor(
+    runtime: DbosRuntime,
+    provider: RecordingAgentExecutorFactoryV2,
+    tmp_path: Path,
+    scratch_root_outside_a_worktree: Path,
+    request: pytest.FixtureRequest,
 ) -> None:
     admit_instance(VISION_VARIANTS_SCHEMA, VISIONER_ANSWER)
     admit_instance(OPERATOR_ANSWER_SCHEMA, OPERATOR_ANSWER)
     admit_instance(REQUIREMENT_SENTENCES_SCHEMA, WRITER_ANSWER)
+
+    unknown_source = VISION_VARIANTS_DOCUMENT.replace(
+        b"          node: develop_variants\n",
+        b"          node: absent_variants\n",
+        1,
+    )
+    with pytest.raises(InvalidWorkflowDocument) as raised:
+        parse_executable_workflow_document(unknown_source)
+    assert raised.value.refusal is not None
+    assert raised.value.refusal.reason is WorkflowRefusalReason.UNKNOWN_NODE_REFERENCE
+    assert "absent_variants" in raised.value.refusal.detail
+    with runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
 
     workflow, bindings = publish_vision_variants(runtime)
     run_id = RunId("v3/vision-variants-accepted")
@@ -503,12 +527,36 @@ def test_an_acknowledged_reaction_carries_the_vision_line_on_to_requirement_sent
     assert wait_detail.detail.state is NodeState.NEEDS_YOU
     wait_job = wait_detail.detail.job
     assert wait_job is not None
-    assert wait_job == wait_node.prompt.encode()
+    expected_wait_job = (
+        wait_node.prompt.encode()
+        + b"\n\n"
+        + RESULT_HEADING.format(node="develop_variants", name="result").encode()
+        + b"\n\n"
+        + VISIONER_ANSWER
+    )
+    assert wait_job == expected_wait_job
     assert b"chosen_variant_ids" in wait_job
     assert b"decision_answers" in wait_job
     assert b"reaction" in wait_job
     assert b"acknowledged reaction" in wait_job
-    assert b"preceding visioner result" in wait_job
+    assert VISIONER_ANSWER in wait_job
+    expected_pause_payload = Sha256Hash.of(expected_wait_job).value.encode("ascii")
+    with runtime.engine.connect() as connection:
+        pause = (
+            connection.execute(
+                sa.select(run_events).where(
+                    run_events.c.run_id == run_id.value,
+                    run_events.c.node_id == "operator_reaction",
+                    run_events.c.event_kind == RunEventKind.WAITING_INPUT.value,
+                    run_events.c.round_ordinal == FIRST_ROUND_ORDINAL,
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert bytes(pause["payload"]) == expected_pause_payload
+    assert len(bytes(pause["payload"])) == 64
+    assert str(pause["payload_hash"]) == Sha256Hash.of(expected_pause_payload).value
 
     visioner_job = job_bytes_for(provider, "develop_variants")
     assert b"--- order: fragments ---" in visioner_job
@@ -526,15 +574,22 @@ def test_an_acknowledged_reaction_carries_the_vision_line_on_to_requirement_sent
     assert visioner_detail.detail.answer is not None
     assert visioner_detail.detail.answer.value == VISIONER_ANSWER
     assert provider.opened is not None
-    assert [request.node_id for request in provider.opened.requests] == [
+    assert [execution.node_id for execution in provider.opened.requests] == [
         "develop_variants"
     ]
 
-    accepted = answer_operator_reaction(runtime, workflow, run_id, OPERATOR_ANSWER)
-    assert isinstance(accepted, AnswerAcceptedPending), accepted
-    wait_for_state(runtime, run_id, RunState.COMPLETED)
+    runtime.close()
+    recovered = runtime_over(tmp_path, provider, scratch_root_outside_a_worktree)
+    request.addfinalizer(recovered.close)
+    recovered.launch()
+    reread = node_detail(recovered, run_id, "operator_reaction")
+    assert reread.detail.job == expected_wait_job
 
-    wait_detail = node_detail(runtime, run_id, "operator_reaction")
+    accepted = answer_operator_reaction(recovered, workflow, run_id, OPERATOR_ANSWER)
+    assert isinstance(accepted, AnswerAcceptedPending), accepted
+    wait_for_state(recovered, run_id, RunState.COMPLETED)
+
+    wait_detail = node_detail(recovered, run_id, "operator_reaction")
     assert wait_detail.detail.state is NodeState.SUCCEEDED
     assert wait_detail.detail.answer is not None
     assert wait_detail.detail.answer.value == OPERATOR_ANSWER
@@ -559,7 +614,7 @@ def test_an_acknowledged_reaction_carries_the_vision_line_on_to_requirement_sent
     assert b"do not hash the answer" in writer_job
     assert b"SHA-256" not in writer_job
 
-    writer_detail = node_detail(runtime, run_id, "write_requirements")
+    writer_detail = node_detail(recovered, run_id, "write_requirements")
     assert writer_detail.detail.state is NodeState.SUCCEEDED
     assert writer_detail.detail.answer is not None
     assert writer_detail.detail.answer.value == WRITER_ANSWER

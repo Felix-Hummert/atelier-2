@@ -56,7 +56,7 @@ nodes:
   - id: operator_reaction
     type: wait
     prompt: >-
-      The variants, decisions, and contradictions sit on the preceding
+      Read the variants, decisions, and contradictions bound below from the
       visioner result. Type one JSON object with these fields:
       chosen_variant_ids (an array of at least one variant id you choose),
       decision_answers (an array of objects with decision_id and answer; it
@@ -64,6 +64,11 @@ nodes:
       text, which may be empty). This answer is the acknowledged reaction
       requirement sentences will trace to.
     depends_on: [develop_variants]
+    inputs:
+      - name: variants
+        from:
+          node: develop_variants
+          output: result
     outputs:
       - name: answer
         schema:

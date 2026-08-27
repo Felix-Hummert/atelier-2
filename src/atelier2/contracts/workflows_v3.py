@@ -1698,22 +1698,31 @@ def _unrepeatable_loop_forms(graph: WorkflowGraphV3) -> str | None:
 
 
 def _unbound_wait_forms(graph: WorkflowGraphV3) -> str | None:
-    """What an authored Wait node declares that the pause does not carry.
+    """Which Wait input source the composed question still does not carry.
 
-    Two of its forms are kept. `prompt` is what the person is asked, and the one
-    declared output is the schema their answer is read against -- the same owner
-    that judges every other value this run produces.
+    Three of its forms are kept. `prompt` is the authored opening, `inputs` from
+    a graph order or named predecessor output are composed beneath it, and the
+    one declared output is the schema the answer is read against -- the same
+    owner that judges every other value this run produces.
 
-    `inputs` is not kept: nothing composes an earlier node's value into the
-    question, so a document that wrote one would have its answer judged against a
-    contract the operator was never shown. Refused by the form it wrote rather
-    than accepted and dropped.
+    An authored value, receipt or context source remains unbound. Refuse it by
+    the source form it wrote rather than accepting a smaller question than the
+    document declared.
     """
     for node in graph.nodes:
-        if isinstance(node, WaitNodeV3) and "inputs" in node.model_fields_set:
+        if not isinstance(node, WaitNodeV3):
+            continue
+        unbound = sorted(
+            {
+                _source_form(entry)
+                for entry in node.inputs
+                if not isinstance(entry.source, V3_BOUND_INPUT_SOURCES)
+            }
+        )
+        if unbound:
             return (
-                f"inputs on wait node {node.id!r} that nothing composes into the "
-                "question a person is asked"
+                f"input sources on wait node {node.id!r} nothing composes into "
+                f"its question: {', '.join(unbound)}"
             )
     return None
 

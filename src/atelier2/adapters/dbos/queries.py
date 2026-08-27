@@ -122,6 +122,7 @@ from atelier2.contracts.run_projections import (
     NodeAnswer,
     NodeDetail,
     NodeProvenance,
+    NodeState,
     ReusedNodeProjection,
     RunForkOriginProjection,
     RunForkSuccessorProjection,
@@ -810,27 +811,74 @@ def _node_job_and_refusal(
     projection: RunProjection,
     node: object,
     round_ordinal: int,
+    node_state: NodeState,
 ) -> tuple[bytes | None, str | None, str | None]:
     """What this node was handed, and what stops it if something does.
 
     A V1 or V2 node's job is the text its author wrote and nothing else, so there
-    is nothing to refuse. A V3 agent node is composed from its instruction, the
-    orders the run carries and the work earlier nodes handed on -- and composing
-    it is exactly where a refusal surfaces, because reading an earlier node's
-    value against the schema its author pinned happens there. The composer's
-    refusal is caught rather than raised: an operator asking about a stuck node
-    wants to be told the reason, not to be refused the question.
+    is nothing to refuse. A V3 Agent job and bound Wait question are composed from
+    their authored opening, the orders the run carries and the work earlier nodes
+    handed on. Composing is exactly where a refusal surfaces, because reading an
+    earlier node's value against the schema its author pinned happens there. The
+    composer's refusal is caught rather than raised: an operator asking about a
+    stuck node wants to be told the reason, not to be refused the question.
     """
 
     if isinstance(node, AgentNodeV2):
         job = node.job.encode("utf-8")
         return job, Sha256Hash.of(job).value, None
     if isinstance(node, WaitNodeV3):
-        # The published document already names what the person is asked. This
-        # read uses that parse, not the executable one, so a wait that holds a
-        # run still answers with its authored question.
-        job = node.prompt.encode("utf-8")
-        return job, Sha256Hash.of(job).value, None
+        run = projection.run
+        try:
+            question = node_job(
+                node.prompt,
+                load_run_inputs(connection, run.run_id, node),
+                load_node_outputs(
+                    connection,
+                    run.run_id,
+                    run.revision_hash,
+                    projection.graph,
+                    node,
+                    round_ordinal,
+                ),
+            )
+            question_bytes = question.encode("utf-8")
+            waiting_payload = _waiting_input_payload(
+                connection,
+                NodeExecutionId.for_node(
+                    run.run_id, run.revision_hash, node.id, round_ordinal
+                ),
+            )
+            if waiting_payload is None and node_state not in (
+                NodeState.QUEUED,
+                NodeState.WORKING,
+            ):
+                raise RunTransitionConflict(
+                    "a Wait that already paused carries no WAITING_INPUT event"
+                )
+            if node.inputs:
+                if waiting_payload is not None:
+                    try:
+                        durable_question_hash = Sha256Hash(
+                            waiting_payload.decode("ascii")
+                        )
+                    except (UnicodeDecodeError, ValueError) as error:
+                        raise RunTransitionConflict(
+                            "bound wait question digest is not canonical"
+                        ) from error
+                    if durable_question_hash != Sha256Hash.of(question_bytes):
+                        raise RunTransitionConflict(
+                            "bound wait question disagrees with its durable digest"
+                        )
+            elif waiting_payload not in (None, b""):
+                raise RunTransitionConflict(
+                    "a wait with no bound inputs carries a nonempty pause payload"
+                )
+        except NodeOutputNotWritten:
+            return None, None, None
+        except NodeOutputSchemaRefused as refused:
+            return None, None, str(refused)
+        return question_bytes, Sha256Hash.of(question_bytes).value, None
     if not isinstance(node, AgentNodeV3):
         return None, None, None
     run = projection.run
@@ -855,6 +903,81 @@ def _node_job_and_refusal(
     except NodeOutputSchemaRefused as refused:
         return None, None, str(refused)
     return composed, Sha256Hash.of(composed).value, None
+
+
+def _waiting_input_payload(
+    connection: Connection, execution_id: NodeExecutionId
+) -> bytes | None:
+    """The pause attestation for this exact Wait execution, if it has paused."""
+    record = (
+        connection.execute(
+            sa.select(run_events).where(
+                run_events.c.node_execution_id == execution_id.value,
+                run_events.c.event_kind == RunEventKind.WAITING_INPUT.value,
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    return None if record is None else event_from_record(record).payload
+
+
+def _node_detail_execution(
+    connection: Connection,
+    projection: RunProjection,
+    node_id: str,
+    node: object,
+    node_state: NodeState,
+) -> tuple[int, NodeExecutionId]:
+    """The execution the node rail is displaying.
+
+    A queued or working node belongs to the round the run is turning, even when
+    no execution event exists yet. A Wait displayed as paused, answered or
+    cancelled instead takes its execution from its own latest pause event. This
+    distinction matters after another loop advances the run's round: the run
+    head then no longer names the round in which an earlier Wait actually ran.
+    """
+
+    run = projection.run
+    current_round = round_of(
+        projection.graph,
+        node_id,
+        run.current_round_ordinal,
+    )
+    current_execution = NodeExecutionId.for_node(
+        run.run_id,
+        run.revision_hash,
+        node_id,
+        current_round,
+    )
+    if not isinstance(node, WaitNodeV3) or node_state not in (
+        NodeState.NEEDS_YOU,
+        NodeState.SUCCEEDED,
+        NodeState.CANCELLED,
+    ):
+        return current_round, current_execution
+
+    record = (
+        connection.execute(
+            sa.select(run_events)
+            .where(
+                run_events.c.run_id == run.run_id.value,
+                run_events.c.revision_hash == run.revision_hash.value,
+                run_events.c.node_id == node_id,
+                run_events.c.event_kind == RunEventKind.WAITING_INPUT.value,
+            )
+            .order_by(run_events.c.event_sequence.desc())
+            .limit(1)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if record is None:
+        return current_round, current_execution
+    event = event_from_record(record)
+    if node_state is NodeState.NEEDS_YOU and event.round_ordinal != current_round:
+        return current_round, current_execution
+    return event.round_ordinal, event.node_execution_id
 
 
 def _node_instants(
@@ -1233,16 +1356,15 @@ class DbosQueries:
                 }
                 if node_id not in rail:
                     return NodeQueryMissing()
-                round_ordinal = round_of(
-                    projection.graph,
+                round_ordinal, execution_id = _node_detail_execution(
+                    connection,
+                    projection,
                     node_id,
-                    projection.run.current_round_ordinal,
-                )
-                execution_id = _node_execution_id(
-                    projection.run, projection.graph, node_id
+                    node,
+                    rail[node_id],
                 )
                 job, job_hash, refusal = _node_job_and_refusal(
-                    connection, projection, node, round_ordinal
+                    connection, projection, node, round_ordinal, rail[node_id]
                 )
                 durable_refusal = _node_receipt_refusal(
                     connection, execution_id

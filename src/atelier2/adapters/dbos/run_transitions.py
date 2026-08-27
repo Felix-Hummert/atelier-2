@@ -683,20 +683,29 @@ def commit_waiting_input(
     revision_hash: WorkflowRevisionHash,
     node_id: str,
     round_ordinal: int = FIRST_ROUND_ORDINAL,
+    question: str | None = None,
 ) -> TransitionSnapshot:
     """Rest this run at this node's pause, in the round it is already turning.
 
-    The pause moves nowhere, so source and target round are the same one: what
-    the round decides here is only which execution of the node the run is
-    resting at, and that is what the answer will have to name.
+    The pause moves nowhere, so source and target round are the same one. A
+    composed V3 question is represented by its canonical digest rather than by
+    the full text: the durable node binding owns the exact question, while the
+    event proves which question made this execution wait without consuming the
+    event projection's payload budget. Legacy and no-input pauses keep the exact
+    empty payload they have always written.
     """
+    payload = (
+        b""
+        if question is None
+        else Sha256Hash.of(question.encode("utf-8")).value.encode("ascii")
+    )
     return _commit_event(
         session,
         run_id,
         revision_hash,
         node_id,
         RunEventKind.WAITING_INPUT,
-        b"",
+        payload,
         RunState.STARTED,
         RunState.WAITING_INPUT,
         node_id,
