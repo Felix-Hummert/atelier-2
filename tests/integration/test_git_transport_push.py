@@ -7,6 +7,7 @@ import subprocess
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,9 @@ from atelier2.contracts.effect_requests import (
     GitCommitIdentity,
     HeadBranch,
     PushAtelierCommit,
+    ReviewedDocumentationPullRequest,
+    ReviewedDocumentReplacement,
+    reviewed_documentation_candidate_digest,
 )
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
@@ -274,6 +278,43 @@ def test_inconclusive_read_after_send_reconciles_and_retry_sends_no_second_push(
 
     assert isinstance(first, EffectUnknownOutcome)
     assert isinstance(retry, EffectUnknownOutcome)
+    assert len(runner.push_arguments) == 1
+
+
+def test_a_reviewed_documentation_request_reuses_the_push_fence_for_exact_bytes(
+    tmp_path: Path,
+) -> None:
+    store, remote, base, _tree = _repositories(tmp_path)
+    runner = _ScriptedRemoteReadRunner([None] * 8)
+    factory = _factory(store, remote, runner)
+    replacement = ReviewedDocumentReplacement(
+        "kept.txt", sha256(b"base\n").hexdigest(), b"reviewed exact bytes\n"
+    )
+    title = "Reviewed documentation"
+    body = "The approved replacement."
+    candidate_digest = reviewed_documentation_candidate_digest(
+        base, (replacement,), title, body
+    )
+    request = ReviewedDocumentationPullRequest(
+        base,
+        candidate_digest,
+        "d" * 64,
+        (replacement,),
+        title,
+        body,
+        HEAD_BRANCH,
+    )
+    outer_intent, _push_request = _intent(factory, base, _tree)
+    adapter = factory.open()
+    try:
+        adapter.publish(outer_intent, request)
+        adapter.publish(outer_intent, request)
+    finally:
+        adapter.close()
+
+    commit = _git(remote, "rev-parse", HEAD_BRANCH.full_ref)
+    assert _git(remote, "rev-parse", f"{commit}^") == base
+    assert _git(remote, "show", f"{commit}:kept.txt") == "reviewed exact bytes"
     assert len(runner.push_arguments) == 1
 
 
