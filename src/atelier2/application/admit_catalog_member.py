@@ -26,7 +26,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import assert_never
 
-from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
+from atelier2.application.refusals import (
+    DurableStateCorrupt,
+    ProjectionTooLarge,
+    WriteUnavailable,
+)
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
     CatalogActor,
@@ -108,6 +112,7 @@ type FoundLineageResult = (
     | CatalogDisplayNameInvalid
     | WriteUnavailable
     | DurableStateCorrupt
+    | ProjectionTooLarge
 )
 type AdmitMemberResult = (
     AdmitCatalogMemberResult
@@ -115,6 +120,7 @@ type AdmitMemberResult = (
     | CatalogDisplayNameInvalid
     | WriteUnavailable
     | DurableStateCorrupt
+    | ProjectionTooLarge
 )
 
 
@@ -191,6 +197,7 @@ type _ResolvedRevision = (
     | CatalogRevisionUnpublished
     | WriteUnavailable
     | DurableStateCorrupt
+    | ProjectionTooLarge
 )
 
 
@@ -228,7 +235,7 @@ def _named_revision(
         case PortReadUnavailable(detail):
             return WriteUnavailable(detail)
         case PortProjectionTooLarge():
-            return WriteUnavailable()
+            return ProjectionTooLarge()
         case QueryDurableStateCorrupt():
             return DurableStateCorrupt()
         case _ as unreachable:
