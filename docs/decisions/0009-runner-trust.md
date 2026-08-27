@@ -107,6 +107,16 @@ and returns effect evidence; only Core commits an `EffectReceipt` or
 credential, environment or privilege lane. Wait, Join, Resume and deterministic
 or subworkflow scheduling remain in Core and are not workers.
 
+The disposable candidate's Core-restart leg is deliberately a live Docker
+witness, not a deterministic test. Its deterministic crash harness proves the
+binding and same-child rules without Docker. In the live leg a pre-opened host
+observer receives Core's `STARTED` cut event, lowers the Runner container to its
+current cgroup-v2 `pids.max`, records container/PID/start-tick identity, and
+only then acknowledges Core so it can write the cut record and exit. The shell
+reads that STARTED-bound identity from the cut record and requires the same
+single child after Core exits and after reconnect `STARTED`, while the monotonic
+`pids.events:max` counter remains unchanged.
+
 Serve and Runner are separate OCI images and release artifacts under #312.
 Serve contains no provider CLI or provider credential value and receives no raw
 carrier or OCI lifecycle authority. The Runner writes evidence, never product
@@ -745,11 +755,27 @@ this record borrows that owner rather than opening a second vocabulary.
   `/var/tmp/atelier2-301a-runner-witness.0WqeSL` (cancel Core store SHA-256
   `7b84cc59cc65bcb51c31ee4fb3996dde73353dd6872d82efe182dc4bff9ee901`). After
   receiver success the host private keys were unlinked through held directory
-  FDs; the retained trees hold public certificate metadata only. Exact
-  labelled Docker objects were empty after `RELEASED`. It does not prove live
-  A.1 availability, restart/reconnect, cancel races, replacement `ONE`, a
-  wrong-CA live refusal, or packaged cutover. Focused tests cover peer
-  EKU/SAN/CA refusal, Landlock identity denial, journal ACK/RELEASE order,
+  FDs; the retained trees hold public certificate metadata only. A retained
+  Core-restart leg at
+  `/var/tmp/atelier2-301a-runner-witness.jZs0NF` proved one provider child
+  (PID `2372845`, start tick `24859444`) in Runner container
+  `ba621229c2e449e2cd5782eb0f934e1cada22f21673da49eaf00ffe4f2b436a0`
+  from the fenced `STARTED` cut through Core death and reconnect `STARTED`,
+  with `pids.current == pids.max == 2`, unchanged `pids.events:max == 0`, and
+  one `FAILED`/`ACKNOWLEDGED` terminal record. Its Core store SHA-256 is
+  `a9b14d78b632804ea82bb36d780b0ea4cdc4033be46f497c230de3106d8869a7`;
+  its cut, child-survival and terminal-proof records have SHA-256 values
+  `969170f5341ceb750fc44a59ee48c19dc1df20b9dd13a9fa6614b96fad487787`,
+  `2abe74e56683a17c8b596a08dba2a2f268d3856ae5326bf49b75a5c83172590f`
+  and
+  `e5e742c1786860d67fecb217f0bc00d93900b18d983c9ab2a8a6ead62dadb707`.
+  Exact labelled Docker objects were empty after `RELEASED`. Together these
+  legs do not prove live A.1 availability, cancel races, replacement `ONE`, a
+  wrong-CA live refusal, or packaged cutover. They also do not close the
+  STARTED-fence TOCTOU window: from Core writing its STARTED FIFO request until
+  the host completes the `pids.max` reduction, a provider crash and respawn can
+  make the replacement the identity that the fence records. Focused tests cover
+  peer EKU/SAN/CA refusal, Landlock identity denial, journal ACK/RELEASE order,
   and the A request-subset/refusal vocabulary.
 - A runner identity is not satisfied by a reused name: an identifier that
   outlives the runner it named never binds a later attempt.
