@@ -4,7 +4,8 @@ Hop 38 made ABANDONED durable. The query projection already attaches the
 intent to an ended Action run. A dedicated run-resource field would name
 that word beside the run state, but the wire schema is claimed elsewhere;
 the existing node-detail `refusal` is the string that can carry it today.
-GET /runs names the run's own ending as the reason.
+GET /runs names the run's own ending as the reason and does not grow a
+waiting or reconciliation block for that attached intent.
 """
 
 from __future__ import annotations
@@ -119,14 +120,15 @@ def _node_state(ending: RunState) -> NodeState:
 
 def _detail(ending: RunState) -> NodeDetail:
     return NodeDetail(
-        RUN_ID,
-        NODE_ID,
-        _node_state(ending),
-        None,
-        None,
-        None,
-        None,
-        EffectIntentState.ABANDONED.value,
+        run_id=RUN_ID,
+        node_id=NODE_ID,
+        state=_node_state(ending),
+        job=None,
+        job_hash=None,
+        answer=None,
+        provenance=None,
+        refusal=EffectIntentState.ABANDONED.value,
+        refusal_output=None,
     )
 
 
@@ -201,8 +203,11 @@ def test_get_run_and_node_detail_name_abandoned_with_the_run_ending(
     assert listed_run["current_node_id"] == NODE_ID
     assert listed_run["node_rail"][0]["state"] == _node_state(ending).value
     assert listed_run["terminal_hash"] is not None
+    assert "waiting" not in listed_run
+    assert "reconciliation" not in listed_run
     assert detail.status_code == 200
     assert detail.json()["refusal"] == EffectIntentState.ABANDONED.value
+    assert detail.json()["refusal_output"] is None
     assert detail.json()["state"] == listed_run["node_rail"][0]["state"]
     assert detail.json()["node_id"] == listed_run["current_node_id"]
     assert detail.json()["run_id"] == listed_run["run_id"]
@@ -214,9 +219,14 @@ def test_an_abandoned_intent_stays_on_the_ended_run_resource(
 ) -> None:
     resource = run_resource(_projection(ending))
     rendered = node_detail_resource(_detail(ending))
+    dumped = resource.model_dump(mode="json")
+    detail_body = rendered.model_dump(mode="json")
 
     assert isinstance(resource, RunResourceV3)
     assert resource.state == ending.value
     assert resource.current_node_id == NODE_ID
-    assert rendered.refusal == EffectIntentState.ABANDONED.value
+    assert "waiting" not in dumped
+    assert "reconciliation" not in dumped
+    assert detail_body["refusal"] == EffectIntentState.ABANDONED.value
+    assert detail_body["refusal_output"] is None
     assert rendered.state == _node_state(ending).value
