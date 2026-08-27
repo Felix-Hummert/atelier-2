@@ -6,7 +6,14 @@ import tomllib
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from documentation_freshness import (
+        DocumentSourceWatermark,
+        SourceObjectKind,
+        UnboundDocument,
+    )
 
 REQUIREMENTS_DIRECTORY = Path("docs/requirements")
 REGISTRY_LOCATION = REQUIREMENTS_DIRECTORY / "revisions.toml"
@@ -20,6 +27,9 @@ ROOT_FIELDS = frozenset({"schema_version", "legacy", "revision"})
 LEGACY_FIELDS = frozenset({"document", "path", "content_sha256"})
 REVISION_FIELDS = frozenset(
     {*LEGACY_FIELDS, "approval_comment_id", "approval_sha256", "predecessor"}
+)
+SOURCE_BINDING_FIELDS = frozenset(
+    {"document", "content_sha256", "source_thread", "watermark_kind", "watermark"}
 )
 
 
@@ -51,6 +61,21 @@ class RegistryEntry:
     predecessor: str
     approval_comment_id: int | None = None
     approval_sha256: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceBinding:
+    document: str
+    content_sha256: str
+    source_thread: str
+    watermark_kind: SourceObjectKind
+    watermark: str
+
+
+@dataclass(frozen=True, slots=True)
+class RequirementRegistry:
+    entries: tuple[RegistryEntry, ...]
+    source_bindings: tuple[SourceBinding, ...]
 
 
 RequirementRules = tuple[RequirementRule, ...]
@@ -113,12 +138,64 @@ def read_requirement_shelf(project_root: Path) -> RequirementShelf:
 
 
 def read_requirement_registry(project_root: Path) -> tuple[RegistryEntry, ...]:
+    return _read_requirement_registry(project_root).entries
+
+
+def read_document_source_watermarks(
+    project_root: Path,
+) -> tuple[DocumentSourceWatermark | UnboundDocument, ...]:
+    """Read active requirement documents with their optional source bindings."""
+    if __package__:
+        from .documentation_freshness import (
+            DocumentSourceWatermark,
+            SourceObjectReference,
+            SourceThreadReference,
+            UnboundDocument,
+        )
+    else:
+        from documentation_freshness import (
+            DocumentSourceWatermark,
+            SourceObjectReference,
+            SourceThreadReference,
+            UnboundDocument,
+        )
+
+    registry = _read_requirement_registry(project_root)
+    active = _active_entries(registry.entries)
+    bindings = {
+        (binding.document, binding.content_sha256): binding
+        for binding in registry.source_bindings
+    }
+    watermarks: list[DocumentSourceWatermark | UnboundDocument] = []
+    for document, entry in sorted(active.items()):
+        binding = bindings.get((document, entry.content_sha256))
+        if binding is None:
+            watermarks.append(UnboundDocument(entry.location, entry.content_sha256))
+            continue
+        watermarks.append(
+            DocumentSourceWatermark(
+                entry.location,
+                entry.content_sha256,
+                SourceThreadReference(binding.source_thread),
+                SourceObjectReference(binding.watermark_kind, binding.watermark),
+            )
+        )
+    return tuple(watermarks)
+
+
+def read_requirement_source_bindings(
+    project_root: Path,
+) -> tuple[SourceBinding, ...]:
+    return _read_requirement_registry(project_root).source_bindings
+
+
+def _read_requirement_registry(project_root: Path) -> RequirementRegistry:
     registry = _regular_file(project_root, REGISTRY_LOCATION)
     try:
         parsed = tomllib.loads(registry.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as error:
         raise Refusal(f"{REGISTRY_LOCATION} is unreadable: {error}") from error
-    if unknown := sorted(set(parsed) - ROOT_FIELDS):
+    if unknown := sorted(set(parsed) - {*ROOT_FIELDS, "source_binding"}):
         raise Refusal(f"{REGISTRY_LOCATION} has unknown fields {unknown}")
     schema_version = parsed.get("schema_version")
     if schema_version != 1:
@@ -132,7 +209,80 @@ def read_requirement_registry(project_root: Path) -> tuple[RegistryEntry, ...]:
         if not valid:
             raise Refusal(f"{REGISTRY_LOCATION} {field} must be an array of tables")
         entries.extend(_registry_entry(item, legacy) for item in value)
-    return tuple(entries)
+    raw_bindings = parsed.get("source_binding", [])
+    if not isinstance(raw_bindings, list) or not all(
+        isinstance(item, dict) for item in raw_bindings
+    ):
+        raise Refusal(f"{REGISTRY_LOCATION} source_binding must be an array of tables")
+    bindings = tuple(_source_binding(item) for item in raw_bindings)
+    _verify_source_bindings(tuple(entries), bindings)
+    return RequirementRegistry(tuple(entries), bindings)
+
+
+def _source_binding(raw: dict[str, Any]) -> SourceBinding:
+    if unknown := sorted(set(raw) - SOURCE_BINDING_FIELDS):
+        raise Refusal(
+            f"{REGISTRY_LOCATION} source binding has unknown fields {unknown}"
+        )
+    if missing := sorted(SOURCE_BINDING_FIELDS - set(raw)):
+        raise Refusal(f"{REGISTRY_LOCATION} source binding lacks fields {missing}")
+    document = _text(raw, "document", "source binding")
+    if re.fullmatch(r"\d{4}", document) is None:
+        raise Refusal(f"source binding document {document!r} is not NNNN")
+    raw_watermark_kind = _text(raw, "watermark_kind", f"source binding {document}")
+    if __package__:
+        from .documentation_freshness import SourceObjectKind
+    else:
+        from documentation_freshness import SourceObjectKind
+    try:
+        watermark_kind = SourceObjectKind(raw_watermark_kind)
+    except ValueError as error:
+        raise Refusal(
+            f"source binding {document} has unsupported watermark kind "
+            f"{raw_watermark_kind!r}"
+        ) from error
+    return SourceBinding(
+        document,
+        _text(raw, "content_sha256", f"source binding {document}", digest=True),
+        _text(raw, "source_thread", f"source binding {document}"),
+        watermark_kind,
+        _text(raw, "watermark", f"source binding {document}"),
+    )
+
+
+def _verify_source_bindings(
+    entries: tuple[RegistryEntry, ...], bindings: tuple[SourceBinding, ...]
+) -> None:
+    revision_digests = {
+        (entry.document, entry.content_sha256) for entry in entries if entry.predecessor
+    }
+    seen: set[tuple[str, str]] = set()
+    for binding in bindings:
+        key = (binding.document, binding.content_sha256)
+        if key in seen:
+            raise Refusal(
+                f"source binding {binding.document} {binding.content_sha256} is duplicated"
+            )
+        seen.add(key)
+        if key not in revision_digests:
+            raise Refusal(
+                f"source binding {binding.document} {binding.content_sha256} "
+                "does not name an exact registered requirement revision"
+            )
+
+
+def _active_entries(entries: tuple[RegistryEntry, ...]) -> dict[str, RegistryEntry]:
+    grouped: defaultdict[str, list[RegistryEntry]] = defaultdict(list)
+    for entry in entries:
+        grouped[entry.document].append(entry)
+    active: dict[str, RegistryEntry] = {}
+    for document, lineage in grouped.items():
+        active[document] = (
+            lineage[0]
+            if not lineage[0].predecessor
+            else _lineage_tip(document, tuple(lineage))
+        )
+    return active
 
 
 def _registry_entry(raw: dict[str, Any], legacy: bool) -> RegistryEntry:

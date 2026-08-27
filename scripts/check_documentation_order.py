@@ -15,8 +15,10 @@ from requirement_contract import (
     RegistryEntry,
     RequirementContractError,
     RequirementShelf,
+    SourceBinding,
     read_requirement_registry,
     read_requirement_shelf,
+    read_requirement_source_bindings,
 )
 
 EXACT_GIT_SHA = re.compile(r"[0-9a-f]{40}")
@@ -28,8 +30,10 @@ HONESTY_BOUND = (
     "proves: with an exact VCS base, every existing revision remains field-identical and history grows only by a valid successor",
     "proves: every strict requirement has only title, nonempty Intent, nonempty unique sourced rule sentences, and optional nonempty Non-goals",
     "proves: every approval-backed revision line is predecessor-complete, unbranched, and has one tip on one numbered path",
+    "proves: every source binding names one exact approval-backed requirement revision, and with an exact VCS base prior bindings stay field-identical",
     "does not prove: that a cited source or approval comment exists or says what the registry claims - review judges that",
     "does not fetch: GitHub or another live authority",
+    "does not judge: source meaning or freshness",
     "does not make: a frozen legacy document an approved revision",
     "```",
 )
@@ -106,10 +110,12 @@ def _git_regular_file(project_root: Path, base_revision: str, location: Path) ->
     return _git_bytes(project_root, "show", f"{base_revision}:{location.as_posix()}")
 
 
-def _base_snapshot(project_root: Path, base_revision: str) -> tuple[RegistryEntry, ...]:
+def _base_snapshot(
+    project_root: Path, base_revision: str
+) -> tuple[tuple[RegistryEntry, ...], tuple[SourceBinding, ...]]:
     registry_object = f"{base_revision}:{REGISTRY_LOCATION.as_posix()}"
     if not _git_object_exists(project_root, registry_object):
-        return _bootstrap_base_snapshot(project_root, base_revision)
+        return _bootstrap_base_snapshot(project_root, base_revision), ()
     with tempfile.TemporaryDirectory() as temporary:
         base_root = Path(temporary)
         registry = base_root / REGISTRY_LOCATION
@@ -118,9 +124,10 @@ def _base_snapshot(project_root: Path, base_revision: str) -> tuple[RegistryEntr
             _git_regular_file(project_root, base_revision, REGISTRY_LOCATION)
         )
         entries = read_requirement_registry(base_root)
+        bindings = read_requirement_source_bindings(base_root)
     for entry in entries:
         _git_regular_file(project_root, base_revision, entry.location)
-    return entries
+    return entries, bindings
 
 
 def _bootstrap_base_snapshot(
@@ -164,7 +171,7 @@ def _verify_snapshot_monotonicity(project_root: Path, base_revision: str) -> Non
         raise RequirementContractError(
             f"exact base revision {base_revision!r} is absent or unresolvable"
         )
-    base_entries = _base_snapshot(project_root, base_revision)
+    base_entries, base_bindings = _base_snapshot(project_root, base_revision)
     current_entries = read_requirement_registry(project_root)
     base_legacy = _legacy_entries(base_entries)
     current_legacy = _legacy_entries(current_entries)
@@ -201,6 +208,17 @@ def _verify_snapshot_monotonicity(project_root: Path, base_revision: str) -> Non
         if base.predecessor and base not in current_entries:
             raise RequirementContractError(
                 f"revision {base.document} {base.content_sha256} changed or deleted"
+            )
+    current_bindings = {
+        (binding.document, binding.content_sha256): binding
+        for binding in read_requirement_source_bindings(project_root)
+    }
+    for binding in base_bindings:
+        current = current_bindings.get((binding.document, binding.content_sha256))
+        if current != binding:
+            raise RequirementContractError(
+                f"source binding {binding.document} {binding.content_sha256} "
+                "changed or deleted"
             )
 
 
