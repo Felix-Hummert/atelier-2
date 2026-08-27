@@ -497,11 +497,19 @@ def test_an_answer_its_own_schema_refuses_never_becomes_a_success(
                 context_packages_v3.c.package_hash == request["context_package_hash"]
             )
         )
-        artifacts = connection.scalar(
+        node_artifact_count = connection.scalar(
             sa.select(sa.func.count()).select_from(node_artifacts_v3)
         )
         outputs = connection.scalar(
             sa.select(sa.func.count()).select_from(node_receipt_outputs_v3)
+        )
+        refused_bytes = connection.scalar(
+            sa.select(artifacts.c.content).where(
+                artifacts.c.artifact_hash == receipt["artifact_hash"]
+            )
+        )
+        node_receipt_count = connection.scalar(
+            sa.select(sa.func.count()).select_from(node_receipts_v3)
         )
     reason = str(receipt["reason"])
     assert reason == expected_reason
@@ -509,6 +517,8 @@ def test_an_answer_its_own_schema_refuses_never_becomes_a_success(
     assert len(reason) <= MAXIMUM_AGENT_FIELD_CHARACTERS
     assert receipt["schema_revision_hash"] == PLAN_SCHEMA.revision_hash.value
     assert receipt["value_hash"] == Sha256Hash.of(answered).value
+    assert receipt["artifact_hash"] == ArtifactHash.of(answered).value
+    assert bytes(refused_bytes or b"") == answered
     assert (
         attempt["node_execution_id"],
         attempt["request_hash"],
@@ -518,7 +528,14 @@ def test_an_answer_its_own_schema_refuses_never_becomes_a_success(
         execution.request.request_hash.value,
         1,
     )
-    assert (event["agent_attempt_id"], event["attempt_ordinal"]) == (
+    assert (
+        event["event_kind"],
+        bytes(event["payload"]),
+        event["agent_attempt_id"],
+        event["attempt_ordinal"],
+    ) == (
+        RunEventKind.AGENT_FAILED.value,
+        AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED.value.encode("ascii"),
         execution.attempt_id.value,
         1,
     )
@@ -531,7 +548,11 @@ def test_an_answer_its_own_schema_refuses_never_becomes_a_success(
         request["context_package_hash"]
         == DeclaredContextPackage(bytes(context)).package_hash.value
     )
-    assert (int(artifacts or 0), int(outputs or 0)) == (0, 0)
+    assert (
+        int(node_artifact_count or 0),
+        int(outputs or 0),
+        int(node_receipt_count or 0),
+    ) == (0, 0, 0)
 
 
 def test_get_run_reads_a_working_schema_repair_with_both_attempts(
@@ -667,6 +688,14 @@ def test_two_schema_refusals_end_failed_under_output_schema_refused(
                 .order_by(agent_attempts.c.attempt_ordinal)
             )
         )
+        node_receipts = tuple(
+            connection.execute(
+                sa.select(
+                    node_receipts_v3.c.disposition,
+                    node_receipts_v3.c.reason,
+                )
+            )
+        )
     assert attempts == (
         (
             1,
@@ -693,6 +722,16 @@ def test_two_schema_refusals_end_failed_under_output_schema_refused(
             ArtifactHash.of(THE_ANSWER_THE_SCHEMA_REFUSES).value,
         ),
     )
+    assert len(node_receipts) == 1
+    assert node_receipts[0][0] == PersistedReceiptDisposition.FAILED.value
+    terminal_reason, terminal_schema, terminal_value_hash = (
+        read_stored_node_receipt_reason(str(node_receipts[0][1]))
+    )
+    assert terminal_reason.startswith(
+        f"{NodeReceiptReason.OUTPUT_SCHEMA_REFUSED.value}: "
+    )
+    assert terminal_schema == PLAN_SCHEMA.revision_hash
+    assert terminal_value_hash == Sha256Hash.of(THE_ANSWER_THE_SCHEMA_REFUSES)
     assert durable_answer(runtime)[2] == RunState.FAILED.value
 
 

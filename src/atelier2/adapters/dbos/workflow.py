@@ -78,6 +78,7 @@ from atelier2.adapters.dbos.run_transitions import (
     load_run,
 )
 from atelier2.adapters.dbos.schema import (
+    agent_attempt_receipts_v3,
     agent_attempts,
     published_revisions,
     reconcile_commands,
@@ -424,6 +425,25 @@ def _reconstructed_agent_job_candidates(
         graph = load_graph(session, attempt.workflow_revision_hash)
         node = graph.node(attempt.node_id)
         if not isinstance(node, AgentNodeV3):
+            prior_receipt_attempt_id = session.scalar(
+                sa.select(agent_attempt_receipts_v3.c.attempt_id)
+                .select_from(
+                    agent_attempt_receipts_v3.join(
+                        agent_attempts,
+                        agent_attempt_receipts_v3.c.attempt_id
+                        == agent_attempts.c.attempt_id,
+                    )
+                )
+                .where(
+                    agent_attempts.c.node_execution_id
+                    == attempt.node_execution_id.value,
+                    agent_attempts.c.attempt_ordinal == AGENT_ATTEMPT_ORDINAL,
+                )
+            )
+            if prior_receipt_attempt_id is not None:
+                raise RunTransitionConflict(
+                    "repair receipt belongs to a non-V3 agent node"
+                )
             return None, None
         receipt = load_prior_output_schema_refusal_receipt(
             session,

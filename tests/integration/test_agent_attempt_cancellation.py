@@ -20,7 +20,11 @@ from atelier2.adapters.dbos.run_transitions import (
     load_run,
 )
 from atelier2.adapters.dbos.runtime import DbosRuntime
-from atelier2.adapters.dbos.schema import agent_attempts, run_events
+from atelier2.adapters.dbos.schema import (
+    agent_attempt_receipts_v3,
+    agent_attempts,
+    run_events,
+)
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow import AgentExecutorMap, reconstruct_agent_attempt
 from atelier2.api.openapi import API_PREFIX
@@ -35,6 +39,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptReplacement,
     AgentAttemptState,
     CancelAgentAttemptRequest,
+    OutputSchemaRefusalReceipt,
 )
 from atelier2.contracts.agents import AgentExecutionResult
 from atelier2.contracts.executions import (
@@ -42,6 +47,8 @@ from atelier2.contracts.executions import (
     RunEventCancellationBinding,
     RunEventKind,
 )
+from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.contracts.runs import RunId
 from atelier2.ports.agent_attempts import (
@@ -258,23 +265,14 @@ def test_cancellation_replacement_keeps_its_base_job_and_request_hash(
     run_id = RunId(f"v3/cancellation-keeps-{base_version.name.lower()}")
     legacy, current = started_string_ordered_v3_attempts(ordered_v3_runtime, run_id)
     selected = legacy if base_version is NodeJobCompositionVersion.LEGACY else current
+    assert legacy.request.job_bytes != current.request.job_bytes
+    assert legacy.request.request_hash != current.request.request_hash
     store = DbosAgentAttemptStore(
         ordered_v3_runtime.engine,
         ordered_v3_runtime.settings.application_version,
     )
-    store.prepare(current)
-    if selected is legacy:
-        with ordered_v3_runtime.engine.begin() as connection:
-            connection.exec_driver_sql("DROP TRIGGER agent_attempts_state_transition")
-            connection.execute(
-                agent_attempts.update()
-                .where(agent_attempts.c.attempt_id == current.attempt_id.value)
-                .values(
-                    attempt_id=legacy.attempt_id.value,
-                    request_hash=legacy.request.request_hash.value,
-                )
-            )
-    prepared = store.load(selected.attempt_id)
+    prepared = store.prepare(selected)
+    assert prepared.request_hash == selected.request.request_hash
     command = CancelAgentAttemptRequest(
         run_id,
         selected.attempt_id,
@@ -336,6 +334,74 @@ def test_cancellation_replacement_keeps_its_base_job_and_request_hash(
         "ordinal": 2,
         "state": PublicAgentAttemptState.PREPARED.value,
     }
+
+
+def test_non_v3_replacement_refuses_a_schema_repair_receipt(tmp_path: Path) -> None:
+    runtime = attempt_runtime(tmp_path)
+    runtime.initialize_storage()
+    try:
+        execution = agent_attempt_execution(
+            attempt_request(runtime, "cancel/non-v3-repair-receipt")
+        )
+        store = DbosAgentAttemptStore(
+            runtime.engine, runtime.settings.application_version
+        )
+        prepared = store.prepare(execution)
+        command = CancelAgentAttemptRequest(
+            execution.request.run_id,
+            execution.attempt_id,
+            "replace-with-repair-receipt",
+            prepared.state_version,
+            AgentAttemptReplacement.ONE,
+        )
+        store.request_cancellation(command)
+        terminal = store.attest_cancellation_cleanup(
+            command,
+            AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
+            None,
+            None,
+        )
+        assert terminal.replacement_attempt_id is not None
+        replacement = store.load(terminal.replacement_attempt_id)
+        receipt = OutputSchemaRefusalReceipt(
+            execution.attempt_id,
+            "output-schema-refused: impossible-v2-receipt",
+            PublishedRevisionHash(execution.request.workflow_revision_hash.value),
+            Sha256Hash.of(b""),
+            None,
+        )
+        with runtime.engine.begin() as connection:
+            connection.execute(
+                agent_attempt_receipts_v3.insert().values(
+                    attempt_id=receipt.attempt_id.value,
+                    reason=receipt.reason,
+                    schema_revision_hash=receipt.schema_revision.value,
+                    value_hash=receipt.value_hash.value,
+                    artifact_hash=None,
+                    receipt_hash=receipt.receipt_hash.value,
+                )
+            )
+        executors: AgentExecutorMap = {
+            entry.key: (
+                None,
+                entry.manifest_entry.operational_identity,
+                entry.manifest_entry.declared_capabilities,
+                entry.manifest_entry.carrier,
+            )
+            for entry in runtime.agent_executor_registry.entries
+        }
+
+        with pytest.raises(
+            RunTransitionConflict, match="repair receipt belongs to a non-V3 agent node"
+        ):
+            reconstruct_agent_attempt(
+                runtime.datasource,
+                executors,
+                runtime.declared_project,
+                replacement,
+            )
+    finally:
+        runtime.close()
 
 
 def test_durable_cancellation_workflow_reaps_the_exact_running_process(
