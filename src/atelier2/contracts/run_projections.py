@@ -12,6 +12,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptReplacement,
     AgentAttemptState,
 )
+from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import AgentExecutionRequestHash
 from atelier2.contracts.effects import EffectIntentSnapshot, ReconcileCommandSnapshot
 from atelier2.contracts.executions import NodeExecutionId
@@ -250,6 +251,11 @@ class NodeDetail:
     judged bytes first, so `value` is what is safe to show and `value_hash` is
     still the receipt's own hash of the original, unredacted bytes -- the hash
     proves what was judged, the value is its redacted presentation.
+
+    `transcript` is the decoded, already-redacted steps of the current
+    execution's highest attempt that named one. A null pointer is honest
+    absence; a named address that cannot be read is not this field's job to
+    soften.
     """
 
     run_id: RunId
@@ -263,3 +269,4 @@ class NodeDetail:
     refusal_output: NodeAnswer | None = None
     started_at: RecordedAt | None = None
     ended_at: RecordedAt | None = None
+    transcript: AttemptTranscript | None = None
