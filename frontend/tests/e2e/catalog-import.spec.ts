@@ -89,7 +89,6 @@ test("proves(the-operator-imports-a-workflow-and-an-agent-and-starts-what-was-im
   await catalogLink.click();
   await expect(page.getByRole("heading", { name: catalogPageCopy.title })).toBeVisible();
   await expect(catalogLink).toBeInViewport();
-  await expect(page.getByText(catalogPageCopy.skillsNone)).toBeVisible();
   await expect(entry(page, workflowName)).toHaveCount(0);
   await expect(entry(page, agentName)).toHaveCount(0);
 
@@ -101,12 +100,23 @@ test("proves(the-operator-imports-a-workflow-and-an-agent-and-starts-what-was-im
   await expect(entry(page, agentName)).toBeVisible();
   // An imported agent belongs to the provider whose format it arrived in, and
   // the row says so instead of implying it runs anywhere.
-  await expect(entry(page, agentName).getByText(catalogPageCopy.agentProviderClaude)).toBeVisible();
+  await expect(entry(page, agentName).getByLabel(catalogPageCopy.agentProviderClaude)).toBeVisible();
+
+  const catalogGroups = page.getByRole("group", { name: "Catalog groups" });
+  await catalogGroups.getByRole("button", { name: /^Agents/ }).click();
+  await expect(entry(page, agentName)).toBeVisible();
+  await expect(entry(page, workflowName)).toHaveCount(0);
+  await page.getByLabel(catalogPageCopy.searchLabel).fill(agentName);
+  await expect(entry(page, agentName)).toBeVisible();
+  await catalogGroups.getByRole("button", { name: /^Skills/ }).click();
+  await expect(page.getByText(catalogPageCopy.skillsNone)).toBeVisible();
+  await catalogGroups.getByRole("button", { name: /^All/ }).click();
+  await page.getByLabel(catalogPageCopy.searchLabel).fill("");
 
   // The admission is durable, not a screen state: a cold load of the room
   // reads the admitted entry back and offers its enabled manual start door.
   await page.reload();
-  await expect(entry(page, workflowName).getByRole("button", { name: catalogPageCopy.stateHint })).toHaveCount(0);
+  await expect(entry(page, workflowName).getByText(catalogPageCopy.newerRevision)).toHaveCount(0);
   await expect(page.getByText(catalogPageCopy.notAdmittedHint)).toHaveCount(0);
   await entry(page, workflowName).getByRole("link", { name: workflowName }).click();
   await expect(page.getByRole("heading", { name: workflowName })).toBeVisible();
@@ -133,12 +143,7 @@ test("an unadmitted sibling of an admitted name shows as a newer revision, not a
   await page.reload();
 
   await expect(page.getByRole("listitem").filter({ hasText: workflowName })).toHaveCount(1);
-  const stateHint = entry(page, workflowName).getByRole("button", { name: catalogPageCopy.stateHint });
-  await expect(stateHint).toBeVisible();
-  await stateHint.click();
-  await expect(entry(page, workflowName).getByRole("status")).toHaveText(
-    catalogPageCopy.newerRevisionHint
-  );
+  await expect(entry(page, workflowName).getByText(catalogPageCopy.newerRevision)).toBeVisible();
 });
 
 test("the catalog names an unrecognized file without adding it", async ({ page }) => {
