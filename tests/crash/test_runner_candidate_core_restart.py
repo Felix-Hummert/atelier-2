@@ -9,12 +9,16 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Protocol
 
 import pytest
 
 from tests.crash.runner_candidate_core_restart_harness import (
+    CORE_STARTED_AFTER_FENCE_ACK_EXIT_CODE,
+    CORE_STARTED_BEFORE_FENCE_ACK_EXIT_CODE,
     CORE_STARTED_CUT_EXIT_CODE,
     CgroupProcessEvidence,
     ChildObservation,
@@ -40,11 +44,28 @@ HARNESS = Path(__file__).with_name("runner_candidate_core_restart_harness.py")
 PROJECT_ROOT = Path(__file__).parents[2]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class StartedCutProcesses:
     runner: subprocess.Popen[bytes]
     core: subprocess.Popen[str]
     restarted_core_connection: socket.socket
+    fence_request_descriptor: int | None
+    restarted_core: subprocess.Popen[str] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StartedCutAtFence:
+    processes: StartedCutProcesses
+    started_provider: ChildObservation
+
+
+class StartAtFence(Protocol):
+    def __call__(
+        self,
+        *,
+        crash_before_fence_ack: bool = False,
+        crash_after_fence_ack: bool = False,
+    ) -> StartedCutAtFence: ...
 
 
 def _environment() -> dict[str, str]:
@@ -90,20 +111,22 @@ def _wait_for_file(path: Path) -> None:
     assert path.is_file()
 
 
-def _witness_binding(root: Path) -> dict[str, str]:
-    document = json.loads(
-        (root / "core-store" / "core-started-cut.json").read_text(encoding="utf-8")
-    )
+def _witness_binding(path: Path) -> dict[str, str]:
+    document = json.loads(path.read_text(encoding="utf-8"))
     return {field: document[field] for field in _CORE_WITNESS_BINDING_FIELDS}
 
 
 def _start_started_cut_processes(
-    root: Path, *, crash_after_fence_ack: bool = False
+    root: Path,
+    *,
+    crash_before_fence_ack: bool = False,
+    crash_after_fence_ack: bool = False,
 ) -> StartedCutProcesses:
     core_store = root / "core-store"
     core_store.mkdir(parents=True)
     os.mkfifo(core_store / _CORE_STARTED_CUT_EVENT)
     os.mkfifo(core_store / _CORE_STARTED_CUT_FENCED_EVENT)
+    fence_request_descriptor = _opened_cut_fifo(core_store / _CORE_STARTED_CUT_EVENT)
     first_core, first_runner = socket.socketpair()
     restarted_core, restarted_runner = socket.socketpair()
     runner = subprocess.Popen(
@@ -129,6 +152,8 @@ def _start_started_cut_processes(
         "--connection",
         str(first_core.fileno()),
     ]
+    if crash_before_fence_ack:
+        command.append("--crash-before-fence-ack")
     if crash_after_fence_ack:
         command.append("--crash-after-fence-ack")
     core = subprocess.Popen(
@@ -143,7 +168,7 @@ def _start_started_cut_processes(
     first_core.close()
     first_runner.close()
     restarted_runner.close()
-    return StartedCutProcesses(runner, core, restarted_core)
+    return StartedCutProcesses(runner, core, restarted_core, fence_request_descriptor)
 
 
 def _runner_child_observation(runner_process_id: int) -> ChildObservation:
@@ -160,14 +185,16 @@ def _runner_child_observation(runner_process_id: int) -> ChildObservation:
     )
 
 
-def _receive_fence_request(root: Path) -> None:
-    descriptor = _opened_cut_fifo(root / "core-store" / _CORE_STARTED_CUT_EVENT)
+def _receive_fence_request(processes: StartedCutProcesses) -> None:
+    descriptor = processes.fence_request_descriptor
+    assert descriptor is not None
     try:
         readable, _, _ = select.select([descriptor], [], [], 10)
         assert readable
         assert os.read(descriptor, 256) == _CORE_STARTED_CUT_REQUEST
     finally:
         os.close(descriptor)
+        processes.fence_request_descriptor = None
 
 
 def _acknowledge_fence(root: Path, observation: ChildObservation) -> None:
@@ -181,150 +208,190 @@ def _acknowledge_fence(root: Path, observation: ChildObservation) -> None:
 
 def _stop_started_cut_processes(processes: StartedCutProcesses) -> None:
     processes.restarted_core_connection.close()
-    for process in (processes.core, processes.runner):
+    if processes.fence_request_descriptor is not None:
+        os.close(processes.fence_request_descriptor)
+        processes.fence_request_descriptor = None
+    for process in (processes.restarted_core, processes.core, processes.runner):
+        if process is None:
+            continue
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)
         process.wait(timeout=10)
 
 
-def test_restart_reuses_one_generation_while_the_same_provider_child_lives(
-    tmp_path: Path,
-) -> None:
-    processes = _start_started_cut_processes(tmp_path)
-    restarted: subprocess.Popen[str] | None = None
-    try:
-        _receive_fence_request(tmp_path)
-        started = _runner_child_observation(processes.runner.pid)
-        _acknowledge_fence(tmp_path, started)
-        assert processes.core.wait(timeout=10) == CORE_STARTED_CUT_EXIT_CODE
-        binding = _witness_binding(tmp_path)
-        first = _runner_child_observation(processes.runner.pid)
-        record_child_observation(
-            tmp_path / "core-store" / "child-survival.json",
-            "after-core-death",
-            first,
-            binding,
-        )
+@pytest.fixture
+def start_at_fence(tmp_path: Path) -> Iterator[StartAtFence]:
+    started_processes: list[StartedCutProcesses] = []
 
-        restarted = subprocess.Popen(
-            [
-                sys.executable,
-                str(HARNESS),
-                "restart",
-                "--root",
-                str(tmp_path),
-                "--connection",
-                str(processes.restarted_core_connection.fileno()),
-            ],
-            env=_environment(),
-            pass_fds=(processes.restarted_core_connection.fileno(),),
-            start_new_session=True,
-            text=True,
-        )
-        processes.restarted_core_connection.close()
-        reconnected_started = tmp_path / "core-store" / "core-reconnected-started.json"
-        session_finished = (
-            tmp_path / "core-store" / "core-reconnect-session-finished.json"
-        )
-        _wait_for_file(reconnected_started)
-        assert restarted.poll() is None
-        assert not session_finished.exists()
-
-        second = _runner_child_observation(processes.runner.pid)
-        record_child_observation(
-            tmp_path / "core-store" / "child-survival.json",
-            "after-core-restart",
-            second,
-            binding,
-        )
-        assert restarted.wait(timeout=10) == 0
-        _wait_for_file(session_finished)
-        assert processes.runner.wait(timeout=10) == 0
-
-        assert first.runner_process_id == second.runner_process_id
-        assert first.provider_child_pid == second.provider_child_pid
-        assert (
-            first.provider_child_start_time_ticks
-            == second.provider_child_start_time_ticks
-        )
-        assert first.provider_child_count == "1"
-        assert _rows(
+    def start(
+        *,
+        crash_before_fence_ack: bool = False,
+        crash_after_fence_ack: bool = False,
+    ) -> StartedCutAtFence:
+        processes = _start_started_cut_processes(
             tmp_path,
-            "SELECT COUNT(*), COUNT(DISTINCT runner_generation_id), "
-            "COUNT(DISTINCT runner_invocation_id) FROM agent_attempts",
-        ) == ((1, 1, 1),)
-        cut = json.loads(
-            (tmp_path / "core-store" / "core-started-cut.json").read_text("utf-8")
+            crash_before_fence_ack=crash_before_fence_ack,
+            crash_after_fence_ack=crash_after_fence_ack,
         )
-        reconnected = json.loads(
-            (tmp_path / "core-store" / "core-reconnected-started.json").read_text(
-                "utf-8"
-            )
+        started_processes.append(processes)
+        _receive_fence_request(processes)
+        return StartedCutAtFence(
+            processes,
+            _runner_child_observation(processes.runner.pid),
         )
-        assert reconnected["attempt_id"] == cut["attempt_id"]
-        assert reconnected["generation_id"] == cut["generation_id"]
-        assert reconnected["invocation_id"] == cut["invocation_id"]
-        assert cut["runner_container_id"] == first.runner_container_id
-        assert cut["runner_process_id"] == first.runner_process_id
-        assert cut["provider_child_pid"] == first.provider_child_pid
-        assert (
-            cut["provider_child_start_time_ticks"]
-            == first.provider_child_start_time_ticks
-        )
-    finally:
-        if restarted is not None and restarted.poll() is None:
-            os.killpg(restarted.pid, signal.SIGKILL)
-            restarted.wait(timeout=10)
+
+    yield start
+
+    for processes in reversed(started_processes):
         _stop_started_cut_processes(processes)
+
+
+def _restart_core(root: Path, processes: StartedCutProcesses) -> subprocess.Popen[str]:
+    restarted = subprocess.Popen(
+        [
+            sys.executable,
+            str(HARNESS),
+            "restart",
+            "--root",
+            str(root),
+            "--connection",
+            str(processes.restarted_core_connection.fileno()),
+        ],
+        env=_environment(),
+        pass_fds=(processes.restarted_core_connection.fileno(),),
+        start_new_session=True,
+        text=True,
+    )
+    processes.restarted_core = restarted
+    processes.restarted_core_connection.close()
+    return restarted
+
+
+def test_restart_reuses_one_generation_while_the_same_provider_child_lives(
+    tmp_path: Path, start_at_fence: StartAtFence
+) -> None:
+    at_fence = start_at_fence()
+    processes = at_fence.processes
+    _acknowledge_fence(tmp_path, at_fence.started_provider)
+    assert processes.core.wait(timeout=10) == CORE_STARTED_CUT_EXIT_CODE
+    binding = _witness_binding(tmp_path / "core-store" / "core-started-cut.json")
+    first = _runner_child_observation(processes.runner.pid)
+    record_child_observation(
+        tmp_path / "core-store" / "child-survival.json",
+        "after-core-death",
+        first,
+        binding,
+    )
+
+    restarted = _restart_core(tmp_path, processes)
+    reconnected_started = tmp_path / "core-store" / "core-reconnected-started.json"
+    session_finished = tmp_path / "core-store" / "core-reconnect-session-finished.json"
+    _wait_for_file(reconnected_started)
+    assert restarted.poll() is None
+    assert not session_finished.exists()
+
+    second = _runner_child_observation(processes.runner.pid)
+    record_child_observation(
+        tmp_path / "core-store" / "child-survival.json",
+        "after-core-restart",
+        second,
+        binding,
+    )
+    assert restarted.wait(timeout=10) == 0
+    _wait_for_file(session_finished)
+    assert processes.runner.wait(timeout=10) == 0
+
+    assert first.runner_process_id == second.runner_process_id
+    assert first.provider_child_pid == second.provider_child_pid
+    assert (
+        first.provider_child_start_time_ticks == second.provider_child_start_time_ticks
+    )
+    assert first.provider_child_count == "1"
+    assert _rows(
+        tmp_path,
+        "SELECT COUNT(*), COUNT(DISTINCT runner_generation_id), "
+        "COUNT(DISTINCT runner_invocation_id) FROM agent_attempts",
+    ) == ((1, 1, 1),)
+    cut = json.loads(
+        (tmp_path / "core-store" / "core-started-cut.json").read_text("utf-8")
+    )
+    reconnected = json.loads(
+        (tmp_path / "core-store" / "core-reconnected-started.json").read_text("utf-8")
+    )
+    assert reconnected["attempt_id"] == cut["attempt_id"]
+    assert reconnected["generation_id"] == cut["generation_id"]
+    assert reconnected["invocation_id"] == cut["invocation_id"]
+    assert cut["runner_container_id"] == first.runner_container_id
+    assert cut["runner_process_id"] == first.runner_process_id
+    assert cut["provider_child_pid"] == first.provider_child_pid
+    assert (
+        cut["provider_child_start_time_ticks"] == first.provider_child_start_time_ticks
+    )
 
 
 def test_crash_after_started_before_fence_ack_leaves_no_cut_record(
-    tmp_path: Path,
+    tmp_path: Path, start_at_fence: StartAtFence
 ) -> None:
-    processes = _start_started_cut_processes(tmp_path)
-    try:
-        _receive_fence_request(tmp_path)
-        os.killpg(processes.core.pid, signal.SIGKILL)
-        assert processes.core.wait(timeout=10) == -signal.SIGKILL
+    at_fence = start_at_fence(crash_before_fence_ack=True)
+    processes = at_fence.processes
+    assert processes.core.wait(timeout=10) == CORE_STARTED_BEFORE_FENCE_ACK_EXIT_CODE
 
-        assert not (tmp_path / "core-store" / "core-started-child.json").exists()
-        assert not (tmp_path / "core-store" / "core-started-cut.json").exists()
-        assert _rows(
-            tmp_path,
-            "SELECT COUNT(*), COUNT(DISTINCT runner_generation_id), "
-            "COUNT(DISTINCT runner_invocation_id) FROM agent_attempts",
-        ) == ((1, 1, 1),)
-        _runner_child_observation(processes.runner.pid)
-    finally:
-        _stop_started_cut_processes(processes)
+    assert not (tmp_path / "core-store" / "core-started-child.json").exists()
+    assert not (tmp_path / "core-store" / "core-started-cut.json").exists()
+    assert _rows(
+        tmp_path,
+        "SELECT COUNT(*), COUNT(DISTINCT runner_generation_id), "
+        "COUNT(DISTINCT runner_invocation_id) FROM agent_attempts",
+    ) == ((1, 1, 1),)
+    after_core_death = _runner_child_observation(processes.runner.pid)
+    assert _observation_identity(after_core_death) == _observation_identity(
+        at_fence.started_provider
+    )
+
+    restarted = _restart_core(tmp_path, processes)
+    reconnected_started = tmp_path / "core-store" / "core-reconnected-started.json"
+    _wait_for_file(reconnected_started)
+    after_reconnect = _runner_child_observation(processes.runner.pid)
+    assert _observation_identity(after_reconnect) == _observation_identity(
+        at_fence.started_provider
+    )
+    binding = _witness_binding(reconnected_started)
+    child_survival = tmp_path / "core-store" / "child-survival.json"
+    record_child_observation(
+        child_survival, "after-core-death", after_core_death, binding
+    )
+    record_child_observation(
+        child_survival, "after-core-restart", after_reconnect, binding
+    )
+    assert restarted.wait(timeout=10) == 0
+    assert processes.runner.wait(timeout=10) == 0
+    assert not (tmp_path / "core-store" / "core-started-cut.json").exists()
 
 
 def test_crash_after_fence_ack_before_cut_record_preserves_the_fenced_child(
-    tmp_path: Path,
+    tmp_path: Path, start_at_fence: StartAtFence
 ) -> None:
-    processes = _start_started_cut_processes(tmp_path, crash_after_fence_ack=True)
-    try:
-        _receive_fence_request(tmp_path)
-        started = _runner_child_observation(processes.runner.pid)
-        _acknowledge_fence(tmp_path, started)
-        assert processes.core.wait(timeout=10) == CORE_STARTED_CUT_EXIT_CODE
+    at_fence = start_at_fence(crash_after_fence_ack=True)
+    processes = at_fence.processes
+    _acknowledge_fence(tmp_path, at_fence.started_provider)
+    assert processes.core.wait(timeout=10) == CORE_STARTED_AFTER_FENCE_ACK_EXIT_CODE
 
-        assert json.loads(
-            (tmp_path / "core-store" / "core-started-child.json").read_text(
-                encoding="utf-8"
-            )
-        ) == asdict(started)
-        assert not (tmp_path / "core-store" / "core-started-cut.json").exists()
-        assert _rows(
-            tmp_path,
-            "SELECT COUNT(*), COUNT(DISTINCT runner_generation_id), "
-            "COUNT(DISTINCT runner_invocation_id) FROM agent_attempts",
-        ) == ((1, 1, 1),)
-        after_crash = _runner_child_observation(processes.runner.pid)
-        assert _observation_identity(after_crash) == _observation_identity(started)
-        assert after_crash.provider_child_state != "Z"
-    finally:
-        _stop_started_cut_processes(processes)
+    assert json.loads(
+        (tmp_path / "core-store" / "core-started-child.json").read_text(
+            encoding="utf-8"
+        )
+    ) == asdict(at_fence.started_provider)
+    assert not (tmp_path / "core-store" / "core-started-cut.json").exists()
+    assert _rows(
+        tmp_path,
+        "SELECT COUNT(*), COUNT(DISTINCT runner_generation_id), "
+        "COUNT(DISTINCT runner_invocation_id) FROM agent_attempts",
+    ) == ((1, 1, 1),)
+    after_crash = _runner_child_observation(processes.runner.pid)
+    assert _observation_identity(after_crash) == _observation_identity(
+        at_fence.started_provider
+    )
+    assert after_crash.provider_child_state != "Z"
 
 
 @pytest.mark.parametrize(

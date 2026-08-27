@@ -30,6 +30,7 @@ from tests.witness.runner_candidate_core import (
     _WITNESS_RECORD_FAMILY,
     _bootstrap,
     _fence_started_child,
+    _opened_cut_fifo,
     _read_witness_document,
     _require_exact_string_fields,
     _wait_for_reconnected_child_observation,
@@ -39,6 +40,8 @@ from tests.witness.runner_candidate_core import (
 from tests.witness.runner_candidate_issuer import write_candidate_manifest
 
 CORE_STARTED_CUT_EXIT_CODE = _CORE_STARTED_CUT_EXIT_CODE
+CORE_STARTED_BEFORE_FENCE_ACK_EXIT_CODE = 94
+CORE_STARTED_AFTER_FENCE_ACK_EXIT_CODE = 95
 _INVOCATION = RunnerInvocationId("runner-core-reconnect-invocation")
 
 
@@ -415,9 +418,18 @@ def _started_provider_identity(connection: socket.socket) -> ChildObservation:
     )
 
 
+def _request_started_child_fence(root: Path) -> None:
+    descriptor = _opened_cut_fifo(root / _CORE_STARTED_CUT_EVENT)
+    try:
+        os.write(descriptor, _CORE_STARTED_CUT_REQUEST)
+    finally:
+        os.close(descriptor)
+
+
 def _seed_and_crash(
     root: Path,
     connection_file_descriptor: int | None,
+    crash_before_fence_ack: bool,
     crash_after_fence_ack: bool,
 ) -> None:
     bootstrap = _bootstrap(
@@ -432,6 +444,9 @@ def _seed_and_crash(
     if connection_file_descriptor is not None:
         with socket.socket(fileno=connection_file_descriptor) as connection:
             _started_provider_identity(connection)
+            if crash_before_fence_ack:
+                _request_started_child_fence(root / "core-store")
+                os._exit(CORE_STARTED_BEFORE_FENCE_ACK_EXIT_CODE)
             started_child = ChildObservation(
                 **cast(
                     dict[str, str],
@@ -439,7 +454,7 @@ def _seed_and_crash(
                 )
             )
             if crash_after_fence_ack:
-                os._exit(CORE_STARTED_CUT_EXIT_CODE)
+                os._exit(CORE_STARTED_AFTER_FENCE_ACK_EXIT_CODE)
             _write_core_started_cut(
                 root / "core-store",
                 bootstrap.binding,
@@ -631,7 +646,9 @@ def main(arguments: list[str] | None = None) -> int:
         command.add_argument("--root", type=Path, required=True)
         command.add_argument("--connection", type=int)
         if name == "seed-and-crash":
-            command.add_argument("--crash-after-fence-ack", action="store_true")
+            crash_point = command.add_mutually_exclusive_group()
+            crash_point.add_argument("--crash-before-fence-ack", action="store_true")
+            crash_point.add_argument("--crash-after-fence-ack", action="store_true")
     observe = commands.add_parser("observe-child")
     observe.add_argument("--container", required=True)
     observe.add_argument("--lease-directory", type=Path, required=True)
@@ -665,6 +682,7 @@ def main(arguments: list[str] | None = None) -> int:
         _seed_and_crash(
             parsed.root,
             parsed.connection,
+            parsed.crash_before_fence_ack,
             parsed.crash_after_fence_ack,
         )
     elif parsed.command == "restart":
