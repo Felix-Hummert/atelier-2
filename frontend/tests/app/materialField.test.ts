@@ -268,6 +268,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
       listObservedQueueItems: vi.fn(async () => ({
         items: [
           { project_id: "atelier", tracker_item_reference: "gh:450", item_id: "1".repeat(64), revision: 0 },
+          { project_id: "atelier", tracker_item_reference: "gh:446", item_id: "3".repeat(64), revision: 0 },
           { project_id: "infra", tracker_item_reference: "gl:12", item_id: "2".repeat(64), revision: 0 }
         ],
         next_after: null
@@ -275,19 +276,21 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     });
     await openStart(cockpitApi);
 
-    const picker = screen.getByLabelText("Work item for work");
+    const picker = screen.getByRole("combobox", { name: "Work item for work" });
     const workItemOrderGroup = screen.getByRole("group", { name: "Work item" });
     expect(workItemOrderGroup.textContent).not.toContain(`work-item-schema@${WORK_ITEM_ORDER_SCHEMA_REVISION}`);
-    expect([...picker.querySelectorAll("optgroup")].map((group) => group.label)).toEqual([
-      "GitHub",
-      "GitLab"
-    ]);
-    expect(picker.querySelector('option[value="gh:450"]')?.textContent).toBe("GitHub · gh:450");
+    await fireEvent.click(picker);
+    expect(screen.getByText("atelier · GitHub")).toBeTruthy();
+    expect(screen.getByText("infra · GitLab")).toBeTruthy();
+    expect(screen.getByRole("option", { name: "#450" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "#446" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "!12" })).toBeTruthy();
+    expect(screen.queryByText("GitHub · gh:450")).toBeNull();
     expect(screen.queryByRole("note")).toBeNull();
     expect(screen.getByRole("group", { name: "Roles" })).toBeTruthy();
 
-    await fireEvent.change(picker, { target: { value: "gh:450" } });
-    expect((picker as HTMLSelectElement).selectedOptions[0]?.textContent).toBe("GitHub · gh:450");
+    await fireEvent.click(screen.getByRole("option", { name: "#450" }));
+    expect(picker.textContent).toContain("#450");
     await fireEvent.change(screen.getByLabelText("Configuration for cook"), {
       target: { value: configurationHash }
     });
@@ -310,15 +313,15 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     });
     await openStart(cockpitApi);
 
-    expect(screen.getByText("No source")).toBeTruthy();
+    expect(screen.getByText(workflowStartCopy.noSource)).toBeTruthy();
     await fireEvent.change(screen.getByLabelText("Configuration for cook"), {
       target: { value: configurationHash }
     });
-    const startRun = screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement;
+    const startRun = screen.getByRole("button", { name: workflowStartCopy.startRun }) as HTMLButtonElement;
     expect(startRun.disabled).toBe(true);
-    expect(startRun.title).toBe("Connect a source in Settings before starting.");
-    expect(screen.queryByText("Choose a work item before starting.")).toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(startRun.title).toBe(workflowStartCopy.startNeedsWorkItemSource);
+    expect(screen.queryByText(workflowStartCopy.startNeedsWorkItem)).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: workflowStartCopy.connectSource }));
     await waitFor(() => expect(window.location.pathname).toBe("/atelier/settings"));
   });
 

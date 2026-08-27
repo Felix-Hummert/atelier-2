@@ -226,8 +226,9 @@ unreachable platform, a payload its adapter refused -- and writes nothing;
 those three connection answers are published on the start door's own OpenAPI
 operation. Publishing the house schema is still the operator's own act, an item
 whose read is larger than the inline order bound is refused by that bound
-rather than published as an artifact, and no picker offers the items in a
-surface yet.
+rather than published as an artifact. The catalog start sheet offers those
+observed items as a picker; a run started there carries the observed revision
+as the order value.
 
 On 2026-08-19 at `ed6376b` this landing measured how many concurrent
 fake-executor runs one SQLite instance carries. The harness is in-process ASGI on one event loop,

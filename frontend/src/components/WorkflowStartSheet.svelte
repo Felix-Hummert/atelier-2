@@ -77,6 +77,7 @@
   let dialogElement: DialogElement;
   let closeButton: HTMLButtonElement;
   let opener: HTMLElement | null = null;
+  let openWorkItemOrder: string | null = null;
 
   $: roles = agentRolesOf(revision.graph);
   $: canStart =
@@ -395,15 +396,20 @@
     return value;
   }
 
-  function sourceOf(reference: string): string {
-    const prefix = reference.split(":", 1)[0] ?? "";
-    if (prefix === "gh") return "GitHub";
-    if (prefix === "gl") return "GitLab";
-    return prefix === "" ? workflowStartCopy.unknownSource : prefix;
+  function adapterGrammarLabel(reference: string): string {
+    if (reference.startsWith("gh:")) return `#${reference.slice(3)}`;
+    if (reference.startsWith("gl:")) return `!${reference.slice(3)}`;
+    return reference;
   }
 
-  function observedItemLabel(item: ObservedQueueItem): string {
-    return `${sourceOf(item.tracker_item_reference)} · ${item.tracker_item_reference}`;
+  function platformOf(reference: string): string {
+    if (reference.startsWith("gh:")) return "GitHub";
+    if (reference.startsWith("gl:")) return "GitLab";
+    return workflowStartCopy.unknownSource;
+  }
+
+  function observedGroupHeading(item: ObservedQueueItem): string {
+    return `${item.project_id} · ${platformOf(item.tracker_item_reference)}`;
   }
 
   function groupObservedItemsBySource(
@@ -411,12 +417,26 @@
   ): ReadonlyArray<readonly [string, readonly ObservedQueueItem[]]> {
     const grouped: Array<[string, ObservedQueueItem[]]> = [];
     for (const item of items) {
-      const source = sourceOf(item.tracker_item_reference);
-      const group = grouped.find(([candidate]) => candidate === source);
-      if (group === undefined) grouped.push([source, [item]]);
+      const heading = observedGroupHeading(item);
+      const group = grouped.find(([candidate]) => candidate === heading);
+      if (group === undefined) grouped.push([heading, [item]]);
       else group[1].push(item);
     }
     return grouped;
+  }
+
+  function selectedWorkItemLabel(order: OrderDraft): string {
+    const reference = order.values.work_item ?? "";
+    return reference.length === 0 ? workflowStartCopy.choose : adapterGrammarLabel(reference);
+  }
+
+  function toggleWorkItemPicker(orderName: string): void {
+    openWorkItemOrder = openWorkItemOrder === orderName ? null : orderName;
+  }
+
+  function chooseWorkItem(orderName: string, reference: string): void {
+    setOrderValue(orderName, "work_item", reference);
+    openWorkItemOrder = null;
   }
 
   function dismiss(): void {
@@ -435,7 +455,7 @@
     if (event.key !== "Tab") return;
     const focusable = Array.from(
       dialogElement.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), input:not([disabled]), select:not([disabled]), a[href]'
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), a[href], [role=option]:not(button)'
       )
     );
     const first = focusable[0];
@@ -527,38 +547,59 @@
             <legend>{order.name}</legend>
           {/if}
           {#if order.shape?.kind === "work_item"}
-            <label>
-              {workflowStartCopy.workItem}
+            <div class="work-item">
+              <span>{workflowStartCopy.workItem}</span>
               {#if observedItemsBySource.length === 0}
-                <span class="degraded">
-                  {workflowStartCopy.noSource}
+                <div class="degraded">
+                  <span>{workflowStartCopy.noSource}</span>
                   <button
                     type="button"
                     class="link"
-                    aria-label={workflowStartCopy.settings}
                     onclick={() => navigate("/atelier/settings")}
                   >
-                    {workflowStartCopy.settings}
+                    {workflowStartCopy.connectSource}
                   </button>
-                </span>
+                </div>
               {:else}
-                <select
+                <button
+                  type="button"
+                  class="picker-field"
+                  role="combobox"
+                  aria-haspopup="listbox"
+                  aria-expanded={openWorkItemOrder === order.name}
+                  aria-controls={`work-item-list-${order.name}`}
                   aria-label={`${workflowStartCopy.workItem} for ${order.name}`}
-                  value={order.values.work_item ?? ""}
                   disabled={starting}
-                  onchange={(event) => setOrderValue(order.name, "work_item", event.currentTarget.value)}
+                  onclick={() => toggleWorkItemPicker(order.name)}
                 >
-                  <option value="">{workflowStartCopy.choose}</option>
-                  {#each observedItemsBySource as [source, items] (source)}
-                    <optgroup label={source}>
+                  <span>{selectedWorkItemLabel(order)}</span>
+                  <span class="picker-caret" aria-hidden="true">{openWorkItemOrder === order.name ? "▴" : "▾"}</span>
+                </button>
+                {#if openWorkItemOrder === order.name}
+                  <div
+                    class="picker-menu"
+                    id={`work-item-list-${order.name}`}
+                    role="listbox"
+                  >
+                    {#each observedItemsBySource as [heading, items] (heading)}
+                      <div class="picker-group">{heading}</div>
                       {#each items as item (item.item_id)}
-                        <option value={item.tracker_item_reference}>{observedItemLabel(item)}</option>
+                        <button
+                          type="button"
+                          class="picker-option"
+                          class:selected={(order.values.work_item ?? "") === item.tracker_item_reference}
+                          role="option"
+                          aria-selected={(order.values.work_item ?? "") === item.tracker_item_reference}
+                          onclick={() => chooseWorkItem(order.name, item.tracker_item_reference)}
+                        >
+                          {adapterGrammarLabel(item.tracker_item_reference)}
+                        </button>
                       {/each}
-                    </optgroup>
-                  {/each}
-                </select>
+                    {/each}
+                  </div>
+                {/if}
               {/if}
-            </label>
+            </div>
           {:else if order.shape?.kind === "inline_object"}
             {#each order.resource?.summary.fields ?? [] as field (field.name)}
               <label>
@@ -669,6 +710,13 @@
   .failure { color: var(--signal-failure); }
   .degraded { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); border: 1px dashed var(--signal-attention); padding: var(--space-2); color: var(--signal-attention); }
   .link { min-height: var(--tap); border: 0; background: transparent; color: var(--ink); font: inherit; font-weight: var(--weight-strong); text-decoration: underline; }
+  .work-item { display: grid; gap: var(--space-1); }
+  .picker-field { display: flex; width: 100%; justify-content: space-between; gap: var(--space-2); background: var(--panel2); border-color: var(--line); font-weight: var(--weight-medium); text-align: left; }
+  .picker-caret { color: var(--ink-dim); }
+  .picker-menu { border: var(--edge) solid var(--line); border-radius: var(--r); background: var(--panel2); padding: var(--space-1) 0; }
+  .picker-group { padding: var(--space-1) var(--space-3); color: var(--ink-dim); font-size: var(--text-2xs); font-weight: var(--weight-heavy); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+  .picker-option { display: flex; width: 100%; justify-content: flex-start; border: 0; border-radius: 0; background: transparent; font-weight: var(--weight-medium); padding: var(--space-2) var(--space-3) var(--space-2) var(--space-5); text-align: left; }
+  .picker-option.selected { background: var(--chip); }
   .role-configurations { border-color: var(--ink); margin: var(--space-5) 0; padding: var(--space-3); }
   .role-configurations legend { color: var(--ink); font-weight: var(--weight-strong); padding: 0 var(--space-1); }
   .role-row { margin: var(--space-4) 0; }
