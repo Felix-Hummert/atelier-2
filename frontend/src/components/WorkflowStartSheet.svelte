@@ -77,6 +77,9 @@
   let dialogElement: DialogElement;
   let closeButton: HTMLButtonElement;
   let opener: HTMLElement | null = null;
+  let openWorkItemOrder: string | null = null;
+  let activeWorkItemId: string | null = null;
+  let suppressDialogCancel = false;
 
   $: roles = agentRolesOf(revision.graph);
   $: canStart =
@@ -395,15 +398,20 @@
     return value;
   }
 
-  function sourceOf(reference: string): string {
-    const prefix = reference.split(":", 1)[0] ?? "";
-    if (prefix === "gh") return "GitHub";
-    if (prefix === "gl") return "GitLab";
-    return prefix === "" ? workflowStartCopy.unknownSource : prefix;
+  function adapterGrammarLabel(reference: string): string {
+    if (reference.startsWith("gh:")) return `#${reference.slice(3)}`;
+    if (reference.startsWith("gl:")) return `!${reference.slice(3)}`;
+    return reference;
   }
 
-  function observedItemLabel(item: ObservedQueueItem): string {
-    return `${sourceOf(item.tracker_item_reference)} · ${item.tracker_item_reference}`;
+  function platformOf(reference: string): string {
+    if (reference.startsWith("gh:")) return "GitHub";
+    if (reference.startsWith("gl:")) return "GitLab";
+    return workflowStartCopy.unknownSource;
+  }
+
+  function observedGroupHeading(item: ObservedQueueItem): string {
+    return `${item.project_id} · ${platformOf(item.tracker_item_reference)}`;
   }
 
   function groupObservedItemsBySource(
@@ -411,12 +419,97 @@
   ): ReadonlyArray<readonly [string, readonly ObservedQueueItem[]]> {
     const grouped: Array<[string, ObservedQueueItem[]]> = [];
     for (const item of items) {
-      const source = sourceOf(item.tracker_item_reference);
-      const group = grouped.find(([candidate]) => candidate === source);
-      if (group === undefined) grouped.push([source, [item]]);
+      const heading = observedGroupHeading(item);
+      const group = grouped.find(([candidate]) => candidate === heading);
+      if (group === undefined) grouped.push([heading, [item]]);
       else group[1].push(item);
     }
     return grouped;
+  }
+
+  function selectedWorkItemLabel(order: OrderDraft): string {
+    const reference = order.values.work_item ?? "";
+    return reference.length === 0 ? workflowStartCopy.choose : adapterGrammarLabel(reference);
+  }
+
+  function workItemListName(orderName: string): string {
+    return `${workflowStartCopy.workItem} for ${orderName}`;
+  }
+
+  function workItemOptionId(orderName: string, itemId: string): string {
+    return `work-item-option-${orderName}-${itemId}`;
+  }
+
+  function flattenedObservedItems(): readonly ObservedQueueItem[] {
+    return observedItemsBySource.flatMap(([, items]) => items);
+  }
+
+  function closeWorkItemPicker(): void {
+    openWorkItemOrder = null;
+    activeWorkItemId = null;
+  }
+
+  function openWorkItemPicker(orderName: string, preferEnd = false): void {
+    const items = flattenedObservedItems();
+    if (items.length === 0) return;
+    const selected = orders.find((order) => order.name === orderName)?.values.work_item ?? "";
+    const selectedItem = items.find((item) => item.tracker_item_reference === selected);
+    openWorkItemOrder = orderName;
+    activeWorkItemId = selectedItem?.item_id
+      ?? (preferEnd ? items.at(-1)?.item_id : items[0]?.item_id)
+      ?? null;
+  }
+
+  function toggleWorkItemPicker(orderName: string): void {
+    if (openWorkItemOrder === orderName) closeWorkItemPicker();
+    else openWorkItemPicker(orderName);
+  }
+
+  function moveActiveWorkItem(orderName: string, delta: number): void {
+    const items = flattenedObservedItems();
+    if (items.length === 0) return;
+    if (openWorkItemOrder !== orderName) {
+      openWorkItemPicker(orderName, delta < 0);
+      return;
+    }
+    const current = items.findIndex((item) => item.item_id === activeWorkItemId);
+    const start = current === -1 ? (delta > 0 ? -1 : items.length) : current;
+    activeWorkItemId = items[Math.max(0, Math.min(items.length - 1, start + delta))]!.item_id;
+  }
+
+  function chooseWorkItem(orderName: string, reference: string): void {
+    setOrderValue(orderName, "work_item", reference);
+    closeWorkItemPicker();
+  }
+
+  function chooseActiveWorkItem(orderName: string): void {
+    const item = flattenedObservedItems().find((candidate) => candidate.item_id === activeWorkItemId);
+    if (item === undefined) return;
+    chooseWorkItem(orderName, item.tracker_item_reference);
+  }
+
+  function handleWorkItemPickerKey(orderName: string, event: KeyboardEvent): void {
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        moveActiveWorkItem(orderName, 1);
+        return;
+      case "ArrowUp":
+        event.preventDefault();
+        moveActiveWorkItem(orderName, -1);
+        return;
+      case "Enter":
+      case " ":
+        event.preventDefault();
+        if (openWorkItemOrder === orderName) chooseActiveWorkItem(orderName);
+        else openWorkItemPicker(orderName);
+        return;
+      case "Tab":
+        if (openWorkItemOrder === orderName) closeWorkItemPicker();
+        return;
+      default:
+        return;
+    }
   }
 
   function dismiss(): void {
@@ -426,16 +519,31 @@
     globalThis.queueMicrotask(() => opener?.focus());
   }
 
+  function handleDialogCancel(event: Event): void {
+    if (openWorkItemOrder !== null || suppressDialogCancel) {
+      event.preventDefault();
+      suppressDialogCancel = false;
+      closeWorkItemPicker();
+      return;
+    }
+    dismiss();
+  }
+
   function containDialogFocus(event: KeyboardEvent): void {
     if (event.key === "Escape") {
       event.preventDefault();
+      if (openWorkItemOrder !== null || suppressDialogCancel) {
+        suppressDialogCancel = true;
+        closeWorkItemPicker();
+        return;
+      }
       dismiss();
       return;
     }
     if (event.key !== "Tab") return;
     const focusable = Array.from(
       dialogElement.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), input:not([disabled]), select:not([disabled]), a[href]'
+        'button:not([disabled]):not([role="option"]), input:not([disabled]), select:not([disabled]), a[href]'
       )
     );
     const first = focusable[0];
@@ -510,7 +618,7 @@
     class="sheet"
     aria-labelledby="start-sheet-title"
     onkeydown={containDialogFocus}
-    oncancel={dismiss}
+    oncancel={handleDialogCancel}
   >
     <header>
       <h2 id="start-sheet-title">Start {workflowName}</h2>
@@ -527,38 +635,69 @@
             <legend>{order.name}</legend>
           {/if}
           {#if order.shape?.kind === "work_item"}
-            <label>
-              {workflowStartCopy.workItem}
+            <div class="work-item">
+              <span>{workflowStartCopy.workItem}</span>
               {#if observedItemsBySource.length === 0}
-                <span class="degraded">
-                  {workflowStartCopy.noSource}
+                <div class="degraded">
+                  <span>{workflowStartCopy.noSource}</span>
                   <button
                     type="button"
                     class="link"
-                    aria-label={workflowStartCopy.settings}
                     onclick={() => navigate("/atelier/settings")}
                   >
-                    {workflowStartCopy.settings}
+                    {workflowStartCopy.connectSource}
                   </button>
-                </span>
+                </div>
               {:else}
-                <select
-                  aria-label={`${workflowStartCopy.workItem} for ${order.name}`}
-                  value={order.values.work_item ?? ""}
+                <button
+                  type="button"
+                  class="picker-field"
+                  role="combobox"
+                  aria-haspopup="listbox"
+                  aria-autocomplete="none"
+                  aria-expanded={openWorkItemOrder === order.name}
+                  aria-controls={`work-item-list-${order.name}`}
+                  aria-activedescendant={openWorkItemOrder === order.name && activeWorkItemId !== null
+                    ? workItemOptionId(order.name, activeWorkItemId)
+                    : undefined}
+                  aria-label={workItemListName(order.name)}
                   disabled={starting}
-                  onchange={(event) => setOrderValue(order.name, "work_item", event.currentTarget.value)}
+                  onclick={() => toggleWorkItemPicker(order.name)}
+                  onkeydown={(event) => handleWorkItemPickerKey(order.name, event)}
                 >
-                  <option value="">{workflowStartCopy.choose}</option>
-                  {#each observedItemsBySource as [source, items] (source)}
-                    <optgroup label={source}>
+                  <span>{selectedWorkItemLabel(order)}</span>
+                  <span class="picker-caret" aria-hidden="true">{openWorkItemOrder === order.name ? "▴" : "▾"}</span>
+                </button>
+                {#if openWorkItemOrder === order.name}
+                  <div
+                    class="picker-menu"
+                    id={`work-item-list-${order.name}`}
+                    role="listbox"
+                    aria-label={workItemListName(order.name)}
+                  >
+                    {#each observedItemsBySource as [heading, items] (heading)}
+                      <div class="picker-group">{heading}</div>
                       {#each items as item (item.item_id)}
-                        <option value={item.tracker_item_reference}>{observedItemLabel(item)}</option>
+                        <button
+                          type="button"
+                          class="picker-option"
+                          class:selected={(order.values.work_item ?? "") === item.tracker_item_reference}
+                          class:active={activeWorkItemId === item.item_id}
+                          id={workItemOptionId(order.name, item.item_id)}
+                          tabindex="-1"
+                          role="option"
+                          aria-selected={(order.values.work_item ?? "") === item.tracker_item_reference}
+                          onmousedown={(event) => event.preventDefault()}
+                          onclick={() => chooseWorkItem(order.name, item.tracker_item_reference)}
+                        >
+                          {adapterGrammarLabel(item.tracker_item_reference)}
+                        </button>
                       {/each}
-                    </optgroup>
-                  {/each}
-                </select>
+                    {/each}
+                  </div>
+                {/if}
               {/if}
-            </label>
+            </div>
           {:else if order.shape?.kind === "inline_object"}
             {#each order.resource?.summary.fields ?? [] as field (field.name)}
               <label>
@@ -669,6 +808,14 @@
   .failure { color: var(--signal-failure); }
   .degraded { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); border: 1px dashed var(--signal-attention); padding: var(--space-2); color: var(--signal-attention); }
   .link { min-height: var(--tap); border: 0; background: transparent; color: var(--ink); font: inherit; font-weight: var(--weight-strong); text-decoration: underline; }
+  .work-item { display: grid; gap: var(--space-1); }
+  .picker-field { display: flex; width: 100%; justify-content: space-between; gap: var(--space-2); background: var(--panel2); border-color: var(--line); font-weight: var(--weight-medium); text-align: left; }
+  .picker-caret { color: var(--ink-dim); }
+  .picker-menu { border: var(--edge) solid var(--line); border-radius: var(--r); background: var(--panel2); padding: var(--space-1) 0; }
+  .picker-group { padding: var(--space-1) var(--space-3); color: var(--ink-dim); font-size: var(--text-2xs); font-weight: var(--weight-heavy); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+  .picker-option { display: flex; width: 100%; justify-content: flex-start; border: 0; border-radius: 0; background: transparent; font-weight: var(--weight-medium); padding: var(--space-2) var(--space-3) var(--space-2) var(--space-5); text-align: left; }
+  .picker-option.selected { background: var(--chip); }
+  .picker-option.active { outline: var(--edge) solid var(--ink); outline-offset: calc(-1 * var(--edge)); }
   .role-configurations { border-color: var(--ink); margin: var(--space-5) 0; padding: var(--space-3); }
   .role-configurations legend { color: var(--ink); font-weight: var(--weight-strong); padding: 0 var(--space-1); }
   .role-row { margin: var(--space-4) 0; }
