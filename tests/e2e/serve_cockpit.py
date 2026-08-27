@@ -21,7 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import sqlalchemy as sa
 import uvicorn
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from fastapi import FastAPI
+from starlette.types import ASGIApp, Lifespan, Message, Receive, Scope, Send
 
 from atelier2.adapters.dbos import workflow as dbos_workflow
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
@@ -29,6 +30,8 @@ from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.context import ApiContext, ApiPorts
+from atelier2.api.limits import ApiLimits
+from atelier2.api.stream import EventPollBackoff
 from atelier2.application.model_configuration import (
     ModelRegistryPublished,
     ModelRegistryUnchanged,
@@ -1103,13 +1106,28 @@ def main() -> None:
 
     original_create_app = serving.create_app
 
-    def create_app_with_fixture_tracker(**kwargs: object) -> object:
-        ports = kwargs["ports"]
-        if not isinstance(ports, ApiPorts):
-            raise TypeError("e2e compose expected ApiPorts")
+    def create_app_with_fixture_tracker(
+        *,
+        source_commit: str,
+        source_tree: str,
+        ports: ApiPorts,
+        limits: ApiLimits,
+        event_poll_backoff: EventPollBackoff,
+        frontend_dist: Path | None = None,
+        served_project_id: ProjectId | None = None,
+        lifespan: Lifespan[FastAPI] | None = None,
+    ) -> FastAPI:
         seeded = replace(ports, tracker_item_source=FixtureTracker())
-        kwargs["ports"] = seeded
-        app = original_create_app(**kwargs)
+        app = original_create_app(
+            source_commit=source_commit,
+            source_tree=source_tree,
+            ports=seeded,
+            limits=limits,
+            event_poll_backoff=event_poll_backoff,
+            frontend_dist=frontend_dist,
+            served_project_id=served_project_id,
+            lifespan=lifespan,
+        )
         observed = seeded.queue_projection.observe((_E2E_WORK_ITEM,))
         if not isinstance(observed, QueueItemsObserved):
             raise TypeError(
