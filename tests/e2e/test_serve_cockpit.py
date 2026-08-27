@@ -494,6 +494,90 @@ def test_a_decode_that_starts_after_drain_observes_idle_is_rejected_before_scrat
     assert not created_root.exists()
 
 
+def test_a_stale_generation_decode_admitted_late_must_not_touch_the_removed_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    gen1 = tmp_path / "generation-1"
+    gen2 = tmp_path / "generation-2"
+    roots = iter((gen1, gen2))
+
+    def fake_mkdtemp(prefix: str) -> str:
+        path = next(roots)
+        path.mkdir()
+        return str(path)
+
+    monkeypatch.setattr(harness.tempfile, "mkdtemp", fake_mkdtemp)
+    scratch_root = harness.BrowserScratchRoot.create()
+    runtime = ClosingRuntime(scratch_root.path)
+    holds = harness.FakeProviderHolds()
+    factory = harness.HeldAgentExecutorFactory(
+        "e2e-v3-held", "held/v1", "e2e-held-process", b'"V3 provider bytes"', holds
+    )
+    executor = factory.open()
+    executor.requests.append(SimpleNamespace(run_id=SimpleNamespace(value="stale-run")))
+    decode_body = executor.decoder
+    touched: list[str] = []
+
+    def touch_removed_root(completion: object) -> object:
+        gen1.mkdir(exist_ok=True)
+        (gen1 / "stale-decode").write_text("touched")
+        touched.append("decoded")
+        return decode_body(completion)
+
+    executor.decoder = touch_removed_root
+    entered = threading.Event()
+    proceed = threading.Event()
+    original_decode = executor.decode_process_completion
+
+    def delay_before_admission(invocation: object, completion: object) -> object:
+        entered.set()
+        if not proceed.wait(harness.TIMEOUT_SECONDS):
+            raise RuntimeError("stale decode was not resumed")
+        return original_decode(invocation, completion)
+
+    executor.decode_process_completion = delay_before_admission
+    outcome: list[RuntimeError | None] = []
+
+    def run_decode() -> None:
+        try:
+            executor.decode_process_completion(
+                SimpleNamespace(),
+                harness.AgentProcessCompletion(0, b'"V3 provider bytes"', b""),
+            )
+        except RuntimeError as error:
+            outcome.append(error)
+            return
+        outcome.append(None)
+
+    decoder_thread = threading.Thread(target=run_decode)
+    next_root = None
+    decoder_thread.start()
+    try:
+        assert entered.wait(harness.TIMEOUT_SECONDS)
+        harness.drain_inflight_fake_decodes(holds)
+        runtime.close()
+        holds.start_generation()
+        next_root = harness.replace_closed_generation_scratch_root(scratch_root)
+        assert not gen1.exists()
+        proceed.set()
+        decoder_thread.join(timeout=harness.TIMEOUT_SECONDS)
+        assert not decoder_thread.is_alive()
+        assert len(outcome) == 1
+        assert isinstance(outcome[0], RuntimeError)
+        assert "stale generation" in str(outcome[0])
+        assert touched == []
+        assert not gen1.exists()
+        assert gen2.is_dir()
+        assert list(gen2.iterdir()) == []
+    finally:
+        proceed.set()
+        holds.release_all()
+        if decoder_thread.is_alive():
+            decoder_thread.join(timeout=harness.TIMEOUT_SECONDS)
+        if next_root is not None:
+            next_root.close()
+
+
 def test_a_reset_recompose_opens_the_next_runtime_on_a_fresh_scratch_root(
     tmp_path: Path,
 ) -> None:

@@ -184,13 +184,16 @@ def close_runtime_and_scratch_root(
 
 
 class FakeProviderHolds:
-    """Tracks in-flight fake provider decodes across a served generation.
+    """Tracks in-flight fake provider decodes bound to one served generation.
 
     Delayed, held, and blocking executors wait on a release signal instead of
-    sleeping. Drain sets that signal, seals admission under the same lock that
-    tracks in-flight count, then blocks until every already-admitted decode has
-    returned. A decode that arrives after the seal is rejected, so
-    `wait_until_idle` cannot observe zero and still race a later admission.
+    sleeping. Drain sets that signal, seals the live generation under the same
+    lock that tracks in-flight count, then blocks until every already-admitted
+    decode has returned. Each executor captures the live generation token when
+    it is created; admission refuses when that token is not the live generation
+    or when that generation is already sealed. start_generation mints a new
+    token and does not unseal the previous one, so a decode delayed before the
+    admission lock cannot enter after the old scratch root is removed.
     DBOS shutdown only waits one second for workflows and then
     ThreadPoolExecutor.shutdown(wait=False), so closing the runtime or
     removing the scratch root before those decodes finish still races a live
@@ -202,15 +205,19 @@ class FakeProviderHolds:
         self._idle = threading.Condition(self._lock)
         self._released = threading.Event()
         self._inflight = 0
-        self._sealed = False
+        self._generation: object = object()
+        self._sealed_generation: object | None = None
 
-    def current(self) -> threading.Event:
-        return self._released
+    def bind_decode(self) -> tuple[object, threading.Event]:
+        with self._lock:
+            return self._generation, self._released
 
     @contextmanager
-    def in_flight(self) -> Iterator[None]:
+    def in_flight(self, generation: object) -> Iterator[None]:
         with self._lock:
-            if self._sealed:
+            if generation is not self._generation:
+                raise RuntimeError("cannot admit a fake decode from a stale generation")
+            if generation is self._sealed_generation:
                 raise RuntimeError(
                     "cannot admit a fake decode after this generation was sealed"
                 )
@@ -228,7 +235,7 @@ class FakeProviderHolds:
     def wait_until_idle(self, timeout: float = TIMEOUT_SECONDS) -> None:
         deadline = time.monotonic() + timeout
         with self._lock:
-            self._sealed = True
+            self._sealed_generation = self._generation
             while self._inflight > 0:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -244,7 +251,7 @@ class FakeProviderHolds:
                     "cannot start a generation while "
                     f"{self._inflight} fake decode(s) are still in flight"
                 )
-            self._sealed = False
+            self._generation = object()
             self._released = threading.Event()
 
 
@@ -287,11 +294,13 @@ class BlockingAgentExecutor(RecordingAgentExecutorV2):
         name: str,
         release: threading.Event,
         owner: BlockingAgentExecutorFactory,
+        generation: object | None,
     ) -> None:
         super().__init__(output, requests, lifecycle, name)
         self.observed = threading.Event()
         self.release = release
         self.owner = owner
+        self._generation = generation
 
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
@@ -300,7 +309,7 @@ class BlockingAgentExecutor(RecordingAgentExecutorV2):
             return super().decode_process_completion(invocation, completion)
         self.owner.observed_executor = self
         tracking = (
-            self.owner.holds.in_flight()
+            self.owner.holds.in_flight(self._generation)
             if self.owner.holds is not None
             else nullcontext()
         )
@@ -337,8 +346,17 @@ class BlockingAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
     def open(self) -> RecordingAgentExecutorV2:
         self.opens += 1
         self.lifecycle.append(f"open:{self.provider}")
+        generation: object | None = None
+        if self.holds is not None:
+            generation, _ = self.holds.bind_decode()
         self.opened = BlockingAgentExecutor(
-            self.output, [], self.lifecycle, self.provider, threading.Event(), self
+            self.output,
+            [],
+            self.lifecycle,
+            self.provider,
+            threading.Event(),
+            self,
+            generation,
         )
         return self.opened
 
@@ -373,7 +391,7 @@ class DelayedAgentExecutor(RecordingAgentExecutorV2):
     ) -> None:
         super().__init__(output, requests, lifecycle, name)
         self._holds = holds
-        self._released = holds.current()
+        self._generation, self._released = holds.bind_decode()
         self.holding = threading.Event()
 
     def decode_process_completion(
@@ -381,7 +399,7 @@ class DelayedAgentExecutor(RecordingAgentExecutorV2):
     ) -> AgentExecutionResult | AgentExecutionFailure:
         if self.requests[-1].run_id.value == MODEL_VALIDATION_RUN_ID:
             return super().decode_process_completion(invocation, completion)
-        with self._holds.in_flight():
+        with self._holds.in_flight(self._generation):
             self.holding.set()
             self._released.wait(DELAYED_ATTEMPT_SECONDS)
             return super().decode_process_completion(invocation, completion)
@@ -427,7 +445,7 @@ class HeldAgentExecutor(RecordingAgentExecutorV2):
     ) -> None:
         super().__init__(output, requests, lifecycle, name)
         self._holds = holds
-        self._released = holds.current()
+        self._generation, self._released = holds.bind_decode()
         self.holding = threading.Event()
 
     def decode_process_completion(
@@ -435,7 +453,7 @@ class HeldAgentExecutor(RecordingAgentExecutorV2):
     ) -> AgentExecutionResult | AgentExecutionFailure:
         if self.requests[-1].run_id.value == MODEL_VALIDATION_RUN_ID:
             return super().decode_process_completion(invocation, completion)
-        with self._holds.in_flight():
+        with self._holds.in_flight(self._generation):
             self.holding.set()
             self._released.wait(HELD_ATTEMPT_SECONDS)
             return super().decode_process_completion(invocation, completion)
