@@ -1112,7 +1112,7 @@ def main() -> None:
         app = original_create_app(**kwargs)
         observed = seeded.queue_projection.observe((_E2E_WORK_ITEM,))
         if not isinstance(observed, QueueItemsObserved):
-            raise RuntimeError(
+            raise TypeError(
                 f"e2e work-item fixture did not land on the queue: {observed!r}"
             )
         return app
