@@ -11,6 +11,7 @@ import sqlalchemy as sa
 from sqlglot import Expr, exp, parse_one
 
 from atelier2.adapters.dbos import schema
+from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.agent_attempts import (
     AGENT_ATTEMPT_ORDINAL,
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
@@ -385,7 +386,9 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "agent_receipts_v2.auth_mode": _values(AuthMode),
     "auth_profile_revisions.auth_mode": _values(AuthMode),
     "effect_intents.state": _values(EffectIntentState),
+    "effect_intents.operation_name": _values(AdapterOperationName),
     "effect_receipts.confirmation_source": _values(ConfirmationSource),
+    "effect_receipts.operation_name": _values(AdapterOperationName),
     # An operator determination is a decision, and UNKNOWN is what a readback
     # reports when no source can decide yet, so no command may ever persist it.
     "reconcile_commands.determination": _values(EffectOutcome)
@@ -401,10 +404,13 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "published_revisions.kind": _values(RevisionKind),
     # A tool redemption is the exec-shaped record -- a command, an exit code, a
     # hash of what it said -- so only an exec-shaped capability ever lands here.
-    # OPEN_PR is redeemed as a platform effect and answers with an
-    # EffectReceipt, so it belongs to effect_receipts and never to this column.
+    # Both external effects answer with an EffectReceipt, so neither belongs to
+    # this exec-shaped column.
     "tool_redemptions.capability": _values(ToolGrantCapability)
-    - {ToolGrantCapability.OPEN_PR.value},
+    - {
+        ToolGrantCapability.OPEN_PR.value,
+        ToolGrantCapability.PUSH_ATELIER_COMMIT.value,
+    },
     "catalog_lineages.kind": _values(RevisionKind),
     "catalog_lineage_retirements.state": _values(CatalogRetirementState),
     "queue_items.state": _values(QueueItemState),

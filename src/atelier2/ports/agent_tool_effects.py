@@ -97,6 +97,8 @@ def redeem_prepared_tool_effect(
         return AgentToolEffectPending(readback)
     if isinstance(readback, EffectAbsence):
         performed = adapter.execute(prepared_intent)
+        if isinstance(performed, EffectUnknownOutcome):
+            return AgentToolEffectPending(performed)
         return AgentToolEffectDelivered(
             EffectReceipt(
                 intent=prepared_intent,

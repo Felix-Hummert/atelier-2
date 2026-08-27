@@ -579,7 +579,7 @@ def test_run_event_answer_and_action_receipt_bindings_are_immutable_and_composit
             sa.text(
                 "INSERT INTO effect_intents VALUES "
                 "('key','run-1',:request,:request_hash,:revision,'adapter',"
-                "'destination','operation','CONFIRMED',1,NULL)"
+                "'destination','operation','open-pr','CONFIRMED',1,NULL)"
             ),
             {
                 "request": b"draft-17",
@@ -591,7 +591,7 @@ def test_run_event_answer_and_action_receipt_bindings_are_immutable_and_composit
             sa.text(
                 "INSERT INTO effect_receipts VALUES "
                 "('key','run-1',:request,:request_hash,:revision,'adapter',"
-                "'destination','operation','effect',:result,:result_hash,"
+                "'destination','operation','open-pr','effect',:result,:result_hash,"
                 "'ADAPTER_EXECUTION',NULL,NULL,NULL,NULL,NULL)"
             ),
             {
@@ -686,7 +686,7 @@ def test_run_event_schema_receipt_binding_matrix(tmp_path: Path) -> None:
             sa.text(
                 "INSERT INTO effect_intents VALUES "
                 "('key','run-1',:result,:result_hash,:revision,'adapter',"
-                "'destination','operation','CONFIRMED',1,NULL)"
+                "'destination','operation','open-pr','CONFIRMED',1,NULL)"
             ),
             {"result": result, "result_hash": result_hash, "revision": revision},
         )
@@ -694,7 +694,7 @@ def test_run_event_schema_receipt_binding_matrix(tmp_path: Path) -> None:
             sa.text(
                 "INSERT INTO effect_receipts VALUES "
                 "('key','run-1',:result,:result_hash,:revision,'adapter',"
-                "'destination','operation','effect',:result,:result_hash,"
+                "'destination','operation','open-pr','effect',:result,:result_hash,"
                 "'ADAPTER_EXECUTION',NULL,NULL,NULL,NULL,NULL)"
             ),
             {"result": result, "result_hash": result_hash, "revision": revision},
@@ -817,7 +817,7 @@ def test_composite_foreign_keys_reject_individually_valid_cross_bindings(
                 sa.text(
                     "INSERT INTO effect_intents VALUES "
                     "(:key,:run,:payload,:payload_hash,:revision,'adapter',"
-                    "'destination','operation','CONFIRMED',1,NULL)"
+                    "'destination','operation','open-pr','CONFIRMED',1,NULL)"
                 ),
                 {
                     "key": f"key-{index}",
@@ -831,7 +831,7 @@ def test_composite_foreign_keys_reject_individually_valid_cross_bindings(
                 sa.text(
                     "INSERT INTO effect_receipts VALUES "
                     "(:key,:run,:payload,:payload_hash,:revision,'adapter',"
-                    "'destination','operation',:effect,:payload,:payload_hash,"
+                    "'destination','operation','open-pr',:effect,:payload,:payload_hash,"
                     "'ADAPTER_EXECUTION',NULL,NULL,NULL,NULL,NULL)"
                 ),
                 {
@@ -847,7 +847,7 @@ def test_composite_foreign_keys_reject_individually_valid_cross_bindings(
             sa.text(
                 "INSERT INTO effect_intents VALUES "
                 "('key-3','run-1',:payload,:payload_hash,:revision,'adapter',"
-                "'destination','operation','CONFIRMED',1,NULL)"
+                "'destination','operation','open-pr','CONFIRMED',1,NULL)"
             ),
             {
                 "payload": payload,
@@ -883,7 +883,7 @@ def test_composite_foreign_keys_reject_individually_valid_cross_bindings(
             sa.text(
                 "INSERT INTO effect_intents VALUES "
                 "('wrong-revision','run-2',:payload,:payload_hash,:revision,'adapter',"
-                "'destination','operation','PREPARED',0,NULL)"
+                "'destination','operation','open-pr','PREPARED',0,NULL)"
             ),
             {
                 "payload": payload,
@@ -898,7 +898,7 @@ def test_composite_foreign_keys_reject_individually_valid_cross_bindings(
             sa.text(
                 "INSERT INTO effect_receipts VALUES "
                 "('key-3','run-2',:payload,:payload_hash,:revision,'adapter',"
-                "'destination','operation','effect-3',:payload,:payload_hash,"
+                "'destination','operation','open-pr','effect-3',:payload,:payload_hash,"
                 "'ADAPTER_EXECUTION',NULL,NULL,NULL,NULL,NULL)"
             ),
             {

@@ -11,9 +11,10 @@
   import {
     catalogAgentRows,
     catalogRowFacts,
-    catalogWorkflowRows,
+    catalogWorkflowTiles,
     type CatalogAgentRow,
-    type CatalogWorkflowRow
+    type CatalogWorkflowRow,
+    type CatalogWorkflowTiles
   } from "../lib/catalogRows";
   import { onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
@@ -36,8 +37,8 @@
     | { kind: "incomplete"; title: string };
   type CatalogGroup = "all" | "workflows" | "agents" | "skills";
 
-  let workflows: RetainedRead<CatalogWorkflowRow[], ReadFailure> =
-    retainedRead<CatalogWorkflowRow[], ReadFailure>();
+  let workflows: RetainedRead<CatalogWorkflowTiles, ReadFailure> =
+    retainedRead<CatalogWorkflowTiles, ReadFailure>();
   let agents: RetainedRead<CatalogAgentRow[], ReadFailure> =
     retainedRead<CatalogAgentRow[], ReadFailure>();
   type ImportResult = {
@@ -58,8 +59,14 @@
   let activeGroup: CatalogGroup = "all";
   let search = "";
 
-  $: workflowRows = workflows.confirmed ?? [];
+  $: workflowTiles = workflows.confirmed;
+  $: workflowRows = workflowTiles?.rows ?? [];
   $: agentRows = agents.confirmed ?? [];
+  $: catalogGroupsReady =
+    workflows.confirmed !== null &&
+    workflows.request.state !== "loading" &&
+    agents.confirmed !== null &&
+    agents.request.state !== "loading";
   $: hasCatalogEntries = workflowRows.length + agentRows.length > 0;
   $: matchingWorkflows = catalogMatches(workflowRows, search);
   $: matchingAgents = catalogMatches(agentRows, search);
@@ -109,7 +116,7 @@
       workflows = confirmRead(
         workflows,
         begun.generation,
-        catalogWorkflowRows(reading.revisions, catalogByName)
+        catalogWorkflowTiles(reading.revisions, catalogByName)
       );
     } catch {
       workflows = failRead(workflows, begun.generation, {
@@ -242,15 +249,15 @@
     );
   }
 
-  function catalogGroupChoices(): readonly {
+  function catalogGroupChoices(workflowCount: number, agentCount: number): readonly {
     group: CatalogGroup;
     label: string;
     count: number | null;
   }[] {
     return [
       { group: "all", label: catalogPageCopy.all, count: null },
-      { group: "workflows", label: catalogPageCopy.workflowsTitle, count: workflowRows.length },
-      { group: "agents", label: catalogPageCopy.agentsTitle, count: agentRows.length },
+      { group: "workflows", label: catalogPageCopy.workflowsTitle, count: workflowCount },
+      { group: "agents", label: catalogPageCopy.agentsTitle, count: agentCount },
       { group: "skills", label: catalogPageCopy.skillsTitle, count: 0 }
     ];
   }
@@ -281,18 +288,20 @@
   <ReadState read={agents} label="agents" onRetry={() => { void loadAgents(); }} />
 
   {#if hasCatalogEntries}
-    <div class="catalog-filters" role="group" aria-label={wrapDisplayCopy(catalogPageCopy.catalogGroups)}>
-      {#each catalogGroupChoices() as { group, label, count } (group)}
-        <button
-          class="filter-chip"
-          class:active={activeGroup === group}
-          type="button"
-          aria-pressed={activeGroup === group}
-          onclick={() => { activeGroup = group as CatalogGroup; }}
-        >{wrapDisplayCopy(label)}{#if count !== null} <b>{count}</b>{/if}</button>
-      {/each}
-      <input bind:value={search} type="search" placeholder={wrapDisplayCopy(catalogPageCopy.search)} aria-label={wrapDisplayCopy(catalogPageCopy.searchLabel)} />
-    </div>
+    {#if catalogGroupsReady}
+      <div class="catalog-filters" role="group" aria-label={wrapDisplayCopy(catalogPageCopy.catalogGroups)}>
+        {#each catalogGroupChoices(workflowTiles?.count ?? 0, agentRows.length) as { group, label, count } (group)}
+          <button
+            class="filter-chip"
+            class:active={activeGroup === group}
+            type="button"
+            aria-pressed={activeGroup === group}
+            onclick={() => { activeGroup = group as CatalogGroup; }}
+          >{wrapDisplayCopy(label)}{#if count !== null} <b>{count}</b>{/if}</button>
+        {/each}
+        <input bind:value={search} type="search" placeholder={wrapDisplayCopy(catalogPageCopy.search)} aria-label={wrapDisplayCopy(catalogPageCopy.searchLabel)} />
+      </div>
+    {/if}
 
     {#if activeGroup === "all" || activeGroup === "workflows"}
       <section aria-label={wrapDisplayCopy(catalogPageCopy.workflowsTitle)}>
@@ -335,7 +344,11 @@
         <p class="empty"><span aria-hidden="true">✦ </span><span>{wrapDisplayCopy(catalogPageCopy.skillsNone)}</span></p>
       </section>
     {/if}
-  {:else if workflows.confirmed !== null && agents.confirmed !== null}
+  {:else if
+    workflows.confirmed !== null &&
+    workflows.request.state === "idle" &&
+    agents.confirmed !== null &&
+    agents.request.state === "idle"}
     <p class="empty">{wrapDisplayCopy(catalogPageCopy.catalogEmpty)}</p>
   {/if}
 

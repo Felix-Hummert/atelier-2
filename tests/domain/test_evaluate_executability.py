@@ -42,6 +42,28 @@ GRANT = PublishedRevision(
         {"capability": ToolGrantCapability.RUN_PROJECT_VERIFICATION.value}
     ).encode(),
 )
+PUSH_OPERATION = PublishedRevision(
+    RevisionKind.ADAPTER_OPERATION,
+    json.dumps(
+        {
+            "operation": "push-atelier-commit",
+            "author": {"name": "Atelier Agent", "email": "agent@example.test"},
+            "committer": {"name": "Atelier Core", "email": "core@example.test"},
+        }
+    ).encode(),
+)
+PUSH_GRANT = PublishedRevision(
+    RevisionKind.TOOL,
+    json.dumps(
+        {
+            "capability": ToolGrantCapability.PUSH_ATELIER_COMMIT.value,
+            "operation": {
+                "ref": "push-atelier-commit",
+                "revision": PUSH_OPERATION.revision_hash.value,
+            },
+        }
+    ).encode(),
+)
 NOT_A_GRANT = PublishedRevision(RevisionKind.TOOL, b"not even json")
 
 
@@ -123,6 +145,41 @@ def test_every_reference_resolved_is_the_snapshot_a_start_freezes() -> None:
     assert sorted(
         entry.revision_hash.value for entry in evaluated.resolutions
     ) == sorted([ANY_JSON_SCHEMA.revision_hash.value, GRANT.revision_hash.value])
+
+
+def test_push_grant_resolves_and_freezes_its_transitive_operation_pin() -> None:
+    evaluated = evaluate_executability(
+        parse_workflow_document(one_agent(PUSH_GRANT)),
+        Registry((ANY_JSON_SCHEMA, PUSH_GRANT, PUSH_OPERATION)),
+    )
+
+    assert isinstance(evaluated, ExecutableDocument), evaluated
+    push = next(
+        entry
+        for entry in evaluated.resolutions
+        if entry.kind is RevisionKind.ADAPTER_OPERATION
+    )
+    assert push.revision_hash == PUSH_OPERATION.revision_hash
+    assert push.site.chain == (
+        next(
+            entry.reference
+            for entry in evaluated.resolutions
+            if entry.kind is RevisionKind.TOOL
+        ),
+    )
+
+
+def test_push_grant_refuses_before_start_when_its_operation_pin_is_missing() -> None:
+    evaluated = evaluate_executability(
+        parse_workflow_document(one_agent(PUSH_GRANT)),
+        Registry((ANY_JSON_SCHEMA, PUSH_GRANT)),
+    )
+
+    assert isinstance(evaluated, DocumentNotExecutable), evaluated
+    assert evaluated.refusal is not None
+    assert evaluated.refusal.kind is RevisionKind.ADAPTER_OPERATION
+    assert evaluated.refusal.reason is ReferenceRefusalReason.UNPUBLISHED_REVISION
+    assert PUSH_GRANT.revision_hash.value in str(evaluated.refusal.site)
 
 
 def test_the_first_unpublished_reference_names_its_site_hash_and_token() -> None:
