@@ -17,6 +17,8 @@ from atelier2.adapters.dbos.schema import (
     effect_receipts,
     reconcile_commands,
     run_fork_effect_fences,
+    run_fork_reused_nodes,
+    run_forks,
     runs,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
@@ -26,6 +28,7 @@ from atelier2.adapters.dbos.uncontinuable_runs import (
 )
 from atelier2.adapters.dbos.workflow_ids import (
     effect_workflow_id_for,
+    fork_bootstrap_workflow_id_for,
     node_workflow_id_for,
     reconcile_workflow_id_for,
 )
@@ -109,20 +112,6 @@ def intent_snapshot_from_record(record: Mapping[Any, Any]) -> EffectIntentSnapsh
 
 def receipt_from_record(record: Mapping[Any, Any]) -> EffectReceipt:
     command_id = record["reconcile_command_id"]
-    source_logical_key = record.get("fork_source_logical_key")
-    source_run_id = record.get("fork_source_run_id")
-    source_revision = record.get("fork_source_workflow_revision_hash")
-    source_result_hash = record.get("fork_source_result_hash")
-    source_values = (
-        source_logical_key,
-        source_run_id,
-        source_revision,
-        source_result_hash,
-    )
-    if any(value is None for value in source_values) and not all(
-        value is None for value in source_values
-    ):
-        raise ValueError("fork receipt source identity is incomplete")
     return EffectReceipt(
         intent=intent_from_record(record),
         effect_id=EffectId(str(record["effect_id"])),
@@ -133,16 +122,26 @@ def receipt_from_record(record: Mapping[Any, Any]) -> EffectReceipt:
         reconcile_command_id=(
             None if command_id is None else ReconcileCommandId(str(command_id))
         ),
-        source_receipt=(
-            None
-            if source_logical_key is None
-            else EffectReceiptReference(
-                LogicalEffectKey(str(source_logical_key)),
-                RunId(str(source_run_id)),
-                WorkflowRevisionHash(str(source_revision)),
-                Sha256Hash(str(source_result_hash)),
-            )
-        ),
+        source_receipt=_fork_source_reference(record),
+    )
+
+
+def _fork_source_reference(record: Mapping[Any, Any]) -> EffectReceiptReference | None:
+    values = (
+        record.get("fork_source_logical_key"),
+        record.get("fork_source_run_id"),
+        record.get("fork_source_workflow_revision_hash"),
+        record.get("fork_source_result_hash"),
+    )
+    if any(value is None for value in values):
+        if not all(value is None for value in values):
+            raise ValueError("fork receipt source identity is incomplete")
+        return None
+    return EffectReceiptReference(
+        LogicalEffectKey(str(values[0])),
+        RunId(str(values[1])),
+        WorkflowRevisionHash(str(values[2])),
+        Sha256Hash(str(values[3])),
     )
 
 
@@ -251,7 +250,6 @@ def decode_found(intent: EffectIntent, encoded: Mapping[str, Any]) -> EffectRece
         Sha256Hash(str(encoded["result_hash"])),
     )
     command_id = encoded.get("reconcile_command_id")
-    source_logical_key = encoded.get("fork_source_logical_key")
     return EffectReceipt(
         intent,
         effect_id=EffectId(str(encoded["effect_id"])),
@@ -260,18 +258,7 @@ def decode_found(intent: EffectIntent, encoded: Mapping[str, Any]) -> EffectRece
         reconcile_command_id=(
             None if command_id is None else ReconcileCommandId(str(command_id))
         ),
-        source_receipt=(
-            None
-            if source_logical_key is None
-            else EffectReceiptReference(
-                LogicalEffectKey(str(source_logical_key)),
-                RunId(str(encoded["fork_source_run_id"])),
-                WorkflowRevisionHash(
-                    str(encoded["fork_source_workflow_revision_hash"])
-                ),
-                Sha256Hash(str(encoded["fork_source_result_hash"])),
-            )
-        ),
+        source_receipt=_fork_source_reference(encoded),
     )
 
 
@@ -281,29 +268,97 @@ def fork_fenced_resolution(
     """Resolve a successor effect from its source fence, before any adapter call."""
 
     intent = load_intent(session, logical_key, revision_hash)
-    fences = tuple(
+    run_record = (
         session.execute(
-            sa.select(run_fork_effect_fences).where(
-                run_fork_effect_fences.c.successor_run_id == intent.binding.run_id.value
-            )
-        ).mappings()
+            sa.select(
+                runs.c.bootstrap_workflow_id,
+                runs.c.current_node_id,
+                runs.c.current_round_ordinal,
+            ).where(runs.c.run_id == intent.binding.run_id.value)
+        )
+        .mappings()
+        .one()
     )
-    matching = tuple(
-        fence
-        for fence in fences
-        if logical_effect_key_for_node(
+    fork_record = (
+        session.execute(
+            sa.select(run_forks).where(
+                run_forks.c.successor_run_id == intent.binding.run_id.value
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    fork_workflow_id = fork_bootstrap_workflow_id_for(intent.binding.run_id)
+    if fork_record is None:
+        if str(run_record["bootstrap_workflow_id"]) == fork_workflow_id:
+            raise DurableEffectConflict(
+                "fork successor is visible without its committed fence transaction"
+            )
+        return None
+    if (
+        str(run_record["bootstrap_workflow_id"]) != fork_workflow_id
+        or str(fork_record["workflow_revision_hash"]) != revision_hash
+    ):
+        raise DurableEffectConflict("fork successor header disagrees with its run")
+    node_id = str(run_record["current_node_id"])
+    round_ordinal = int(run_record["current_round_ordinal"])
+    if (
+        logical_effect_key_for_node(
             intent.binding.run_id,
             intent.binding.workflow_revision_hash,
-            str(fence["node_id"]),
-            int(fence["round_ordinal"]),
+            node_id,
+            round_ordinal,
         ).value
-        == logical_key
+        != logical_key
+    ):
+        raise DurableEffectConflict("fork effect intent is not at the current node")
+    fence = (
+        session.execute(
+            sa.select(run_fork_effect_fences).where(
+                run_fork_effect_fences.c.successor_run_id
+                == intent.binding.run_id.value,
+                run_fork_effect_fences.c.node_id == node_id,
+                run_fork_effect_fences.c.round_ordinal == round_ordinal,
+            )
+        )
+        .mappings()
+        .one_or_none()
     )
-    if not matching:
+    if fence is None:
+        source_run_id = str(fork_record["origin_run_id"])
+        source_revision_hash = revision_hash
+        reused = (
+            session.execute(
+                sa.select(run_fork_reused_nodes).where(
+                    run_fork_reused_nodes.c.successor_run_id == source_run_id,
+                    run_fork_reused_nodes.c.node_id == node_id,
+                    run_fork_reused_nodes.c.round_ordinal == round_ordinal,
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if reused is not None:
+            source_run_id = str(reused["source_run_id"])
+            source_revision_hash = str(reused["source_workflow_revision_hash"])
+        source_logical_key = logical_effect_key_for_node(
+            RunId(source_run_id),
+            WorkflowRevisionHash(source_revision_hash),
+            node_id,
+            round_ordinal,
+        )
+        source_receipt_exists = session.scalar(
+            sa.select(sa.literal(True)).where(
+                sa.exists().where(
+                    effect_receipts.c.logical_key == source_logical_key.value,
+                    effect_receipts.c.run_id == source_run_id,
+                    effect_receipts.c.workflow_revision_hash == source_revision_hash,
+                )
+            )
+        )
+        if source_receipt_exists:
+            return {"outcome": EffectOutcome.UNKNOWN.value}
         return None
-    if len(matching) != 1:
-        raise DurableEffectConflict("fork effect fence is not unique")
-    fence = matching[0]
     source_record = (
         session.execute(
             sa.select(effect_receipts).where(

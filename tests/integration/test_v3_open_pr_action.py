@@ -19,6 +19,7 @@ from atelier2.adapters.dbos.schema import (
     effect_intents,
     effect_receipts,
     run_events,
+    run_fork_effect_fences,
     run_forks,
     runs,
 )
@@ -148,7 +149,18 @@ class CountingGitHubEffectAdapterFactory:
 def runtime(
     tmp_path: Path,
 ) -> Iterator[tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path, Path]]:
-    listing = tmp_path / "lease-listing.txt"
+    started, github, listing = _runtime_for(tmp_path, tmp_path / "github.sqlite")
+    started.initialize_storage()
+    try:
+        yield started, github, listing, tmp_path / "atelier.sqlite"
+    finally:
+        started.close()
+
+
+def _runtime_for(
+    root: Path, github_database: Path
+) -> tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path]:
+    listing = root / "lease-listing.txt"
     recording = RecordingAgentExecutorFactoryV2(
         "exact",
         "exact/v1",
@@ -162,22 +174,18 @@ def runtime(
             TREE.hex(),
         ),
     )
-    github = CountingGitHubEffectAdapterFactory(tmp_path / "github.sqlite")
+    github = CountingGitHubEffectAdapterFactory(github_database)
     started = DbosRuntime(
         DbosRuntimeSettings(
-            tmp_path / "atelier.sqlite",
+            root / "atelier.sqlite",
             "v3-open-pr-test",
-            agent_scratch_root=agent_scratch_root(tmp_path),
+            agent_scratch_root=agent_scratch_root(root),
         ),
         github,
         ExactOutputAgentExecutorFactory(),
         (recording,),
     )
-    started.initialize_storage()
-    try:
-        yield started, github, listing, tmp_path / "atelier.sqlite"
-    finally:
-        started.close()
+    return started, github, listing
 
 
 def publish_line(
@@ -266,6 +274,18 @@ def wait_for_state(runtime: DbosRuntime, state: RunState, run_id: RunId = RUN) -
             return
         time.sleep(0.025)
     raise AssertionError(f"run stayed {observed!r}, expected {state.value!r}")
+
+
+def _complete_origin(runtime: DbosRuntime) -> None:
+    workflow, bindings = publish_line(runtime)
+    started = DbosDurableRunStarter(
+        runtime.engine,
+        runtime.settings,
+        runtime.agent_executor_registry,
+    ).start_published(StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings))
+    assert isinstance(started, DurableRunCreated)
+    runtime.launch()
+    wait_for_state(runtime, RunState.COMPLETED)
 
 
 def test_forked_action_references_the_confirmed_pull_request_without_replaying_it(
@@ -393,6 +413,113 @@ def test_action_fork_with_changed_request_waits_without_invoking_the_adapter(
     assert len(github.recorded_pull_requests()) == 1
 
 
+def test_fork_with_a_missing_effect_fence_waits_without_invoking_the_adapter(
+    runtime: tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path, Path],
+) -> None:
+    started_runtime, _github, _listing, atelier_database = runtime
+    _complete_origin(started_runtime)
+    started_runtime.close()
+    restarted, github, _listing = _runtime_for(
+        atelier_database.parent, atelier_database.parent / "github.sqlite"
+    )
+    try:
+        restarted.initialize_storage()
+        starter = DbosDurableRunStarter(
+            restarted.engine,
+            restarted.settings,
+            restarted.agent_executor_registry,
+        )
+        forked = starter.fork_run(
+            ForkRunRequest(RUN, "missing-effect-fence", "publish")
+        )
+        assert isinstance(forked, DurableRunForkCreated)
+        with restarted.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TRIGGER run_fork_effect_fences_no_delete")
+            connection.execute(
+                run_fork_effect_fences.delete().where(
+                    run_fork_effect_fences.c.successor_run_id == forked.run.run_id.value
+                )
+            )
+
+        restarted.launch()
+        wait_for_state(restarted, RunState.WAITING_RECONCILIATION, forked.run.run_id)
+
+        assert github.readback_calls == github.execute_calls == 0
+        assert len(github.recorded_pull_requests()) == 1
+        with restarted.engine.connect() as connection:
+            assert connection.execute(
+                sa.select(runs.c.state, effect_intents.c.state)
+                .join(effect_intents, effect_intents.c.run_id == runs.c.run_id)
+                .where(runs.c.run_id == forked.run.run_id.value)
+            ).one() == (
+                RunState.WAITING_RECONCILIATION.value,
+                "WAITING_RECONCILIATION",
+            )
+            assert tuple(
+                connection.scalars(
+                    sa.select(run_events.c.event_kind).where(
+                        run_events.c.run_id == forked.run.run_id.value
+                    )
+                )
+            ) == (RunEventKind.ACTION_RECONCILIATION_REQUIRED.value,)
+    finally:
+        restarted.close()
+
+
+def test_fork_adapter_identity_mismatch_commits_waiting_without_adapter_calls(
+    runtime: tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path, Path],
+) -> None:
+    started_runtime, _github, _listing, atelier_database = runtime
+    _complete_origin(started_runtime)
+    started_runtime.close()
+    restarted, github, _listing = _runtime_for(
+        atelier_database.parent,
+        atelier_database.parent / "github.sqlite",
+    )
+    try:
+        restarted.initialize_storage()
+        starter = DbosDurableRunStarter(
+            restarted.engine,
+            restarted.settings,
+            restarted.agent_executor_registry,
+        )
+        forked = starter.fork_run(
+            ForkRunRequest(RUN, "adapter-identity-mismatch", "publish")
+        )
+        assert isinstance(forked, DurableRunForkCreated)
+        with restarted.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TRIGGER effect_receipts_no_update")
+            connection.execute(
+                effect_receipts.update()
+                .where(effect_receipts.c.run_id == RUN.value)
+                .values(adapter_operational_identity="mismatched-source-operation")
+            )
+
+        restarted.launch()
+        wait_for_state(restarted, RunState.WAITING_RECONCILIATION, forked.run.run_id)
+
+        assert github.readback_calls == github.execute_calls == 0
+        assert len(github.recorded_pull_requests()) == 1
+        with restarted.engine.connect() as connection:
+            assert connection.execute(
+                sa.select(runs.c.state, effect_intents.c.state)
+                .join(effect_intents, effect_intents.c.run_id == runs.c.run_id)
+                .where(runs.c.run_id == forked.run.run_id.value)
+            ).one() == (
+                RunState.WAITING_RECONCILIATION.value,
+                "WAITING_RECONCILIATION",
+            )
+            assert tuple(
+                connection.scalars(
+                    sa.select(run_events.c.event_kind).where(
+                        run_events.c.run_id == forked.run.run_id.value
+                    )
+                )
+            ) == (RunEventKind.ACTION_RECONCILIATION_REQUIRED.value,)
+    finally:
+        restarted.close()
+
+
 def test_missing_confirmed_action_receipt_refuses_the_fork_before_any_side_effect(
     runtime: tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path, Path],
 ) -> None:
@@ -461,11 +588,21 @@ def test_unreached_action_without_a_receipt_does_not_block_a_full_fork(
     )
     started_runtime.launch()
     wait_for_state(started_runtime, RunState.FAILED)
+    factory.opened.command = launching(
+        sys.executable,
+        "-c",
+        _LIST_THEN_WRITE,
+        str(_listing),
+        TREE.hex(),
+    )
 
     forked = starter.fork_run(ForkRunRequest(RUN, "unreached-action", "implement"))
 
     assert isinstance(forked, DurableRunForkCreated)
-    assert github.readback_calls == github.execute_calls == 0
+    wait_for_state(started_runtime, RunState.COMPLETED, forked.run.run_id)
+    assert github.readback_calls == 1
+    assert github.execute_calls == 1
+    assert len(github.recorded_pull_requests()) == 1
 
 
 def durable_bytes_contain(database: Path, token: str) -> bool:

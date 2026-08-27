@@ -46,7 +46,6 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
-from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
 from atelier2.adapters.github.marker import body_carries_request_hash
 from atelier2.application.compose_node_job import node_job
 from atelier2.contracts.agents import (
@@ -98,6 +97,7 @@ from atelier2.ports.durable_runs import (
     StartPublishedRunRequestV2,
 )
 from atelier2.ports.effects import EffectAdapter
+from tests.integration.test_v3_open_pr_action import CountingGitHubEffectAdapterFactory
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_attempt_execution,
@@ -159,12 +159,8 @@ class _UnknownOpenPrAdapterFactory:
 @pytest.fixture
 def runtime(
     tmp_path: Path,
-) -> Iterator[tuple[DbosRuntime, GitHubEffectAdapterFactory, Path]]:
-    github = GitHubEffectAdapterFactory(
-        tmp_path / "github.sqlite",
-        AdapterRevision("github-open-pr-v1"),
-        EffectDestination("platform"),
-    )
+) -> Iterator[tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path]]:
+    github = CountingGitHubEffectAdapterFactory(tmp_path / "github.sqlite")
     started = DbosRuntime(
         DbosRuntimeSettings(
             tmp_path / "atelier.sqlite",
@@ -364,7 +360,7 @@ def _durable_bytes_contain(database: Path, token: str) -> bool:
 
 @pytest.mark.proves("a-v3-agent-node-opens-one-pr-through-its-own-open-pr-grant")
 def test_a_granted_agent_node_opens_one_pull_request_and_leaves_one_receipt(
-    runtime: tuple[DbosRuntime, GitHubEffectAdapterFactory, Path],
+    runtime: tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path],
 ) -> None:
     started_runtime, github, atelier_sqlite = runtime
 
@@ -442,7 +438,7 @@ def test_a_granted_agent_node_opens_one_pull_request_and_leaves_one_receipt(
 
 
 def test_forked_agent_open_pr_references_the_confirmed_effect_without_replay(
-    runtime: tuple[DbosRuntime, GitHubEffectAdapterFactory, Path],
+    runtime: tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path],
 ) -> None:
     started_runtime, github, _atelier_sqlite = runtime
     workflow, bindings = publish_open_pr_agent_run(started_runtime, granted=True)
@@ -493,7 +489,7 @@ def test_forked_agent_open_pr_references_the_confirmed_effect_without_replay(
 
 
 def test_fork_of_fork_fences_an_inherited_agent_effect_before_adapter_invocation(
-    runtime: tuple[DbosRuntime, GitHubEffectAdapterFactory, Path],
+    runtime: tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path],
 ) -> None:
     started_runtime, github, _atelier_sqlite = runtime
     workflow, bindings = _publish_two_agent_open_pr_run(started_runtime)
@@ -510,12 +506,17 @@ def test_fork_of_fork_fences_an_inherited_agent_effect_before_adapter_invocation
     assert isinstance(inherited, DurableRunForkCreated)
     _wait_for_state(started_runtime, inherited.run.run_id, RunState.COMPLETED)
     assert inherited.fork.reused_nodes[0].source_run_id == RUN
+    calls_before_exact = (github.readback_calls, github.execute_calls)
 
     exact = starter.fork_run(
         ForkRunRequest(inherited.run.run_id, "exact-inherited-agent", "implement")
     )
     assert isinstance(exact, DurableRunForkCreated)
     _wait_for_state(started_runtime, exact.run.run_id, RunState.COMPLETED)
+    assert (
+        github.readback_calls - calls_before_exact[0],
+        github.execute_calls - calls_before_exact[1],
+    ) == (0, 0)
     assert len(github.recorded_pull_requests()) == 1
     with started_runtime.engine.connect() as connection:
         exact_receipt = (
@@ -540,6 +541,7 @@ def test_fork_of_fork_fences_an_inherited_agent_effect_before_adapter_invocation
     factory.opened.output = json.dumps(
         {"title": "Changed request", "opened_by": "the nested fork"}
     ).encode()
+    calls_before_mismatch = (github.readback_calls, github.execute_calls)
     mismatched = starter.fork_run(
         ForkRunRequest(inherited.run.run_id, "changed-inherited-agent", "implement")
     )
@@ -547,6 +549,10 @@ def test_fork_of_fork_fences_an_inherited_agent_effect_before_adapter_invocation
     _wait_for_state(
         started_runtime, mismatched.run.run_id, RunState.WAITING_RECONCILIATION
     )
+    assert (
+        github.readback_calls - calls_before_mismatch[0],
+        github.execute_calls - calls_before_mismatch[1],
+    ) == (0, 0)
     assert len(github.recorded_pull_requests()) == 1
     with started_runtime.engine.connect() as connection:
         assert (
@@ -561,7 +567,7 @@ def test_fork_of_fork_fences_an_inherited_agent_effect_before_adapter_invocation
 
 @pytest.mark.proves("without-the-grant-the-open-pr-tool-does-not-exist")
 def test_an_agent_node_without_the_grant_opens_no_pull_request(
-    runtime: tuple[DbosRuntime, GitHubEffectAdapterFactory, Path],
+    runtime: tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path],
 ) -> None:
     """A plain agent node has no open-pr tool: it completes and opens nothing."""
     started_runtime, github, _atelier_sqlite = runtime
@@ -582,7 +588,7 @@ def test_an_agent_node_without_the_grant_opens_no_pull_request(
 
 
 def test_a_completed_agent_replay_refuses_a_mismatched_receipt_intent(
-    runtime: tuple[DbosRuntime, GitHubEffectAdapterFactory, Path],
+    runtime: tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path],
 ) -> None:
     started_runtime, _github, _atelier_sqlite = runtime
 
@@ -601,7 +607,7 @@ def test_a_completed_agent_replay_refuses_a_mismatched_receipt_intent(
 
 
 def test_a_looped_agent_effect_grant_is_refused_before_it_creates_a_run(
-    runtime: tuple[DbosRuntime, GitHubEffectAdapterFactory, Path],
+    runtime: tuple[DbosRuntime, CountingGitHubEffectAdapterFactory, Path],
 ) -> None:
     started_runtime, github, _atelier_sqlite = runtime
     workflow, bindings = publish_open_pr_agent_run(
