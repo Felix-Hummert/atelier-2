@@ -197,14 +197,6 @@
       <p class="failure" role="alert">{cannotBeStarted(graph.not_executable_reason)}</p>
     {/if}
 
-    <div class="detail-provenance">
-      <ProofAnchor
-        label={workflowDetailCopy.workflowRevision}
-        seals={workflowDetailCopy.sealsWorkflowRevision}
-        value={revisionHash}
-      />
-    </div>
-
     {#if previews !== null}
       <WorkflowGraphDrawing {previews} {loops} onSelect={selectNode} {selectedNodeId} />
     {:else}
@@ -239,6 +231,17 @@
     {#if selectedPreview !== null}
       <WorkflowNodePreviewPanel preview={selectedPreview} onClose={closePanel} />
     {/if}
+
+    <details class="detail-technical">
+      <summary>Technical</summary>
+      <div class="detail-provenance">
+        <ProofAnchor
+          label={workflowDetailCopy.workflowRevision}
+          seals={workflowDetailCopy.sealsWorkflowRevision}
+          value={revisionHash}
+        />
+      </div>
+    </details>
 
     {#if startSheetOpen && found !== null}
       <WorkflowStartSheet
@@ -296,8 +299,16 @@
     cursor: not-allowed;
   }
 
+  .detail-technical {
+    margin-top: var(--space-5);
+  }
+
+  .detail-technical summary {
+    cursor: pointer;
+  }
+
   .detail-provenance {
-    margin: 0 0 var(--space-5);
+    margin-top: var(--space-2);
     padding: var(--space-3);
     border-left: var(--edge-mark) solid var(--ink-dim);
     background: color-mix(in srgb, currentColor 4%, transparent);
