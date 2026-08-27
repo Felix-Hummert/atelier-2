@@ -48,6 +48,12 @@
       write: ExactModelRegistryRevisionWrite;
       }
     | {
+        kind: "check-publish";
+        providerId: string;
+        write: ExactModelRegistryRevisionWrite;
+        configurationHash: string;
+      }
+    | {
         kind: "validation";
         providerId: string;
         configurationHash: string;
@@ -270,7 +276,8 @@
   async function validateModel(
     providerId: string,
     configurationHash: string,
-    retrying = false
+    retrying = false,
+    exactPublish: ExactModelRegistryRevisionWrite | null = null
   ): Promise<void> {
     if (writing || (failedWrite !== null && !retrying)) return;
     writing = true;
@@ -282,10 +289,10 @@
             && candidate.provider_id === providerId
         );
         if (configuration === undefined) return;
-        const write = additionWrite(configuration);
+        const write = exactPublish ?? additionWrite(configuration);
         const published = await publishRegistry(providerId, write);
         if (published === "uncertain") {
-          if (!retrying) failedWrite = { kind: "registry", providerId, write };
+          failedWrite = { kind: "check-publish", providerId, write, configurationHash };
           return;
         }
       }
@@ -296,7 +303,7 @@
       }
       const outcome = await applyValidation(providerId, configurationHash);
       if (outcome === "uncertain") {
-        if (!retrying) failedWrite = { kind: "validation", providerId, configurationHash };
+        failedWrite = { kind: "validation", providerId, configurationHash };
       } else {
         failedWrite = null;
       }
@@ -370,7 +377,9 @@
     const retry = failedWrite;
     if (retry === null) return;
     if (retry.kind === "registry") await sendRegistryWrite(retry.providerId, retry.write, true);
-    else if (retry.kind === "validation") {
+    else if (retry.kind === "check-publish") {
+      await validateModel(retry.providerId, retry.configurationHash, true, retry.write);
+    } else if (retry.kind === "validation") {
       await validateModel(retry.providerId, retry.configurationHash, true);
     } else await sendDefaultsWrite(retry.projectReference, retry.write, true);
   }

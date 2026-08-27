@@ -426,6 +426,108 @@ describe("Settings owns project sources, models, and defaults", () => {
     });
   });
 
+  it("continues Check through validation after a retried uncertain publish", async () => {
+    const putModelRegistry = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("uncertain"))
+      .mockImplementation(async (_providerId, write) => ({
+        status: 201,
+        value: {
+          ...registry([{ ...registeredEntry, provider_check: "not-checked" as const }]),
+          revision_number: write.input.revision_number,
+          model_registry_revision_hash: "f".repeat(64)
+        }
+      }));
+    const validateModelRegistryEntry = vi.fn(async () => ({
+      status: 201,
+      value: {
+        ...registry([{ ...registeredEntry, provider_check: "checked" as const }]),
+        revision_number: 2,
+        model_registry_revision_hash: "f".repeat(64)
+      }
+    }));
+    openSettings({
+      getModelRegistry: vi.fn(async () => { throw modelRegistryMissing(); }),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      putModelRegistry,
+      validateModelRegistryEntry
+    });
+
+    await fireEvent.click(await screen.findByRole("button", { name: "Check" }));
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(screen.getByText(settingsPageCopy.writeFailed)).toBeTruthy();
+    expect(validateModelRegistryEntry).not.toHaveBeenCalled();
+    await waitFor(() => expect((retry as HTMLButtonElement).disabled).toBe(false));
+
+    await fireEvent.click(retry);
+
+    await waitFor(() => {
+      expect(putModelRegistry).toHaveBeenCalledTimes(2);
+      expect(putModelRegistry.mock.calls[1]).toEqual(putModelRegistry.mock.calls[0]);
+      expect(validateModelRegistryEntry).toHaveBeenCalledWith("anthropic", configurationHash);
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(within(screen.getByRole("combobox", { name: "Difficulty 3" })).getByRole(
+        "option",
+        { name: new RegExp(configuration.model) }
+      )).toBeTruthy();
+    });
+  });
+
+  it("names a validation failure after a retried Check publish so the next Retry only validates", async () => {
+    const putModelRegistry = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("uncertain"))
+      .mockImplementation(async (_providerId, write) => ({
+        status: 201,
+        value: {
+          ...registry([{ ...registeredEntry, provider_check: "not-checked" as const }]),
+          revision_number: write.input.revision_number,
+          model_registry_revision_hash: "f".repeat(64)
+        }
+      }));
+    const validateModelRegistryEntry = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("uncertain"))
+      .mockResolvedValueOnce({
+        status: 201,
+        value: {
+          ...registry([{ ...registeredEntry, provider_check: "checked" as const }]),
+          revision_number: 2,
+          model_registry_revision_hash: "f".repeat(64)
+        }
+      });
+    openSettings({
+      getModelRegistry: vi.fn(async () => { throw modelRegistryMissing(); }),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      putModelRegistry,
+      validateModelRegistryEntry
+    });
+
+    await fireEvent.click(await screen.findByRole("button", { name: "Check" }));
+    const firstRetry = await screen.findByRole("button", { name: "Retry" });
+    await waitFor(() => expect((firstRetry as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(firstRetry);
+
+    const secondRetry = await screen.findByRole("button", { name: "Retry" });
+    await waitFor(() => {
+      expect(putModelRegistry).toHaveBeenCalledTimes(2);
+      expect(validateModelRegistryEntry).toHaveBeenCalledTimes(1);
+      expect((secondRetry as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    await fireEvent.click(secondRetry);
+
+    await waitFor(() => {
+      expect(putModelRegistry).toHaveBeenCalledTimes(2);
+      expect(validateModelRegistryEntry).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(within(screen.getByRole("combobox", { name: "Difficulty 3" })).getByRole(
+        "option",
+        { name: new RegExp(configuration.model) }
+      )).toBeTruthy();
+    });
+  });
+
   it("lists every live startable model and writes the first default through the real decoder", async () => {
     const writes = { defaults: [] as string[] };
     const api = createCockpitApi(liveSettingsFetcher(writes));

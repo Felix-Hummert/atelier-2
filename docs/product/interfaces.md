@@ -195,7 +195,8 @@ the one editing surface only for each provider's exact model registry and the
 three difficulty defaults, in that order. The startable configuration list is
 the owner of that provider-grouped rendering: a provider whose registry is
 missing, or whose entry is not yet checked, still renders, marked unavailable,
-with the Check action that asks the server to append its dry-run result.
+with the Check action that publishes a missing registry if needed, then asks
+the server to append its dry-run result.
 Registry rows name the exact model
 id, Account, provenance, and current provider check as separate facts; adding
 or removing a row writes immediately. Only checked, startable registry entries
@@ -207,7 +208,9 @@ configuration are a checked, startable registry row; a carried row stays
 admissible if that provider later stops reporting it. The retained model,
 Account, and unavailable state wrap as one visible surface
 until that row is changed or cleared. Neither operation renders a saving or saved caption, and an uncertain
-write retries its identical bytes. Settings does not read or count runs; the
+write retries its identical bytes. Check is one operation; Retry of an
+uncertain publish or validation resumes at that step and continues through
+validation. Settings does not read or count runs; the
 Workbench alone owns that live-work signal. The new-run trail names the project the same way the other
 levels do. It can answer the exact integer requested by a Wait node and resolve an
 unknown Action outcome as either an exact found effect or an accountable,
