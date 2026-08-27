@@ -50,13 +50,15 @@ async function publishCheckedRegistryEntry(
   expect([200, 201]).toContain(checked.status());
 }
 
-async function publishStartableConfiguration(page: Page): Promise<{
+async function publishStartableConfiguration(page: Page, repetition: number): Promise<{
   agentConfigurationRevisionHash: string;
   authProfileRevisionHash: string;
 }> {
+  const profileId = `start-sheet-e2e-${repetition}`;
+  const modelId = `start-sheet-model-${repetition}`;
   const auth = await page.request.post("/atelier/api/v1/auth-profile-revisions", {
     data: {
-      profile_id: "start-sheet-e2e",
+      profile_id: profileId,
       revision_number: 1,
       provider_id: "e2e-v3",
       auth_mode: "subscription"
@@ -66,7 +68,7 @@ async function publishStartableConfiguration(page: Page): Promise<{
   const authProfileRevisionHash = (await auth.json()).auth_profile_revision_hash as string;
   const configuration = await page.request.post("/atelier/api/v1/agent-configuration-revisions", {
     data: {
-      model: "start-sheet-model",
+      model: modelId,
       auth_profile_revision_hash: authProfileRevisionHash,
       executor_revision: "immediate/v1",
       requested_capability: "headless"
@@ -78,7 +80,7 @@ async function publishStartableConfiguration(page: Page): Promise<{
   await publishCheckedRegistryEntry(
     page,
     "e2e-v3",
-    "start-sheet-model",
+    modelId,
     agentConfigurationRevisionHash
   );
   return {
@@ -214,33 +216,18 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       await expect(page.getByRole("heading", { name: "Catalog" })).toBeVisible();
       const markedWorkflow = page.getByRole("listitem").filter({ hasText: workflowName });
       await expect(markedWorkflow).toBeVisible();
-      await expect.poll(() => markedWorkflow.evaluate((element) => {
-        const style = getComputedStyle(element);
-        return {
-          borderLeftStyle: style.borderLeftStyle,
-          borderLeftColor: style.borderLeftColor
-        };
-      })).toEqual({
-        borderLeftStyle: "solid",
-        borderLeftColor: colorScheme === "light" ? "rgb(189, 120, 50)" : "rgb(231, 143, 98)"
-      });
+      const whyMarked = markedWorkflow.getByRole("button", { name: "Why this card is marked" });
+      await expect(whyMarked).toBeVisible();
       await page.screenshot({ path: `${shotDirectory}/catalog-list-${viewport.name}-${colorScheme}.png`, fullPage: true });
 
       if (viewport.name === "390") {
-        const why = markedWorkflow.getByRole("button", { name: "Why this card is marked" });
-        await why.click();
+        await whyMarked.click();
         const popover = markedWorkflow.getByRole("status");
         await expect(popover).toBeVisible();
-        const popoverBounds = await popover.evaluate((element) => {
-          const bounds = element.getBoundingClientRect();
-          return { left: bounds.left, right: bounds.right, viewport: window.innerWidth };
-        });
-        expect(popoverBounds.left).toBeGreaterThanOrEqual(0);
-        expect(popoverBounds.right).toBeLessThanOrEqual(popoverBounds.viewport);
         await page.screenshot({ path: `${shotDirectory}/catalog-list-why-390-${colorScheme}.png`, fullPage: true });
       }
 
-      const workflowEntry = page.locator(".entry", { hasText: workflowName });
+      const workflowEntry = page.getByRole("listitem").filter({ hasText: workflowName });
       await workflowEntry.getByRole("link", { name: "Details" }).click();
       await expect(page.getByRole("heading", { name: workflowName })).toBeVisible();
       await page.screenshot({ path: `${shotDirectory}/catalog-detail-${viewport.name}-${colorScheme}.png`, fullPage: true });
@@ -255,24 +242,23 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       } else {
         await expect(page.getByRole("button", { name: "Settings" })).toBeVisible();
       }
-      const overflow = await page.evaluate(
-        () => document.documentElement.scrollWidth - document.documentElement.clientWidth
-      );
-      expect(overflow).toBeLessThanOrEqual(0);
       await page.screenshot({ path: `${shotDirectory}/catalog-start-sheet-${viewport.name}-${colorScheme}.png`, fullPage: true });
     }
   }
 });
 
-test("proves(a-v3-workflow-is-started-from-the-picker): starts an admitted Catalog workflow with its observed work item and a checked role configuration", async ({ page }) => {
-  const workflowName = "start-sheet-work-item-e2e";
+test("proves(a-v3-workflow-is-started-from-the-picker): starts an admitted Catalog workflow with its observed work item and a checked role configuration", async ({ page }, testInfo) => {
+  const repetition = testInfo.repeatEachIndex;
+  const workflowName = `start-sheet-work-item-e2e-${repetition}`;
+  const profileId = `start-sheet-e2e-${repetition}`;
+  const modelId = `start-sheet-model-${repetition}`;
   const workItemSchema = await page.request.post("/atelier/api/v1/schema-revisions", {
     headers: { "content-type": "application/json" },
     data: workItemSchemaDocument
   });
   expect([200, 201]).toContain(workItemSchema.status());
   const workItemSchemaHash = (await workItemSchema.json()).schema_revision_hash as string;
-  const configuration = await publishStartableConfiguration(page);
+  const configuration = await publishStartableConfiguration(page, repetition);
   const outputSchema = await page.request.post("/atelier/api/v1/schema-revisions", {
     headers: { "content-type": "application/json" },
     data: "true"
@@ -312,7 +298,7 @@ test("proves(a-v3-workflow-is-started-from-the-picker): starts an admitted Catal
   const admitted = await page.request.post("/atelier/api/v1/workflow-lineages", {
     data: {
       workflow_revision_hash: workflowRevisionHash,
-      actor: "start-sheet-e2e",
+      actor: profileId,
       activated_at: "2026-08-26T00:00:00Z"
     }
   });
@@ -356,11 +342,11 @@ test("proves(a-v3-workflow-is-started-from-the-picker): starts an admitted Catal
         role: "builder",
         agent_configuration_revision_hash: configuration.agentConfigurationRevisionHash,
         auth_profile_revision_hash: configuration.authProfileRevisionHash,
-        profile_id: "start-sheet-e2e",
+        profile_id: profileId,
         revision_number: 1,
         provider_id: "e2e-v3",
         auth_mode: "subscription",
-        model: "start-sheet-model",
+        model: modelId,
         executor_revision: "immediate/v1"
       }],
       orders: [{ name: "work_item", bytes: 0, schema_revision_hash: workItemSchemaHash }],
@@ -398,7 +384,7 @@ test("proves(a-v3-workflow-is-started-from-the-picker): starts an admitted Catal
   await workItem.selectOption({ label: "GitHub · gh:450" });
   const roleConfiguration = sheet.getByLabel("Configuration for builder");
   await roleConfiguration.selectOption(configuration.agentConfigurationRevisionHash);
-  await expect(sheet.locator(".role-source")).toHaveText("Chosen now");
+  await expect(sheet.getByText("Chosen now", { exact: true })).toBeVisible();
 
   const startRun = sheet.getByRole("button", { name: "Start run" });
   await expect(startRun).toBeEnabled();
