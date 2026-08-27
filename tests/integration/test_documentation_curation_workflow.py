@@ -6,6 +6,7 @@ import json
 import tempfile
 import time
 from collections.abc import Iterator
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,7 @@ from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.contracts.schemas_v3 import (
     InstanceAccepted,
+    InstanceRefused,
     SchemaAccepted,
     read_instance_document,
     read_schema_document,
@@ -54,6 +56,7 @@ from atelier2.ports.artifacts import ArtifactCreated, ArtifactExisting
 from atelier2.ports.durable_runs import (
     AuthoredOrder,
     DurableRunCreated,
+    DurableUncastAgentRoles,
     DurableV3StartInputRefused,
     StartPublishedRunRequestV3,
     V3InputRefusal,
@@ -95,6 +98,12 @@ CANDIDATE_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
     (
         WORKFLOWS_DIRECTORY / "schemas" / "documentation_curation_candidate.json"
+    ).read_bytes(),
+)
+TRACE_REVIEW_RESULT_SCHEMA = PublishedRevision(
+    RevisionKind.SCHEMA,
+    (
+        WORKFLOWS_DIRECTORY / "schemas" / "documentation_trace_review_result.json"
     ).read_bytes(),
 )
 
@@ -162,6 +171,22 @@ CANDIDATE = {
     "unresolved_questions": ["Which owner approves the revised wording?"],
 }
 ANSWER = json.dumps(CANDIDATE, ensure_ascii=False).encode()
+CANDIDATE_DIGEST = sha256(ANSWER).hexdigest()
+TRACE_REVIEW = {
+    "candidate_digest": CANDIDATE_DIGEST,
+    "trace_judgements": [
+        {
+            "document": DOCUMENT_PATH,
+            "judgement": "traced",
+            "cited_owner_object": CANDIDATE["stale_documents"][0][
+                "cited_owner_objects"
+            ][0],
+        }
+    ],
+    "findings": [],
+    "verdict": "approve",
+}
+TRACE_REVIEW_ANSWER = json.dumps(TRACE_REVIEW, ensure_ascii=False).encode()
 REFUSED_CANDIDATES = {
     "extra candidate field": {**CANDIDATE, "writes_repository": False},
     "replacement missing its expected digest": {
@@ -177,10 +202,45 @@ REFUSED_CANDIDATES = {
         "unresolved_questions": [],
     },
 }
+REFUSED_TRACE_REVIEWS = {
+    "extra trace review field": {**TRACE_REVIEW, "writes_repository": False},
+    "missing candidate digest": {
+        key: value for key, value in TRACE_REVIEW.items() if key != "candidate_digest"
+    },
+    "revise without findings": {**TRACE_REVIEW, "verdict": "revise"},
+    "cannot judge without reason": {**TRACE_REVIEW, "verdict": "cannot-judge"},
+}
+TRACE_REVIEW_SCHEMA_CASES = {
+    "approve without findings": (TRACE_REVIEW, True),
+    "revise with a finding": (
+        {
+            **TRACE_REVIEW,
+            "findings": [
+                {
+                    "document": DOCUMENT_PATH,
+                    "cited_owner_object": TRACE_REVIEW["trace_judgements"][0][
+                        "cited_owner_object"
+                    ],
+                    "text": "The cited source does not support this replacement.",
+                }
+            ],
+            "verdict": "revise",
+        },
+        True,
+    ),
+    "revise without findings": ({**TRACE_REVIEW, "verdict": "revise"}, False),
+    "cannot judge without reason": (
+        {**TRACE_REVIEW, "verdict": "cannot-judge"},
+        False,
+    ),
+    "extra trace review field": ({**TRACE_REVIEW, "writes_repository": False}, False),
+}
 
 
 def runtime_over(
-    root: Path, provider: RecordingAgentExecutorFactoryV2, scratch_root: Path
+    root: Path,
+    providers: tuple[RecordingAgentExecutorFactoryV2, ...],
+    scratch_root: Path,
 ) -> DbosRuntime:
     return DbosRuntime(
         DbosRuntimeSettings(
@@ -194,25 +254,39 @@ def runtime_over(
             EffectDestination("loopback-test"),
         ),
         ExactOutputAgentExecutorFactory(),
-        (provider,),
+        providers,
     )
 
 
 @pytest.fixture
-def provider(request: pytest.FixtureRequest) -> RecordingAgentExecutorFactoryV2:
-    return RecordingAgentExecutorFactoryV2(
-        "exact", "exact/v1", "exact-op", getattr(request, "param", ANSWER)
+def providers(
+    request: pytest.FixtureRequest,
+) -> tuple[RecordingAgentExecutorFactoryV2, RecordingAgentExecutorFactoryV2]:
+    curator_answer, trace_review_answer = getattr(
+        request, "param", (ANSWER, TRACE_REVIEW_ANSWER)
+    )
+    return (
+        RecordingAgentExecutorFactoryV2(
+            "curator", "curator/v1", "curator-op", curator_answer
+        ),
+        RecordingAgentExecutorFactoryV2(
+            "trace-reviewer",
+            "trace-reviewer/v1",
+            "trace-reviewer-op",
+            trace_review_answer,
+        ),
     )
 
 
 @pytest.fixture
 def runtime(
-    tmp_path: Path, provider: RecordingAgentExecutorFactoryV2
+    tmp_path: Path,
+    providers: tuple[RecordingAgentExecutorFactoryV2, RecordingAgentExecutorFactoryV2],
 ) -> Iterator[DbosRuntime]:
     with tempfile.TemporaryDirectory(
         prefix="atelier2-documentation-curation-scratch-", dir="/var/tmp"
     ) as directory:
-        started = runtime_over(tmp_path, provider, Path(directory))
+        started = runtime_over(tmp_path, providers, Path(directory))
         started.initialize_storage()
         try:
             yield started
@@ -228,6 +302,7 @@ def publish(runtime: DbosRuntime) -> tuple[WorkflowRevision, AgentBindingSet]:
         CURRENT_DOCUMENTS_SCHEMA,
         TEXT_SCHEMA,
         CANDIDATE_SCHEMA,
+        TRACE_REVIEW_RESULT_SCHEMA,
     ):
         result = store.publish_revision(revision)
         assert isinstance(
@@ -236,28 +311,50 @@ def publish(runtime: DbosRuntime) -> tuple[WorkflowRevision, AgentBindingSet]:
     catalog = DbosAgentConfigurationCatalog(
         runtime.engine, runtime.agent_executor_registry
     )
-    auth = AuthProfileRevision("max", 1, ProviderId("exact"), AuthMode.SUBSCRIPTION)
-    assert isinstance(
-        catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
+    curator_auth = AuthProfileRevision(
+        "curator-auth", 1, ProviderId("curator"), AuthMode.SUBSCRIPTION
     )
-    configuration = AgentConfigurationRevision(
+    reviewer_auth = AuthProfileRevision(
+        "trace-reviewer-auth", 1, ProviderId("trace-reviewer"), AuthMode.SUBSCRIPTION
+    )
+    for auth in (curator_auth, reviewer_auth):
+        assert isinstance(
+            catalog.publish_auth_profile_revision(auth), AuthProfileRevisionCreated
+        )
+    curator_configuration = AgentConfigurationRevision(
         "opus",
-        auth.revision_hash,
-        AgentExecutorRevision("exact/v1"),
+        curator_auth.revision_hash,
+        AgentExecutorRevision("curator/v1"),
         AgentExecutionCapability.HEADLESS,
         AgentConfigurationRevisionFormatVersion.V2,
     )
-    assert isinstance(
-        catalog.publish_agent_configuration_revision(configuration),
-        AgentConfigurationRevisionCreated,
+    reviewer_configuration = AgentConfigurationRevision(
+        "opus",
+        reviewer_auth.revision_hash,
+        AgentExecutorRevision("trace-reviewer/v1"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    for configuration in (curator_configuration, reviewer_configuration):
+        assert isinstance(
+            catalog.publish_agent_configuration_revision(configuration),
+            AgentConfigurationRevisionCreated,
+        )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("curator"), (curator_configuration,)
     )
     publish_checked_model_registry(
-        runtime.engine, ProviderId("exact"), (configuration,)
+        runtime.engine, ProviderId("trace-reviewer"), (reviewer_configuration,)
     )
     workflow = WorkflowRevision(CURATION_DOCUMENT)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     return workflow, AgentBindingSet(
-        (AgentBinding(AgentRole("curator"), configuration.revision_hash),)
+        (
+            AgentBinding(AgentRole("curator"), curator_configuration.revision_hash),
+            AgentBinding(
+                AgentRole("trace-reviewer"), reviewer_configuration.revision_hash
+            ),
+        )
     )
 
 
@@ -322,15 +419,58 @@ def test_a_curator_without_context_is_refused_before_a_run_exists(
         assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
 
 
+def test_a_trace_reviewer_without_a_different_provider_family_is_refused_before_a_run_exists(
+    runtime: DbosRuntime,
+) -> None:
+    workflow, bindings = publish(runtime)
+    curator_binding = bindings.bindings[0]
+    same_family = AgentBindingSet(
+        (
+            curator_binding,
+            AgentBinding(
+                AgentRole("trace-reviewer"),
+                curator_binding.agent_configuration_revision_hash,
+            ),
+        )
+    )
+    refused = DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_published(
+        StartPublishedRunRequestV3(
+            RunId("v3/documentation-curation-same-provider-family"),
+            workflow.revision_hash,
+            same_family,
+            orders=orders(runtime),
+        )
+    )
+    assert isinstance(refused, DurableUncastAgentRoles), refused
+    assert [(role.role, role.reason.value) for role in refused.roles] == [
+        ("trace-reviewer", "family-difference-unavailable")
+    ]
+    with runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+
+
 @pytest.mark.proves(
     "a-curator-candidate-is-bound-to-exact-stale-view-and-owner-artifacts"
 )
-def test_a_curator_hands_exact_artifact_evidence_to_one_schema_bound_candidate(
-    runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
+@pytest.mark.proves(
+    "an-independent-trace-review-is-bound-to-the-curator-candidate-and-owner-evidence"
+)
+def test_an_independent_trace_reviewer_receives_exact_curator_and_owner_evidence(
+    runtime: DbosRuntime,
+    providers: tuple[RecordingAgentExecutorFactoryV2, RecordingAgentExecutorFactoryV2],
 ) -> None:
-    schema = read_schema_document(CANDIDATE_SCHEMA.document)
+    candidate_schema = read_schema_document(CANDIDATE_SCHEMA.document)
+    assert isinstance(candidate_schema, SchemaAccepted), candidate_schema
+    assert isinstance(
+        read_instance_document(ANSWER, candidate_schema), InstanceAccepted
+    )
+    schema = read_schema_document(TRACE_REVIEW_RESULT_SCHEMA.document)
     assert isinstance(schema, SchemaAccepted), schema
-    assert isinstance(read_instance_document(ANSWER, schema), InstanceAccepted)
+    assert isinstance(
+        read_instance_document(TRACE_REVIEW_ANSWER, schema), InstanceAccepted
+    )
 
     workflow, bindings = publish(runtime)
     run_id = RunId("v3/documentation-curation-candidate")
@@ -346,8 +486,12 @@ def test_a_curator_hands_exact_artifact_evidence_to_one_schema_bound_candidate(
     runtime.launch()
     wait_for_state(runtime, run_id, RunState.COMPLETED)
 
-    assert provider.opened is not None
-    handed = provider.opened.requests[0].job_bytes
+    curator_provider, trace_reviewer_provider = providers
+    assert curator_provider.opened is not None
+    assert trace_reviewer_provider.opened is not None
+    assert len(curator_provider.opened.requests) == 1
+    assert len(trace_reviewer_provider.opened.requests) == 1
+    handed = curator_provider.opened.requests[0].job_bytes
     artifact_payloads = (
         json.dumps(FRESHNESS_REPORT, ensure_ascii=False).encode(),
         json.dumps(OWNER_SOURCES, ensure_ascii=False).encode(),
@@ -356,23 +500,61 @@ def test_a_curator_hands_exact_artifact_evidence_to_one_schema_bound_candidate(
     )
     for payload in artifact_payloads:
         assert payload in handed
+    trace_handoff = trace_reviewer_provider.opened.requests[0].job_bytes
+    assert b"--- order: context ---" in trace_handoff
+    assert b"--- order: owner_sources ---" in trace_handoff
+    assert b"--- result of curator: candidate ---" in trace_handoff
+    assert CONTEXT_TEXT.encode() in trace_handoff
+    assert json.dumps(OWNER_SOURCES, ensure_ascii=False).encode() in trace_handoff
+    assert ANSWER in trace_handoff
     detail = durable_queries(runtime.engine).get_node_detail(run_id, "curator")
     assert isinstance(detail, NodeDetailFound), detail
     assert detail.detail.state is NodeState.SUCCEEDED
     assert detail.detail.answer is not None
     assert detail.detail.answer.value == ANSWER
+    review_detail = durable_queries(runtime.engine).get_node_detail(
+        run_id, "trace-review"
+    )
+    assert isinstance(review_detail, NodeDetailFound), review_detail
+    assert review_detail.detail.state is NodeState.SUCCEEDED
+    assert review_detail.detail.answer is not None
+    assert review_detail.detail.answer.value == TRACE_REVIEW_ANSWER
+    assert (
+        json.loads(review_detail.detail.answer.value)["candidate_digest"]
+        == CANDIDATE_DIGEST
+    )
 
 
 @pytest.mark.parametrize(
-    "provider",
+    ("payload", "admitted"),
+    TRACE_REVIEW_SCHEMA_CASES.values(),
+    ids=TRACE_REVIEW_SCHEMA_CASES.keys(),
+)
+def test_the_trace_review_schema_admits_only_honest_verdicts(
+    payload: dict[str, object], admitted: bool
+) -> None:
+    schema = read_schema_document(TRACE_REVIEW_RESULT_SCHEMA.document)
+    assert isinstance(schema, SchemaAccepted), schema
+    verdict = read_instance_document(json.dumps(payload).encode(), schema)
+    if admitted:
+        assert isinstance(verdict, InstanceAccepted), verdict
+    else:
+        assert isinstance(verdict, InstanceRefused), verdict
+
+
+@pytest.mark.parametrize(
+    "providers",
     [
-        pytest.param(json.dumps(candidate, ensure_ascii=False).encode(), id=case)
+        pytest.param(
+            (json.dumps(candidate, ensure_ascii=False).encode(), TRACE_REVIEW_ANSWER),
+            id=case,
+        )
         for case, candidate in REFUSED_CANDIDATES.items()
     ],
     indirect=True,
 )
 def test_a_candidate_with_an_extra_field_or_missing_digest_never_becomes_a_success(
-    runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
+    runtime: DbosRuntime,
 ) -> None:
     workflow, bindings = publish(runtime)
     run_id = RunId("v3/documentation-curation-refused")
@@ -389,6 +571,39 @@ def test_a_candidate_with_an_extra_field_or_missing_digest_never_becomes_a_succe
     wait_for_state(runtime, run_id, RunState.FAILED)
 
     detail = durable_queries(runtime.engine).get_node_detail(run_id, "curator")
+    assert isinstance(detail, NodeDetailFound), detail
+    assert detail.detail.state is NodeState.FAILED
+    assert detail.detail.answer is None
+    assert detail.detail.refusal is not None
+    assert "output-schema-refused" in detail.detail.refusal
+
+
+@pytest.mark.parametrize(
+    "providers",
+    [
+        pytest.param((ANSWER, json.dumps(verdict).encode()), id=case)
+        for case, verdict in REFUSED_TRACE_REVIEWS.items()
+    ],
+    indirect=True,
+)
+def test_a_malformed_trace_verdict_never_becomes_a_success(
+    runtime: DbosRuntime,
+) -> None:
+    workflow, bindings = publish(runtime)
+    run_id = RunId("v3/documentation-curation-trace-verdict-refused")
+    created = DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_published(
+        StartPublishedRunRequestV3(
+            run_id, workflow.revision_hash, bindings, orders=orders(runtime)
+        )
+    )
+    assert isinstance(created, DurableRunCreated), created
+
+    runtime.launch()
+    wait_for_state(runtime, run_id, RunState.FAILED)
+
+    detail = durable_queries(runtime.engine).get_node_detail(run_id, "trace-review")
     assert isinstance(detail, NodeDetailFound), detail
     assert detail.detail.state is NodeState.FAILED
     assert detail.detail.answer is None
