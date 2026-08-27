@@ -375,6 +375,12 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         """
         ...
 
+    def complete_agent_refusal(
+        self, execution: AgentAttemptExecution, reason: str
+    ) -> AgentAttemptFailed:
+        """End an armed attempt whose executor refused it before launch."""
+        ...
+
     def complete_project_verification_failure(
         self,
         execution: AgentAttemptExecution,
