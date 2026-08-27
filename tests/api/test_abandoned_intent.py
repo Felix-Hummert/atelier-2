@@ -1,4 +1,4 @@
-"""ABANDONED on GET /runs/{ref} and the node detail.
+"""ABANDONED on GET /runs, GET /runs/{ref}, and the node detail.
 
 Hop 38 made ABANDONED durable. The query projection already attaches the
 intent to an ended Action run. A dedicated run-resource field would name
@@ -35,6 +35,7 @@ from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
 from atelier2.contracts.run_projections import (
     NodeDetail,
     NodeState,
+    RunPage,
     RunProjection,
     WaitingReconciliationProjection,
 )
@@ -157,7 +158,7 @@ class _RunQueries:
         projection_limit: DurableProjectionLimit | None = None,
     ) -> ListRunsResult:
         del after, limit, state, projection_limit
-        raise AssertionError("abandoned-intent read must not list runs")
+        return RunPage((_projection(self._ending),), None)
 
     def get_reconciliation_retry_target(
         self,
@@ -188,18 +189,23 @@ def test_get_run_and_node_detail_name_abandoned_with_the_run_ending(
     """GET /runs names the ending; the node detail names ABANDONED as its refusal."""
 
     client = _client(ending)
+    listed = client.get("/atelier/api/v1/runs")
     run = client.get(f"/atelier/api/v1/runs/{PUBLIC_REF}")
     detail = client.get(f"/atelier/api/v1/runs/{PUBLIC_REF}/nodes/{NODE_ID}")
 
+    assert listed.status_code == 200
     assert run.status_code == 200
-    assert run.json()["state"] == ending.value
-    assert run.json()["current_node_id"] == NODE_ID
-    assert run.json()["node_rail"][0]["state"] == _node_state(ending).value
-    assert run.json()["terminal_hash"] is not None
+    assert listed.json()["items"] == [run.json()]
+    listed_run = listed.json()["items"][0]
+    assert listed_run["state"] == ending.value
+    assert listed_run["current_node_id"] == NODE_ID
+    assert listed_run["node_rail"][0]["state"] == _node_state(ending).value
+    assert listed_run["terminal_hash"] is not None
     assert detail.status_code == 200
     assert detail.json()["refusal"] == EffectIntentState.ABANDONED.value
-    assert detail.json()["state"] == _node_state(ending).value
-    assert detail.json()["node_id"] == NODE_ID
+    assert detail.json()["state"] == listed_run["node_rail"][0]["state"]
+    assert detail.json()["node_id"] == listed_run["current_node_id"]
+    assert detail.json()["run_id"] == listed_run["run_id"]
 
 
 @pytest.mark.parametrize("ending", [RunState.FAILED, RunState.CANCELLED])
