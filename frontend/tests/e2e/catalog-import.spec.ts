@@ -67,7 +67,8 @@ function entry(page: Page, name: string) {
 
 async function importInto(page: Page, fileName: string, document: string): Promise<void> {
   await page.getByRole("button", { name: catalogPageCopy.import }).click();
-  await page.getByLabel(catalogPageCopy.chooseFile).setInputFiles({
+  await expect(page.getByRole("dialog", { name: catalogPageCopy.import })).toHaveCount(0);
+  await page.getByLabel(catalogPageCopy.filePicker).setInputFiles({
     name: fileName,
     mimeType: "application/octet-stream",
     buffer: Buffer.from(document)
@@ -105,8 +106,9 @@ test("proves(the-operator-imports-a-workflow-and-an-agent-and-starts-what-was-im
   // The admission is durable, not a screen state: a cold load of the room
   // reads the admitted entry back and offers its enabled manual start door.
   await page.reload();
-  await expect(entry(page, workflowName).getByRole("link", { name: "Details" })).toBeVisible();
-  await entry(page, workflowName).getByRole("link", { name: "Details" }).click();
+  await expect(entry(page, workflowName).getByRole("button", { name: catalogPageCopy.stateHint })).toHaveCount(0);
+  await expect(page.getByText(catalogPageCopy.notAdmittedHint)).toHaveCount(0);
+  await entry(page, workflowName).getByRole("link", { name: workflowName }).click();
   await expect(page.getByRole("heading", { name: workflowName })).toBeVisible();
   await expect(page.getByRole("button", { name: catalogPageCopy.start })).toBeEnabled();
 });
@@ -143,14 +145,15 @@ test("the catalog names an unrecognized file without adding it", async ({ page }
   await page.goto("/atelier/catalog");
   await expect(page.getByRole("heading", { name: catalogPageCopy.title })).toBeVisible();
 
-  await page.getByRole("button", { name: catalogPageCopy.import }).click();
-  await page.getByLabel(catalogPageCopy.chooseFile).setInputFiles({
+  await page.getByLabel(catalogPageCopy.filePicker).setInputFiles({
     name: "nameless.agent.md",
     mimeType: "application/octet-stream",
     buffer: Buffer.from("---\nname: nameless\ndescription: Has a key nobody knows.\ncolor: cyan\n---\n\nBody.\n")
   });
 
   await expect(page.getByText(catalogPageCopy.unrecognized)).toBeVisible();
+  await expect(page.getByRole("button", { name: catalogPageCopy.close })).toBeVisible();
+  await expect(page.getByText("Choose a file", { exact: true })).toHaveCount(0);
 });
 
 test("the catalog room is composed, not squeezed, at 390 pixels", async ({ page }) => {
@@ -158,5 +161,18 @@ test("the catalog room is composed, not squeezed, at 390 pixels", async ({ page 
   await page.goto("/atelier/catalog");
   await expect(page.getByRole("heading", { name: catalogPageCopy.title })).toBeVisible();
 
-  await expect(page.getByRole("navigation", { name: "Workshop" })).toBeVisible();
+  const navigation = page.getByRole("navigation", { name: "Workshop" });
+  await expect(navigation).toBeVisible();
+  const roomBoxes = await Promise.all([
+    navigation.getByRole("link", { name: "Workbench" }).boundingBox(),
+    navigation.getByRole("link", { name: "Catalog" }).boundingBox(),
+    navigation.getByRole("link", { name: "History" }).boundingBox(),
+    navigation.getByRole("link", { name: /Settings/ }).boundingBox()
+  ]);
+  expect(roomBoxes.every((box) => box !== null)).toBe(true);
+  const roomRows = roomBoxes.flatMap((box) => box === null ? [] : [box.y]);
+  expect(Math.max(...roomRows) - Math.min(...roomRows)).toBeLessThanOrEqual(1);
+  const importBox = await page.getByRole("button", { name: catalogPageCopy.import }).boundingBox();
+  expect(importBox).not.toBeNull();
+  expect((importBox?.x ?? 0) + (importBox?.width ?? 0)).toBeLessThanOrEqual(390);
 });

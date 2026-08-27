@@ -220,6 +220,32 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       await expect(whyMarked).toBeVisible();
       await page.screenshot({ path: `${shotDirectory}/catalog-list-${viewport.name}-${colorScheme}.png`, fullPage: true });
 
+      await page.getByLabel("Catalog file picker").setInputFiles({
+        name: "catalog-recognition-shot.yaml",
+        mimeType: "application/yaml",
+        buffer: Buffer.from([
+          "format_version: 3",
+          "name: catalog-recognition-shot",
+          "nodes:",
+          "  - id: inspect",
+          "    type: wait",
+          "    prompt: Is this import ready?",
+          "    outputs:",
+          "      - name: answer",
+          "        schema:",
+          "          ref: answer-schema",
+          `          revision: ${schemaHash}`,
+          ""
+        ].join("\n"))
+      });
+      const importSheet = page.getByRole("dialog", { name: "Import" });
+      await expect(importSheet).toBeVisible();
+      await expect(importSheet.getByText("⧉")).toBeVisible();
+      await expect(importSheet.getByText("1 workflow")).toBeVisible();
+      await expect(importSheet.getByText("catalog-recognition-shot")).toBeVisible();
+      await page.screenshot({ path: `${shotDirectory}/catalog-import-found-${viewport.name}-${colorScheme}.png`, fullPage: true });
+      await importSheet.getByRole("button", { name: "Cancel" }).click();
+
       if (viewport.name === "390") {
         await whyMarked.click();
         const popover = markedWorkflow.getByRole("status");
@@ -228,7 +254,7 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       }
 
       const workflowEntry = page.getByRole("listitem").filter({ hasText: workflowName });
-      await workflowEntry.getByRole("link", { name: "Details" }).click();
+      await workflowEntry.getByRole("link", { name: workflowName }).click();
       await expect(page.getByRole("heading", { name: workflowName })).toBeVisible();
       await page.screenshot({ path: `${shotDirectory}/catalog-detail-${viewport.name}-${colorScheme}.png`, fullPage: true });
 

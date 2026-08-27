@@ -18,8 +18,9 @@ export const catalogPageCopy = {
   // how to get more. There is no second room that starts a run.
   lead: "What the workshop has — every published workflow, agent, and skill, each with its provenance.",
   import: "Import",
-  workflow: "Workflow",
-  agent: "Agent",
+  filePicker: "Catalog file picker",
+  oneWorkflow: "1 workflow",
+  oneAgent: "1 agent",
 
   workflowsTitle: "Available workflows",
   workflowsEmpty: "Drop a workflow, an agent, or a plugin folder — anywhere on this page.",
@@ -58,17 +59,9 @@ export const catalogPageCopy = {
 
   // The catalog detail owns the only manual start door (ADR 0019 §1).
   start: "Start",
-  // The one door into the workflow detail page (#695): a named revision's
-  // node-graph preview and per-node facts, which this entry itself does not
-  // carry. Shown for any named revision -- admitted, not yet admitted, or not
-  // executable -- since seeing the graph and why a node refuses to run is
-  // exactly what this door is for.
-  details: "Details",
 
-  chooseFile: "Choose a file",
   cancel: "Cancel",
   close: "Close",
-  recognizing: "Recognizing…",
   addToCatalog: "Add to catalog",
   addingToCatalog: "Adding…",
   importFailed: "This file could not be imported.",

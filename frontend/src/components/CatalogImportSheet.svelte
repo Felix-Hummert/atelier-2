@@ -7,10 +7,11 @@
   import { humanErrorMessage } from "../lib/humanRefusal";
   import ProblemNotice from "./ProblemNotice.svelte";
 
-  export let recognize: (
-    document: Uint8Array,
-    fileName: string | null
-  ) => Promise<LibraryRecognition>;
+  export let document: Uint8Array;
+  export let fileName: string;
+  export let recognition: LibraryRecognition | null;
+  export let recognitionProblem: Problem | null;
+  export let recognitionFailure: string | null;
   export let add: (document: Uint8Array, fileName: string | null) => Promise<void>;
   export let onClose: () => void;
 
@@ -18,10 +19,6 @@
 
   let dialogElement: DialogElement;
   let closeButton: HTMLButtonElement;
-  let document: Uint8Array | null = null;
-  let fileName: string | null = null;
-  let recognition: LibraryRecognition | null = null;
-  let recognizing = false;
   let adding = false;
   let problem: Problem | null = null;
   let failure: string | null = null;
@@ -37,32 +34,8 @@
     onClose();
   }
 
-  function clearVerdict(): void {
-    recognition = null;
-    problem = null;
-    failure = null;
-  }
-
-  async function chooseFile(event: Event): Promise<void> {
-    const chosen = (event.currentTarget as HTMLInputElement).files?.[0];
-    if (chosen === undefined) return;
-    clearVerdict();
-    document = null;
-    fileName = chosen.name;
-    recognizing = true;
-    try {
-      document = new Uint8Array(await chosen.arrayBuffer());
-      recognition = await recognize(document, fileName);
-    } catch (error) {
-      if (error instanceof CockpitRequestError && error.problem !== null) problem = error.problem;
-      else failure = humanErrorMessage(error, catalogPageCopy.recognitionFailed);
-    } finally {
-      recognizing = false;
-    }
-  }
-
   async function addRecognizedDocument(): Promise<void> {
-    if (document === null || recognition === null || !canAdd(recognition)) return;
+    if (recognition === null || !canAdd(recognition)) return;
     problem = null;
     failure = null;
     adding = true;
@@ -81,17 +54,22 @@
     return value.outcome === "workflow" || value.outcome === "agent_definition";
   }
 
+  function mustClose(): boolean {
+    return recognition === null || !canAdd(recognition);
+  }
+
   function recognitionLabel(value: LibraryRecognition): string {
     if (value.outcome === "workflow") return value.name ?? catalogPageCopy.unnamedWorkflow;
     if (value.outcome === "agent_definition") return value.name;
     return "";
   }
 
-  function recognitionDescription(value: LibraryRecognition): string | null {
-    if (value.outcome === "workflow" || value.outcome === "agent_definition") {
-      return value.description;
-    }
-    return null;
+  function recognitionGlyph(value: LibraryRecognition): string {
+    return value.outcome === "workflow" ? "⧉" : "◯";
+  }
+
+  function recognitionCount(value: LibraryRecognition): string {
+    return value.outcome === "workflow" ? catalogPageCopy.oneWorkflow : catalogPageCopy.oneAgent;
   }
 </script>
 
@@ -101,25 +79,11 @@
       <h2 id="catalog-import-title">{wrapDisplayCopy(catalogPageCopy.import)}</h2>
     </header>
 
-    <label class="file-choice button">
-      {wrapDisplayCopy(catalogPageCopy.chooseFile)}
-      <input
-        class="visually-hidden"
-        type="file"
-        disabled={recognizing || adding}
-        onchange={(event) => { void chooseFile(event); }}
-      />
-    </label>
-
-    {#if recognizing}
-      <p>{wrapDisplayCopy(catalogPageCopy.recognizing)}</p>
-    {:else if recognition !== null && canAdd(recognition)}
+    {#if recognition !== null && canAdd(recognition)}
       <div class="found">
-        <p class="kind">{wrapDisplayCopy(recognition.outcome === "workflow" ? catalogPageCopy.workflow : catalogPageCopy.agent)}</p>
+        <span class="glyph" aria-hidden="true">{recognitionGlyph(recognition)}</span>
+        <span class="count">{wrapDisplayCopy(recognitionCount(recognition))}</span>
         <strong>{recognitionLabel(recognition)}</strong>
-        {#if recognitionDescription(recognition) !== null}
-          <p>{recognitionDescription(recognition)}</p>
-        {/if}
       </div>
     {:else if recognition?.outcome === "not_held"}
       <p class="failure" role="alert">{recognition.reason}</p>
@@ -127,6 +91,12 @@
       <p class="failure" role="alert">{wrapDisplayCopy(catalogPageCopy.unrecognized)}</p>
     {/if}
 
+    {#if recognitionProblem !== null}
+      <ProblemNotice title={catalogPageCopy.importFailed} problem={recognitionProblem} />
+    {/if}
+    {#if recognitionFailure !== null}
+      <p class="failure" role="alert">{recognitionFailure}</p>
+    {/if}
     {#if problem !== null}
       <ProblemNotice title={catalogPageCopy.importFailed} {problem} />
     {/if}
@@ -141,7 +111,7 @@
         </button>
       {/if}
       <button bind:this={closeButton} class="quiet" type="button" disabled={adding} onclick={dismiss}>
-        {wrapDisplayCopy(recognition?.outcome === "unrecognized" || recognition?.outcome === "not_held" ? catalogPageCopy.close : catalogPageCopy.cancel)}
+        {wrapDisplayCopy(mustClose() ? catalogPageCopy.close : catalogPageCopy.cancel)}
       </button>
     </footer>
   </dialog>
@@ -153,12 +123,9 @@
   .sheet::backdrop { background: color-mix(in srgb, var(--ground) 80%, transparent); }
   header, footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
   h2 { margin: 0; font-family: var(--serif); }
-  .file-choice { display: inline-flex; align-items: center; margin: var(--space-4) 0; cursor: pointer; }
-  .file-choice:has(input:focus-visible) { outline: var(--edge) solid var(--accent); outline-offset: var(--space-1); }
-  .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-  .found { display: grid; gap: var(--space-1); margin-bottom: var(--space-4); }
-  .found p { margin: 0; }
-  .kind { color: var(--ink-dim); font-size: var(--text-2xs); font-weight: var(--weight-strong); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+  .found { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: baseline; gap: var(--space-2); margin-bottom: var(--space-4); }
+  .glyph { color: var(--ink-dim); }
+  .count { color: var(--ink-dim); font-size: var(--text-2xs); font-weight: var(--weight-strong); letter-spacing: var(--tracking-label); text-transform: uppercase; }
   .failure { color: var(--signal-failure); }
   @media (max-width: 480px) { .sheet { inset: auto 0 0 0; width: 100%; max-height: 85vh; border-radius: var(--r-lg) var(--r-lg) 0 0; } }
 </style>

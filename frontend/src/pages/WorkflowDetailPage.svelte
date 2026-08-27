@@ -68,6 +68,7 @@
   $: orders = found?.orders ?? [];
   $: revisionHash = found?.detail.workflow_revision_hash ?? "";
   $: retired = found?.catalogState.kind === "retired";
+  $: admitted = found?.catalogState.kind === "admitted";
   $: catalogNote = catalogStateNote(found?.catalogState);
   /**
    * Only a version 3 document ever declares a `name:`, so a row this page
@@ -185,7 +186,7 @@
       <button
         type="button"
         class="primary"
-        disabled={retired || (graph.workflow_format_version === 3 && !graph.executable)}
+        disabled={!admitted || retired || (graph.workflow_format_version === 3 && !graph.executable)}
         onclick={goToStart}
       >{wrapDisplayCopy(catalogPageCopy.start)}</button>
     </header>

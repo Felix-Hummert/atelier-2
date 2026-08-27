@@ -18,7 +18,7 @@ import { cancellableBlock } from "../support/runV3";
 const revisionHash = "a".repeat(64);
 const configurationHash = "b".repeat(64);
 const publicReference = "run1.cnVuLW9yZGVy";
-const workflowName = "Cook to order";
+const workflowName = "cook-to-order";
 const projectReference = "project1.dGVzdA";
 
 const portionsOrder = {

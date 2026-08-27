@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import type { CockpitApi } from "../api/client";
+  import { CockpitRequestError, type CockpitApi, type LibraryRecognition, type Problem } from "../api/client";
   import CatalogImportSheet from "../components/CatalogImportSheet.svelte";
   import InfoHint from "../components/InfoHint.svelte";
   import ReadState from "../components/ReadState.svelte";
@@ -17,6 +17,7 @@
   } from "../lib/catalogRows";
   import { onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
+  import { humanErrorMessage } from "../lib/humanRefusal";
   import {
     beginRead,
     confirmRead,
@@ -38,7 +39,21 @@
     retainedRead<CatalogWorkflowRow[], ReadFailure>();
   let agents: RetainedRead<CatalogAgentRow[], ReadFailure> =
     retainedRead<CatalogAgentRow[], ReadFailure>();
-  let importSheetOpen = false;
+  type ImportResult = {
+    document: Uint8Array;
+    fileName: string;
+    recognition: LibraryRecognition | null;
+    problem: Problem | null;
+    failure: string | null;
+  };
+  type ImportFile = {
+    readonly name: string;
+    arrayBuffer(): Promise<ArrayBuffer>;
+  };
+
+  let fileInput: HTMLInputElement;
+  let importResult: ImportResult | null = null;
+  let isDropTarget = false;
 
   onMount(() => {
     // Navigating into the Catalog focuses the stage. On a phone that focus can
@@ -124,8 +139,48 @@
     }
   }
 
-  async function recognizeLibraryDocument(document: Uint8Array, fileName: string | null) {
-    return cockpitApi.recognizeLibraryDocument(document, fileName);
+  function openFilePicker(): void {
+    fileInput.click();
+  }
+
+  async function recognizeFile(file: ImportFile): Promise<void> {
+    isDropTarget = false;
+    try {
+      const document = new Uint8Array(await file.arrayBuffer());
+      importResult = {
+        document,
+        fileName: file.name,
+        recognition: await cockpitApi.recognizeLibraryDocument(document, file.name),
+        problem: null,
+        failure: null
+      };
+    } catch (error) {
+      importResult = {
+        document: new Uint8Array(),
+        fileName: file.name,
+        recognition: null,
+        problem: error instanceof CockpitRequestError ? error.problem : null,
+        failure: error instanceof CockpitRequestError
+          ? null
+          : humanErrorMessage(error, catalogPageCopy.recognitionFailed)
+      };
+    }
+  }
+
+  function chooseFile(event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (file !== undefined) void recognizeFile(file);
+  }
+
+  function receiveDrop(event: {
+    preventDefault(): void;
+    dataTransfer: { files: ArrayLike<ImportFile> } | null;
+  }): void {
+    event.preventDefault();
+    const file = event.dataTransfer?.files[0];
+    if (file !== undefined) void recognizeFile(file);
   }
 
   async function addLibraryDocument(document: Uint8Array, fileName: string | null): Promise<void> {
@@ -148,13 +203,27 @@
   }
 </script>
 
-<section class="surface" aria-labelledby="catalog-title">
+<section
+  class="surface catalog-drop-target"
+  class:drop-target-active={isDropTarget}
+  aria-labelledby="catalog-title"
+  ondragover={(event) => { event.preventDefault(); isDropTarget = true; }}
+  ondragleave={(event) => { if (event.currentTarget === event.target) isDropTarget = false; }}
+  ondrop={receiveDrop}
+>
+  <input
+    bind:this={fileInput}
+    class="visually-hidden"
+    type="file"
+    aria-label={wrapDisplayCopy(catalogPageCopy.filePicker)}
+    onchange={chooseFile}
+  />
   <header class="surface-head catalog-head">
     <div>
       <h1 id="catalog-title">{wrapDisplayCopy(catalogPageCopy.title)}</h1>
       <p>{wrapDisplayCopy(catalogPageCopy.lead)}</p>
     </div>
-    <button type="button" onclick={() => { importSheetOpen = true; }}>
+    <button type="button" onclick={openFilePicker}>
       {wrapDisplayCopy(catalogPageCopy.import)}
     </button>
   </header>
@@ -174,9 +243,27 @@
           class:marked-attention={stateHint !== null && row.state?.kind !== "not-executable"}
           class:marked-blocked={row.state?.kind === "not-executable"}
         >
-          <div class="entry-head">
-            <strong>{row.title}</strong>
-          </div>
+          {#if row.name !== null}
+            {@const detailPath = workflowPath(row.name)}
+            <a
+              class="entry-door"
+              href={detailPath}
+              aria-label={row.title}
+              onclick={(event) => { event.preventDefault(); navigate(detailPath); }}
+            >
+              <div class="entry-head">
+                <strong>{row.title}</strong>
+              </div>
+              <p class="entry-line">{row.description ?? wrapDisplayCopy(catalogPageCopy.noDescription)}</p>
+              <p class="entry-facts">{catalogRowFacts().join(" · ")}</p>
+            </a>
+          {:else}
+            <div class="entry-head">
+              <strong>{row.title}</strong>
+            </div>
+            <p class="entry-line">{row.description ?? wrapDisplayCopy(catalogPageCopy.noDescription)}</p>
+            <p class="entry-facts">{catalogRowFacts().join(" · ")}</p>
+          {/if}
           {#if stateHint !== null}
             <InfoHint
               label={wrapDisplayCopy(catalogPageCopy.stateHint)}
@@ -184,19 +271,6 @@
               text={wrapDisplayCopy(catalogPageCopy.why)}
               pinToCard={true}
             />
-          {/if}
-          <p class="entry-line">{row.description ?? wrapDisplayCopy(catalogPageCopy.noDescription)}</p>
-          <p class="entry-facts">{catalogRowFacts().join(" · ")}</p>
-          {#if row.name !== null}
-            {@const detailPath = workflowPath(row.name)}
-            <div class="entry-actions">
-              <a
-                class="button"
-                href={detailPath}
-                onclick={(event) => { event.preventDefault(); navigate(detailPath); }}
-                >{wrapDisplayCopy(catalogPageCopy.details)}</a
-              >
-            </div>
           {/if}
         </li>
       {/each}
@@ -238,11 +312,15 @@
     <p class="empty">{wrapDisplayCopy(catalogPageCopy.skillsNone)}</p>
   </section>
 
-  {#if importSheetOpen}
+  {#if importResult !== null}
     <CatalogImportSheet
-      recognize={recognizeLibraryDocument}
+      document={importResult.document}
+      fileName={importResult.fileName}
+      recognition={importResult.recognition}
+      recognitionProblem={importResult.problem}
+      recognitionFailure={importResult.failure}
       add={addLibraryDocument}
-      onClose={() => { importSheetOpen = false; }}
+      onClose={() => { importResult = null; }}
     />
   {/if}
 </section>
@@ -267,11 +345,29 @@
   .catalog-head > div {
     display: grid;
     gap: var(--space-1);
+    min-width: 0;
   }
 
   .catalog-head p {
     max-width: var(--reading-width);
     color: var(--ink-dim);
+  }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .catalog-drop-target.drop-target-active {
+    outline: var(--edge-strong) dashed var(--signal-attention);
+    outline-offset: calc(var(--space-2) * -1);
   }
 
   .empty {
@@ -323,6 +419,70 @@
     gap: var(--space-2);
   }
 
+  .entry-door {
+    display: grid;
+    gap: var(--space-1);
+    width: 100%;
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .entry-door:hover strong,
+  .entry-door:focus-visible strong {
+    text-decoration: underline;
+  }
+
+  /* At phone width the rail is one row. Its former flex layout gave Settings'
+     project context an unshrinkable width, which pushed History and Settings
+     onto a second line and left the Catalog action outside the viewport. The
+     grid reserves room for the room doors and lets only the context elide. */
+  @media (max-width: 48rem) {
+    :global(.workshop .workshop-rail) {
+      display: grid;
+      grid-template-columns: max-content repeat(3, max-content) minmax(0, 1fr);
+      gap: var(--space-1);
+      padding: var(--space-2);
+    }
+
+    :global(.workshop .workshop-rail .rail-brand) {
+      padding: var(--space-1);
+      font-size: var(--text-sm);
+    }
+
+    :global(.workshop .workshop-rail .nav-destination) {
+      gap: var(--space-1);
+      min-width: 0;
+      padding: var(--space-1);
+      font-size: var(--text-2xs);
+    }
+
+    :global(.workshop .workshop-rail .nav-destination-mark) {
+      width: auto;
+    }
+
+    :global(.workshop .workshop-rail .rail-grow) {
+      display: none;
+    }
+
+    :global(.workshop .workshop-rail > a:nth-of-type(1)) { grid-column: 2; grid-row: 1; }
+    :global(.workshop .workshop-rail > a:nth-of-type(2)) { grid-column: 3; grid-row: 1; }
+    :global(.workshop .workshop-rail > a:nth-of-type(3)) { grid-column: 4; grid-row: 1; }
+
+    :global(.workshop .workshop-rail .rail-foot) {
+      grid-column: 5;
+      grid-row: 1;
+      margin-left: 0;
+      justify-self: end;
+    }
+
+    :global(.workshop .workshop-rail .rail-project) {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
   .entry strong {
     font-size: var(--text-sm);
   }
@@ -334,13 +494,6 @@
   .entry-facts {
     color: var(--ink-dim);
     font-size: var(--text-2xs);
-  }
-
-  .entry-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2);
-    margin-top: var(--space-2);
   }
 
 </style>

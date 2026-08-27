@@ -157,7 +157,7 @@ describe("the catalog room", () => {
     expect(screen.queryByRole("button", { name: catalogPageCopy.stateHint })).toBeNull();
   });
 
-  it("opens a named workflow's own detail room from its Details door, the only one it has", async () => {
+  it("opens a named workflow's own detail room from the card door", async () => {
     openCatalog({
       ...listing([workflowSummary()]),
       ...admittedName(),
@@ -181,7 +181,7 @@ describe("the catalog room", () => {
     });
     await screen.findByText(WORKFLOW_NAME);
 
-    fireEvent.click(screen.getByRole("link", { name: catalogPageCopy.details }));
+    fireEvent.click(screen.getByRole("link", { name: WORKFLOW_NAME }));
 
     expect(
       (await screen.findByRole("heading", { name: WORKFLOW_NAME })).isConnected
@@ -218,7 +218,7 @@ describe("the catalog room", () => {
     });
 
     await screen.findByText(WORKFLOW_NAME);
-    await fireEvent.click(screen.getByRole("link", { name: catalogPageCopy.details }));
+    await fireEvent.click(screen.getByRole("link", { name: WORKFLOW_NAME }));
 
     const revision = await screen.findByRole("group", { name: workflowDetailCopy.workflowRevision });
     expect(revision.textContent).toContain(shortFingerprint(WORKFLOW_HASH));
@@ -306,7 +306,7 @@ describe("the catalog room", () => {
       }))
     });
     await screen.findByText(WORKFLOW_NAME);
-    await fireEvent.click(screen.getByRole("link", { name: catalogPageCopy.details }));
+    await fireEvent.click(screen.getByRole("link", { name: WORKFLOW_NAME }));
 
     await fireEvent.click(await screen.findByRole("button", { name: catalogPageCopy.start }));
 
@@ -320,11 +320,11 @@ describe("the catalog room", () => {
     expect(screen.queryByRole("button", { name: /Why builder/ })).toBeNull();
   });
 
-  it("offers no Details door for a revision that declares no name to look one up by", async () => {
+  it("offers no card door for a revision that declares no name to look one up by", async () => {
     openCatalog({ ...listing([workflowSummary({ name: null })]), ...unlistedName() });
     await screen.findByText(catalogPageCopy.unnamedWorkflow);
 
-    expect(screen.queryByRole("link", { name: catalogPageCopy.details })).toBeNull();
+    expect(screen.queryByRole("link", { name: catalogPageCopy.unnamedWorkflow })).toBeNull();
   });
 
   it("keeps a published workflow outside the catalog without a second admission door", async () => {
@@ -378,12 +378,34 @@ describe("the catalog room", () => {
     });
 
     await fireEvent.click(await screen.findByRole("button", { name: catalogPageCopy.import }));
+    expect(screen.queryByRole("dialog", { name: catalogPageCopy.import })).toBeNull();
     const file = { name: "iterate-code.yaml", arrayBuffer: async () => new TextEncoder().encode(EXACT_YAML).buffer };
-    await fireEvent.change(screen.getByLabelText(catalogPageCopy.chooseFile), { target: { files: [file] } });
+    await fireEvent.change(screen.getByLabelText(catalogPageCopy.filePicker), { target: { files: [file] } });
     await fireEvent.click(await screen.findByRole("button", { name: catalogPageCopy.addToCatalog }));
 
     expect((await screen.findByText(WORKFLOW_NAME)).isConnected).toBe(true);
     expect(addLibraryDocument).toHaveBeenCalledOnce();
+  });
+
+  it("recognizes a file dropped anywhere on the Catalog page", async () => {
+    openCatalog({
+      recognizeLibraryDocument: vi.fn(async () => ({
+        outcome: "workflow" as const,
+        workflow_format_version: 3 as const,
+        name: WORKFLOW_NAME,
+        description: null
+      }))
+    });
+    const file = {
+      name: "iterate-code.yaml",
+      arrayBuffer: async () => new TextEncoder().encode(EXACT_YAML).buffer
+    };
+
+    await fireEvent.drop(screen.getByRole("region", { name: catalogPageCopy.title }), {
+      dataTransfer: { files: [file] }
+    });
+
+    expect((await screen.findByRole("button", { name: catalogPageCopy.addToCatalog })).isConnected).toBe(true);
   });
 
   it("offers no admission door for a workflow the library would refuse", async () => {
@@ -484,11 +506,12 @@ describe("the catalog room", () => {
       addLibraryDocument
     });
 
-    await fireEvent.click(await screen.findByRole("button", { name: catalogPageCopy.import }));
     const file = { name: "notes.txt", arrayBuffer: async () => new TextEncoder().encode("notes").buffer };
-    await fireEvent.change(screen.getByLabelText(catalogPageCopy.chooseFile), { target: { files: [file] } });
+    await fireEvent.change(screen.getByLabelText(catalogPageCopy.filePicker), { target: { files: [file] } });
 
     expect((await screen.findByText(catalogPageCopy.unrecognized)).isConnected).toBe(true);
+    expect(screen.queryByText("Choose a file", { exact: true })).toBeNull();
+    expect(screen.getByRole("button", { name: catalogPageCopy.close })).toBeTruthy();
     expect(addLibraryDocument).not.toHaveBeenCalled();
   });
 

@@ -1904,7 +1904,7 @@ test("the Catalog detail names the admitted head of a V3 lineage", async ({
   const row = page.getByRole("listitem").filter({ hasText: lineageName });
   await expect(row).toContainText("The catalog head.");
   await expect(row).not.toContainText("The first admitted member.");
-  await row.getByRole("link", { name: "Details" }).click();
+  await row.getByRole("link", { name: lineageName }).click();
   await expect(page).toHaveURL(`/atelier/catalog/${lineageName}`);
   await expect(page.getByRole("heading", { level: 1, name: lineageName })).toBeVisible();
   await expect(page.getByRole("button", { name: "Start" })).toBeDisabled();
@@ -2098,8 +2098,8 @@ test("an admitted V3 workflow is named by the Catalog", async ({
 
   await page.goto("/atelier/catalog");
   const row = page.getByRole("listitem").filter({ hasText: lineageName });
-  await expect(row.getByRole("link", { name: "Details" })).toBeVisible();
-  await row.getByRole("link", { name: "Details" }).click();
+  await expect(row.getByRole("link", { name: lineageName })).toBeVisible();
+  await row.getByRole("link", { name: lineageName }).click();
   await expect(page).toHaveURL(`/atelier/catalog/${lineageName}`);
   await expect(page.getByRole("heading", { level: 1, name: lineageName })).toBeVisible();
 });
@@ -2159,9 +2159,14 @@ test("the Catalog keeps unpublished and unnamable workflows visible", async ({
   await stateHint.click();
   await expect(unpublished.getByRole("status")).toHaveText(catalogPageCopy.notAdmittedHint);
   await expect(unpublished.getByRole("button", { name: /Admit/ })).toHaveCount(0);
+  await unpublished.getByRole("link", { name: unlisted }).click();
+  await expect(page.getByRole("heading", { level: 1, name: unlisted })).toBeVisible();
+  await expect(page.getByRole("button", { name: catalogPageCopy.start })).toBeDisabled();
+
+  await page.goto("/atelier/catalog");
   const unnamed = page.getByRole("listitem").filter({ hasText: unnamable });
   await expect(unnamed).toBeVisible();
-  await expect(unnamed.getByRole("link", { name: "Details" })).toBeVisible();
+  await expect(unnamed.getByRole("link", { name: unnamable })).toBeVisible();
   await expect(unnamed.getByRole("button", { name: /Admit/ })).toHaveCount(0);
 });
 
