@@ -12,7 +12,7 @@ from types import ModuleType
 
 import pytest
 
-from scripts.documentation_freshness import DocumentSourceWatermark
+from scripts.documentation_freshness import DocumentSourceWatermark, UnboundDocument
 from scripts.requirement_contract import approval_bytes, read_document_source_watermarks
 
 PROJECT_ROOT = Path(__file__).parents[2]
@@ -143,6 +143,27 @@ def source_binding_with_changed_watermark() -> str:
     watermark = bound_0004_watermark()
     original = watermark.last_observed_source_object.identifier
     return source_binding_with_watermark("0" + original[1:])
+
+
+def source_binding_for_unbound_document_with_watermark(source_watermark: str) -> str:
+    document = next(
+        item
+        for item in read_document_source_watermarks(PROJECT_ROOT)
+        if item.document.name.startswith("0001-")
+    )
+    assert isinstance(document, UnboundDocument)
+    return (
+        source_binding()
+        .replace('document = "0004"', 'document = "0001"')
+        .replace(
+            f'content_sha256 = "{bound_0004_watermark().document_digest}"',
+            f'content_sha256 = "{document.document_digest}"',
+        )
+        .replace(
+            f'watermark = "{bound_0004_watermark().last_observed_source_object.identifier}"',
+            f'watermark = "{source_watermark}"',
+        )
+    )
 
 
 def legacy_table(document: str, path: Path, content_digest: str) -> str:
@@ -401,14 +422,14 @@ def test_an_unresolvable_exact_base_revision_fails_closed(tmp_path: Path) -> Non
         ),
         (lambda content: content + "\n" + source_binding(), "0004"),
         (
-            lambda content: content.replace(
-                source_binding(),
-                source_binding_with_watermark("unregistered-revision").replace(
-                    f'content_sha256 = "{bound_0004_watermark().document_digest}"',
-                    'content_sha256 = "' + "f" * 64 + '"',
-                ),
+            lambda content: (
+                content
+                + "\n"
+                + source_binding_for_unbound_document_with_watermark(
+                    "unregistered-revision"
+                )
             ),
-            "0004",
+            "0001",
         ),
         (
             lambda content: content.replace(

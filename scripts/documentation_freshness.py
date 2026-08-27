@@ -4,10 +4,11 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-if __package__:
-    from .requirement_contract import SourceObjectKind
-else:
-    from requirement_contract import SourceObjectKind
+
+class SourceObjectKind(str, Enum):
+    ISSUE_BODY_REVISION = "issue_body_revision"
+    ISSUE_COMMENT = "issue_comment"
+    DECISION_REVISION = "decision_revision"
 
 
 class FreshnessRefusalReason(str, Enum):

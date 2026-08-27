@@ -5,12 +5,15 @@ import re
 import tomllib
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from documentation_freshness import DocumentSourceWatermark, UnboundDocument
+    from documentation_freshness import (
+        DocumentSourceWatermark,
+        SourceObjectKind,
+        UnboundDocument,
+    )
 
 REQUIREMENTS_DIRECTORY = Path("docs/requirements")
 REGISTRY_LOCATION = REQUIREMENTS_DIRECTORY / "revisions.toml"
@@ -28,12 +31,6 @@ REVISION_FIELDS = frozenset(
 SOURCE_BINDING_FIELDS = frozenset(
     {"document", "content_sha256", "source_thread", "watermark_kind", "watermark"}
 )
-
-
-class SourceObjectKind(str, Enum):
-    ISSUE_BODY_REVISION = "issue_body_revision"
-    ISSUE_COMMENT = "issue_comment"
-    DECISION_REVISION = "decision_revision"
 
 
 class RequirementContractError(Exception):
@@ -233,6 +230,10 @@ def _source_binding(raw: dict[str, Any]) -> SourceBinding:
     if re.fullmatch(r"\d{4}", document) is None:
         raise Refusal(f"source binding document {document!r} is not NNNN")
     raw_watermark_kind = _text(raw, "watermark_kind", f"source binding {document}")
+    if __package__:
+        from .documentation_freshness import SourceObjectKind
+    else:
+        from documentation_freshness import SourceObjectKind
     try:
         watermark_kind = SourceObjectKind(raw_watermark_kind)
     except ValueError as error:
