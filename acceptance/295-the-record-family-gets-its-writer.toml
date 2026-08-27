@@ -56,7 +56,7 @@ story = "https://github.com/FlexOr2/atelier-2/issues/295"
 
 [[sentence]]
 id = "a-refused-output-ends-its-attempt-durably-named"
-text = "Exact decoded output bytes that the schema their own node pinned refuses end the attempt FAILED under OUTPUT_SCHEMA_REFUSED with an AGENT_FAILED event, and a failed node-receipt/v3 whose reason opens with the stable token output-schema-refused and carries the schema owner's own verdict, bound to the request and package the start persisted -- written in one transaction with nothing partial on a crash, while no agent receipt, no completion event and no advanced run appear, and the driver survives instead of leaving a silent STARTED/LAUNCH_ARMED zombie."
+text = "Exact decoded output bytes that the schema their own node pinned refuses end the first attempt FAILED under OUTPUT_SCHEMA_REFUSED with a durable refusal receipt carrying the schema owner's verdict and judged bytes, and prepare the one repair attempt while the run remains STARTED; a second refused answer ends FAILED with the AGENT_FAILED event and failed node-receipt/v3 whose reason opens with the stable token output-schema-refused, bound to the request and package the start persisted, while no agent receipt, no completion event and no advanced run appear."
 
 [[sentence]]
 id = "a-succeeded-node-writes-artifact-and-receipt-atomically"

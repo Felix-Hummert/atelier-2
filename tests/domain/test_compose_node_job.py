@@ -9,9 +9,13 @@ today -- a promise that holds by accident of its callers is not a promise.
 
 from __future__ import annotations
 
+import pytest
+
 from atelier2.application.compose_node_job import (
     ORDER_HEADING,
+    OUTPUT_SCHEMA_REPAIR_HEADING,
     NodeJobCompositionVersion,
+    OutputSchemaRepair,
     node_job,
 )
 from atelier2.contracts.node_records_v3 import RunInput, RunInputSchemaKind
@@ -99,4 +103,78 @@ def test_the_legacy_composition_keeps_declared_root_strings_json_encoded() -> No
             ORDER_HEADING.format(name="diff"),
             '"diff --git a/file.py b/file.py\\n+line"',
         ]
+    )
+
+
+def test_output_schema_repair_is_a_versioned_composition_input() -> None:
+    composed = node_job(
+        "Review it.",
+        output_schema_repair=OutputSchemaRepair(
+            "output-schema-refused: instance-not-json"
+        ),
+        composition_version=NodeJobCompositionVersion.OUTPUT_SCHEMA_REPAIR,
+    )
+
+    assert composed == (
+        "Review it.\n\n"
+        f"{OUTPUT_SCHEMA_REPAIR_HEADING}\n\n"
+        "output-schema-refused: instance-not-json"
+    )
+
+
+@pytest.mark.parametrize(
+    ("composition_version", "repair"),
+    [
+        pytest.param(
+            NodeJobCompositionVersion.OUTPUT_SCHEMA_REPAIR,
+            None,
+            id="repair-version-without-receipt-payload",
+        ),
+        pytest.param(
+            NodeJobCompositionVersion.CURRENT,
+            OutputSchemaRepair("output-schema-refused: instance-not-json"),
+            id="current-version-with-repair-payload",
+        ),
+        pytest.param(
+            NodeJobCompositionVersion.LEGACY,
+            OutputSchemaRepair("output-schema-refused: instance-not-json"),
+            id="legacy-version-with-repair-payload",
+        ),
+    ],
+)
+def test_node_job_refuses_every_version_and_repair_payload_mismatch(
+    composition_version: NodeJobCompositionVersion,
+    repair: OutputSchemaRepair | None,
+) -> None:
+    with pytest.raises(ValueError, match="output-schema repair"):
+        node_job(
+            "Review it.",
+            composition_version=composition_version,
+            output_schema_repair=repair,
+        )
+
+
+def test_current_and_legacy_compositions_keep_their_exact_published_preimages() -> None:
+    supplied = (
+        RunInput(
+            "diff",
+            SCHEMA,
+            b'"diff --git a/file.py b/file.py\\n+line"',
+            RunInputSchemaKind.PLAIN_STRING,
+        ),
+    )
+
+    assert node_job(
+        "Review it.",
+        supplied,
+        composition_version=NodeJobCompositionVersion.LEGACY,
+    ).encode("utf-8") == (
+        b'Review it.\n\n--- order: diff ---\n\n"diff --git a/file.py b/file.py\\n+line"'
+    )
+    assert node_job(
+        "Review it.",
+        supplied,
+        composition_version=NodeJobCompositionVersion.CURRENT,
+    ).encode("utf-8") == (
+        b"Review it.\n\n--- order: diff ---\n\ndiff --git a/file.py b/file.py\n+line"
     )

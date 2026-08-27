@@ -1439,24 +1439,24 @@ test("proves(the-cockpit-cancels-a-real-run-by-keyboard): cancels a running V3 r
 
 test("a node whose answer its own contract refuses never reports success", async ({
   page
-}) => {
-  // The operator's own silence, reproduced in a browser -- and its cause moved.
-  // `live/die-kette-sieht` stood on STARTED with nothing to read: its first node
-  // answered prose while its author had pinned a schema, and the atelier wrote
-  // `AGENT_COMPLETED` anyway. Since #57 that success is never written: the run
-  // stops on the node that answered, and nothing on the page claims it is done.
-  //
-  // What the page still cannot say is why, and this test pins that gap rather
-  // than hiding it: no durable record of the refusal exists yet, because nothing
-  // writes `node-receipt/v3`. The panel's refusal wording keeps its own proof in
-  // the cockpit component tests, which drive the read surface directly.
+}, testInfo) => {
+  // The provider's prose cannot become success just because it reached the
+  // execution boundary. Its first refusal durably ends ordinal one, then orders
+  // one repair attempt. This uses the existing delayed fake so the browser can
+  // read that ordinal-two repair while it is live before the same fake refuses
+  // its answer too.
   const api = "/atelier/api/v1";
+  const proofInstance = testInfo.repeatEachIndex + 1;
+  const workflowName = `the chain the operator watched ${proofInstance}`;
+  const profileId = `v3-refused-twice-${proofInstance}`;
+  const model = `v3-refused-twice-model-${proofInstance}`;
+  const runId = `v3/the-silent-one-${proofInstance}`;
 
   const schemaHash = await publishSchema(page, '{"type": "object"}');
 
   const workflowYaml = [
     "format_version: 3",
-    "name: the chain the operator watched",
+    `name: ${workflowName}`,
     "nodes:",
     "  - id: implement",
     "    type: agent",
@@ -1487,33 +1487,33 @@ test("a node whose answer its own contract refuses never reports success", async
 
   const auth = await page.request.post(`${api}/auth-profile-revisions`, {
     data: {
-      profile_id: "v3-stuck",
+      profile_id: profileId,
       revision_number: 1,
-      provider_id: "e2e-v3",
+      provider_id: "e2e-v3-slow",
       auth_mode: "subscription"
     }
   });
   expect(auth.status()).toBe(201);
   const configuration = await page.request.post(`${api}/agent-configuration-revisions`, {
     data: {
-      model: "v3-model",
+      model,
       auth_profile_revision_hash: (await auth.json()).auth_profile_revision_hash,
-      executor_revision: "immediate/v1",
+      executor_revision: "delayed/v1",
       requested_capability: "headless"
     }
   });
   expect(configuration.status()).toBe(201);
   await publishCheckedRegistryEntry(
     page,
-    "e2e-v3",
-    "v3-model",
+    "e2e-v3-slow",
+    model,
     (await configuration.json()).agent_configuration_revision_hash as string
   );
 
   const started = await page.request.post(`${api}/runs`, {
     data: {
       workflow_format_version: 2,
-      run_id: "v3/the-silent-one",
+      run_id: runId,
       workflow_revision_hash: revisionHash,
       agent_bindings: [
         {
@@ -1527,9 +1527,29 @@ test("a node whose answer its own contract refuses never reports success", async
   expect(started.status()).toBe(201);
   const reference = (await started.json()).public_run_reference as string;
 
-  // The provider answers a sentence where an object was declared, so the success
-  // write refuses it: the run stops standing on the node that answered, and no
-  // completion event is written for it.
+  // Ordinal one is durably refused before the repair attempt runs. The one
+  // active rail entry is therefore ordinal two; its public state may already
+  // have crossed the process-launch boundary, but the run is still STARTED and
+  // no terminal evidence exists.
+  await expect(async () => {
+    const read = await page.request.get(`${api}/runs/${reference}`);
+    expect(read.status()).toBe(200);
+    const body = await read.json();
+    expect(body.state).toBe("STARTED");
+    expect(body.current_node_id).toBe("implement");
+    expect(body.terminal_hash).toBeNull();
+    expect(body.node_rail).toEqual([
+      {
+        node_id: "implement",
+        state: "working",
+        attempt: { ordinal: 2, state: "POSSIBLY_RAN" }
+      },
+      { node_id: "review", state: "queued", attempt: null }
+    ]);
+  }).toPass({ timeout: 15_000 });
+
+  // The same second refusal is terminal: the retained rail attempt is ordinal
+  // two, no third round exists, and the dependent review remains queued.
   await expect(async () => {
     const read = await page.request.get(`${api}/runs/${reference}`);
     expect(read.status()).toBe(200);
@@ -1541,15 +1561,60 @@ test("a node whose answer its own contract refuses never reports success", async
       {
         node_id: "implement",
         state: "failed",
-        attempt: { ordinal: 1, state: "FAILED" }
+        attempt: { ordinal: 2, state: "FAILED" }
       },
       { node_id: "review", state: "queued", attempt: null }
     ]);
   }).toPass({ timeout: 15_000 });
 
+  // V3 deliberately has no duplicated `agent_attempts` list on its run
+  // resource; the durable stream is the public ordered list of attempt endings.
+  // Both entries must be schema refusals, so ordinal two did not quietly become
+  // a success and no ordinal three was ordered.
+  const eventStream = await page.request.get(`${api}/runs/${reference}/events`, {
+    headers: { accept: "text/event-stream" }
+  });
+  expect(eventStream.status()).toBe(200);
+  const refusalEvents = (await eventStream.text())
+    .trim()
+    .split(/\r?\n\r?\n/)
+    .map((frame) => {
+      const data = frame.split(/\r?\n/).find((line) => line.startsWith("data: "));
+      if (data === undefined) throw new Error("run event stream frame has no data");
+      return JSON.parse(data.slice("data: ".length)) as {
+        event: string;
+        node_id: string;
+        failure_code: string;
+        reason: string | null;
+        attempt_ordinal: number;
+      };
+    });
+  expect(refusalEvents.map((event) => ({
+    event: event.event,
+    node_id: event.node_id,
+    failure_code: event.failure_code,
+    reason: event.reason,
+    attempt_ordinal: event.attempt_ordinal
+  }))).toEqual([
+    {
+      event: "AGENT_FAILED",
+      node_id: "implement",
+      failure_code: "OUTPUT_SCHEMA_REFUSED",
+      reason: "output-schema-refused: instance-not-json: Expecting value",
+      attempt_ordinal: 1
+    },
+    {
+      event: "AGENT_FAILED",
+      node_id: "implement",
+      failure_code: "OUTPUT_SCHEMA_REFUSED",
+      reason: "output-schema-refused: instance-not-json: Expecting value",
+      attempt_ordinal: 2
+    }
+  ]);
+
   await page.goto(`/atelier/runs/${reference}`);
-  await expect(page.getByRole("heading", { level: 1, name: "the chain the operator watched" })).toBeVisible();
-  await expect(page.getByText("v3/the-silent-one")).toHaveCount(0);
+  await expect(page.getByRole("heading", { level: 1, name: workflowName })).toBeVisible();
+  await expect(page.getByText(runId)).toHaveCount(0);
   await expect(page.getByLabel("Where this run stands")).toContainText("Failed");
   await expect(page.getByLabel("Where this run stands")).not.toContainText("Done");
   await expect(page.getByRole("button", { name: "implement — Failed" })).toBeVisible();
@@ -1566,7 +1631,7 @@ test("a node whose answer its own contract refuses never reports success", async
     "Write three German sentences about code review."
   );
   await page.getByRole("tab", { name: runPageCopy.tabEvidence }).click();
-  await expect(page.getByRole("group", { name: "Run id" })).toContainText("v3/the-silent-one");
+  await expect(page.getByRole("group", { name: "Run id" })).toContainText(runId);
   await expect(page.getByText("a moment")).toHaveCount(0);
   await page.screenshot({ path: "test-results/v3-node-refusal.png", fullPage: true });
 });

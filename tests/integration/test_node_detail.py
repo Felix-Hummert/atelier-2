@@ -25,12 +25,19 @@ import pytest
 import sqlalchemy as sa
 from pydantic import ValidationError
 
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.artifact_store import keep_artifact
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import agent_attempts, run_events, runs
+from atelier2.adapters.dbos.schema import (
+    agent_attempt_receipts_v3,
+    agent_attempts,
+    artifacts,
+    run_events,
+    runs,
+)
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -42,6 +49,10 @@ from atelier2.api.projection.runs import node_detail_resource
 from atelier2.api.references import MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS
 from atelier2.api.wire.resources import NodeRefusalOutputResource
 from atelier2.application.answer_wait import AnswerAcceptedPending, answer_wait_result
+from atelier2.contracts.agent_attempts import (
+    AgentAttemptId,
+    OutputSchemaRefusalReceipt,
+)
 from atelier2.contracts.agent_transcripts import (
     AssistantTurn,
     AttemptTranscript,
@@ -63,7 +74,7 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
-from atelier2.contracts.artifacts import Artifact
+from atelier2.contracts.artifacts import Artifact, ArtifactHash
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
     NodeExecutionId,
@@ -71,7 +82,11 @@ from atelier2.contracts.executions import (
     RunEventKind,
 )
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
+from atelier2.contracts.revisions_v3 import (
+    PublishedRevision,
+    PublishedRevisionHash,
+    RevisionKind,
+)
 from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import (
     RunId,
@@ -99,6 +114,15 @@ from atelier2.ports.run_queries import (
     RunReceiptsFound,
 )
 from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt
+from tests.integration.test_v3_output_enforcement import NODE as REFUSAL_NODE
+from tests.integration.test_v3_output_enforcement import RUN as REFUSAL_RUN
+from tests.integration.test_v3_output_enforcement import (
+    THE_ANSWER_THE_SCHEMA_REFUSES,
+)
+from tests.integration.test_v3_output_enforcement import (
+    armed_attempt as armed_refusal_attempt,
+)
+from tests.integration.test_v3_output_enforcement import runtime as _refusal_runtime
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
@@ -109,6 +133,8 @@ from tests.scenarios.agents import (
 from tests.scenarios.api import durable_queries
 from tests.scenarios.runs import prepare_and_launch_graph_action, start_published_v1_run
 from tests.scenarios.runtime import exact_output_runtime
+
+refusal_runtime = _refusal_runtime
 
 TEXT_SCHEMA = PublishedRevision(RevisionKind.SCHEMA, b'{"type": "string"}')
 ANSWER = b'"Ein gutes Code-Review schuetzt vor fehlerhaftem Code."'
@@ -802,6 +828,103 @@ def test_a_schema_refused_answer_reads_back_its_exact_bytes_and_hash(
     assert detail.refusal_output is not None
     assert detail.refusal_output.value == NOT_EVEN_JSON
     assert detail.refusal_output.value_hash == Sha256Hash.of(NOT_EVEN_JSON)
+
+
+def test_empty_refusal_output_without_an_artifact_reads_as_an_empty_answer(
+    refusal_runtime: DbosRuntime,
+) -> None:
+    runtime = refusal_runtime
+    attempt = armed_refusal_attempt(runtime)
+    DbosAgentAttemptStore(
+        runtime.engine, runtime.settings.application_version
+    ).complete_success(attempt, AgentExecutionResult(b""))
+
+    found = durable_queries(runtime.engine).get_node_detail(REFUSAL_RUN, REFUSAL_NODE)
+
+    assert isinstance(found, NodeDetailFound), found
+    assert found.detail.refusal_output is not None
+    assert found.detail.refusal_output.value == b""
+    assert found.detail.refusal_output.value_hash == Sha256Hash.of(b"")
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ("missing-artifact-row", "changed-artifact-content", "non-utf8-artifact"),
+)
+def test_corrupt_refusal_output_evidence_fails_loud(
+    refusal_runtime: DbosRuntime,
+    corruption: str,
+) -> None:
+    runtime = refusal_runtime
+    attempt = armed_refusal_attempt(runtime)
+    DbosAgentAttemptStore(
+        runtime.engine, runtime.settings.application_version
+    ).complete_success(
+        attempt,
+        AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES),
+    )
+    with runtime.engine.begin() as connection:
+        record = (
+            connection.execute(
+                sa.select(agent_attempt_receipts_v3)
+                .select_from(
+                    agent_attempt_receipts_v3.join(
+                        agent_attempts,
+                        agent_attempt_receipts_v3.c.attempt_id
+                        == agent_attempts.c.attempt_id,
+                    )
+                )
+                .where(agent_attempts.c.attempt_ordinal == 1)
+            )
+            .mappings()
+            .one()
+        )
+        attempt_id = AgentAttemptId(str(record["attempt_id"]))
+        reason = str(record["reason"])
+        schema_revision = PublishedRevisionHash(str(record["schema_revision_hash"]))
+        artifact_hash = ArtifactHash(str(record["artifact_hash"]))
+        if corruption == "missing-artifact-row":
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            connection.exec_driver_sql("DROP TRIGGER artifacts_no_delete")
+            connection.execute(
+                artifacts.delete().where(
+                    artifacts.c.artifact_hash == artifact_hash.value
+                )
+            )
+        elif corruption == "changed-artifact-content":
+            connection.exec_driver_sql("DROP TRIGGER artifacts_no_update")
+            connection.execute(
+                artifacts.update()
+                .where(artifacts.c.artifact_hash == artifact_hash.value)
+                .values(content=b"different refused bytes")
+            )
+        else:
+            unreadable = Artifact(b"\xff")
+            keep_artifact(connection, unreadable)
+            rewritten = OutputSchemaRefusalReceipt(
+                attempt_id,
+                reason,
+                schema_revision,
+                Sha256Hash.of(unreadable.content),
+                unreadable.artifact_hash,
+            )
+            connection.exec_driver_sql(
+                "DROP TRIGGER agent_attempt_receipts_v3_no_update"
+            )
+            connection.execute(
+                agent_attempt_receipts_v3.update()
+                .where(agent_attempt_receipts_v3.c.attempt_id == attempt_id.value)
+                .values(
+                    value_hash=rewritten.value_hash.value,
+                    artifact_hash=unreadable.artifact_hash.value,
+                    receipt_hash=rewritten.receipt_hash.value,
+                )
+            )
+
+    assert isinstance(
+        durable_queries(runtime.engine).get_node_detail(REFUSAL_RUN, REFUSAL_NODE),
+        QueryDurableStateCorrupt,
+    )
 
 
 def assembled(*parts: str) -> str:

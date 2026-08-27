@@ -458,7 +458,7 @@ def test_a_later_round_failure_keeps_its_exact_public_refusal(
     assert {(item.node_id, item.round_ordinal) for item in receipts.items} == {
         (node_id, 1) for node_id in LOOPED_LINE_NODE_IDS
     }
-    assert prepared == StreamReady(3, True, 0)
+    assert prepared == StreamReady(4, True, 0)
     assert isinstance(events, RunEventPage), events
     assert events.terminal_seen
     assert events.events[-1].event.node_execution_id == execution

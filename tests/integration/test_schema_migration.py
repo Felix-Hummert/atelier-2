@@ -471,11 +471,11 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[41]
         == "7c4bc13ceb1db7533bfdf9697c1e6b262032a516275b488eac73af9969446b68"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 42
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 43
     assert (
         PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
-        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[42]
-        == "d2f874edd0dbbecb677b284db8e41cd3a681fae99703d126764bc90fa0cf7865"
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[43]
+        == "f7d299ab865b87ca47a399d4897f8c7b273085c4d206fac9eb882d47198b9782"
     )
 
 
@@ -487,7 +487,7 @@ def test_populated_v41_effect_rows_are_backfilled_before_v42_publish(
 
     report = migrate_store(database_path)
 
-    assert (report.source_version, report.target_version) == (41, 42)
+    assert (report.source_version, report.target_version) == (41, 43)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT operation_name FROM effect_intents"
