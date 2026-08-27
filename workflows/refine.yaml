@@ -1,0 +1,49 @@
+format_version: 3
+name: refine
+description: >-
+  One headless planner round proposes the expectations a vision needs before a
+  picture delta or a breakdown can carry them onward.
+graph_inputs:
+  - name: vision
+    schema:
+      ref: nonempty_string
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+  - name: owner_documents
+    schema:
+      ref: nonempty_string
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+nodes:
+  - id: refine
+    type: agent
+    role: planner
+    mode: headless
+    instruction: >-
+      Read the operator vision carried under "vision" against the owner
+      documents carried under "owner_documents". A picture excerpt, when one
+      exists, is folded into "owner_documents" because this V3 graph has only
+      required inputs. You cannot read files, run anything, or use tools in
+      this headless call; these artifacts are your only evidence. First write
+      a mirror of exactly two sentences beginning in the operator's language:
+      "so habe ich dich verstanden". Then propose expectation lines using this
+      catalog revision: create_change_remove, identity, states,
+      secrets_and_rights, undo, scale. Every lens gets one or more lines or is
+      listed in "lenses_without_lines". Write each sentence in the operator's
+      language as an acceptance sentence, with no technical vocabulary in its
+      sentence or its example. Each example must say "Wenn du …, dann …" and
+      each counterexample must say "Sagst du nein, dann …". Fold the technical
+      explanation into "technical". Ask no questions: propose a default of
+      yes, no, or later for every line. Invent nothing beyond the vision, owner
+      documents, and folded picture excerpt. This is one round only; the Wait
+      loop and further rounds are deferred.
+    inputs:
+      - name: vision
+        from:
+          graph_input: vision
+      - name: owner_documents
+        from:
+          graph_input: owner_documents
+    outputs:
+      - name: result
+        schema:
+          ref: refine_result
+          revision: "78f077ab2f012073fb63047f1a5f8af1f66fb8dc0cb3e220237b82fe49d112e1"
