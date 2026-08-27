@@ -221,7 +221,7 @@ event and no advanced run, so a run can no longer end successfully on work its
 own contract rejects. The catalog `code-review` and `plan-review` result schemas
 refuse a `revise` with no finding or risk and admit `cannot-judge` only with a
 reason, so a reviewer that cannot judge the evidence names that instead of
-emitting an empty revise. The refusal is durable and named. The record family ADR
+emitting an empty revise. Both catalog review workflows take a required `context` order carrying the owner-document excerpt the reviewer must judge against; a head that has no excerpt passes the explicit word none. The refusal is durable and named. The record family ADR
 0006 declared has its production writer: the public start persists each node's
 `node-execution-request/v3` and `context-package/v3` inside the start
 transaction -- an order the run carries binds into that package as a material

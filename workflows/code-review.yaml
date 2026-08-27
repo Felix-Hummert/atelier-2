@@ -13,6 +13,10 @@ graph_inputs:
     schema:
       ref: nonempty_string
       revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+  - name: context
+    schema:
+      ref: nonempty_string
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
 nodes:
   - id: review
     type: agent
@@ -20,11 +24,14 @@ nodes:
     mode: headless
     instruction: >-
       Review the diff carried under "diff" and answer the questions carried
-      under "review_questions". You cannot read files, run anything, or use
-      tools in this headless call; the diff and questions are your only
-      evidence. Approve the diff when nothing you find blocks it; otherwise
-      revise it. Revise only with at least one finding; cannot-judge must
-      carry a reason.
+      under "review_questions". Answer the questions against the contract
+      carried under "context"; when the context contradicts the diff, say
+      which one wins and why. Context is required; the head passes the
+      explicit word "none" when it is truly absent. You cannot
+      read files, run anything, or use tools in this headless call; the diff,
+      questions, and context are your only evidence. Approve the diff when
+      nothing you find blocks it; otherwise revise it. Revise only with at
+      least one finding; cannot-judge must carry a reason.
     inputs:
       - name: diff
         from:
@@ -32,6 +39,9 @@ nodes:
       - name: review_questions
         from:
           graph_input: review_questions
+      - name: context
+        from:
+          graph_input: context
     outputs:
       - name: result
         schema:

@@ -55,7 +55,9 @@ from atelier2.ports.artifacts import ArtifactCreated, ArtifactExisting
 from atelier2.ports.durable_runs import (
     AuthoredOrder,
     DurableRunCreated,
+    DurableV3StartInputRefused,
     StartPublishedRunRequestV3,
+    V3InputRefusal,
 )
 from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
@@ -80,8 +82,10 @@ RESULT_SCHEMA = PublishedRevision(
 )
 DIFF_TEXT = "diff --git a/app.py b/app.py\n+print('reviewed')\n"
 QUESTIONS_TEXT = "Does this change preserve the review contract?"
+CONTEXT_TEXT = "The review contract is the only authority."
 DIFF = json.dumps(DIFF_TEXT).encode()
 QUESTIONS = json.dumps(QUESTIONS_TEXT).encode()
+CONTEXT = json.dumps(CONTEXT_TEXT).encode()
 REVIEW = {
     "findings": [
         {
@@ -230,6 +234,30 @@ def wait_for_completion(runtime: DbosRuntime, run_id: RunId) -> None:
     raise AssertionError("code review run did not complete")
 
 
+def test_a_code_review_without_context_is_refused_before_a_run_exists(
+    runtime: DbosRuntime,
+) -> None:
+    workflow, bindings = publish(runtime)
+    refused = DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_published(
+        StartPublishedRunRequestV3(
+            RunId("v3/code-review-without-context"),
+            workflow.revision_hash,
+            bindings,
+            orders=(
+                artifact_order(runtime),
+                AuthoredOrder("review_questions", InlineOrderValue(QUESTIONS)),
+            ),
+        )
+    )
+    assert isinstance(refused, DurableV3StartInputRefused), refused
+    assert refused.name == "context"
+    assert refused.refusal is V3InputRefusal.MISSING
+    with runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+
+
 def test_a_code_review_round_trips_an_artifact_and_inline_question_to_an_object_result(
     runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
 ) -> None:
@@ -249,6 +277,7 @@ def test_a_code_review_round_trips_an_artifact_and_inline_question_to_an_object_
             orders=(
                 artifact_order(runtime),
                 AuthoredOrder("review_questions", InlineOrderValue(QUESTIONS)),
+                AuthoredOrder("context", InlineOrderValue(CONTEXT)),
             ),
         )
     )
@@ -261,6 +290,7 @@ def test_a_code_review_round_trips_an_artifact_and_inline_question_to_an_object_
     handed = provider.opened.requests[0].job_bytes
     assert DIFF_TEXT.encode() in handed
     assert QUESTIONS_TEXT.encode() in handed
+    assert CONTEXT_TEXT.encode() in handed
     detail = durable_queries(runtime.engine).get_node_detail(run_id, "review")
     assert isinstance(detail, NodeDetailFound), detail
     assert detail.detail.state is NodeState.SUCCEEDED
@@ -308,6 +338,7 @@ def test_a_code_review_object_the_schema_refuses_never_becomes_a_success(
             orders=(
                 artifact_order(runtime),
                 AuthoredOrder("review_questions", InlineOrderValue(QUESTIONS)),
+                AuthoredOrder("context", InlineOrderValue(CONTEXT)),
             ),
         )
     )
