@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import pytest
+import sqlalchemy as sa
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.schema import agent_attempt_receipts_v3, agent_attempts
 from atelier2.api.projection.events import run_event_resource
 from atelier2.api.projection.runs import node_rail_resources, run_resource
 from atelier2.api.wire.events import AgentFailedEventResourceV3
@@ -21,7 +23,7 @@ from atelier2.contracts.run_projections import (
 )
 from atelier2.ports.agent_attempts import AgentAttemptFailed
 from atelier2.ports.agent_executions import AgentExecutionResult
-from atelier2.ports.run_queries import RunFound
+from atelier2.ports.run_queries import NodeDetailFound, RunFound
 from tests.integration.test_v3_output_enforcement import (
     NODE,
     PLAN_SCHEMA,
@@ -39,42 +41,95 @@ from tests.scenarios.api import durable_queries
 
 runtime = output_contract_runtime
 
+FIRST_REFUSED_ANSWER = THE_ANSWER_THE_SCHEMA_REFUSES
+FIRST_REFUSAL_REASON = "output-schema-refused: instance-not-json: Expecting value"
+SECOND_REFUSED_ANSWER = b'{"steps": "three"}'
+SECOND_REFUSAL_REASON = (
+    "output-schema-refused: schema-violated: /steps: is not of type 'integer'"
+)
+
 
 @pytest.mark.proves("an-agent-failed-event-carries-the-stored-receipt-reason")
 def test_an_agent_failed_event_carries_the_stored_receipt_reason(runtime) -> None:
     execution = armed_attempt(runtime)
     store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
     outcome = store.complete_success(
-        execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+        execution, AgentExecutionResult(FIRST_REFUSED_ANSWER)
     )
     assert isinstance(outcome, AgentAttemptFailed), outcome
     assert outcome.attempt.failure_code is AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED
     repair = repair_attempt(runtime, execution)
     outcome = store.complete_success(
-        repair, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+        repair, AgentExecutionResult(SECOND_REFUSED_ANSWER)
     )
     assert isinstance(outcome, AgentAttemptFailed), outcome
+
+    with runtime.engine.connect() as connection:
+        durable_reasons = tuple(
+            connection.execute(
+                sa.select(
+                    agent_attempt_receipts_v3.c.attempt_id,
+                    agent_attempts.c.attempt_ordinal,
+                    agent_attempt_receipts_v3.c.reason,
+                )
+                .select_from(
+                    agent_attempt_receipts_v3.join(
+                        agent_attempts,
+                        agent_attempt_receipts_v3.c.attempt_id
+                        == agent_attempts.c.attempt_id,
+                    )
+                )
+                .order_by(agent_attempts.c.attempt_ordinal)
+            )
+        )
+    assert durable_reasons == (
+        (execution.attempt_id.value, 1, FIRST_REFUSAL_REASON),
+        (repair.attempt_id.value, 2, SECOND_REFUSAL_REASON),
+    )
 
     queries = durable_queries(runtime.engine)
     page = queries.read_run_event_page(RUN, 0, 5)
     assert isinstance(page, RunEventPage)
-    assert len(page.events) == 1
-    persisted = page.events[0]
-    assert persisted.node_receipt_reason is not None
-    assert persisted.node_receipt_reason.startswith(
-        f"{NodeReceiptReason.OUTPUT_SCHEMA_REFUSED.value}: "
+    assert len(page.events) == 2
+    assert tuple(
+        (
+            persisted.event.attempt_binding.attempt_id,
+            persisted.event.attempt_binding.attempt_ordinal,
+            persisted.node_receipt_reason,
+        )
+        for persisted in page.events
+        if persisted.event.attempt_binding is not None
+    ) == (
+        (
+            execution.attempt_id,
+            1,
+            FIRST_REFUSAL_REASON,
+        ),
+        (
+            repair.attempt_id,
+            2,
+            SECOND_REFUSAL_REASON,
+        ),
     )
-    assert len(persisted.node_receipt_reason) <= MAXIMUM_AGENT_FIELD_CHARACTERS
+    detail = queries.get_node_detail(RUN, NODE)
+    assert isinstance(detail, NodeDetailFound)
+    assert detail.detail.refusal == SECOND_REFUSAL_REASON
 
     found = queries.get_run(RUN)
     assert isinstance(found, RunFound)
-    resource = run_event_resource(
-        persisted,
-        node_rail_resources(project_node_rail(found.projection, page.events)),
-    )
-    assert isinstance(resource, AgentFailedEventResourceV3)
-    assert resource.failure_code == "OUTPUT_SCHEMA_REFUSED"
-    assert resource.reason == persisted.node_receipt_reason
+    for persisted in page.events:
+        assert persisted.node_receipt_reason is not None
+        assert persisted.node_receipt_reason.startswith(
+            f"{NodeReceiptReason.OUTPUT_SCHEMA_REFUSED.value}: "
+        )
+        assert len(persisted.node_receipt_reason) <= MAXIMUM_AGENT_FIELD_CHARACTERS
+        resource = run_event_resource(
+            persisted,
+            node_rail_resources(project_node_rail(found.projection, page.events)),
+        )
+        assert isinstance(resource, AgentFailedEventResourceV3)
+        assert resource.failure_code == "OUTPUT_SCHEMA_REFUSED"
+        assert resource.reason == persisted.node_receipt_reason
 
 
 @pytest.mark.proves("a-failed-run-list-and-events-name-the-same-node")

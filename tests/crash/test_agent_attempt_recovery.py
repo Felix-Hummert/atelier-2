@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import os
 import sqlite3
 import subprocess
@@ -11,10 +13,18 @@ import sqlalchemy as sa
 
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import agent_attempts, agent_receipts_v2, runs
+from atelier2.adapters.dbos.schema import (
+    agent_attempt_receipts_v3,
+    agent_attempts,
+    agent_receipts_v2,
+    runs,
+)
+from atelier2.adapters.dbos.workflow import AgentExecutorMap, reconstruct_agent_attempt
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.ports.agent_executions import AgentExecutionResult
 from tests.integration.test_v3_output_enforcement import (
     THE_ANSWER_THE_SCHEMA_ADMITS,
@@ -93,11 +103,29 @@ def wait_for_run_state(runtime: DbosRuntime, state: str) -> None:
     raise AssertionError(f"run stayed {observed!r}, expected {state!r}")
 
 
+def _executor_map_of(runtime: DbosRuntime) -> AgentExecutorMap:
+    return {
+        entry.key: (
+            None,
+            entry.manifest_entry.operational_identity,
+            entry.manifest_entry.declared_capabilities,
+            entry.manifest_entry.carrier,
+        )
+        for entry in runtime.agent_executor_registry.entries
+    }
+
+
 def test_restart_after_a_schema_refusal_runs_its_repair_once(
     tmp_path: Path,
 ) -> None:
     """The boundary after round one survives a process loss with one repair id."""
-    first = output_schema_runtime(tmp_path)
+    first_executor = RecordingAgentExecutorFactoryV2(
+        "exact",
+        "exact/v1",
+        "exact-operation",
+        THE_ANSWER_THE_SCHEMA_ADMITS,
+    )
+    first = output_schema_runtime(tmp_path, first_executor)
     try:
         execution = armed_attempt(first)
         DbosAgentAttemptStore(
@@ -105,6 +133,44 @@ def test_restart_after_a_schema_refusal_runs_its_repair_once(
         ).complete_success(
             execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
         )
+        with first.engine.connect() as connection:
+            durable_receipt = (
+                connection.execute(sa.select(agent_attempt_receipts_v3))
+                .mappings()
+                .one()
+            )
+            repair_before = (
+                connection.execute(
+                    sa.select(agent_attempts).where(
+                        agent_attempts.c.attempt_ordinal == 2
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        durable_repair = DbosAgentAttemptStore(
+            first.engine, first.settings.application_version
+        ).load(AgentAttemptId(str(repair_before["attempt_id"])))
+        reconstructed_before = reconstruct_agent_attempt(
+            first.datasource,
+            _executor_map_of(first),
+            first.declared_project,
+            durable_repair,
+        ).execution
+        assert durable_receipt["attempt_id"] == execution.attempt_id.value
+        assert (
+            durable_receipt["value_hash"]
+            == Sha256Hash.of(THE_ANSWER_THE_SCHEMA_REFUSES).value
+        )
+        assert reconstructed_before.ordinal == 2
+        assert (
+            reconstructed_before.request.round_ordinal
+            == execution.request.round_ordinal
+        )
+        assert reconstructed_before.request.job_bytes != execution.request.job_bytes
+        assert reconstructed_before.request.request_hash == durable_repair.request_hash
+        assert first_executor.opened is not None
+        assert first_executor.opened.requests == []
     finally:
         first.close()
 
@@ -139,8 +205,102 @@ def test_restart_after_a_schema_refusal_runs_its_repair_once(
         assert repair_state == "SUCCEEDED"
         assert recovered_executor.opened is not None
         assert len(recovered_executor.opened.requests) == 1
+        recovered_request = recovered_executor.opened.requests[0]
+        assert (
+            recovered_request.round_ordinal
+            == reconstructed_before.request.round_ordinal
+        )
+        assert recovered_request.job_bytes == reconstructed_before.request.job_bytes
+        assert (
+            repair_before["attempt_id"],
+            repair_before["request_hash"],
+        ) == (
+            AgentAttemptId.for_execution(
+                recovered_request.node_execution_id,
+                recovered_request.request_hash,
+                2,
+            ).value,
+            recovered_request.request_hash.value,
+        )
     finally:
         recovered.close()
+
+
+def test_restart_during_round_two_reconstructs_one_exact_adapter_request(
+    tmp_path: Path,
+) -> None:
+    """A real process death after repair reconstruction does not duplicate it."""
+    child(tmp_path, "crash-output-schema-repair-before-adapter", CRASHED)
+    precrash = json.loads(
+        (tmp_path / "precrash-repair.json").read_text(encoding="utf-8")
+    )
+    assert precrash["adapter_requests"] == 0
+
+    inspector_factory = RecordingAgentExecutorFactoryV2(
+        "exact",
+        "exact/v1",
+        "exact-operation",
+        THE_ANSWER_THE_SCHEMA_ADMITS,
+    )
+    inspector = output_schema_runtime(tmp_path, inspector_factory)
+    try:
+        with inspector.engine.connect() as connection:
+            refusal_receipt = (
+                connection.execute(sa.select(agent_attempt_receipts_v3))
+                .mappings()
+                .one()
+            )
+            repair_id = AgentAttemptId(
+                str(
+                    connection.scalar(
+                        sa.select(agent_attempts.c.attempt_id).where(
+                            agent_attempts.c.attempt_ordinal == 2
+                        )
+                    )
+                )
+            )
+        store = DbosAgentAttemptStore(
+            inspector.engine, inspector.settings.application_version
+        )
+        durable = store.load(repair_id)
+        reconstructed = reconstruct_agent_attempt(
+            inspector.datasource,
+            _executor_map_of(inspector),
+            inspector.declared_project,
+            durable,
+        ).execution
+        durable_evidence = {
+            "attempt_id": durable.attempt_id.value,
+            "attempt_ordinal": durable.attempt_ordinal,
+            "round_ordinal": reconstructed.request.round_ordinal,
+            "job_bytes_base64": base64.b64encode(
+                reconstructed.request.job_bytes
+            ).decode("ascii"),
+            "request_hash": durable.request_hash.value,
+        }
+        assert refusal_receipt["attempt_id"] != durable.attempt_id.value
+        assert inspector_factory.opened is not None
+        assert inspector_factory.opened.requests == []
+    finally:
+        inspector.close()
+
+    child(tmp_path, "recover-output-schema-repair")
+    recovered = json.loads(
+        (tmp_path / "recovered-repair.json").read_text(encoding="utf-8")
+    )
+    assert recovered["adapter_requests"] == 1
+    evidence_keys = (
+        "attempt_id",
+        "attempt_ordinal",
+        "round_ordinal",
+        "job_bytes_base64",
+        "request_hash",
+    )
+    assert (
+        tuple(durable_evidence[key] for key in evidence_keys)
+        == tuple(precrash[key] for key in evidence_keys)
+        == tuple(recovered[key] for key in evidence_keys)
+    )
 
 
 def test_restart_reclaims_prepared_but_only_projects_launch_armed_as_possibly_ran(

@@ -13,6 +13,12 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from atelier2.adapters.dbos.agent_attempt_store import (
+    attempt_from_record,
+    compose_agent_node_job_for_attempt,
+    load_output_schema_refusal_receipt,
+    load_prior_output_schema_refusal_receipt,
+)
 from atelier2.adapters.dbos.artifact_store import read_stored_artifact
 from atelier2.adapters.dbos.attention_events import load_attention_event_page
 from atelier2.adapters.dbos.effect_store import (
@@ -35,11 +41,11 @@ from atelier2.adapters.dbos.run_store import (
 from atelier2.adapters.dbos.run_transitions import (
     RunTransitionConflict,
     event_from_record,
+    load_graph,
     run_from_record_with_bindings,
     validate_run_graph_binding,
 )
 from atelier2.adapters.dbos.schema import (
-    agent_attempt_receipts_v3,
     agent_attempts,
     agent_receipts_v2,
     attempt_instants,
@@ -61,7 +67,6 @@ from atelier2.adapters.dbos.workflow import (
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.compose_node_job import (
     NodeJobCompositionVersion,
-    OutputSchemaRepair,
     node_job,
 )
 from atelier2.application.project_node_rail import (
@@ -75,6 +80,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptRedriveState,
     AgentAttemptReplacement,
     AgentAttemptState,
+    OutputSchemaRefusalReceipt,
 )
 from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import (
@@ -100,6 +106,7 @@ from atelier2.contracts.node_records_v3 import (
     read_stored_node_receipt_reason,
 )
 from atelier2.contracts.pages import MAXIMUM_PAGE_ITEMS
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.run_bindings import AnyRun, RunV2, RunV3
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
@@ -388,6 +395,25 @@ def _event_endpoint(record: Mapping[Any, Any]) -> tuple[str, NodeExecutionId]:
     return str(record["event_kind"]), execution_id
 
 
+def _event_orders_output_schema_repair(
+    connection: Connection, record: Mapping[Any, Any]
+) -> bool:
+    attempt_id = record.get("agent_attempt_id")
+    return (
+        str(record["event_kind"]) == RunEventKind.AGENT_FAILED.value
+        and bytes(record["payload"])
+        == AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED.value.encode("ascii")
+        and int(record["attempt_ordinal"]) == 1
+        and attempt_id is not None
+        and _attempt_output_schema_refusal(
+            connection,
+            NodeExecutionId(str(record["node_execution_id"])),
+            AgentAttemptId(str(attempt_id)),
+        )
+        is not None
+    )
+
+
 def _durable_attempt_state(persisted_value: Any) -> AgentAttemptState:
     try:
         return AgentAttemptState(str(persisted_value))
@@ -451,49 +477,38 @@ def _current_attempt_projection(
             node,
             run.current_round_ordinal,
         )
-        repair_reason = None
-        if ordinal == 2:
-            repair_reason = session.scalar(
-                sa.select(agent_attempt_receipts_v3.c.reason)
-                .select_from(
-                    agent_attempt_receipts_v3.join(
-                        agent_attempts,
-                        agent_attempt_receipts_v3.c.attempt_id
-                        == agent_attempts.c.attempt_id,
-                    )
-                )
-                .where(
-                    agent_attempts.c.node_execution_id == execution_id.value,
-                    agent_attempts.c.attempt_ordinal == 1,
-                )
-            )
-            if repair_reason is None:
-                raise RunTransitionConflict("repair attempt has no refusal receipt")
+        attempt_id = AgentAttemptId(str(record["attempt_id"]))
+        repair_receipt = load_prior_output_schema_refusal_receipt(
+            session,
+            target_attempt_id=attempt_id,
+            target_node_execution_id=execution_id,
+            target_attempt_ordinal=ordinal,
+            expected_schema_revision=PublishedRevisionHash(
+                node.outputs[0].schema_reference.revision
+            ),
+        )
         exact_request = request_for(
-            node_job(
-                node.instruction,
+            compose_agent_node_job_for_attempt(
+                node,
                 orders,
                 results,
-                composition_version=(
-                    NodeJobCompositionVersion.OUTPUT_SCHEMA_REPAIR
-                    if repair_reason is not None
-                    else NodeJobCompositionVersion.CURRENT
-                ),
-                output_schema_repair=(
-                    None
-                    if repair_reason is None
-                    else OutputSchemaRepair(str(repair_reason))
-                ),
-            ).encode("utf-8")
+                base_composition_version=NodeJobCompositionVersion.CURRENT,
+                target_node_execution_id=execution_id,
+                target_attempt_ordinal=ordinal,
+                prior_refusal_receipt=repair_receipt,
+            )
         )
-        if repair_reason is None and request_hash != exact_request.request_hash:
+        if repair_receipt is None and request_hash != exact_request.request_hash:
             exact_request = request_for(
-                node_job(
-                    node.instruction,
+                compose_agent_node_job_for_attempt(
+                    node,
                     orders,
                     results,
-                    NodeJobCompositionVersion.LEGACY,
-                ).encode("utf-8")
+                    base_composition_version=NodeJobCompositionVersion.LEGACY,
+                    target_node_execution_id=execution_id,
+                    target_attempt_ordinal=ordinal,
+                    prior_refusal_receipt=None,
+                )
             )
     attempt_id = AgentAttemptId(str(record["attempt_id"]))
     expected_attempt_id = AgentAttemptId.for_execution(
@@ -580,37 +595,72 @@ def _current_attempt_projection(
     )
 
 
+def _attempt_output_schema_refusal(
+    connection: Connection,
+    execution_id: NodeExecutionId,
+    attempt_id: AgentAttemptId | None = None,
+) -> OutputSchemaRefusalReceipt | None:
+    attempt_record = (
+        connection.execute(
+            sa.select(agent_attempts).where(
+                agent_attempts.c.node_execution_id == execution_id.value,
+                (
+                    agent_attempts.c.attempt_id == attempt_id.value
+                    if attempt_id is not None
+                    else agent_attempts.c.attempt_ordinal == 1
+                ),
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if attempt_record is None:
+        return None
+    attempt = attempt_from_record(attempt_record)
+    graph = load_graph(connection, attempt.workflow_revision_hash)
+    node = graph.node(attempt.node_id)
+    if not isinstance(node, AgentNodeV3):
+        return None
+    return load_output_schema_refusal_receipt(
+        connection,
+        attempt.attempt_id,
+        expected_node_execution_id=execution_id,
+        expected_attempt_ordinal=attempt.attempt_ordinal,
+        expected_schema_revision=PublishedRevisionHash(
+            node.outputs[0].schema_reference.revision
+        ),
+    )
+
+
 def _node_receipt_refusal(
     connection: Connection,
     execution_id: NodeExecutionId,
+    attempt_id: AgentAttemptId | None = None,
 ) -> str | None:
     """The durably named reason this node's execution ended without a success.
 
-    Read from `node-receipt/v3` where one exists: the receipt was written in
-    the transaction that ended the execution, so it is the store's own
-    statement and outranks a recomputation. A succeeded receipt refuses
-    nothing, and a run from before the family's writer has no receipt at all --
-    that absence is honest, never filled in here.
+    An event supplies its exact Attempt identity, so that Attempt's immutable
+    refusal receipt is its reason even after a later repair ends differently.
+    An ordinary node read has no Attempt identity and prefers the terminal
+    `node-receipt/v3`; only between rounds, while that terminal row is absent,
+    does ordinal one's Attempt receipt name the active refusal. A succeeded
+    node receipt refuses nothing, and a run from before either family's writer
+    stays honestly absent.
     """
+    if attempt_id is not None:
+        exact_refusal = _attempt_output_schema_refusal(
+            connection, execution_id, attempt_id
+        )
+        if exact_refusal is not None:
+            return exact_refusal.reason
     record = connection.execute(
         sa.select(node_receipts_v3.c.disposition, node_receipts_v3.c.reason).where(
             node_receipts_v3.c.node_execution_id == execution_id.value
         )
     ).one_or_none()
     if record is None:
-        return connection.scalar(
-            sa.select(agent_attempt_receipts_v3.c.reason)
-            .select_from(
-                agent_attempt_receipts_v3.join(
-                    agent_attempts,
-                    agent_attempt_receipts_v3.c.attempt_id
-                    == agent_attempts.c.attempt_id,
-                )
-            )
-            .where(agent_attempts.c.node_execution_id == execution_id.value)
-            .order_by(agent_attempts.c.attempt_ordinal.desc())
-            .limit(1)
-        )
+        refusal = _attempt_output_schema_refusal(connection, execution_id)
+        return None if refusal is None else refusal.reason
     disposition = PersistedReceiptDisposition(str(record.disposition))
     if disposition is PersistedReceiptDisposition.SUCCEEDED:
         return None
@@ -626,16 +676,17 @@ def _node_receipt_refusal_output(
 ) -> NodeAnswer | None:
     """A redacted presentation of what a schema owner judged and refused.
 
-    Only a judged `node-receipt/v3` row names a value hash at all
-    (`store_node_receipt_reason`); a plain reason, an unjudged failure, or an
-    absent receipt has nothing to resolve, and this reads honestly absent for
-    each of them. Where a hash is named, the failure transaction that wrote it
-    also published these exact bytes as an artifact under that same address
-    (#664) -- so a reader who wants to see what was refused, not just that it
-    was, reads them back through the one content-addressed store every other
-    artifact uses. A run written before that publish existed, or judged bytes
-    that were themselves empty, named a hash nothing resolves; that absence is
-    the honest answer, never manufactured here.
+    A terminal ordinal-two refusal names its value hash in `node-receipt/v3`;
+    before that terminal row exists, ordinal one's immutable Attempt receipt
+    names the same evidence for its nonterminal repair event. A plain reason,
+    an unjudged failure, or absence from both receipt families has nothing to
+    resolve and reads honestly absent. Where either receipt names a hash, its
+    failure transaction also published these exact bytes as an artifact under
+    that same address (#664) -- so a reader who wants to see what was refused,
+    not just that it was, reads them back through the one content-addressed
+    store every other artifact uses. Empty judged bytes need no artifact and
+    project as an empty answer. A nonempty hash whose artifact is absent or
+    disagrees is corrupt durable state, never an absent answer.
 
     A provider's refused output is untrusted text on its way to a browser, and
     a schema refusal is exactly the shape of episode where a provider might
@@ -645,9 +696,8 @@ def _node_receipt_refusal_output(
     named it: the hash of the original, unredacted bytes the schema judged, so
     it goes on proving what was judged even though the returned `value` is a
     presentation of that judgment rather than its exact preimage. Bytes that do
-    not decode as UTF-8 cannot be scanned for a credential shape at all, and
-    showing them unscanned would be exactly the leak this exists to close -- so
-    that case answers honestly absent too, the same as an unresolvable hash.
+    not decode as UTF-8 cannot be scanned for a credential shape at all, so the
+    durable read fails loud instead of hiding or exposing them.
     """
     record = connection.execute(
         sa.select(node_receipts_v3.c.disposition, node_receipts_v3.c.reason).where(
@@ -655,36 +705,16 @@ def _node_receipt_refusal_output(
         )
     ).one_or_none()
     if record is None:
-        record = connection.execute(
-            sa.select(
-                agent_attempt_receipts_v3.c.value_hash,
-                agent_attempt_receipts_v3.c.artifact_hash,
-            )
-            .select_from(
-                agent_attempt_receipts_v3.join(
-                    agent_attempts,
-                    agent_attempt_receipts_v3.c.attempt_id
-                    == agent_attempts.c.attempt_id,
-                )
-            )
-            .where(agent_attempts.c.node_execution_id == execution_id.value)
-            .order_by(agent_attempts.c.attempt_ordinal.desc())
-            .limit(1)
-        ).one_or_none()
-        if record is None:
+        refusal = _attempt_output_schema_refusal(connection, execution_id)
+        if refusal is None:
             return None
-        value_hash = Sha256Hash(str(record.value_hash))
-        if record.artifact_hash is None:
-            return None
-        artifact = read_stored_artifact(
-            connection, ArtifactHash(str(record.artifact_hash))
-        )
+        value_hash = refusal.value_hash
+        if refusal.artifact_hash is None:
+            return NodeAnswer(b"", value_hash)
+        artifact = read_stored_artifact(connection, refusal.artifact_hash)
         if artifact is None:
-            return None
-        try:
-            text = artifact.content.decode("utf-8")
-        except UnicodeDecodeError:
-            return None
+            raise RuntimeError("output-schema refusal artifact is missing")
+        text = artifact.content.decode("utf-8")
         return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
     disposition = PersistedReceiptDisposition(str(record.disposition))
     if disposition is PersistedReceiptDisposition.SUCCEEDED:
@@ -696,11 +726,10 @@ def _node_receipt_refusal_output(
         return None
     artifact = read_stored_artifact(connection, ArtifactHash(value_hash.value))
     if artifact is None:
-        return None
-    try:
-        text = artifact.content.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
+        if value_hash == Sha256Hash.of(b""):
+            return NodeAnswer(b"", value_hash)
+        raise RuntimeError("refused node output artifact is missing")
+    text = artifact.content.decode("utf-8")
     return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
 
 
@@ -1177,14 +1206,15 @@ class DbosQueries:
         identity around those bytes. Doing it any other way would mean keeping
         a second copy of a value that already has an identity.
 
-        A refusal has two voices and the durable one wins. When a node's own
-        output does not satisfy the schema its author pinned, the run stops
-        there and the terminal write names the reason in a `failed`
-        `node-receipt/v3`; that stored statement is read back here. A run from
-        before the record family's writer has no receipt and stays honestly
-        absent in those tables, so its refusal is still recomputed through the
-        composition owner -- named either way, so the operator is told why a run
-        stands still instead of watching it stand still.
+        A refusal has two durable voices. Every refused attempt writes its own
+        immutable Attempt receipt; ordinal one also records a nonterminal event
+        before the repair, while ordinal two additionally writes the terminal
+        `failed` `node-receipt/v3`. The exact attempt receipt is the fallback
+        when that terminal node receipt is absent. A run from before either
+        record family stays honestly absent in those tables, so its refusal is
+        still recomputed through the composition owner -- named either way, so
+        the operator is told why a run stands still instead of watching it
+        stand still.
         """
 
         found = self.get_run(run_id)
@@ -1894,16 +1924,19 @@ class DbosQueries:
                 if after_sequence > 0:
                     required_sequences.add(after_sequence)
                 endpoint_records = {
-                    int(endpoint["event_sequence"]): _event_endpoint(endpoint)
+                    int(endpoint["event_sequence"]): endpoint
                     for endpoint in connection.execute(
                         sa.select(
                             run_events.c.event_sequence,
                             run_events.c.event_kind,
+                            run_events.c.payload,
                             run_events.c.run_id,
                             run_events.c.revision_hash,
                             run_events.c.node_id,
                             run_events.c.node_execution_id,
                             run_events.c.round_ordinal,
+                            run_events.c.agent_attempt_id,
+                            run_events.c.attempt_ordinal,
                         ).where(
                             run_events.c.run_id == run_id.value,
                             run_events.c.event_sequence.in_(required_sequences),
@@ -1921,8 +1954,15 @@ class DbosQueries:
                         int(record["current_round_ordinal"]),
                     ),
                 )
-                if ended_the_run(endpoint_records[head]) != terminal or any(
-                    sequence < head and ended_the_run(endpoint)
+                if (
+                    ended_the_run(_event_endpoint(endpoint_records[head]))
+                    and not _event_orders_output_schema_repair(
+                        connection, endpoint_records[head]
+                    )
+                ) != terminal or any(
+                    sequence < head
+                    and ended_the_run(_event_endpoint(endpoint))
+                    and not _event_orders_output_schema_repair(connection, endpoint)
                     for sequence, endpoint in endpoint_records.items()
                 ):
                     return EventHistoryCorrupt()
@@ -2007,6 +2047,7 @@ class DbosQueries:
                     int(record["event_sequence"])
                     for record in records
                     if ended_the_run(_event_endpoint(record))
+                    and not _event_orders_output_schema_repair(connection, record)
                 )
                 terminal = str(run_record["state"]) in {
                     RunState.COMPLETED.value,
@@ -2106,7 +2147,15 @@ class DbosQueries:
             and event.payload
             == AgentExecutionRefusal.EXECUTOR_BINDING_UNAVAILABLE.value.encode("ascii")
             else (
-                _node_receipt_refusal(connection, event.node_execution_id)
+                _node_receipt_refusal(
+                    connection,
+                    event.node_execution_id,
+                    (
+                        None
+                        if event.attempt_binding is None
+                        else event.attempt_binding.attempt_id
+                    ),
+                )
                 if event.event_kind is RunEventKind.AGENT_FAILED
                 else None
             )

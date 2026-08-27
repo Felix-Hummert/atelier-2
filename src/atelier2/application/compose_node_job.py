@@ -36,7 +36,7 @@ OUTPUT_SCHEMA_REPAIR_HEADING = "--- repair: declared output schema ---"
 
 
 class NodeJobCompositionVersion(StrEnum):
-    """The two rendering rules whose bytes have identified agent attempts."""
+    """The three rendering rules whose bytes have identified agent attempts."""
 
     LEGACY = "json-orders/v1"
     CURRENT = "declared-root-strings/v2"
@@ -77,10 +77,13 @@ def node_job(
     """
     if not isinstance(composition_version, NodeJobCompositionVersion):
         raise TypeError("node job composition version must be typed")
-    if output_schema_repair is not None and (
-        composition_version is not NodeJobCompositionVersion.OUTPUT_SCHEMA_REPAIR
-    ):
-        raise ValueError("an output-schema repair requires its composition version")
+    is_repair_version = (
+        composition_version is NodeJobCompositionVersion.OUTPUT_SCHEMA_REPAIR
+    )
+    if is_repair_version != (output_schema_repair is not None):
+        raise ValueError(
+            "an output-schema repair requires both its composition version and payload"
+        )
     if not orders and not results and output_schema_repair is None:
         return instruction
     sections = [instruction]

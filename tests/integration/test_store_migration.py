@@ -85,6 +85,7 @@ from atelier2.adapters.dbos.schema import (
     V39_SCHEMA_HANDOFF,
     V40_SCHEMA_HANDOFF,
     V41_SCHEMA_HANDOFF,
+    V42_SCHEMA_HANDOFF,
     MigrationRequired,
     StoreMigrationRefused,
     _rebuild_product_table,
@@ -761,6 +762,158 @@ def test_v41_receipt_binding_corruption_is_refused_without_mutation(
         migrate_store(database)
 
     assert _logical_dump(database) == before
+
+
+def _create_populated_v42_store(
+    database_path: Path, *, colliding_receipt_table: bool = False
+) -> None:
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    artifact_content = b"v42 row preserved byte-for-byte"
+    with sqlite3.connect(database_path) as connection:
+        receipt_table_ddl = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' "
+            "AND name='agent_attempt_receipts_v3'"
+        ).fetchone()
+        assert receipt_table_ddl is not None
+        connection.execute(
+            "INSERT INTO artifacts (artifact_hash, content) VALUES (?, ?)",
+            (Sha256Hash.of(artifact_content).value, artifact_content),
+        )
+        connection.execute(
+            "INSERT INTO workflow_revisions (revision_hash, document) VALUES (?, ?)",
+            ("a2" * 32, b"name: populated-v42\nsteps: []\n"),
+        )
+        connection.execute("DROP TRIGGER agent_attempt_receipts_v3_no_update")
+        connection.execute("DROP TRIGGER agent_attempt_receipts_v3_no_delete")
+        connection.execute("DROP TABLE agent_attempt_receipts_v3")
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V42_SCHEMA_HANDOFF.version,),
+        )
+        if colliding_receipt_table:
+            connection.execute(str(receipt_table_ddl[0]))
+            connection.execute(
+                "INSERT INTO agent_attempt_receipts_v3 VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "b2" * 32,
+                    "collision",
+                    "c2" * 32,
+                    "d2" * 32,
+                    None,
+                    "e2" * 32,
+                ),
+            )
+        connection.commit()
+        if not colliding_receipt_table:
+            _require_product_shape(connection, V42_SCHEMA_HANDOFF.version)
+
+
+def _v42_product_rows(
+    database_path: Path,
+) -> tuple[tuple[str, tuple[object, ...]], ...]:
+    with sqlite3.connect(database_path) as connection:
+        return tuple(
+            (
+                table_name,
+                tuple(
+                    tuple(row)
+                    for row in connection.execute(
+                        f'SELECT * FROM "{table_name}" ORDER BY rowid'
+                    )
+                ),
+            )
+            for table_name in sorted(
+                schema_module._table_names_for_version(V42_SCHEMA_HANDOFF.version)
+                - {atelier_schema_versions.name}
+            )
+        )
+
+
+def test_every_populated_v42_product_row_crosses_v43_unchanged(
+    tmp_path: Path,
+) -> None:
+    assert V42_SCHEMA_HANDOFF.fingerprint_sha256 == (
+        "d2f874edd0dbbecb677b284db8e41cd3a681fae99703d126764bc90fa0cf7865"
+    )
+    assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 == (
+        "f7d299ab865b87ca47a399d4897f8c7b273085c4d206fac9eb882d47198b9782"
+    )
+    database = tmp_path / "atelier.sqlite"
+    _create_populated_v42_store(database)
+    before = _v42_product_rows(database)
+
+    report = migrate_store(database)
+
+    assert (report.source_version, report.target_version) == (42, 43)
+    assert _v42_product_rows(database) == before
+    with sqlite3.connect(database) as connection:
+        assert schema_module._fingerprint_for_version(connection, 43) == (
+            PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        )
+
+
+def test_nonempty_v43_receipt_table_collision_refuses_v42_without_mutation(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    _create_populated_v42_store(database, colliding_receipt_table=True)
+    before = _logical_dump(database)
+
+    with pytest.raises(
+        StoreMigrationRefused,
+        match="schema version 42 already has agent_attempt_receipts_v3",
+    ):
+        migrate_store(database)
+
+    assert _logical_dump(database) == before
+
+
+def test_v43_failpoint_after_version_cas_restores_the_exact_v42_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    _create_populated_v42_store(database)
+    before = _logical_dump(database)
+    raise_declared_version = schema_module._raise_declared_version
+
+    def fail_after_v43_cas(
+        connection: sqlite3.Connection, expected_version: int, target_version: int
+    ) -> None:
+        raise_declared_version(connection, expected_version, target_version)
+        if expected_version == V42_SCHEMA_HANDOFF.version:
+            raise sqlite3.OperationalError("v43-after-version-cas-failpoint")
+
+    monkeypatch.setattr(schema_module, "_raise_declared_version", fail_after_v43_cas)
+
+    with pytest.raises(StoreMigrationRefused, match="v43-after-version-cas-failpoint"):
+        migrate_store(database)
+
+    assert _logical_dump(database) == before
+    with sqlite3.connect(database) as connection:
+        assert schema_module._fingerprint_for_version(connection, 42) == (
+            V42_SCHEMA_HANDOFF.fingerprint_sha256
+        )
+
+
+def test_v43_refusal_receipts_are_immutable_after_the_additive_hop(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    _create_populated_v42_store(database)
+    migrate_store(database)
+    receipt = ("b3" * 32, "reason", "c3" * 32, "d3" * 32, None, "e3" * 32)
+
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO agent_attempt_receipts_v3 VALUES (?, ?, ?, ?, ?, ?)",
+            receipt,
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute("UPDATE agent_attempt_receipts_v3 SET reason='changed'")
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute("DELETE FROM agent_attempt_receipts_v3")
 
 
 _PREDECESSOR_RUN_EVENTS_INDEX_DDL = (

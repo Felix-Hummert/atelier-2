@@ -22,6 +22,8 @@ from atelier2.adapters.dbos.run_transitions import (
 from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import agent_attempts, run_events
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
+from atelier2.adapters.dbos.workflow import AgentExecutorMap, reconstruct_agent_attempt
+from atelier2.application.compose_node_job import NodeJobCompositionVersion
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
@@ -38,6 +40,7 @@ from atelier2.contracts.executions import (
     RunEventCancellationBinding,
     RunEventKind,
 )
+from atelier2.contracts.runs import RunId
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationCommandConflict,
@@ -48,7 +51,11 @@ from tests.integration.test_agent_attempts import (
     attempt_runtime,
     inspecting_executor,
 )
+from tests.integration.test_v3_attempt_arm import runtime as _ordered_v3_runtime
+from tests.integration.test_v3_attempt_arm import started_string_ordered_v3_attempts
 from tests.scenarios.agents import agent_attempt_execution, runtime_workspace_owner
+
+ordered_v3_runtime = _ordered_v3_runtime
 
 
 def test_cancel_commits_before_signal_and_exact_retry_is_idempotent(
@@ -233,6 +240,77 @@ def test_cancel_replacement_creates_exactly_ordinal_two_and_never_three(
             )
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize(
+    "base_version",
+    (NodeJobCompositionVersion.LEGACY, NodeJobCompositionVersion.CURRENT),
+)
+def test_cancellation_replacement_keeps_its_base_job_and_request_hash(
+    ordered_v3_runtime: DbosRuntime,
+    base_version: NodeJobCompositionVersion,
+) -> None:
+    run_id = RunId(f"v3/cancellation-keeps-{base_version.name.lower()}")
+    legacy, current = started_string_ordered_v3_attempts(ordered_v3_runtime, run_id)
+    selected = legacy if base_version is NodeJobCompositionVersion.LEGACY else current
+    store = DbosAgentAttemptStore(
+        ordered_v3_runtime.engine,
+        ordered_v3_runtime.settings.application_version,
+    )
+    store.prepare(current)
+    if selected is legacy:
+        with ordered_v3_runtime.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TRIGGER agent_attempts_state_transition")
+            connection.execute(
+                agent_attempts.update()
+                .where(agent_attempts.c.attempt_id == current.attempt_id.value)
+                .values(
+                    attempt_id=legacy.attempt_id.value,
+                    request_hash=legacy.request.request_hash.value,
+                )
+            )
+    prepared = store.load(selected.attempt_id)
+    command = CancelAgentAttemptRequest(
+        run_id,
+        selected.attempt_id,
+        f"replace-{base_version.name.lower()}",
+        prepared.state_version,
+        AgentAttemptReplacement.ONE,
+    )
+    store.request_cancellation(command)
+    terminal = store.attest_cancellation_cleanup(
+        command,
+        AgentAttemptCancellationDisposition.NEVER_LAUNCHED,
+        None,
+        None,
+    )
+    assert terminal.replacement_attempt_id is not None
+    replacement = store.load(terminal.replacement_attempt_id)
+    executors: AgentExecutorMap = {
+        entry.key: (
+            None,
+            entry.manifest_entry.operational_identity,
+            entry.manifest_entry.declared_capabilities,
+            entry.manifest_entry.carrier,
+        )
+        for entry in ordered_v3_runtime.agent_executor_registry.entries
+    }
+
+    reconstructed = reconstruct_agent_attempt(
+        ordered_v3_runtime.datasource,
+        executors,
+        ordered_v3_runtime.declared_project,
+        replacement,
+    ).execution
+
+    assert reconstructed.request.job_bytes == selected.request.job_bytes
+    assert reconstructed.request.request_hash == selected.request.request_hash
+    assert replacement.request_hash == selected.request.request_hash
+    assert replacement.attempt_id == AgentAttemptId.for_execution(
+        selected.request.node_execution_id,
+        selected.request.request_hash,
+        2,
+    )
 
 
 def test_durable_cancellation_workflow_reaps_the_exact_running_process(

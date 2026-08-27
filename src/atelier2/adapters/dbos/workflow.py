@@ -15,6 +15,10 @@ from atelier2.adapters.dbos.advancer import (
     read_pinned_tool_grant,
     redeem_agent_effect,
 )
+from atelier2.adapters.dbos.agent_attempt_store import (
+    compose_agent_node_job_for_attempt,
+    load_prior_output_schema_refusal_receipt,
+)
 from atelier2.adapters.dbos.continuation import (
     checkpoint_confirmed_effect,
     schedule_confirmed_effect_continuation,
@@ -74,7 +78,6 @@ from atelier2.adapters.dbos.run_transitions import (
     load_run,
 )
 from atelier2.adapters.dbos.schema import (
-    agent_attempt_receipts_v3,
     agent_attempts,
     published_revisions,
     reconcile_commands,
@@ -96,11 +99,7 @@ from atelier2.application.cancel_agent_attempt import (
     continue_agent_attempt_cancellation,
 )
 from atelier2.application.cancel_runner_attempt import cancel_runner_attempt
-from atelier2.application.compose_node_job import (
-    NodeJobCompositionVersion,
-    OutputSchemaRepair,
-    node_job,
-)
+from atelier2.application.compose_node_job import NodeJobCompositionVersion
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.application.execute_agent_attempt_on_runner import (
     ExecuteAgentAttemptOnRunnerOutcome,
@@ -142,7 +141,7 @@ from atelier2.contracts.node_bindings import (
 )
 from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
 from atelier2.contracts.project_sources import ProjectSourcePin
-from atelier2.contracts.revisions_v3 import RevisionKind
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import RunBindingConflict
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
@@ -407,11 +406,11 @@ class ReconstructedAgentAttempt:
     carrier: AgentExecutorCarrier
 
 
-def _reconstructed_output_schema_repair_job(
+def _reconstructed_agent_job_candidates(
     datasource: SQLAlchemyDatasource,
     attempt: AgentAttempt,
     round_ordinal: int,
-) -> str | None:
+) -> tuple[str | None, str | None]:
     """Read and compose a repair only when its durable refusal receipt exists.
 
     Ordinal two predates schema repair: cancellation also mints one replacement.
@@ -420,27 +419,21 @@ def _reconstructed_output_schema_repair_job(
     access their datasource through that boundary.
     """
 
-    def load() -> str | None:
+    def load() -> tuple[str | None, str | None]:
         session = datasource.sql_session()
-        prior_attempt_id = session.scalar(
-            sa.select(agent_attempts.c.attempt_id).where(
-                agent_attempts.c.node_execution_id == attempt.node_execution_id.value,
-                agent_attempts.c.attempt_ordinal == AGENT_ATTEMPT_ORDINAL,
-            )
-        )
-        if prior_attempt_id is None:
-            return None
-        reason = session.scalar(
-            sa.select(agent_attempt_receipts_v3.c.reason).where(
-                agent_attempt_receipts_v3.c.attempt_id == str(prior_attempt_id)
-            )
-        )
-        if reason is None:
-            return None
         graph = load_graph(session, attempt.workflow_revision_hash)
         node = graph.node(attempt.node_id)
         if not isinstance(node, AgentNodeV3):
-            raise RunTransitionConflict("repair receipt belongs to a non-V3 agent node")
+            return None, None
+        receipt = load_prior_output_schema_refusal_receipt(
+            session,
+            target_attempt_id=attempt.attempt_id,
+            target_node_execution_id=attempt.node_execution_id,
+            target_attempt_ordinal=attempt.attempt_ordinal,
+            expected_schema_revision=PublishedRevisionHash(
+                node.outputs[0].schema_reference.revision
+            ),
+        )
         orders, results = _agent_material(
             session,
             attempt.run_id,
@@ -449,17 +442,33 @@ def _reconstructed_output_schema_repair_job(
             node,
             round_ordinal,
         )
-        return node_job(
-            node.instruction,
+        repair_job = (
+            None
+            if receipt is None
+            else compose_agent_node_job_for_attempt(
+                node,
+                orders,
+                results,
+                base_composition_version=NodeJobCompositionVersion.CURRENT,
+                target_node_execution_id=attempt.node_execution_id,
+                target_attempt_ordinal=attempt.attempt_ordinal,
+                prior_refusal_receipt=receipt,
+            ).decode("utf-8")
+        )
+        legacy_job = compose_agent_node_job_for_attempt(
+            node,
             orders,
             results,
-            composition_version=NodeJobCompositionVersion.OUTPUT_SCHEMA_REPAIR,
-            output_schema_repair=OutputSchemaRepair(str(reason)),
-        )
+            base_composition_version=NodeJobCompositionVersion.LEGACY,
+            target_node_execution_id=attempt.node_execution_id,
+            target_attempt_ordinal=attempt.attempt_ordinal,
+            prior_refusal_receipt=None,
+        ).decode("utf-8")
+        return repair_job, legacy_job
 
     return cast(
-        str | None,
-        datasource.run_tx_step({"name": "reconstruct-output-schema-repair"}, load),
+        tuple[str | None, str | None],
+        datasource.run_tx_step({"name": "reconstruct-agent-job"}, load),
     )
 
 
@@ -488,8 +497,10 @@ def reconstruct_agent_attempt(
     )
     if not isinstance(binding, AgentNodeBindingV2):
         raise RunTransitionConflict("durable attempt is not a V2 agent node")
+    repair_job: str | None = None
+    legacy_job: str | None = None
     if attempt.attempt_ordinal == REPLACEMENT_AGENT_ATTEMPT_ORDINAL:
-        repair_job = _reconstructed_output_schema_repair_job(
+        repair_job, legacy_job = _reconstructed_agent_job_candidates(
             datasource, attempt, binding.round_ordinal
         )
         if repair_job is not None:
@@ -508,6 +519,20 @@ def reconstruct_agent_attempt(
         operational_identity,
         declared_capabilities,
     )
+    if (
+        request.request_hash != attempt.request_hash
+        and repair_job is None
+        and legacy_job is not None
+    ):
+        binding = replace(binding, job=legacy_job)
+        request = agent_execution_request_v2(
+            binding,
+            attempt.run_id,
+            attempt.workflow_revision_hash,
+            attempt.node_id,
+            operational_identity,
+            declared_capabilities,
+        )
     if (
         request.node_execution_id != attempt.node_execution_id
         or request.request_hash != attempt.request_hash
