@@ -10,6 +10,10 @@ candidate_images=("$core_image" "$runner_image" "$policy_image")
 # -- the one process-level fact a real `os._exit` and this shell script can
 # only share by declared, matching literal.
 crash_after_publish_exit_code=92
+# Must match `_CORE_STARTED_CUT_EXIT_CODE` in the disposable Core and crash
+# harness. This is the declared process cut after Core has accepted STARTED.
+core_started_cut_exit_code=93
+core_restart_harness="tests.crash.runner_candidate_core_restart_harness"
 
 # Every Docker operation this witness performs *as a launcher* goes through the
 # one typed owner, `atelier2.adapters.docker_carrier` (`#540` C-2a): argument
@@ -20,6 +24,71 @@ crash_after_publish_exit_code=92
 carrier() {
   uv run --locked python -m atelier2.adapters.docker_carrier \
     --policy-image "$policy_image" "$@"
+}
+
+toolchain_cleanup_root=""
+cleanup_toolchain_probe() {
+  [[ -z "$toolchain_cleanup_root" ]] || rm -rf -- "$toolchain_cleanup_root"
+}
+
+egress_cleanup_first_host=""
+egress_cleanup_second_host=""
+egress_cleanup_first_network=""
+egress_cleanup_second_network=""
+cleanup_egress_probes() {
+  carrier remove \
+    --container "$egress_cleanup_first_host" \
+    --container "$egress_cleanup_second_host" \
+    --network "$egress_cleanup_first_network" \
+    --network "$egress_cleanup_second_network" >/dev/null 2>&1 || true
+}
+
+console_cleanup_container=""
+console_cleanup_base_network=""
+console_cleanup_first_attempt_network=""
+console_cleanup_second_attempt_network=""
+cleanup_console_probes() {
+  carrier remove \
+    --container "$console_cleanup_container" \
+    --network "$console_cleanup_base_network" \
+    --network "$console_cleanup_first_attempt_network" \
+    --network "$console_cleanup_second_attempt_network" >/dev/null 2>&1 || true
+}
+
+require_reconnect_child_identity() {
+  local phase=$1 expected_text=$2 observed_text=$3 witness_root=$4
+  local -a expected observed
+  IFS=$'\t' read -r -a expected <<<"$expected_text"
+  IFS=$'\t' read -r -a observed <<<"$observed_text"
+  if [[ -z "${observed[0]:-}" ]] || [[ "${expected[0]}" != "${observed[0]}" ]]; then
+    printf 'runner-core-reconnect-container-changed: phase=%s root=%s\n' \
+      "$phase" "$witness_root" >&2
+    exit 1
+  fi
+  if [[ "${expected[1]}" != "${observed[1]}" ]] \
+    || [[ "${expected[2]}" != "${observed[2]}" ]]; then
+    printf 'runner-core-reconnect-pid-changed: phase=%s root=%s\n' \
+      "$phase" "$witness_root" >&2
+    exit 1
+  fi
+  if [[ "${expected[3]}" != "${observed[3]}" ]]; then
+    printf 'runner-core-reconnect-start-tick-changed: phase=%s root=%s\n' \
+      "$phase" "$witness_root" >&2
+    exit 1
+  fi
+  if [[ "${expected[4]}" != 1 ]] || [[ "${observed[4]}" != 1 ]]; then
+    printf 'runner-core-reconnect-child-count-changed: phase=%s root=%s\n' \
+      "$phase" "$witness_root" >&2
+    exit 1
+  fi
+  if [[ "${expected[5]}" != "${expected[6]}" ]] \
+    || [[ "${observed[5]}" != "${observed[6]}" ]] \
+    || [[ "${expected[5]}" != "${observed[5]}" ]] \
+    || [[ "${expected[7]}" != "${observed[7]}" ]]; then
+    printf 'runner-core-reconnect-cgroup-changed: phase=%s root=%s\n' \
+      "$phase" "$witness_root" >&2
+    exit 1
+  fi
 }
 
 # Every size, path and limit below is read out of the manifest contract, so the
@@ -131,10 +200,9 @@ run_toolchain_legs() {
   claude_version=$(build_candidate_images)
   probe_root=$(mktemp -d "$witness_root_prefix.toolchain.XXXXXX")
   # An EXIT trap, not a RETURN one: a failing assertion below leaves this
-  # function through `exit`, which no RETURN trap would ever see. The paths are
-  # expanded into the trap now, because by the time it runs this function's own
-  # locals are gone.
-  trap "rm -rf -- '$probe_root'" EXIT
+  # function through `exit`, which no RETURN trap would ever see.
+  toolchain_cleanup_root=$probe_root
+  trap cleanup_toolchain_probe EXIT
   cat >"$probe_root/toolchain_probe.py" <<'PROBE'
 from atelier2.contracts.runner_manifests import candidate_runner_manifest
 from atelier2.runner.executors import attest_runner_provider_toolchain
@@ -228,9 +296,12 @@ run_egress_legs() {
   second_host="${second}-probe"
   # An EXIT trap, not a RETURN one: a failing assertion below leaves this
   # function through `exit`, and a RETURN trap would strand these Attempt
-  # networks and containers on the host. The names are expanded into the trap
-  # now, because by the time it runs this function's own locals are gone.
-  trap "carrier remove --container '$first_host' --container '$second_host' --network '$first' --network '$second' >/dev/null 2>&1 || true" EXIT
+  # networks and containers on the host.
+  egress_cleanup_first_host=$first_host
+  egress_cleanup_second_host=$second_host
+  egress_cleanup_first_network=$first
+  egress_cleanup_second_network=$second
+  trap cleanup_egress_probes EXIT
   first_subnet=$(carrier create-network --name "$first" --label "$label")
   second_subnet=$(carrier create-network --name "$second" --label "$label")
   # This Attempt really listens, on the port an Attempt's Core would serve and
@@ -348,7 +419,11 @@ run_console_legs() {
   second=$(new_lease_id)
   base="atelier2-301a-base-${first:0:12}"
   console="atelier2-301a-console-${first:0:12}"
-  trap "carrier remove --container '$console' --network '$base' --network 'atelier2-301a-attempt-${first:0:12}' --network 'atelier2-301a-attempt-${second:0:12}' >/dev/null 2>&1 || true" EXIT
+  console_cleanup_container=$console
+  console_cleanup_base_network=$base
+  console_cleanup_first_attempt_network="atelier2-301a-attempt-${first:0:12}"
+  console_cleanup_second_attempt_network="atelier2-301a-attempt-${second:0:12}"
+  trap cleanup_console_probes EXIT
   carrier create-network --name "$base" --label "$label" >/dev/null
   # The console listens on the cockpit port an operator uses and on the session
   # port an Attempt's Core serves. Probing a container that listens for nothing
@@ -449,6 +524,9 @@ case "$mode" in
   resume)
     scenario="crash-after-publish"
     ;;
+  core-restart)
+    scenario="core-restart"
+    ;;
   toolchain)
     run_toolchain_legs
     exit 0
@@ -494,7 +572,7 @@ case "$mode" in
     exit 0
     ;;
   *)
-    printf 'usage: %s [success|cancel|resume|toolchain|egress|console|clean|images]\n' "$0" >&2
+    printf 'usage: %s [success|cancel|resume|core-restart|toolchain|egress|console|clean|images]\n' "$0" >&2
     exit 1
     ;;
 esac
@@ -502,6 +580,9 @@ esac
 root=$(mktemp -d "$witness_root_prefix.XXXXXX")
 released=false
 network=""
+launcher_pid=""
+marker_wait_pid=""
+cut_fence_pid=""
 label="atelier2.runner-candidate=${RANDOM}${RANDOM}"
 lease_id=$(new_lease_id)
 core="atelier2-301a-${lease_id:0:12}-core"
@@ -511,6 +592,18 @@ printf '%s\n' "$lease_id" >"$root/lease"
 printf '%s\n' "$scenario" >"$root/scenario"
 
 cleanup() {
+  if [[ -n "$cut_fence_pid" ]] && kill -0 "$cut_fence_pid" >/dev/null 2>&1; then
+    kill "$cut_fence_pid" >/dev/null 2>&1 || true
+    wait "$cut_fence_pid" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$marker_wait_pid" ]] && kill -0 "$marker_wait_pid" >/dev/null 2>&1; then
+    kill "$marker_wait_pid" >/dev/null 2>&1 || true
+    wait "$marker_wait_pid" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$launcher_pid" ]] && kill -0 "$launcher_pid" >/dev/null 2>&1; then
+    kill "$launcher_pid" >/dev/null 2>&1 || true
+    wait "$launcher_pid" >/dev/null 2>&1 || true
+  fi
   carrier logs --container "$core" --output "$root/core.log" >/dev/null 2>&1 || true
   if "$released"; then
     # Everything the launcher created it removed itself; Core and the base
@@ -578,7 +671,21 @@ cat >"$root/leases/open/${lease_id}.json" <<LEASE
   "provider_credential_source": "$attempt_root/provider-credentials"
 }
 LEASE
-launcher_status=0
+if [[ "$scenario" == "core-restart" ]]; then
+  runner_container="atelier2-attempt-${lease_id}-runner"
+  child_binding="$root/core-store/core-started-cut.json"
+  mkfifo "$root/core-store/core-started-cut.event" \
+    "$root/core-store/core-started-cut-fenced.event"
+  uv run --locked python -m "$core_restart_harness" freeze-started-child \
+    --container "$runner_container" \
+    --lease-directory "$root/leases" \
+    --lease-id "$lease_id" \
+    --root "$root/core-store" \
+    --policy-image "$policy_image" \
+    --enforce-current-process-limit \
+    >"$root/core-store/core-started-cut-fence.tsv" &
+  cut_fence_pid=$!
+fi
 # The launcher believes no lease: it admits only paths under the attempt root,
 # only the console container, console network and Runner image declared here,
 # only a manifest whose identity is the one Core bound, and only one that stays
@@ -592,9 +699,93 @@ uv run --locked python -m atelier2.host.runner_launcher serve \
   --console-container "$core" \
   --console-network "$base_network" \
   --console-identity "$root/core-identity" \
-  --runner-image "$runner_image" --once 2>&1 \
-  | tee "$root/launcher.log" || launcher_status=$?
-network=$(sed -n 's/^attempt-network=//p' "$root/launcher.log")
+  --runner-image "$runner_image" --once >"$root/launcher.log" 2>&1 &
+launcher_pid=$!
+
+if [[ "$scenario" == "core-restart" ]]; then
+  core_cut_status=$(carrier wait --container "$core")
+  if ! wait "$cut_fence_pid"; then
+    printf 'runner-core-reconnect-cgroup-fence-failed: root=%s\n' "$root" >&2
+    exit 1
+  fi
+  cut_fence_pid=""
+  if [[ "$core_cut_status" != "$core_started_cut_exit_code" ]] \
+    || [[ ! -f "$root/core-store/core-started-cut.json" ]]; then
+    printf 'runner-core-reconnect-started-cut-missing: expected=%s observed=%s root=%s\n' \
+      "$core_started_cut_exit_code" "$core_cut_status" "$root" >&2
+    exit 1
+  fi
+  network=$(sed -n 's/^attempt-network=//p' "$root/launcher.log" | tail -n 1)
+  if [[ -z "$network" ]]; then
+    printf 'runner-core-reconnect-attempt-network-missing: root=%s\n' "$root" >&2
+    exit 1
+  fi
+  printf '%s\n' "$network" >"$root/network"
+  started_child_identity=$(uv run --locked python -m "$core_restart_harness" \
+    read-started-child --binding-witness "$child_binding")
+  first_child_identity=$(uv run --locked python -m "$core_restart_harness" observe-child \
+    --container "$runner_container" \
+    --lease-directory "$root/leases" \
+    --lease-id "$lease_id" \
+    --output "$root/core-store/child-survival.json" \
+    --binding-witness "$child_binding" \
+    --phase after-core-death)
+  require_reconnect_child_identity \
+    after-core-death "$started_child_identity" "$first_child_identity" "$root"
+  reconnected_event="$root/core-store/core-reconnected-started.event"
+  mkfifo "$reconnected_event"
+  timeout "${handoff_deadline_seconds}s" bash -c \
+    "IFS= read -r event <\"\$1\" && [[ \"\$event\" == runner-core-reconnected-started ]]" \
+    runner-core-reconnect-wait "$reconnected_event" &
+  marker_wait_pid=$!
+  # A restart replaces the network namespace that held this Attempt's packet
+  # policy. Bring Core back private through the Docker owner, restore the
+  # deployment-owned base attachment, then reinstall and attest the Attempt
+  # policy in the same order as Core's first attachment.
+  subnet=$(uv run --locked python -m "$core_restart_harness" restart-private-core \
+    --policy-image "$policy_image" --container "$core" --attempt-network "$network")
+  printf '%s\n' "$subnet" >"$root/subnet"
+  docker network connect "$base_network" "$core"
+  carrier attach-policed --container "$core" --network "$network" --subnet "$subnet" \
+    --role core --attempt "$lease_id" --base-network "$base_network"
+  marker_wait_status=0
+  if wait "$marker_wait_pid"; then
+    marker_wait_status=0
+  else
+    marker_wait_status=$?
+  fi
+  marker_wait_pid=""
+  if [[ "$marker_wait_status" == 124 ]]; then
+    printf 'runner-core-reconnect-started-deadline: root=%s\n' "$root" >&2
+    exit 1
+  fi
+  if [[ "$marker_wait_status" != 0 ]]; then
+    printf 'runner-core-reconnect-started-event-mismatch: root=%s\n' "$root" >&2
+    exit 1
+  fi
+  if [[ ! -f "$root/core-store/core-reconnected-started.json" ]]; then
+    printf 'runner-core-reconnect-started-marker-missing: root=%s\n' "$root" >&2
+    exit 1
+  fi
+  second_child_identity=$(uv run --locked python -m "$core_restart_harness" observe-child \
+    --container "$runner_container" \
+    --lease-directory "$root/leases" \
+    --lease-id "$lease_id" \
+    --output "$root/core-store/child-survival.json" \
+    --binding-witness "$child_binding" \
+    --phase after-core-restart)
+  require_reconnect_child_identity \
+    after-core-restart "$started_child_identity" "$second_child_identity" "$root"
+fi
+
+launcher_status=0
+if wait "$launcher_pid"; then
+  launcher_status=0
+else
+  launcher_status=$?
+fi
+launcher_pid=""
+network=$(sed -n 's/^attempt-network=//p' "$root/launcher.log" | tail -n 1)
 if [[ -n "$network" ]]; then
   # Recorded only once the launcher reported the network it created, so a
   # concurrent `clean` never mistakes a still-running witness for a released
@@ -624,9 +815,28 @@ if [[ "$launcher_status" == 0 && "$core_status" == 0 ]]; then
     printf 'witness retained a private key: root=%s\n' "$root" >&2
     exit 1
   fi
+  if [[ "$scenario" == "core-restart" ]]; then
+    if [[ ! -f "$root/core-store/live-restart-proof.json" ]]; then
+      printf 'runner-core-reconnect-terminal-proof-missing: root=%s\n' "$root" >&2
+      exit 1
+    fi
+    if [[ ! -f "$root/leases/released/${lease_id}.json" ]] \
+      || [[ -e "$root/leases/claimed/${lease_id}.json" ]]; then
+      printf 'runner-core-reconnect-lease-not-released: lease=%s root=%s\n' \
+        "$lease_id" "$root" >&2
+      exit 1
+    fi
+    uv run --locked python -m "$core_restart_harness" record-inventory \
+      --lease-id "$lease_id" --output "$root/labelled-object-inventory.json"
+    sha256sum "$root/core-store/core.sqlite3" >"$root/store.sha256"
+  fi
   released=true
   if [[ "$scenario" == "crash-after-publish" ]]; then
     printf 'resume delivered the retained evidence through RELEASED: core=%s root=%s\n' \
+      "$core_status" "$root"
+  fi
+  if [[ "$scenario" == "core-restart" ]]; then
+    printf 'same provider child crossed the live Core restart through ACKNOWLEDGED: core=%s root=%s\n' \
       "$core_status" "$root"
   fi
 else

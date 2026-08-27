@@ -218,7 +218,10 @@ back from the provider is then read against that schema by the profile owner
 above, inside the transaction that would have written the success and before its
 first row: an answer the schema refuses leaves no agent receipt, no completion
 event and no advanced run, so a run can no longer end successfully on work its
-own contract rejects. The refusal is durable and named. The record family ADR
+own contract rejects. The catalog `code-review` and `plan-review` result schemas
+refuse a `revise` with no finding or risk and admit `cannot-judge` only with a
+reason, so a reviewer that cannot judge the evidence names that instead of
+emitting an empty revise. The refusal is durable and named. The record family ADR
 0006 declared has its production writer: the public start persists each node's
 `node-execution-request/v3` and `context-package/v3` inside the start
 transaction -- an order the run carries binds into that package as a material
