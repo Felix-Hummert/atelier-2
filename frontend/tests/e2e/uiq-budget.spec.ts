@@ -511,7 +511,7 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
     let historyGlances = 1;
     await historyPath.click(finishedRow);
     await expect(page).toHaveURL(/\/atelier\/runs\/run1\./);
-    const resultSentence = page.getByLabel("Where this run stands");
+    const resultSentence = page.getByLabel(runPageCopy.whereThisRunStands);
     await expect(resultSentence).toContainText(standingWords.done);
     await expect(resultSentence, `history sentence glance at ${viewport.width}`).toBeInViewport();
     historyGlances += 1;

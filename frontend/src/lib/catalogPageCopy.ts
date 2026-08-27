@@ -20,7 +20,9 @@ export const catalogPageCopy = {
 
   all: "All",
   workflowsTitle: "Workflows",
+  workflowsLabel: "workflows",
   agentsTitle: "Agents",
+  agentsLabel: "agents",
   agentsByProvider: "Agents by provider",
   skillsTitle: "Skills",
   catalogGroups: "Catalog groups",
@@ -72,6 +74,8 @@ export const catalogPageCopy = {
  */
 export const workflowDetailCopy = {
   detailUnavailable: "Workflow detail unavailable",
+  detailLabel: "workflow detail",
+  technical: "Technical",
   notFoundTitle: "Workflow not found",
   notFoundDescription: "No published workflow carries this name.",
   graphUnavailable: "This revision's graph cannot be drawn here.",
@@ -96,6 +100,8 @@ export const workflowDetailCopy = {
 
 /** Copy owned by the catalog detail's one manual-start sheet. */
 export const workflowStartCopy = {
+  startTitle: (name: string) => `Start ${name}`,
+  configurationFor: (role: string) => `Configuration for ${role}`,
   preparing: "Preparing…",
   sheetUnavailable: "The start sheet could not be prepared.",
   noConfiguration: "No executable configuration is available.",

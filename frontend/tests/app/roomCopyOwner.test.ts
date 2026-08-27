@@ -2,7 +2,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { FRONTEND_SRC, svelteSourcesIn } from "../support/workshopSources";
+import {
+  FRONTEND_SRC,
+  svelteImportClosure,
+  svelteSourcesIn
+} from "../support/workshopSources";
 
 /**
  * REQ-UIQ-03: terms of a surface come from one source. Room pages render
@@ -10,11 +14,9 @@ import { FRONTEND_SRC, svelteSourcesIn } from "../support/workshopSources";
  * a hand-written operator-facing literal in those templates is a second
  * source. Structural glyphs and whitespace are not terms.
  *
- * The file list is the page half of the skin-token walker, plus the Run
- * view body `V3RunView.svelte` that RunCockpitPage hosts.
+ * The file list is every room page and every `.svelte` file those pages
+ * import, transitively.
  */
-
-const RUN_VIEW = "components/V3RunView.svelte";
 
 const VISIBLE_ATTRIBUTE_KEYS = new Set([
   "alt",
@@ -26,6 +28,7 @@ const VISIBLE_ATTRIBUTE_KEYS = new Set([
   "datalabel",
   "label",
   "placeholder",
+  "seals",
   "title"
 ]);
 
@@ -36,7 +39,7 @@ const COMPARAND_PREFIX = /(?:===|!==|==|!=|case)$/;
 const TOKEN_ARGUMENT = /^[a-z]+(?:-[a-z]+)*$/;
 
 function roomTemplates(): string[] {
-  return [...svelteSourcesIn("pages"), RUN_VIEW];
+  return svelteImportClosure(svelteSourcesIn("pages"));
 }
 
 function unownedCopyIn(file: string, source: string): string[] {
@@ -345,9 +348,49 @@ describe("a surface's terms come from one copy owner", () => {
     ]);
   });
 
+  it("treats a seals attribute as a visible term", () => {
+    expect(
+      unownedCopyIn("pages/Example.svelte", '<x seals="exactly these output bytes" />')
+    ).toEqual(["pages/Example.svelte:1:exactly these output bytes"]);
+  });
+
+  it("follows each room page's .svelte imports into the components those rooms host", () => {
+    expect(roomTemplates()).toEqual(
+      expect.arrayContaining([
+        "pages/WorkbenchPage.svelte",
+        "pages/CatalogPage.svelte",
+        "pages/HistoryPage.svelte",
+        "pages/RunCockpitPage.svelte",
+        "pages/SettingsPage.svelte",
+        "pages/WorkflowDetailPage.svelte",
+        "components/ReadState.svelte",
+        "components/ProblemNotice.svelte",
+        "components/CatalogTile.svelte",
+        "components/PinnedDecision.svelte",
+        "components/V3RunView.svelte",
+        "components/NodeDetailPanel.svelte",
+        "components/AttemptTranscript.svelte",
+        "components/V3AnswerCard.svelte",
+        "components/RunCancelCard.svelte",
+        "components/ReadableResult.svelte",
+        "components/InfoHint.svelte",
+        "components/StateMark.svelte",
+        "components/BackLink.svelte",
+        "components/ProofAnchor.svelte",
+        "components/NodeRail.svelte",
+        "components/HumanActionCard.svelte",
+        "components/ReconciliationActionCard.svelte",
+        "components/CatalogImportSheet.svelte",
+        "components/WorkflowStartSheet.svelte",
+        "components/WorkflowGraphDrawing.svelte",
+        "components/WorkflowNodePreviewPanel.svelte"
+      ])
+    );
+  });
+
   it("proves(a-surfaces-terms-come-from-one-source): every room template takes its terms from that surface's copy owner", () => {
     const templates = roomTemplates();
-    expect(templates).toEqual(expect.arrayContaining(["pages/WorkbenchPage.svelte", RUN_VIEW]));
+    expect(templates).toEqual(expect.arrayContaining(["pages/WorkbenchPage.svelte"]));
     const violations = templates.flatMap((relativePath) =>
       unownedCopyIn(relativePath, readFileSync(resolve(FRONTEND_SRC, relativePath), "utf8"))
     );

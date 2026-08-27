@@ -210,7 +210,7 @@ async function openStart(cockpitApi: CockpitApi): Promise<void> {
     }
   });
   await fireEvent.click(await screen.findByRole("button", { name: "Start" }));
-  await screen.findByRole("dialog", { name: `Start ${workflowName}` });
+  await screen.findByRole("dialog", { name: workflowStartCopy.startTitle(workflowName) });
   await waitFor(() => expect(screen.queryByText("Preparing…")).toBeNull());
 }
 
@@ -244,7 +244,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
 
     const start = screen.getByRole("button", { name: "Start run" });
     expect((start as HTMLButtonElement).disabled).toBe(true);
-    await fireEvent.change(screen.getByLabelText("Configuration for cook"), { target: { value: configurationHash } });
+    await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), { target: { value: configurationHash } });
     expect((start as HTMLButtonElement).disabled).toBe(true);
     await fireEvent.input(screen.getByLabelText("portions (integer) *"), { target: { value: "7" } });
     expect((start as HTMLButtonElement).disabled).toBe(false);
@@ -255,7 +255,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     await openStart(cockpitApi);
 
     await fireEvent.input(screen.getByLabelText("portions (integer) *"), { target: { value: "7" } });
-    await fireEvent.change(screen.getByLabelText("Configuration for cook"), { target: { value: configurationHash } });
+    await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), { target: { value: configurationHash } });
     await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
 
     await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
@@ -294,10 +294,10 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     expect(screen.getByRole("listbox", { name: "Work item for work" })).toBeTruthy();
     await fireEvent.click(screen.getByRole("option", { name: "#450" }));
     expect(picker.textContent).toContain("#450");
-    await fireEvent.change(screen.getByLabelText("Configuration for cook"), {
+    await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
       target: { value: configurationHash }
     });
-    expect((screen.getByLabelText("Configuration for cook") as HTMLSelectElement).value).toBe(
+    expect((screen.getByLabelText(workflowStartCopy.configurationFor("cook")) as HTMLSelectElement).value).toBe(
       configurationHash
     );
     await waitFor(() => expect(screen.getByText("Chosen now")).toBeTruthy());
@@ -339,7 +339,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
 
     await fireEvent.keyDown(picker, { key: "Escape" });
     expect(screen.queryByRole("listbox", { name: "Work item for work" })).toBeNull();
-    expect(screen.getByRole("dialog", { name: `Start ${workflowName}` })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: workflowStartCopy.startTitle(workflowName) })).toBeTruthy();
     expect(document.activeElement).toBe(picker);
     expect(picker.textContent).toContain("Choose");
 
@@ -375,7 +375,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     await openStart(cockpitApi);
 
     expect(screen.getByText(workflowStartCopy.noSource)).toBeTruthy();
-    await fireEvent.change(screen.getByLabelText("Configuration for cook"), {
+    await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
       target: { value: configurationHash }
     });
     const startRun = screen.getByRole("button", { name: workflowStartCopy.startRun }) as HTMLButtonElement;
@@ -396,7 +396,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     await openStart(cockpitApi);
 
     expect((await screen.findByRole("alert")).textContent).toContain("canonical work-item schema");
-    await fireEvent.change(screen.getByLabelText("Configuration for cook"), {
+    await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
       target: { value: configurationHash }
     });
     expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
@@ -413,7 +413,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     await openStart(cockpitApi);
 
     expect((await screen.findByRole("alert")).textContent).toContain("must be an object");
-    await fireEvent.change(screen.getByLabelText("Configuration for cook"), {
+    await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
       target: { value: configurationHash }
     });
     expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled).toBe(true);
@@ -440,7 +440,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     const start = await screen.findByRole("button", { name: "Start" });
     start.focus();
     await fireEvent.click(start);
-    const dialog = await screen.findByRole("dialog", { name: `Start ${workflowName}` });
+    const dialog = await screen.findByRole("dialog", { name: workflowStartCopy.startTitle(workflowName) });
     await waitFor(() => expect(screen.queryByText("Preparing…")).toBeNull());
     const cancel = within(dialog).getByRole("button", { name: "Cancel" });
     const portions = within(dialog).getByLabelText("portions (integer) *");
@@ -453,7 +453,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     await fireEvent.keyDown(portions, { key: "Tab", shiftKey: true });
     expect(document.activeElement).toBe(cancel);
     await fireEvent.keyDown(dialog, { key: "Escape" });
-    expect(screen.queryByRole("dialog", { name: `Start ${workflowName}` })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: workflowStartCopy.startTitle(workflowName) })).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(start));
   });
 });
@@ -559,7 +559,7 @@ describe("the catalog start sheet's project model resolution", () => {
     const cockpitApi = modelApi(resolveProjectModels);
     await openStart(cockpitApi);
 
-    const picker = screen.getByLabelText("Configuration for cook");
+    const picker = screen.getByLabelText(workflowStartCopy.configurationFor("cook"));
     expect((picker as HTMLSelectElement).value).toBe(configurationHash);
     expect(within(picker).getByRole("option", {
       name: "difficulty 2 → cook-model (next higher) · Account test"
@@ -586,10 +586,10 @@ describe("the catalog start sheet's project model resolution", () => {
     const cockpitApi = modelApi(resolveProjectModels);
     await openStart(cockpitApi);
 
-    expect(within(screen.getByLabelText("Configuration for cook")).getByRole("option", {
+    expect(within(screen.getByLabelText(workflowStartCopy.configurationFor("cook"))).getByRole("option", {
       name: "pinned in workflow → cook-model · Account test"
     })).toBeTruthy();
-    await fireEvent.change(screen.getByLabelText("Configuration for cook"), {
+    await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
       target: { value: configurationHash }
     });
     await waitFor(() => expect(screen.getByText("Chosen now")).toBeTruthy());
@@ -622,7 +622,7 @@ describe("the catalog start sheet's project model resolution", () => {
     const cockpitApi = modelApi(resolveProjectModels);
     await openStart(cockpitApi);
 
-    const picker = screen.getByLabelText("Configuration for cook");
+    const picker = screen.getByLabelText(workflowStartCopy.configurationFor("cook"));
     expect(picker.classList).toContain("needs-choice");
     expect(screen.getAllByText("Choose")).toHaveLength(1);
     expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).title).toBe(
@@ -661,11 +661,11 @@ describe("the catalog start sheet's project model resolution", () => {
     ]);
     await openStart(cockpitApi);
 
-    await fireEvent.change(screen.getByLabelText("Configuration for cook"), {
+    await fireEvent.change(screen.getByLabelText(workflowStartCopy.configurationFor("cook")), {
       target: { value: otherHash }
     });
     await waitFor(() => expect(
-      (screen.getByLabelText("Configuration for cook") as HTMLSelectElement).value
+      (screen.getByLabelText(workflowStartCopy.configurationFor("cook")) as HTMLSelectElement).value
     ).toBe(""));
     expect(screen.getAllByText("Choose")).toHaveLength(1);
     expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).title).toBe(
@@ -695,7 +695,7 @@ describe("the catalog start sheet's project model resolution", () => {
     ]);
     await openStart(cockpitApi);
 
-    const picker = screen.getByLabelText("Configuration for cook") as HTMLSelectElement;
+    const picker = screen.getByLabelText(workflowStartCopy.configurationFor("cook")) as HTMLSelectElement;
     expect(picker.value).toBe(configurationHash);
     expect(picker.selectedOptions[0]?.disabled).toBe(true);
     expect(picker.selectedOptions[0]?.textContent).toBe(
@@ -727,12 +727,12 @@ describe("the catalog start sheet's project model resolution", () => {
     const cockpitApi = modelApi(resolveProjectModels);
     await openStart(cockpitApi);
 
-    expect((screen.getByLabelText("Configuration for cook") as HTMLSelectElement)
+    expect((screen.getByLabelText(workflowStartCopy.configurationFor("cook")) as HTMLSelectElement)
       .selectedOptions[0]?.textContent).toBe("difficulty 2 → cook-model · Account test");
     await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
 
     await waitFor(() => expect(
-      (screen.getByLabelText("Configuration for cook") as HTMLSelectElement).value
+      (screen.getByLabelText(workflowStartCopy.configurationFor("cook")) as HTMLSelectElement).value
     ).toBe(""));
     expect(screen.getAllByText("Choose")).toHaveLength(1);
     expect(cockpitApi.start).not.toHaveBeenCalled();
@@ -766,7 +766,7 @@ describe("the catalog start sheet's project model resolution", () => {
     ]);
     await openStart(cockpitApi);
 
-    const picker = screen.getByLabelText("Configuration for cook") as HTMLSelectElement;
+    const picker = screen.getByLabelText(workflowStartCopy.configurationFor("cook")) as HTMLSelectElement;
     await fireEvent.change(picker, { target: { value: olderHash } });
     await fireEvent.change(picker, { target: { value: newerHash } });
     await waitFor(() => expect(picker.value).toBe(newerHash));
@@ -842,7 +842,7 @@ describe("the catalog start sheet's project model resolution", () => {
           })) };
       await openStart(modelApi(resolveProjectModels, undefined, overrides));
 
-      const picker = screen.getByLabelText("Configuration for cook");
+      const picker = screen.getByLabelText(workflowStartCopy.configurationFor("cook"));
       expect(within(picker).queryByRole("option", { name: /cook-model/ })).toBeNull();
       expect(screen.getAllByText("Choose")).toHaveLength(1);
     }
@@ -869,7 +869,7 @@ describe("the catalog start sheet's project model resolution", () => {
     expect((await screen.findByRole("alert")).textContent).toContain(
       "The start response changed the selected roles."
     );
-    expect(screen.getByLabelText("Configuration for cook")).toBeTruthy();
+    expect(screen.getByLabelText(workflowStartCopy.configurationFor("cook"))).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Start run" })).toBeNull();
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
     expect(window.location.pathname).toBe(`/atelier/catalog/${encodeURIComponent(workflowName)}`);

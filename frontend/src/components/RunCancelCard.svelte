@@ -140,9 +140,9 @@
       const mutation = await prepareCancel(mutationJournal, run.public_run_reference, target);
       pending = mutation;
       accepted = false;
-      await deliverAndSettle(mutation, "The cancel could not be confirmed.");
+      await deliverAndSettle(mutation, runPageCopy.cancel.unconfirmed);
     } catch (error) {
-      uncertainMessage = humanErrorMessage(error, "The cancel could not be confirmed.");
+      uncertainMessage = humanErrorMessage(error, runPageCopy.cancel.unconfirmed);
     } finally {
       busy = false;
     }
@@ -154,7 +154,7 @@
     busy = true;
     uncertainMessage = null;
     try {
-      await deliverAndSettle(pending, "The exact retry could not be confirmed.");
+      await deliverAndSettle(pending, runPageCopy.exactRetryUnconfirmed);
     } finally {
       busy = false;
     }

@@ -147,7 +147,7 @@ describe("a finished run's page shows the standing sentence, not the result (#66
     const raw = '{"answer":"The workflow could not be started: format not executable.","started_run_ids":[]}';
     const { getNodeDetail } = renderRun(v3Run(), withAnswer(raw));
 
-    const standing = await screen.findByLabelText("Where this run stands");
+    const standing = await screen.findByLabelText(runPageCopy.whereThisRunStands);
     expect(standing.textContent).toContain(standingWords.done);
     await screen.findByRole("button", { name: "report — Done" });
 
@@ -188,7 +188,7 @@ describe("a finished run's page shows the standing sentence, not the result (#66
       withAnswer('{"answer":"Still writing."}')
     );
 
-    await screen.findByLabelText("Where this run stands");
+    await screen.findByLabelText(runPageCopy.whereThisRunStands);
     await screen.findByRole("button", { name: "report — Working" });
     expect(screen.queryByRole("region", { name: runPageCopy.tabResult })).toBeNull();
     expect(getNodeDetail).not.toHaveBeenCalled();

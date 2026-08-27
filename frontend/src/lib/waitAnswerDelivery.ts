@@ -6,6 +6,7 @@ import {
   waitMutationId,
   type WaitMutation
 } from "./mutationJournal";
+import { runPageCopy } from "./runPageCopy";
 import { encodeWaitAnswer } from "./waitAnswer";
 
 /**
@@ -56,7 +57,7 @@ export async function deliverWaitAnswer(
   cockpitApi: CockpitApi,
   mutationJournal: MutationJournal,
   mutation: WaitMutation,
-  fallbackMessage = "The answer could not be confirmed."
+  fallbackMessage: string = runPageCopy.answerUnconfirmed
 ): Promise<WaitAnswerOutcome> {
   try {
     const result = await cockpitApi.answer(mutation);

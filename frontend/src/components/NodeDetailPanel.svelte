@@ -242,7 +242,7 @@
 <aside class="node-panel" aria-labelledby="node-panel-title">
   <header>
     <h2 id="node-panel-title">{panelNodeId}</h2>
-    <button type="button" class="close" on:click={onClose} aria-label="Close node detail">
+    <button type="button" class="close" on:click={onClose} aria-label={runPageCopy.closeNodeDetail}>
       ×
     </button>
   </header>
@@ -287,7 +287,7 @@
     {#if tab === "result"}
       {#if situation === "refused"}
         <p class="refusal" role="alert">
-          <strong>Stopped here:</strong>
+          <strong>{runPageCopy.stoppedHere}</strong>
           {detail.refusal}
         </p>
         {#if refusalOutput !== null}
@@ -305,7 +305,7 @@
         {/if}
       {:else if situation === "waiting"}
         <p class="waiting" role="status">
-          Waiting for the work before it. Nothing has been refused.
+          {runPageCopy.waitingForWork}
         </p>
       {/if}
       {#if detail.answer === null}

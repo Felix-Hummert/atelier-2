@@ -102,7 +102,7 @@ test("the Result tab carries the decoded result; the run head is only the standi
   test.setTimeout(120_000);
 
   await completedConductorRun(page);
-  await expect(page.getByLabel("Where this run stands")).toContainText(standingWords.done, {
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText(standingWords.done, {
     timeout: 30_000
   });
 

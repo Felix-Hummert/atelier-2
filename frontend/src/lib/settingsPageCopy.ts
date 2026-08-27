@@ -23,4 +23,23 @@ export const settingsPageCopy = {
   defaultsNoCheckedModels: "Check a model above before choosing defaults",
   defaultsUnavailableModels: "No startable models are available",
   writeFailed: "Change not saved",
+  account: "Account",
+  registry: "Registry",
+  unknownAccount: "Unknown account",
+  addModel: "Add a model",
+  check: "Check",
+  remove: "Remove",
+  notCheckedYet: "◇ not checked yet",
+  difficulty: "Difficulty",
+  changeSavedDefault: "Change saved default",
+  noDefault: "No default",
+  retry: "Retry"
 } as const;
+
+export function accountChoice(modelId: string, account: string): string {
+  return `${modelId} · Account ${account}`;
+}
+
+export function difficultyLabel(difficulty: number): string {
+  return `${settingsPageCopy.difficulty} ${difficulty}`;
+}

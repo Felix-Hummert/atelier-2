@@ -24,7 +24,7 @@
     type RetainedRead
   } from "../lib/readResource";
   import { readEveryAgentConfiguration } from "../lib/runPages";
-  import { settingsPageCopy } from "../lib/settingsPageCopy";
+  import { accountChoice, difficultyLabel, settingsPageCopy } from "../lib/settingsPageCopy";
 
   export let cockpitApi: CockpitApi;
 
@@ -162,7 +162,7 @@
   function accountFor(configuration: AgentConfigurationRevisionListItem): string {
     return settings.confirmed?.profiles.find(
       (profile) => profile.auth_profile_revision_hash === configuration.auth_profile_revision_hash
-    )?.profile_id ?? "Unknown account";
+    )?.profile_id ?? settingsPageCopy.unknownAccount;
   }
 
   function registryEntryDetails(entry: ModelRegistryRevision["entries"][number]): string {
@@ -393,7 +393,7 @@
       if (configuration === undefined || !configuration.startable) return [];
       return [{
         value: entry.agent_configuration_revision_hash,
-        label: `${entry.model_id} · Account ${accountFor(configuration)}`
+        label: accountChoice(entry.model_id, accountFor(configuration))
       }];
     })
   );
@@ -407,7 +407,7 @@
     );
     return {
       value: configurationHash,
-      label: `${found.entry.model_id} · Account ${configuration === undefined ? "Unknown account" : accountFor(configuration)} — Unavailable`
+      label: `${accountChoice(found.entry.model_id, configuration === undefined ? settingsPageCopy.unknownAccount : accountFor(configuration))} — Unavailable`
     };
   }
 
@@ -461,7 +461,7 @@
       {:else}
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Model</th><th>Account</th><th><span class="sr-only">Registry</span></th></tr></thead>
+            <thead><tr><th>{settingsPageCopy.model}</th><th>{settingsPageCopy.account}</th><th><span class="sr-only">{settingsPageCopy.registry}</span></th></tr></thead>
             <tbody>
               {#each modelProviders as providerId (providerId)}
                 {@const registry = registryFor(providerId)}
@@ -470,25 +470,25 @@
                   {#each registry.entries as entry (entry.agent_configuration_revision_hash)}
                     {@const configuration = settings.confirmed.configurations.find((candidate) => candidate.agent_configuration_revision_hash === entry.agent_configuration_revision_hash)}
                     <tr>
-                      <td data-label="Model"><code>{entry.model_id}</code></td>
-                      <td data-label="Account">{configuration === undefined ? "Unknown account" : accountFor(configuration)}</td>
-                      <td data-label="Registry">
+                      <td data-label={settingsPageCopy.model}><code>{entry.model_id}</code></td>
+                      <td data-label={settingsPageCopy.account}>{configuration === undefined ? settingsPageCopy.unknownAccount : accountFor(configuration)}</td>
+                      <td data-label={settingsPageCopy.registry}>
                         {#if registryEntryDetails(entry) !== ""}<span class:unchecked={entry.provider_check !== "checked"}>{registryEntryDetails(entry)}</span>{/if}
                         {#if entry.provider_check === "not-checked"}
-                          <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void validateModel(registry.provider_id, entry.agent_configuration_revision_hash); }}>Check</button>
+                          <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void validateModel(registry.provider_id, entry.agent_configuration_revision_hash); }}>{settingsPageCopy.check}</button>
                         {/if}
-                        <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void removeModel(registry, entry); }}>Remove</button>
+                        <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void removeModel(registry, entry); }}>{settingsPageCopy.remove}</button>
                       </td>
                     </tr>
                   {/each}
                 {:else}
                   {#each missingRegistryStartable.filter((configuration) => configuration.provider_id === providerId) as configuration (configuration.agent_configuration_revision_hash)}
                     <tr>
-                      <td data-label="Model"><code>{configuration.model}</code></td>
-                      <td data-label="Account">{accountFor(configuration)}</td>
-                      <td data-label="Registry">
-                        <span class="unchecked">◇ not checked yet</span>
-                        <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void validateModel(configuration.provider_id, configuration.agent_configuration_revision_hash); }}>Check</button>
+                      <td data-label={settingsPageCopy.model}><code>{configuration.model}</code></td>
+                      <td data-label={settingsPageCopy.account}>{accountFor(configuration)}</td>
+                      <td data-label={settingsPageCopy.registry}>
+                        <span class="unchecked">{settingsPageCopy.notCheckedYet}</span>
+                        <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void validateModel(configuration.provider_id, configuration.agent_configuration_revision_hash); }}>{settingsPageCopy.check}</button>
                       </td>
                     </tr>
                   {/each}
@@ -500,9 +500,9 @@
       {/if}
       {#if availableConfigurations.length > 0}
         <label class="add-model">
-          <span class="sr-only">Add a model</span>
+          <span class="sr-only">{settingsPageCopy.addModel}</span>
           <select
-            aria-label="Add a model"
+            aria-label={settingsPageCopy.addModel}
             value=""
             disabled={mutationsFrozen}
             onchange={(event) => {
@@ -512,9 +512,9 @@
               if (configuration !== undefined) void addModel(configuration);
             }}
           >
-            <option value="" disabled>Add a model</option>
+            <option value="" disabled>{settingsPageCopy.addModel}</option>
             {#each availableConfigurations as configuration (configuration.agent_configuration_revision_hash)}
-              <option value={configuration.agent_configuration_revision_hash}>{configuration.model} · Account {accountFor(configuration)}</option>
+              <option value={configuration.agent_configuration_revision_hash}>{accountChoice(configuration.model, accountFor(configuration))}</option>
             {/each}
           </select>
         </label>
@@ -528,27 +528,27 @@
       {/if}
       <div class="table-wrap">
         <table class="defaults-table">
-          <thead><tr><th>Difficulty</th><th>Model</th></tr></thead>
+          <thead><tr><th>{settingsPageCopy.difficulty}</th><th>{settingsPageCopy.model}</th></tr></thead>
           <tbody>
           {#each difficulties as difficulty (difficulty)}
             {@const retained = selections[difficulty] === undefined ? null : retainedDefaultChoice(selections[difficulty])}
             <tr>
-              <td class="difficulty-mark" data-label="Difficulty"><b>{difficulty}</b></td>
-              <td data-label="Model">
+              <td class="difficulty-mark" data-label={settingsPageCopy.difficulty}><b>{difficulty}</b></td>
+              <td data-label={settingsPageCopy.model}>
               {#if retained !== null}
                 <div class="retained-default" role="status">{retained.label}</div>
               {/if}
               <select
-                aria-label={`Difficulty ${difficulty}`}
+                aria-label={difficultyLabel(difficulty)}
                 value={retained === null ? selections[difficulty] ?? "" : ""}
                 disabled={mutationsFrozen}
                 onchange={(event) => { void choose(difficulty, event.currentTarget.value === "__clear" ? "" : event.currentTarget.value); }}
               >
                 {#if retained !== null}
-                  <option value="" disabled>Change saved default</option>
-                  <option value="__clear">No default</option>
+                  <option value="" disabled>{settingsPageCopy.changeSavedDefault}</option>
+                  <option value="__clear">{settingsPageCopy.noDefault}</option>
                 {:else}
-                  <option value="">No default</option>
+                  <option value="">{settingsPageCopy.noDefault}</option>
                 {/if}
                 {#each registeredChoices as choice (choice.value)}
                   <option value={choice.value}>{choice.label}</option>
@@ -565,7 +565,7 @@
     {#if failedWrite !== null}
       <div class="write-failure" role="alert">
         <span aria-hidden="true">◇</span><strong>{settingsPageCopy.writeFailed}</strong>
-        <button class="quiet compact" type="button" disabled={writing} onclick={() => { void retryWrite(); }}>Retry</button>
+        <button class="quiet compact" type="button" disabled={writing} onclick={() => { void retryWrite(); }}>{settingsPageCopy.retry}</button>
       </div>
     {/if}
   {/if}

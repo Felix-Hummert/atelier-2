@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { workflowStartCopy } from "../../src/lib/catalogPageCopy";
+import { workflowDetailCopy, workflowStartCopy } from "../../src/lib/catalogPageCopy";
 
 const shotDirectory = process.env.ATELIER2_SHOT_DIR ?? "";
 
@@ -250,14 +250,14 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       await expect(page.getByRole("button", { name: "Copy Workflow revision" })).toHaveCount(0);
       await page.screenshot({ path: `${shotDirectory}/catalog-detail-${viewport.name}-${colorScheme}.png`, fullPage: true });
 
-      await page.locator("summary", { hasText: "Technical" }).click();
+      await page.locator("summary", { hasText: workflowDetailCopy.technical }).click();
       await expect(page.getByRole("group", { name: "Workflow revision" })).toBeVisible();
       await expect(page.getByRole("button", { name: "Copy Workflow revision" })).toBeVisible();
 
       await page.getByRole("button", { name: "Start" }).click();
-      const sheet = page.getByRole("dialog", { name: `Start ${workflowName}` });
+      const sheet = page.getByRole("dialog", { name: workflowStartCopy.startTitle(workflowName) });
       await expect(sheet).toBeVisible();
-      await expect(page.getByLabel("Configuration for builder")).toBeVisible();
+      await expect(page.getByLabel(workflowStartCopy.configurationFor("builder"))).toBeVisible();
       await expect(sheet.getByText(workItemSchemaHash)).toHaveCount(0);
       await openGroupedWorkItemPicker(sheet);
       await page.screenshot({ path: `${shotDirectory}/catalog-start-sheet-${viewport.name}-${colorScheme}.png`, fullPage: true });

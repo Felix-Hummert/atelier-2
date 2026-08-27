@@ -22,6 +22,7 @@
   import { nodeIsLiveWork } from "../lib/liveWatch";
   import type { NodeState } from "../lib/runProjection";
   import { layerWorkflowGraph } from "../lib/workflowGraph";
+  import { loopLabel, workflowGraphCopy } from "../lib/workflowGraphCopy";
   import { stateGlyphs, stateLabels } from "./StateMark.svelte";
 
   type WorkflowGraphPreview = {
@@ -211,14 +212,6 @@
     });
   }
 
-  /** "until <verdict> · max <n>", or "max <n>" where the document declares no verdict exit. */
-  function loopLabel(loop: WorkflowGraphLoop): string {
-    const bound = `max ${loop.maximum_rounds}`;
-    return loop.repeat_while === null
-      ? `↻ ${bound}`
-      : `↻ until ${loop.repeat_while.verdict} · ${bound}`;
-  }
-
   function applyEdges(): void {
     const next = measureEdges();
     if (
@@ -288,7 +281,7 @@
     class:has-more-before={canScrollToStart}
     class:has-more-after={canScrollToEnd}
   >
-    <section class="graph-canvas" bind:this={host} aria-label="Workflow">
+    <section class="graph-canvas" bind:this={host} aria-label={workflowGraphCopy.label}>
       {#if !layered.ok}
         <p class="muted" role="status">{layered.reason}</p>
       {:else}

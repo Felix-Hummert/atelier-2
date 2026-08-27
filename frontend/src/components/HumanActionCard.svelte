@@ -1,6 +1,7 @@
 <script lang="ts">
   import { decisionStatusCopy } from "../lib/decisionStatusCopy";
   import type { WaitMutation } from "../lib/mutationJournal";
+  import { runPageCopy } from "../lib/runPageCopy";
 
   export let pending: WaitMutation | null;
   export let pendingAnswer: string | null;
@@ -41,7 +42,7 @@
   aria-labelledby="wait-action-title"
 >
   <div class="human-action-header">
-    <p class="eyebrow">Wait node</p>
+    <p class="eyebrow">{runPageCopy.waitNode}</p>
     <span
       class="human-action-shape"
       class:human-action-shape-working={pending !== null}
@@ -60,14 +61,14 @@
     <output class="exact-answer" aria-label={decisionStatusCopy.exactAnswer}>{pendingAnswer}</output>
     {#if !accepted && !busy}
       <div class="actions">
-        <button type="button" disabled={busy} onclick={onRetry} bind:this={retryButton}>Retry</button>
-        <button class="quiet" type="button" disabled={busy} onclick={onDiscard}>Discard</button>
+        <button type="button" disabled={busy} onclick={onRetry} bind:this={retryButton}>{runPageCopy.retry}</button>
+        <button class="quiet" type="button" disabled={busy} onclick={onDiscard}>{runPageCopy.discard}</button>
       </div>
     {/if}
   {:else}
-    <h2 id="wait-action-title">Answer needed</h2>
+    <h2 id="wait-action-title">{runPageCopy.answerNeeded}</h2>
     <form class="wait-form" onsubmit={submit} novalidate>
-      <label for="wait-answer">Integer answer</label>
+      <label for="wait-answer">{runPageCopy.integerAnswer}</label>
       <input
         id="wait-answer"
         type="text"
@@ -88,7 +89,7 @@
       {#if validationMessage !== null}
         <p id="wait-validation" class="field-error" role="alert">{validationMessage}</p>
       {/if}
-      <button class="primary" type="submit" disabled={busy}>Answer</button>
+      <button class="primary" type="submit" disabled={busy}>{runPageCopy.answerSubmit}</button>
     </form>
   {/if}
 </section>

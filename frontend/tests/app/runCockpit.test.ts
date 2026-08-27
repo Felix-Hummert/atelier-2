@@ -8,7 +8,10 @@ import {
   type CockpitApi,
   type Run
 } from "../../src/api/client";
+import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import { shortFingerprint } from "../../src/lib/fingerprint";
+import { proofAnchorCopy } from "../../src/lib/proofAnchorCopy";
+import { runPageCopy } from "../../src/lib/runPageCopy";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import {
@@ -46,15 +49,15 @@ describe("read-only run cockpit", () => {
     const working = await screen.findByRole("article", { name: "agent — Working" });
     expect(working.classList.contains("live-work")).toBe(true);
     expect(working.getAttribute("data-live")).toBe("true");
-    expect(screen.getByText("Process log stays in the lease.").isConnected).toBe(true);
+    expect(screen.getByText(runPageCopy.processLogInLease).isConnected).toBe(true);
     expect(screen.queryByRole("progressbar")).toBeNull();
     expect(document.querySelector("details.event-log")?.hasAttribute("open")).toBe(true);
-    expect(screen.getByText("No durable events yet.").isConnected).toBe(true);
+    expect(screen.getByText(runPageCopy.noDurableEvents).isConnected).toBe(true);
 
     feed.handlers?.opened();
     feed.handlers?.event(JSON.stringify(agentCompleted(1)));
     await waitFor(() => expect(screen.getAllByText("AGENT COMPLETED").length).toBeGreaterThan(0));
-    expect(screen.getByText("Process log stays in the lease.").isConnected).toBe(true);
+    expect(screen.getByText(runPageCopy.processLogInLease).isConnected).toBe(true);
   });
 
   it("loads one authoritative run plus bound graph before opening the durable event history", async () => {
@@ -70,7 +73,7 @@ describe("read-only run cockpit", () => {
     expect(screen.getByRole("article", { name: "action — Done" }).isConnected).toBe(true);
     expect(screen.getByRole("article", { name: "wait — Needs you" }).isConnected).toBe(true);
     expect(screen.getByRole("article", { name: "final — Queued" }).isConnected).toBe(true);
-    expect(screen.getByText("No durable events yet.").isConnected).toBe(true);
+    expect(screen.getByText(runPageCopy.noDurableEvents).isConnected).toBe(true);
   });
 
   it("retains confirmed nodes and events through a disconnect the live stream heals on its own, naming no local reconnecting notice of its own (#700)", async () => {
@@ -93,7 +96,7 @@ describe("read-only run cockpit", () => {
     // and offers no manual freshness control either: a second, competing
     // model of the same one honest fact (#506).
     expect(screen.queryByText("Reconnecting")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: runPageCopy.retry })).toBeNull();
 
     feed.handlers?.opened();
     await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
@@ -168,7 +171,7 @@ describe("read-only run cockpit", () => {
     // A protocol violation is the one honest case the live stream cannot heal
     // on its own (#506): the named "Retry" affordance beside the stopped
     // status is what reopens it.
-    await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await fireEvent.click(screen.getByRole("button", { name: runPageCopy.retry }));
     expectOneConfirmedAgentEvent();
     resolveRefresh(agentCompletedRun());
     await waitFor(() => expect(feed.open).toHaveBeenCalledTimes(2));
@@ -192,7 +195,7 @@ describe("read-only run cockpit", () => {
       props: { cockpitApi: api({ getRun }), mutationJournal: new MutationJournal(sessionStorage) }
     });
 
-    expect(screen.getByRole("status").textContent).toBe("Looking…");
+    expect(screen.getByRole("status").textContent).toBe(runPageCopy.looking);
     rejectRun(
       new CockpitRequestError("Missing", {
         type: "urn:atelier2:problem:v1:run-not-found",
@@ -228,7 +231,7 @@ describe("read-only run cockpit", () => {
     expect(document.activeElement).toBe(copy);
     await fireEvent.click(copy);
     expect(writeText).toHaveBeenCalledWith(digest);
-    await waitFor(() => expect(screen.getByText("Copied").isConnected).toBe(true));
+    await waitFor(() => expect(screen.getByText(proofAnchorCopy.copied).isConnected).toBe(true));
 
     await fireEvent.click(screen.getByRole("button", { name: "Copy Terminal hash" }));
     expect(writeText).toHaveBeenLastCalledWith(digest);
@@ -254,7 +257,7 @@ describe("read-only run cockpit", () => {
     expect(within(identity).getByText("run").isConnected).toBe(true);
     await fireEvent.click(within(identity).getByRole("button", { name: "Copy Run id" }));
     expect(writeText).toHaveBeenCalledWith("run");
-    await waitFor(() => expect(screen.getByText("Copied").isConnected).toBe(true));
+    await waitFor(() => expect(screen.getByText(proofAnchorCopy.copied).isConnected).toBe(true));
   });
 
   it("does not open event history for a run whose current node disagrees with its revision", async () => {
@@ -279,7 +282,7 @@ describe("read-only run cockpit", () => {
       }
     });
 
-    expect((await screen.findByText("Run unavailable")).isConnected).toBe(true);
+    expect((await screen.findByText(runPageCopy.runUnavailable)).isConnected).toBe(true);
     expect(feed.open).not.toHaveBeenCalled();
   });
 });
@@ -293,7 +296,7 @@ describe("the trail back from a run (#654)", () => {
         mutationJournal: new MutationJournal(sessionStorage)
       }
     });
-    const trail = await screen.findByRole("navigation", { name: "Where you are" });
+    const trail = await screen.findByRole("navigation", { name: backLinkCopy.whereYouAre });
     return within(trail).getByRole("link");
   }
 
@@ -323,8 +326,8 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
 }
 
 function expectOneConfirmedAgentEvent(): void {
-  expect(screen.getByText("Events", { exact: false, selector: "summary" }).textContent).toContain("1");
-  expect(screen.queryByText("No durable events yet.")).toBeNull();
+  expect(screen.getByText(runPageCopy.events, { exact: false, selector: "summary" }).textContent).toContain("1");
+  expect(screen.queryByText(runPageCopy.noDurableEvents)).toBeNull();
   expect(screen.getByRole("article", { name: "agent — Done" }).isConnected).toBe(true);
   expect(screen.getByRole("article", { name: "action — Working" }).isConnected).toBe(true);
   expect(screen.getAllByText("AGENT COMPLETED")).toHaveLength(2);

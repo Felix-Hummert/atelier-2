@@ -156,7 +156,7 @@
       } catch (error) {
         failureMessage = error instanceof Error
           ? error.message
-          : "The saved exact answer could not be read.";
+          : runPageCopy.savedAnswerUnreadable;
       }
       if (disposed || generation !== snapshot.generation) return;
     } catch (error) {
@@ -164,7 +164,7 @@
       if (error instanceof CockpitRequestError && error.problem !== null) {
         snapshot = failRead(snapshot, generation, error.problem);
       } else {
-        failureMessage = error instanceof Error ? error.message : "The durable run could not be loaded.";
+        failureMessage = error instanceof Error ? error.message : runPageCopy.runUnloadable;
         snapshot = { ...snapshot, request: { state: "idle" } };
       }
     }
@@ -447,7 +447,7 @@
     waitValidationMessage = null;
     waitFailureMessage = null;
     if (!/^(?:0|-?[1-9][0-9]*)$/.test(answer)) {
-      waitValidationMessage = "Use one canonical integer.";
+      waitValidationMessage = runPageCopy.canonicalInteger;
       return;
     }
     const run = snapshot.confirmed?.run;
@@ -469,7 +469,7 @@
       await focusAfterDelivery();
     } catch (error) {
       if (mutation !== null) await recordWaitFailure(mutation.mutation_id, error);
-      waitFailureMessage = error instanceof Error ? error.message : "The answer could not be confirmed.";
+      waitFailureMessage = error instanceof Error ? error.message : runPageCopy.answerUnconfirmed;
     } finally {
       waitBusy = false;
       if (waitFailureMessage !== null) {
@@ -487,7 +487,7 @@
       await focusAfterDelivery();
     } catch (error) {
       await recordWaitFailure(pendingWait.mutation_id, error);
-      waitFailureMessage = error instanceof Error ? error.message : "The exact retry could not be confirmed.";
+      waitFailureMessage = error instanceof Error ? error.message : runPageCopy.exactRetryUnconfirmed;
     } finally {
       waitBusy = false;
       if (waitFailureMessage !== null) {
@@ -548,7 +548,7 @@
       }
       reconciliationFailureMessage = error instanceof Error
         ? error.message
-        : "The decision could not be confirmed.";
+        : runPageCopy.reconciliation.unconfirmed;
     } finally {
       reconciliationBusy = false;
       if (reconciliationFailureMessage !== null) {
@@ -573,7 +573,7 @@
       await recordReconciliationFailure(pendingReconciliation.mutation_id, error);
       reconciliationFailureMessage = error instanceof Error
         ? error.message
-        : "The exact retry could not be confirmed.";
+        : runPageCopy.exactRetryUnconfirmed;
     } finally {
       reconciliationBusy = false;
       if (reconciliationFailureMessage !== null) {
@@ -869,7 +869,7 @@
   {:else if snapshot.request.state === "failed"}
     <ProblemNotice problem={snapshot.request.failure} />
   {:else if failureMessage !== null}
-    <ProblemNotice title="Run unavailable" message={failureMessage} />
+    <ProblemNotice title={runPageCopy.runUnavailable} message={failureMessage} />
   {/if}
 
   {#if snapshot.confirmed !== null}
@@ -886,7 +886,7 @@
       </div>
     </header>
 
-    {#if snapshot.request.state === "loading"}<p class="status compact-status" role="status">Refreshing</p>{/if}
+    {#if snapshot.request.state === "loading"}<p class="status compact-status" role="status">{runPageCopy.refreshing}</p>{/if}
 
     {#if projection !== null}
       <!-- A dropped-but-recovering stream (connection "reconnecting", no
@@ -907,12 +907,12 @@
           type="button"
           disabled={snapshot.request.state === "loading"}
           onclick={retryStream}
-        >Retry</button>
+        >{runPageCopy.retry}</button>
       {/if}
       {#if projection.stream_failure !== null}
         <ProblemNotice problem={projection.stream_failure} />
       {:else if protocolTitle(projection) !== null}
-        <ProblemNotice title={protocolTitle(projection) ?? "Event invalid"} message={protocolDetail(projection) ?? ""} />
+        <ProblemNotice title={protocolTitle(projection) ?? runPageCopy.eventInvalid} message={protocolDetail(projection) ?? ""} />
       {/if}
       {#if snapshot.confirmed.run.state === "STARTED"}
         <p class="honest-absence">{wrapDisplayCopy(runPageCopy.processLogInLease)}</p>
@@ -920,7 +920,7 @@
     {/if}
 
     <dl class="run-summary">
-      <div><dt>State</dt><dd tabindex="-1" bind:this={runStateElement} data-testid="run-state">{snapshot.confirmed.run.state.replaceAll("_", " ").toLowerCase()}</dd></div>
+      <div><dt>{runPageCopy.state}</dt><dd tabindex="-1" bind:this={runStateElement} data-testid="run-state">{snapshot.confirmed.run.state.replaceAll("_", " ").toLowerCase()}</dd></div>
       <div>
         <dt>{wrapDisplayCopy(runPageCopy.workflowRevision)}</dt>
         <dd>
@@ -983,9 +983,9 @@
     />
 
     <details class="event-log" open={snapshot.confirmed.run.state === "STARTED"}>
-      <summary>Events <span>{projection?.events.length ?? 0}</span></summary>
+      <summary>{runPageCopy.events} <span>{projection?.events.length ?? 0}</span></summary>
       {#if (projection?.events.length ?? 0) === 0}
-        <p class="empty-event">No durable events yet.</p>
+        <p class="empty-event">{runPageCopy.noDurableEvents}</p>
       {:else}
         <ol>
           {#each projection?.events ?? [] as event (event.cursor)}
@@ -1010,8 +1010,8 @@
       {/if}
     </details>
   {:else if snapshot.request.state === "loading"}
-    <p class="status" role="status">Looking…</p>
+    <p class="status" role="status">{runPageCopy.looking}</p>
   {:else if v3Run === null}
-    <button type="button" onclick={load}>Retry</button>
+    <button type="button" onclick={load}>{runPageCopy.retry}</button>
   {/if}
 </section>

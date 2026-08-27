@@ -621,7 +621,7 @@
     oncancel={handleDialogCancel}
   >
     <header>
-      <h2 id="start-sheet-title">Start {workflowName}</h2>
+      <h2 id="start-sheet-title">{workflowStartCopy.startTitle(workflowName)}</h2>
     </header>
     {#if loading}
       <p>{workflowStartCopy.preparing}</p>
@@ -742,7 +742,7 @@
                   <select
                     class:needs-choice={resolvedHash === null}
                     aria-invalid={resolvedHash === null}
-                    aria-label={`Configuration for ${role}`}
+                    aria-label={workflowStartCopy.configurationFor(role)}
                     disabled={starting || resolving}
                     onchange={(event) => { void chooseConfiguration(role, event.currentTarget.value); }}
                   >

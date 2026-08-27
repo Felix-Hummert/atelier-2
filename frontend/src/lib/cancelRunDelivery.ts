@@ -13,6 +13,7 @@ import {
   type CancelMutation,
   type MutationDelivery
 } from "./mutationJournal";
+import { runPageCopy } from "./runPageCopy";
 
 /**
  * A cancel the durable journal still holds for a run, carrying how far it got
@@ -84,7 +85,7 @@ export async function deliverCancel(
   cockpitApi: CockpitApi,
   mutationJournal: MutationJournal,
   mutation: CancelMutation,
-  fallbackMessage = "The cancel could not be confirmed."
+  fallbackMessage: string = runPageCopy.cancel.unconfirmed
 ): Promise<CancelOutcome> {
   try {
     const result = await cockpitApi.cancelRun(mutation);

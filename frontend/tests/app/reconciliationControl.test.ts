@@ -15,6 +15,7 @@ import {
   type ReconciliationMutation
 } from "../../src/lib/mutationJournal";
 import { PRODUCT_NAME } from "../../src/lib/productName";
+import { runPageCopy } from "../../src/lib/runPageCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import {
   agentCompleted,
@@ -73,7 +74,7 @@ describe("reconciliation control", () => {
       }
     });
 
-    expect(await screen.findByRole("heading", { name: "Decision needed" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: runPageCopy.reconciliation.decisionNeeded })).toBeTruthy();
     expect(screen.getByText("effect-key")).toBeTruthy();
     expect(screen.getByText(requestHash)).toBeTruthy();
     expect(screen.getByText("7")).toBeTruthy();
@@ -102,11 +103,11 @@ describe("reconciliation control", () => {
     });
     expect(first.result_hash).toBe(emptyResultHash);
     expect(createCommandId).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("Empty result")).toBeTruthy();
+    expect(screen.getByText(runPageCopy.reconciliation.emptyResult)).toBeTruthy();
     const stilledAction = screen.getByRole("article", { name: "action — Working" });
     expect(stilledAction.querySelector(".state-mark")?.classList).toContain("state-still");
 
-    await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await fireEvent.click(screen.getByRole("button", { name: runPageCopy.retry }));
 
     expect(reconcile).toHaveBeenCalledTimes(2);
     expect(reconcile.mock.calls[1]?.[0]).toMatchObject(first);
@@ -159,7 +160,7 @@ describe("reconciliation control", () => {
         createReconcileCommandId: () => "command-race"
       }
     });
-    await screen.findByRole("heading", { name: "Decision needed" });
+    await screen.findByRole("heading", { name: runPageCopy.reconciliation.decisionNeeded });
     await fireEvent.input(screen.getByLabelText("Actor"), { target: { value: "Felix" } });
     await fireEvent.input(screen.getByLabelText("Evidence"), { target: { value: "Exact check" } });
     await fireEvent.input(screen.getByLabelText("Effect ID"), { target: { value: "effect-empty" } });
@@ -211,7 +212,7 @@ describe("reconciliation control", () => {
       }
     });
 
-    await screen.findByRole("heading", { name: "Decision needed" });
+    await screen.findByRole("heading", { name: runPageCopy.reconciliation.decisionNeeded });
     await fireEvent.input(screen.getByLabelText("Actor"), { target: { value: "Felix" } });
     await fireEvent.input(screen.getByLabelText("Evidence"), {
       target: { value: "Destination has no matching effect" }
@@ -247,7 +248,7 @@ describe("reconciliation control", () => {
       evidence: "Destination has no matching effect",
       determination: { type: "operator_authoritative_absence" }
     });
-    await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await fireEvent.click(screen.getByRole("button", { name: runPageCopy.retry }));
     expect(reconcile).toHaveBeenCalledTimes(2);
     expect(reconcile.mock.calls[1]?.[0]).toMatchObject(first);
     expect(reconcile.mock.calls[1]?.[0].body_base64).toBe(first.body_base64);
@@ -273,7 +274,7 @@ describe("reconciliation control", () => {
     expect(screen.getByText("Felix")).toBeTruthy();
     expect(screen.getByText("Inspected the exact destination")).toBeTruthy();
     expect(screen.getByText("effect-empty")).toBeTruthy();
-    expect(screen.getByText("Empty result")).toBeTruthy();
+    expect(screen.getByText(runPageCopy.reconciliation.emptyResult)).toBeTruthy();
     expect(screen.queryByLabelText("Actor")).toBeNull();
     expect(screen.getByRole("article", { name: "action — Working" })).toBeTruthy();
   });
