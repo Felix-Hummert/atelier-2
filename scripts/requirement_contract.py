@@ -5,11 +5,12 @@ import re
 import tomllib
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from documentation_freshness import DocumentSourceWatermark
+    from documentation_freshness import DocumentSourceWatermark, UnboundDocument
 
 REQUIREMENTS_DIRECTORY = Path("docs/requirements")
 REGISTRY_LOCATION = REQUIREMENTS_DIRECTORY / "revisions.toml"
@@ -27,9 +28,12 @@ REVISION_FIELDS = frozenset(
 SOURCE_BINDING_FIELDS = frozenset(
     {"document", "content_sha256", "source_thread", "watermark_kind", "watermark"}
 )
-SOURCE_BINDING_KINDS = frozenset(
-    {"issue_body_revision", "issue_comment", "decision_revision"}
-)
+
+
+class SourceObjectKind(str, Enum):
+    ISSUE_BODY_REVISION = "issue_body_revision"
+    ISSUE_COMMENT = "issue_comment"
+    DECISION_REVISION = "decision_revision"
 
 
 class RequirementContractError(Exception):
@@ -67,7 +71,7 @@ class SourceBinding:
     document: str
     content_sha256: str
     source_thread: str
-    watermark_kind: str
+    watermark_kind: SourceObjectKind
     watermark: str
 
 
@@ -142,21 +146,21 @@ def read_requirement_registry(project_root: Path) -> tuple[RegistryEntry, ...]:
 
 def read_document_source_watermarks(
     project_root: Path,
-) -> tuple[DocumentSourceWatermark, ...]:
+) -> tuple[DocumentSourceWatermark | UnboundDocument, ...]:
     """Read active requirement documents with their optional source bindings."""
     if __package__:
         from .documentation_freshness import (
             DocumentSourceWatermark,
-            SourceObjectKind,
             SourceObjectReference,
             SourceThreadReference,
+            UnboundDocument,
         )
     else:
         from documentation_freshness import (
             DocumentSourceWatermark,
-            SourceObjectKind,
             SourceObjectReference,
             SourceThreadReference,
+            UnboundDocument,
         )
 
     registry = _read_requirement_registry(project_root)
@@ -165,29 +169,18 @@ def read_document_source_watermarks(
         (binding.document, binding.content_sha256): binding
         for binding in registry.source_bindings
     }
-    watermarks: list[DocumentSourceWatermark] = []
+    watermarks: list[DocumentSourceWatermark | UnboundDocument] = []
     for document, entry in sorted(active.items()):
         binding = bindings.get((document, entry.content_sha256))
         if binding is None:
-            watermarks.append(
-                DocumentSourceWatermark(
-                    entry.location, entry.content_sha256, None, None
-                )
-            )
+            watermarks.append(UnboundDocument(entry.location, entry.content_sha256))
             continue
-        try:
-            kind = SourceObjectKind(binding.watermark_kind)
-        except ValueError as error:
-            raise Refusal(
-                f"source binding {document} has unsupported watermark kind "
-                f"{binding.watermark_kind!r}"
-            ) from error
         watermarks.append(
             DocumentSourceWatermark(
                 entry.location,
                 entry.content_sha256,
                 SourceThreadReference(binding.source_thread),
-                SourceObjectReference(kind, binding.watermark),
+                SourceObjectReference(binding.watermark_kind, binding.watermark),
             )
         )
     return tuple(watermarks)
@@ -239,12 +232,14 @@ def _source_binding(raw: dict[str, Any]) -> SourceBinding:
     document = _text(raw, "document", "source binding")
     if re.fullmatch(r"\d{4}", document) is None:
         raise Refusal(f"source binding document {document!r} is not NNNN")
-    watermark_kind = _text(raw, "watermark_kind", f"source binding {document}")
-    if watermark_kind not in SOURCE_BINDING_KINDS:
+    raw_watermark_kind = _text(raw, "watermark_kind", f"source binding {document}")
+    try:
+        watermark_kind = SourceObjectKind(raw_watermark_kind)
+    except ValueError as error:
         raise Refusal(
             f"source binding {document} has unsupported watermark kind "
-            f"{watermark_kind!r}"
-        )
+            f"{raw_watermark_kind!r}"
+        ) from error
     return SourceBinding(
         document,
         _text(raw, "content_sha256", f"source binding {document}", digest=True),

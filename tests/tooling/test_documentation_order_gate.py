@@ -12,11 +12,13 @@ from types import ModuleType
 
 import pytest
 
+from scripts.documentation_freshness import DocumentSourceWatermark
 from scripts.requirement_contract import approval_bytes, read_document_source_watermarks
 
 PROJECT_ROOT = Path(__file__).parents[2]
 GATE = Path("scripts/check_documentation_order.py")
 CONTRACT = Path("scripts/requirement_contract.py")
+FRESHNESS = Path("scripts/documentation_freshness.py")
 REQUIREMENTS = Path("docs/requirements")
 REGISTRY = REQUIREMENTS / "revisions.toml"
 DOCUMENTATION = REQUIREMENTS / "README.md"
@@ -27,7 +29,7 @@ BOUND_END = "<!-- documentation-order-gate-bound:end -->"
 
 def copied_project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
-    for relative in (GATE, CONTRACT):
+    for relative in (GATE, CONTRACT, FRESHNESS):
         destination = project / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(PROJECT_ROOT / relative, destination)
@@ -99,18 +101,18 @@ def digest(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def bound_0004_watermark():
-    return next(
+def bound_0004_watermark() -> DocumentSourceWatermark:
+    watermark = next(
         item
         for item in read_document_source_watermarks(PROJECT_ROOT)
         if item.document.name.startswith("0004-")
     )
+    assert isinstance(watermark, DocumentSourceWatermark)
+    return watermark
 
 
 def source_binding() -> str:
     watermark = bound_0004_watermark()
-    assert watermark.source_thread is not None
-    assert watermark.last_observed_source_object is not None
     return (
         "[[source_binding]]\n"
         f'document = "{watermark.document.name[:4]}"\n'
@@ -131,7 +133,6 @@ def source_binding_with_digest(content_digest: str) -> str:
 
 def source_binding_with_watermark(source_watermark: str) -> str:
     watermark = bound_0004_watermark()
-    assert watermark.last_observed_source_object is not None
     return source_binding().replace(
         f'watermark = "{watermark.last_observed_source_object.identifier}"',
         f'watermark = "{source_watermark}"',
@@ -140,7 +141,6 @@ def source_binding_with_watermark(source_watermark: str) -> str:
 
 def source_binding_with_changed_watermark() -> str:
     watermark = bound_0004_watermark()
-    assert watermark.last_observed_source_object is not None
     original = watermark.last_observed_source_object.identifier
     return source_binding_with_watermark("0" + original[1:])
 

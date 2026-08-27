@@ -13,6 +13,7 @@ from scripts.documentation_freshness import (
     SourceObjectKind,
     SourceObjectReference,
     SourceThreadReference,
+    UnboundDocument,
     read_documentation_freshness,
 )
 from scripts.requirement_contract import read_document_source_watermarks
@@ -38,8 +39,8 @@ def bound_watermark(
     *,
     document: Path = DOCUMENT,
     document_digest: str = DOCUMENT_DIGEST,
-    source_thread: SourceThreadReference | None = THREAD,
-    source_object: SourceObjectReference | None = WATERMARK,
+    source_thread: SourceThreadReference = THREAD,
+    source_object: SourceObjectReference = WATERMARK,
 ) -> DocumentSourceWatermark:
     return DocumentSourceWatermark(
         document, document_digest, source_thread, source_object
@@ -99,7 +100,7 @@ def bound_watermark(
             (),
         ),
         (
-            (bound_watermark(source_thread=None, source_object=None),),
+            (UnboundDocument(DOCUMENT, DOCUMENT_DIGEST),),
             (),
             (),
             (),
@@ -116,7 +117,7 @@ def bound_watermark(
     ),
 )
 def test_source_freshness_reports_only_later_objects(
-    watermarks: tuple[DocumentSourceWatermark, ...],
+    watermarks: tuple[DocumentSourceWatermark | UnboundDocument, ...],
     objects: tuple[ObservedSourceObject, ...],
     stale_documents: tuple[tuple[Path, tuple[SourceObjectReference, ...]], ...],
     current_documents: tuple[Path, ...],
@@ -185,7 +186,7 @@ def test_source_freshness_reports_only_later_objects(
     ),
 )
 def test_source_freshness_refuses_without_a_partial_report(
-    watermarks: tuple[DocumentSourceWatermark, ...],
+    watermarks: tuple[DocumentSourceWatermark | UnboundDocument, ...],
     threads: tuple[ObservedSourceThread, ...],
     reason: FreshnessRefusalReason,
 ) -> None:
@@ -204,13 +205,10 @@ def test_the_tree_binding_feeds_the_pure_reader_and_leaves_unbound_documents_una
     watermarks = read_document_source_watermarks(PROJECT_ROOT)
 
     bound_documents = tuple(
-        item for item in watermarks if item.source_thread is not None
+        item for item in watermarks if isinstance(item, DocumentSourceWatermark)
     )
     assert len(bound_documents) == 1
     bound = bound_documents[0]
-    assert bound.source_thread is not None
-    assert bound.last_observed_source_object is not None
-
     report = read_documentation_freshness(
         watermarks,
         (
@@ -228,5 +226,5 @@ def test_the_tree_binding_feeds_the_pure_reader_and_leaves_unbound_documents_una
     assert report.stale_documents[0].later_objects == (observed(ISSUE_COMMENT, 2),)
     assert report.current_documents == ()
     assert tuple(item.document for item in report.unassessed_documents) == tuple(
-        item.document for item in watermarks if item.source_thread is None
+        item.document for item in watermarks if isinstance(item, UnboundDocument)
     )
