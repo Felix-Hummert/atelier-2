@@ -36,9 +36,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.wire.requests import (
-    AnyStartRunOrderResource,
     ArtifactOrderResource,
-    InlineOrderResource,
     RevisionListingView,
     StartRunAgentBindingResourceV2,
     WorkItemOrderResource,
@@ -57,6 +55,8 @@ from atelier2.host.address import (
 )
 from atelier2.host.mcp_tools import (
     JSONRPC_VERSION,
+    MAXIMUM_MCP_ARTIFACT_BYTES,
+    MAXIMUM_MCP_INPUT_LINE_BYTES,
     MCP_PROTOCOL_VERSION,
     MCP_SERVER_NAME,
     MCP_SERVER_VERSION,
@@ -82,7 +82,6 @@ from atelier2.host.run_command import (
     ServiceRefused,
     ServiceUnreachable,
     SuppliedArtifactOrder,
-    SuppliedOrder,
     SuppliedStartOrder,
     SuppliedWorkItemOrder,
     UnreadableServiceAnswer,
@@ -95,9 +94,8 @@ _run_resource = TypeAdapter[AnyRunResource](AnyRunResource)
 _catalog_name_resolution = TypeAdapter(CatalogNameResolutionResource)
 _described_page = TypeAdapter(VersionedWorkflowRevisionPageResource)
 _artifact_resource = TypeAdapter(ArtifactResource)
-_start_run_order = TypeAdapter(AnyStartRunOrderResource)
+_start_run_order = TypeAdapter(ArtifactOrderResource | WorkItemOrderResource)
 
-MAXIMUM_MESSAGE_BYTES = 1_048_576
 JSONRPC_PARSE_ERROR = -32700
 JSONRPC_INVALID_REQUEST = -32600
 JSONRPC_METHOD_NOT_FOUND = -32601
@@ -109,6 +107,26 @@ ToolHandler = Callable[[str, Mapping[str, Any]], dict[str, Any]]
 
 class McpServiceRefusal(Exception):
     """The operator named a service this process will not speak to."""
+
+
+class McpArtifactPayloadTooLarge(UnusableRunOrder):
+    """The decoded artifact cannot fit the bounded MCP JSON-RPC request."""
+
+    def __init__(self, decoded_bytes: int) -> None:
+        super().__init__(
+            "mcp-artifact-payload-too-large: "
+            f"{decoded_bytes} decoded bytes exceeds {MAXIMUM_MCP_ARTIFACT_BYTES}"
+        )
+
+
+class McpStartRunOrderRefusal(UnusableRunOrder):
+    """An MCP start order is outside this door's artifact/work-item subset."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "mcp-start-run-order-invalid: each order must be exactly "
+            "{name, artifact_hash} or {name, work_item}"
+        )
 
 
 @dataclass(frozen=True)
@@ -173,10 +191,10 @@ def dispatch_message(service_url: str, raw: object) -> dict[str, Any] | None:
 def read_message(stream: IO[bytes]) -> object | None:
     """One newline-delimited JSON-RPC message, or None at end of input."""
 
-    line = stream.readline(MAXIMUM_MESSAGE_BYTES + 1)
+    line = stream.readline(MAXIMUM_MCP_INPUT_LINE_BYTES + 1)
     if not line:
         return None
-    if len(line) > MAXIMUM_MESSAGE_BYTES and not line.endswith(b"\n"):
+    if len(line) > MAXIMUM_MCP_INPUT_LINE_BYTES and not line.endswith(b"\n"):
         raise UnreadableServiceAnswer("the MCP line is larger than this server reads")
     try:
         return json.loads(line)
@@ -395,22 +413,20 @@ def _orders(raw: object) -> tuple[SuppliedStartOrder, ...]:
     if raw is None:
         return ()
     if not isinstance(raw, list):
-        raise UnusableRunOrder("orders must be an array")
+        raise McpStartRunOrderRefusal()
     try:
         return tuple(
             _supplied_start_order(_start_run_order.validate_python(item))
             for item in raw
         )
     except ValidationError as error:
-        raise UnusableRunOrder(
-            f"orders is not the start request's order shape: {error}"
-        ) from error
+        raise McpStartRunOrderRefusal() from error
 
 
-def _supplied_start_order(order: AnyStartRunOrderResource) -> SuppliedStartOrder:
+def _supplied_start_order(
+    order: ArtifactOrderResource | WorkItemOrderResource,
+) -> SuppliedStartOrder:
     match order:
-        case InlineOrderResource(name=name, value=value):
-            return SuppliedOrder(name, value.encode())
         case ArtifactOrderResource(name=name, artifact_hash=artifact_hash):
             return SuppliedArtifactOrder(name, artifact_hash)
         case WorkItemOrderResource(name=name, work_item=work_item):
@@ -424,11 +440,14 @@ def _artifact_bytes(raw: object) -> bytes:
     if not isinstance(raw, str):
         raise UnusableRunOrder("content_base64 must be a string")
     try:
-        return base64.b64decode(raw, validate=True)
+        content = base64.b64decode(raw, validate=True)
     except binascii.Error as error:
         raise UnusableRunOrder(
             f"content_base64 is not standard Base64 of the exact bytes: {error}"
         ) from error
+    if len(content) > MAXIMUM_MCP_ARTIFACT_BYTES:
+        raise McpArtifactPayloadTooLarge(len(content))
+    return content
 
 
 def _required_text(arguments: Mapping[str, Any], field: str) -> str:
