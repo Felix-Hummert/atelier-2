@@ -47,6 +47,7 @@ from atelier2.contracts.workflows_v3 import (
     ActionNodeV3,
     AgentNodeV3,
     AnyWorkflowDocumentNode,
+    WaitNodeV3,
 )
 from atelier2.ports.project_verification import DeclaredProject, PinnedProjectSource
 
@@ -81,11 +82,11 @@ def bind_node(
 ) -> NodeBinding:
     """What this node binds: its form, and the material that form carries.
 
-    `orders` and `results` are what a V3 Agent node declared it reads, already
-    fetched; the other forms are given none and read none. `project_source` is
-    the pin the runtime took for this binding -- taken once here rather than at
-    launch, so a commit landing in between cannot change what a started run works
-    on.
+    `orders` and `results` are what a V3 Agent or Wait node declared it reads,
+    already fetched; the other forms are given none and read none.
+    `project_source` is the pin the runtime took for this binding -- taken once
+    here rather than at launch, so a commit landing in between cannot change what
+    a started run works on.
     """
     if isinstance(node, AgentNode):
         return AgentNodeBinding(node.job, node.output)
@@ -119,7 +120,12 @@ def bind_node(
     if isinstance(node, (ActionNode, ActionNodeV3)):
         return ActionNodeBinding()
     if isinstance(node, ANY_WAIT_NODE_KINDS):
-        return WaitNodeBinding(run.current_round_ordinal)
+        question = (
+            node_job(node.prompt, orders, results)
+            if isinstance(node, WaitNodeV3) and node.inputs
+            else None
+        )
+        return WaitNodeBinding(run.current_round_ordinal, question)
     if isinstance(node, SubworkflowNode):
         return SubworkflowNodeBinding(node.operands)
     raise AssertionError("closed WorkflowNode union was not exhaustive")

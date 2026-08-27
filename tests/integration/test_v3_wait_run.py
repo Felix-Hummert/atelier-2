@@ -159,6 +159,30 @@ nodes:
     + declared_output(APPROVAL_SCHEMA, "approval")
 )
 
+WAIT_WITH_AN_UNWRITTEN_INPUT = (
+    b"""format_version: 3
+name: A person waits for a named predecessor value
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Produce the candidate a person will review.
+"""
+    + declared_output()
+    + b"""  - id: approve
+    type: wait
+    prompt: Approve the candidate bound below.
+    depends_on: [implement]
+    inputs:
+      - name: candidate
+        from:
+          node: implement
+          output: result
+"""
+    + declared_output(APPROVAL_SCHEMA, "approval")
+)
+
 RUN = RunId("v3/a-person-approves")
 PROVIDER_OUTPUT = b'"the exact provider bytes"'
 ANSWER = b'"approved"'
@@ -205,8 +229,8 @@ def runtime(
         started.close()
 
 
-def start_and_launch(runtime: DbosRuntime, document: bytes) -> WorkflowRevision:
-    """Publish everything the document pins, start the run, and let it drive."""
+def publish_and_start(runtime: DbosRuntime, document: bytes) -> WorkflowRevision:
+    """Publish everything the document pins and start its durable run."""
     catalog_store = DbosCatalogStore(runtime.engine)
     for schema in (ANY_JSON_SCHEMA, APPROVAL_SCHEMA):
         assert isinstance(
@@ -250,6 +274,12 @@ def start_and_launch(runtime: DbosRuntime, document: bytes) -> WorkflowRevision:
         )
     )
     assert isinstance(started, DurableRunCreated), started
+    return workflow
+
+
+def start_and_launch(runtime: DbosRuntime, document: bytes) -> WorkflowRevision:
+    """Publish and start the run, then let its durable driver move."""
+    workflow = publish_and_start(runtime, document)
     runtime.launch()
     return workflow
 
@@ -415,12 +445,12 @@ def test_a_waiting_v3_run_reads_back_as_waiting_with_the_node_that_owes_a_move(
 
 
 @pytest.mark.proves("a-waiting-v3-run-is-answerable-on-its-run-page")
-def test_the_waiting_node_reading_carries_the_authored_prompt(
+def test_a_no_input_wait_reads_answers_and_rereads_its_authored_prompt(
     runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
 ) -> None:
-    """The published document already names the question; this read passes it on."""
+    """A no-input Wait keeps its published question and empty pause payload."""
     started, _ = runtime
-    start_and_launch(started, WAIT_IN_THE_MIDDLE)
+    workflow = start_and_launch(started, WAIT_IN_THE_MIDDLE)
     wait_for_state(started, RunState.WAITING_INPUT)
 
     found = durable_queries(started.engine).get_node_detail(RUN, WAIT_NODE)
@@ -428,6 +458,75 @@ def test_the_waiting_node_reading_carries_the_authored_prompt(
     assert isinstance(found, NodeDetailFound), found
     assert found.detail.job == b"Approve this candidate, or name the blocking defect."
     assert found.detail.job_hash == Sha256Hash.of(found.detail.job).value
+    with started.engine.connect() as connection:
+        pause = (
+            connection.execute(
+                sa.select(run_events).where(
+                    run_events.c.run_id == RUN.value,
+                    run_events.c.node_id == WAIT_NODE,
+                    run_events.c.event_kind == RunEventKind.WAITING_INPUT.value,
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert bytes(pause["payload"]) == b""
+    assert str(pause["payload_hash"]) == Sha256Hash.of(b"").value
+
+    accepted = answer(started, workflow, ANSWER)
+    assert isinstance(accepted, AnswerAcceptedPending), accepted
+    wait_for_state(started, RunState.COMPLETED)
+    reread = durable_queries(started.engine).get_node_detail(RUN, WAIT_NODE)
+    assert isinstance(reread, NodeDetailFound), reread
+    assert reread.detail.state is NodeState.SUCCEEDED
+    assert reread.detail.job == found.detail.job
+    assert reread.detail.job_hash == found.detail.job_hash
+    assert reread.detail.answer is not None
+    assert reread.detail.answer.value == ANSWER
+
+
+def test_a_nonlive_bound_wait_names_the_predecessor_that_never_wrote(
+    runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
+) -> None:
+    """Missing input is soft while queued and named if a corrupt run pauses."""
+    started, _ = runtime
+    publish_and_start(started, WAIT_WITH_AN_UNWRITTEN_INPUT)
+
+    queued = durable_queries(started.engine).get_node_detail(RUN, WAIT_NODE)
+    assert isinstance(queued, NodeDetailFound), queued
+    assert queued.detail.state is NodeState.QUEUED
+    assert queued.detail.job is None
+    assert queued.detail.refusal is None
+
+    with started.engine.begin() as connection:
+        changed = connection.execute(
+            runs.update()
+            .where(runs.c.run_id == RUN.value)
+            .values(
+                current_node_id=WAIT_NODE,
+                state=RunState.WAITING_INPUT.value,
+                state_version=1,
+            )
+        )
+    assert changed.rowcount == 1
+    with started.engine.connect() as connection:
+        pause_count = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(run_events)
+            .where(
+                run_events.c.run_id == RUN.value,
+                run_events.c.event_kind == RunEventKind.WAITING_INPUT.value,
+            )
+        )
+    assert pause_count == 0
+
+    stopped = durable_queries(started.engine).get_node_detail(RUN, WAIT_NODE)
+    assert isinstance(stopped, NodeDetailFound), stopped
+    assert stopped.detail.state is NodeState.NEEDS_YOU
+    assert stopped.detail.job is None
+    assert stopped.detail.refusal is not None
+    assert "node 'implement'" in stopped.detail.refusal
+    assert "has written no output" in stopped.detail.refusal
 
 
 @pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
