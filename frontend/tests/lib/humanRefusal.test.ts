@@ -36,6 +36,16 @@ describe("human start refusals", () => {
 });
 
 describe("human problem details", () => {
+  it("replaces an unrepresentable durable projection's stream detail with the node-detail move", () => {
+    expect(
+      humanProblemDetail({
+        type: "urn:atelier2:problem:v1:durable-projection-unrepresentable",
+        detail:
+          "Durable projection field 'event_payload' exceeds this API's bound of 4 bytes. Open the node detail: GET /atelier/api/v1/runs/run1.ZmFpbGluZy1zdHJlYW0/nodes/agent."
+      })
+    ).toBe("Open the node detail to inspect the stored value.");
+  });
+
   it("turns durable-state-corrupt into a next action and leaves an unknown code raw", () => {
     expect(
       humanProblemDetail({

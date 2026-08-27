@@ -26,15 +26,6 @@ from atelier2.contracts.budgets_v3 import BudgetRevisionRefusal
 from atelier2.contracts.schemas_v3 import SchemaDocumentRefusal
 from atelier2.contracts.tool_grants_v3 import ToolGrantRefusal
 
-PROJECTION_LIMIT_DETAIL = "Durable projection exceeds configured API limits."
-"""How the API words a stored projection that does not fit its configured bound.
-
-The bound is the API's, so the sentence is too. It lived in `ports/` and made a
-durable port speak of "API limits" — a layer explaining a decision it does not
-make. The port now answers `ProjectionTooLarge` and this is what that becomes on
-the wire.
-"""
-
 PROBLEM_TYPE_PREFIX = "urn:atelier2:problem:v1:"
 ROUTE_NOT_FOUND_ACTION = "Use a path described by this API's OpenAPI document"
 """What a caller who guessed a path is told to read instead.
@@ -52,6 +43,23 @@ def route_not_found_detail(openapi_document_path: str) -> str:
     """The refusal a guessed path earns, naming the document that lists them."""
 
     return f"{ROUTE_NOT_FOUND_ACTION} at {openapi_document_path}."
+
+
+def durable_projection_unrepresentable_detail(
+    field_name: str,
+    bound: int,
+    unit: str,
+    node_detail_path: str | None = None,
+) -> str:
+    """Say which stored value this API cannot represent, and where to inspect it."""
+
+    detail = (
+        f"Durable projection field {field_name!r} exceeds this API's bound of "
+        f"{bound} {unit}."
+    )
+    if node_detail_path is not None:
+        return f"{detail} Open the node detail: GET {node_detail_path}."
+    return detail
 
 
 def artifact_problem_code(refusal: ArtifactRefusal) -> str:
@@ -644,6 +652,11 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         503,
         "Temporarily unavailable",
         "Retry after the durable store becomes available.",
+    ),
+    "durable-projection-unrepresentable": ProblemDefinition(
+        500,
+        "Durable projection cannot be represented",
+        "Inspect the durable projection before retrying.",
     ),
     "durable-state-corrupt": ProblemDefinition(
         500, "Durable state is corrupt", "Stop mutation and inspect the durable store."

@@ -15,7 +15,7 @@ from atelier2.api._support import (
 from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.limits import ApiLimitExceeded
 from atelier2.api.openapi import API_PREFIX
-from atelier2.api.problems import PROJECTION_LIMIT_DETAIL, ApiProblem
+from atelier2.api.problems import ApiProblem
 from atelier2.api.references import InvalidEventCursor, parse_event_cursor
 from atelier2.api.stream import (
     PreparedAttentionStream,
@@ -149,7 +149,7 @@ async def prepare_attention_events(
             case ReadUnavailable(detail):
                 raise ApiProblem("temporarily-unavailable", detail)
             case ProjectionTooLarge():
-                raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
+                raise ApiProblem("durable-projection-unrepresentable")
             case AttentionEventPageOversized():
                 raise ApiProblem("internal-error")
             case _ as unreachable:

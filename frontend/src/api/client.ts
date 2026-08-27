@@ -1895,6 +1895,10 @@ export const problemDefinitions = {
   "route-not-found": { status: 404, title: "Route not found" },
   "method-not-allowed": { status: 405, title: "Method not allowed" },
   "temporarily-unavailable": { status: 503, title: "Temporarily unavailable" },
+  "durable-projection-unrepresentable": {
+    status: 500,
+    title: "Durable projection cannot be represented",
+  },
   "durable-state-corrupt": { status: 500, title: "Durable state is corrupt" },
   "internal-error": { status: 500, title: "Internal error" },
 } as const;
@@ -2389,6 +2393,10 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant(
     "temporarily-unavailable",
     problemDefinitions["temporarily-unavailable"],
+  ),
+  problemVariant(
+    "durable-projection-unrepresentable",
+    problemDefinitions["durable-projection-unrepresentable"],
   ),
   problemVariant(
     "durable-state-corrupt",

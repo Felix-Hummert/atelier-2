@@ -103,8 +103,10 @@ from atelier2.contracts.executions import (
     logical_effect_key_for,
     logical_effect_key_for_node,
 )
+from atelier2.contracts.run_projections import NodeState, RunPage
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.run_events import AttentionEventPage
+from atelier2.ports.run_queries import NodeDetailFound, RunFound
 from tests.scenarios.agents import commit_configured_agent
 from tests.scenarios.api import durable_queries
 from tests.scenarios.runs import (
@@ -617,6 +619,82 @@ def test_a_returning_driver_writes_no_receipt_over_an_abandonment(
             connection.scalar(sa.select(sa.func.count()).select_from(effect_receipts))
             == 0
         )
+
+
+@pytest.mark.parametrize("ending", [RunState.FAILED, RunState.CANCELLED])
+def test_an_abandoned_intent_is_projected_on_the_ended_run(
+    prepared: tuple[DbosRuntime, EffectIntent],
+    ending: RunState,
+) -> None:
+    """The run's own read names the word the store wrote, including the request.
+
+    Hop 38 made ABANDONED durable and left it off every public run shape. A
+    reader asking for the run after the sweep must see the intent, or the
+    prepared bytes stay readable only by opening the store.
+
+    COMPLETED is omitted here: lifting a V1 run to COMPLETED while it still
+    stands on the Action is a store-side inventory ending, and the read already
+    refuses it as not the sink. FAILED and CANCELLED are the endings a reader
+    of this document can honestly be told.
+    """
+
+    runtime, intent = prepared
+    abandon(runtime, intent, ending)
+
+    found = durable_queries(runtime.engine).get_run(intent.binding.run_id)
+
+    assert isinstance(found, RunFound)
+    reconciliation = found.projection.reconciliation
+    assert reconciliation is not None
+    assert reconciliation.intent.state is EffectIntentState.ABANDONED
+    assert reconciliation.pending_command is None
+    assert reconciliation.intent.intent.request.payload == intent.request.payload
+    assert found.projection.run.state is ending
+
+    detail = durable_queries(runtime.engine).get_node_detail(
+        intent.binding.run_id, ACTION_NODE_ID
+    )
+    assert isinstance(detail, NodeDetailFound)
+    assert detail.detail.refusal == EffectIntentState.ABANDONED.value
+    assert detail.detail.state is (
+        NodeState.FAILED if ending is RunState.FAILED else NodeState.CANCELLED
+    )
+
+
+@pytest.mark.parametrize("ending", [RunState.FAILED, RunState.CANCELLED])
+def test_an_ended_action_run_does_not_acquire_abandoned_without_a_matching_intent(
+    prepared: tuple[DbosRuntime, EffectIntent],
+    ending: RunState,
+) -> None:
+    """ABANDONED is the stored word, not an inference from the run's ending.
+
+    Before hop 38 a prepared intent on an ended Action stayed PREPARED. That
+    leftover is still a legal row, and a reader of this run must keep the
+    ending without inventing ABANDONED because the node is an Action.
+    """
+
+    runtime, intent = prepared
+    node_workflow_ended_before_the_enqueue(runtime, intent)
+    end_the_run(runtime, intent, ending)
+
+    queries = durable_queries(runtime.engine)
+    found = queries.get_run(intent.binding.run_id)
+    listed = queries.list_runs(None, 10)
+
+    assert intent_row(runtime.engine) == (EffectIntentState.PREPARED.value, 0, None)
+    assert isinstance(found, RunFound)
+    assert found.projection.reconciliation is None
+    assert found.projection.run.state is ending
+    assert isinstance(listed, RunPage)
+    assert listed.runs[0].reconciliation is None
+    assert listed.runs[0].run.state is ending
+
+    detail = queries.get_node_detail(intent.binding.run_id, ACTION_NODE_ID)
+    assert isinstance(detail, NodeDetailFound)
+    assert detail.detail.refusal is None
+    assert detail.detail.state is (
+        NodeState.FAILED if ending is RunState.FAILED else NodeState.CANCELLED
+    )
 
 
 def _drop_workflow(engine: Engine, workflow_id: str) -> None:
