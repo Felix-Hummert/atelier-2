@@ -121,8 +121,12 @@ def e2e_log_tab_stdout() -> bytes:
     ).encode()
 
 
-def e2e_log_tab_request(request: AgentExecutionRequestV2) -> bool:
-    return E2E_LOG_TAB_INSTRUCTION_MARK.encode() in request.job_bytes
+def e2e_log_tab_request(request: object) -> bool:
+    # Drain proofs plant a run_id-only request on this same executor.
+    job_bytes = getattr(request, "job_bytes", None)
+    return isinstance(job_bytes, bytes) and (
+        E2E_LOG_TAB_INSTRUCTION_MARK.encode() in job_bytes
+    )
 
 
 def e2e_log_tab_command(request: AgentExecutionRequestV2) -> AgentProcessCommand:
