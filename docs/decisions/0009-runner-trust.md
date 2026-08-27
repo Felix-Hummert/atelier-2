@@ -107,6 +107,16 @@ and returns effect evidence; only Core commits an `EffectReceipt` or
 credential, environment or privilege lane. Wait, Join, Resume and deterministic
 or subworkflow scheduling remain in Core and are not workers.
 
+The disposable candidate's Core-restart leg is deliberately a live Docker
+witness, not a deterministic test. Its deterministic crash harness proves the
+binding and same-child rules without Docker. In the live leg a pre-opened host
+observer receives Core's `STARTED` cut event, lowers the Runner container to its
+current cgroup-v2 `pids.max`, records container/PID/start-tick identity, and
+only then acknowledges Core so it can write the cut record and exit. The shell
+reads that STARTED-bound identity from the cut record and requires the same
+single child after Core exits and after reconnect `STARTED`, while the monotonic
+`pids.events:max` counter remains unchanged.
+
 Serve and Runner are separate OCI images and release artifacts under #312.
 Serve contains no provider CLI or provider credential value and receives no raw
 carrier or OCI lifecycle authority. The Runner writes evidence, never product
@@ -745,9 +755,22 @@ this record borrows that owner rather than opening a second vocabulary.
   `/var/tmp/atelier2-301a-runner-witness.0WqeSL` (cancel Core store SHA-256
   `7b84cc59cc65bcb51c31ee4fb3996dde73353dd6872d82efe182dc4bff9ee901`). After
   receiver success the host private keys were unlinked through held directory
-  FDs; the retained trees hold public certificate metadata only. Exact
-  labelled Docker objects were empty after `RELEASED`. It does not prove live
-  A.1 availability, restart/reconnect, cancel races, replacement `ONE`, a
+  FDs; the retained trees hold public certificate metadata only. A retained
+  Core-restart leg at
+  `/var/tmp/atelier2-301a-runner-witness.usw8SL` proved one provider child
+  (PID `2247405`, start tick `24586124`) in Runner container
+  `0e22828383fa8cbf6ae945c33c36e9eb869aa163190a4ef4458cabda7d26852c`
+  from the fenced `STARTED` cut through Core death and reconnect `STARTED`,
+  with `pids.current == pids.max == 2`, unchanged `pids.events:max == 0`, and
+  one `FAILED`/`ACKNOWLEDGED` terminal record. Its Core store SHA-256 is
+  `8b63e1b193ef669f3819d598e8098ff0a947579f553937af6336bbce7cfa47d9`;
+  its cut, child-survival and terminal-proof records have SHA-256 values
+  `70ac96d1bb6fef92b50566fe3a59ab423a01a015aea82eee10f7bbbbfa2e0778`,
+  `b06a2fbdadee95daf3ee980d4f88a9d356233351cbd33e4c324ee908bafdad45`
+  and
+  `9417c944d00a7247d21fc9bc1e506070ba814425465386b79a4f851d79032364`.
+  Exact labelled Docker objects were empty after `RELEASED`. Together these
+  legs do not prove live A.1 availability, cancel races, replacement `ONE`, a
   wrong-CA live refusal, or packaged cutover. Focused tests cover peer
   EKU/SAN/CA refusal, Landlock identity denial, journal ACK/RELEASE order,
   and the A request-subset/refusal vocabulary.

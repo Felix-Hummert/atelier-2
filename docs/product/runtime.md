@@ -92,10 +92,23 @@ tombstone; missing, corrupt, oversized and unavailable-ACK outcomes remain
 distinct without inventing evidence. This is proven against a byte-backed test
 Fake and, for the #301-A disposable witness candidate (`src/atelier2/runner/`,
 its adapters, and `application/run_runner_session.py`), a real session codec,
-TLS-authenticated transport, journal, and Landlock-confined child; the
-witness itself remains a disposable proof, not a packaged, deployed Runner,
-but Serve can now compose the same real driver as an executor's dispatch
-carrier (`#540` C-3.6, below).
+TLS-authenticated transport, journal, and Landlock-confined child. Its live
+restart leg also reaches `STARTED` under a pre-opened host fence. Core emits the
+cut event but does not write its cut record or exit until the host has lowered
+the controlled Runner cgroup's `pids.max` to its two live tasks (Runner and
+provider child), recorded that container/PID/start-tick identity, and
+acknowledged the fence. Core embeds that identity in `core-started-cut.json`.
+The shell reads it back and requires both the post-exit observation and the
+observation after reconnect `STARTED` to match it exactly, with one child,
+`pids.current == pids.max`, and an unchanged `pids.events:max` counter. The
+record is bound to that attempt, generation and invocation; the restarted Core
+reopens the same V40 binding and invocation and requires one acknowledged
+terminal record. This is a live Docker witness, not a deterministic test; the
+local crash tests prove the state-machine contract deterministically without
+claiming to execute Docker. The live JSON records remain below the disposable
+witness root, outside product state and the Runner journal; the witness is not
+a packaged, deployed Runner, but Serve can compose the same real driver as an
+executor's dispatch carrier (`#540` C-3.6, below).
 
 Dispatch names which authority starts one executor key's process (`#540`
 C-3.6): a registration declares itself `LOCAL_PROCESS` or `RUNNER_LEASE`, and
