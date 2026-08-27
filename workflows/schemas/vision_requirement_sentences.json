@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sentences"],
+  "properties": {
+    "sentences": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text", "derives_from", "owner_document", "traceable_to"],
+        "properties": {
+          "text": {"type": "string", "minLength": 1},
+          "derives_from": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "id"],
+            "properties": {
+              "kind": {"enum": ["variant", "decision"]},
+              "id": {"type": "string", "minLength": 1}
+            }
+          },
+          "owner_document": {"type": "string", "minLength": 1},
+          "traceable_to": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  }
+}
