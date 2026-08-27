@@ -103,9 +103,10 @@ from atelier2.contracts.executions import (
     logical_effect_key_for,
     logical_effect_key_for_node,
 )
+from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.ports.run_events import AttentionEventPage
-from atelier2.ports.run_queries import RunFound
+from atelier2.ports.run_queries import NodeDetailFound, RunFound
 from tests.scenarios.agents import commit_configured_agent
 from tests.scenarios.api import durable_queries
 from tests.scenarios.runs import (
@@ -649,6 +650,15 @@ def test_an_abandoned_intent_is_projected_on_the_ended_run(
     assert reconciliation.pending_command is None
     assert reconciliation.intent.intent.request.payload == intent.request.payload
     assert found.projection.run.state is ending
+
+    detail = durable_queries(runtime.engine).get_node_detail(
+        intent.binding.run_id, ACTION_NODE_ID
+    )
+    assert isinstance(detail, NodeDetailFound)
+    assert detail.detail.refusal == EffectIntentState.ABANDONED.value
+    assert detail.detail.state is (
+        NodeState.FAILED if ending is RunState.FAILED else NodeState.CANCELLED
+    )
 
 
 def _drop_workflow(engine: Engine, workflow_id: str) -> None:

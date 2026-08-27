@@ -590,6 +590,19 @@ def _node_receipt_refusal_output(
     return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
 
 
+def _abandoned_intent_refusal(projection: RunProjection, node_id: str) -> str | None:
+    """ABANDONED, when this node is the prepared effect the ended run never resolved."""
+
+    reconciliation = projection.reconciliation
+    if (
+        reconciliation is None
+        or reconciliation.intent.state is not EffectIntentState.ABANDONED
+        or projection.run.current_node_id != node_id
+    ):
+        return None
+    return EffectIntentState.ABANDONED.value
+
+
 def _unavailable_executor_refusal(
     connection: Connection,
     execution_id: NodeExecutionId,
@@ -1060,6 +1073,11 @@ class DbosQueries:
                     connection, execution_id
                 ) or _unavailable_executor_refusal(connection, execution_id)
                 started_at, ended_at = _node_instants(connection, execution_id)
+                named_refusal = durable_refusal
+                if named_refusal is None:
+                    named_refusal = refusal
+                if named_refusal is None:
+                    named_refusal = _abandoned_intent_refusal(projection, node_id)
                 return NodeDetailFound(
                     NodeDetail(
                         run_id=run_id,
@@ -1069,9 +1087,7 @@ class DbosQueries:
                         job_hash=job_hash,
                         answer=_node_answer(connection, execution_id),
                         provenance=_node_provenance(connection, execution_id),
-                        refusal=durable_refusal
-                        if durable_refusal is not None
-                        else refusal,
+                        refusal=named_refusal,
                         refusal_output=_node_receipt_refusal_output(
                             connection, execution_id
                         ),
