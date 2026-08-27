@@ -71,6 +71,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptReplacement,
     AgentAttemptState,
 )
+from atelier2.contracts.agent_transcripts import AttemptTranscript
 from atelier2.contracts.agents import (
     AgentExecutionRequestHash,
     AgentExecutionRequestV2,
@@ -629,6 +630,37 @@ def _node_receipt_refusal_output(
     return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
 
 
+def _node_transcript(
+    connection: Connection,
+    execution_id: NodeExecutionId,
+) -> AttemptTranscript | None:
+    """The current execution's highest attempt that named a transcript.
+
+    A null pointer is honest absence: this attempt decoded nothing, or none of
+    its attempts have ended with a transcript yet. A named address whose
+    artifact is missing, whose stored bytes do not hash to that address, or
+    whose document `from_document` refuses is a store disagreeing with itself
+    -- not an omitted transcript. The surrounding query maps that loud failure
+    to durable corruption.
+    """
+
+    named = connection.scalar(
+        sa.select(agent_attempts.c.transcript_artifact_hash)
+        .where(
+            agent_attempts.c.node_execution_id == execution_id.value,
+            agent_attempts.c.transcript_artifact_hash.is_not(None),
+        )
+        .order_by(agent_attempts.c.attempt_ordinal.desc())
+        .limit(1)
+    )
+    if named is None:
+        return None
+    artifact = read_stored_artifact(connection, ArtifactHash(str(named)))
+    if artifact is None:
+        raise ValueError(f"named transcript artifact {named} is missing from the store")
+    return AttemptTranscript.from_document(artifact.content)
+
+
 def _abandoned_intent_refusal(projection: RunProjection, node_id: str) -> str | None:
     """ABANDONED, when this node is the prepared effect the ended run never resolved."""
 
@@ -1132,6 +1164,7 @@ class DbosQueries:
                         ),
                         started_at=started_at,
                         ended_at=ended_at,
+                        transcript=_node_transcript(connection, execution_id),
                     )
                 )
         except ProjectionLimitExceeded:

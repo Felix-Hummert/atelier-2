@@ -206,8 +206,8 @@ either — building a transcript at all is what makes its steps safe. What the
 boundary to a Runner cannot yet carry it refuses out loud instead of dropping:
 that record is bounded far below one transcript and its hash is part of Core's
 acceptance chain, so carrying one is its own decision rather than a silent
-truncation. No read surface serves the transcript yet — the API projection and
-the node panel's Log tab are the next slice.
+truncation. Node detail serves the decoded, redacted events of a stored
+transcript; the node panel's Log tab is still not built.
 
 The first real provider now sits behind that durable contract. When the operator
 declares a Claude executable and a credential directory, the host composes one

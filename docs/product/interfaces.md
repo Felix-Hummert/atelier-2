@@ -161,7 +161,9 @@ finished and does not paste the output the node already holds. A STARTED run pai
 as live work, not as a finished card, and shows new events from the existing
 SSE door as they arrive. Empty, connecting, and failed stream states are each
 named as themselves. The process log is not on that door — it stays in the
-lease (#104) — and the page says so rather than inventing a progress bar. The
+lease (#104) — and the page says so rather than inventing a progress bar.
+Node detail now serves the stored transcript of a finished attempt; the Log
+tab that would render it is still not built. The
 live event line stays open until the events it has applied match the latest
 cursor the run itself names, so a run that has already ended still shows every
 node that finished. Details on the
