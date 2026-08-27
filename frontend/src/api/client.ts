@@ -1083,8 +1083,12 @@ export const runV3Schema = z
  * #664 omits the key entirely, and that reads exactly as the absence it is
  * (`?? null` at every reader), never a parse failure.
  *
- * Usage is not here because no receipt holds it. Duration sits beside the
- * attempt as started_at / ended_at, not on the receipt.
+ * `transcript` is the decoded, already-redacted steps of the attempt that
+ * named one. Optional the same way: the server omits the key when no attempt
+ * stored a transcript, and an older fixture that never heard of the field
+ * still decodes. Usage is still not a receipt field; it can appear as a
+ * `usage` transcript event when the attempt stored one. Duration sits beside
+ * the attempt as started_at / ended_at, not on the receipt.
  */
 const nodeProvenanceSchema = z
   .object({
@@ -1127,6 +1131,85 @@ const nodeRefusalOutputSchema = z
   })
   .strict();
 
+/**
+ * `MAXIMUM_TRANSCRIPT_STEP_CHARACTERS` (`contracts/agent_transcripts.py`),
+ * mirrored here as a plain number the way every other server-owned wire bound
+ * already is on this side.
+ */
+export const MAXIMUM_TRANSCRIPT_STEP_CHARACTERS = 8_192;
+
+const transcriptStepTextSchema = z.string().max(MAXIMUM_TRANSCRIPT_STEP_CHARACTERS);
+
+export const toolCalledEventSchema = z
+  .object({
+    event: z.literal("tool-called"),
+    name: transcriptStepTextSchema,
+    arguments: transcriptStepTextSchema,
+    redacted: z.boolean(),
+  })
+  .strict();
+
+export const toolReturnedEventSchema = z
+  .object({
+    event: z.literal("tool-returned"),
+    name: transcriptStepTextSchema,
+    result: transcriptStepTextSchema,
+    redacted: z.boolean(),
+  })
+  .strict();
+
+export const assistantTurnEventSchema = z
+  .object({
+    event: z.literal("assistant-turn"),
+    text: transcriptStepTextSchema,
+    redacted: z.boolean(),
+  })
+  .strict();
+
+export const usageEventSchema = z
+  .object({
+    event: z.literal("usage"),
+    input_tokens: nonnegativeSafeInteger,
+    output_tokens: nonnegativeSafeInteger,
+    cache_read_input_tokens: nonnegativeSafeInteger,
+    cache_creation_input_tokens: nonnegativeSafeInteger,
+  })
+  .strict();
+
+export const unrecognisedProviderOutputEventSchema = z
+  .object({
+    event: z.literal("unrecognised-provider-output"),
+    text: transcriptStepTextSchema,
+    redacted: z.boolean(),
+  })
+  .strict();
+
+export const transcriptTruncatedEventSchema = z
+  .object({
+    event: z.literal("transcript-truncated"),
+    dropped_events: positiveSafeInteger,
+  })
+  .strict();
+
+export const attemptTranscriptSchema = z
+  .object({
+    events: z
+      .array(
+        z.discriminatedUnion("event", [
+          toolCalledEventSchema,
+          toolReturnedEventSchema,
+          assistantTurnEventSchema,
+          usageEventSchema,
+          unrecognisedProviderOutputEventSchema,
+          transcriptTruncatedEventSchema,
+        ]),
+      )
+      .min(1),
+  })
+  .strict();
+
+export type AttemptTranscript = z.infer<typeof attemptTranscriptSchema>;
+
 export const nodeDetailSchema = z
   .object({
     run_id: z.string().min(1),
@@ -1141,6 +1224,7 @@ export const nodeDetailSchema = z
     refusal_output: nodeRefusalOutputSchema.nullable().optional(),
     started_at: z.string().nullable().optional(),
     ended_at: z.string().nullable().optional(),
+    transcript: attemptTranscriptSchema.nullable().optional(),
   })
   .strict();
 
