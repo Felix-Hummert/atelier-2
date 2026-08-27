@@ -4,14 +4,18 @@ description: >-
   One separately operator-authorized release of an already independently
   approved documentation candidate. This workflow has no revise route.
 graph_inputs:
+  - name: work_item
+    schema:
+      ref: work-item
+      revision: "e57e281851b809afc32527cdde2a2a76b033f4b6b4301ad592472147bc7c978a"
   - name: candidate
     schema:
       ref: documentation_release_candidate
-      revision: "bfe4a66e1596b17e6d7ab59f05423662ebf33d7c9b8cadbda8a59e74af1fbd8a"
+      revision: "8d9bfb218ee8abbb9837f556fcb27720bdc135d5013412a0bda5e5fe683fab8d"
   - name: approved_verdict
     schema:
       ref: documentation_release_verdict
-      revision: "7ae72006d69631ee4421fc50b69bb24ca4815c271307b19b88948c48d0ef9d2f"
+      revision: "b7f5ec5710b8df56a5b4772a78ac9ff6380819ed5bce103fd55193543a41cbdc"
 nodes:
   - id: open-reviewed-draft
     type: action
@@ -19,6 +23,9 @@ nodes:
       ref: open-pr
       revision: "420440a07ba8d6f2ba953d02e50d3889a4128ce42fe3e8562fead9523e341f37"
     inputs:
+      - name: work_item
+        from:
+          graph_input: work_item
       - name: candidate
         from:
           graph_input: candidate

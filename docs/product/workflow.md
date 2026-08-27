@@ -142,7 +142,10 @@ reference that used to refuse as unpublished. A project-bound open-PR request ca
 the predecessor Agent's output as its body and the run's derived work-item branch; a
 documentation-release Action instead binds its declared candidate and independently
 approved verdict orders into ADR 0010's closed draft-release request. That is a
-separate operator-authorized run: `revise` never reaches it automatically. A
+separate operator-authorized work-item run: the candidate digest covers the
+canonical base/change/title/body projection, the platform publishes those exact
+replacement bytes through the existing push fence before opening the draft PR,
+and `revise` never reaches either effect. A
 V3 Agent request hashes the current job composition:
 declared root-string orders appear as their text while every other order keeps its
 JSON representation. Readers first recompute that composition, then prove a

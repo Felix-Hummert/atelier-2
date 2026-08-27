@@ -7,7 +7,8 @@ import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Never
 
@@ -15,18 +16,42 @@ import pytest
 import sqlalchemy as sa
 
 from atelier2.adapters.candidate_store import CANDIDATE_STORE_DIRECTORY_NAME
+from atelier2.adapters.dbos.advancer import (
+    RunEffectConflict,
+    graph_action_intent,
+    prepared_effect_intent,
+)
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
-from atelier2.adapters.dbos.effect_store import intent_snapshot_from_record
+from atelier2.adapters.dbos.effect_store import (
+    commit_resolution,
+    intent_snapshot_from_record,
+    observe_adapter,
+    resolve_observation,
+)
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import effect_intents, effect_receipts, runs
-from atelier2.adapters.dbos.starter import DbosWorkflowRevisionPublisher
+from atelier2.adapters.dbos.schema import (
+    effect_intents,
+    effect_receipts,
+    run_inputs_v3,
+    runs,
+)
+from atelier2.adapters.dbos.starter import (
+    DbosDurableRunStarter,
+    DbosWorkflowRevisionPublisher,
+)
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.git_transport.effects import (
+    GitCommandResult,
     GitRemote,
     GitTransportEffectAdapterFactory,
+    SubprocessGitCommandRunner,
 )
-from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
+from atelier2.adapters.github.effects import (
+    GitHubEffectAdapterFactory,
+    ReviewedDocumentationPublisher,
+    ReviewedDocumentationPublisherFactory,
+)
 from atelier2.api.openapi import API_PREFIX
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.agents import (
@@ -43,18 +68,24 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.effect_requests import (
     OpenPullRequest,
+    ReviewedDocumentationPullRequest,
+    ReviewedDocumentReplacement,
     head_branch_for_queue_item,
+    reviewed_documentation_candidate_digest,
 )
 from atelier2.contracts.effects import (
     AdapterRevision,
     EffectDestination,
+    EffectIntent,
     EffectIntentStateVersion,
     OperatorAuthoritativeAbsence,
     ReconcileActor,
     ReconcileCommand,
     ReconcileCommandId,
 )
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.orders import InlineOrderValue, ObservedWorkItemOrderValue
 from atelier2.contracts.queue_projection import TrackerItemReference, WorkItemReference
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
@@ -69,6 +100,11 @@ from atelier2.contracts.work_items import (
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
+)
+from atelier2.ports.durable_runs import (
+    AuthoredOrder,
+    DurableRunCreated,
+    StartPublishedRunRequestV3,
 )
 from atelier2.ports.effects import EffectAdapterRegistration, EffectAdapterRegistry
 from atelier2.ports.issue_observation import WorkItemRevisionObserved
@@ -88,6 +124,8 @@ from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 PROJECT = ProjectId("p3-public")
 ITEM = TrackerItemReference("gh:642")
+RELEASE_ITEM = TrackerItemReference("gh:162")
+RELEASE_RUN = RunId("v3/documentation-release")
 RUN = RunId("v3/push-before-open-pr")
 ORDER_NAME = "work-item"
 AGENT_OUTPUT = b'{"summary":"publish the captured candidate"}'
@@ -99,6 +137,10 @@ _WRITE_CANDIDATE = (
 
 
 def _git(repository: Path, *arguments: str) -> str:
+    return _git_bytes(repository, *arguments).decode().strip()
+
+
+def _git_bytes(repository: Path, *arguments: str) -> bytes:
     environment = {
         **os.environ,
         "GIT_CONFIG_NOSYSTEM": "1",
@@ -114,7 +156,7 @@ def _git(repository: Path, *arguments: str) -> str:
         capture_output=True,
         check=True,
     )
-    return completed.stdout.decode().strip()
+    return completed.stdout
 
 
 def _repositories(root: Path) -> tuple[Path, Path, str]:
@@ -253,14 +295,16 @@ nodes:
     )
 
 
-def _wait_for_state(runtime: DbosRuntime, expected: RunState) -> None:
+def _wait_for_state(
+    runtime: DbosRuntime, expected: RunState, run_id: RunId = RUN
+) -> None:
     deadline = time.monotonic() + 10
     observed = ""
     while time.monotonic() < deadline:
         with runtime.engine.connect() as connection:
             observed = str(
                 connection.scalar(
-                    sa.select(runs.c.state).where(runs.c.run_id == RUN.value)
+                    sa.select(runs.c.state).where(runs.c.run_id == run_id.value)
                 )
             )
         if observed == expected.value:
@@ -419,5 +463,433 @@ def test_public_start_pushes_the_candidate_before_opening_its_pull_request(
         assert push_receipt["candidate_tree"] == pushed_tree
         open_request = OpenPullRequest.from_canonical_bytes(intents[1].request.payload)
         assert open_request.head_branch.value == branch
+    finally:
+        runtime.close()
+
+
+class _CrashAfterDocumentationPush(RuntimeError):
+    pass
+
+
+@dataclass
+class _CrashAfterPushPublisher:
+    delegate: ReviewedDocumentationPublisher
+
+    def publish(
+        self, intent: EffectIntent, request: ReviewedDocumentationPullRequest
+    ) -> None:
+        self.delegate.publish(intent, request)
+        raise _CrashAfterDocumentationPush
+
+    def close(self) -> None:
+        self.delegate.close()
+
+
+@dataclass(frozen=True)
+class _CrashAfterPushPublisherFactory:
+    delegate: ReviewedDocumentationPublisherFactory
+
+    def open(self) -> ReviewedDocumentationPublisher:
+        return _CrashAfterPushPublisher(self.delegate.open())
+
+
+@dataclass
+class _CountingGitRunner:
+    delegate: SubprocessGitCommandRunner = field(
+        default_factory=SubprocessGitCommandRunner
+    )
+    push_calls: int = 0
+
+    def run(
+        self,
+        arguments: tuple[str, ...],
+        *,
+        working_directory: Path,
+        environment: Mapping[str, str],
+        standard_input: bytes | None = None,
+    ) -> GitCommandResult:
+        if "push" in arguments:
+            self.push_calls += 1
+        return self.delegate.run(
+            arguments,
+            working_directory=working_directory,
+            environment=environment,
+            standard_input=standard_input,
+        )
+
+
+def test_release_resolve_after_a_push_crash_opens_one_pr_without_another_push(
+    tmp_path: Path,
+) -> None:
+    project, remote, base = _repositories(tmp_path)
+    runner = _CountingGitRunner()
+    publisher = GitTransportEffectAdapterFactory(
+        tmp_path / "documentation-candidates.git",
+        GitRemote("documentation-release", str(remote)),
+        AdapterRevision("git-push-v1"),
+        EffectDestination("git"),
+        runner,
+    )
+    github = GitHubEffectAdapterFactory(
+        tmp_path / "github.sqlite",
+        AdapterRevision("github-open-pr-v1"),
+        EffectDestination("platform"),
+        publisher,
+    )
+    runtime = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "documentation-release-resolve-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+            project_id=PROJECT,
+            bootstrap_project_root=project,
+        ),
+        github,
+        ExactOutputAgentExecutorFactory(),
+    )
+    runtime.initialize_storage()
+    try:
+        workflow = _publish_documentation_release(runtime)
+        orders, replacement = _documentation_release_orders(
+            base_revision=base, verdict="approve", mutate_after_digest=False
+        )
+        started = DbosDurableRunStarter(
+            runtime.engine, runtime.settings, runtime.agent_executor_registry
+        ).start_published(
+            StartPublishedRunRequestV3(
+                RELEASE_RUN,
+                workflow.revision_hash,
+                AgentBindingSet(()),
+                orders=orders,
+            )
+        )
+        assert isinstance(started, DurableRunCreated), started
+        with runtime.engine.begin() as connection:
+            snapshot = prepared_effect_intent(
+                connection,
+                graph_action_intent(
+                    connection,
+                    RELEASE_RUN,
+                    workflow.revision_hash,
+                    github.binding,
+                    PROJECT,
+                ),
+            )
+        logical_key = snapshot.intent.binding.logical_key.value
+        crashing_factory = replace(
+            github,
+            documentation_publisher_factory=_CrashAfterPushPublisherFactory(publisher),
+        )
+        crashing_adapter = crashing_factory.open()
+        try:
+            with runtime.engine.begin() as connection:
+                observed = observe_adapter(
+                    connection,
+                    crashing_adapter,
+                    logical_key,
+                    workflow.revision_hash.value,
+                )
+            with (
+                pytest.raises(_CrashAfterDocumentationPush),
+                runtime.engine.begin() as connection,
+            ):
+                resolve_observation(
+                    connection,
+                    crashing_adapter,
+                    logical_key,
+                    workflow.revision_hash.value,
+                    observed,
+                )
+        finally:
+            crashing_adapter.close()
+        assert runner.push_calls == 1
+        branch = ReviewedDocumentationPullRequest.from_canonical_bytes(
+            snapshot.intent.request.payload
+        ).head_branch
+        pushed_commit = _git(remote, "rev-parse", branch.full_ref)
+        assert _git_bytes(remote, "show", f"{pushed_commit}:base.txt") == replacement
+        assert github.recorded_pull_requests() == ()
+
+        adapter = github.open()
+        try:
+            with runtime.engine.begin() as connection:
+                resolved = resolve_observation(
+                    connection,
+                    adapter,
+                    logical_key,
+                    workflow.revision_hash.value,
+                    observed,
+                )
+                assert (
+                    commit_resolution(
+                        connection,
+                        logical_key,
+                        workflow.revision_hash.value,
+                        resolved,
+                    )
+                    is RunState.STARTED
+                )
+        finally:
+            adapter.close()
+        assert runner.push_calls == 1
+        assert len(github.recorded_pull_requests()) == 1
+        with runtime.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(effect_receipts)
+                )
+                == 1
+            )
+    finally:
+        runtime.close()
+
+
+def _publish_documentation_release(runtime: DbosRuntime) -> WorkflowRevision:
+    store = DbosCatalogStore(runtime.engine)
+    revisions = (
+        PublishedRevision(RevisionKind.SCHEMA, WORK_ITEM_ORDER_SCHEMA_DOCUMENT),
+        PublishedRevision(
+            RevisionKind.SCHEMA,
+            Path("workflows/schemas/documentation_release_candidate.json").read_bytes(),
+        ),
+        PublishedRevision(
+            RevisionKind.SCHEMA,
+            Path("workflows/schemas/documentation_release_verdict.json").read_bytes(),
+        ),
+        PublishedRevision(RevisionKind.ADAPTER_OPERATION, b'{"operation":"open-pr"}'),
+    )
+    for revision in revisions:
+        published = store.publish_revision(revision)
+        assert isinstance(
+            published, (PublishedRevisionCreated, PublishedRevisionExisting)
+        ), published
+    workflow = WorkflowRevision(
+        Path("workflows/documentation-release.yaml").read_bytes()
+    )
+    DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
+    return workflow
+
+
+def _documentation_release_orders(
+    *, base_revision: str, verdict: str, mutate_after_digest: bool
+) -> tuple[tuple[AuthoredOrder, ...], bytes]:
+    replacements = (
+        ReviewedDocumentReplacement(
+            "base.txt", Sha256Hash.of(b"base\n").value, b"reviewed replacement\n"
+        ),
+    )
+    title = "Reviewed documentation release"
+    body = "The independently approved documentation candidate."
+    candidate_digest = reviewed_documentation_candidate_digest(
+        base_revision, replacements, title, body
+    )
+    replacement_content = (
+        "unreviewed replacement\n"
+        if mutate_after_digest
+        else replacements[0].replacement.decode()
+    )
+    candidate = {
+        "candidate_digest": candidate_digest,
+        "base_revision": base_revision,
+        "changes": [
+            {
+                "path": replacements[0].path,
+                "current_digest": replacements[0].current_digest,
+                "replacement_utf8_content": replacement_content,
+            }
+        ],
+        "title": title,
+        "body": body,
+    }
+    verdict_candidate_digest = (
+        "f" * 64 if verdict == "digest-mismatch" else candidate_digest
+    )
+    verdict_document = {
+        "candidate_digest": verdict_candidate_digest,
+        "verdict_digest": "d" * 64,
+        "verdict": (
+            verdict if verdict in {"approve", "revise", "cannot-judge"} else "approve"
+        ),
+    }
+    item = ObservedWorkItemRevision(
+        RELEASE_ITEM,
+        WorkItemKind.ISSUE,
+        b"Release the reviewed documentation candidate.",
+        WorkItemChangeMarker("issue-162-release-v1"),
+        RecordedAt("2026-08-27T12:00:00Z"),
+    )
+    return (
+        (
+            AuthoredOrder("work_item", ObservedWorkItemOrderValue(item)),
+            AuthoredOrder(
+                "candidate", InlineOrderValue(json.dumps(candidate).encode())
+            ),
+            AuthoredOrder(
+                "approved_verdict",
+                InlineOrderValue(json.dumps(verdict_document).encode()),
+            ),
+        ),
+        replacements[0].replacement,
+    )
+
+
+@pytest.mark.proves(
+    "an-explicitly-released-approved-documentation-candidate-opens-one-draft-pr"
+)
+@pytest.mark.parametrize(
+    ("verdict", "mutate_after_digest", "approved"),
+    [
+        pytest.param("approve", False, True, id="approved-exact-candidate"),
+        pytest.param("revise", False, False, id="non-approve-verdict"),
+        pytest.param("digest-mismatch", False, False, id="verdict-digest-mismatch"),
+        pytest.param("approve", True, False, id="copied-digest-on-different-tree"),
+        pytest.param(
+            "missing-candidate-digest",
+            False,
+            False,
+            id="malformed-candidate-is-a-typed-action-refusal",
+        ),
+        pytest.param(
+            "missing-candidate-order",
+            False,
+            False,
+            id="missing-declared-order-is-a-typed-action-refusal",
+        ),
+    ],
+)
+def test_the_real_release_entry_binds_approval_to_the_exact_candidate_before_effects(
+    tmp_path: Path,
+    verdict: str,
+    mutate_after_digest: bool,
+    approved: bool,
+) -> None:
+    project, remote, base = _repositories(tmp_path)
+    runner = _CountingGitRunner()
+    publisher = GitTransportEffectAdapterFactory(
+        tmp_path / "documentation-candidates.git",
+        GitRemote("documentation-release", str(remote)),
+        AdapterRevision("git-push-v1"),
+        EffectDestination("git"),
+        runner,
+    )
+    github = GitHubEffectAdapterFactory(
+        tmp_path / "github.sqlite",
+        AdapterRevision("github-open-pr-v1"),
+        EffectDestination("platform"),
+        publisher,
+    )
+    runtime = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "documentation-release-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+            project_id=PROJECT,
+            bootstrap_project_root=project,
+        ),
+        github,
+        ExactOutputAgentExecutorFactory(),
+    )
+    runtime.initialize_storage()
+    try:
+        workflow = _publish_documentation_release(runtime)
+        orders, expected_replacement = _documentation_release_orders(
+            base_revision=base,
+            verdict=verdict,
+            mutate_after_digest=mutate_after_digest,
+        )
+        started = DbosDurableRunStarter(
+            runtime.engine, runtime.settings, runtime.agent_executor_registry
+        ).start_published(
+            StartPublishedRunRequestV3(
+                RELEASE_RUN,
+                workflow.revision_hash,
+                AgentBindingSet(()),
+                orders=orders,
+            )
+        )
+        assert isinstance(started, DurableRunCreated), started
+
+        if verdict == "missing-candidate-digest":
+            with runtime.engine.begin() as connection:
+                connection.exec_driver_sql("DROP TRIGGER run_inputs_v3_no_update")
+                stored_candidate = connection.scalar(
+                    sa.select(run_inputs_v3.c.value).where(
+                        run_inputs_v3.c.run_id == RELEASE_RUN.value,
+                        run_inputs_v3.c.name == "candidate",
+                    )
+                )
+                assert stored_candidate is not None
+                candidate_bytes = bytes(stored_candidate)
+                malformed_candidate = json.loads(candidate_bytes)
+                del malformed_candidate["candidate_digest"]
+                malformed_bytes = json.dumps(malformed_candidate).encode()
+                connection.execute(
+                    run_inputs_v3.update()
+                    .where(
+                        run_inputs_v3.c.run_id == RELEASE_RUN.value,
+                        run_inputs_v3.c.name == "candidate",
+                    )
+                    .values(
+                        value=malformed_bytes,
+                        value_hash=Sha256Hash.of(malformed_bytes).value,
+                    )
+                )
+        if verdict == "missing-candidate-order":
+            with runtime.engine.begin() as connection:
+                connection.exec_driver_sql("DROP TRIGGER run_inputs_v3_no_delete")
+                connection.execute(
+                    run_inputs_v3.delete().where(
+                        run_inputs_v3.c.run_id == RELEASE_RUN.value,
+                        run_inputs_v3.c.name == "candidate",
+                    )
+                )
+
+        if not approved:
+            with runtime.engine.begin() as connection:
+                with pytest.raises(RunEffectConflict):
+                    graph_action_intent(
+                        connection,
+                        RELEASE_RUN,
+                        workflow.revision_hash,
+                        github.binding,
+                        PROJECT,
+                    )
+                assert (
+                    connection.scalar(
+                        sa.select(sa.func.count()).select_from(effect_intents)
+                    )
+                    == 0
+                )
+            assert runner.push_calls == 0
+            assert github.recorded_pull_requests() == ()
+            return
+
+        runtime.launch()
+        _wait_for_state(runtime, RunState.COMPLETED, RELEASE_RUN)
+        pull_requests = github.recorded_pull_requests()
+        assert runner.push_calls == 1
+        assert len(pull_requests) == 1
+        with runtime.engine.connect() as connection:
+            intent = intent_snapshot_from_record(
+                connection.execute(sa.select(effect_intents)).mappings().one()
+            ).intent
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(effect_receipts)
+                )
+                == 1
+            )
+        request = ReviewedDocumentationPullRequest.from_canonical_bytes(
+            intent.request.payload
+        )
+        assert request.reviewed_verdict_digest
+        assert request.draft is True
+        assert request.replacements[0].replacement == expected_replacement
+        pushed_commit = _git(remote, "rev-parse", request.head_branch.full_ref)
+        assert _git(remote, "rev-parse", f"{pushed_commit}^") == request.base_revision
+        assert _git_bytes(remote, "show", f"{pushed_commit}:base.txt") == (
+            request.replacements[0].replacement
+        )
+        assert pull_requests[0].branch == request.head_branch.value
     finally:
         runtime.close()

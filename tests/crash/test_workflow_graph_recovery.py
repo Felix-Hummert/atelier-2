@@ -27,6 +27,10 @@ from atelier2.adapters.dbos.workflow_ids import (
     subworkflow_workflow_id_for,
 )
 from atelier2.contracts.agents import AgentConfigurationRevisionFormatVersion
+from atelier2.contracts.effect_requests import (
+    OpenPullRequest,
+    head_branch_for_unbound_request,
+)
 from atelier2.contracts.executions import (
     NodeExecutionId,
     logical_effect_key_for,
@@ -48,6 +52,10 @@ nodes:
   - {id: action, type: action, next: waiting}
   - {id: agent, type: agent, job: job-17, output: draft-17, next: action}
 """
+ACTION_REQUEST = OpenPullRequest(
+    "draft-17", head_branch_for_unbound_request(b"draft-17")
+).canonical_bytes()
+ACTION_REQUEST_HASH = Sha256Hash.of(ACTION_REQUEST).value
 V3_DOCUMENT = (
     b"""format_version: 3
 name: Two agents in a line
@@ -241,11 +249,11 @@ def c3_expected_event_rows() -> tuple[tuple[object, ...], ...]:
             "action",
             "4db8459b3ffc567337cae15227f49a0df16af6a03ff17020e720eaafa4b9c554",
             "ACTION_RECONCILIATION_REQUIRED",
-            b"draft-17",
-            "5057270cddd80f8172eaa4efbb6affdcfe5039f50dd39c7259632337f4dfe5b8",
+            ACTION_REQUEST,
+            ACTION_REQUEST_HASH,
             None,
             None,
-            "043dfc754e71706f681f96b357214a767a23e4a16731d05507db4951d3e50382",
+            "50ccd473079309e53ab97347096f77250aa084162114d88f7cce8d90845f2fe9",
         ),
         (
             "run-1",
@@ -254,11 +262,11 @@ def c3_expected_event_rows() -> tuple[tuple[object, ...], ...]:
             "action",
             "4db8459b3ffc567337cae15227f49a0df16af6a03ff17020e720eaafa4b9c554",
             "ACTION_RECONCILIATION_RESOLVED",
-            b"draft-17",
-            "5057270cddd80f8172eaa4efbb6affdcfe5039f50dd39c7259632337f4dfe5b8",
+            ACTION_REQUEST,
+            ACTION_REQUEST_HASH,
             "atelier2-node-effect-830e7443ae091c398ae0b0728123b4e1f75f39651a9fdc269c96c873df65490f",
-            "5057270cddd80f8172eaa4efbb6affdcfe5039f50dd39c7259632337f4dfe5b8",
-            "67c006d6c49ab1e9adeae21ea92a5b50264036240b24f860990a4312edb5957b",
+            ACTION_REQUEST_HASH,
+            "b17ef2228a0fe0d16918a6eab8bd826dcc7aeee1dc7d7843f5f974e2ec2f415d",
         ),
         (
             "run-1",
@@ -267,11 +275,11 @@ def c3_expected_event_rows() -> tuple[tuple[object, ...], ...]:
             "action",
             "4db8459b3ffc567337cae15227f49a0df16af6a03ff17020e720eaafa4b9c554",
             "ACTION_COMPLETED",
-            b"draft-17",
-            "5057270cddd80f8172eaa4efbb6affdcfe5039f50dd39c7259632337f4dfe5b8",
+            ACTION_REQUEST,
+            ACTION_REQUEST_HASH,
             "atelier2-node-effect-830e7443ae091c398ae0b0728123b4e1f75f39651a9fdc269c96c873df65490f",
-            "5057270cddd80f8172eaa4efbb6affdcfe5039f50dd39c7259632337f4dfe5b8",
-            "6b7d64e00966f12ad79e08c5843965b5231c67265a45c4d3dbf8213540094351",
+            ACTION_REQUEST_HASH,
+            "703bff3bc072df56deef2a481c437e7fbeb3f28488a936c1f1f758b40232dfda",
         ),
         (
             "run-1",
@@ -320,7 +328,7 @@ def assert_exact_c3_completed_vector(root: Path) -> None:
         "atelier2-node-effect-"
         "830e7443ae091c398ae0b0728123b4e1f75f39651a9fdc269c96c873df65490f"
     )
-    result_hash = "5057270cddd80f8172eaa4efbb6affdcfe5039f50dd39c7259632337f4dfe5b8"
+    result_hash = ACTION_REQUEST_HASH
     assert database_row(
         root,
         "atelier.sqlite",
@@ -331,7 +339,7 @@ def assert_exact_c3_completed_vector(root: Path) -> None:
         "final",
         7,
         7,
-        "d7fefb302309bd78e2b7ee6d3f82e7563863587e8e1fa26b43de9a13a120932d",
+        "610f428edfada01873c61f0a4a816d6ed444fd4ea39b562df497c000f7854bb6",
     )
     assert event_rows(root) == c3_expected_event_rows()
     assert database_row(
@@ -342,7 +350,7 @@ def assert_exact_c3_completed_vector(root: Path) -> None:
     ) == (
         logical_key,
         "9f87f9fd0daa7b7893eec06360d94afb0a195f77efd16494bfe7f6057d00fe96",
-        b"draft-17",
+        ACTION_REQUEST,
         result_hash,
         "OPERATOR_AUTHORIZED_EXECUTION",
         "run-1/reconcile-1",
@@ -372,10 +380,10 @@ def assert_exact_c3_completed_vector(root: Path) -> None:
         "FROM loopback_effects",
     ) == (
         logical_key,
-        b"draft-17",
+        ACTION_REQUEST,
         result_hash,
         "9f87f9fd0daa7b7893eec06360d94afb0a195f77efd16494bfe7f6057d00fe96",
-        b"draft-17",
+        ACTION_REQUEST,
         result_hash,
     )
     assert database_row(

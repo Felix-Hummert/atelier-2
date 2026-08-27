@@ -32,6 +32,10 @@ from atelier2.adapters.dbos.workflow_ids import (
     reconcile_workflow_id_for,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.contracts.effect_requests import (
+    OpenPullRequest,
+    head_branch_for_unbound_request,
+)
 from atelier2.contracts.effects import (
     AdapterRevision,
     ConfirmationSource,
@@ -79,6 +83,9 @@ nodes:
   - {id: action, type: action, next: waiting}
   - {id: agent, type: agent, job: job-17, output: exact-request, next: action}
 """
+ACTION_REQUEST = OpenPullRequest(
+    "exact-request", head_branch_for_unbound_request(b"exact-request")
+).canonical_bytes()
 
 
 class UnknownReadbackAdapter:
@@ -296,7 +303,7 @@ def test_unknown_commits_waiting_state_and_required_event_together(
             )
         ).all() == [
             ("AGENT_COMPLETED", b"exact-request"),
-            ("ACTION_RECONCILIATION_REQUIRED", b"exact-request"),
+            ("ACTION_RECONCILIATION_REQUIRED", ACTION_REQUEST),
         ]
 
 

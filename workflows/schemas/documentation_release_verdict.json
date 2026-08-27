@@ -6,6 +6,6 @@
   "properties": {
     "candidate_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "verdict_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "verdict": {"const": "approve"}
+    "verdict": {"enum": ["approve", "revise", "cannot-judge"]}
   }
 }

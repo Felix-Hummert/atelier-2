@@ -97,6 +97,10 @@ def head_branch_for_queue_item(item_id: QueueItemIdentity) -> HeadBranch:
     return HeadBranch(f"atelier2/work-item/{item_id.value}")
 
 
+def head_branch_for_unbound_request(payload: bytes) -> HeadBranch:
+    return HeadBranch(f"atelier2-open-pr-{hashlib.sha256(payload).hexdigest()[:12]}")
+
+
 @dataclass(frozen=True, slots=True)
 class OpenPullRequest:
     body: str
@@ -150,6 +154,13 @@ class ReviewedDocumentReplacement:
             "replacement_base64": b64encode(self.replacement).decode("ascii"),
         }
 
+    def as_candidate_json(self) -> dict[str, str]:
+        return {
+            "current_digest": self.current_digest,
+            "path": self.path,
+            "replacement_utf8_content": self.replacement.decode("utf-8"),
+        }
+
     @classmethod
     def from_json(cls, value: object) -> Self:
         if not isinstance(value, dict):
@@ -171,6 +182,26 @@ class ReviewedDocumentReplacement:
         except ValueError as error:
             raise ValueError("a reviewed replacement is base64") from error
         return cls(path, current_digest, replacement_bytes)
+
+
+def reviewed_documentation_candidate_digest(
+    base_revision: str,
+    replacements: tuple[ReviewedDocumentReplacement, ...],
+    title: str,
+    body: str,
+) -> str:
+    """Digest the exact release candidate fields other than its digest slot."""
+
+    return hashlib.sha256(
+        _canonical_json(
+            {
+                "base_revision": base_revision,
+                "body": body,
+                "changes": [entry.as_candidate_json() for entry in replacements],
+                "title": title,
+            }
+        )
+    ).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

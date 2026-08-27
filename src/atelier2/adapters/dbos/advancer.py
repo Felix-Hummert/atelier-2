@@ -46,6 +46,8 @@ from atelier2.contracts.effect_requests import (
     ReviewedDocumentationPullRequest,
     ReviewedDocumentReplacement,
     head_branch_for_queue_item,
+    head_branch_for_unbound_request,
+    reviewed_documentation_candidate_digest,
 )
 from atelier2.contracts.effects import (
     CanonicalRequest,
@@ -168,27 +170,27 @@ def graph_action_intent(
     )
     effect_adapter_binding = _binding_for(effect_adapter_bindings, operation.operation)
     request = CanonicalRequest(payload)
-    if (
-        isinstance(action, ActionNodeV3)
-        and operation.operation is AdapterOperationName.OPEN_PR
-        and project_id is not None
-    ):
-        if not isinstance(predecessor, AgentNodeV3):
-            raise RunEffectConflict("V3 open-pr Action predecessor is not a V3 Agent")
-        head_branch = _confirmed_push_branch(
-            session,
-            run_id,
-            revision_hash,
-            predecessor,
-            run.current_round_ordinal,
-            project_id,
-        )
-        request = CanonicalRequest(
-            OpenPullRequest(
-                payload.decode("utf-8"),
-                head_branch,
-            ).canonical_bytes()
-        )
+    if operation.operation is AdapterOperationName.OPEN_PR:
+        if isinstance(action, ActionNodeV3) and project_id is not None:
+            if not isinstance(predecessor, AgentNodeV3):
+                raise RunEffectConflict(
+                    "V3 open-pr Action predecessor is not a V3 Agent"
+                )
+            head_branch = _confirmed_push_branch(
+                session,
+                run_id,
+                revision_hash,
+                predecessor,
+                run.current_round_ordinal,
+                project_id,
+            )
+        else:
+            head_branch = head_branch_for_unbound_request(payload)
+        try:
+            body = payload.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise RunEffectConflict("open-pr Action output is not UTF-8") from error
+        request = CanonicalRequest(OpenPullRequest(body, head_branch).canonical_bytes())
     binding = EffectBinding(
         logical_effect_key_for_node(
             run_id, revision_hash, action.id, run.current_round_ordinal
@@ -221,38 +223,51 @@ def _documentation_release_action_intent(
     candidate = _object_order(orders["candidate"], "documentation candidate")
     verdict_bytes = orders["approved_verdict"]
     verdict = _object_order(verdict_bytes, "documentation trace-review verdict")
-    candidate_digest = _text_field(
-        candidate, "candidate_digest", "documentation candidate"
-    )
-    if (
-        verdict.get("verdict") != "approve"
-        or verdict.get("candidate_digest") != candidate_digest
-    ):
-        raise RunEffectConflict(
-            "documentation release requires an approved verdict for its candidate"
-        )
     changes = candidate.get("changes")
     if not isinstance(changes, list):
         raise RunEffectConflict("documentation candidate carries no reviewed changes")
     try:
+        candidate_digest = _text_field(
+            candidate, "candidate_digest", "documentation candidate"
+        )
+        base_revision = _text_field(
+            candidate, "base_revision", "documentation candidate"
+        )
+        replacements = tuple(
+            ReviewedDocumentReplacement(
+                _text_field(change, "path", "documentation change"),
+                _text_field(change, "current_digest", "documentation change"),
+                _text_field(
+                    change, "replacement_utf8_content", "documentation change"
+                ).encode("utf-8"),
+            )
+            for change in changes
+        )
+        title = _text_field(candidate, "title", "documentation candidate")
+        body = _text_field(candidate, "body", "documentation candidate")
+        bound_candidate_digest = reviewed_documentation_candidate_digest(
+            base_revision, replacements, title, body
+        )
+        if (
+            verdict.get("verdict") != "approve"
+            or verdict.get("candidate_digest") != candidate_digest
+            or candidate_digest != bound_candidate_digest
+        ):
+            raise RunEffectConflict(
+                "documentation release requires an approved verdict for its "
+                "exact candidate"
+            )
         request = ReviewedDocumentationPullRequest(
-            _text_field(candidate, "base_revision", "documentation candidate"),
+            base_revision,
             candidate_digest,
             Sha256Hash.of(verdict_bytes).value,
-            tuple(
-                ReviewedDocumentReplacement(
-                    _text_field(change, "path", "documentation change"),
-                    _text_field(change, "current_digest", "documentation change"),
-                    _text_field(
-                        change, "replacement_utf8_content", "documentation change"
-                    ).encode("utf-8"),
-                )
-                for change in changes
-            ),
-            _text_field(candidate, "title", "documentation candidate"),
-            _text_field(candidate, "body", "documentation candidate"),
+            replacements,
+            title,
+            body,
             _head_branch(session, run_id, project_id),
         )
+    except RunEffectConflict:
+        raise
     except (TypeError, ValueError) as error:
         raise RunEffectConflict("documentation release request is invalid") from error
     owner = _binding_for(effect_adapter_bindings, operation.operation)
@@ -281,9 +296,11 @@ def _documentation_release_orders(
         for entry in action.inputs
         if isinstance(entry.source, GraphInputSource)
     }
-    if set(sources) != {"candidate", "approved_verdict"}:
+    required = {"candidate", "approved_verdict", "work_item"}
+    if set(sources) != required:
         raise RunEffectConflict(
-            "documentation release Action declares candidate and approved_verdict"
+            "documentation release Action declares work_item, candidate and "
+            "approved_verdict"
         )
     records = session.execute(
         sa.select(run_inputs_v3.c.name, run_inputs_v3.c.value).where(
@@ -294,7 +311,7 @@ def _documentation_release_orders(
     stored = {str(record.name): bytes(record.value) for record in records}
     if set(stored) != set(sources.values()):
         raise RunEffectConflict("documentation release has a missing declared order")
-    return {name: stored[source] for name, source in sources.items()}
+    return {name: stored[sources[name]] for name in ("candidate", "approved_verdict")}
 
 
 def _object_order(value: bytes, owner: str) -> dict[str, object]:
@@ -518,15 +535,18 @@ def graph_agent_open_pr_intent(
         AdapterOperationName.OPEN_PR,
     )
     payload = _agent_output(session, execution_id)
-    if project_id is None:
-        return EffectIntent(binding, CanonicalRequest(payload))
+    head_branch = (
+        _head_branch(session, run_id, project_id)
+        if project_id is not None
+        else head_branch_for_unbound_request(payload)
+    )
+    try:
+        body = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RunEffectConflict("open-pr Agent output is not UTF-8") from error
     return EffectIntent(
         binding,
-        CanonicalRequest(
-            OpenPullRequest(
-                payload.decode("utf-8"), _head_branch(session, run_id, project_id)
-            ).canonical_bytes()
-        ),
+        CanonicalRequest(OpenPullRequest(body, head_branch).canonical_bytes()),
     )
 
 
