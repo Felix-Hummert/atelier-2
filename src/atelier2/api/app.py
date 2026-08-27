@@ -549,9 +549,7 @@ COCKPIT_INDEX_PATHS: tuple[str, ...] = (
     "/atelier/catalog/{workflow_name:path}",
     "/atelier/history",
 )
-COCKPIT_HOME_PATH = next(
-    path for path in COCKPIT_INDEX_PATHS if path.endswith("/")
-)
+COCKPIT_HOME_PATH = next(path for path in COCKPIT_INDEX_PATHS if path.endswith("/"))
 
 
 async def _redirect_host_root(_request: Request) -> RedirectResponse:
