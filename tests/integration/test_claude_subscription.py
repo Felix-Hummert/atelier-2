@@ -33,10 +33,12 @@ from atelier2.adapters.claude_subscription import (
     WORKSPACE_TOOLS,
     ClaudeExecutableUnsupported,
     ClaudeManagedPolicyPresent,
+    ClaudeProcessCommand,
     ClaudeSubscriptionAuthModeUnsupported,
     ClaudeSubscriptionExecutorFactory,
     ClaudeSubscriptionSettings,
     ClaudeWorkspaceToolExecutorFactory,
+    _tool_free_output_format_arguments,
     attest_no_managed_policy,
     attest_workspace_tool_invocation,
     verify_claude_capability,
@@ -378,10 +380,34 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     assert observed["job"] == "draw the owl"
 
 
+def test_the_tool_free_schema_flag_carries_a_constraint_without_the_meta_schema() -> (
+    None
+):
+    declared_schema = (
+        b'{"$schema":"https://json-schema.org/draft/2020-12/schema",'
+        b'"type":"object","additionalProperties":false}'
+    )
+
+    arguments = _tool_free_output_format_arguments(declared_schema)
+
+    assert arguments[:3] == ("--output-format", "json", "--json-schema")
+    assert json.loads(arguments[3]) == {
+        "type": "object",
+        "additionalProperties": False,
+    }
+    assert declared_schema == (
+        b'{"$schema":"https://json-schema.org/draft/2020-12/schema",'
+        b'"type":"object","additionalProperties":false}'
+    )
+
+
 def test_a_declared_schema_uses_claudes_native_structured_output(
     tmp_path: Path,
 ) -> None:
-    declared_schema = b'{"type": "object", "additionalProperties": false}'
+    declared_schema = (
+        b'{"$schema":"https://json-schema.org/draft/2020-12/schema",'
+        b'"type":"object","additionalProperties":false}'
+    )
     structured_output = {"findings": [], "verdict": "accepted"}
     settings = claude_subscription_deployment(
         tmp_path,
@@ -392,12 +418,13 @@ def test_a_declared_schema_uses_claudes_native_structured_output(
     command = executor.prepare_process(request)
     workspace = provider_workspace(tmp_path)
 
-    assert command.arguments[2:6] == (
-        "--output-format",
-        "json",
-        "--json-schema",
-        declared_schema.decode(),
-    )
+    assert isinstance(command, ClaudeProcessCommand)
+    assert command.arguments[2:5] == ("--output-format", "json", "--json-schema")
+    assert json.loads(command.arguments[5]) == {
+        "type": "object",
+        "additionalProperties": False,
+    }
+    assert command.declared_output_schema_bytes == declared_schema
     assert "--tools=StructuredOutput" in command.arguments
     assert "--verbose" not in command.arguments
 
