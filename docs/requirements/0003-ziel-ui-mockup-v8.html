@@ -1,6 +1,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Workshop target picture v8.16</title>
+<title>Workshop target picture v8.17</title>
 <style>
 /* ── House tokens (from frontend/src/styles.css, so the picture is the same house) ── */
 :root{
@@ -337,6 +337,8 @@ details.raw summary{cursor:pointer;min-height:2rem;display:flex;align-items:cent
 .sheets{display:grid;grid-template-columns:repeat(auto-fit,minmax(18rem,1fr));gap:1rem;margin-top:.5rem;align-items:start}
 .fld{display:flex;flex-direction:column;gap:.2rem;margin:.45rem 0;font-size:.88rem}
 .fld label{font-weight:600}
+/* A token is a secret field: the same box as .in, never a value the picture can repeat. */
+.fld input{border:1px solid var(--line);border-radius:var(--r);padding:.4rem .65rem;background:var(--panel2);color:var(--ink);font:inherit;min-height:2.3rem;width:100%}
 .in{border:1px solid var(--line);border-radius:var(--r);padding:.4rem .65rem;background:var(--panel2);color:var(--ink);min-height:2.3rem;display:flex;align-items:center;justify-content:space-between;gap:.5rem}
 .in span{color:var(--ink-dim)}
 .in.degraded{border-style:dashed;border-color:var(--need-mark);color:var(--need)}
@@ -383,6 +385,10 @@ table.hist td.res{color:var(--ink-dim)} table.hist td.res.fail{color:var(--fail)
 .src .act{color:var(--ink);font-weight:600;font-size:.85rem;white-space:nowrap;min-height:var(--tap);display:inline-flex;align-items:center;text-decoration:underline;text-underline-offset:.2em}
 /* Disconnecting is irreversible: brick, no underline — it never reads like "Pull". */
 .src .act.destroy{color:var(--fail);text-decoration:none;font-weight:500}
+/* Disconnect and Token erneuern share the row; a model's check and Remove do the same. */
+.row-acts{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
+table.list .err{margin:0}
+#v8-17-settings-doors table.list .in{width:100%;display:flex}
 table.list{width:100%;border-collapse:collapse;font-size:.9rem}
 table.list th{font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-dim);text-align:left;padding:.35rem .5rem;border-bottom:1px solid var(--line)}
 table.list td{padding:.45rem .5rem;border-bottom:1px solid var(--line);vertical-align:middle}
@@ -443,9 +449,11 @@ table.list tr.grp td .mark{margin-right:.2rem}
   .ask h5{font-size:1.3rem}
   .head h4{font-size:1.2rem}
   .src{grid-template-columns:auto minmax(0,1fr)}
-  .src .act{grid-column:2}
+  .src .act,.src .row-acts{grid-column:2}
   /* Anything wider than the screen — graph, log, table — fades at its right edge: the one affordance every browser shows. */
   .pipe,.log,.stage .tw{mask-image:linear-gradient(to right,#000 calc(100% - 2rem),transparent)}
+  /* Empty Settings tables are the form without rows: they fit, so they must not fade. */
+  #v8-17-empty .stage .tw{mask-image:none}
   .pipe{padding-bottom:.6rem;padding-right:2.5rem}
   .pipe::-webkit-scrollbar{height:6px}
   .pipe::-webkit-scrollbar-track{background:var(--chip)}
@@ -478,10 +486,10 @@ table.list tr.grp td .mark{margin-right:.2rem}
 </style>
 <main>
 <header class="doc-head">
-  <div class="eyebrow">v8.16 · 27.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
+  <div class="eyebrow">v8.17 · 27.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
   <h1>The workshop holds a piece out to you</h1>
   <p class="thesis">Everything the workshop says to you is a question it holds out — a wait node of some run. Everything you say is an answer to one. The decision with two buttons, the ear with its input line and the "yes" to the conductor are <b>one</b> mechanism in three sizes; so there is exactly Stage, Row, Card, Sheet, plus Graph, and every room is built from these four blocks. Four rooms — Workbench, Catalog, History, Settings — and the run as a view in three tenses. Colour only for what wants something from you.</p>
-  <p class="note"><b>Changelog v8.16</b> · Retire an entry from its Technical fold: its tile and Start door disappear, History keeps its references, and a duplicate import names the existing revision.</p>
+  <p class="note"><b>Changelog v8.17</b> · Settings doors and row states: Connect a source takes a token never shown again; Disconnect asks once more and names what stays; Token erneuern keeps the row; Add a model then Checking, checked, or unknown at the provider; a duplicate names the existing row; empty is the form without a sentence.</p>
   <div class="tw"><table class="doc">
     <tr><th>Room</th><th>The one question it answers</th><th>What it never does</th></tr>
     <tr><td><b>Workbench</b></td><td>What needs me now, what is moving, what did we say today — and what do I want to say next?</td><td>No chronicle, no library; it never explains itself (no shelf titles); it shows nothing twice; it carries no number that does not lead to an action.</td></tr>
@@ -1668,6 +1676,195 @@ command stopped before an answer</div>
   <div><dt>Where: one address</dt><dd>"Which repository, group or folder?" — the house recognises the platform from the address; no provider dropdown (REQ-UI-15).</dd></div>
   <div><dt>Account: a reference, never a token</dt><dd>"With whose access?" — an Account of the installation (ADR 0017); the sheet shows names, never material. Creating an Account is a settings surface that does not exist yet.</dd></div>
   <div><dt>The question before a disconnect</dt><dd>"What do I lose?" — the stage in your own hand: one line of consequence, brick button, a way back.</dd></div>
+</dl>
+
+<section id="v8-17-settings-doors">
+<h3 class="frame-title">Settings · Sources and Models <small>— the doors and the row states</small></h3>
+<div class="frame" id="v8-17-source-row">
+  <nav class="rail" data-on="settings"></nav>
+  <div class="stage">
+    <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
+    <p class="shelf">Sources</p>
+    <div class="src"><span class="k">Items</span><span class="d"><b>GitHub · FlexOr2/atelier-2</b> · issues · connected today</span><div class="row-acts"><span class="act destroy">Disconnect</span><span class="act">Token erneuern</span></div></div>
+    <div class="src"><span class="k">Items</span><span class="d"><b>GitLab · infra</b> · group, 3 projects · issues · connected today</span><div class="row-acts"><span class="act destroy">Disconnect</span><span class="act">Token erneuern</span></div></div>
+    <div style="margin:.2rem 0 .4rem"><span class="btn sm">Connect a source</span></div>
+    <p class="shelf">Models</p>
+    <div class="tw"><table class="list">
+      <tr><th>Model</th><th>Account</th><th></th></tr>
+      <tr class="grp"><td colspan="3"><i class="mark" title="Claude">A</i> Anthropic · leonardo</td></tr>
+      <tr><td><code>claude-opus-5</code></td><td class="by">leonardo</td><td><div class="row-acts"><span class="by">added by you · checked</span><span class="btn sm danger">Remove</span></div></td></tr>
+      <tr><td><code>claude-sonnet-4-6</code></td><td class="by">leonardo</td><td><div class="row-acts"><span class="by">added by you · checked</span><span class="btn sm danger">Remove</span></div></td></tr>
+      <tr><td><code>claude-haiku-4-5</code></td><td class="by">leonardo</td><td><div class="row-acts"><span class="word live">Checking</span><span class="btn sm danger">Remove</span></div></td></tr>
+      <tr><td><code>claude-opus-4-6</code></td><td class="by">leonardo</td><td><div class="row-acts"><div class="err">No such model at Anthropic. <a href="#">Correct the id</a></div><span class="btn sm danger">Remove</span></div></td></tr>
+      <tr><td colspan="3"><span class="btn sm">Add a model</span></td></tr>
+    </table></div>
+    <p class="shelf">Model defaults</p>
+    <div class="tw"><table class="list">
+      <tr><th>Difficulty</th><th>Model</th></tr>
+      <tr><td class="ord"><b>3</b></td><td><div class="in"><span class="val"><i class="mark" title="Claude">A</i> claude-opus-5</span><span class="sub">Account leonardo</span><span>▾</span></div></td></tr>
+      <tr><td class="ord"><b>2</b></td><td><div class="in"><span class="val"><i class="mark" title="Claude">A</i> claude-sonnet-4-6</span><span class="sub">Account leonardo</span><span>▾</span></div></td></tr>
+      <tr><td class="ord"><b>1</b></td><td><div class="in"><span>▾</span></div></td></tr>
+    </table></div>
+  </div>
+</div>
+
+<div class="frame sheeted" id="v8-17-connect">
+  <nav class="rail" data-on="settings"></nav>
+  <div class="stage dimmed">
+    <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
+    <p class="shelf">Sources</p>
+    <div class="src"><span class="k">Items</span><span class="d"><b>GitHub · FlexOr2/atelier-2</b> · issues · connected today</span><div class="row-acts"><span class="act destroy">Disconnect</span><span class="act">Token erneuern</span></div></div>
+    <div class="src"><span class="k">Items</span><span class="d"><b>GitLab · infra</b> · group, 3 projects · issues · connected today</span><div class="row-acts"><span class="act destroy">Disconnect</span><span class="act">Token erneuern</span></div></div>
+    <div style="margin:.2rem 0 .4rem"><span class="btn sm">Connect a source</span></div>
+    <p class="shelf">Models</p>
+    <div class="tw"><table class="list"><tr><th>Model</th><th>Account</th><th></th></tr><tr><td><code>claude-opus-5</code></td><td class="by">leonardo</td><td class="by">added by you · checked</td></tr></table></div>
+  </div>
+  <div class="veil" aria-hidden="true"></div>
+  <section class="sheet" aria-label="Connect a source">
+    <h5>Connect a source</h5>
+    <div class="fld"><label>Kind</label><div class="filters plain"><span class="f on">Items</span><span class="f">Library</span></div></div>
+    <div class="fld"><label>Where</label><div class="in">github.com/FlexOr2/docs</div></div>
+    <div class="fld"><label for="v8-17-connect-token">Token</label><input id="v8-17-connect-token" type="password" autocomplete="off" spellcheck="false" aria-label="Token"></div>
+    <p class="note">Never shown again.</p>
+    <div class="foot"><span class="btn primary">Connect</span><span class="btn quiet">Cancel</span></div>
+  </section>
+</div>
+
+<div class="frame sheeted" id="v8-17-connect-refused">
+  <nav class="rail" data-on="settings"></nav>
+  <div class="stage dimmed">
+    <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
+    <p class="shelf">Sources</p>
+    <div class="src"><span class="k">Items</span><span class="d"><b>GitHub · FlexOr2/atelier-2</b> · issues · connected today</span><div class="row-acts"><span class="act destroy">Disconnect</span><span class="act">Token erneuern</span></div></div>
+    <div style="margin:.2rem 0 .4rem"><span class="btn sm">Connect a source</span></div>
+  </div>
+  <div class="veil" aria-hidden="true"></div>
+  <section class="sheet" aria-label="Connect a source — token refused">
+    <h5>Connect a source</h5>
+    <div class="fld"><label>Kind</label><div class="filters plain"><span class="f on">Items</span><span class="f">Library</span></div></div>
+    <div class="fld"><label>Where</label><div class="in">github.com/FlexOr2/docs</div></div>
+    <div class="fld"><label for="v8-17-connect-refused-token">Token</label><input id="v8-17-connect-refused-token" type="password" autocomplete="off" spellcheck="false" aria-label="Token"></div>
+    <p class="note">Never shown again.</p>
+    <div class="err">This token was refused. <a href="#">Token erneuern</a></div>
+    <div class="foot"><span class="btn primary">Connect</span><span class="btn quiet">Cancel</span></div>
+  </section>
+</div>
+
+<div class="frame sheeted" id="v8-17-disconnect">
+  <nav class="rail" data-on="settings"></nav>
+  <div class="stage dimmed">
+    <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
+    <p class="shelf">Sources</p>
+    <div class="src"><span class="k">Items</span><span class="d"><b>GitHub · FlexOr2/atelier-2</b> · issues · connected today</span><div class="row-acts"><span class="act destroy">Disconnect</span><span class="act">Token erneuern</span></div></div>
+    <div class="src"><span class="k">Items</span><span class="d"><b>GitLab · infra</b> · group, 3 projects · issues · connected today</span><div class="row-acts"><span class="act destroy">Disconnect</span><span class="act">Token erneuern</span></div></div>
+    <p class="shelf">Models</p>
+    <div class="tw"><table class="list"><tr><th>Model</th><th>Account</th><th></th></tr><tr><td><code>claude-opus-5</code></td><td class="by">leonardo</td><td class="by">added by you · checked</td></tr></table></div>
+  </div>
+  <div class="veil" aria-hidden="true"></div>
+  <section class="sheet" aria-label="Disconnect FlexOr2/atelier-2">
+    <h5>Disconnect FlexOr2/atelier-2?</h5>
+    <div class="fact"><b>Goes</b><span>this connection</span></div>
+    <div class="fact"><b>Stays</b><span>atelier-2, GitLab · infra, and the models</span></div>
+    <div class="fact"><b>Again</b><span>Connect a source starts a new connection</span></div>
+    <div class="foot"><span class="btn danger">Disconnect</span><span class="btn quiet">Keep it</span></div>
+  </section>
+</div>
+
+<div class="frame sheeted" id="v8-17-renew-token">
+  <nav class="rail" data-on="settings"></nav>
+  <div class="stage dimmed">
+    <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
+    <p class="shelf">Sources</p>
+    <div class="src"><span class="k">Items</span><span class="d"><b>GitHub · FlexOr2/atelier-2</b> · issues · connected today</span><div class="row-acts"><span class="act destroy">Disconnect</span><span class="act">Token erneuern</span></div></div>
+    <div class="src"><span class="k">Items</span><span class="d"><b>GitLab · infra</b> · group, 3 projects · issues · connected today</span><div class="row-acts"><span class="act destroy">Disconnect</span><span class="act">Token erneuern</span></div></div>
+  </div>
+  <div class="veil" aria-hidden="true"></div>
+  <section class="sheet" aria-label="Token erneuern">
+    <h5>Token erneuern</h5>
+    <div class="fld"><label for="v8-17-renew-token-field">Token</label><input id="v8-17-renew-token-field" type="password" autocomplete="off" spellcheck="false" aria-label="Token"></div>
+    <p class="note">Never shown again.</p>
+    <div class="foot"><span class="btn primary">Token erneuern</span><span class="btn quiet">Cancel</span></div>
+  </section>
+</div>
+
+<div class="frame sheeted" id="v8-17-add-model">
+  <nav class="rail" data-on="settings"></nav>
+  <div class="stage dimmed">
+    <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
+    <p class="shelf">Models</p>
+    <div class="tw"><table class="list">
+      <tr><th>Model</th><th>Account</th><th></th></tr>
+      <tr class="grp"><td colspan="3"><i class="mark" title="Claude">A</i> Anthropic · leonardo</td></tr>
+      <tr><td><code>claude-opus-5</code></td><td class="by">leonardo</td><td class="by">added by you · checked</td></tr>
+      <tr><td colspan="3"><span class="btn sm">Add a model</span></td></tr>
+    </table></div>
+    <p class="shelf">Model defaults</p>
+    <div class="tw"><table class="list">
+      <tr><th>Difficulty</th><th>Model</th></tr>
+      <tr><td class="ord"><b>3</b></td><td><div class="in"><span class="val"><i class="mark" title="Claude">A</i> claude-opus-5</span><span class="sub">Account leonardo</span><span>▾</span></div></td></tr>
+    </table></div>
+  </div>
+  <div class="veil" aria-hidden="true"></div>
+  <section class="sheet" aria-label="Add a model">
+    <h5>Add a model</h5>
+    <div class="fld"><label>Provider</label><div class="in"><span class="val"><i class="mark" title="Claude">A</i> Anthropic · leonardo</span><span>▾</span></div></div>
+    <div class="menu">
+      <div class="grp">Accounts</div>
+      <div class="opt on"><i class="mark" title="Claude">A</i>&nbsp;Anthropic · leonardo</div>
+      <div class="opt"><i class="mark" title="Codex">O</i>&nbsp;OpenAI · leonardo</div>
+      <div class="opt"><i class="mark" title="Grok">X</i>&nbsp;xAI · leonardo</div>
+    </div>
+    <div class="fld"><label>Model</label><div class="in">claude-opus-4-6</div></div>
+    <div class="foot"><span class="btn primary">Add</span><span class="btn quiet">Cancel</span></div>
+  </section>
+</div>
+
+<div class="frame" id="v8-17-duplicate">
+  <nav class="rail" data-on="settings"></nav>
+  <div class="stage">
+    <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
+    <p class="shelf">Sources</p>
+    <div class="src"><span class="k">Items</span><span class="d"><b>GitHub · FlexOr2/atelier-2</b> · issues · connected today · <span class="pill">schon vorhanden</span></span><div class="row-acts"><span class="act destroy">Disconnect</span><span class="act">Token erneuern</span></div></div>
+    <div class="src"><span class="k">Items</span><span class="d"><b>GitLab · infra</b> · group, 3 projects · issues · connected today</span><div class="row-acts"><span class="act destroy">Disconnect</span><span class="act">Token erneuern</span></div></div>
+    <div style="margin:.2rem 0 .4rem"><span class="btn sm">Connect a source</span></div>
+    <p class="shelf">Models</p>
+    <div class="tw"><table class="list">
+      <tr><th>Model</th><th>Account</th><th></th></tr>
+      <tr class="grp"><td colspan="3"><i class="mark" title="Claude">A</i> Anthropic · leonardo</td></tr>
+      <tr><td><code>claude-opus-5</code> <span class="pill">schon vorhanden</span></td><td class="by">leonardo</td><td><div class="row-acts"><span class="by">added by you · checked</span><span class="btn sm danger">Remove</span></div></td></tr>
+      <tr><td colspan="3"><span class="btn sm">Add a model</span></td></tr>
+    </table></div>
+  </div>
+</div>
+
+<div class="frame" id="v8-17-empty">
+  <nav class="rail" data-on="settings"></nav>
+  <div class="stage">
+    <div class="head"><h4><a class="switcher" href="#" aria-label="atelier-2 — switch project" title="Switch project">atelier-2 <span class="switch" aria-hidden="true">▾</span></a></h4></div>
+    <p class="shelf">Sources</p>
+    <div style="margin:.2rem 0 .4rem"><span class="btn sm">Connect a source</span></div>
+    <p class="shelf">Models</p>
+    <div style="margin:.2rem 0 .4rem"><span class="btn sm">Add a model</span></div>
+    <p class="shelf">Model defaults</p>
+    <div class="tw"><table class="list">
+      <tr><th>Difficulty</th><th>Model</th></tr>
+      <tr><td class="ord"><b>3</b></td><td><div class="in"><span>▾</span></div></td></tr>
+      <tr><td class="ord"><b>2</b></td><td><div class="in"><span>▾</span></div></td></tr>
+      <tr><td class="ord"><b>1</b></td><td><div class="in"><span>▾</span></div></td></tr>
+    </table></div>
+  </div>
+</div>
+</section>
+<dl class="uq">
+  <div><dt>The source row</dt><dd>"Which project, not which branch — and with whose token?" — GitHub · FlexOr2/atelier-2 · issues · connected today; no @main, no auth column. Disconnect in brick, Token erneuern in ink.</dd></div>
+  <div><dt>Connect a source</dt><dd>"What does this door take?" — kind, address, and a token as a secret field. The sentence under the field is the only time the token is spoken of; no later line shows it. The sheet sits to the right at 1280, from the bottom at 390.</dd></div>
+  <div><dt>This token was refused</dt><dd>"Did it hold?" — brick with one sentence and Token erneuern as the next step; the field stays secret.</dd></div>
+  <div><dt>Disconnect asks once more</dt><dd>"What goes, and what stays?" — this connection goes; atelier-2, the other source, and the models stay. There is no undo: Connect a source starts a new connection.</dd></div>
+  <div><dt>Token erneuern</dt><dd>"Can I change the token without losing the row?" — the sheet takes a new token only; the row behind it stays.</dd></div>
+  <div><dt>Add a model</dt><dd>"Which provider, which id?" — the provider is an existing account; the id is one line. Remove stands on every added row.</dd></div>
+  <div><dt>Checking · checked · unknown</dt><dd>"Did the id hold?" — Checking is live colour while the first-use check still runs; checked is quiet and selectable under Model defaults; unknown at the provider is brick with a sentence and Correct the id.</dd></div>
+  <div><dt>schon vorhanden</dt><dd>"Did I add a second row?" — no: the existing source row and the existing model row say so; there is no second line.</dd></div>
+  <div><dt>Empty</dt><dd>"What would stand here?" — the form: shelves, doors, and the three difficulty rows. No sentence about the emptiness.</dd></div>
 </dl>
 
 <h3 class="frame-title">The conversation's yes is a start override</h3>
