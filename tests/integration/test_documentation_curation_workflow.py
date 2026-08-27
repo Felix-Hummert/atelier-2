@@ -203,6 +203,7 @@ REFUSED_CANDIDATES = {
     },
 }
 REFUSED_TRACE_REVIEWS = {
+    "extra trace review field": {**TRACE_REVIEW, "writes_repository": False},
     "missing candidate digest": {
         key: value for key, value in TRACE_REVIEW.items() if key != "candidate_digest"
     },
@@ -232,6 +233,7 @@ TRACE_REVIEW_SCHEMA_CASES = {
         {**TRACE_REVIEW, "verdict": "cannot-judge"},
         False,
     ),
+    "extra trace review field": ({**TRACE_REVIEW, "writes_repository": False}, False),
 }
 
 
@@ -519,7 +521,7 @@ def test_an_independent_trace_reviewer_receives_exact_curator_and_owner_evidence
     assert review_detail.detail.answer.value == TRACE_REVIEW_ANSWER
     assert (
         json.loads(review_detail.detail.answer.value)["candidate_digest"]
-        == sha256(ANSWER).hexdigest()
+        == CANDIDATE_DIGEST
     )
 
 
