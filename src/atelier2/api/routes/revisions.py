@@ -22,7 +22,6 @@ from atelier2.api.openapi import (
     LIBRARY_RECOGNITIONS_PATH,
 )
 from atelier2.api.problems import (
-    PROJECTION_LIMIT_DETAIL,
     ApiProblem,
     adapter_operation_document_problem_code,
     agent_definition_document_problem_code,
@@ -785,7 +784,7 @@ async def _summary_page(
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case ProjectionTooLarge():
-            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
+            raise ApiProblem("durable-projection-unrepresentable")
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
@@ -805,7 +804,7 @@ async def _described_page(
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case ProjectionTooLarge():
-            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
+            raise ApiProblem("durable-projection-unrepresentable")
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
@@ -937,6 +936,8 @@ def _admission_resource(result: object) -> CatalogAdmissionResource:
             raise ApiProblem("durable-state-corrupt")
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
+        case ProjectionTooLarge():
+            raise ApiProblem("durable-projection-unrepresentable")
         case WriteUnavailable():
             raise ApiProblem("temporarily-unavailable")
         case _:
@@ -1019,7 +1020,7 @@ async def get_revision(
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case ProjectionTooLarge():
-            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
+            raise ApiProblem("durable-projection-unrepresentable")
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:

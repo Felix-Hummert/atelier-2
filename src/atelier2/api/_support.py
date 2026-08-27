@@ -10,7 +10,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits
-from atelier2.api.problems import PROJECTION_LIMIT_DETAIL, ApiProblem
+from atelier2.api.problems import (
+    ApiProblem,
+    durable_projection_unrepresentable_detail,
+)
 from atelier2.api.projection.runs import run_resource
 from atelier2.api.references import (
     MAX_SIGNED_INT64,
@@ -81,7 +84,7 @@ async def load_run_projection(
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case ProjectionTooLarge():
-            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
+            raise ApiProblem("durable-projection-unrepresentable")
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
@@ -94,8 +97,13 @@ def require_run_projections(
     try:
         for projection in projections:
             limits.require_run_projection(projection)
-    except ValueError as error:
-        raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL) from error
+    except ApiLimitExceeded as error:
+        raise ApiProblem(
+            "durable-projection-unrepresentable",
+            durable_projection_unrepresentable_detail(
+                error.field_name, error.bound, error.unit
+            ),
+        ) from error
 
 
 async def run_control_query[Result](

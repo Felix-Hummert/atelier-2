@@ -51,7 +51,25 @@ def durable_projection_limit(limits: ApiLimits) -> WorkflowPublicationLimits:
 
 
 class ApiLimitExceeded(ValueError):
-    pass
+    """One value cannot fit a named API representation bound."""
+
+    def __init__(self, field_name: str, bound: int, unit: str) -> None:
+        self.field_name = field_name
+        self.bound = bound
+        self.unit = unit
+        messages = {
+            "public_run_reference": "public run reference exceeds its character limit",
+            "event_cursor": "event cursor exceeds its character limit",
+        }
+        message = messages.get(field_name)
+        if message is None:
+            if unit == "bytes":
+                message = "decoded payload exceeds its byte limit"
+            elif unit == "base64 characters":
+                message = "encoded payload exceeds its character limit"
+            else:
+                message = f"{field_name} exceeds its {unit} bound of {bound}"
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -85,30 +103,44 @@ class ApiLimits:
     def maximum_base64_decoded_bytes(self) -> int:
         return 3 * (self.maximum_base64_characters // 4)
 
-    def require_field(self, value: str) -> None:
+    def require_field(self, value: str, field_name: str = "field") -> None:
         if len(value) > self.maximum_field_characters:
-            raise ApiLimitExceeded("request field exceeds its character limit")
+            raise ApiLimitExceeded(
+                field_name, self.maximum_field_characters, "characters"
+            )
 
-    def require_base64(self, value: str) -> None:
+    def require_base64(self, value: str, field_name: str = "base64 field") -> None:
         if len(value) > self.maximum_base64_characters:
-            raise ApiLimitExceeded("base64 field exceeds its character limit")
+            raise ApiLimitExceeded(
+                field_name, self.maximum_base64_characters, "characters"
+            )
 
-    def require_payload(self, value: bytes) -> None:
+    def require_payload(self, value: bytes, field_name: str = "payload") -> None:
         if len(value) > self.maximum_decoded_payload_bytes:
-            raise ApiLimitExceeded("decoded payload exceeds its byte limit")
+            raise ApiLimitExceeded(
+                field_name, self.maximum_decoded_payload_bytes, "bytes"
+            )
 
-    def require_encoded_payload(self, value: bytes) -> None:
-        self.require_payload(value)
+    def require_encoded_payload(
+        self, value: bytes, field_name: str = "payload"
+    ) -> None:
+        self.require_payload(value, field_name)
         if base64_characters_for(len(value)) > self.maximum_base64_characters:
-            raise ApiLimitExceeded("encoded payload exceeds its character limit")
+            raise ApiLimitExceeded(
+                field_name, self.maximum_base64_characters, "base64 characters"
+            )
 
     def require_public_run_reference(self, run_id: RunId) -> None:
         if len(encode_public_run_reference(run_id)) > self.maximum_field_characters:
-            raise ApiLimitExceeded("public run reference exceeds its character limit")
+            raise ApiLimitExceeded(
+                "public_run_reference", self.maximum_field_characters, "characters"
+            )
 
     def require_event_cursor(self, run_id: RunId, sequence: int) -> None:
         if len(encode_event_cursor(run_id, sequence)) > self.maximum_field_characters:
-            raise ApiLimitExceeded("event cursor exceeds its character limit")
+            raise ApiLimitExceeded(
+                "event_cursor", self.maximum_field_characters, "characters"
+            )
 
     def require_run_projection(self, projection: RunProjection) -> None:
         # No durable owner bounds how many orders a run was started with, so
@@ -116,66 +148,68 @@ class ApiLimits:
         # Pydantic model, where an oversized projection would surface as an
         # unhandled validation error instead of a named, typed refusal.
         if len(projection.orders) > MAXIMUM_RUN_ORDERS:
-            raise ApiLimitExceeded(
-                "run projection carries more orders than the wire allows"
-            )
-        self.require_field(projection.run.run_id.value)
+            raise ApiLimitExceeded("orders", MAXIMUM_RUN_ORDERS, "items")
+        self.require_field(projection.run.run_id.value, "run_id")
         self.require_public_run_reference(projection.run.run_id)
         if projection.run.last_event_sequence > 0:
             self.require_event_cursor(
                 projection.run.run_id, projection.run.last_event_sequence
             )
-        self.require_field(projection.run.current_node_id)
+        self.require_field(projection.run.current_node_id, "current_node_id")
         attempt = projection.current_agent_attempt
         if attempt is not None:
-            self.require_field(attempt.attempt_id.value)
-            self.require_field(attempt.node_execution_id.value)
-            self.require_field(attempt.request_hash.value)
-            self.require_field(attempt.state)
+            self.require_field(attempt.attempt_id.value, "attempt_id")
+            self.require_field(attempt.node_execution_id.value, "node_execution_id")
+            self.require_field(attempt.request_hash.value, "request_hash")
+            self.require_field(attempt.state, "attempt_state")
             if attempt.failure_code is not None:
-                self.require_field(attempt.failure_code.value)
+                self.require_field(attempt.failure_code.value, "failure_code")
         reconciliation = projection.reconciliation
         if reconciliation is None:
             return
         intent = reconciliation.intent.intent
-        self.require_field(intent.binding.logical_key.value)
-        self.require_encoded_payload(intent.request.payload)
+        self.require_field(intent.binding.logical_key.value, "logical_key")
+        self.require_encoded_payload(intent.request.payload, "request_payload")
         pending = reconciliation.pending_command
         if pending is None:
             return
         command = pending.command
-        self.require_field(command.command_id.value)
-        self.require_field(command.actor.value)
-        self.require_field(command.evidence)
+        self.require_field(command.command_id.value, "command_id")
+        self.require_field(command.actor.value, "actor")
+        self.require_field(command.evidence, "evidence")
         determination = command.determination
         if isinstance(determination, OperatorFoundEffect):
-            self.require_field(determination.effect_id.value)
-            self.require_encoded_payload(determination.result.payload)
+            self.require_field(determination.effect_id.value, "effect_id")
+            self.require_encoded_payload(determination.result.payload, "result_payload")
 
     def require_event_projection(self, projection: PersistedRunEvent) -> None:
         event = projection.event
-        self.require_field(event.run_id.value)
+        self.require_field(event.run_id.value, "run_id")
         self.require_public_run_reference(event.run_id)
         self.require_event_cursor(event.run_id, event.event_sequence)
-        self.require_field(event.node_id)
+        self.require_field(event.node_id, "node_id")
         if event.event_kind is RunEventKind.AGENT_FAILED:
-            self.require_field(event.payload.decode("ascii"))
+            self.require_field(event.payload.decode("ascii"), "failure_code")
             if projection.node_receipt_reason is not None:
-                self.require_field(projection.node_receipt_reason)
-        self.require_encoded_payload(event.payload)
+                self.require_field(
+                    projection.node_receipt_reason, "node_receipt_reason"
+                )
+        self.require_encoded_payload(event.payload, "event_payload")
         if (
             event.event_kind is RunEventKind.AGENT_COMPLETED
             and projection.workflow_format_version is WorkflowFormatVersion.V1
         ) or event.event_kind is RunEventKind.WAIT_ANSWERED:
-            self.require_field(event.payload.decode("utf-8"))
+            self.require_field(event.payload.decode("utf-8"), "event_payload")
         receipt = projection.receipt
         if receipt is None:
             return
-        self.require_field(receipt.intent.binding.logical_key.value)
-        self.require_field(receipt.effect_id.value)
-        self.require_encoded_payload(receipt.result.payload)
+        self.require_field(receipt.intent.binding.logical_key.value, "logical_key")
+        self.require_field(receipt.effect_id.value, "effect_id")
+        self.require_encoded_payload(receipt.result.payload, "receipt_payload")
         if receipt.reconcile_command_id is not None:
-            self.require_field(receipt.reconcile_command_id.value)
+            self.require_field(
+                receipt.reconcile_command_id.value, "reconcile_command_id"
+            )
 
 
 @dataclass(frozen=True)

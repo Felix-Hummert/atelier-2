@@ -15,6 +15,10 @@ from atelier2.adapters.markdown_agent_definitions import (
 from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.api.app import create_app
 from atelier2.api.context import ApiPorts
+from atelier2.contracts.catalog_v3 import (
+    CatalogLineageDisplayName,
+    CatalogLineageId,
+)
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -40,7 +44,11 @@ from atelier2.contracts.executions import (
     WaitAnswerSnapshot,
     WaitAnswerState,
 )
-from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
+from atelier2.contracts.revisions_v3 import (
+    PublishedRevision,
+    PublishedRevisionHash,
+    RevisionKind,
+)
 from atelier2.contracts.run_projections import (
     RunPage,
     RunProjection,
@@ -54,6 +62,7 @@ from atelier2.contracts.runs import (
     WorkflowRevisionHash,
 )
 from atelier2.contracts.workflow_projections import (
+    EnrichedPageBudget,
     WorkflowRevisionPage,
     WorkflowRevisionProjection,
 )
@@ -85,9 +94,11 @@ from atelier2.ports.effects import (
     DurableReconciliationResult,
 )
 from atelier2.ports.published_revisions import (
+    CatalogNameFound,
     PublishedRevisionCollision,
     PublishedRevisionCreated,
     PublishedRevisionExisting,
+    PublishedRevisionMissing,
     PublishRevisionResult,
 )
 from atelier2.ports.run_events import (
@@ -113,6 +124,7 @@ from atelier2.ports.workflow_revisions import (
     DurableRevisionExisting,
     DurableRevisionPublicationResult,
     GetWorkflowRevisionResult,
+    ListDescribedWorkflowRevisionsResult,
     ListWorkflowRevisionsResult,
     ProjectionTooLarge,
     QueryDurableStateCorrupt,
@@ -474,6 +486,22 @@ PROBLEM_CASES = (
         "durable-state-corrupt",
     ),
     (
+        "revision-list-projection-limit",
+        "revision-list",
+        "revision-list",
+        ProjectionTooLarge(),
+        500,
+        "durable-projection-unrepresentable",
+    ),
+    (
+        "revision-described-projection-limit",
+        "revision-described",
+        "revision-described",
+        ProjectionTooLarge(),
+        500,
+        "durable-projection-unrepresentable",
+    ),
+    (
         "revision-get-missing",
         "revision-get",
         "revision-get",
@@ -496,6 +524,30 @@ PROBLEM_CASES = (
         QueryDurableStateCorrupt(),
         500,
         "durable-state-corrupt",
+    ),
+    (
+        "revision-get-projection-limit",
+        "revision-get",
+        "revision-get",
+        ProjectionTooLarge(),
+        500,
+        "durable-projection-unrepresentable",
+    ),
+    (
+        "lineage-found-projection-limit",
+        "lineage-found",
+        "lineage-found",
+        ProjectionTooLarge(),
+        500,
+        "durable-projection-unrepresentable",
+    ),
+    (
+        "lineage-member-projection-limit",
+        "lineage-member",
+        "lineage-member",
+        ProjectionTooLarge(),
+        500,
+        "durable-projection-unrepresentable",
     ),
     (
         "start-revision-missing",
@@ -553,6 +605,14 @@ PROBLEM_CASES = (
         500,
         "durable-state-corrupt",
     ),
+    (
+        "run-list-projection-limit",
+        "run-list",
+        "run-list",
+        ProjectionTooLarge(),
+        500,
+        "durable-projection-unrepresentable",
+    ),
     ("run-get-missing", "run-get", "run-get", RunQueryMissing(), 404, "run-not-found"),
     (
         "run-get-unavailable",
@@ -569,6 +629,14 @@ PROBLEM_CASES = (
         QueryDurableStateCorrupt(),
         500,
         "durable-state-corrupt",
+    ),
+    (
+        "run-get-projection-limit",
+        "run-get",
+        "run-get",
+        ProjectionTooLarge(),
+        500,
+        "durable-projection-unrepresentable",
     ),
     (
         "wait-unanswerable",
@@ -730,6 +798,14 @@ PROBLEM_CASES = (
         500,
         "durable-state-corrupt",
     ),
+    (
+        "reconcile-projection-limit",
+        "reconcile",
+        "reconcile-retry",
+        ProjectionTooLarge(),
+        500,
+        "durable-projection-unrepresentable",
+    ),
     ("events-run-missing", "events", "events", RunQueryMissing(), 404, "run-not-found"),
     (
         "events-cursor-ahead",
@@ -762,6 +838,30 @@ PROBLEM_CASES = (
         ReadUnavailable(),
         503,
         "temporarily-unavailable",
+    ),
+    (
+        "events-run-projection-limit",
+        "events",
+        "run-get",
+        ProjectionTooLarge(),
+        500,
+        "durable-projection-unrepresentable",
+    ),
+    (
+        "node-detail-projection-limit",
+        "node-detail",
+        "node-detail",
+        ProjectionTooLarge(),
+        500,
+        "durable-projection-unrepresentable",
+    ),
+    (
+        "attention-resume-projection-limit",
+        "attention",
+        "attention",
+        ProjectionTooLarge(),
+        500,
+        "durable-projection-unrepresentable",
     ),
 )
 CASES = tuple(RouteResultCase(*values) for values in SUCCESS_CASES) + tuple(
@@ -802,7 +902,30 @@ class MatrixRegistry:
 
     def resolve(self, kind: object, revision_hash: object) -> object:
         del kind, revision_hash
+        if self.case.source in {"lineage-found", "lineage-member"}:
+            return PublishedRevisionMissing()
         raise AssertionError("a publication never resolves")
+
+
+@dataclass
+class MatrixCatalog:
+    case: RouteResultCase
+
+    def resolve(self, kind: object, revision_hash: object) -> object:
+        del kind, revision_hash
+        assert self.case.source in {"lineage-found", "lineage-member"}
+        return PublishedRevisionMissing()
+
+    def resolve_name(self, kind: object, query: object, position: object) -> object:
+        del kind, query, position
+        assert self.case.source == "lineage-member"
+        return CatalogNameFound(
+            CatalogLineageId(REVISION.revision_hash.value),
+            PublishedRevisionHash(REVISION.revision_hash.value),
+            1,
+            CatalogLineageDisplayName("lineage"),
+            False,
+        )
 
 
 @dataclass
@@ -849,6 +972,16 @@ class MatrixQueries:
         assert self.case.source == "revision-list"
         return cast(ListWorkflowRevisionsResult, self.case.result)
 
+    def list_described_workflow_revisions(
+        self,
+        after: WorkflowRevisionHash | None,
+        limit: int,
+        budget: EnrichedPageBudget,
+    ) -> ListDescribedWorkflowRevisionsResult:
+        del after, limit, budget
+        assert self.case.source == "revision-described"
+        return cast(ListDescribedWorkflowRevisionsResult, self.case.result)
+
     def get_workflow_revision(
         self,
         revision_hash: WorkflowRevisionHash,
@@ -860,6 +993,8 @@ class MatrixQueries:
             # before it writes anything; every matrix start case is a document
             # the API can serve, so the read falls through to the starter.
             return WorkflowRevisionFound(REVISION_PROJECTION)
+        if self.case.source in {"lineage-found", "lineage-member"}:
+            return ProjectionTooLarge()
         assert self.case.source == "revision-get"
         return cast(GetWorkflowRevisionResult, self.case.result)
 
@@ -895,6 +1030,11 @@ class MatrixQueries:
             return RunFound(RUN_PROJECTION)
         raise AssertionError("matrix route unexpectedly read a run")
 
+    def get_node_detail(self, run_id: RunId, node_id: str) -> object:
+        del run_id, node_id
+        assert self.case.source == "node-detail"
+        return self.case.result
+
     def get_reconciliation_retry_target(
         self,
         run_id: RunId,
@@ -909,6 +1049,8 @@ class MatrixQueries:
         self, run_id: RunId, after_sequence: int
     ) -> PrepareRunEventStreamResult:
         del run_id, after_sequence
+        if self.case.source == "run-get":
+            return StreamReady(0, True, 0)
         assert self.case.source == "events"
         return cast(PrepareRunEventStreamResult, self.case.result)
 
@@ -929,6 +1071,8 @@ class MatrixQueries:
         limit: int,
         excluded_identities: tuple[tuple[RunId, int], ...] = (),
     ) -> object:
+        if self.case.source == "attention":
+            return self.case.result
         return unused_attention_event_page(
             after_run_id, after_sequence, limit, excluded_identities
         )
@@ -945,6 +1089,7 @@ def _ports(case: RouteResultCase) -> ApiPorts:
         run_queries=queries,
         run_event_queries=queries,
         published_revision_registry=MatrixRegistry(case),
+        catalog_resolver=MatrixCatalog(case),
         workflow_document_parser=parse_executable_workflow_document,
         agent_definition_parser=parse_agent_definition,
         agent_definition_renderer=render_agent_definition,
@@ -989,9 +1134,31 @@ def _request(client: TestClient, case: RouteResultCase):
         )
     if case.operation == "revision-list":
         return client.get("/atelier/api/v1/workflow-revisions")
+    if case.operation == "revision-described":
+        return client.get("/atelier/api/v1/workflow-revisions?view=described")
     if case.operation == "revision-get":
         return client.get(
             "/atelier/api/v1/workflow-revisions/" + REVISION.revision_hash.value
+        )
+    if case.operation == "lineage-found":
+        return client.post(
+            "/atelier/api/v1/workflow-lineages",
+            json={
+                "workflow_revision_hash": REVISION.revision_hash.value,
+                "actor": "operator",
+                "activated_at": "2026-08-27T12:00:00Z",
+            },
+        )
+    if case.operation == "lineage-member":
+        return client.post(
+            "/atelier/api/v1/workflow-lineages/"
+            + REVISION.revision_hash.value
+            + "/members",
+            json={
+                "workflow_revision_hash": REVISION.revision_hash.value,
+                "actor": "operator",
+                "activated_at": "2026-08-27T12:00:00Z",
+            },
         )
     if case.operation == "start":
         return client.post(
@@ -1029,6 +1196,13 @@ def _request(client: TestClient, case: RouteResultCase):
         return client.get(
             "/atelier/api/v1/runs/run1.cnVu/events",
             headers={"accept": "text/event-stream"},
+        )
+    if case.operation == "node-detail":
+        return client.get("/atelier/api/v1/runs/run1.cnVu/nodes/final")
+    if case.operation == "attention":
+        return client.get(
+            "/atelier/api/v1/events",
+            headers={"accept": "text/event-stream", "last-event-id": "event1.cnVu.1"},
         )
     raise AssertionError(f"matrix has no request for {case.operation}")
 
@@ -1103,23 +1277,14 @@ def test_every_application_result_branch_has_exact_http_mapping(
 
 
 @pytest.mark.proves("a-port-refuses-by-type-and-the-api-words-the-answer")
-def test_a_typed_projection_refusal_answers_exactly_what_the_sentence_answered() -> (
-    None
-):
-    """The port stopped wording this answer; the bytes did not change.
-
-    It used to hand back the sentence itself, which made a durable port explain a
-    bound it does not set. It now answers `ProjectionTooLarge`, and this pins that
-    the caller still receives the same status and the same words — the type moved,
-    the answer did not.
-    """
+def test_a_typed_projection_refusal_tells_the_operator_what_to_do() -> None:
     case = RouteResultCase(
         "reconcile-retry-projection-limit",
         "reconcile",
         "reconcile-retry",
         ProjectionTooLarge(),
-        503,
-        "temporarily-unavailable",
+        500,
+        "durable-projection-unrepresentable",
     )
     client = TestClient(
         create_app(
@@ -1133,9 +1298,9 @@ def test_a_typed_projection_refusal_answers_exactly_what_the_sentence_answered()
 
     response = _request(client, case)
 
-    assert response.status_code == 503
-    assert response.json()["detail"] == (
-        "Durable projection exceeds configured API limits."
+    assert response.status_code == 500
+    assert (
+        response.json()["detail"] == "Inspect the durable projection before retrying."
     )
 
 

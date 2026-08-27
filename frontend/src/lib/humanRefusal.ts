@@ -81,6 +81,9 @@ export function humanProblemDetail(problem: Pick<Problem, "type" | "detail">): s
     return problem.detail;
   }
   const code = problem.type.slice(PROBLEM_TYPE_PREFIX.length);
+  if (code === "durable-projection-unrepresentable") {
+    return "Open the node detail to inspect the stored value.";
+  }
   return KNOWN_PROBLEM_NEXT_ACTION[code] ?? problem.detail;
 }
 
