@@ -54,7 +54,6 @@ id = "a-cockpit-published-v3-workflow-is-named-over-the-api"
 requirement = "REQ-KATALOG-05"
 text = "A V3 workflow published through the cockpit is named through POST /workflow-lineages with that exact hash, the cockpit actor and an activation time, so GET by-name answers with the lineage."
 
-[[sentence]]
-id = "an-unadmitted-or-uncatalogable-published-name-is-named-in-the-picker"
-requirement = "REQ-KATALOG-05"
-text = "A published name the catalog does not hold is shown as Unlisted when the title is a legal catalog name and as Unnamable when it is not, and the picker never swallows that 404 into silence."
+# Retired by #698: the membership picker no longer exists. Catalog deliberately
+# collapses both states into its common not-admitted hint; WorkflowStartSheet
+# starts an already-selected admitted revision.
