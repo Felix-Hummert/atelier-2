@@ -5,7 +5,9 @@ from typing import Any
 import sqlalchemy as sa
 
 from atelier2.adapters.dbos.agent_effect_grants import (
+    agent_node_redeems_platform_effect,
     open_pr_capability_for,
+    push_atelier_commit_capability_for,
 )
 from atelier2.adapters.dbos.agent_effect_grants import (
     read_pinned_tool_grant as read_agent_pinned_tool_grant,
@@ -21,10 +23,23 @@ from atelier2.adapters.dbos.run_store import load_node_output_payload
 from atelier2.adapters.dbos.run_transitions import load_graph, load_run
 from atelier2.adapters.dbos.schema import (
     agent_receipts_v2,
+    attempt_instants,
     effect_intents,
     effect_receipts,
+    published_revisions,
     run_events,
+    run_inputs_v3,
     runs,
+)
+from atelier2.contracts.adapter_operations_v3 import (
+    AdapterOperationAccepted,
+    AdapterOperationName,
+    read_adapter_operation_document,
+)
+from atelier2.contracts.effect_requests import (
+    OpenPullRequest,
+    PushAtelierCommit,
+    head_branch_for_queue_item,
 )
 from atelier2.contracts.effects import (
     CanonicalRequest,
@@ -41,14 +56,19 @@ from atelier2.contracts.executions import (
     logical_effect_key_for_node,
 )
 from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.queue_projection import WorkItemReference
+from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import (
     RunId,
     RunState,
     WorkflowRevisionHash,
 )
-from atelier2.contracts.tool_grants_v3 import (
-    DeclaredToolGrant,
-    ToolGrantCapability,
+from atelier2.contracts.tool_grants_v3 import DeclaredToolGrant
+from atelier2.contracts.work_items import (
+    WORK_ITEM_ORDER_SCHEMA_REVISION,
+    WorkItemKind,
+    read_work_item_order_document,
 )
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.contracts.workflows import ActionNode, AgentNode, AgentNodeV2
@@ -79,7 +99,8 @@ def graph_action_intent(
     session: Any,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
-    effect_adapter_binding: EffectAdapterBinding,
+    effect_adapter_bindings: EffectAdapterBinding | tuple[EffectAdapterBinding, ...],
+    project_id: ProjectId | None = None,
 ) -> EffectIntent:
     run = load_run(session, run_id)
     graph = load_graph(session, revision_hash)
@@ -124,6 +145,24 @@ def graph_action_intent(
         record is not None and Sha256Hash.of(payload).value != record.payload_hash
     ) or payload != expected_output:
         raise RunEffectConflict("Action predecessor output binding changed")
+    operation = (
+        _operation_for(session, action.operation)
+        if isinstance(action, ActionNodeV3)
+        else AdapterOperationAccepted(AdapterOperationName.OPEN_PR)
+    )
+    effect_adapter_binding = _binding_for(effect_adapter_bindings, operation.operation)
+    request = CanonicalRequest(payload)
+    if (
+        isinstance(action, ActionNodeV3)
+        and operation.operation is AdapterOperationName.OPEN_PR
+        and project_id is not None
+    ):
+        request = CanonicalRequest(
+            OpenPullRequest(
+                payload.decode("utf-8"),
+                _head_branch(session, run_id, project_id),
+            ).canonical_bytes()
+        )
     binding = EffectBinding(
         logical_effect_key_for_node(
             run_id, revision_hash, action.id, run.current_round_ordinal
@@ -133,17 +172,21 @@ def graph_action_intent(
         effect_adapter_binding.adapter_revision,
         effect_adapter_binding.destination,
         effect_adapter_binding.operational_identity,
+        operation.operation,
     )
-    return EffectIntent(binding, CanonicalRequest(payload))
+    return EffectIntent(binding, request)
 
 
 def prepare_graph_action(
     session: Any,
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
-    effect_adapter_binding: EffectAdapterBinding,
+    effect_adapter_bindings: EffectAdapterBinding | tuple[EffectAdapterBinding, ...],
+    project_id: ProjectId | None = None,
 ) -> EffectIntentSnapshot:
-    intent = graph_action_intent(session, run_id, revision_hash, effect_adapter_binding)
+    intent = graph_action_intent(
+        session, run_id, revision_hash, effect_adapter_bindings, project_id
+    )
     return prepared_effect_intent(session, intent)
 
 
@@ -185,6 +228,7 @@ def prepared_effect_intent(session: Any, intent: EffectIntent) -> EffectIntentSn
             adapter_operational_identity=(
                 intent.binding.adapter_operational_identity.value
             ),
+            operation_name=intent.binding.operation_name.value,
             state=EffectIntentState.PREPARED.value,
             state_version=0,
             reconciliation_owner_command_id=None,
@@ -216,7 +260,7 @@ def read_pinned_tool_grant(
     return read_agent_pinned_tool_grant(session, node)
 
 
-def legacy_agent_open_pr_runs_without_receipt(engine: sa.Engine) -> tuple[RunId, ...]:
+def legacy_agent_effect_runs_without_receipt(engine: sa.Engine) -> tuple[RunId, ...]:
     """Find persisted pre-reconciliation agent-effect checkpoints.
 
     Before agent effects entered the shared continuation, an agent could advance
@@ -242,7 +286,7 @@ def legacy_agent_open_pr_runs_without_receipt(engine: sa.Engine) -> tuple[RunId,
             current_node = graph.node(current_node_id)
             if (
                 isinstance(current_node, AgentNodeV3)
-                and _agent_node_redeems_platform_effect(connection, current_node)
+                and agent_node_redeems_platform_effect(connection, current_node)
                 and RunState(str(record["state"])) is RunState.COMPLETED
                 and not _effect_receipt_exists(
                     connection,
@@ -267,7 +311,7 @@ def legacy_agent_open_pr_runs_without_receipt(engine: sa.Engine) -> tuple[RunId,
                 node = graph.node(node_id)
                 if (
                     not isinstance(node, AgentNodeV3)
-                    or not _agent_node_redeems_platform_effect(connection, node)
+                    or not agent_node_redeems_platform_effect(connection, node)
                     or _effect_receipt_exists(
                         connection,
                         logical_effect_key_for_node(
@@ -284,10 +328,6 @@ def legacy_agent_open_pr_runs_without_receipt(engine: sa.Engine) -> tuple[RunId,
         return tuple(sorted(blocking, key=lambda run: run.value))
 
 
-def _agent_node_redeems_platform_effect(session: Any, node: AgentNodeV3) -> bool:
-    return open_pr_capability_for(read_pinned_tool_grant(session, node)) is not None
-
-
 def _effect_receipt_exists(connection: Any, logical_key: str) -> bool:
     return (
         connection.scalar(
@@ -299,24 +339,6 @@ def _effect_receipt_exists(connection: Any, logical_key: str) -> bool:
     )
 
 
-def _effect_shaped_capability_to_open_pr(
-    grant: DeclaredToolGrant | None,
-) -> ToolGrantCapability | None:
-    """The effect-shaped capability this preparation opens a pull request for, or none.
-
-    A missing grant, or one `redeems_as_platform_effect` classifies as
-    exec-shaped, prepares no platform effect here -- the exec-shaped grant is
-    redeemed inside the attempt's lease instead. An effect-shaped grant that is
-    not `open-pr` has no redeemer this preparation performs, so it is refused by
-    name here rather than returned as `None` and silently left unprepared: a new
-    effect capability then fails loud where its intent would be prepared instead
-    of completing a run that opened nothing, exactly as the exec redeemer refuses
-    a capability it does not perform. `redeems_as_platform_effect` is the one
-    owner of the exec-versus-effect split both redemption paths read.
-    """
-    return open_pr_capability_for(grant)
-
-
 def graph_agent_open_pr_intent(
     session: Any,
     run_id: RunId,
@@ -324,13 +346,13 @@ def graph_agent_open_pr_intent(
     node_id: str,
     round_ordinal: int,
     effect_adapter_binding: EffectAdapterBinding,
+    project_id: ProjectId | None = None,
 ) -> EffectIntent | None:
     """The pull-request this agent node's own grant opens, or nothing where none does.
 
-    Which grants open a pull request here is `_effect_shaped_capability_to_open_pr`'s
-    decision: a node with no grant or an exec-shaped one prepares nothing, and an
-    effect-shaped grant this preparation does not perform is refused by name
-    rather than silently left unprepared.
+    A node with no grant, an exec-shaped grant, or the push grant handled by the
+    sibling preparation creates no open-PR intent here. A future effect-shaped
+    capability still fails loud in the shared grant classifier.
 
     The request bytes are the node's own durable receipt output rather than
     trusted from memory, because the same provider bytes the run kept are what
@@ -345,7 +367,7 @@ def graph_agent_open_pr_intent(
     grant = read_pinned_tool_grant(
         session, load_graph(session, revision_hash).node(node_id)
     )
-    if _effect_shaped_capability_to_open_pr(grant) is None:
+    if open_pr_capability_for(grant) is None:
         return None
     execution_id = NodeExecutionId.for_node(
         run_id, revision_hash, node_id, round_ordinal
@@ -357,8 +379,19 @@ def graph_agent_open_pr_intent(
         effect_adapter_binding.adapter_revision,
         effect_adapter_binding.destination,
         effect_adapter_binding.operational_identity,
+        AdapterOperationName.OPEN_PR,
     )
-    return EffectIntent(binding, CanonicalRequest(_agent_output(session, execution_id)))
+    payload = _agent_output(session, execution_id)
+    if project_id is None:
+        return EffectIntent(binding, CanonicalRequest(payload))
+    return EffectIntent(
+        binding,
+        CanonicalRequest(
+            OpenPullRequest(
+                payload.decode("utf-8"), _head_branch(session, run_id, project_id)
+            ).canonical_bytes()
+        ),
+    )
 
 
 def prepare_graph_agent_open_pr(
@@ -367,7 +400,8 @@ def prepare_graph_agent_open_pr(
     revision_hash: WorkflowRevisionHash,
     node_id: str,
     round_ordinal: int,
-    effect_adapter_binding: EffectAdapterBinding,
+    effect_adapter_bindings: EffectAdapterBinding | tuple[EffectAdapterBinding, ...],
+    project_id: ProjectId | None = None,
 ) -> str | None:
     """Prepare this agent node's own pull-request intent, or nothing where none is.
 
@@ -376,20 +410,85 @@ def prepare_graph_agent_open_pr(
     adapter is asked, exactly as the effect-shaped redemption port requires.
     """
     intent = graph_agent_open_pr_intent(
-        session, run_id, revision_hash, node_id, round_ordinal, effect_adapter_binding
+        session,
+        run_id,
+        revision_hash,
+        node_id,
+        round_ordinal,
+        _binding_for(effect_adapter_bindings, AdapterOperationName.OPEN_PR),
+        project_id,
     )
     if intent is None:
         return None
     return prepared_effect_intent(session, intent).intent.binding.logical_key.value
 
 
-def redeem_agent_open_pr(
+def prepare_graph_agent_push(
+    session: Any,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    node_id: str,
+    round_ordinal: int,
+    attempt_id: str,
+    candidate_tree: str,
+    base_commit: str,
+    effect_adapter_bindings: EffectAdapterBinding | tuple[EffectAdapterBinding, ...],
+    project_id: ProjectId,
+) -> str | None:
+    """Prepare the exact candidate publication earned by a pinned push grant."""
+
+    node = load_graph(session, revision_hash).node(node_id)
+    grant = read_pinned_tool_grant(session, node)
+    if push_atelier_commit_capability_for(grant) is None:
+        return None
+    assert grant is not None and grant.operation is not None
+    operation = _operation_for(session, grant.operation)
+    if (
+        operation.operation is not AdapterOperationName.PUSH_ATELIER_COMMIT
+        or operation.author is None
+        or operation.committer is None
+    ):
+        raise RunEffectConflict(
+            "pinned push grant does not resolve to a push operation"
+        )
+    binding_owner = _binding_for(effect_adapter_bindings, operation.operation)
+    completed_at = session.scalar(
+        sa.select(attempt_instants.c.ended_at).where(
+            attempt_instants.c.attempt_id == attempt_id
+        )
+    )
+    if not isinstance(completed_at, str):
+        raise RunEffectConflict("successful push attempt has no completion instant")
+    request = PushAtelierCommit(
+        attempt_id,
+        candidate_tree,
+        base_commit,
+        _head_branch(session, run_id, project_id),
+        operation.author,
+        operation.committer,
+        completed_at,
+    )
+    binding = EffectBinding(
+        logical_effect_key_for_node(run_id, revision_hash, node_id, round_ordinal),
+        run_id,
+        revision_hash,
+        binding_owner.adapter_revision,
+        binding_owner.destination,
+        binding_owner.operational_identity,
+        operation.operation,
+    )
+    return prepared_effect_intent(
+        session, EffectIntent(binding, CanonicalRequest(request.canonical_bytes()))
+    ).intent.binding.logical_key.value
+
+
+def redeem_agent_effect(
     session: Any,
     adapter: EffectAdapter,
     logical_key: str,
     revision_hash: str,
 ) -> str:
-    """Redeem one PREPARED agent pull-request intent through the shared adapter.
+    """Redeem one PREPARED agent effect intent through its selected adapter.
 
     Readback runs before create, so a redemption retried after the pull request
     already exists is recognized rather than opened twice. The receipt reaches
@@ -425,7 +524,7 @@ def _agent_output(session: Any, execution_id: NodeExecutionId) -> bytes:
         )
     ).one_or_none()
     if record is None:
-        raise RunEffectConflict("agent open-pr grant has no durable agent receipt")
+        raise RunEffectConflict("agent effect grant has no durable agent receipt")
     payload = bytes(record.output_bytes)
     if Sha256Hash.of(payload).value != record.output_hash:
         raise RunEffectConflict("agent output binding changed")
@@ -443,3 +542,59 @@ def _action_predecessor(
             raise RunEffectConflict("Action predecessor is not an Agent")
         return predecessor
     return graph.predecessor(action.id)
+
+
+def _operation_for(session: Any, reference: Any) -> AdapterOperationAccepted:
+    document = session.scalar(
+        sa.select(published_revisions.c.document).where(
+            published_revisions.c.kind == RevisionKind.ADAPTER_OPERATION.value,
+            published_revisions.c.revision_hash == reference.revision,
+        )
+    )
+    if document is None:
+        raise RunEffectConflict("pinned adapter operation left the registry")
+    verdict = read_adapter_operation_document(bytes(document))
+    if not isinstance(verdict, AdapterOperationAccepted):
+        raise RunEffectConflict("pinned adapter operation is corrupt")
+    return verdict
+
+
+def _binding_for(
+    bindings: EffectAdapterBinding | tuple[EffectAdapterBinding, ...],
+    operation: AdapterOperationName,
+) -> EffectAdapterBinding:
+    candidates = (bindings,) if isinstance(bindings, EffectAdapterBinding) else bindings
+    matching = tuple(
+        binding for binding in candidates if binding.operation_name is operation
+    )
+    if len(matching) != 1:
+        raise RunEffectConflict(
+            f"operation {operation.value!r} does not have exactly one adapter"
+        )
+    return matching[0]
+
+
+def _head_branch(session: Any, run_id: RunId, project_id: ProjectId):
+    rows = session.execute(
+        sa.select(
+            run_inputs_v3.c.schema_revision_hash,
+            run_inputs_v3.c.value,
+            run_inputs_v3.c.value_hash,
+        ).where(run_inputs_v3.c.run_id == run_id.value)
+    ).all()
+    orders = []
+    for schema_revision, value, value_hash in rows:
+        raw = bytes(value)
+        if Sha256Hash.of(raw).value != str(value_hash):
+            raise RunEffectConflict("run input bytes differ from their durable hash")
+        if str(schema_revision) != WORK_ITEM_ORDER_SCHEMA_REVISION.value:
+            continue
+        order = read_work_item_order_document(raw)
+        if order is None or order.kind is not WorkItemKind.ISSUE:
+            raise RunEffectConflict("push requires one valid issue work-item order")
+        orders.append(order)
+    if len(orders) != 1:
+        raise RunEffectConflict("push requires exactly one issue work-item order")
+    return head_branch_for_queue_item(
+        WorkItemReference(project_id, orders[0].reference).item_id
+    )

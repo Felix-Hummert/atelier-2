@@ -18,12 +18,14 @@ from typing import assert_never
 from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
 from atelier2.application.resolve_references import (
     declared_through,
-    resolve_declared_reference,
+    resolve_declared_reference_with_revision,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_configuration_v3 import (
+    DeclaredReference,
     ReferenceRefusal,
     ReferenceRefusalReason,
+    ReferenceSite,
     ResolvedReference,
 )
 from atelier2.contracts.tool_grants_v3 import (
@@ -138,10 +140,43 @@ def resolve_document_references(
     """
     resolutions: list[ResolvedReference] = []
     for declared in declared_through(graph, SubworkflowBinding()):
-        resolution = resolve_declared_reference(declared, resolver)
+        resolution, revision = resolve_declared_reference_with_revision(
+            declared, resolver
+        )
         match resolution:
             case ResolvedReference():
                 resolutions.append(resolution)
+                if revision is not None and declared.kind is RevisionKind.TOOL:
+                    grant = read_tool_grant_document(revision.document)
+                    if (
+                        isinstance(grant, ToolGrantAccepted)
+                        and grant.operation is not None
+                    ):
+                        transitive = DeclaredReference(
+                            ReferenceSite(
+                                "operation",
+                                declared.site.node,
+                                chain=(*declared.site.chain, declared.reference),
+                            ),
+                            RevisionKind.ADAPTER_OPERATION,
+                            grant.operation,
+                        )
+                        nested, _operation_revision = (
+                            resolve_declared_reference_with_revision(
+                                transitive, resolver
+                            )
+                        )
+                        match nested:
+                            case ResolvedReference():
+                                resolutions.append(nested)
+                            case ReferenceRefusal():
+                                return DocumentNotExecutable(
+                                    public_reason(nested), nested
+                                )
+                            case ReadUnavailable() | DurableStateCorrupt():
+                                return nested
+                            case _ as unreachable:
+                                assert_never(unreachable)
             case ReferenceRefusal():
                 return DocumentNotExecutable(public_reason(resolution), resolution)
             case ReadUnavailable() | DurableStateCorrupt():

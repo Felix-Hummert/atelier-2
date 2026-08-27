@@ -168,6 +168,17 @@ A crash between the two leaves the work readable beside an attempt that reports
 it possibly ran. Nothing deletes a candidate yet: the store grows until the
 project root is destroyed.
 
+An Agent whose exact grant pins `push-atelier-commit` now publishes that kept
+candidate before the following open-PR Action. From the run's single issue order,
+pinned project source and operation identities, the runtime derives one
+`atelier2/work-item/<id>` branch and one deterministic commit over the candidate
+tree, persists the operation with the intent and receipt, and admits success only
+when the configured remote reads back that exact commit; the PR uses the same
+branch as its head. Because neither remote absence nor an inconclusive post-send
+readback proves what happened, both enter or remain in durable reconciliation
+instead of permitting another push, while an operator-authorized send is still
+fenced by a create-only lease.
+
 An attempt now leaves behind what it did, not only what it answered. The
 executor decodes its provider's own structured stream into one neutral shape --
 a tool call with its arguments, the result that came back, an assistant turn,

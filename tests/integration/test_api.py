@@ -704,6 +704,7 @@ def test_concurrent_same_command_http_reconciliation_creates_one_command_and_wor
         "adapter_operational_identity": (
             intent.binding.adapter_operational_identity.value
         ),
+        "operation_name": intent.binding.operation_name.value,
         "state": "RECONCILING",
         "state_version": 2,
         "reconciliation_owner_command_id": body["command_id"],
@@ -1294,6 +1295,7 @@ def test_http_reconciliation_exact_applied_retry_survives_run_advancement(
         "adapter_revision": "loopback-v1",
         "destination_identity": "loopback-test",
         "adapter_operational_identity": str((tmp_path / "external.sqlite").resolve()),
+        "operation_name": "open-pr",
         "state": "RECONCILING",
         "state_version": 2,
         "reconciliation_owner_command_id": "applied-command",
@@ -1382,6 +1384,7 @@ def test_http_reconciliation_exact_applied_retry_survives_run_advancement(
         "adapter_revision": "loopback-v1",
         "destination_identity": "loopback-test",
         "adapter_operational_identity": str((tmp_path / "external.sqlite").resolve()),
+        "operation_name": "open-pr",
         "effect_id": "effect-applied",
         "result": b"result-applied",
         "result_hash": result_hash,

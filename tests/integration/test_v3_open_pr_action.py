@@ -32,7 +32,6 @@ from atelier2.adapters.github.effects import (
     GitHubEffectAdapterFactory,
     RecordedPullRequest,
 )
-from atelier2.adapters.github.marker import body_carries_request_hash
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.references import encode_public_run_reference
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
@@ -48,12 +47,14 @@ from atelier2.contracts.agents import (
     AuthProfileRevision,
     ProviderId,
 )
+from atelier2.contracts.effect_markers import body_carries_request_hash
 from atelier2.contracts.effects import (
     AdapterRevision,
     EffectAdapterBinding,
     EffectDestination,
     EffectIntent,
     EffectReadback,
+    EffectUnknownOutcome,
     PerformedEffect,
 )
 from atelier2.contracts.executions import RunEventKind
@@ -108,7 +109,7 @@ class CountingGitHubEffectAdapter:
         self._owner.readback_calls += 1
         return self._delegate.readback(intent)
 
-    def execute(self, intent: EffectIntent) -> PerformedEffect:
+    def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
         self._owner.execute_calls += 1
         return self._delegate.execute(intent)
 
@@ -672,6 +673,7 @@ def test_a_v3_agent_then_action_opens_one_pull_request_through_the_github_adapte
         replayed = adapter.execute(intent)
     finally:
         adapter.close()
+    assert isinstance(replayed, PerformedEffect)
     assert json.loads(replayed.result.payload.decode("utf-8")) == result
     assert len(github.recorded_pull_requests()) == 1
 

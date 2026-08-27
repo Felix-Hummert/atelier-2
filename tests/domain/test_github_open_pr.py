@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
-from atelier2.adapters.github.marker import body_carries_request_hash, marker_line
+from atelier2.contracts.effect_markers import body_carries_request_hash, marker_line
+from atelier2.contracts.effect_requests import HeadBranch, OpenPullRequest
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -27,6 +28,7 @@ ADAPTER_REVISION = AdapterRevision("github-open-pr-v1")
 DESTINATION = EffectDestination("platform")
 LOGICAL_KEY = LogicalEffectKey("run-1/open-pr")
 TREE = json.dumps({"files": {"hello.txt": "from the builder"}}).encode("utf-8")
+HEAD_BRANCH = HeadBranch("atelier2/work-item/" + "a" * 64)
 CANARY_TOKEN = "gho_atelier2_canary_token_must_not_appear"
 
 
@@ -51,7 +53,9 @@ def effect_intent(factory: GitHubEffectAdapterFactory) -> EffectIntent:
                 str(factory.database_path.resolve())
             ),
         ),
-        CanonicalRequest(TREE),
+        CanonicalRequest(
+            OpenPullRequest(TREE.decode("utf-8"), HEAD_BRANCH).canonical_bytes()
+        ),
     )
 
 
@@ -75,6 +79,7 @@ def test_execute_records_one_pull_request_with_the_request_hash_in_its_body(
         "pr_number": pull_request.pr_number,
     }
     assert pull_request.pr_number == 1
+    assert pull_request.branch == HEAD_BRANCH.value
     assert body_carries_request_hash(
         pull_request.body, intent.request.request_hash.value
     )

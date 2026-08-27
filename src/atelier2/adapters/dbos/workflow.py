@@ -11,8 +11,9 @@ from dbos import DBOS, SetWorkflowID, SQLAlchemyDatasource
 from atelier2.adapters.dbos.advancer import (
     prepare_graph_action,
     prepare_graph_agent_open_pr,
+    prepare_graph_agent_push,
     read_pinned_tool_grant,
-    redeem_agent_open_pr,
+    redeem_agent_effect,
 )
 from atelier2.adapters.dbos.continuation import (
     checkpoint_confirmed_effect,
@@ -21,6 +22,7 @@ from atelier2.adapters.dbos.continuation import (
 from atelier2.adapters.dbos.effect_store import (
     EncodedEffectResolution,
     commit_resolution,
+    load_intent,
     observe_adapter_with_fork_fence,
     observe_reconcile_command,
     resolve_observation,
@@ -71,7 +73,7 @@ from atelier2.adapters.dbos.run_transitions import (
     load_graph,
     load_run,
 )
-from atelier2.adapters.dbos.schema import published_revisions
+from atelier2.adapters.dbos.schema import published_revisions, reconcile_commands
 from atelier2.adapters.dbos.workflow_ids import (
     effect_workflow_id_for,
     node_workflow_id_for,
@@ -112,6 +114,7 @@ from atelier2.contracts.budgets_v3 import (
 )
 from atelier2.contracts.effects import (
     EffectAdapterBinding,
+    EffectIntent,
     LogicalEffectKey,
     ReconcileCommandId,
 )
@@ -119,6 +122,7 @@ from atelier2.contracts.executions import (
     AgentAttemptExecution,
     NodeExecutionId,
 )
+from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.node_bindings import (
     ActionNodeBinding,
     AgentNodeBinding,
@@ -138,6 +142,7 @@ from atelier2.contracts.runs import (
 )
 from atelier2.contracts.tool_grants_v3 import (
     DeclaredToolGrant,
+    ToolGrantCapability,
     redeems_as_platform_effect,
 )
 from atelier2.contracts.workflows import (
@@ -169,7 +174,7 @@ from atelier2.ports.agent_executions import (
     AgentExecutorV2,
     AgentProcessRunner,
 )
-from atelier2.ports.effects import EffectAdapter
+from atelier2.ports.effects import EffectAdapter, OpenEffectAdapterRegistry
 from atelier2.ports.project_verification import (
     DeclaredProject,
 )
@@ -538,11 +543,26 @@ def register_durable_run_workflow(
     agent_process_runner: AgentProcessRunner | None,
     agent_workspace_owner: AgentAttemptWorkspaceOwner | None,
     project: DeclaredProject | None,
-    adapter: EffectAdapter,
-    effect_binding: EffectAdapterBinding,
+    adapter: OpenEffectAdapterRegistry,
+    effect_binding: tuple[EffectAdapterBinding, ...],
+    project_id: ProjectId | None = None,
     runner_lease_driver: RunnerLeaseAttemptDriver | None = None,
     runner_lease_publisher: RunnerLeasePublisher | None = None,
 ) -> None:
+    effect_bindings = effect_binding
+
+    def adapter_for_intent(intent: EffectIntent) -> EffectAdapter:
+        return adapter.adapter_for(
+            intent.binding.operation_name, intent.binding.adapter_binding
+        )
+
+    def adapter_for_key(logical_key: str, revision_hash: str) -> EffectAdapter:
+        intent = datasource.run_tx_step(
+            {"name": "effect-adapter-binding"},
+            lambda: load_intent(datasource.sql_session(), logical_key, revision_hash),
+        )
+        return adapter_for_intent(intent)
+
     def execute_v2_attempt(
         carrier: AgentExecutorCarrier,
         attempt_execution: AgentAttemptExecution,
@@ -649,6 +669,7 @@ def register_durable_run_workflow(
 
     def continue_run_after(
         outcome: AgentAttemptExecutionOutcome | RunnerInvocationTimedOut,
+        node_binding: AgentNodeBindingV2,
         run_id: RunId,
         revision_hash: WorkflowRevisionHash,
         node_id: str,
@@ -664,7 +685,7 @@ def register_durable_run_workflow(
         if not isinstance(outcome, AgentAttemptSucceeded):
             return RunState.STARTED.value
         redeemed_effect = redeem_agent_node_effect(
-            run_id, revision_hash, node_id, round_ordinal
+            outcome, node_binding, run_id, revision_hash, node_id, round_ordinal
         )
         if redeemed_effect is not None:
             logical_key, state = redeemed_effect
@@ -681,40 +702,79 @@ def register_durable_run_workflow(
                 assert_never(unreachable)
 
     def redeem_agent_node_effect(
+        outcome: AgentAttemptSucceeded,
+        node_binding: AgentNodeBindingV2,
         run_id: RunId,
         revision_hash: WorkflowRevisionHash,
         node_id: str,
         round_ordinal: int,
     ) -> tuple[LogicalEffectKey, RunState] | None:
-        """Redeem the pull request this agent node's own grant opened, if any.
+        """Redeem the external effect this agent node's own grant earned, if any.
 
-        Runs after the attempt has durably succeeded, so the request bytes are
-        the node's own kept output, and only for a node whose grant is
-        effect-shaped -- the prepare step answers with nothing for every other
-        node, which is why it may run for all of them. Preparing the intent and
-        redeeming it are two steps so a PREPARED intent is committed before the
-        adapter is ever asked, and both replay idempotently: the second reads
-        the pull request back rather than opening its twin.
+        Runs after the attempt has durably succeeded and candidate capture has
+        kept its tree. Only an effect-shaped grant prepares an intent. Preparing
+        and redeeming are separate durable steps, so replay reads the standing
+        remote effect back instead of creating a twin.
         """
-        logical_key = datasource.run_tx_step(
-            {"name": AGENT_EFFECT_PREPARE_STEP_NAME},
-            lambda: prepare_graph_agent_open_pr(
+        grant = datasource.run_tx_step(
+            {"name": "agent-effect-kind"},
+            lambda: read_pinned_tool_grant(
+                datasource.sql_session(),
+                load_graph(datasource.sql_session(), revision_hash).node(node_id),
+            ),
+        )
+        push = (
+            grant is not None
+            and grant.capability is ToolGrantCapability.PUSH_ATELIER_COMMIT
+        )
+        if push:
+            if (
+                project is None
+                or project_id is None
+                or node_binding.project_source is None
+            ):
+                raise RunBindingConflict("push grant requires its declared project")
+            push_project = project
+            push_project_id = project_id
+            push_source = node_binding.project_source
+            candidate = push_project.candidates.read(outcome.attempt.attempt_id)
+            if candidate is None:
+                raise RunBindingConflict("successful push attempt has no candidate")
+            prepare = lambda: prepare_graph_agent_push(
                 datasource.sql_session(),
                 run_id,
                 revision_hash,
                 node_id,
                 round_ordinal,
-                effect_binding,
-            ),
+                outcome.attempt.attempt_id.value,
+                candidate.tree,
+                push_source.commit,
+                effect_bindings,
+                push_project_id,
+            )
+        else:
+            prepare = lambda: prepare_graph_agent_open_pr(
+                datasource.sql_session(),
+                run_id,
+                revision_hash,
+                node_id,
+                round_ordinal,
+                effect_bindings,
+                project_id,
+            )
+        logical_key = datasource.run_tx_step(
+            {"name": AGENT_EFFECT_PREPARE_STEP_NAME},
+            prepare,
         )
         if logical_key is None:
             return None
+        selected_adapter = adapter_for_key(str(logical_key), revision_hash.value)
         state = RunState(
             datasource.run_tx_step(
                 {"name": AGENT_EFFECT_REDEEM_STEP_NAME},
-                lambda: redeem_agent_open_pr(
+                lambda: redeem_agent_effect(
                     datasource.sql_session(),
-                    adapter,
+                    selected_adapter,
                     str(logical_key),
                     revision_hash.value,
                 ),
@@ -898,7 +958,12 @@ def register_durable_run_workflow(
             attempt.carrier, attempt.execution, attempt.executor, binding
         )
         return continue_run_after(
-            outcome, typed_run_id, typed_revision, node_id, binding.round_ordinal
+            outcome,
+            binding,
+            typed_run_id,
+            typed_revision,
+            node_id,
+            binding.round_ordinal,
         )
 
     @DBOS.workflow(name=REPLACEMENT_WORKFLOW_NAME, max_recovery_attempts=None)
@@ -919,6 +984,7 @@ def register_durable_run_workflow(
         )
         continue_run_after(
             outcome,
+            reconstructed.binding,
             replacement.run_id,
             replacement.workflow_revision_hash,
             replacement.node_id,
@@ -970,7 +1036,12 @@ def register_durable_run_workflow(
                 attempt.carrier, attempt.execution, attempt.executor, binding
             )
             return continue_run_after(
-                outcome, typed_run_id, typed_revision, node_id, binding.round_ordinal
+                outcome,
+                binding,
+                typed_run_id,
+                typed_revision,
+                node_id,
+                binding.round_ordinal,
             )
         if isinstance(binding, ActionNodeBinding):
             logical_key = str(
@@ -981,7 +1052,8 @@ def register_durable_run_workflow(
                             datasource.sql_session(),
                             typed_run_id,
                             typed_revision,
-                            effect_binding,
+                            effect_bindings,
+                            project_id,
                         ).intent.binding.logical_key.value
                     ),
                 )
@@ -1028,11 +1100,12 @@ def register_durable_run_workflow(
 
     @DBOS.workflow(name=EFFECT_WORKFLOW_NAME, max_recovery_attempts=None)
     def durable_effect(logical_key: str, revision_hash: str) -> str:
+        selected_adapter = adapter_for_key(logical_key, revision_hash)
         observed = _run_effect_step(
             datasource,
             OBSERVE_STEP_NAME,
             observe_adapter_with_fork_fence,
-            adapter,
+            selected_adapter,
             logical_key,
             revision_hash,
         )
@@ -1040,7 +1113,7 @@ def register_durable_run_workflow(
             datasource,
             RESOLVE_STEP_NAME,
             resolve_observation,
-            adapter,
+            selected_adapter,
             logical_key,
             revision_hash,
             observed,
@@ -1065,11 +1138,22 @@ def register_durable_run_workflow(
 
     @DBOS.workflow(name=RECONCILE_WORKFLOW_NAME, max_recovery_attempts=None)
     def durable_reconciliation(command_id: str, revision_hash: str) -> str:
+        command_logical_key = str(
+            datasource.run_tx_step(
+                {"name": "reconcile-adapter-binding"},
+                lambda: datasource.sql_session().scalar(
+                    sa.select(reconcile_commands.c.logical_key).where(
+                        reconcile_commands.c.command_id == command_id
+                    )
+                ),
+            )
+        )
+        selected_adapter = adapter_for_key(command_logical_key, revision_hash)
         observed = _run_effect_step(
             datasource,
             OBSERVE_STEP_NAME,
             observe_reconcile_command,
-            adapter,
+            selected_adapter,
             command_id,
             revision_hash,
         )
@@ -1079,7 +1163,7 @@ def register_durable_run_workflow(
             datasource,
             RESOLVE_STEP_NAME,
             resolve_observation,
-            adapter,
+            selected_adapter,
             logical_key,
             revision_hash,
             observed,

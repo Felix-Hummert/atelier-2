@@ -20,6 +20,7 @@ from atelier2.contracts.effects import (
     EffectDestination,
     EffectIntent,
     EffectReadback,
+    EffectUnknownOutcome,
     PerformedEffect,
 )
 from atelier2.contracts.run_forks import RunForkCommandId, successor_run_id_for
@@ -52,7 +53,7 @@ class _RecordingEffectAdapter:
             stream.write("readback\n")
         return self._delegate.readback(intent)
 
-    def execute(self, intent: EffectIntent) -> PerformedEffect:
+    def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
         with self._calls.open("a", encoding="utf-8") as stream:
             stream.write("execute\n")
         return self._delegate.execute(intent)

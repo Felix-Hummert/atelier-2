@@ -462,11 +462,11 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[40]
         == "d8d7b89cc0cacd15dfde84bf15f796f0e03d9b571c26be0309ed87a60960071d"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 41
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 42
     assert (
         PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
-        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[41]
-        == "7c4bc13ceb1db7533bfdf9697c1e6b262032a516275b488eac73af9969446b68"
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[42]
+        == "d2f874edd0dbbecb677b284db8e41cd3a681fae99703d126764bc90fa0cf7865"
     )
 
 
@@ -1113,6 +1113,7 @@ def _add_intent(
         "adapter_revision": "adapter-1",
         "destination_identity": "destination-1",
         "adapter_operational_identity": "external-store-1",
+        "operation_name": "open-pr",
         "state": state,
         "state_version": state_version,
         "reconciliation_owner_command_id": owner_command_id,
@@ -1168,6 +1169,7 @@ def _add_receipt(
         "adapter_revision": "adapter-1",
         "destination_identity": "destination-1",
         "adapter_operational_identity": "external-store-1",
+        "operation_name": "open-pr",
         "effect_id": "external-effect-1",
         "result": result,
         "result_hash": hashlib.sha256(result).hexdigest(),
@@ -1203,6 +1205,7 @@ def _add_receipt(
             "",
             id="intent-adapter-operational-identity",
         ),
+        pytest.param("intent", "operation_name", "corrupt", id="intent-operation-name"),
         pytest.param(
             "intent",
             "reconciliation_owner_command_id",
@@ -1245,6 +1248,9 @@ def _add_receipt(
             "adapter_operational_identity",
             "",
             id="receipt-adapter-operational-identity",
+        ),
+        pytest.param(
+            "receipt", "operation_name", "corrupt", id="receipt-operation-name"
         ),
         pytest.param("receipt", "effect_id", "", id="receipt-effect-id"),
         pytest.param("receipt", "result_hash", "", id="receipt-result-hash"),
@@ -1628,6 +1634,7 @@ def test_receipt_round_trips_full_provenance_once_per_logical_key(
             "adapter-1",
             "destination-1",
             "external-store-1",
+            "open-pr",
             "external-effect-1",
             result,
             hashlib.sha256(result).hexdigest(),

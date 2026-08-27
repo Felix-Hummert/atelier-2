@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import ClassVar, Final, Self
 
+from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
@@ -121,6 +122,7 @@ class EffectAdapterBinding:
     adapter_revision: AdapterRevision
     destination: EffectDestination
     operational_identity: AdapterOperationalIdentity
+    operation_name: AdapterOperationName = AdapterOperationName.OPEN_PR
 
 
 @dataclass(frozen=True)
@@ -206,6 +208,7 @@ class EffectBinding:
     adapter_revision: AdapterRevision
     destination: EffectDestination
     adapter_operational_identity: AdapterOperationalIdentity
+    operation_name: AdapterOperationName = AdapterOperationName.OPEN_PR
 
     @property
     def adapter_binding(self) -> EffectAdapterBinding:
@@ -213,6 +216,7 @@ class EffectBinding:
             self.adapter_revision,
             self.destination,
             self.adapter_operational_identity,
+            self.operation_name,
         )
 
 

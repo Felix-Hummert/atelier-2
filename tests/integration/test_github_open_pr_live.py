@@ -22,7 +22,8 @@ from atelier2.adapters.github.composition import (
     live_github_effect_adapter_factory,
 )
 from atelier2.adapters.github.live_effects import LiveGitHubEffectAdapterFactory
-from atelier2.adapters.github.marker import body_carries_request_hash, marker_line
+from atelier2.contracts.effect_markers import body_carries_request_hash, marker_line
+from atelier2.contracts.effect_requests import HeadBranch, OpenPullRequest
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -53,6 +54,7 @@ REPO = "atelier2-target"
 BASE_BRANCH = "main"
 BASE_SHA = "b" * 40
 AGENT_OUTPUT = b"the predecessor agent's answer, published as the pull request body"
+HEAD_BRANCH = HeadBranch("atelier2/work-item/" + "a" * 64)
 CANARY_TOKEN = "gho_atelier2_canary_token_must_not_appear"
 
 
@@ -148,7 +150,9 @@ class _FakeGitHubServer:
 
 @pytest.fixture
 def server() -> _FakeGitHubServer:
-    return _FakeGitHubServer(OWNER, REPO, BASE_BRANCH, BASE_SHA)
+    return _FakeGitHubServer(
+        OWNER, REPO, BASE_BRANCH, BASE_SHA, branches={HEAD_BRANCH.value}
+    )
 
 
 def connection_revision(
@@ -256,11 +260,13 @@ def effect_intent(payload: bytes = AGENT_OUTPUT) -> EffectIntent:
             destination=DESTINATION,
             adapter_operational_identity=AdapterOperationalIdentity(f"{OWNER}/{REPO}"),
         ),
-        CanonicalRequest(payload),
+        CanonicalRequest(
+            OpenPullRequest(payload.decode("utf-8"), HEAD_BRANCH).canonical_bytes()
+        ),
     )
 
 
-def test_execute_creates_one_branch_and_one_pull_request_carrying_the_marker(
+def test_execute_uses_the_push_created_branch_and_opens_one_marked_pull_request(
     factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
 ) -> None:
     intent = effect_intent()
@@ -271,13 +277,15 @@ def test_execute_creates_one_branch_and_one_pull_request_carrying_the_marker(
         adapter.close()
 
     assert len(server.pull_requests) == 1
-    assert len(server.branches) == 1
+    assert server.branches == {HEAD_BRANCH.value}
+    assert server.branch_ref_attempts == 0
     pull_request = server.pull_requests[0]
     body = str(pull_request["body"])
     assert body_carries_request_hash(body, intent.request.request_hash.value)
     assert marker_line(intent.request.request_hash.value) in body
     result = json.loads(performed.result.payload.decode("utf-8"))
     assert result["pr_number"] == pull_request["number"]
+    assert result["branch"] == HEAD_BRANCH.value
     assert performed.effect_id.value == str(pull_request["number"])
     assert CANARY_TOKEN not in body
 
@@ -298,6 +306,7 @@ def test_a_second_execute_finds_the_same_pull_request_and_does_not_create_a_twin
     assert first.result == second.result
     assert len(server.pull_requests) == 1
     assert len(server.branches) == 1
+    assert server.branch_ref_attempts == 0
     assert isinstance(read, EffectReceipt)
     assert read.effect_id == first.effect_id
     assert read.confirmation_source is ConfirmationSource.ADAPTER_READBACK
@@ -307,9 +316,8 @@ def test_execute_converges_on_a_concurrently_created_pull_request_instead_of_rai
     factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
 ) -> None:
     """A concurrent execute can win both the branch-ref and the pull-request
-    race between this attempt's own search and its own create calls. GitHub's
-    head+base uniqueness constraint refuses the twin create with the same 422
-    status a duplicate branch ref answers with, and this attempt must
+    race between this attempt's own search and its own create call. GitHub's
+    head+base uniqueness constraint refuses the twin create with 422, and this attempt must
     converge on the concurrent winner's pull request rather than raising or
     creating a twin.
     """
@@ -320,7 +328,7 @@ def test_execute_converges_on_a_concurrently_created_pull_request_instead_of_rai
 
         # This attempt's own search misses the pull request the "concurrent"
         # execute above already created -- the eventually-consistent search
-        # ADR 0010 §5 names -- so it proceeds to create, and hits both races.
+        # ADR 0010 §5 names -- so it proceeds to create and hits the PR race.
         server.suppress_next_pull_request_search = True
         loser = adapter.execute(intent)
     finally:
@@ -330,6 +338,7 @@ def test_execute_converges_on_a_concurrently_created_pull_request_instead_of_rai
     assert loser.result == winner.result
     assert len(server.pull_requests) == 1
     assert len(server.branches) == 1
+    assert server.branch_ref_attempts == 0
 
 
 def test_readback_before_any_execute_is_unknown_never_an_authoritative_absence(

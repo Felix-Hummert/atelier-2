@@ -132,11 +132,15 @@ rule behind it.
 Inside that shape the runtime drives the line its author wrote. Each Agent node runs
 its attempt through the same durable path a V2 node uses, and the heir its author
 declared starts when its predecessor completes. A linear Action node pins a published
-adapter-operation revision; the one operation this runtime performs is `open-pr`.
+adapter-operation revision; the runtime dispatches each durable intent by its persisted
+operation and exact adapter binding, and its closed registry performs `open-pr` and
+`push-atelier-commit`. An Agent reaches the push only through a tool grant that pins
+that exact published operation revision.
 `POST /adapter-operation-revisions` is the publication door (bytes in, hash out,
 idempotent), and a start whose `operation.revision` is that hash gets past the
-reference that used to refuse as unpublished. The Action's request bytes are the
-predecessor Agent's output. A V3 Agent request hashes the current job composition:
+reference that used to refuse as unpublished. A project-bound open-PR request carries
+the predecessor Agent's output as its body and the run's derived work-item branch. A
+V3 Agent request hashes the current job composition:
 declared root-string orders appear as their text while every other order keeps its
 JSON representation. Readers first recompute that composition, then prove a
 pre-change request against the legacy all-JSON composition when necessary. The
