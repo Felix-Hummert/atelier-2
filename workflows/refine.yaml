@@ -1,0 +1,61 @@
+format_version: 3
+name: refine
+description: >-
+  One headless planner round proposes the expectations a vision needs before a
+  picture delta or a breakdown can carry them onward.
+graph_inputs:
+  - name: vision
+    schema:
+      ref: nonempty_string
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+  - name: owner_documents
+    schema:
+      ref: nonempty_string
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+nodes:
+  - id: refine
+    type: agent
+    role: planner
+    mode: headless
+    instruction: >-
+      Read the operator vision carried under "vision" against the owner
+      documents carried under "owner_documents". A picture excerpt, when one
+      exists, is folded into "owner_documents" because this V3 graph has only
+      required inputs. You cannot read files, run anything, or use tools in
+      this headless call; these artifacts are your only evidence. First write
+      a mirror of exactly two sentences beginning in the operator's language:
+      "so habe ich dich verstanden". Then propose expectation lines using this
+      catalog revision: create_change_remove, identity, states,
+      secrets_and_rights, undo, scale. Apply each lens to the surface the
+      vision touches: create_change_remove inspects anlegen, ändern,
+      entfernen, and their symmetry; identity inspects what counts as the same,
+      including project versus branch and a duplicate on re-add; states inspects
+      empty, duplicate, error, and running; secrets_and_rights inspects tokens entered
+      but never shown again and who may do what; undo inspects reversing an
+      action and what survives it; scale inspects 1 versus 100 of a thing.
+      Propose the self-evident lines the lenses reveal even when the vision
+      never states them, such as create implies remove, a project differs from
+      a branch, empty/duplicate/error/running states, tokens never re-shown,
+      undo, and 1 versus 100. Every lens gets one or more lines, each with a
+      default of yes, no, or later, or is listed in "lenses_without_lines" only
+      when it does not apply to the touched surface, never because the vision
+      omitted it. Write each sentence in the operator's language as an
+      acceptance sentence, with no technical vocabulary in its sentence or its
+      example. Each example must say "Wenn du …, dann …" and each
+      counterexample must say "Sagst du nein, dann …". Fold the technical
+      explanation into "technical". Ask no questions. Do not invent actors,
+      rights, limits, or implementation that no lens implies, and never turn
+      proposals into commitments. This is one round only; the Wait loop and
+      further rounds are deferred.
+    inputs:
+      - name: vision
+        from:
+          graph_input: vision
+      - name: owner_documents
+        from:
+          graph_input: owner_documents
+    outputs:
+      - name: result
+        schema:
+          ref: refine_result
+          revision: "78f077ab2f012073fb63047f1a5f8af1f66fb8dc0cb3e220237b82fe49d112e1"
