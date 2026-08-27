@@ -232,6 +232,46 @@ class PushAtelierCommitReceipt:
     author: GitCommitIdentity
     committer: GitCommitIdentity
 
+    @classmethod
+    def from_result_bytes(cls, result: bytes) -> Self:
+        value = _object(result, "push receipt")
+        _fields(
+            value,
+            frozenset(
+                (
+                    "author",
+                    "branch",
+                    "candidate_tree",
+                    "commit_oid",
+                    "committer",
+                    "full_ref",
+                    "parent",
+                    "remote_identity",
+                )
+            ),
+            "push receipt",
+        )
+        text_fields = (
+            "branch",
+            "candidate_tree",
+            "commit_oid",
+            "full_ref",
+            "parent",
+            "remote_identity",
+        )
+        if any(not isinstance(value[field], str) for field in text_fields):
+            raise TypeError("push receipt identity, objects and branch are text")
+        return cls(
+            value["remote_identity"],
+            value["full_ref"],
+            value["commit_oid"],
+            value["parent"],
+            value["candidate_tree"],
+            value["branch"],
+            GitCommitIdentity.from_json(value["author"]),
+            GitCommitIdentity.from_json(value["committer"]),
+        )
+
     def result_bytes(self) -> bytes:
         return _canonical_json(
             {

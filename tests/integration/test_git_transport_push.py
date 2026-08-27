@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
+
 from atelier2.adapters.git_transport.effects import (
+    GitCommandResult,
     GitCommandRunner,
     GitRemote,
     GitTransportEffectAdapterFactory,
+    SubprocessGitCommandRunner,
 )
 from atelier2.contracts.effect_markers import marker_line
 from atelier2.contracts.effect_requests import (
@@ -215,3 +221,185 @@ def test_concurrent_replay_publishes_one_commit_and_no_twin(tmp_path: Path) -> N
         _git(remote, "for-each-ref", "--format=%(objectname)", HEAD_BRANCH.full_ref)
         == expected
     )
+
+
+@dataclass
+class _ScriptedRemoteReadRunner:
+    remote_reads: list[GitCommandResult | None]
+    delegate: SubprocessGitCommandRunner = field(
+        default_factory=SubprocessGitCommandRunner
+    )
+    push_arguments: list[tuple[str, ...]] = field(default_factory=list)
+    remote_arguments: list[tuple[str, ...]] = field(default_factory=list)
+
+    def run(
+        self,
+        arguments: tuple[str, ...],
+        *,
+        working_directory: Path,
+        environment: Mapping[str, str],
+        standard_input: bytes | None = None,
+    ) -> GitCommandResult:
+        if "ls-remote" in arguments:
+            self.remote_arguments.append(arguments)
+            scripted = self.remote_reads.pop(0)
+            if scripted is not None:
+                return scripted
+        elif "fetch" in arguments:
+            self.remote_arguments.append(arguments)
+        if "push" in arguments:
+            self.push_arguments.append(arguments)
+        return self.delegate.run(
+            arguments,
+            working_directory=working_directory,
+            environment=environment,
+            standard_input=standard_input,
+        )
+
+
+def test_inconclusive_read_after_send_reconciles_and_retry_sends_no_second_push(
+    tmp_path: Path,
+) -> None:
+    store, remote, base, tree = _repositories(tmp_path)
+    inconclusive = GitCommandResult(1, b"", b"remote unavailable")
+    runner = _ScriptedRemoteReadRunner([None, inconclusive, inconclusive])
+    factory = _factory(store, remote, runner)
+    intent, _request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        first = adapter.execute(intent)
+        retry = adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert isinstance(first, EffectUnknownOutcome)
+    assert isinstance(retry, EffectUnknownOutcome)
+    assert len(runner.push_arguments) == 1
+
+
+@pytest.mark.parametrize(
+    "observation",
+    [
+        pytest.param(GitCommandResult(0, b"", b""), id="empty-success"),
+        pytest.param(
+            GitCommandResult(2, b"", b"remote read failed"),
+            id="absence-code-with-error",
+        ),
+        pytest.param(
+            GitCommandResult(
+                0,
+                (
+                    b"a" * 40
+                    + b"\t"
+                    + HEAD_BRANCH.full_ref.encode()
+                    + b"\n"
+                    + b"b" * 40
+                    + b"\trefs/heads/other\n"
+                ),
+                b"",
+            ),
+            id="multiple-lines",
+        ),
+        pytest.param(
+            GitCommandResult(0, b"a" * 40 + b"\trefs/heads/other\n", b""),
+            id="wrong-ref",
+        ),
+        pytest.param(
+            GitCommandResult(
+                0, b"not-an-oid\t" + HEAD_BRANCH.full_ref.encode() + b"\n", b""
+            ),
+            id="malformed-oid",
+        ),
+    ],
+)
+def test_only_an_exact_remote_observation_can_license_a_push(
+    tmp_path: Path, observation: GitCommandResult
+) -> None:
+    store, remote, base, tree = _repositories(tmp_path)
+    runner = _ScriptedRemoteReadRunner([observation])
+    factory = _factory(store, remote, runner)
+    intent, _request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        result = adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert isinstance(result, EffectUnknownOutcome)
+    assert runner.push_arguments == []
+
+
+def test_a_reachable_base_that_is_no_longer_an_advertised_tip_can_be_pushed(
+    tmp_path: Path,
+) -> None:
+    store, remote, base, tree = _repositories(tmp_path)
+    source = tmp_path / "source"
+    (source / "later.txt").write_text("default branch moved\n", encoding="utf-8")
+    _git(source, "add", "later.txt")
+    _git(source, "commit", "--quiet", "-m", "move the default branch")
+    _git(source, "push", "--quiet", str(remote), "HEAD:refs/heads/main")
+    assert _git(remote, "rev-parse", "refs/heads/main") != base
+
+    factory = _factory(store, remote)
+    intent, request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        performed = adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert isinstance(performed, PerformedEffect)
+    assert performed.effect_id.value == request.expected_commit_oid(
+        intent.request.request_hash.value
+    )
+
+
+def test_remote_git_positionals_follow_the_option_terminator(tmp_path: Path) -> None:
+    store, remote, base, tree = _repositories(tmp_path)
+    runner = _ScriptedRemoteReadRunner([None, None])
+    factory = _factory(store, remote, runner)
+    intent, _request = _intent(factory, base, tree)
+    adapter = factory.open()
+    try:
+        performed = adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert isinstance(performed, PerformedEffect)
+    remote_commands = [*runner.remote_arguments, *runner.push_arguments]
+    assert remote_commands
+    for arguments in remote_commands:
+        separator = arguments.index("--")
+        remote_position = arguments.index(str(remote))
+        assert separator < remote_position
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("url", "--upload-pack=malicious", id="url-leading-dash"),
+        pytest.param("ref", "malicious:refs/heads/main", id="ref-colon"),
+        pytest.param("ref", "-malicious", id="ref-leading-dash"),
+        pytest.param("oid", "-" + "a" * 39, id="oid-leading-dash"),
+        pytest.param("oid", "a" * 20 + ":" + "a" * 19, id="oid-colon"),
+    ],
+)
+def test_git_positional_injection_shapes_are_refused(field: str, value: str) -> None:
+    if field == "url":
+        with pytest.raises(ValueError, match="URL"):
+            GitRemote("remote", value)
+        return
+    if field == "ref":
+        with pytest.raises(ValueError, match="unsafe branch"):
+            HeadBranch(value)
+        return
+    with pytest.raises(ValueError, match="git object format"):
+        PushAtelierCommit(
+            ATTEMPT_ID,
+            "a" * 40,
+            value,
+            HEAD_BRANCH,
+            AUTHOR,
+            COMMITTER,
+            "2026-08-27T12:34:56Z",
+        )

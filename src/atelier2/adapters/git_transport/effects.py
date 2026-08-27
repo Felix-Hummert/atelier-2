@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 from collections.abc import Mapping
@@ -32,6 +33,7 @@ from atelier2.contracts.effects import (
 )
 
 _HOOK_FREE_ARGUMENTS = ("-c", f"core.hooksPath={os.devnull}")
+_GIT_OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 
 
 class GitTransportRefused(RuntimeError):
@@ -47,6 +49,8 @@ class GitRemote:
     def __post_init__(self) -> None:
         if not self.identity or not self.url:
             raise ValueError("a git remote has a stable identity and URL")
+        if self.url.startswith("-"):
+            raise ValueError("a git remote URL cannot begin with an option marker")
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +58,12 @@ class GitCommandResult:
     returncode: int
     stdout: bytes
     stderr: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _RemoteRefObservation:
+    oid: str | None = None
+    absence_proven: bool = False
 
 
 class GitCommandRunner(Protocol):
@@ -147,8 +157,8 @@ class GitTransportEffectAdapter:
         request = self._authorized_request(intent)
         self._verify_candidate(request)
         expected = request.expected_commit_oid(intent.request.request_hash.value)
-        standing = self._remote_ref(request.head_branch.full_ref)
-        if standing != expected:
+        observation = self._remote_ref(request.head_branch.full_ref)
+        if observation.oid != expected:
             return EffectUnknownOutcome(intent.reference)
         performed = self._performed(request, expected)
         return EffectReceipt(
@@ -163,15 +173,11 @@ class GitTransportEffectAdapter:
         self._verify_candidate(request)
         expected = request.expected_commit_oid(intent.request.request_hash.value)
         full_ref = request.head_branch.full_ref
-        standing = self._remote_ref(full_ref)
-        if standing == expected:
+        observation = self._remote_ref(full_ref)
+        if observation.oid == expected:
             return self._performed(request, expected)
-        if standing is not None:
+        if not observation.absence_proven:
             return EffectUnknownOutcome(intent.reference)
-        if not self._remote_carries(request.base_commit):
-            raise GitTransportRefused(
-                "the declared base commit is not advertised by the configured remote"
-            )
         self._fetch_base(request.base_commit)
         written = self._store_commit(request, intent.request.request_hash.value)
         if written != expected:
@@ -185,6 +191,7 @@ class GitTransportEffectAdapter:
                 "--porcelain",
                 "--no-verify",
                 f"--force-with-lease={full_ref}:{zero_oid}",
+                "--",
                 self._remote.url,
                 f"{expected}:{full_ref}",
             ),
@@ -222,32 +229,46 @@ class GitTransportEffectAdapter:
                 "the pinned attempt does not name the declared candidate tree"
             )
 
-    def _remote_ref(self, full_ref: str) -> str | None:
-        result = self._remote_git(("ls-remote", "--refs", self._remote.url, full_ref))
-        if result.returncode != 0:
-            return None
-        lines = result.stdout.decode("ascii", errors="strict").splitlines()
-        if not lines:
-            return None
-        if len(lines) != 1:
-            return None
-        oid, separator, name = lines[0].partition("\t")
-        if separator != "\t" or name != full_ref:
-            return None
-        return oid
-
-    def _remote_carries(self, oid: str) -> bool:
-        result = self._remote_git(("ls-remote", "--refs", self._remote.url))
-        if result.returncode != 0:
-            return False
-        return any(
-            line.partition("\t")[0] == oid
-            for line in result.stdout.decode("ascii", errors="strict").splitlines()
+    def _remote_ref(self, full_ref: str) -> _RemoteRefObservation:
+        result = self._remote_git(
+            (
+                "ls-remote",
+                "--refs",
+                "--exit-code",
+                "--",
+                self._remote.url,
+                full_ref,
+            )
         )
+        if result.returncode == 2 and not result.stdout and not result.stderr:
+            return _RemoteRefObservation(absence_proven=True)
+        if result.returncode != 0:
+            return _RemoteRefObservation()
+        try:
+            lines = result.stdout.decode("ascii", errors="strict").splitlines()
+        except UnicodeDecodeError:
+            return _RemoteRefObservation()
+        if len(lines) != 1:
+            return _RemoteRefObservation()
+        oid, separator, name = lines[0].partition("\t")
+        if (
+            separator != "\t"
+            or name != full_ref
+            or _GIT_OBJECT_ID.fullmatch(oid) is None
+        ):
+            return _RemoteRefObservation()
+        return _RemoteRefObservation(oid=oid)
 
     def _fetch_base(self, oid: str) -> None:
         result = self._remote_git(
-            ("fetch", "--no-tags", "--no-write-fetch-head", self._remote.url, oid),
+            (
+                "fetch",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--",
+                self._remote.url,
+                oid,
+            ),
             in_store=True,
         )
         if result.returncode != 0:
@@ -285,8 +306,8 @@ class GitTransportEffectAdapter:
         request: PushAtelierCommit,
         expected: str,
     ) -> PerformedEffect | EffectUnknownOutcome:
-        standing = self._remote_ref(request.head_branch.full_ref)
-        if standing == expected:
+        observation = self._remote_ref(request.head_branch.full_ref)
+        if observation.oid == expected:
             return self._performed(request, expected)
         return EffectUnknownOutcome(intent.reference)
 

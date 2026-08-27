@@ -21,7 +21,10 @@ from atelier2.adapters.github.composition import (
     GitHubConnectionUncomposable,
     live_github_effect_adapter_factory,
 )
-from atelier2.adapters.github.live_effects import LiveGitHubEffectAdapterFactory
+from atelier2.adapters.github.live_effects import (
+    GitHubEffectRefused,
+    LiveGitHubEffectAdapterFactory,
+)
 from atelier2.contracts.effect_markers import body_carries_request_hash, marker_line
 from atelier2.contracts.effect_requests import HeadBranch, OpenPullRequest
 from atelier2.contracts.effects import (
@@ -77,11 +80,13 @@ class _FakeGitHubServer:
     base_sha: str
     pull_requests: list[dict[str, Any]] = field(default_factory=list)
     branches: set[str] = field(default_factory=set)
+    http_calls: int = 0
     branch_ref_attempts: int = 0
     suppress_next_pull_request_search: bool = False
     _next_number: int = 1
 
     def handle(self, request: httpx.Request) -> httpx.Response:
+        self.http_calls += 1
         path = request.url.path
         prefix = f"/repos/{self.owner}/{self.repo}"
         if request.method == "GET" and path == f"{prefix}/branches/{self.base_branch}":
@@ -250,7 +255,12 @@ def test_a_base_branch_may_itself_carry_slashes_and_at_signs(
     assert composed.repository.base_branch == "release/v1@rc"
 
 
-def effect_intent(payload: bytes = AGENT_OUTPUT) -> EffectIntent:
+def effect_intent(payload: bytes = AGENT_OUTPUT, *, typed: bool = True) -> EffectIntent:
+    request_payload = (
+        OpenPullRequest(payload.decode("utf-8"), HEAD_BRANCH).canonical_bytes()
+        if typed
+        else payload
+    )
     return EffectIntent(
         EffectBinding(
             logical_key=LOGICAL_KEY,
@@ -260,9 +270,7 @@ def effect_intent(payload: bytes = AGENT_OUTPUT) -> EffectIntent:
             destination=DESTINATION,
             adapter_operational_identity=AdapterOperationalIdentity(f"{OWNER}/{REPO}"),
         ),
-        CanonicalRequest(
-            OpenPullRequest(payload.decode("utf-8"), HEAD_BRANCH).canonical_bytes()
-        ),
+        CanonicalRequest(request_payload),
     )
 
 
@@ -353,6 +361,33 @@ def test_readback_before_any_execute_is_unknown_never_an_authoritative_absence(
 
     assert isinstance(read, EffectUnknownOutcome)
     assert read.intent_reference == intent.reference
+
+
+@pytest.mark.parametrize("operation", ["readback", "execute"])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(b"not an open-pr request", id="utf8-body"),
+        pytest.param(b"\xff", id="non-utf8-body"),
+        pytest.param(b'{"body":"missing head"}', id="incomplete-object"),
+    ],
+)
+def test_an_untyped_open_pr_payload_fails_loud_before_any_github_call(
+    factory: LiveGitHubEffectAdapterFactory,
+    server: _FakeGitHubServer,
+    operation: str,
+    payload: bytes,
+) -> None:
+    intent = effect_intent(payload, typed=False)
+    adapter = factory.open()
+    try:
+        with pytest.raises(GitHubEffectRefused, match="canonical open-pr request"):
+            getattr(adapter, operation)(intent)
+    finally:
+        adapter.close()
+
+    assert server.pull_requests == []
+    assert server.http_calls == 0
 
 
 def test_no_token_appears_in_any_adapter_output(

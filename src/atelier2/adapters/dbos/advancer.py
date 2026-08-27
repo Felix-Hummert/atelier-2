@@ -18,6 +18,7 @@ from atelier2.adapters.dbos.effect_store import (
     fork_fenced_resolution,
     intent_snapshot_from_record,
     load_intent,
+    receipt_from_record,
 )
 from atelier2.adapters.dbos.run_store import load_node_output_payload
 from atelier2.adapters.dbos.run_transitions import load_graph, load_run
@@ -37,8 +38,10 @@ from atelier2.contracts.adapter_operations_v3 import (
     read_adapter_operation_document,
 )
 from atelier2.contracts.effect_requests import (
+    HeadBranch,
     OpenPullRequest,
     PushAtelierCommit,
+    PushAtelierCommitReceipt,
     head_branch_for_queue_item,
 )
 from atelier2.contracts.effects import (
@@ -157,10 +160,20 @@ def graph_action_intent(
         and operation.operation is AdapterOperationName.OPEN_PR
         and project_id is not None
     ):
+        if not isinstance(predecessor, AgentNodeV3):
+            raise RunEffectConflict("V3 open-pr Action predecessor is not a V3 Agent")
+        head_branch = _confirmed_push_branch(
+            session,
+            run_id,
+            revision_hash,
+            predecessor,
+            run.current_round_ordinal,
+            project_id,
+        )
         request = CanonicalRequest(
             OpenPullRequest(
                 payload.decode("utf-8"),
-                _head_branch(session, run_id, project_id),
+                head_branch,
             ).canonical_bytes()
         )
     binding = EffectBinding(
@@ -542,6 +555,63 @@ def _action_predecessor(
             raise RunEffectConflict("Action predecessor is not an Agent")
         return predecessor
     return graph.predecessor(action.id)
+
+
+def _confirmed_push_branch(
+    session: Any,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    predecessor: AgentNodeV3,
+    round_ordinal: int,
+    project_id: ProjectId,
+) -> HeadBranch:
+    logical_key = logical_effect_key_for_node(
+        run_id, revision_hash, predecessor.id, round_ordinal
+    )
+    record = (
+        session.execute(
+            sa.select(effect_receipts).where(
+                effect_receipts.c.logical_key == logical_key.value
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if record is None:
+        raise RunEffectConflict(
+            "project open-pr Action requires its predecessor's confirmed push receipt"
+        )
+    try:
+        receipt = receipt_from_record(record)
+        request = PushAtelierCommit.from_canonical_bytes(receipt.intent.request.payload)
+        result = PushAtelierCommitReceipt.from_result_bytes(receipt.result.payload)
+        result_branch = HeadBranch(result.branch)
+    except (TypeError, ValueError) as error:
+        raise RunEffectConflict("confirmed push receipt is corrupt") from error
+    expected_commit = request.expected_commit_oid(
+        receipt.intent.request.request_hash.value
+    )
+    if (
+        receipt.intent.binding.operation_name
+        is not AdapterOperationName.PUSH_ATELIER_COMMIT
+        or receipt.intent.binding.run_id != run_id
+        or receipt.intent.binding.workflow_revision_hash != revision_hash
+        or result.remote_identity
+        != receipt.intent.binding.adapter_operational_identity.value
+        or result.commit_oid != receipt.effect_id.value
+        or result.commit_oid != expected_commit
+        or result.full_ref != request.head_branch.full_ref
+        or result.parent != request.base_commit
+        or result.candidate_tree != request.candidate_tree
+        or result_branch != request.head_branch
+        or result.author != request.author
+        or result.committer != request.committer
+        or result_branch != _head_branch(session, run_id, project_id)
+    ):
+        raise RunEffectConflict(
+            "confirmed push receipt disagrees with the open-pr head"
+        )
+    return result_branch
 
 
 def _operation_for(session: Any, reference: Any) -> AdapterOperationAccepted:
