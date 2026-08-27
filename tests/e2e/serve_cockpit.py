@@ -362,7 +362,7 @@ class BlockingAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
 
     def release_in_flight(self) -> None:
         for executor in (self.observed_executor, self.opened):
-            if executor is not None:
+            if isinstance(executor, BlockingAgentExecutor):
                 executor.release.set()
         self.observed_executor = None
         type(self).observed_executor = None

@@ -8,7 +8,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any
+from typing import Any, Protocol
 from unittest.mock import patch
 
 import pytest
@@ -299,7 +299,11 @@ def _leftover_attempt_directory(scratch_root: Path) -> Path:
     return leftover
 
 
-def _compose_with_scratch(settings: object, scratch_root: harness.BrowserScratchRoot):
+class ScratchRootWithPath(Protocol):
+    path: Path
+
+
+def _compose_with_scratch(settings: object, scratch_root: ScratchRootWithPath):
     factory = harness.RecordingAgentExecutorFactoryV2(
         "e2e-v3", "immediate/v1", "e2e-immediate-process", b'"V3 provider bytes"'
     )
