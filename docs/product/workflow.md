@@ -136,8 +136,13 @@ adapter-operation revision; the one operation this runtime performs is `open-pr`
 `POST /adapter-operation-revisions` is the publication door (bytes in, hash out,
 idempotent), and a start whose `operation.revision` is that hash gets past the
 reference that used to refuse as unpublished. The Action's request bytes are the
-predecessor Agent's output. Tests inject a fake GitHub `EffectAdapterFactory` that
-records a branch and pull-request number, writes the request hash into the pull
+predecessor Agent's output. A V3 Agent request hashes the current job composition:
+declared root-string orders appear as their text while every other order keeps its
+JSON representation. Readers first recompute that composition, then prove a
+pre-change request against the legacy all-JSON composition when necessary. The
+attempt record does not yet persist its composition version; that unambiguous
+future choice requires the next schema hop. Tests inject a fake GitHub
+`EffectAdapterFactory` that records a branch and pull-request number, writes the request hash into the pull
 request body, and answers a replay by readback rather than creating a twin. The
 served host composes the loopback adapter unless the served project's
 source-connection record names a GitHub source, in which case serve composes the
@@ -146,6 +151,18 @@ a receipt, an event or an API projection, and the lease listing has no `.git`.
 ADR 0010 stays PROPOSED. A Wait node holds the run in
 `WAITING_INPUT` as a durable state rather than as work in progress: nothing is queued
 behind it, a restart finds it still waiting, and it moves only when a person answers.
+
+A terminal, non-looping V3 run can be forked from one node of that same revision.
+The successor does not edit or copy the origin: every successful node strictly before
+the restart node is an immutable reference to the origin execution and its receipt,
+event and declared Context-Package evidence. The successor creates node requests and
+declared packages only from the restart node onward. Confirmed effects at or after that
+node are fenced across the two runs: an identical request reuses the confirmed result
+without calling the adapter, while different bytes stop at reconciliation rather than
+replaying an already-opened pull request. The run list and detail expose the same
+origin/successor lineage and mark referenced nodes on the rail. Forking does not change
+the workflow revision, configuration, orders, budget accounting, or queue policy;
+nonterminal origins and looped workflows are refused.
 The V3 run page shows that wait as an answer card, with the authored question
 the published document already carries, and sends the typed bytes through
 the same `POST /runs/{ref}/answers` door the API already proved.
@@ -304,4 +321,3 @@ receipt, intent, command, run, and resolved event. The later `ACTION_COMPLETED`
 transition is another crash-safe transaction.
 [ADR 0001](../decisions/0001-durable-runtime.md) owns the runtime and recovery
 boundary.
-

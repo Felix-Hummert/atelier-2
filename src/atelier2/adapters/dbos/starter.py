@@ -105,6 +105,7 @@ from atelier2.contracts.workflows_v3 import (
     WorkflowGraphV3,
 )
 from atelier2.ports.agent_executions import AgentExecutorRegistry
+from atelier2.ports.durable_run_forks import DurableRunForkResult, ForkRunRequest
 from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
     AuthoredOrder,
@@ -566,6 +567,15 @@ class DbosDurableRunStarter:
         self._settings = settings
         self._agent_executor_registry = agent_executor_registry
         self._published_revisions = DbosCatalogStore(engine)
+
+    def fork_run(self, request: ForkRunRequest) -> DurableRunForkResult:
+        """Fork through the same composed runtime dependencies as an ordinary start."""
+
+        from atelier2.adapters.dbos.run_fork_store import DbosRunForkStore
+
+        return DbosRunForkStore(
+            self._engine, self._settings, self._agent_executor_registry
+        ).fork_run(request)
 
     def start_published(
         self, request: AnyStartPublishedRunRequest

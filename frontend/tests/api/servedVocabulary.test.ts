@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  EFFECT_CONFIRMATION_SOURCES,
+  MAXIMUM_RUN_FORK_SUCCESSORS,
   NODE_STATES,
   PUBLIC_ATTEMPT_STATES,
   RUN_NOT_CANCELLABLE_REASONS,
@@ -22,6 +24,8 @@ import {
   projectModelResolutionSchema,
   projectListSchema,
   projectResourceSchema,
+  nodeRailEntrySchema,
+  runV3Schema,
   workflowRevisionSummarySchema
 } from "../../src/api/client";
 
@@ -41,7 +45,12 @@ const servedDocument = JSON.parse(
         enum?: string[];
         properties?: Record<
           string,
-          { enum?: string[]; const?: string; anyOf?: Array<{ enum?: string[] }> }
+          {
+            enum?: string[];
+            const?: string;
+            anyOf?: Array<{ enum?: string[] }>;
+            maxItems?: number;
+          }
         >;
       }
     >;
@@ -60,6 +69,49 @@ describe("the served vocabulary", () => {
   it("decodes exactly the V3 run states the document serves", () => {
     expect([...RUN_STATES_V3]).toEqual(
       servedDocument.components.schemas.RunResourceV3?.properties?.state?.enum
+    );
+  });
+
+  it("decodes exactly the fork lineage fields the V3 run and rail serve", () => {
+    expect(Object.keys(runV3Schema.shape).sort()).toEqual(
+      Object.keys(servedDocument.components.schemas.RunResourceV3?.properties ?? {}).sort()
+    );
+    expect(Object.keys(nodeRailEntrySchema.shape).sort()).toEqual(
+      Object.keys(servedDocument.components.schemas.NodeRailResource?.properties ?? {}).sort()
+    );
+    expect(MAXIMUM_RUN_FORK_SUCCESSORS).toBe(
+      servedDocument.components.schemas.RunResourceV3?.properties?.fork_successors?.maxItems
+    );
+  });
+
+  it("refuses partial reuse evidence and reuse on a node that did not succeed", () => {
+    const completeEvidence = {
+      reused_from_run_reference: "run1.cnVu",
+      source_event_hash: "a".repeat(64),
+      source_receipt_hash: "b".repeat(64),
+      source_declared_context_package_hash: "c".repeat(64)
+    };
+    const ordinary = { node_id: "implement", state: "succeeded", attempt: null };
+
+    for (const field of Object.keys(completeEvidence) as Array<keyof typeof completeEvidence>) {
+      const partial: Partial<typeof completeEvidence> = { ...completeEvidence };
+      delete partial[field];
+      expect(nodeRailEntrySchema.safeParse({ ...ordinary, ...partial }).success).toBe(false);
+    }
+    expect(
+      nodeRailEntrySchema.safeParse({
+        ...ordinary,
+        state: "failed",
+        ...completeEvidence
+      }).success
+    ).toBe(false);
+    expect(nodeRailEntrySchema.safeParse({ ...ordinary, ...completeEvidence }).success).toBe(true);
+  });
+
+  it("decodes exactly the effect confirmation sources the document serves", () => {
+    expect([...EFFECT_CONFIRMATION_SOURCES]).toEqual(
+      servedDocument.components.schemas.EffectReceiptResource?.properties?.confirmation_source
+        ?.enum
     );
   });
 
@@ -89,6 +141,29 @@ describe("the served vocabulary", () => {
       "run-not-cancellable"
     ]);
     for (const code of servedRunCancelProblems) {
+      expect(problemDefinitions[code as keyof typeof problemDefinitions]).toBeDefined();
+    }
+  });
+
+  it("mirrors exactly the run-fork problems the document serves", () => {
+    const servedRunForkProblems = Object.values(servedDocument.components.schemas)
+      .map((schema) => schema.properties?.type?.const)
+      .filter(
+        (constant): constant is string =>
+          typeof constant === "string" && constant.startsWith(PROBLEM_TYPE_PREFIX)
+      )
+      .map((urn) => urn.slice(PROBLEM_TYPE_PREFIX.length))
+      .filter((code) => code.startsWith("run-fork-"))
+      .sort();
+
+    expect(servedRunForkProblems).toEqual([
+      "run-fork-command-conflict",
+      "run-fork-loop-unsupported",
+      "run-fork-node-missing",
+      "run-fork-origin-not-terminal",
+      "run-fork-prefix-not-reusable"
+    ]);
+    for (const code of servedRunForkProblems) {
       expect(problemDefinitions[code as keyof typeof problemDefinitions]).toBeDefined();
     }
   });

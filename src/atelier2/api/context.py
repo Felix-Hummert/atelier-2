@@ -22,6 +22,7 @@ from atelier2.application.cancel_run import CancelRunResult
 from atelier2.application.classify_definition_document import (
     ClassifyDefinitionDocumentResult,
 )
+from atelier2.application.fork_run import ForkRunResult
 from atelier2.application.import_project_source_issues import (
     ImportProjectSourceIssuesOutcome,
     ListObservedQueueItemsOutcome,
@@ -280,6 +281,7 @@ class ApiUseCases:
         ],
         StartPublishedRunResult,
     ]
+    fork_run: Callable[[RunId, str, str], ForkRunResult]
     answer_wait: Callable[[RunId, WorkflowRevisionHash, str, bytes], AnswerWaitResult]
     reconcile_run: Callable[[ReconcileRunRequest], ReconcileRunResult]
     cancel_agent_attempt: Callable[

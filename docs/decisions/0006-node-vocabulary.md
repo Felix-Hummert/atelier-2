@@ -537,6 +537,23 @@ interprets, and the adapter never writes the envelope.
 check, effect, readback, receipt; an unknown outcome becomes a reconciliation an
 accountable operator command resolves.
 
+### Fork reuse is a reference, not another execution
+
+For the executable linear V3 shape, a fork from node X reuses only the strict
+prefix before X. Each reused coordinate points to the ultimate source run's node
+execution, successful receipt, completion event, and declared Context-Package;
+forking a fork flattens that reference rather than making a reference chain. The
+successor stores no copied attempt, receipt, event, artifact, request, or package
+for that prefix. When X consumes its predecessor output, the input loader follows
+the validated reuse reference to the source artifact. New node-execution requests
+and declared Context-Packages belong only to X and its successors.
+
+An effect at or after X is not prefix reuse. Its confirmed origin receipt becomes
+a cross-run fence. The successor may record a `FORK_REFERENCE` only when its
+canonical request is identical and the referenced result hash is unchanged; a
+mismatch waits for reconciliation before any adapter call. This is the same rule
+whether `open-pr` is authored as an Action or invoked through an agent grant.
+
 ### Role, profile, skill: three different things
 
 | Reference | What it carries | Who binds it | Can it make a run unstartable? |

@@ -82,13 +82,14 @@ from atelier2.contracts.schemas_v3 import (
 )
 from atelier2.host import _grok_subscription_settings
 from atelier2.host.serving import HostSettings, compose_application
-from atelier2.ports.agent_attempts import AgentAttemptSucceeded
+from atelier2.ports.agent_attempts import AgentAttemptFailed, AgentAttemptSucceeded
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
 )
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
+    AgentExecutionPreflightRefusal,
     AgentProcessCommand,
     AgentProcessCompletion,
     AgentProcessInvocation,
@@ -105,7 +106,7 @@ from tests.scenarios.agents import (
     runtime_workspace_owner,
 )
 
-MEASURED_GROK_VERSION = "1.0.4"
+MEASURED_GROK_VERSION = "1.0.5"
 
 
 @pytest.fixture
@@ -126,7 +127,7 @@ INTROSPECTING_GROK = """
 import json, os, sys, tomllib
 from pathlib import Path
 if "--version" in sys.argv:
-    print("grok 1.0.4 (d846eb93d9) [stable]")
+    print("grok 1.0.5 (5115b46bc9) [stable]")
     raise SystemExit(0)
 if "inspect" in sys.argv:
     home = Path(os.environ["GROK_HOME"])
@@ -157,12 +158,8 @@ if "inspect" in sys.argv:
         sys.stdout,
     )
     raise SystemExit(0)
-prompt_file = None
 args = sys.argv[1:]
-for index, argument in enumerate(args):
-    if argument == "--prompt-file" and index + 1 < len(args):
-        prompt_file = args[index + 1]
-job = Path(prompt_file).read_bytes() if prompt_file else b""
+job = args[args.index("-p") + 1].encode("utf-8") if "-p" in args else b""
 session = Path(os.environ["GROK_HOME"]) / "sessions" / "headless"
 session.mkdir(parents=True)
 (session / "updates.jsonl").write_bytes(job + b"\\nprovider response")
@@ -178,6 +175,11 @@ if "--json-schema" in args:
     envelope["structuredOutput"] = observed
 json.dump(envelope, sys.stdout)
 """
+
+INLINE_PROMPT_GROK = INTROSPECTING_GROK.replace(
+    '"arguments": sys.argv,',
+    '"single_prompt_bytes": len(job),',
+)
 
 
 def _write_executable(path: Path, source: str) -> Path:
@@ -333,11 +335,6 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     workspace = leased_workspace(tmp_path)
     command = executor.prepare_process(request)
     invocation = leased(command, workspace)
-    # The job path is private per execution, so it is read back from the vector
-    # rather than recomputed: a predictable name is what a symlink preys on.
-    job_file = Path(command.arguments[command.arguments.index("--prompt-file") + 1])
-
-    assert job_file.parent.parent == settings.workspace
     assert command.arguments == (
         str(settings.executable),
         "--output-format",
@@ -346,8 +343,8 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
         '{"type": "object", "additionalProperties": false}',
         "--model",
         "grok-4",
-        "--prompt-file",
-        str(job_file),
+        "-p",
+        "draw the owl",
         "--tools=",
         "--permission-mode",
         "dontAsk",
@@ -374,7 +371,7 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     )
     assert command.standard_input == b""
     assert command.standard_output_frame_bytes == GROK_SUBSCRIPTION_FRAME_BYTES
-    assert b"draw the owl" not in " ".join(command.arguments).encode()
+    assert b"draw the owl" in " ".join(command.arguments).encode()
     result = executor.decode_process_completion(
         invocation, launched(command, workspace)
     )
@@ -395,6 +392,65 @@ def test_a_headless_run_carries_the_bound_model_job_and_only_the_credential_boun
     executor.release_credential_channel(command)
     assert not invocation_home.exists()
     assert (settings.credential_directory / "auth.json").read_bytes() == b"{}"
+
+
+@pytest.mark.parametrize(
+    "factory",
+    (GrokSubscriptionExecutorFactory, GrokWorkspaceToolExecutorFactory),
+)
+def test_a_measured_size_job_reaches_grok_inline(
+    tmp_path: Path,
+    factory: type[GrokSubscriptionExecutorFactory | GrokWorkspaceToolExecutorFactory],
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INLINE_PROMPT_GROK)
+    executor = factory(settings).open()
+    job = b"x" * 30_000
+    command = executor.prepare_process(
+        subscription_request(job=job, declared_output_schema=b'{"type":"object"}')
+    )
+    invocation = leased(command, leased_workspace(tmp_path))
+
+    completion = launched(command, invocation.lease.working_directory)
+
+    assert completion.return_code == 0
+    observed = json.loads(completion.standard_output)["structuredOutput"]
+    assert observed["single_prompt_bytes"] == len(job)
+    assert observed["stdin"] == ""
+    executor.release_credential_channel(command)
+
+
+def test_a_job_above_the_measured_transport_limit_is_agent_refused(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(
+        tmp_path, "raise AssertionError('a Grok process was launched')\n"
+    )
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    job = b"x" * 30_001
+
+    with pytest.raises(AgentExecutionPreflightRefusal, match="30,000") as refused:
+        executor.prepare_process(subscription_request(job=job))
+
+    assert refused.value.code is AgentAttemptFailureCode.AGENT_REFUSED
+    assert list(settings.workspace.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "factory",
+    (GrokSubscriptionExecutorFactory, GrokWorkspaceToolExecutorFactory),
+)
+def test_non_utf8_job_bytes_are_agent_refused_before_any_grok_invocation(
+    tmp_path: Path,
+    factory: type[GrokSubscriptionExecutorFactory | GrokWorkspaceToolExecutorFactory],
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = factory(settings).open()
+
+    with pytest.raises(AgentExecutionPreflightRefusal, match="UTF-8") as refused:
+        executor.prepare_process(subscription_request(job=b"\xff"))
+
+    assert refused.value.code is AgentAttemptFailureCode.AGENT_REFUSED
+    assert list(settings.workspace.iterdir()) == []
 
 
 def test_a_string_schema_travels_as_json_schema(
@@ -934,12 +990,19 @@ def test_an_unusable_envelope_is_a_typed_process_failure(tmp_path: Path) -> None
 
 
 def test_only_the_measured_grok_release_is_admitted(tmp_path: Path) -> None:
-    assert CONFORMANT_GROK_VERSIONS == {(1, 0, 4)}
-    other = grok_subscription_deployment(
+    assert CONFORMANT_GROK_VERSIONS == {(1, 0, 5)}
+    installed = grok_named_deployment(
         tmp_path,
-        "import sys\nprint('grok 1.0.3 (old) [stable]')\n",
+        "installed",
+        INTROSPECTING_GROK,
     )
-    with pytest.raises(GrokExecutableUnsupported, match="1.0.4"):
+    assert verify_grok_capability(installed.executable) == (1, 0, 5)
+    other = grok_named_deployment(
+        tmp_path,
+        "other",
+        "import sys\nprint('grok 1.0.4 (old) [stable]')\n",
+    )
+    with pytest.raises(GrokExecutableUnsupported, match="1.0.5"):
         verify_grok_capability(other.executable)
 
 
@@ -947,7 +1010,7 @@ ATTESTING_GROK = """
 import json, os, sys
 from pathlib import Path
 if "--version" in sys.argv:
-    print("grok 1.0.4 (d846eb93d9) [stable]")
+    print("grok 1.0.5 (5115b46bc9) [stable]")
     raise SystemExit(0)
 if "inspect" in sys.argv:
     inspected = dict(INSPECTED)
@@ -1010,57 +1073,30 @@ def attesting_deployment(
     return grok_subscription_deployment(tmp_path, source)
 
 
-def test_a_preplaced_symlink_at_the_job_path_receives_no_job_bytes(
+def test_the_private_credential_home_outlives_neither_a_completion_nor_a_close(
     tmp_path: Path,
 ) -> None:
-    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    victim = tmp_path / "victim"
-    victim.write_bytes(b"the operator's bytes")
-    request = subscription_request(job=b"attacker payload")
-    predictable = (
-        settings.workspace / f"atelier2-grok-job-{request.node_execution_id.value}"
-    )
-    predictable.symlink_to(victim)
-    executor = GrokSubscriptionExecutorFactory(settings).open()
-
-    invocation = executor.prepare_process(request)
-
-    assert victim.read_bytes() == b"the operator's bytes"
-    job_file = Path(
-        invocation.arguments[invocation.arguments.index("--prompt-file") + 1]
-    )
-    assert job_file.read_bytes() == b"attacker payload"
-    assert not job_file.is_symlink()
-    assert stat.S_IMODE(job_file.stat().st_mode) == 0o600
-    assert stat.S_IMODE(job_file.parent.stat().st_mode) == 0o700
-    executor.close()
-
-
-def test_job_bytes_outlive_neither_a_completion_nor_a_close(tmp_path: Path) -> None:
     settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
     executor = GrokSubscriptionExecutorFactory(settings).open()
 
     invocation = executor.prepare_process(subscription_request())
-    job_file = Path(
-        invocation.arguments[invocation.arguments.index("--prompt-file") + 1]
-    )
-    assert job_file.exists()
+    invocation_home = Path(dict(invocation.environment)["GROK_HOME"])
+    assert invocation_home.exists()
 
     executor.decode_process_completion(
         leased(invocation, tmp_path), AgentProcessCompletion(1, b"", b"")
     )
     executor.release_credential_channel(invocation)
 
-    assert not job_file.exists()
-    assert not job_file.parent.exists()
+    assert not invocation_home.exists()
 
     second = executor.prepare_process(subscription_request())
-    abandoned = Path(second.arguments[second.arguments.index("--prompt-file") + 1])
-    assert abandoned.exists()
+    abandoned_home = Path(dict(second.environment)["GROK_HOME"])
+    assert abandoned_home.exists()
 
     executor.close()
 
-    assert not abandoned.exists()
+    assert not abandoned_home.exists()
     assert list(settings.workspace.iterdir()) == []
 
 
@@ -1078,10 +1114,7 @@ def test_releasing_one_concurrent_invocation_preserves_the_other(
 
     assert not first_home.exists()
     assert second_home.is_dir()
-    assert (
-        Path(second.arguments[second.arguments.index("--prompt-file") + 1]).read_bytes()
-        == b"second"
-    )
+    assert second.arguments[second.arguments.index("-p") + 1] == "second"
     executor.release_credential_channel(second)
     assert list(settings.workspace.iterdir()) == []
 
@@ -1361,7 +1394,7 @@ TOOL_USING_GROK = f"""
 import json, os, sys, tomllib
 from pathlib import Path
 if "--version" in sys.argv:
-    print("grok 1.0.4 (d846eb93d9) [stable]")
+    print("grok 1.0.5 (5115b46bc9) [stable]")
     raise SystemExit(0)
 if "inspect" in sys.argv:
     home = Path(os.environ["GROK_HOME"])
@@ -1434,6 +1467,7 @@ def grok_subscription_start(
     run_name: str,
     requested_capability: AgentExecutionCapability,
     executor_revision: AgentExecutorRevision,
+    job: bytes = b"build",
 ) -> tuple[DurablePublishedRunResult, WorkflowRevision]:
     catalog = DbosAgentConfigurationCatalog(
         runtime.engine, runtime.agent_executor_registry
@@ -1450,7 +1484,7 @@ def grok_subscription_start(
         AgentConfigurationRevisionFormatVersion.V2,
     )
     catalog.publish_agent_configuration_revision(configuration)
-    workflow = WorkflowRevision(HOST_DOCUMENT)
+    workflow = WorkflowRevision(HOST_DOCUMENT.replace(b"job: build", b"job: " + job))
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     started = DbosDurableRunStarter(
         runtime.engine,
@@ -1474,10 +1508,11 @@ def grok_subscription_attempt(
     requested_capability: AgentExecutionCapability,
     executor_revision: AgentExecutorRevision,
     operational_identity: AgentExecutorOperationalIdentity,
+    job: bytes = b"build",
 ) -> AgentAttemptExecution:
     run_id = RunId(run_name)
     started, workflow = grok_subscription_start(
-        runtime, run_name, requested_capability, executor_revision
+        runtime, run_name, requested_capability, executor_revision, job
     )
     assert isinstance(started, DurableRunCreated)
     assert isinstance(started.run, RunV2)
@@ -1489,7 +1524,7 @@ def grok_subscription_attempt(
             "build",
             started.run.agent_bindings[0],
             operational_identity,
-            b"build",
+            job,
         )
     )
 
@@ -1526,7 +1561,7 @@ def parsing_grok(known: Iterable[str], *, refuses_unknown: bool = True) -> str:
         f"known = {sorted(set(known))!r}\n"
         f"refuses_unknown = {refuses_unknown!r}\n"
         "if '--version' in sys.argv:\n"
-        "    print('grok 1.0.4 (d846eb93d9) [stable]')\n"
+        "    print('grok 1.0.5 (5115b46bc9) [stable]')\n"
         "    raise SystemExit(0)\n"
         "for argument in sys.argv[1:]:\n"
         "    if refuses_unknown and argument.startswith('--') "
@@ -1796,6 +1831,75 @@ def test_a_tool_free_grok_attempt_persists_the_v2_operational_identity(
     assert receipts[0]["executor_operational_identity"] == (
         "headless-print-json-output-schema/v3"
     )
+
+
+@pytest.mark.parametrize(
+    (
+        "requested_capability",
+        "executor_revision",
+        "operational_identity",
+        "workspace_tools",
+    ),
+    (
+        (
+            AgentExecutionCapability.HEADLESS,
+            GROK_SUBSCRIPTION_EXECUTOR_KEY.executor_revision,
+            GROK_SUBSCRIPTION_OPERATIONAL_IDENTITY,
+            False,
+        ),
+        (
+            AgentExecutionCapability.HEADLESS_WITH_TOOLS,
+            GROK_WORKSPACE_TOOLS_EXECUTOR_KEY.executor_revision,
+            GROK_WORKSPACE_TOOLS_OPERATIONAL_IDENTITY,
+            True,
+        ),
+    ),
+)
+def test_a_grok_job_above_the_measured_bound_is_refused_before_any_provider_launch(
+    tmp_path: Path,
+    scratch_root_outside_a_worktree: Path,
+    requested_capability: AgentExecutionCapability,
+    executor_revision: AgentExecutorRevision,
+    operational_identity: AgentExecutorOperationalIdentity,
+    workspace_tools: bool,
+) -> None:
+    settings = grok_subscription_deployment(
+        tmp_path, "raise AssertionError('a Grok process was launched')\n"
+    )
+    runtime = grok_subscription_runtime(
+        tmp_path,
+        settings,
+        scratch_root_outside_a_worktree,
+        workspace_tools=workspace_tools,
+    )
+    runtime.initialize_storage()
+    try:
+        execution = grok_subscription_attempt(
+            runtime,
+            f"grok/prelaunch-bound/{requested_capability.value}",
+            requested_capability=requested_capability,
+            executor_revision=executor_revision,
+            operational_identity=operational_identity,
+            job=b"x" * 30_001,
+        )
+        executor = (
+            GrokWorkspaceToolExecutorFactory(settings).open()
+            if workspace_tools
+            else GrokSubscriptionExecutorFactory(settings).open()
+        )
+        outcome = execute_agent_attempt(
+            execution,
+            executor,
+            DbosAgentAttemptStore(runtime.engine),
+            runtime.agent_process_supervisor,
+            runtime_workspace_owner(runtime),
+        )
+    finally:
+        runtime.close()
+
+    assert isinstance(outcome, AgentAttemptFailed)
+    assert outcome.attempt.failure_code is AgentAttemptFailureCode.AGENT_REFUSED
+    assert list(settings.workspace.iterdir()) == []
 
 
 def test_a_tool_bearing_grok_attempt_writes_in_its_lease_and_answers_what_it_wrote(

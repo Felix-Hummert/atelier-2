@@ -15,20 +15,30 @@ from atelier2.adapters.dbos.effect_store import (
     receipt_from_record,
 )
 from atelier2.adapters.dbos.names import ANSWER_WORKFLOW_NAME, QUEUE_NAME
+from atelier2.adapters.dbos.node_records import (
+    keep_node_receipt,
+    node_receipt_from_record,
+)
 from atelier2.adapters.dbos.run_transitions import (
     RunTransitionConflict,
     _commit_event,
+    event_from_record,
     graph_from_document,
     load_graph,
     run_from_record_with_bindings,
 )
 from atelier2.adapters.dbos.schema import (
     agent_receipts,
+    context_packages_v3,
     effect_intents,
     effect_receipts,
     node_artifacts_v3,
+    node_execution_requests_v3,
+    node_receipts_v3,
     published_revisions,
     run_events,
+    run_fork_reused_nodes,
+    run_forks,
     run_inputs_v3,
     runs,
     wait_answers,
@@ -68,11 +78,17 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
+    DeclaredContextPackage,
     DeliveredOutput,
+    NodeArtifact,
+    NodeReceiptReason,
+    PersistedReceiptDisposition,
     RunInput,
     RunInputSchemaKind,
+    node_receipt_reason,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
+from atelier2.contracts.run_bindings import AnyRun, RunV3
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
     RunId,
@@ -100,6 +116,7 @@ from atelier2.contracts.workflows import (
 from atelier2.contracts.workflows_v3 import (
     ANY_ACTION_NODE_KINDS,
     ANY_WAIT_NODE_KINDS,
+    ActionNodeV3,
     AgentNodeV3,
     AnyWaitNode,
     AnyWorkflowDocument,
@@ -265,6 +282,175 @@ class NodeOutputSchemaRefused(RunTransitionConflict):
     """
 
 
+def bootstrap_node_for_snapshot(
+    session: Any, run: AnyRun, graph: AnyWorkflowDocument
+) -> str:
+    """Validate the one pristine snapshot an ordinary start or fork may drive."""
+
+    if (
+        run.state is not RunState.STARTED
+        or run.state_version != 0
+        or run.last_event_sequence != 0
+        or run.current_round_ordinal != FIRST_ROUND_ORDINAL
+    ):
+        raise RunTransitionConflict("bootstrap requires its exact new durable run")
+    fork = (
+        session.execute(
+            sa.select(run_forks).where(run_forks.c.successor_run_id == run.run_id.value)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if fork is None:
+        entry = entry_node_of(graph)
+        if run.current_node_id != entry:
+            raise RunTransitionConflict("ordinary bootstrap requires the graph entry")
+        return entry
+    if not isinstance(run, RunV3) or not isinstance(graph, WorkflowGraphV3):
+        raise RunTransitionConflict("only a V3 run may carry fork lineage")
+    origin = (
+        session.execute(
+            sa.select(runs.c.terminal_hash, runs.c.revision_hash).where(
+                runs.c.run_id == str(fork["origin_run_id"])
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if (
+        str(fork["workflow_revision_hash"]) != run.revision_hash.value
+        or str(fork["run_configuration_revision_hash"])
+        != run.run_configuration_revision_hash.value
+        or str(fork["restart_from_node_id"]) != run.current_node_id
+        or origin is None
+        or str(origin["revision_hash"]) != run.revision_hash.value
+        or str(origin["terminal_hash"]) != str(fork["origin_terminal_hash"])
+    ):
+        raise RunTransitionConflict("fork bootstrap lineage disagrees with its run")
+    try:
+        graph.node(run.current_node_id)
+    except KeyError as error:
+        raise RunTransitionConflict("fork bootstrap node left its graph") from error
+    return run.current_node_id
+
+
+def load_node_output_payload(
+    session: Any,
+    run_id: RunId,
+    revision_hash: WorkflowRevisionHash,
+    graph: WorkflowGraphV3,
+    producer_id: str,
+    round_ordinal: int,
+) -> bytes:
+    """Read one producer value locally or through its validated immutable fork rail."""
+
+    producer = graph.node(producer_id)
+    execution_id = NodeExecutionId.for_node(
+        run_id, revision_hash, producer_id, round_ordinal
+    )
+    local = (
+        session.execute(
+            sa.select(run_events).where(
+                run_events.c.run_id == run_id.value,
+                run_events.c.revision_hash == revision_hash.value,
+                run_events.c.node_execution_id == execution_id.value,
+                run_events.c.event_kind == event_carrying_the_output_of(producer).value,
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if local is not None:
+        return event_from_record(local).payload
+
+    reference = (
+        session.execute(
+            sa.select(run_fork_reused_nodes).where(
+                run_fork_reused_nodes.c.successor_run_id == run_id.value,
+                run_fork_reused_nodes.c.node_id == producer_id,
+                run_fork_reused_nodes.c.round_ordinal == round_ordinal,
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if reference is None:
+        raise NodeOutputNotWritten(
+            f"node {producer_id!r} has written no output this node can read"
+        )
+    source_run_id = RunId(str(reference["source_run_id"]))
+    source_revision = WorkflowRevisionHash(
+        str(reference["source_workflow_revision_hash"])
+    )
+    source_execution = NodeExecutionId.for_node(
+        source_run_id, source_revision, producer_id, round_ordinal
+    )
+    if source_execution.value != str(reference["source_node_execution_id"]):
+        raise RunTransitionConflict("fork output reference execution disagrees")
+    source_event_record = (
+        session.execute(
+            sa.select(run_events).where(
+                run_events.c.event_hash == str(reference["source_event_hash"]),
+                run_events.c.run_id == source_run_id.value,
+                run_events.c.revision_hash == source_revision.value,
+                run_events.c.node_execution_id == source_execution.value,
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    receipt_record = (
+        session.execute(
+            sa.select(node_receipts_v3).where(
+                node_receipts_v3.c.node_execution_id == source_execution.value,
+                node_receipts_v3.c.receipt_hash
+                == str(reference["source_receipt_hash"]),
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    request_record = (
+        session.execute(
+            sa.select(node_execution_requests_v3).where(
+                node_execution_requests_v3.c.node_execution_id == source_execution.value
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    manifest = session.scalar(
+        sa.select(context_packages_v3.c.manifest).where(
+            context_packages_v3.c.package_hash
+            == str(reference["source_declared_context_package_hash"])
+        )
+    )
+    if (
+        source_event_record is None
+        or receipt_record is None
+        or request_record is None
+        or manifest is None
+    ):
+        raise RunTransitionConflict("fork output source evidence is incomplete")
+    event = event_from_record(source_event_record)
+    receipt = node_receipt_from_record(session, receipt_record)
+    package = DeclaredContextPackage(bytes(manifest))
+    if (
+        event.event_kind != event_carrying_the_output_of(producer)
+        or event.node_id != producer_id
+        or event.round_ordinal != round_ordinal
+        or receipt.disposition is not PersistedReceiptDisposition.SUCCEEDED
+        or receipt.context_package_hash.value
+        != str(reference["source_declared_context_package_hash"])
+        or str(request_record["request_hash"]) != receipt.request_hash.value
+        or str(request_record["context_package_hash"])
+        != receipt.context_package_hash.value
+        or package.package_hash != receipt.context_package_hash
+    ):
+        raise RunTransitionConflict("fork output source evidence disagrees")
+    return event.payload
+
+
 def event_carrying_the_output_of(node: WorkflowNodeV3) -> RunEventKind:
     """Which event's payload is this node's declared output.
 
@@ -344,26 +530,14 @@ def load_node_outputs(
         if written_in is None:
             continue
         producer = graph.node(source.node)
-        record = session.execute(
-            sa.select(run_events.c.payload, run_events.c.payload_hash).where(
-                run_events.c.run_id == run_id.value,
-                run_events.c.revision_hash == revision_hash.value,
-                run_events.c.node_execution_id
-                == NodeExecutionId.for_node(
-                    run_id, revision_hash, source.node, written_in
-                ).value,
-                run_events.c.event_kind == event_carrying_the_output_of(producer).value,
-            )
-        ).one_or_none()
-        if record is None:
-            raise NodeOutputNotWritten(
-                f"node {source.node!r} has written no output this node can read"
-            )
-        payload = bytes(record.payload)
-        if Sha256Hash.of(payload).value != str(record.payload_hash):
-            raise RunTransitionConflict(
-                f"the stored output of node {source.node!r} no longer matches its hash"
-            )
+        payload = load_node_output_payload(
+            session,
+            run_id,
+            revision_hash,
+            graph,
+            source.node,
+            written_in,
+        )
         declared = next(
             output for output in producer.outputs if output.name == source.output
         )
@@ -748,6 +922,15 @@ def commit_confirmed_effect(
         or receipt.intent != intent
     ):
         raise RunTransitionConflict("logical effect key does not own current effect")
+    if isinstance(node, ActionNodeV3):
+        keep_node_receipt(
+            session,
+            NodeExecutionId.for_node(
+                run_id, revision_hash, node.id, run.current_round_ordinal
+            ),
+            PersistedReceiptDisposition.SUCCEEDED,
+            node_receipt_reason(NodeReceiptReason.EFFECT_CONFIRMED),
+        )
     match completion_after_node(graph, node.id, run.current_round_ordinal):
         case RunContinues(successor, successor_round):
             target_state = RunState.STARTED
@@ -794,6 +977,23 @@ def commit_wait_answered(session: Any, answer: WaitAnswer) -> TransitionSnapshot
     if durable.answer != answer:
         raise RunTransitionConflict("answer workflow binding differs")
     graph = load_graph(session, answer.revision_hash)
+    node = graph.node(answer.node_id)
+    if isinstance(node, WaitNodeV3):
+        declared = node.outputs[0]
+        keep_node_receipt(
+            session,
+            answer.node_execution_id,
+            PersistedReceiptDisposition.SUCCEEDED,
+            node_receipt_reason(NodeReceiptReason.OUTPUT_ACCEPTED),
+            NodeArtifact(
+                answer.run_id,
+                node.id,
+                answer.node_execution_id,
+                declared.name,
+                PublishedRevisionHash(declared.schema_reference.revision),
+                answer.answer_bytes,
+            ),
+        )
     # The answer is asked the same question every other completed node is asked --
     # is this the run's sink, and if not which heir did its author declare -- so a
     # Wait node standing last carries its own run to COMPLETED instead of handing

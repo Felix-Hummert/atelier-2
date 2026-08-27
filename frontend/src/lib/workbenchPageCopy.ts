@@ -21,10 +21,9 @@ import { PRODUCT_NAME } from "./productName";
 export const workbenchPageCopy = {
   title: "Workbench",
 
-  /** Names who is asking, so a pinned decision is never a question from nowhere. */
-  waitingFrom: "is waiting for you",
-  openTheRun: "Open the run",
-  openTheRunForStory: "Open the run for the whole story",
+  openTheRun: "open the run",
+  answerDecision: "Answer →",
+  pinnedDecisionsLabel: "Open decisions",
 
   runsIncomplete: "Workbench runs incomplete",
   /**
@@ -50,6 +49,7 @@ export const workbenchPageCopy = {
   emptyStart: "Open the Catalog",
   youLabel: "You",
   houseLabel: PRODUCT_NAME,
+  composerRegionLabel: "Composer",
   composerLabel: "Message",
   send: "Send",
   /**

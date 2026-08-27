@@ -86,6 +86,7 @@ class NodeReceiptReason(StrEnum):
     """
 
     OUTPUT_ACCEPTED = "output-accepted"
+    EFFECT_CONFIRMED = "effect-confirmed"
     OUTPUT_SCHEMA_REFUSED = "output-schema-refused"
     PROCESS_EXITED_UNSUCCESSFULLY = "process-exited-unsuccessfully"
     PROCESS_OUTPUT_LIMIT_EXCEEDED = "process-output-limit-exceeded"
@@ -503,6 +504,8 @@ class InputEnvelope:
     schema_revision: PublishedRevisionHash | None = None
     value_hash: Sha256Hash | None = None
     receipt: InputReceiptBinding | None = None
+    source_event_hash: Sha256Hash | None = None
+    source_receipt_hash: NodeReceiptHash | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, ProjectedDeliveryStatus):
@@ -514,6 +517,10 @@ class InputEnvelope:
                 raise ValueError("a succeeded input envelope carries schema and value")
             if self.receipt is not None:
                 raise ValueError("a succeeded input envelope carries no receipt")
+            if (self.source_event_hash is None) != (self.source_receipt_hash is None):
+                raise ValueError(
+                    "a reused succeeded input names both source hashes or neither"
+                )
             return
         if self.receipt is None:
             raise ValueError(
@@ -523,6 +530,8 @@ class InputEnvelope:
             raise ValueError(
                 "a non-succeeded input envelope carries no schema or value"
             )
+        if self.source_event_hash is not None or self.source_receipt_hash is not None:
+            raise ValueError("a non-succeeded input carries no reused success source")
         if (
             self.status is not ProjectedDeliveryStatus.STALE
             and self.status.value != self.receipt.disposition.value
@@ -532,6 +541,14 @@ class InputEnvelope:
             )
 
     def framed(self) -> bytes:
+        inherited_source = (
+            ()
+            if self.source_event_hash is None or self.source_receipt_hash is None
+            else (
+                _ascii_hash(self.source_event_hash),
+                _ascii_hash(self.source_receipt_hash),
+            )
+        )
         return frame(
             "input-envelope/v3",
             self.status.value.encode("ascii"),
@@ -539,6 +556,7 @@ class InputEnvelope:
             _optional_ascii_hash(self.schema_revision),
             b"" if self.value_hash is None else _ascii_hash(self.value_hash),
             b"" if self.receipt is None else self.receipt.framed(),
+            *inherited_source,
         )
 
 

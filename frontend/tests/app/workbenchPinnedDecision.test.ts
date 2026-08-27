@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
 import {
+  CockpitRequestError,
   encodePublicRunReference,
   type CockpitApi,
   type RunV3,
@@ -195,10 +196,118 @@ describe("the Workbench pins open decisions (#580)", () => {
     const needsYou = await screen.findByRole("region", { name: question });
     await within(needsYou).findByRole("heading", { name: question });
     expect(within(needsYou).queryByRole("button", { name: runPageCopy.answerYes })).toBeNull();
-    const open = within(needsYou).getByRole("link", { name: `${workbenchPageCopy.openTheRun} →` });
+    const open = within(needsYou).getByRole("link", { name: workbenchPageCopy.openTheRun });
 
     await fireEvent.click(open);
 
     await waitFor(() => expect(window.location.pathname).toBe(`/atelier/runs/${publicReference}`));
+  });
+
+  it("keeps six decisions bounded to one expanded stage and promotes the compact control", async () => {
+    const runs = Array.from({ length: 6 }, (_, index) =>
+      waitingRun({
+        run_id: `v3/decide-${index + 1}`,
+        public_run_reference: encodePublicRunReference(`v3/decide-${index + 1}`)
+      })
+    );
+    openWorkbench(runs);
+
+    const decisions = await screen.findAllByRole("region", { name: question });
+    expect(decisions).toHaveLength(6);
+    const expanded = decisions[0];
+    const compact = decisions[5];
+    if (expanded === undefined || compact === undefined) {
+      throw new Error("The decision stack did not render.");
+    }
+
+    expect(within(expanded).getByRole("link", { name: workbenchPageCopy.openTheRun }).isConnected).toBe(true);
+    expect(
+      within(compact).getByRole("button", {
+        name: new RegExp(workbenchPageCopy.answerDecision)
+      }).isConnected
+    ).toBe(true);
+    expect(
+      within(compact).queryByRole("link", {
+        name: workbenchPageCopy.openTheRun
+      })
+    ).toBeNull();
+
+    await fireEvent.click(
+      within(compact).getByRole("button", {
+        name: new RegExp(workbenchPageCopy.answerDecision)
+      })
+    );
+
+    await waitFor(() => {
+      expect(
+        within(compact).getByRole("link", {
+          name: workbenchPageCopy.openTheRun
+        }).isConnected
+      ).toBe(true);
+      expect(
+        within(expanded).queryByRole("link", {
+          name: workbenchPageCopy.openTheRun
+        })
+      ).toBeNull();
+      expect(
+        within(expanded).getByRole("button", {
+          name: new RegExp(workbenchPageCopy.answerDecision)
+        }).isConnected
+      ).toBe(true);
+    });
+  });
+
+  it("keeps an uncertain answer expanded when another decision is promoted", async () => {
+    const answer = vi.fn(async () => {
+      throw new CockpitRequestError("The connection ended without a response.");
+    });
+    openWorkbench(
+      [
+        waitingRun(),
+        waitingRun({
+          run_id: "v3/decide-second",
+          public_run_reference: encodePublicRunReference("v3/decide-second")
+        })
+      ],
+      { answer }
+    );
+
+    const decisions = await screen.findAllByRole("region", { name: question });
+    const answeredDecision = decisions[0];
+    const otherDecision = decisions[1];
+    if (answeredDecision === undefined || otherDecision === undefined) {
+      throw new Error("The decision stack did not render.");
+    }
+
+    await fireEvent.click(
+      within(answeredDecision).getByRole("button", {
+        name: runPageCopy.answerYes
+      })
+    );
+    await within(answeredDecision).findByRole("heading", {
+      name: "Answer uncertain"
+    });
+    await within(answeredDecision).findByRole("button", { name: "Retry" });
+
+    await fireEvent.click(
+      within(otherDecision).getByRole("button", {
+        name: new RegExp(workbenchPageCopy.answerDecision)
+      })
+    );
+
+    await within(otherDecision).findByRole("link", {
+      name: workbenchPageCopy.openTheRun
+    });
+    expect(
+      within(answeredDecision).getByRole("heading", {
+        name: "Answer uncertain"
+      }).isConnected
+    ).toBe(true);
+    expect(within(answeredDecision).getByRole("button", { name: "Retry" }).isConnected).toBe(true);
+    expect(
+      within(answeredDecision).queryByRole("button", {
+        name: new RegExp(workbenchPageCopy.answerDecision)
+      })
+    ).toBeNull();
   });
 });
