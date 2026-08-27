@@ -23,6 +23,7 @@ import sqlalchemy as sa
 import uvicorn
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from atelier2.adapters.dbos import workflow as dbos_workflow
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
@@ -104,6 +105,9 @@ nodes:
 """
 RUN_IDS = ("found-run", "absent-run")
 TIMEOUT_SECONDS = 10.0
+# Deadlock brake for generation drain. Fake decode waits are short; git capture
+# of the pinned project under CI CPU pressure is not (issue #747 c2).
+GENERATION_DRAIN_SECONDS = 60.0
 # The fake conductor's fixed episode report: valid against the production
 # `CONDUCTOR_REPORT_SCHEMA`, so the browser proof sees exactly the reply a real
 # doors-armed conductor would return -- same vector, unbilled.
@@ -184,19 +188,23 @@ def close_runtime_and_scratch_root(
 
 
 class FakeProviderHolds:
-    """Tracks in-flight fake provider decodes bound to one served generation.
+    """Tracks in-flight fake provider work bound to one served generation.
 
     Delayed, held, and blocking executors wait on a release signal instead of
-    sleeping. Drain sets that signal, seals the live generation under the same
-    lock that tracks in-flight count, then blocks until every already-admitted
-    decode has returned. Each executor captures the live generation token when
-    it is created; admission refuses when that token is not the live generation
-    or when that generation is already sealed. start_generation mints a new
-    token and does not unseal the previous one, so a decode delayed before the
-    admission lock cannot enter after the old scratch root is removed.
+    sleeping. Drain sets that signal, waits until in-process DBOS workflows
+    have finished, seals the live generation under the same lock that tracks
+    in-flight count, then blocks until every already-admitted decode or
+    tracked attempt has returned. Immediate and conductor executors never
+    enter those holds; `track_execute_agent_attempt` counts their whole
+    attempt, including candidate capture after decode. Each executor captures
+    the live generation token when it is created; admission refuses when that
+    token is not the live generation or when that generation is already
+    sealed. start_generation mints a new token and does not unseal the
+    previous one, so a decode delayed before the admission lock cannot enter
+    after the old scratch root is removed.
     DBOS shutdown only waits one second for workflows and then
     ThreadPoolExecutor.shutdown(wait=False), so closing the runtime or
-    removing the scratch root before those decodes finish still races a live
+    removing the scratch root before those attempts finish still races a live
     generation.
     """
 
@@ -368,6 +376,157 @@ class BlockingAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
         type(self).observed_executor = None
 
 
+class _ActiveWorkflows(Protocol):
+    def acquire(
+        self,
+        key: str,
+        queue_name: str | None = None,
+        queue_partition_key: str | None = None,
+    ) -> bool: ...
+
+    def release(self, key: str) -> None: ...
+
+    def activeList(self) -> list[str]: ...
+
+    def count_for_queue(
+        self, queue_name: str, queue_partition_key: str | None = None
+    ) -> int: ...
+
+
+class NotifyingActiveWorkflows:
+    """Waitable in-process DBOS active-workflow set.
+
+    Wraps the live set or stands alone. The wrapper lock is acquired before
+    the inner set lock so wait_until_empty and release share one condition.
+    """
+
+    def __init__(self, inner: _ActiveWorkflows | None = None) -> None:
+        self._lock = threading.Lock()
+        self._idle = threading.Condition(self._lock)
+        self._inner = inner
+        self._standalone: dict[str, tuple[str, str | None] | None] = {}
+
+    def acquire(
+        self,
+        key: str,
+        queue_name: str | None = None,
+        queue_partition_key: str | None = None,
+    ) -> bool:
+        with self._lock:
+            if self._inner is not None:
+                return self._inner.acquire(key, queue_name, queue_partition_key)
+            if key in self._standalone:
+                return False
+            self._standalone[key] = (
+                (queue_name, queue_partition_key) if queue_name is not None else None
+            )
+            return True
+
+    def release(self, key: str) -> None:
+        with self._lock:
+            if self._inner is not None:
+                self._inner.release(key)
+                empty = not self._inner.activeList()
+            else:
+                del self._standalone[key]
+                empty = not self._standalone
+            if empty:
+                self._idle.notify_all()
+
+    def activeList(self) -> list[str]:
+        with self._lock:
+            return list(self._active_ids())
+
+    def count_for_queue(
+        self, queue_name: str, queue_partition_key: str | None = None
+    ) -> int:
+        with self._lock:
+            if self._inner is not None:
+                return self._inner.count_for_queue(queue_name, queue_partition_key)
+            target = (queue_name, queue_partition_key)
+            return sum(1 for bucket in self._standalone.values() if bucket == target)
+
+    def wait_until_empty(self, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        with self._lock:
+            while self._active_ids():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    remaining_ids = self._active_ids()
+                    raise RuntimeError(
+                        f"{len(remaining_ids)} DBOS workflow(s) did not finish: "
+                        f"{remaining_ids!r}"
+                    )
+                self._idle.wait(remaining)
+
+    def _active_ids(self) -> tuple[str, ...]:
+        if self._inner is not None:
+            return tuple(self._inner.activeList())
+        return tuple(self._standalone)
+
+
+_notifying_active_workflows_lock = threading.Lock()
+
+
+def notifying_active_workflows() -> NotifyingActiveWorkflows | None:
+    """The live in-process DBOS set, wrapped once so drain can wait on empty.
+
+    DBOS looks up `_active_workflows_set` at release time, so in-flight
+    workflows notify this wrapper after the first drain wait.
+    """
+
+    import dbos._dbos as dbos_runtime
+
+    instance: object | None = dbos_runtime._dbos_global_instance
+    if instance is None:
+        return None
+    active_set_name = "_active_workflows_set"
+    with _notifying_active_workflows_lock:
+        current = getattr(instance, active_set_name)
+        if isinstance(current, NotifyingActiveWorkflows):
+            return current
+        wrapped = NotifyingActiveWorkflows(current)
+        setattr(instance, active_set_name, wrapped)
+        return wrapped
+
+
+def active_dbos_workflow_ids() -> tuple[str, ...]:
+    """In-process DBOS workflows still running in this generation.
+
+    `DbosRuntime.close` destroys DBOS after one second, then shuts the worker
+    pool without joining. A node workflow still capturing then keeps the old
+    lease path, and the next generation recovers it.
+    """
+
+    workflows = notifying_active_workflows()
+    if workflows is None:
+        return ()
+    return tuple(workflows.activeList())
+
+
+def wait_until_dbos_workflows_idle(
+    timeout: float = GENERATION_DRAIN_SECONDS,
+) -> None:
+    workflows = notifying_active_workflows()
+    if workflows is None:
+        return
+    workflows.wait_until_empty(timeout)
+
+
+def track_execute_agent_attempt(
+    holds: FakeProviderHolds,
+    execute: Callable[..., object],
+) -> Callable[..., object]:
+    """Count the whole attempt, including capture after decode, in the drain."""
+
+    def tracked(*args: object, **kwargs: object) -> object:
+        generation, _ = holds.bind_decode()
+        with holds.in_flight(generation):
+            return execute(*args, **kwargs)
+
+    return tracked
+
+
 def drain_inflight_fake_decodes(
     holds: FakeProviderHolds,
     blocking: BlockingAgentExecutorFactory | None = None,
@@ -375,7 +534,10 @@ def drain_inflight_fake_decodes(
     holds.release_all()
     if blocking is not None:
         blocking.release_in_flight()
-    holds.wait_until_idle()
+    deadline = time.monotonic() + GENERATION_DRAIN_SECONDS
+    wait_until_dbos_workflows_idle(timeout=max(0.0, deadline - time.monotonic()))
+    holds.wait_until_idle(timeout=max(0.0, deadline - time.monotonic()))
+    wait_until_dbos_workflows_idle(timeout=max(0.0, deadline - time.monotonic()))
 
 
 class DelayedAgentExecutor(RecordingAgentExecutorV2):
@@ -824,6 +986,9 @@ def main() -> None:
     seed_boot_baseline(database, effects, application_version)
 
     holds = FakeProviderHolds()
+    dbos_workflow.execute_agent_attempt = track_execute_agent_attempt(
+        holds, dbos_workflow.execute_agent_attempt
+    )
     factory = BlockingAgentExecutorFactory(
         "e2e",
         "blocking/v1",
