@@ -46,6 +46,7 @@ from atelier2.adapters.dbos.run_transitions import (
     load_run,
 )
 from atelier2.adapters.dbos.schema import (
+    agent_attempt_receipts_v3,
     agent_attempts,
     agent_receipts_v2,
     effect_intents,
@@ -62,7 +63,11 @@ from atelier2.adapters.dbos.workflow_ids import (
     driving_workflow_ids,
     replacement_workflow_id_for,
 )
-from atelier2.application.compose_node_job import node_job
+from atelier2.application.compose_node_job import (
+    NodeJobCompositionVersion,
+    OutputSchemaRepair,
+    node_job,
+)
 from atelier2.contracts.agent_attempts import (
     TERMINAL_AGENT_ATTEMPT_STATES,
     AgentAttempt,
@@ -76,6 +81,7 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     AgentProcessOwnerId,
     CancelAgentAttemptRequest,
+    OutputSchemaRefusalReceipt,
     ProcessExitSignature,
     RunnerBindingConflict,
     RunnerCancellation,
@@ -425,6 +431,7 @@ def _validate_request(
     # wrote, plus the orders this run was started with, through the one owner
     # that decides what an agent is handed. A second spelling here would let a
     # request claim a job the document and the run never agreed on.
+    repair_reason = _output_schema_repair_reason(session, request)
     authored_job = (
         node.job
         if isinstance(node, AgentNodeV2)
@@ -438,6 +445,14 @@ def _validate_request(
                 graph,
                 node,
                 request.round_ordinal,
+            ),
+            composition_version=(
+                NodeJobCompositionVersion.CURRENT
+                if repair_reason is None
+                else NodeJobCompositionVersion.OUTPUT_SCHEMA_REPAIR
+            ),
+            output_schema_repair=(
+                None if repair_reason is None else OutputSchemaRepair(repair_reason)
             ),
         )
     ).encode("utf-8")
@@ -459,6 +474,67 @@ def _validate_request(
             "agent attempt request differs from durable binding"
         )
     return run, graph
+
+
+def _output_schema_repair_reason(
+    connection: Any, request: AgentExecutionRequestV2
+) -> str | None:
+    if request.node_execution_id != NodeExecutionId.for_node(
+        request.run_id,
+        request.workflow_revision_hash,
+        request.node_id,
+        request.round_ordinal,
+    ):
+        raise RunTransitionConflict("agent attempt request names another execution")
+    prior = connection.execute(
+        sa.select(agent_attempts.c.attempt_id).where(
+            agent_attempts.c.node_execution_id == request.node_execution_id.value,
+            agent_attempts.c.attempt_ordinal == 1,
+        )
+    ).scalar_one_or_none()
+    if prior is None:
+        return None
+    receipt = connection.execute(
+        sa.select(agent_attempt_receipts_v3.c.reason).where(
+            agent_attempt_receipts_v3.c.attempt_id == str(prior)
+        )
+    ).scalar_one_or_none()
+    return None if receipt is None else str(receipt)
+
+
+def _output_schema_repair_request(
+    connection: Any,
+    request: AgentExecutionRequestV2,
+    graph: WorkflowGraphV2 | WorkflowGraphV3,
+    node: AgentNodeV3,
+    reason: str,
+) -> AgentExecutionRequestV2:
+    job = node_job(
+        node.instruction,
+        load_run_inputs(connection, request.run_id, node),
+        load_node_outputs(
+            connection,
+            request.run_id,
+            request.workflow_revision_hash,
+            graph,
+            node,
+            request.round_ordinal,
+        ),
+        composition_version=NodeJobCompositionVersion.OUTPUT_SCHEMA_REPAIR,
+        output_schema_repair=OutputSchemaRepair(reason),
+    ).encode("utf-8")
+    return AgentExecutionRequestV2(
+        request.node_execution_id,
+        request.run_id,
+        request.workflow_revision_hash,
+        request.node_id,
+        request.resolved_binding,
+        request.executor_operational_identity,
+        job,
+        request.declared_output_schema_bytes,
+        request.round_ordinal,
+        request.maximum_assistant_turns,
+    )
 
 
 def _require_attempt_binding(
@@ -793,6 +869,62 @@ def _compact_schema_refusal(refusal: InstanceRefused, payload: bytes) -> str:
         - len(": ")
     )
     return words[:maximum_words]
+
+
+def _store_output_schema_refusal_receipt(
+    connection: Any,
+    attempt_id: AgentAttemptId,
+    reason: str,
+    schema_revision: PublishedRevisionHash,
+    value: bytes,
+) -> OutputSchemaRefusalReceipt:
+    artifact = None if value == b"" else Artifact(value)
+    if artifact is not None:
+        keep_artifact(connection, artifact)
+    receipt = OutputSchemaRefusalReceipt(
+        attempt_id,
+        reason,
+        schema_revision,
+        Sha256Hash.of(value),
+        None if artifact is None else artifact.artifact_hash,
+    )
+    connection.execute(
+        agent_attempt_receipts_v3.insert()
+        .prefix_with("OR IGNORE")
+        .values(
+            attempt_id=receipt.attempt_id.value,
+            reason=receipt.reason,
+            schema_revision_hash=receipt.schema_revision.value,
+            value_hash=receipt.value_hash.value,
+            artifact_hash=(
+                None if receipt.artifact_hash is None else receipt.artifact_hash.value
+            ),
+            receipt_hash=receipt.receipt_hash.value,
+        )
+    )
+    record = (
+        connection.execute(
+            sa.select(agent_attempt_receipts_v3).where(
+                agent_attempt_receipts_v3.c.attempt_id == attempt_id.value
+            )
+        )
+        .mappings()
+        .one()
+    )
+    durable = OutputSchemaRefusalReceipt(
+        AgentAttemptId(str(record["attempt_id"])),
+        str(record["reason"]),
+        PublishedRevisionHash(str(record["schema_revision_hash"])),
+        Sha256Hash(str(record["value_hash"])),
+        (
+            None
+            if record["artifact_hash"] is None
+            else ArtifactHash(str(record["artifact_hash"]))
+        ),
+    )
+    if durable != receipt:
+        raise RunTransitionConflict("durable output-schema refusal receipt differs")
+    return durable
 
 
 def _kept_verdict(
@@ -1876,6 +2008,20 @@ class DbosAgentAttemptStore:
                 connection, node.id, declared, result.output_bytes
             )
             if refusal is not None:
+                reason = _compact_schema_refusal(refusal, result.output_bytes)
+                if execution.ordinal == 1:
+                    return self._begin_output_schema_repair(
+                        connection,
+                        execution,
+                        durable,
+                        graph,
+                        node,
+                        declared,
+                        result,
+                        reason,
+                        redemption,
+                        runner_evidence_hash,
+                    )
                 failed = _fail_current_attempt(
                     connection,
                     execution,
@@ -1883,7 +2029,7 @@ class DbosAgentAttemptStore:
                     AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED,
                     node_receipt_reason(
                         NodeReceiptReason.OUTPUT_SCHEMA_REFUSED,
-                        _compact_schema_refusal(refusal, result.output_bytes),
+                        reason,
                     ),
                     PublishedRevisionHash(declared.schema_reference.revision),
                     result.output_bytes,
@@ -2023,6 +2169,94 @@ class DbosAgentAttemptStore:
         return AgentAttemptSucceeded(
             _load_attempt(connection, durable.attempt_id), completion
         )
+
+    def _begin_output_schema_repair(
+        self,
+        connection: Any,
+        execution: AgentAttemptExecution,
+        durable: AgentAttempt,
+        graph: WorkflowGraphV2 | WorkflowGraphV3,
+        node: AgentNodeV3,
+        declared: NodeOutput,
+        result: AgentExecutionResult,
+        reason: str,
+        redemption: ToolRedemptionReceipt | None,
+        runner_evidence_hash: RunnerTerminalEvidenceHash | None,
+    ) -> AgentAttemptFailed:
+        receipt_reason = node_receipt_reason(
+            NodeReceiptReason.OUTPUT_SCHEMA_REFUSED, reason
+        )
+        _store_output_schema_refusal_receipt(
+            connection,
+            durable.attempt_id,
+            receipt_reason,
+            PublishedRevisionHash(declared.schema_reference.revision),
+            result.output_bytes,
+        )
+        _keep_tool_redemption(
+            connection, execution, _proof_of_a_passed_check(redemption)
+        )
+        values: dict[str, object] = {
+            "state": AgentAttemptState.FAILED.value,
+            "state_version": durable.state_version + 1,
+            "failure_code": AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED.value,
+            **_kept_transcript_values(connection, result.transcript),
+        }
+        if runner_evidence_hash is not None:
+            values.update(
+                runner_terminal_evidence_hash=runner_evidence_hash.value,
+                runner_evidence_acceptance_phase=(
+                    RunnerEvidenceAcceptancePhase.CORE_COMMITTED.value
+                ),
+            )
+        updated = connection.execute(
+            agent_attempts.update()
+            .where(
+                agent_attempts.c.attempt_id == durable.attempt_id.value,
+                agent_attempts.c.state == durable.state.value,
+                agent_attempts.c.state_version == durable.state_version,
+            )
+            .values(**values)
+        )
+        if updated.rowcount != 1:
+            raise RunTransitionConflict("output-schema repair lost its attempt CAS")
+        record_attempt_ended(connection, durable.attempt_id.value)
+        request = execution.request
+        repair_request = _output_schema_repair_request(
+            connection, request, graph, node, receipt_reason
+        )
+        repair = _prepared_attempt(
+            AgentAttemptExecution(
+                repair_request,
+                AgentAttemptId.for_execution(
+                    repair_request.node_execution_id, repair_request.request_hash, 2
+                ),
+                2,
+            )
+        )
+        connection.execute(agent_attempts.insert().values(_attempt_values(repair)))
+        record_attempt_started(connection, repair.attempt_id.value)
+        if self._application_version is None:
+            raise RunTransitionConflict(
+                "output-schema repair requires an application version"
+            )
+        client = DBOSClient(
+            system_database_engine=self._engine, use_listen_notify=False
+        )
+        try:
+            client.enqueue_in_transaction(
+                connection,
+                {
+                    "workflow_name": REPLACEMENT_WORKFLOW_NAME,
+                    "queue_name": QUEUE_NAME,
+                    "workflow_id": replacement_workflow_id_for(repair.attempt_id),
+                    "app_version": self._application_version,
+                },
+                repair.attempt_id.value,
+            )
+        finally:
+            client.destroy()
+        return AgentAttemptFailed(_load_attempt(connection, durable.attempt_id))
 
     def _commit_runner_cancellation(
         self,

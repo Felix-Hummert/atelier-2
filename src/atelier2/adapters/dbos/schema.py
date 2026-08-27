@@ -62,7 +62,7 @@ class ProductSchemaHandoff:
 # Movable hop: this head persists the closed effect operation on each durable
 # intent and receipt so recovery selects the exact adapter that owns it (#642 P3).
 # Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 41
+_HOP_PREDECESSOR_VERSION = 42
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -98,6 +98,7 @@ _VERSION_THIRTY_NINE = 39
 _VERSION_FORTY = 40
 _VERSION_FORTY_ONE = 41
 _VERSION_FORTY_TWO = 42
+_VERSION_FORTY_THREE = 43
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -283,6 +284,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     40: "d8d7b89cc0cacd15dfde84bf15f796f0e03d9b571c26be0309ed87a60960071d",
     41: "7c4bc13ceb1db7533bfdf9697c1e6b262032a516275b488eac73af9969446b68",
     42: "d2f874edd0dbbecb677b284db8e41cd3a681fae99703d126764bc90fa0cf7865",
+    43: "f7d299ab865b87ca47a399d4897f8c7b273085c4d206fac9eb882d47198b9782",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -1233,6 +1235,38 @@ agent_attempts = sa.Table(
         "'AGENT_REFUSED', 'PROJECT_VERIFICATION_FAILED', "
         "'CANDIDATE_CAPTURE_FAILED') "
         "AND receipt_hash IS NULL)"
+    ),
+)
+agent_attempt_receipts_v3 = sa.Table(
+    "agent_attempt_receipts_v3",
+    metadata,
+    sa.Column(
+        "attempt_id",
+        sa.Text,
+        sa.ForeignKey("agent_attempts.attempt_id", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    sa.Column("reason", sa.Text, nullable=False),
+    sa.Column("schema_revision_hash", sa.Text, nullable=False),
+    sa.Column("value_hash", sa.Text, nullable=False),
+    sa.Column(
+        "artifact_hash",
+        sa.Text,
+        sa.ForeignKey("artifacts.artifact_hash", ondelete="RESTRICT"),
+        nullable=True,
+    ),
+    sa.Column("receipt_hash", sa.Text, unique=True, nullable=False),
+    sa.CheckConstraint("length(reason) > 0"),
+    sa.CheckConstraint(
+        "length(schema_revision_hash) = 64 AND schema_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("length(value_hash) = 64 AND value_hash NOT GLOB '*[^0-9a-f]*'"),
+    sa.CheckConstraint(
+        "artifact_hash IS NULL OR (length(artifact_hash) = 64 "
+        "AND artifact_hash NOT GLOB '*[^0-9a-f]*')"
+    ),
+    sa.CheckConstraint(
+        "length(receipt_hash) = 64 AND receipt_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
 run_events = sa.Table(
@@ -2386,6 +2420,18 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'v2 agent receipts are immutable');
         END
     """,
+    "agent_attempt_receipts_v3_no_update": """
+        CREATE TRIGGER agent_attempt_receipts_v3_no_update
+        BEFORE UPDATE ON agent_attempt_receipts_v3 BEGIN
+          SELECT RAISE(ABORT, 'agent attempt receipts are immutable');
+        END
+    """,
+    "agent_attempt_receipts_v3_no_delete": """
+        CREATE TRIGGER agent_attempt_receipts_v3_no_delete
+        BEFORE DELETE ON agent_attempt_receipts_v3 BEGIN
+          SELECT RAISE(ABORT, 'agent attempt receipts are immutable');
+        END
+    """,
     "tool_redemptions_no_update": """
         CREATE TRIGGER tool_redemptions_no_update
         BEFORE UPDATE ON tool_redemptions BEGIN
@@ -3195,7 +3241,8 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         run_fork_reused_nodes.name,
         run_fork_effect_fences.name,
     }
-    before_forks = PRODUCT_TABLE_NAMES - fork_tables
+    attempt_receipt_tables = {agent_attempt_receipts_v3.name}
+    before_forks = PRODUCT_TABLE_NAMES - fork_tables - attempt_receipt_tables
     before_model_configuration = (before_forks - model_configuration) | occupancy
     predecessor_tables = (
         before_model_configuration
@@ -3204,8 +3251,10 @@ def _table_names_for_version(version: int) -> frozenset[str]:
     ) | {_V27_ACCESS_TABLE_NAME}
     if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
+    if version == _VERSION_FORTY_TWO:
+        return PRODUCT_TABLE_NAMES - attempt_receipt_tables
     if version == _VERSION_FORTY_ONE:
-        return PRODUCT_TABLE_NAMES
+        return PRODUCT_TABLE_NAMES - attempt_receipt_tables
     if version == _VERSION_FORTY:
         return before_forks
     # V33 to V39 hold the same tables: the hops between
@@ -3460,7 +3509,12 @@ def _raise_declared_version(
 
 
 def _added_table_step(
-    table: sa.Table, triggers: tuple[str, ...], source: int, target: int
+    table: sa.Table,
+    triggers: tuple[str, ...],
+    source: int,
+    target: int,
+    *,
+    allow_empty_prepared_table: bool = False,
 ) -> Callable[[sqlite3.Connection], None]:
     """One additive hop: a table this version introduces, its triggers, the CAS.
 
@@ -3481,6 +3535,18 @@ def _added_table_step(
             (table.name,),
         ).fetchone()
         if existing is not None:
+            if allow_empty_prepared_table and connection.execute(
+                f"SELECT count(*) FROM {table.name}"
+            ).fetchone() == (0,):
+                for trigger in triggers:
+                    trigger_exists = connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='trigger' AND name=?",
+                        (trigger,),
+                    ).fetchone()
+                    if trigger_exists is None:
+                        connection.execute(_PRODUCT_TRIGGERS[trigger])
+                _raise_declared_version(connection, source, target)
+                return
             raise StoreMigrationRefused(
                 f"schema version {source} already has {table.name}; "
                 "this command will not alter it"
@@ -3516,7 +3582,7 @@ def _table_indexes_at(version: int, table: sa.Table) -> tuple[str, ...]:
     published versions record none; a version a later hop moved an index of is a
     record, for the reason `published_schema_shapes` gives.
     """
-    if version == SCHEMA_VERSION:
+    if version in {SCHEMA_VERSION, _VERSION_FORTY_TWO}:
         return tuple(_declared_indexes(table).values())
     recorded = PUBLISHED_TABLE_INDEXES.get((version, table.name))
     return tuple(_declared_indexes(table).values()) if recorded is None else recorded
@@ -3528,7 +3594,7 @@ def _table_shape_at(version: int, table: sa.Table) -> str:
     The current version is the declaration; every earlier one is a record, and
     `published_schema_shapes` says why it may not be derived.
     """
-    if version == SCHEMA_VERSION:
+    if version in {SCHEMA_VERSION, _VERSION_FORTY_TWO}:
         return str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
     frozen_shape = PUBLISHED_TABLE_SHAPES.get((version, table.name))
     if frozen_shape is None:
@@ -5170,6 +5236,19 @@ def _apply_v41_to_v42(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_FORTY_ONE, _VERSION_FORTY_TWO)
 
 
+def _apply_v42_to_v43(connection: sqlite3.Connection) -> None:
+    """Give a schema refusal its immutable per-attempt evidence record."""
+
+    apply = _added_table_step(
+        agent_attempt_receipts_v3,
+        ("agent_attempt_receipts_v3_no_update", "agent_attempt_receipts_v3_no_delete"),
+        _VERSION_FORTY_TWO,
+        _VERSION_FORTY_THREE,
+        allow_empty_prepared_table=True,
+    )
+    apply(connection)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -5322,6 +5401,11 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _VERSION_FORTY_ONE,
         _VERSION_FORTY_TWO,
         _apply_v41_to_v42,
+    ),
+    _SchemaMigrationStep(
+        _VERSION_FORTY_TWO,
+        _VERSION_FORTY_THREE,
+        _apply_v42_to_v43,
     ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {

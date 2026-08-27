@@ -65,6 +65,9 @@ atomic attempt/receipt/event/run transition. Which bytes may become that success
 is the declaring node's decision: a V2 node bounds them and nothing else, while a
 V3 node's answer is read against the schema its own output pins before any of
 that transition is written.
+When a declared output schema refuses an agent's answer, the engine gives that
+same agent one durable repair round carrying the refusal reason; a second refusal
+ends the run under `OUTPUT_SCHEMA_REFUSED`.
 
 Schema V27 stages the Core half of the external Runner handoff. A disposable
 #301-A witness candidate now exercises a real codec against it end to end

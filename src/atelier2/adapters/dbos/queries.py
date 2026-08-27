@@ -39,6 +39,7 @@ from atelier2.adapters.dbos.run_transitions import (
     validate_run_graph_binding,
 )
 from atelier2.adapters.dbos.schema import (
+    agent_attempt_receipts_v3,
     agent_attempts,
     agent_receipts_v2,
     attempt_instants,
@@ -58,7 +59,11 @@ from atelier2.adapters.dbos.workflow import (
     _pinned_maximum_assistant_turns,
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.application.compose_node_job import NodeJobCompositionVersion, node_job
+from atelier2.application.compose_node_job import (
+    NodeJobCompositionVersion,
+    OutputSchemaRepair,
+    node_job,
+)
 from atelier2.application.project_node_rail import (
     never_launched_cleanup_on_failed_run,
     project_node_rail,
@@ -417,6 +422,7 @@ def _current_attempt_projection(
     # handed on. A recomputation that knew only part of it would answer a run
     # that really was a chain with a conflict about its own identity.
     request_hash = AgentExecutionRequestHash(str(record["request_hash"]))
+    ordinal = int(record["attempt_ordinal"])
     output_schema = _declared_output_schema_document(session, node)
 
     def request_for(authored_job: bytes) -> AgentExecutionRequestV2:
@@ -445,15 +451,42 @@ def _current_attempt_projection(
             node,
             run.current_round_ordinal,
         )
+        repair_reason = None
+        if ordinal == 2:
+            repair_reason = session.scalar(
+                sa.select(agent_attempt_receipts_v3.c.reason)
+                .select_from(
+                    agent_attempt_receipts_v3.join(
+                        agent_attempts,
+                        agent_attempt_receipts_v3.c.attempt_id
+                        == agent_attempts.c.attempt_id,
+                    )
+                )
+                .where(
+                    agent_attempts.c.node_execution_id == execution_id.value,
+                    agent_attempts.c.attempt_ordinal == 1,
+                )
+            )
+            if repair_reason is None:
+                raise RunTransitionConflict("repair attempt has no refusal receipt")
         exact_request = request_for(
             node_job(
                 node.instruction,
                 orders,
                 results,
-                NodeJobCompositionVersion.CURRENT,
+                composition_version=(
+                    NodeJobCompositionVersion.OUTPUT_SCHEMA_REPAIR
+                    if repair_reason is not None
+                    else NodeJobCompositionVersion.CURRENT
+                ),
+                output_schema_repair=(
+                    None
+                    if repair_reason is None
+                    else OutputSchemaRepair(str(repair_reason))
+                ),
             ).encode("utf-8")
         )
-        if request_hash != exact_request.request_hash:
+        if repair_reason is None and request_hash != exact_request.request_hash:
             exact_request = request_for(
                 node_job(
                     node.instruction,
@@ -463,7 +496,6 @@ def _current_attempt_projection(
                 ).encode("utf-8")
             )
     attempt_id = AgentAttemptId(str(record["attempt_id"]))
-    ordinal = int(record["attempt_ordinal"])
     expected_attempt_id = AgentAttemptId.for_execution(
         execution_id, exact_request.request_hash, ordinal
     )
@@ -566,7 +598,19 @@ def _node_receipt_refusal(
         )
     ).one_or_none()
     if record is None:
-        return None
+        return connection.scalar(
+            sa.select(agent_attempt_receipts_v3.c.reason)
+            .select_from(
+                agent_attempt_receipts_v3.join(
+                    agent_attempts,
+                    agent_attempt_receipts_v3.c.attempt_id
+                    == agent_attempts.c.attempt_id,
+                )
+            )
+            .where(agent_attempts.c.node_execution_id == execution_id.value)
+            .order_by(agent_attempts.c.attempt_ordinal.desc())
+            .limit(1)
+        )
     disposition = PersistedReceiptDisposition(str(record.disposition))
     if disposition is PersistedReceiptDisposition.SUCCEEDED:
         return None
@@ -611,7 +655,37 @@ def _node_receipt_refusal_output(
         )
     ).one_or_none()
     if record is None:
-        return None
+        record = connection.execute(
+            sa.select(
+                agent_attempt_receipts_v3.c.value_hash,
+                agent_attempt_receipts_v3.c.artifact_hash,
+            )
+            .select_from(
+                agent_attempt_receipts_v3.join(
+                    agent_attempts,
+                    agent_attempt_receipts_v3.c.attempt_id
+                    == agent_attempts.c.attempt_id,
+                )
+            )
+            .where(agent_attempts.c.node_execution_id == execution_id.value)
+            .order_by(agent_attempts.c.attempt_ordinal.desc())
+            .limit(1)
+        ).one_or_none()
+        if record is None:
+            return None
+        value_hash = Sha256Hash(str(record.value_hash))
+        if record.artifact_hash is None:
+            return None
+        artifact = read_stored_artifact(
+            connection, ArtifactHash(str(record.artifact_hash))
+        )
+        if artifact is None:
+            return None
+        try:
+            text = artifact.content.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
     disposition = PersistedReceiptDisposition(str(record.disposition))
     if disposition is PersistedReceiptDisposition.SUCCEEDED:
         return None

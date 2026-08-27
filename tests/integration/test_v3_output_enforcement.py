@@ -50,6 +50,7 @@ from atelier2.adapters.dbos.node_records import keep_node_receipt
 from atelier2.adapters.dbos.run_store import run_from_record_with_bindings
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
+    agent_attempt_receipts_v3,
     agent_attempts,
     agent_receipts_v2,
     context_packages_v3,
@@ -71,19 +72,22 @@ from atelier2.adapters.grok_subscription import (
     GrokSubscriptionSettings,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.api.projection.events import bounded_event_summary
+from atelier2.application.compose_node_job import (
+    OUTPUT_SCHEMA_REPAIR_HEADING,
+    NodeJobCompositionVersion,
+    OutputSchemaRepair,
+    node_job,
+)
 from atelier2.contracts.agent_attempts import (
     MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES,
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     AgentAttemptCancellationDisposition,
     AgentAttemptFailureCode,
     AgentAttemptId,
-    AgentAttemptProcessPhase,
     AgentAttemptReplacement,
     AgentAttemptState,
     CancelAgentAttemptRequest,
     ProcessExitSignature,
-    RunnerEvidenceAcceptancePhase,
 )
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
@@ -119,7 +123,6 @@ from atelier2.contracts.node_records_v3 import (
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_bindings import RunV3
-from atelier2.contracts.run_events import RunEventPage
 from atelier2.contracts.runs import (
     RunId,
     RunState,
@@ -316,6 +319,56 @@ def armed_attempt(
     return execution
 
 
+def repair_attempt(
+    runtime: DbosRuntime, refused: AgentAttemptExecution
+) -> AgentAttemptExecution:
+    """Read the durable verdict into the one repair request it ordered."""
+    with runtime.engine.connect() as connection:
+        reason = connection.scalar(
+            sa.select(agent_attempt_receipts_v3.c.reason).where(
+                agent_attempt_receipts_v3.c.attempt_id == refused.attempt_id.value
+            )
+        )
+        attempt_id = connection.scalar(
+            sa.select(agent_attempts.c.attempt_id).where(
+                agent_attempts.c.node_execution_id
+                == refused.request.node_execution_id.value,
+                agent_attempts.c.attempt_ordinal == REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
+            )
+        )
+    assert reason is not None
+    request = AgentExecutionRequestV2(
+        refused.request.node_execution_id,
+        refused.request.run_id,
+        refused.request.workflow_revision_hash,
+        refused.request.node_id,
+        refused.request.resolved_binding,
+        refused.request.executor_operational_identity,
+        node_job(
+            INSTRUCTION.decode("ascii"),
+            composition_version=NodeJobCompositionVersion.OUTPUT_SCHEMA_REPAIR,
+            output_schema_repair=OutputSchemaRepair(str(reason)),
+        ).encode("utf-8"),
+        refused.request.declared_output_schema_bytes,
+        refused.request.round_ordinal,
+        refused.request.maximum_assistant_turns,
+    )
+    repair = AgentAttemptExecution(
+        request,
+        AgentAttemptId(str(attempt_id)),
+        REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
+    )
+    assert repair.attempt_id == AgentAttemptId.for_execution(
+        request.node_execution_id,
+        request.request_hash,
+        REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
+    )
+    DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version).claim(
+        repair
+    )
+    return repair
+
+
 def durable_answer(runtime: DbosRuntime) -> tuple[int, int, str, str]:
     """What an operator can read afterwards: receipts, events, run and attempt."""
     with runtime.engine.connect() as connection:
@@ -401,25 +454,15 @@ def test_an_answer_its_own_schema_refuses_never_becomes_a_success(
     assert outcome.attempt.failure_code is AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED
     assert durable_answer(runtime) == (
         0,
-        1,
-        RunState.FAILED.value,
+        0,
+        RunState.STARTED.value,
         AgentAttemptState.FAILED.value,
     )
     with runtime.engine.connect() as connection:
-        event = (
-            connection.execute(
-                sa.select(run_events.c.event_kind, run_events.c.payload).where(
-                    run_events.c.run_id == RUN.value
-                )
-            )
-            .mappings()
-            .one()
-        )
         receipt = (
             connection.execute(
-                sa.select(node_receipts_v3).where(
-                    node_receipts_v3.c.node_execution_id
-                    == execution.request.node_execution_id.value
+                sa.select(agent_attempt_receipts_v3).where(
+                    agent_attempt_receipts_v3.c.attempt_id == execution.attempt_id.value
                 )
             )
             .mappings()
@@ -441,22 +484,129 @@ def test_an_answer_its_own_schema_refuses_never_becomes_a_success(
         outputs = connection.scalar(
             sa.select(sa.func.count()).select_from(node_receipt_outputs_v3)
         )
-    assert event["event_kind"] == RunEventKind.AGENT_FAILED.value
-    assert bytes(
-        event["payload"]
-    ) == AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED.value.encode("ascii")
-    assert receipt["disposition"] == "failed"
-    reason, schema_revision, value_hash = read_stored_node_receipt_reason(
-        str(receipt["reason"])
-    )
+    reason = str(receipt["reason"])
     assert reason == expected_reason
     assert answered.decode("utf-8", errors="replace") not in reason
     assert len(reason) <= MAXIMUM_AGENT_FIELD_CHARACTERS
-    assert schema_revision == PLAN_SCHEMA.revision_hash
-    assert value_hash == Sha256Hash.of(answered)
-    assert receipt["request_hash"] == request["request_hash"]
-    assert receipt["context_package_hash"] == request["context_package_hash"]
+    assert receipt["schema_revision_hash"] == PLAN_SCHEMA.revision_hash.value
+    assert receipt["value_hash"] == Sha256Hash.of(answered).value
+    assert request["node_execution_id"] == execution.request.node_execution_id.value
     assert (int(artifacts or 0), int(outputs or 0)) == (0, 0)
+
+
+@pytest.mark.proves("a-schema-refusal-orders-one-durable-repair-round")
+def test_a_schema_refusal_orders_one_repair_that_can_succeed(
+    runtime: DbosRuntime,
+) -> None:
+    first = armed_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    refused = store.complete_success(
+        first, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+    )
+
+    assert isinstance(refused, AgentAttemptFailed), refused
+    repair = repair_attempt(runtime, first)
+    reason = repair.request.job_bytes.decode("utf-8")
+    assert OUTPUT_SCHEMA_REPAIR_HEADING in reason
+    assert "output-schema-refused: instance-not-json" in reason
+
+    succeeded = store.complete_success(
+        repair, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_ADMITS)
+    )
+
+    assert isinstance(succeeded, AgentAttemptSucceeded), succeeded
+    with runtime.engine.connect() as connection:
+        attempts = tuple(
+            connection.execute(
+                sa.select(
+                    agent_attempts.c.attempt_ordinal,
+                    agent_attempts.c.state,
+                    agent_attempts.c.failure_code,
+                ).order_by(agent_attempts.c.attempt_ordinal)
+            ).all()
+        )
+        refusal_receipts = connection.scalar(
+            sa.select(sa.func.count()).select_from(agent_attempt_receipts_v3)
+        )
+    assert attempts == (
+        (
+            1,
+            AgentAttemptState.FAILED.value,
+            AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED.value,
+        ),
+        (2, AgentAttemptState.SUCCEEDED.value, None),
+    )
+    assert refusal_receipts == 1
+    assert durable_answer(runtime) == (
+        1,
+        1,
+        RunState.COMPLETED.value,
+        AgentAttemptState.FAILED.value,
+    )
+
+
+@pytest.mark.proves("a-schema-refusal-orders-only-one-repair-round")
+def test_two_schema_refusals_end_failed_under_output_schema_refused(
+    runtime: DbosRuntime,
+) -> None:
+    first = armed_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+    store.complete_success(first, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES))
+    repair = repair_attempt(runtime, first)
+
+    failed = store.complete_success(
+        repair, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+    )
+
+    assert isinstance(failed, AgentAttemptFailed), failed
+    assert failed.attempt.failure_code is AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED
+    with runtime.engine.connect() as connection:
+        attempts = tuple(
+            connection.execute(
+                sa.select(
+                    agent_attempts.c.attempt_ordinal,
+                    agent_attempts.c.state,
+                    agent_attempts.c.failure_code,
+                ).order_by(agent_attempts.c.attempt_ordinal)
+            ).all()
+        )
+        receipts = connection.scalar(
+            sa.select(sa.func.count()).select_from(node_receipts_v3)
+        )
+    assert attempts == (
+        (
+            1,
+            AgentAttemptState.FAILED.value,
+            AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED.value,
+        ),
+        (
+            2,
+            AgentAttemptState.FAILED.value,
+            AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED.value,
+        ),
+    )
+    assert receipts == 1
+    assert durable_answer(runtime)[2] == RunState.FAILED.value
+
+
+@pytest.mark.proves("an-admitted-answer-does-not-open-a-repair-round")
+def test_an_admitted_answer_opens_no_repair_round(runtime: DbosRuntime) -> None:
+    execution = armed_attempt(runtime)
+
+    outcome = DbosAgentAttemptStore(
+        runtime.engine, runtime.settings.application_version
+    ).complete_success(execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_ADMITS))
+
+    assert isinstance(outcome, AgentAttemptSucceeded), outcome
+    with runtime.engine.connect() as connection:
+        attempts = connection.scalar(
+            sa.select(sa.func.count()).select_from(agent_attempts)
+        )
+        refusals = connection.scalar(
+            sa.select(sa.func.count()).select_from(agent_attempt_receipts_v3)
+        )
+    assert (attempts, refusals) == (1, 0)
 
 
 @pytest.mark.proves("a-refused-output-ends-its-attempt-durably-named")
@@ -481,32 +631,22 @@ def test_a_large_schema_refusal_has_a_compact_reason_and_exact_detail_output(
     with runtime.engine.connect() as connection:
         receipt = (
             connection.execute(
-                sa.select(node_receipts_v3.c.reason).where(
-                    node_receipts_v3.c.node_execution_id
-                    == execution.request.node_execution_id.value
+                sa.select(agent_attempt_receipts_v3).where(
+                    agent_attempt_receipts_v3.c.attempt_id == execution.attempt_id.value
                 )
             )
             .mappings()
             .one()
         )
-    reason, schema_revision, value_hash = read_stored_node_receipt_reason(
-        str(receipt["reason"])
-    )
+    reason = str(receipt["reason"])
     assert reason.startswith("output-schema-refused: schema-violated: /steps: ")
     assert "is not of type 'integer'" in reason
     assert rejected.decode("utf-8") not in reason
     assert len(reason) <= MAXIMUM_AGENT_FIELD_CHARACTERS
-    assert schema_revision == PLAN_SCHEMA.revision_hash
-    assert value_hash == Sha256Hash.of(rejected)
+    assert receipt["schema_revision_hash"] == PLAN_SCHEMA.revision_hash.value
+    assert receipt["value_hash"] == Sha256Hash.of(rejected).value
 
-    queries = durable_queries(runtime.engine)
-    page = queries.read_run_event_page(RUN, 0, 5)
-    assert isinstance(page, RunEventPage)
-    persisted = page.events[0]
-    assert persisted.node_receipt_reason == reason
-    assert bounded_event_summary(persisted) is persisted
-
-    found = queries.get_node_detail(RUN, NODE)
+    found = durable_queries(runtime.engine).get_node_detail(RUN, NODE)
     assert isinstance(found, NodeDetailFound), found
     assert found.detail.refusal == reason
     assert found.detail.refusal_output is not None
@@ -550,18 +690,21 @@ def test_a_schema_refusal_elides_its_exact_value_repr_from_the_stored_reason(
 
     assert isinstance(outcome, AgentAttemptFailed), outcome
     with runtime.engine.connect() as connection:
-        stored = connection.scalar(
-            sa.select(node_receipts_v3.c.reason).where(
-                node_receipts_v3.c.node_execution_id
-                == execution.request.node_execution_id.value
+        stored = (
+            connection.execute(
+                sa.select(agent_attempt_receipts_v3).where(
+                    agent_attempt_receipts_v3.c.attempt_id == execution.attempt_id.value
+                )
             )
+            .mappings()
+            .one()
         )
-    reason, schema_revision, value_hash = read_stored_node_receipt_reason(str(stored))
+    reason = str(stored["reason"])
     assert reason.startswith("output-schema-refused: schema-violated: ")
     assert expected_rule in reason
     assert rejected_value_repr not in reason
-    assert schema_revision == schema.revision_hash
-    assert value_hash == Sha256Hash.of(answered)
+    assert stored["schema_revision_hash"] == schema.revision_hash.value
+    assert stored["value_hash"] == Sha256Hash.of(answered).value
 
 
 @pytest.mark.parametrize(
@@ -600,19 +743,26 @@ def test_a_refused_answer_stays_readable_under_the_hash_its_receipt_kept(
 
     assert isinstance(outcome, AgentAttemptFailed), outcome
     with runtime.engine.connect() as connection:
-        stored_reason = str(
-            connection.scalar(
-                sa.select(node_receipts_v3.c.reason).where(
-                    node_receipts_v3.c.node_execution_id
-                    == execution.request.node_execution_id.value
+        receipt = (
+            connection.execute(
+                sa.select(
+                    agent_attempt_receipts_v3.c.value_hash,
+                    agent_attempt_receipts_v3.c.artifact_hash,
+                ).where(
+                    agent_attempt_receipts_v3.c.attempt_id == execution.attempt_id.value
                 )
             )
+            .mappings()
+            .one()
         )
-        _reason, _schema_revision, value_hash = read_stored_node_receipt_reason(
-            stored_reason
+        assert receipt["value_hash"] == Sha256Hash.of(answered).value
+        held = (
+            None
+            if receipt["artifact_hash"] is None
+            else read_stored_artifact(
+                connection, ArtifactHash(str(receipt["artifact_hash"]))
+            )
         )
-        assert value_hash is not None
-        held = read_stored_artifact(connection, ArtifactHash(value_hash.value))
     assert held == (None if kept is None else Artifact(kept))
 
 
@@ -718,7 +868,7 @@ def test_a_crash_inside_the_terminal_write_leaves_no_partial_receipt(
     def crash(*arguments: object, **keywords: object) -> None:
         raise RuntimeError("crash inside the terminal write")
 
-    monkeypatch.setattr(store_module, "_commit_event", crash)
+    monkeypatch.setattr(store_module, "replacement_workflow_id_for", crash)
     with pytest.raises(RuntimeError, match="crash inside the terminal write"):
         store.complete_success(execution, AgentExecutionResult(b"prose, not JSON"))
 
@@ -726,12 +876,19 @@ def test_a_crash_inside_the_terminal_write_leaves_no_partial_receipt(
         receipts = connection.scalar(
             sa.select(sa.func.count()).select_from(node_receipts_v3)
         )
+        refusal_receipts = connection.scalar(
+            sa.select(sa.func.count()).select_from(agent_attempt_receipts_v3)
+        )
         events = connection.scalar(
             sa.select(sa.func.count())
             .select_from(run_events)
             .where(run_events.c.run_id == RUN.value)
         )
-    assert (int(receipts or 0), int(events or 0)) == (0, 0)
+    assert (int(receipts or 0), int(refusal_receipts or 0), int(events or 0)) == (
+        0,
+        0,
+        0,
+    )
     assert durable_answer(runtime)[2:] == (
         RunState.STARTED.value,
         AgentAttemptState.LAUNCH_ARMED.value,
@@ -820,9 +977,7 @@ def test_a_refused_output_never_releases_the_node_behind_it(
     assert isinstance(outcome, AgentAttemptFailed), outcome
     assert chain_after_the_answer(
         runtime, execution.request.workflow_revision_hash
-    ) == ChainAfterTheAnswer(
-        RunState.FAILED.value, NODE, (NODE,), 0, ((NODE, "failed"),)
-    )
+    ) == ChainAfterTheAnswer(RunState.STARTED.value, NODE, (NODE, NODE), 0, ())
 
 
 @pytest.mark.proves("a-refused-output-never-releases-the-node-behind-it")
@@ -987,7 +1142,7 @@ def test_a_refused_output_can_never_be_retried_into_a_second_ending(
     )
 
     assert isinstance(retried, AgentAttemptCancellationTerminalConflict), retried
-    assert kept_for_the_node_execution(runtime) == (0, 1, ("failed",))
+    assert kept_for_the_node_execution(runtime) == (0, 2, ())
 
 
 def test_the_start_persists_the_request_and_package_the_receipt_will_bind(
@@ -1140,6 +1295,10 @@ def test_a_refused_answer_ends_the_run_as_failed(runtime: DbosRuntime) -> None:
     store.complete_success(
         execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
     )
+    store.complete_success(
+        repair_attempt(runtime, execution),
+        AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES),
+    )
 
     assert durable_answer(runtime)[2:] == (
         RunState.FAILED.value,
@@ -1166,6 +1325,10 @@ def test_a_serve_start_ends_a_started_run_whose_current_node_already_failed(
     store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
     store.complete_success(
         execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+    )
+    store.complete_success(
+        repair_attempt(runtime, execution),
+        AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES),
     )
     assert durable_answer(runtime)[2] == RunState.FAILED.value
 
@@ -1203,6 +1366,10 @@ def leftover_started_run_whose_current_node_failed(
     attempts.complete_success(
         execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
     )
+    attempts.complete_success(
+        repair_attempt(runtime, execution),
+        AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES),
+    )
     with runtime.engine.connect() as connection:
         reverted = connection.execute(
             runs.update()
@@ -1228,38 +1395,13 @@ def test_converge_uncontinuable_runs_does_not_end_a_run_that_can_still_continue(
         converge_uncontinuable_runs,
     )
 
-    execution = leftover_started_run_whose_current_node_failed(runtime)
+    execution = armed_attempt(runtime)
+    DbosAgentAttemptStore(
+        runtime.engine, runtime.settings.application_version
+    ).complete_success(execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES))
     store = DbosUncontinuableRunStore(
         runtime.engine, runtime.settings.application_version
     )
-    replacement = AgentAttemptId.for_execution(
-        execution.request.node_execution_id,
-        execution.request.request_hash,
-        REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
-    )
-    with runtime.engine.connect() as connection:
-        connection.execute(
-            agent_attempts.insert().values(
-                attempt_id=replacement.value,
-                node_execution_id=execution.request.node_execution_id.value,
-                request_hash=execution.request.request_hash.value,
-                executor_operational_identity=(
-                    execution.request.executor_operational_identity.value
-                ),
-                run_id=execution.request.run_id.value,
-                workflow_revision_hash=execution.request.workflow_revision_hash.value,
-                node_id=execution.request.node_id,
-                attempt_ordinal=REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
-                state=AgentAttemptState.LAUNCH_ARMED.value,
-                state_version=1,
-                process_phase=AgentAttemptProcessPhase.NONE.value,
-                runner_evidence_acceptance_phase=(
-                    RunnerEvidenceAcceptancePhase.NONE.value
-                ),
-            )
-        )
-        connection.commit()
-
     assert store.uncontinuable_runs() == ()
     assert converge_uncontinuable_runs(store) == ()
     assert durable_answer(runtime)[2] == RunState.STARTED.value
@@ -1503,8 +1645,10 @@ def test_every_executor_adapter_refuses_a_schema_violation_on_the_same_seam(
     assert isinstance(outcome, AgentAttemptFailed), outcome
     assert outcome.attempt.failure_code is AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED
     with runtime.engine.connect() as connection:
-        stored = connection.scalar(sa.select(node_receipts_v3.c.reason))
-    reason, schema_revision, value_hash = read_stored_node_receipt_reason(str(stored))
+        stored = (
+            connection.execute(sa.select(agent_attempt_receipts_v3)).mappings().one()
+        )
+    reason = str(stored["reason"])
     assert reason.startswith(f"{NodeReceiptReason.OUTPUT_SCHEMA_REFUSED.value}: ")
-    assert schema_revision == PLAN_SCHEMA.revision_hash
-    assert value_hash == Sha256Hash.of(THE_ANSWER_THE_SCHEMA_REFUSES)
+    assert stored["schema_revision_hash"] == PLAN_SCHEMA.revision_hash.value
+    assert stored["value_hash"] == Sha256Hash.of(THE_ANSWER_THE_SCHEMA_REFUSES).value

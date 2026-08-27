@@ -598,6 +598,9 @@ def _create_populated_v40_store(database_path: Path) -> tuple[object, ...]:
             (*shared, "pull-request/41", b"confirmed result", result_hash),
         )
         _restore_v40_fork_predecessor(connection)
+        connection.execute("DROP TRIGGER agent_attempt_receipts_v3_no_update")
+        connection.execute("DROP TRIGGER agent_attempt_receipts_v3_no_delete")
+        connection.execute("DROP TABLE agent_attempt_receipts_v3")
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V40_SCHEMA_HANDOFF.version,),
@@ -720,6 +723,9 @@ def _create_populated_v41_store(
             (*receipt_binding, "53" * 32),
         )
         _restore_v41_operation_predecessor(connection)
+        connection.execute("DROP TRIGGER agent_attempt_receipts_v3_no_update")
+        connection.execute("DROP TRIGGER agent_attempt_receipts_v3_no_delete")
+        connection.execute("DROP TABLE agent_attempt_receipts_v3")
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V41_SCHEMA_HANDOFF.version,),
@@ -734,7 +740,7 @@ def test_v41_effect_rows_cross_v42_with_open_pr_backfilled(tmp_path: Path) -> No
 
     report = migrate_store(database)
 
-    assert (report.source_version, report.target_version) == (41, 42)
+    assert (report.source_version, report.target_version) == (41, 43)
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT operation_name FROM effect_intents"

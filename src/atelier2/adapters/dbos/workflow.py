@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol, assert_never, cast
 
 import sqlalchemy as sa
@@ -73,7 +73,12 @@ from atelier2.adapters.dbos.run_transitions import (
     load_graph,
     load_run,
 )
-from atelier2.adapters.dbos.schema import published_revisions, reconcile_commands
+from atelier2.adapters.dbos.schema import (
+    agent_attempt_receipts_v3,
+    agent_attempts,
+    published_revisions,
+    reconcile_commands,
+)
 from atelier2.adapters.dbos.workflow_ids import (
     effect_workflow_id_for,
     node_workflow_id_for,
@@ -91,6 +96,11 @@ from atelier2.application.cancel_agent_attempt import (
     continue_agent_attempt_cancellation,
 )
 from atelier2.application.cancel_runner_attempt import cancel_runner_attempt
+from atelier2.application.compose_node_job import (
+    NodeJobCompositionVersion,
+    OutputSchemaRepair,
+    node_job,
+)
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.application.execute_agent_attempt_on_runner import (
     ExecuteAgentAttemptOnRunnerOutcome,
@@ -397,6 +407,62 @@ class ReconstructedAgentAttempt:
     carrier: AgentExecutorCarrier
 
 
+def _reconstructed_output_schema_repair_job(
+    datasource: SQLAlchemyDatasource,
+    attempt: AgentAttempt,
+    round_ordinal: int,
+) -> str | None:
+    """Read and compose a repair only when its durable refusal receipt exists.
+
+    Ordinal two predates schema repair: cancellation also mints one replacement.
+    The receipt, not the ordinal, distinguishes the two.  It is deliberately
+    loaded in one DBOS transaction step because replacement workflows may only
+    access their datasource through that boundary.
+    """
+
+    def load() -> str | None:
+        session = datasource.sql_session()
+        prior_attempt_id = session.scalar(
+            sa.select(agent_attempts.c.attempt_id).where(
+                agent_attempts.c.node_execution_id == attempt.node_execution_id.value,
+                agent_attempts.c.attempt_ordinal == AGENT_ATTEMPT_ORDINAL,
+            )
+        )
+        if prior_attempt_id is None:
+            return None
+        reason = session.scalar(
+            sa.select(agent_attempt_receipts_v3.c.reason).where(
+                agent_attempt_receipts_v3.c.attempt_id == str(prior_attempt_id)
+            )
+        )
+        if reason is None:
+            return None
+        graph = load_graph(session, attempt.workflow_revision_hash)
+        node = graph.node(attempt.node_id)
+        if not isinstance(node, AgentNodeV3):
+            raise RunTransitionConflict("repair receipt belongs to a non-V3 agent node")
+        orders, results = _agent_material(
+            session,
+            attempt.run_id,
+            attempt.workflow_revision_hash,
+            graph,
+            node,
+            round_ordinal,
+        )
+        return node_job(
+            node.instruction,
+            orders,
+            results,
+            composition_version=NodeJobCompositionVersion.OUTPUT_SCHEMA_REPAIR,
+            output_schema_repair=OutputSchemaRepair(str(reason)),
+        )
+
+    return cast(
+        str | None,
+        datasource.run_tx_step({"name": "reconstruct-output-schema-repair"}, load),
+    )
+
+
 def reconstruct_agent_attempt(
     datasource: SQLAlchemyDatasource,
     agent_executors_v2: AgentExecutorMap,
@@ -422,6 +488,15 @@ def reconstruct_agent_attempt(
     )
     if not isinstance(binding, AgentNodeBindingV2):
         raise RunTransitionConflict("durable attempt is not a V2 agent node")
+    if attempt.attempt_ordinal == REPLACEMENT_AGENT_ATTEMPT_ORDINAL:
+        repair_job = _reconstructed_output_schema_repair_job(
+            datasource, attempt, binding.round_ordinal
+        )
+        if repair_job is not None:
+            binding = replace(
+                binding,
+                job=repair_job,
+            )
     executor, operational_identity, declared_capabilities, carrier = agent_executors_v2[
         _executor_key(binding)
     ]
@@ -943,9 +1018,31 @@ def register_durable_run_workflow(
             raise RunTransitionConflict(
                 "the runner-lease slot drives V2 agent nodes only"
             )
-        attempt = agent_node_attempt(
-            binding, typed_run_id, typed_revision, node_id, attempt_ordinal
-        )
+        if attempt_ordinal == REPLACEMENT_AGENT_ATTEMPT_ORDINAL:
+            attempt_id = datasource.run_tx_step(
+                {"name": "runner-repair-attempt"},
+                lambda: datasource.sql_session().scalar(
+                    sa.select(agent_attempts.c.attempt_id).where(
+                        agent_attempts.c.run_id == typed_run_id.value,
+                        agent_attempts.c.workflow_revision_hash == typed_revision.value,
+                        agent_attempts.c.node_id == node_id,
+                        agent_attempts.c.attempt_ordinal == attempt_ordinal,
+                    )
+                ),
+            )
+            if attempt_id is None:
+                raise RunTransitionConflict("runner repair attempt is absent")
+            attempt = reconstruct_agent_attempt(
+                datasource,
+                agent_executors_v2,
+                project,
+                agent_attempt_store.load(AgentAttemptId(str(attempt_id))),
+            )
+            binding = attempt.binding
+        else:
+            attempt = agent_node_attempt(
+                binding, typed_run_id, typed_revision, node_id, attempt_ordinal
+            )
         if attempt.executor is None:
             # The key left the registry while this Attempt waited its turn. A
             # first turn refuses the node, exactly as `durable_node` would have;

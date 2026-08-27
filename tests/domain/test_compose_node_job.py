@@ -11,7 +11,9 @@ from __future__ import annotations
 
 from atelier2.application.compose_node_job import (
     ORDER_HEADING,
+    OUTPUT_SCHEMA_REPAIR_HEADING,
     NodeJobCompositionVersion,
+    OutputSchemaRepair,
     node_job,
 )
 from atelier2.contracts.node_records_v3 import RunInput, RunInputSchemaKind
@@ -99,4 +101,20 @@ def test_the_legacy_composition_keeps_declared_root_strings_json_encoded() -> No
             ORDER_HEADING.format(name="diff"),
             '"diff --git a/file.py b/file.py\\n+line"',
         ]
+    )
+
+
+def test_output_schema_repair_is_a_versioned_composition_input() -> None:
+    composed = node_job(
+        "Review it.",
+        output_schema_repair=OutputSchemaRepair(
+            "output-schema-refused: instance-not-json"
+        ),
+        composition_version=NodeJobCompositionVersion.OUTPUT_SCHEMA_REPAIR,
+    )
+
+    assert composed == (
+        "Review it.\n\n"
+        f"{OUTPUT_SCHEMA_REPAIR_HEADING}\n\n"
+        "output-schema-refused: instance-not-json"
     )

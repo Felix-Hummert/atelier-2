@@ -4,7 +4,28 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+import sqlalchemy as sa
+
+from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
+from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.schema import agent_attempts, agent_receipts_v2, runs
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
+from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.ports.agent_executions import AgentExecutionResult
+from tests.integration.test_v3_output_enforcement import (
+    THE_ANSWER_THE_SCHEMA_ADMITS,
+    THE_ANSWER_THE_SCHEMA_REFUSES,
+    armed_attempt,
+)
+from tests.scenarios.agents import (
+    RecordingAgentExecutorFactoryV2,
+    agent_scratch_root,
+    failing_agent_executor_factory,
+)
 
 CRASHED = 86
 HARNESS = Path(__file__).with_name("agent_attempt_harness.py")
@@ -33,6 +54,93 @@ def child(root: Path, mode: str, expected: int = 0) -> None:
 def rows(root: Path, statement: str) -> tuple[tuple[object, ...], ...]:
     with sqlite3.connect(root / "atelier.sqlite", timeout=30) as connection:
         return tuple(tuple(record) for record in connection.execute(statement))
+
+
+def output_schema_runtime(
+    root: Path, executor_factory: RecordingAgentExecutorFactoryV2 | None = None
+) -> DbosRuntime:
+    started = DbosRuntime(
+        DbosRuntimeSettings(
+            root / "atelier.sqlite",
+            "v3-output-contract-test",
+            agent_scratch_root=agent_scratch_root(root),
+        ),
+        LoopbackEffectAdapterFactory(
+            root / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+        ExactOutputAgentExecutorFactory(),
+        (
+            failing_agent_executor_factory("exact", [])
+            if executor_factory is None
+            else executor_factory,
+        ),
+    )
+    started.initialize_storage()
+    return started
+
+
+def wait_for_run_state(runtime: DbosRuntime, state: str) -> None:
+    deadline = time.monotonic() + 10
+    observed = ""
+    while time.monotonic() < deadline:
+        with runtime.engine.connect() as connection:
+            observed = str(connection.scalar(sa.select(runs.c.state)))
+        if observed == state:
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"run stayed {observed!r}, expected {state!r}")
+
+
+def test_restart_after_a_schema_refusal_runs_its_repair_once(
+    tmp_path: Path,
+) -> None:
+    """The boundary after round one survives a process loss with one repair id."""
+    first = output_schema_runtime(tmp_path)
+    try:
+        execution = armed_attempt(first)
+        DbosAgentAttemptStore(
+            first.engine, first.settings.application_version
+        ).complete_success(
+            execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+        )
+    finally:
+        first.close()
+
+    recovered_executor = RecordingAgentExecutorFactoryV2(
+        "exact",
+        "exact/v1",
+        "exact-operation",
+        THE_ANSWER_THE_SCHEMA_ADMITS,
+    )
+    recovered = output_schema_runtime(tmp_path, recovered_executor)
+    try:
+        recovered.launch()
+        wait_for_run_state(recovered, "COMPLETED")
+        with recovered.engine.connect() as connection:
+            attempts = tuple(
+                connection.execute(
+                    sa.select(agent_attempts.c.attempt_ordinal).order_by(
+                        agent_attempts.c.attempt_ordinal
+                    )
+                )
+            )
+            receipts = connection.scalar(
+                sa.select(sa.func.count()).select_from(agent_receipts_v2)
+            )
+            repair_state = connection.scalar(
+                sa.select(agent_attempts.c.state).where(
+                    agent_attempts.c.attempt_ordinal == 2
+                )
+            )
+        assert attempts == ((1,), (2,))
+        assert receipts == 1
+        assert repair_state == "SUCCEEDED"
+        assert recovered_executor.opened is not None
+        assert len(recovered_executor.opened.requests) == 1
+    finally:
+        recovered.close()
 
 
 def test_restart_reclaims_prepared_but_only_projects_launch_armed_as_possibly_ran(

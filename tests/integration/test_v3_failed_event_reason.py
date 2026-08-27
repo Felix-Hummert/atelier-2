@@ -29,6 +29,7 @@ from tests.integration.test_v3_output_enforcement import (
     SUCCESSOR,
     THE_ANSWER_THE_SCHEMA_REFUSES,
     armed_attempt,
+    repair_attempt,
     reviewed_planning_document,
 )
 from tests.integration.test_v3_output_enforcement import (
@@ -48,6 +49,11 @@ def test_an_agent_failed_event_carries_the_stored_receipt_reason(runtime) -> Non
     )
     assert isinstance(outcome, AgentAttemptFailed), outcome
     assert outcome.attempt.failure_code is AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED
+    repair = repair_attempt(runtime, execution)
+    outcome = store.complete_success(
+        repair, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+    )
+    assert isinstance(outcome, AgentAttemptFailed), outcome
 
     queries = durable_queries(runtime.engine)
     page = queries.read_run_event_page(RUN, 0, 5)
@@ -80,6 +86,11 @@ def test_list_and_events_name_the_same_failed_node(runtime) -> None:
         execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
     )
     assert isinstance(outcome, AgentAttemptFailed), outcome
+    repair = repair_attempt(runtime, execution)
+    outcome = store.complete_success(
+        repair, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+    )
+    assert isinstance(outcome, AgentAttemptFailed), outcome
 
     queries = durable_queries(runtime.engine)
     found = queries.get_run(RUN)
@@ -110,5 +121,5 @@ def test_list_and_events_name_the_same_failed_node(runtime) -> None:
         (SUCCESSOR, NodeState.QUEUED, None),
     ]
     assert get_rail[0].attempt is not None
-    assert get_rail[0].attempt.ordinal == 1
+    assert get_rail[0].attempt.ordinal == 2
     assert get_rail[0].attempt.state == PublicAgentAttemptState.FAILED
