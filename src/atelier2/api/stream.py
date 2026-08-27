@@ -5,13 +5,18 @@ import math
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Final, Literal, TypeVar, assert_never, get_args
+from urllib.parse import quote
 
 from fastapi.sse import ServerSentEvent
 
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits
-from atelier2.api.problems import PROJECTION_LIMIT_DETAIL, problem_resource
+from atelier2.api.problems import (
+    durable_projection_unrepresentable_detail,
+    problem_resource,
+)
 from atelier2.api.projection.events import bounded_event_summary, run_event_resource
 from atelier2.api.projection.runs import node_rail_resources
+from atelier2.api.references import encode_public_run_reference
 from atelier2.api.wire.resources import StreamFailureResource
 from atelier2.application.project_node_rail import (
     NodeRailUnprojectable,
@@ -47,7 +52,9 @@ from atelier2.contracts.when import RecordedAt
 Result = TypeVar("Result")
 
 StreamFailureCode = Literal[
-    "durable-state-corrupt", "temporarily-unavailable", "internal-error"
+    "durable-projection-unrepresentable",
+    "durable-state-corrupt",
+    "internal-error",
 ]
 STREAM_FAILURE_CODES: Final[tuple[StreamFailureCode, ...]] = get_args(StreamFailureCode)
 """The problem vocabulary a failed stream may speak, owned by the only emitter.
@@ -179,6 +186,29 @@ def _stream_failure(
     )
 
 
+def _node_detail_path(event: PersistedRunEvent) -> str:
+    encoded_node_id = quote(event.event.node_id, safe="-_.!~*'()")
+    return (
+        "/atelier/api/v1/runs/"
+        f"{encode_public_run_reference(event.event.run_id)}/nodes/"
+        f"{encoded_node_id}"
+    )
+
+
+def _projection_bounds_failure(
+    error: ApiLimitExceeded, event: PersistedRunEvent
+) -> ServerSentEvent:
+    return _stream_failure(
+        "durable-projection-unrepresentable",
+        durable_projection_unrepresentable_detail(
+            error.field_name,
+            error.bound,
+            error.unit,
+            _node_detail_path(event),
+        ),
+    )
+
+
 async def stream_server_events(
     prepared: PreparedEventStream,
     read_page: Callable[[RunId, int, int], ReadRunEventsResult],
@@ -220,9 +250,7 @@ async def stream_server_events(
                 # Transient unavailability is answered by the client's own reconnect.
                 return
             case ProjectionTooLarge():
-                yield _stream_failure(
-                    "temporarily-unavailable", PROJECTION_LIMIT_DETAIL
-                )
+                yield _stream_failure("durable-projection-unrepresentable")
                 return
             case RunEventPageOversized():
                 yield _stream_failure("internal-error")
@@ -232,16 +260,16 @@ async def stream_server_events(
                 return
             case _ as unreachable:
                 assert_never(unreachable)
-        try:
-            for persisted in page.events:
-                persisted = bounded_event_summary(persisted)
+        for event in page.events:
+            persisted = bounded_event_summary(event)
+            try:
                 limits.require_event_projection(persisted)
-        except ApiLimitExceeded:
-            yield _stream_failure("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
-            return
-        except ValueError:
-            yield _stream_failure("durable-state-corrupt")
-            return
+            except ApiLimitExceeded as error:
+                yield _projection_bounds_failure(error, persisted)
+                return
+            except ValueError:
+                yield _stream_failure("durable-state-corrupt")
+                return
         if page.events:
             next_poll_delay = poll_backoff.initial_delay_seconds
         for persisted in page.events:
@@ -335,24 +363,23 @@ async def stream_attention_events(
             case ReadUnavailable():
                 return
             case ProjectionTooLarge():
-                yield _stream_failure(
-                    "temporarily-unavailable", PROJECTION_LIMIT_DETAIL
-                )
+                yield _stream_failure("durable-projection-unrepresentable")
                 return
             case AttentionEventPageOversized():
                 yield _stream_failure("internal-error")
                 return
             case _ as unreachable:
                 assert_never(unreachable)
-        try:
-            for item in page.events:
-                limits.require_event_projection(bounded_event_summary(item.event))
-        except ApiLimitExceeded:
-            yield _stream_failure("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
-            return
-        except ValueError:
-            yield _stream_failure("durable-state-corrupt")
-            return
+        for item in page.events:
+            persisted = bounded_event_summary(item.event)
+            try:
+                limits.require_event_projection(persisted)
+            except ApiLimitExceeded as error:
+                yield _projection_bounds_failure(error, persisted)
+                return
+            except ValueError:
+                yield _stream_failure("durable-state-corrupt")
+                return
         if page.events:
             next_poll_delay = poll_backoff.initial_delay_seconds
         for item in page.events:
@@ -374,9 +401,7 @@ async def stream_attention_events(
                 case ReadUnavailable():
                     return
                 case ProjectionTooLarge():
-                    yield _stream_failure(
-                        "temporarily-unavailable", PROJECTION_LIMIT_DETAIL
-                    )
+                    yield _stream_failure("durable-projection-unrepresentable")
                     return
                 case _ as unreachable:
                     assert_never(unreachable)
@@ -386,10 +411,8 @@ async def stream_attention_events(
                     persisted,
                     node_rail_resources(project_node_rail(projection, (persisted,))),
                 )
-            except ApiLimitExceeded:
-                yield _stream_failure(
-                    "temporarily-unavailable", PROJECTION_LIMIT_DETAIL
-                )
+            except ApiLimitExceeded as error:
+                yield _projection_bounds_failure(error, persisted)
                 return
             except (ValueError, NodeRailUnprojectable):
                 yield _stream_failure("durable-state-corrupt")

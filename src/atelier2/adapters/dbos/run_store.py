@@ -67,7 +67,11 @@ from atelier2.contracts.executions import (
     logical_effect_key_for_node,
 )
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.node_records_v3 import DeliveredOutput, RunInput
+from atelier2.contracts.node_records_v3 import (
+    DeliveredOutput,
+    RunInput,
+    RunInputSchemaKind,
+)
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
@@ -155,9 +159,31 @@ def load_run_inputs(
             str(record.name),
             PublishedRevisionHash(str(record.schema_revision_hash)),
             bytes(record.value),
+            _declared_input_schema_kind(
+                PublishedRevisionHash(str(record.schema_revision_hash)),
+                None
+                if record.schema_revision_kind is None
+                else str(record.schema_revision_kind),
+                None
+                if record.schema_document is None
+                else bytes(record.schema_document),
+            ),
         )
         for record in session.execute(
-            sa.select(run_inputs_v3).where(run_inputs_v3.c.run_id == run_id.value)
+            sa.select(
+                run_inputs_v3,
+                published_revisions.c.kind.label("schema_revision_kind"),
+                published_revisions.c.document.label("schema_document"),
+            )
+            .outerjoin(
+                published_revisions,
+                sa.and_(
+                    published_revisions.c.kind == RevisionKind.SCHEMA.value,
+                    published_revisions.c.revision_hash
+                    == run_inputs_v3.c.schema_revision_hash,
+                ),
+            )
+            .where(run_inputs_v3.c.run_id == run_id.value)
         ).all()
     }
     missing = sorted(read - stored.keys())
@@ -166,6 +192,29 @@ def load_run_inputs(
             f"the run carries no order named {missing[0]!r}, which this node reads"
         )
     return tuple(stored[name] for name in sorted(read))
+
+
+def _declared_input_schema_kind(
+    revision: PublishedRevisionHash, kind: str | None, document: bytes | None
+) -> RunInputSchemaKind:
+    """The one schema distinction that changes how an order is shown to an agent."""
+    if kind is None or document is None:
+        raise RunTransitionConflict(
+            f"a stored run input names a missing schema revision: {revision.value}"
+        )
+    if kind != RevisionKind.SCHEMA.value:
+        raise RunTransitionConflict(
+            f"a stored run input names a {kind} revision instead of a schema: "
+            f"{revision.value}"
+        )
+    schema = read_schema_document(document)
+    if isinstance(schema, SchemaRefused):
+        raise RunTransitionConflict(
+            f"a stored run input names a refused schema revision: {schema}"
+        )
+    if isinstance(schema.schema, Mapping) and schema.schema.get("type") == "string":
+        return RunInputSchemaKind.PLAIN_STRING
+    return RunInputSchemaKind.JSON
 
 
 def load_run_orders(

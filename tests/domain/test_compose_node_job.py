@@ -10,7 +10,7 @@ today -- a promise that holds by accident of its callers is not a promise.
 from __future__ import annotations
 
 from atelier2.application.compose_node_job import ORDER_HEADING, node_job
-from atelier2.contracts.node_records_v3 import RunInput
+from atelier2.contracts.node_records_v3 import RunInput, RunInputSchemaKind
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 
 SCHEMA = PublishedRevisionHash("a" * 64)
@@ -45,3 +45,31 @@ def test_the_same_orders_compose_the_same_job_whatever_order_they_arrive_in() ->
     assert node_job("Plate it.", supplied).index(
         ORDER_HEADING.format(name="main")
     ) < node_job("Plate it.", supplied).index(ORDER_HEADING.format(name="side"))
+
+
+def test_only_a_declared_root_string_order_is_rendered_raw() -> None:
+    composed = node_job(
+        "Review it.",
+        (
+            RunInput(
+                "diff",
+                SCHEMA,
+                b'"diff --git a/file.py b/file.py\\n+line"',
+                RunInputSchemaKind.PLAIN_STRING,
+            ),
+            RunInput("metadata", SCHEMA, b'{ "files": 1 }'),
+            RunInput("summary", SCHEMA, b'"ship it"', RunInputSchemaKind.JSON),
+        ),
+    )
+
+    assert composed == "\n\n".join(
+        [
+            "Review it.",
+            ORDER_HEADING.format(name="diff"),
+            "diff --git a/file.py b/file.py\n+line",
+            ORDER_HEADING.format(name="metadata"),
+            '{ "files": 1 }',
+            ORDER_HEADING.format(name="summary"),
+            '"ship it"',
+        ]
+    )

@@ -181,3 +181,46 @@ def test_the_workbench_stream_names_an_omitted_overlong_receipt_reason() -> None
         f"{encode_public_run_reference(EARLIER_SORTING_RUN)}/nodes/agent"
     ) in reason
     assert len(reason) <= api_limits().maximum_field_characters
+
+
+def test_attention_feed_names_an_unrepresentable_event_field() -> None:
+    event = _completed(EARLIER_SORTING_RUN)
+    oversized = PersistedRunEvent(
+        RunEvent(
+            event.event.run_id,
+            event.event.revision_hash,
+            event.event.event_sequence,
+            event.event.node_id,
+            event.event.node_execution_id,
+            event.event.event_kind,
+            b"oversized",
+        ),
+        None,
+    )
+    pages = ScriptedAttentionPages(
+        [AttentionEventsRead((AttentionEvent(oversized, INSTANT),))]
+    )
+
+    async def collect() -> list[ServerSentEvent]:
+        return [
+            frame
+            async for frame in stream_attention_events(
+                PreparedAttentionStream(None, None),
+                pages,
+                lambda run_id: RunRead(stream_run_projection(run_id.value)),
+                BoundedQueryRunner(1, admission_timeout_seconds=1),
+                page_size=PageLimit(10),
+                limits=api_limits(maximum_decoded_payload_bytes=4),
+                poll_backoff=EventPollBackoff(0.01, 0.04, 2),
+            )
+        ]
+
+    frames = asyncio.run(collect())
+
+    assert len(frames) == 1
+    problem = json.loads(frames[0].data.model_dump_json())["problem"]
+    assert problem["type"].endswith(":durable-projection-unrepresentable")
+    assert problem["status"] == 500
+    assert "event_payload" in problem["detail"]
+    assert "4 bytes" in problem["detail"]
+    assert "/runs/run1.YS13YWl0/nodes/agent" in problem["detail"]

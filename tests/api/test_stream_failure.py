@@ -16,7 +16,6 @@ import pytest
 from fastapi.sse import ServerSentEvent
 
 from atelier2.api.openapi import API_PREFIX, EVENT_PATH
-from atelier2.api.problems import PROJECTION_LIMIT_DETAIL
 from atelier2.api.projection.events import bounded_event_summary
 from atelier2.api.references import (
     MAX_SIGNED_INT64,
@@ -58,6 +57,7 @@ from atelier2.ports.run_events import (
 )
 from atelier2.ports.workflow_revisions import (
     DurableProjectionLimit,
+    ProjectionTooLarge,
     QueryDurableStateCorrupt,
     ReadUnavailable,
 )
@@ -280,6 +280,14 @@ def test_a_temporarily_unavailable_read_ends_the_stream_for_native_reconnection(
     assert frames == []
 
 
+def test_a_durable_projection_port_refusal_ends_the_stream_as_unrepresentable() -> None:
+    problem = failed_stream_problem(OnePageQueries(ProjectionTooLarge()))
+
+    assert problem["type"].endswith(":durable-projection-unrepresentable")
+    assert problem["status"] == 500
+    assert problem["detail"] == "Inspect the durable projection before retrying."
+
+
 def test_an_over_long_port_page_ends_the_stream_as_a_named_server_fault() -> None:
     page = RunEventPage(
         (
@@ -294,15 +302,20 @@ def test_an_over_long_port_page_ends_the_stream_as_a_named_server_fault() -> Non
     assert problem["type"].endswith(":internal-error")
 
 
-def test_an_event_beyond_the_configured_limits_ends_the_stream_as_unavailable() -> None:
+def test_an_event_beyond_the_configured_limits_names_the_unrepresentable_field() -> (
+    None
+):
     page = one_event_page(RunEventKind.AGENT_COMPLETED, b"oversized")
 
     problem = failed_stream_problem(
         OnePageQueries(page), limit_changes={"maximum_decoded_payload_bytes": 4}
     )
 
-    assert problem["type"].endswith(":temporarily-unavailable")
-    assert problem["detail"] == PROJECTION_LIMIT_DETAIL
+    assert problem["type"].endswith(":durable-projection-unrepresentable")
+    assert problem["status"] == 500
+    assert "event_payload" in problem["detail"]
+    assert "4 bytes" in problem["detail"]
+    assert "/runs/run1.ZmFpbGluZy1zdHJlYW0/nodes/agent" in problem["detail"]
 
 
 def test_a_run_stream_names_an_omitted_overlong_receipt_reason() -> None:
@@ -445,6 +458,7 @@ def test_the_document_promises_exactly_the_problem_bodies_the_stream_can_emit() 
                 OnePageQueries(RunEventPage((persisted_v1_cancellation(),), False))
             )
         ),
+        problem_identity(failed_stream_problem(OnePageQueries(ProjectionTooLarge()))),
         # The V1-vocabulary row above now refuses by name, so the internal-error
         # promise needs the path that still reaches it: a store handing back more
         # events than the page that was asked for.
