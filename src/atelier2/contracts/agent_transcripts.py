@@ -208,6 +208,79 @@ def _event_document(event: TranscriptEvent) -> dict[str, object]:
             assert_never(unreachable)
 
 
+def _require_text(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"transcript event {field} is not text")
+    return value
+
+
+def _require_flag(value: object, field: str) -> bool:
+    if type(value) is not bool:
+        raise TypeError(f"transcript event {field} is not a boolean")
+    return value
+
+
+def _require_count(value: object, field: str) -> int:
+    if type(value) is not int:
+        raise TypeError(f"transcript event {field} is not an integer")
+    return value
+
+
+def _event_from_document(payload: object) -> TranscriptEvent:
+    if not isinstance(payload, dict):
+        raise TypeError("a transcript event is an object")
+    kind_value = payload.get(_KIND_FIELD)
+    try:
+        kind = TranscriptEventKind(kind_value)
+    except ValueError:
+        raise ValueError(f"unknown transcript event {kind_value!r}") from None
+    match kind:
+        case TranscriptEventKind.TOOL_CALLED:
+            event: TranscriptEvent = ToolCalled(
+                _require_text(payload.get("name"), "name"),
+                _require_text(payload.get("arguments"), "arguments"),
+                _require_flag(payload.get("redacted"), "redacted"),
+            )
+        case TranscriptEventKind.TOOL_RETURNED:
+            event = ToolReturned(
+                _require_text(payload.get("name"), "name"),
+                _require_text(payload.get("result"), "result"),
+                _require_flag(payload.get("redacted"), "redacted"),
+            )
+        case TranscriptEventKind.ASSISTANT_TURN:
+            event = AssistantTurn(
+                _require_text(payload.get("text"), "text"),
+                _require_flag(payload.get("redacted"), "redacted"),
+            )
+        case TranscriptEventKind.USAGE:
+            event = Usage(
+                _require_count(payload.get("input_tokens"), "input_tokens"),
+                _require_count(payload.get("output_tokens"), "output_tokens"),
+                _require_count(
+                    payload.get("cache_read_input_tokens"),
+                    "cache_read_input_tokens",
+                ),
+                _require_count(
+                    payload.get("cache_creation_input_tokens"),
+                    "cache_creation_input_tokens",
+                ),
+            )
+        case TranscriptEventKind.UNRECOGNISED_PROVIDER_OUTPUT:
+            event = UnrecognisedProviderOutput(
+                _require_text(payload.get("text"), "text"),
+                _require_flag(payload.get("redacted"), "redacted"),
+            )
+        case TranscriptEventKind.TRANSCRIPT_TRUNCATED:
+            event = TranscriptTruncated(
+                _require_count(payload.get("dropped_events"), "dropped_events")
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+    if _event_document(event) != payload:
+        raise ValueError("transcript event fields disagree")
+    return event
+
+
 def _event_fragment(event: TranscriptEvent) -> bytes:
     return json.dumps(
         _event_document(event), ensure_ascii=False, separators=(",", ":")
@@ -340,3 +413,47 @@ class AttemptTranscript:
         """
 
         return cls(tuple(events))
+
+    @classmethod
+    def from_document(cls, document: bytes) -> AttemptTranscript:
+        """The transcript these exact stored bytes already are, or a loud refusal.
+
+        Reconstruction goes through the constructor, so a document that skipped
+        redaction, cutting, or the document bound cannot be read back as if it
+        had been kept. Extra keys, an unknown kind, missing fields, bad types,
+        empty events, or a canonical encoding that is not the stored bytes are
+        all the same refusal: this is not a transcript this runtime can serve.
+        """
+
+        if type(document) is not bytes:
+            raise TypeError("a transcript document is exact bytes")
+        try:
+            decoded = json.loads(document)
+        except ValueError as broken:
+            raise ValueError("transcript document is not JSON") from broken
+        try:
+            if not isinstance(decoded, dict):
+                raise TypeError("a transcript document is an object")
+            if set(decoded) != {"kind", "events"}:
+                raise ValueError(
+                    "a transcript document names kind and events and nothing else"
+                )
+            if decoded["kind"] != _DOCUMENT_KIND:
+                raise ValueError(
+                    f"unknown transcript document kind {decoded['kind']!r}"
+                )
+            events_payload = decoded["events"]
+            if not isinstance(events_payload, list):
+                raise TypeError("a transcript's events are a list")
+            reconstructed = cls(
+                tuple(_event_from_document(payload) for payload in events_payload)
+            )
+        except TypeError as broken:
+            raise ValueError(
+                "transcript document fields have the wrong types"
+            ) from broken
+        if reconstructed.document != document:
+            raise ValueError(
+                "transcript document is not the canonical encoding of its events"
+            )
+        return reconstructed

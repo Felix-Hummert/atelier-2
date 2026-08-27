@@ -312,3 +312,184 @@ def test_usage_no_provider_could_have_counted_is_refused(usage: dict[str, int]) 
 def test_a_truncation_marker_stands_for_a_real_loss() -> None:
     with pytest.raises(ValueError, match="at least one lost step"):
         TranscriptTruncated(0)
+
+
+@pytest.mark.parametrize(
+    ("event", "expected"),
+    [
+        pytest.param(
+            ToolCalled("Bash", '{"command":"ls"}'),
+            {
+                "event": "tool-called",
+                "name": "Bash",
+                "arguments": '{"command":"ls"}',
+                "redacted": False,
+            },
+            id="tool called",
+        ),
+        pytest.param(
+            ToolReturned("Bash", "AGENTS.md\n"),
+            {
+                "event": "tool-returned",
+                "name": "Bash",
+                "result": "AGENTS.md\n",
+                "redacted": False,
+            },
+            id="tool returned",
+        ),
+        pytest.param(
+            AssistantTurn("Listing the repository."),
+            {
+                "event": "assistant-turn",
+                "text": "Listing the repository.",
+                "redacted": False,
+            },
+            id="assistant turn",
+        ),
+        pytest.param(
+            Usage(2_048, 96, 512, 128),
+            {
+                "event": "usage",
+                "input_tokens": 2_048,
+                "output_tokens": 96,
+                "cache_read_input_tokens": 512,
+                "cache_creation_input_tokens": 128,
+            },
+            id="usage",
+        ),
+        pytest.param(
+            UnrecognisedProviderOutput("Error: connection reset"),
+            {
+                "event": "unrecognised-provider-output",
+                "text": "Error: connection reset",
+                "redacted": False,
+            },
+            id="unrecognised provider output",
+        ),
+        pytest.param(
+            TranscriptTruncated(7),
+            {"event": "transcript-truncated", "dropped_events": 7},
+            id="truncation marker",
+        ),
+    ],
+)
+def test_every_kind_of_step_round_trips_through_from_document(
+    event: TranscriptEvent, expected: dict[str, Any]
+) -> None:
+    stored = AttemptTranscript.of([event])
+
+    loaded = AttemptTranscript.from_document(stored.document)
+
+    assert loaded == stored
+    assert loaded.document == stored.document
+    assert kept_events(loaded) == [expected]
+
+
+def test_from_document_reconstructs_the_canonical_stored_bytes() -> None:
+    stored = AttemptTranscript.of(
+        [
+            ToolCalled("Read", '{"file_path":"/etc/hosts"}'),
+            ToolReturned("Read", "127.0.0.1 localhost"),
+            AssistantTurn("The host file names localhost."),
+            Usage(1_200, 48),
+            UnrecognisedProviderOutput("Error: connection reset"),
+            TranscriptTruncated(7),
+        ]
+    )
+
+    loaded = AttemptTranscript.from_document(stored.document)
+
+    assert loaded.document == stored.document
+    assert loaded == stored
+
+
+def _canonical_payload() -> dict[str, Any]:
+    return json.loads(
+        AttemptTranscript.of([AssistantTurn("The host file names localhost.")]).document
+    )
+
+
+def _encode(payload: dict[str, Any]) -> bytes:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        pytest.param(b"", id="empty bytes"),
+        pytest.param(
+            b'{"kind":"attempt-transcript/v1","events":[]}',
+            id="empty events",
+        ),
+        pytest.param(
+            _encode(_canonical_payload() | {"kind": "attempt-transcript/v0"}),
+            id="unknown kind",
+        ),
+        pytest.param(
+            _encode(_canonical_payload() | {"extra": 1}),
+            id="extra document key",
+        ),
+        pytest.param(
+            _encode(
+                _canonical_payload()
+                | {
+                    "events": [
+                        {
+                            "event": "mystery",
+                            "text": "The host file names localhost.",
+                            "redacted": False,
+                        }
+                    ]
+                }
+            ),
+            id="unknown event",
+        ),
+        pytest.param(
+            _encode(
+                _canonical_payload()
+                | {
+                    "events": [
+                        {
+                            "event": "assistant-turn",
+                            "text": "The host file names localhost.",
+                            "redacted": False,
+                            "extra": 1,
+                        }
+                    ]
+                }
+            ),
+            id="extra event key",
+        ),
+        pytest.param(
+            json.dumps(_canonical_payload(), indent=2).encode(),
+            id="non-canonical encoding",
+        ),
+    ],
+)
+def test_from_document_refuses_a_document_that_is_not_the_canonical_transcript(
+    document: bytes,
+) -> None:
+    with pytest.raises(ValueError):
+        AttemptTranscript.from_document(document)
+
+
+def test_from_document_refuses_bytes_the_constructor_would_have_to_rewrite() -> None:
+    """Reading cannot skip the redactor: rewritten bytes are not the stored ones."""
+
+    canary = planted_credential("sk-ant", "-plantedcanarysecret0123456789")
+    stored = _encode(
+        {
+            "kind": "attempt-transcript/v1",
+            "events": [
+                {
+                    "event": "tool-returned",
+                    "name": "Bash",
+                    "result": f"ANTHROPIC_API_KEY={canary}\n",
+                    "redacted": False,
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(ValueError):
+        AttemptTranscript.from_document(stored)
