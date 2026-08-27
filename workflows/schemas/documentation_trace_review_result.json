@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["candidate_digest", "trace_judgements", "findings", "verdict"],
+  "properties": {
+    "candidate_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "trace_judgements": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/trace_judgement"}
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["document", "cited_owner_object", "text"],
+        "properties": {
+          "document": {"type": "string", "minLength": 1},
+          "cited_owner_object": {"$ref": "#/$defs/cited_owner_object"},
+          "text": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "reason": {"type": "string", "minLength": 1},
+    "verdict": {"enum": ["approve", "revise", "cannot-judge"]}
+  },
+  "$defs": {
+    "cited_owner_object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_thread", "reference", "digest"],
+      "properties": {
+        "source_thread": {"type": "string", "minLength": 1},
+        "reference": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "identifier"],
+          "properties": {
+            "kind": {"enum": ["issue_body_revision", "issue_comment", "decision_revision"]},
+            "identifier": {"type": "string", "minLength": 1}
+          }
+        },
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "trace_judgement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["document", "judgement", "cited_owner_object"],
+      "properties": {
+        "document": {"type": "string", "minLength": 1},
+        "judgement": {"enum": ["traced", "untraced"]},
+        "cited_owner_object": {"$ref": "#/$defs/cited_owner_object"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["verdict"],
+        "properties": {"verdict": {"const": "revise"}}
+      },
+      "then": {"properties": {"findings": {"minItems": 1}}}
+    },
+    {
+      "if": {
+        "required": ["verdict"],
+        "properties": {"verdict": {"const": "cannot-judge"}}
+      },
+      "then": {"required": ["reason"]}
+    }
+  ]
+}
