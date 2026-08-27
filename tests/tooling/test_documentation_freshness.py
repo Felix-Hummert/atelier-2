@@ -227,6 +227,6 @@ def test_the_tree_binding_feeds_the_pure_reader_and_leaves_unbound_documents_una
     assert tuple(item.document for item in report.stale_documents) == (bound.document,)
     assert report.stale_documents[0].later_objects == (observed(ISSUE_COMMENT, 2),)
     assert report.current_documents == ()
-    assert report.unassessed_documents == tuple(
-        item for item in watermarks if item.source_thread is None
+    assert tuple(item.document for item in report.unassessed_documents) == tuple(
+        item.document for item in watermarks if item.source_thread is None
     )

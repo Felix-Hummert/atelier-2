@@ -12,7 +12,7 @@ from types import ModuleType
 
 import pytest
 
-from scripts.requirement_contract import approval_bytes
+from scripts.requirement_contract import approval_bytes, read_document_source_watermarks
 
 PROJECT_ROOT = Path(__file__).parents[2]
 GATE = Path("scripts/check_documentation_order.py")
@@ -23,14 +23,6 @@ DOCUMENTATION = REQUIREMENTS / "README.md"
 LEGACY_DOCUMENT = REQUIREMENTS / "0008-example.md"
 BOUND_START = "<!-- documentation-order-gate-bound:start -->"
 BOUND_END = "<!-- documentation-order-gate-bound:end -->"
-SOURCE_BINDING = (
-    "[[source_binding]]\n"
-    'document = "0004"\n'
-    'content_sha256 = "866b718c0be69be0121dfcda77c75d18f70bbee150e277e2fad503bbaf02efb3"\n'
-    'source_thread = "github-issue:21"\n'
-    'watermark_kind = "issue_body_revision"\n'
-    'watermark = "3c1f663cd51a1c7aedbeffc39c3f38ee2ed6174d16103ab68d9d811014352ed0"\n'
-)
 
 
 def copied_project(tmp_path: Path) -> Path:
@@ -105,6 +97,52 @@ def commit_project(project: Path) -> str:
 
 def digest(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def bound_0004_watermark():
+    return next(
+        item
+        for item in read_document_source_watermarks(PROJECT_ROOT)
+        if item.document.name.startswith("0004-")
+    )
+
+
+def source_binding() -> str:
+    watermark = bound_0004_watermark()
+    assert watermark.source_thread is not None
+    assert watermark.last_observed_source_object is not None
+    return (
+        "[[source_binding]]\n"
+        f'document = "{watermark.document.name[:4]}"\n'
+        f'content_sha256 = "{watermark.document_digest}"\n'
+        f'source_thread = "{watermark.source_thread.identifier}"\n'
+        f'watermark_kind = "{watermark.last_observed_source_object.kind.value}"\n'
+        f'watermark = "{watermark.last_observed_source_object.identifier}"\n'
+    )
+
+
+def source_binding_with_digest(content_digest: str) -> str:
+    watermark = bound_0004_watermark()
+    return source_binding().replace(
+        f'content_sha256 = "{watermark.document_digest}"',
+        f'content_sha256 = "{content_digest}"',
+    )
+
+
+def source_binding_with_watermark(source_watermark: str) -> str:
+    watermark = bound_0004_watermark()
+    assert watermark.last_observed_source_object is not None
+    return source_binding().replace(
+        f'watermark = "{watermark.last_observed_source_object.identifier}"',
+        f'watermark = "{source_watermark}"',
+    )
+
+
+def source_binding_with_changed_watermark() -> str:
+    watermark = bound_0004_watermark()
+    assert watermark.last_observed_source_object is not None
+    original = watermark.last_observed_source_object.identifier
+    return source_binding_with_watermark("0" + original[1:])
 
 
 def legacy_table(document: str, path: Path, content_digest: str) -> str:
@@ -356,24 +394,19 @@ def test_an_unresolvable_exact_base_revision_fails_closed(tmp_path: Path) -> Non
     [
         (
             lambda content: content.replace(
-                'document = "0004"\ncontent_sha256 = '
-                '"866b718c0be69be0121dfcda77c75d18f70bbee150e277e2fad503bbaf02efb3"\n'
-                'source_thread = "github-issue:21"',
-                'document = "0003"\ncontent_sha256 = '
-                '"866b718c0be69be0121dfcda77c75d18f70bbee150e277e2fad503bbaf02efb3"\n'
-                'source_thread = "github-issue:21"',
+                source_binding(),
+                source_binding_with_digest("0" * 64),
             ),
-            "0003",
+            "0004",
         ),
-        (lambda content: content + "\n" + SOURCE_BINDING, "0004"),
+        (lambda content: content + "\n" + source_binding(), "0004"),
         (
-            lambda content: (
-                content + "\n[[source_binding]]\n"
-                'document = "0004"\n'
-                'content_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"\n'
-                'source_thread = "github-issue:21"\n'
-                'watermark_kind = "issue_body_revision"\n'
-                'watermark = "unknown"\n'
+            lambda content: content.replace(
+                source_binding(),
+                source_binding_with_watermark("unregistered-revision").replace(
+                    f'content_sha256 = "{bound_0004_watermark().document_digest}"',
+                    'content_sha256 = "' + "f" * 64 + '"',
+                ),
             ),
             "0004",
         ),
@@ -410,8 +443,10 @@ def test_source_bindings_fail_by_document_when_they_are_not_exact(
 @pytest.mark.parametrize(
     "change",
     [
-        lambda content: content.replace('watermark = "3c1', 'watermark = "4c1'),
-        lambda content: content.replace("\n" + SOURCE_BINDING, "\n"),
+        lambda content: content.replace(
+            source_binding(), source_binding_with_changed_watermark()
+        ),
+        lambda content: content.replace("\n" + source_binding(), "\n"),
     ],
     ids=("changed", "deleted"),
 )
