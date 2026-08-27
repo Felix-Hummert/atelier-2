@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi.sse import ServerSentEvent
 
-from atelier2.api.references import encode_public_run_reference
+from atelier2.api.references import encode_event_cursor, encode_public_run_reference
 from atelier2.api.stream import (
     BoundedQueryRunner,
     EventPollBackoff,
@@ -16,7 +16,8 @@ from atelier2.api.stream import (
     stream_attention_events,
 )
 from atelier2.application.read_attention_events import AttentionEventsRead
-from atelier2.application.read_runs import RunRead
+from atelier2.application.read_runs import GetRunResult, RunRead
+from atelier2.application.refusals import DurableStateCorrupt
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
 from atelier2.contracts.executions import (
@@ -224,3 +225,66 @@ def test_attention_feed_names_an_unrepresentable_event_field() -> None:
     assert "event_payload" in problem["detail"]
     assert "4 bytes" in problem["detail"]
     assert "/runs/run1.YS13YWl0/nodes/agent" in problem["detail"]
+
+
+CORRUPT_RUN = RunId("corrupt-run")
+HEALTHY_RUN = RunId("healthy-run")
+
+
+def test_attention_feed_names_one_corrupt_run_and_keeps_the_healthy_event() -> None:
+    """A get_run projection failure belongs to that run, not to the feed."""
+
+    corrupt = _completed(CORRUPT_RUN)
+    healthy = _completed(HEALTHY_RUN)
+    pages = ScriptedAttentionPages(
+        [
+            AttentionEventsRead(
+                (AttentionEvent(corrupt, INSTANT), AttentionEvent(healthy, INSTANT))
+            ),
+            AttentionEventsRead(()),
+        ]
+    )
+
+    async def sleep(_delay: float) -> None:
+        raise StopPolling()
+
+    def get_run(run_id: RunId) -> GetRunResult:
+        if run_id == CORRUPT_RUN:
+            return DurableStateCorrupt()
+        return RunRead(stream_run_projection(run_id.value))
+
+    async def collect() -> list[ServerSentEvent]:
+        frames: list[ServerSentEvent] = []
+        try:
+            async for frame in stream_attention_events(
+                PreparedAttentionStream(None, None),
+                pages,
+                get_run,
+                BoundedQueryRunner(1, admission_timeout_seconds=1),
+                page_size=PageLimit(10),
+                limits=api_limits(),
+                poll_backoff=EventPollBackoff(0.01, 0.04, 2),
+                sleep=sleep,
+            ):
+                frames.append(frame)
+        except StopPolling:
+            pass
+        return frames
+
+    frames = asyncio.run(collect())
+    payloads = [json.loads(frame.data.model_dump_json()) for frame in frames]
+    kinds = [payload["event"] for payload in payloads]
+
+    assert kinds == ["RUN_PROJECTION_CORRUPT", "AGENT_COMPLETED"]
+    corrupt_payload = payloads[0]
+    assert frames[0].id == encode_event_cursor(CORRUPT_RUN, 1)
+    assert corrupt_payload["public_run_reference"] == encode_public_run_reference(
+        CORRUPT_RUN
+    )
+    assert corrupt_payload["problem"]["type"].endswith(":durable-state-corrupt")
+    assert payloads[1]["public_run_reference"] == encode_public_run_reference(
+        HEALTHY_RUN
+    )
+    assert pages.asked[1][0] == HEALTHY_RUN
+    assert pages.asked[1][1] == 1
+    assert pages.asked[1][3] == ((CORRUPT_RUN, 1),)

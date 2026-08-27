@@ -1584,3 +1584,15 @@ class StreamFailureResource(ApiModel):
 
     event: Literal["STREAM_FAILED"] = "STREAM_FAILED"
     problem: ProblemResource
+
+
+class RunProjectionCorruptResource(ApiModel):
+    """One run the attention feed cannot project, named without ending the feed.
+
+    The per-run stream still ends that run with STREAM_FAILED. This frame is
+    the feed's own word: the named run is corrupt, and other runs continue.
+    """
+
+    event: Literal["RUN_PROJECTION_CORRUPT"] = "RUN_PROJECTION_CORRUPT"
+    public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
+    problem: ProblemResource

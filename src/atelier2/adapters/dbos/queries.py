@@ -463,6 +463,9 @@ def _current_attempt_projection(
             )
     attempt_id = AgentAttemptId(str(record["attempt_id"]))
     ordinal = int(record["attempt_ordinal"])
+    expected_attempt_id = AgentAttemptId.for_execution(
+        execution_id, exact_request.request_hash, ordinal
+    )
     if (
         ordinal not in (1, 2)
         or NodeExecutionId(str(record["node_execution_id"])) != execution_id
@@ -471,12 +474,21 @@ def _current_attempt_projection(
         != run.revision_hash
         or str(record["node_id"]) != run.current_node_id
         or request_hash != exact_request.request_hash
-        or attempt_id
-        != AgentAttemptId.for_execution(
-            execution_id, exact_request.request_hash, ordinal
-        )
+        or attempt_id != expected_attempt_id
     ):
-        raise RunTransitionConflict("current agent attempt binding disagrees")
+        raise RunTransitionConflict(
+            "current agent attempt binding disagrees "
+            f"run_id durable={str(record['run_id'])!r} expected={run.run_id.value!r} "
+            f"node_id durable={str(record['node_id'])!r} expected={run.current_node_id!r} "
+            f"ordinal={ordinal!r} "
+            f"request_hash durable={request_hash.value!r} "
+            f"expected={exact_request.request_hash.value!r} "
+            f"attempt_id durable={attempt_id.value!r} expected={expected_attempt_id.value!r} "
+            f"node_execution_id durable={str(record['node_execution_id'])!r} "
+            f"expected={execution_id.value!r} "
+            f"workflow_revision_hash durable={str(record['workflow_revision_hash'])!r} "
+            f"expected={run.revision_hash.value!r}"
+        )
     durable_state = _durable_attempt_state(record["state"])
     public_state = public_agent_attempt_state(durable_state)
     if public_state is None:
@@ -1185,9 +1197,14 @@ class DbosQueries:
             return ReadUnavailable()
         except (ValueError, RuntimeError, DatabaseError) as error:
             _LOG.error(
-                "run get projection failed",
+                "run get projection failed for run_id=%s: %s",
+                run_id.value,
+                error,
                 exc_info=error,
-                extra={"event": "run_get_projection_corrupt"},
+                extra={
+                    "event": "run_get_projection_corrupt",
+                    "run_id": run_id.value,
+                },
             )
             return QueryDurableStateCorrupt()
 

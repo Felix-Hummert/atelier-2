@@ -14,6 +14,12 @@ import sys
 from datetime import UTC, datetime
 from typing import TextIO
 
+from atelier2.api.references import (
+    InvalidPublicRunReference,
+    encode_public_run_reference,
+)
+from atelier2.contracts.runs import RunId
+
 PROCESS_LOGGER_NAME = "atelier2"
 _SHARED_HANDLER_NAME = "atelier2-process-json"
 _UNIFIED_LOGGERS = (PROCESS_LOGGER_NAME, "uvicorn", "uvicorn.error", "dbos")
@@ -39,6 +45,10 @@ class JsonLogFormatter(logging.Formatter):
             value = getattr(record, key, None)
             if value is not None:
                 payload[key] = value
+                if key == "run_id":
+                    reference = _public_run_reference_for(value)
+                    if reference is not None:
+                        payload["public_run_reference"] = reference
         if "exception" not in payload:
             rendered = self._render_traceback(record)
             if rendered is not None:
@@ -54,6 +64,15 @@ class JsonLogFormatter(logging.Formatter):
         if record.stack_info:
             parts.append(self.formatStack(record.stack_info))
         return "\n".join(parts) if parts else None
+
+
+def _public_run_reference_for(run_id: object) -> str | None:
+    if not isinstance(run_id, str):
+        return None
+    try:
+        return encode_public_run_reference(RunId(run_id))
+    except (InvalidPublicRunReference, ValueError):
+        return None
 
 
 def configure_process_logging(stream: TextIO | None = None) -> None:

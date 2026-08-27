@@ -293,7 +293,13 @@ nodes:
     }
     listed_log = events["run_list_projection_corrupt"]
     inspected_log = events["run_get_projection_corrupt"]
+    poison_id = RunId("poison-row")
     assert listed_log["level"] == "error"
     assert inspected_log["level"] == "error"
+    assert inspected_log["run_id"] == poison_id.value
+    assert inspected_log["public_run_reference"] == encode_public_run_reference(
+        poison_id
+    )
+    assert poison_id.value in str(inspected_log["message"])
     assert "absent" in str(listed_log["exception"]).lower()
     assert "absent" in str(inspected_log["exception"]).lower()

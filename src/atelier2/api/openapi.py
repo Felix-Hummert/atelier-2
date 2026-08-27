@@ -64,7 +64,10 @@ from atelier2.api.wire.events import (
     WaitingInputEventResourceV2,
     WaitingInputEventResourceV3,
 )
-from atelier2.api.wire.resources import StreamFailureResource
+from atelier2.api.wire.resources import (
+    RunProjectionCorruptResource,
+    StreamFailureResource,
+)
 from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
 from atelier2.contracts.executions import (
     KINDS_NO_V1_RUN_CARRIES,
@@ -921,6 +924,28 @@ def _stream_failure_component() -> dict[str, Any]:
     return generated
 
 
+def _run_projection_corrupt_component() -> dict[str, Any]:
+    """The attention-feed frame that names one unprojectable run.
+
+    The generated model would carry the open problem shape. This feed emits
+    only durable-state-corrupt here, so the published component promises that.
+    """
+
+    generated = RunProjectionCorruptResource.model_json_schema(
+        mode="serialization", ref_template="#/components/schemas/{model}"
+    )
+    generated.pop("$defs", None)
+    generated["properties"]["problem"] = {
+        "oneOf": [
+            {
+                "$ref": "#/components/schemas/"
+                + _problem_component_name("durable-state-corrupt")
+            }
+        ]
+    }
+    return generated
+
+
 def _install_event_components(schema: dict[str, Any]) -> None:
     components = schema.setdefault("components", {}).setdefault("schemas", {})
     for model in EVENT_MODELS:
@@ -986,6 +1011,9 @@ def _install_event_components(schema: dict[str, Any]) -> None:
         ]
     }
     components[StreamFailureResource.__name__] = _stream_failure_component()
+    components[RunProjectionCorruptResource.__name__] = (
+        _run_projection_corrupt_component()
+    )
     components["EventCursor"] = {
         "type": "string",
         "pattern": EVENT_CURSOR_PATTERN,
@@ -1184,12 +1212,31 @@ def _replace_parameter_schema(
     raise RuntimeError(f"generated OpenAPI omitted {location} parameter {name}")
 
 
+def _durable_and_failure_frames() -> dict[str, Any]:
+    return {
+        "durable_event": {
+            "id": {"$ref": "#/components/schemas/EventCursor"},
+            "data": {"$ref": "#/components/schemas/VersionedRunEventResource"},
+        },
+        "terminal_failure": {
+            "data": {"$ref": "#/components/schemas/StreamFailureResource"}
+        },
+    }
+
+
 def _install_sse_contract(schema: dict[str, Any]) -> None:
-    for path in (EVENT_PATH, ATTENTION_EVENT_PATH):
-        _install_sse_path(schema, path)
+    _install_sse_path(schema, EVENT_PATH, _durable_and_failure_frames())
+    attention_frames = _durable_and_failure_frames()
+    attention_frames["run_projection_corrupt"] = {
+        "id": {"$ref": "#/components/schemas/EventCursor"},
+        "data": {"$ref": "#/components/schemas/RunProjectionCorruptResource"},
+    }
+    _install_sse_path(schema, ATTENTION_EVENT_PATH, attention_frames)
 
 
-def _install_sse_path(schema: dict[str, Any], path: str) -> None:
+def _install_sse_path(
+    schema: dict[str, Any], path: str, frames: dict[str, Any]
+) -> None:
     operation = schema["paths"][path]["get"]
     operation.setdefault("parameters", []).append(
         {
@@ -1204,14 +1251,6 @@ def _install_sse_path(schema: dict[str, Any], path: str) -> None:
     response["content"] = {
         "text/event-stream": {
             "schema": {"type": "string"},
-            "x-atelier2-sse-v1": {
-                "durable_event": {
-                    "id": {"$ref": "#/components/schemas/EventCursor"},
-                    "data": {"$ref": "#/components/schemas/VersionedRunEventResource"},
-                },
-                "terminal_failure": {
-                    "data": {"$ref": "#/components/schemas/StreamFailureResource"}
-                },
-            },
+            "x-atelier2-sse-v1": frames,
         }
     }

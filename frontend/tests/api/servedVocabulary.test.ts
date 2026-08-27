@@ -26,7 +26,8 @@ import {
   projectResourceSchema,
   nodeRailEntrySchema,
   runV3Schema,
-  workflowRevisionSummarySchema
+  workflowRevisionSummarySchema,
+  decodeStreamFrame
 } from "../../src/api/client";
 
 /**
@@ -166,6 +167,22 @@ describe("the served vocabulary", () => {
     for (const code of servedRunForkProblems) {
       expect(problemDefinitions[code as keyof typeof problemDefinitions]).toBeDefined();
     }
+  });
+
+  it("mirrors the attention feed's per-run corruption frame", () => {
+    const served = servedDocument.components.schemas.RunProjectionCorruptResource;
+    expect(served?.properties?.event?.const).toBe("RUN_PROJECTION_CORRUPT");
+    const frame = decodeStreamFrame({
+      event: "RUN_PROJECTION_CORRUPT",
+      public_run_reference: "run1.cnVu",
+      problem: {
+        type: "urn:atelier2:problem:v1:durable-state-corrupt",
+        title: "Durable state is corrupt",
+        status: 500,
+        detail: "Stop mutation and inspect the durable store."
+      }
+    });
+    expect(frame.event).toBe("RUN_PROJECTION_CORRUPT");
   });
 
   it("decodes exactly the agent attempt states the document serves", () => {

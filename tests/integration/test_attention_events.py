@@ -8,13 +8,17 @@ identity already emitted at T excluded.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy.engine import Connection, Engine
 
+from atelier2.adapters.dbos.attention_events import load_attention_event_page
 from atelier2.adapters.dbos.instants import record_event_instant
+from atelier2.adapters.dbos.queries import DbosQueries
+from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
     initialize_schema,
@@ -23,6 +27,7 @@ from atelier2.adapters.dbos.schema import (
     workflow_revisions,
 )
 from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.run_events import PersistedRunEvent
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
     RunId,
@@ -30,8 +35,10 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
 )
 from atelier2.contracts.when import RecordedAt
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.run_events import AttentionEventPage
-from tests.scenarios.api import durable_queries
+from atelier2.ports.workflow_revisions import DurableProjectionLimit
+from tests.scenarios.api import durable_queries, permissive_projection_limit
 
 INSTANT = RecordedAt("2026-08-19T12:00:00Z")
 LATER_SORTING_RUN = RunId("z-wait")
@@ -151,3 +158,50 @@ def test_page_after_a_later_sorting_same_instant_wait_still_returns_the_earlier_
     )
     assert isinstance(after_both_at_t, AttentionEventPage)
     assert _run_ids(after_both_at_t) == ()
+
+
+CORRUPT_RUN = RunId("corrupt-wait")
+
+
+def test_a_run_whose_event_projection_raises_does_not_hide_the_other_run(
+    engine: Engine,
+) -> None:
+    revision = WorkflowRevision(WAIT_DOCUMENT)
+    with engine.begin() as connection:
+        connection.execute(
+            workflow_revisions.insert().values(
+                revision_hash=revision.revision_hash.value,
+                document=revision.document,
+            )
+        )
+        _insert_run(connection, LATER_SORTING_RUN, revision)
+        _insert_run(connection, CORRUPT_RUN, revision)
+
+    def project_event(
+        connection: Connection,
+        record: Mapping[Any, Any],
+        version: WorkflowFormatVersion,
+        projection_limit: DurableProjectionLimit,
+    ) -> PersistedRunEvent:
+        if str(record["run_id"]) == CORRUPT_RUN.value:
+            raise RunTransitionConflict(
+                "current agent attempt binding disagrees "
+                f"run_id durable={CORRUPT_RUN.value!r} expected={CORRUPT_RUN.value!r}"
+            )
+        return DbosQueries._event_projection(
+            connection, record, version, projection_limit
+        )
+
+    with engine.connect() as connection:
+        page = load_attention_event_page(
+            connection,
+            None,
+            None,
+            10,
+            permissive_projection_limit(),
+            project_event,
+            (),
+        )
+
+    assert isinstance(page, AttentionEventPage)
+    assert _run_ids(page) == (LATER_SORTING_RUN,)

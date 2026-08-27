@@ -407,7 +407,7 @@ def test_openapi_31_validates_and_describes_exact_r2_surface() -> None:
 def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> None:
     schema = served_app().openapi()
 
-    envelope = {
+    durable_and_failure = {
         "durable_event": {
             "id": {"$ref": "#/components/schemas/EventCursor"},
             "data": {"$ref": "#/components/schemas/VersionedRunEventResource"},
@@ -416,11 +416,27 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
             "data": {"$ref": "#/components/schemas/StreamFailureResource"}
         },
     }
-    for path in (EVENT_PATH, ATTENTION_EVENT_PATH):
-        content = schema["paths"][path]["get"]["responses"]["200"]["content"]
+    attention_envelope = {
+        **durable_and_failure,
+        "run_projection_corrupt": {
+            "id": {"$ref": "#/components/schemas/EventCursor"},
+            "data": {"$ref": "#/components/schemas/RunProjectionCorruptResource"},
+        },
+    }
+    event_content = schema["paths"][EVENT_PATH]["get"]["responses"]["200"]["content"]
+    attention_content = schema["paths"][ATTENTION_EVENT_PATH]["get"]["responses"][
+        "200"
+    ]["content"]
+    for content in (event_content, attention_content):
         assert set(content) == {"text/event-stream"}
         assert content["text/event-stream"]["schema"] == {"type": "string"}
-        assert content["text/event-stream"]["x-atelier2-sse-v1"] == envelope
+    assert (
+        event_content["text/event-stream"]["x-atelier2-sse-v1"] == durable_and_failure
+    )
+    assert (
+        attention_content["text/event-stream"]["x-atelier2-sse-v1"]
+        == attention_envelope
+    )
     failure_frame = schema["components"]["schemas"]["StreamFailureResource"]
     assert failure_frame["properties"]["event"]["const"] == "STREAM_FAILED"
     assert failure_frame["properties"]["problem"] == {
@@ -429,6 +445,11 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
             {"$ref": "#/components/schemas/ProblemDurableStateCorrupt"},
             {"$ref": "#/components/schemas/ProblemInternalError"},
         ]
+    }
+    corrupt_frame = schema["components"]["schemas"]["RunProjectionCorruptResource"]
+    assert corrupt_frame["properties"]["event"]["const"] == "RUN_PROJECTION_CORRUPT"
+    assert corrupt_frame["properties"]["problem"] == {
+        "oneOf": [{"$ref": "#/components/schemas/ProblemDurableStateCorrupt"}]
     }
     assert "ProblemResource" not in schema["components"]["schemas"]
     event_union = schema["components"]["schemas"]["RunEventResource"]

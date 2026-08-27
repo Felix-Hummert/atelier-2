@@ -16,6 +16,7 @@ from typing import Any, Final
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection
 
+from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 from atelier2.adapters.dbos.schema import event_instants, run_events, runs
 from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.run_events import PersistedRunEvent
@@ -106,17 +107,21 @@ def load_attention_event_page(
             payload_columns=_EVENT_PAYLOAD_COLUMNS,
             field_columns=_EVENT_FIELD_COLUMNS,
         )
-        events.append(
-            AttentionEvent(
-                project_event(
-                    connection,
-                    record,
-                    WorkflowFormatVersion(int(record["workflow_format_version"])),
-                    projection_limit,
-                ),
-                RecordedAt(str(record["recorded_at"])),
+        try:
+            events.append(
+                AttentionEvent(
+                    project_event(
+                        connection,
+                        record,
+                        WorkflowFormatVersion(int(record["workflow_format_version"])),
+                        projection_limit,
+                    ),
+                    RecordedAt(str(record["recorded_at"])),
+                )
             )
-        )
+        except (RunTransitionConflict, TypeError, ValueError):
+            # One unprojectable row must not refuse the rest of the page.
+            continue
     return AttentionEventPage(tuple(events))
 
 

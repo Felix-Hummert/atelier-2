@@ -7,6 +7,7 @@ import {
   decodeProblem,
   decodeRun,
   decodeRunEvent,
+  decodeStreamFrame,
   decodeWorkflowRevisionDetail,
   executableGraph,
   isRunV3,
@@ -426,6 +427,20 @@ describe("closed API decoders", () => {
 
   it("refuses an unknown durable event kind", () => {
     expect(() => decodeRunEvent(event("NODE_PROGRESS", { percent: 50 }))).toThrow();
+  });
+
+  it("decodes the attention feed's per-run corruption frame", () => {
+    const frame = decodeStreamFrame({
+      event: "RUN_PROJECTION_CORRUPT",
+      public_run_reference: "run1.cnVu",
+      problem: {
+        type: "urn:atelier2:problem:v1:durable-state-corrupt",
+        title: "Durable state is corrupt",
+        status: 500,
+        detail: "Stop mutation and inspect the durable store."
+      }
+    });
+    expect(frame.event).toBe("RUN_PROJECTION_CORRUPT");
   });
 
   it.each(["01", "+1", "-0", " 1", "1 ", "1.0", ""])(
