@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from threading import Barrier
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -45,7 +46,12 @@ from atelier2.api.openapi import (
     QUEUE_PROPOSALS_PATH,
 )
 from atelier2.api.references import encode_public_project_reference
-from atelier2.application.advance_queue import QueueAdvanceUnavailable, QueueRunStarted
+from atelier2.application.advance_queue import (
+    QueueAdvanceCorrupt,
+    QueueAdvanceUnavailable,
+    QueueItemBlocked,
+    QueueRunStarted,
+)
 from atelier2.application.refusals import (
     DurableStateCorrupt as StartDurableStateCorrupt,
 )
@@ -71,6 +77,7 @@ from atelier2.contracts.queue_projection import (
     QueueItemAdmitted,
     QueueItemId,
     QueueItemProposed,
+    QueueItemSnapshot,
     QueueItemState,
     QueueLaunchBinding,
     QueuePriorityRank,
@@ -95,13 +102,18 @@ from atelier2.contracts.runs import (
 from atelier2.ports.durable_runs import (
     DurablePublishedRunStarter,
     DurableStateCorrupt,
+    DurableWriteUnavailable,
 )
-from atelier2.ports.published_revisions import CatalogLineageFounded
+from atelier2.ports.published_revisions import (
+    CatalogLineageFounded,
+    PublishedRevisionsUnavailable,
+)
 from atelier2.ports.queue_projection import (
     QueueItemsPage,
     QueueLaunchBlocked,
     QueueLaunchReserved,
     QueueProjectPolicyPublished,
+    QueueReadUnavailable,
 )
 from tests.scenarios.api import (
     api_limits,
@@ -407,7 +419,7 @@ def test_policy_and_launch_reservation_are_atomic_under_the_project_cap(
     assert QueueBlockerKind.CAP_REACHED in blocked.item.blockers
 
 
-def test_missing_policy_refuses_start_without_inventing_a_capacity_decision(
+def test_missing_policy_fails_launch_reservation_as_corrupt_without_a_binding(
     store: tuple[DbosQueueProjectionStore, Engine],
 ) -> None:
     queue, engine = store
@@ -446,8 +458,7 @@ def test_missing_policy_refuses_start_without_inventing_a_capacity_decision(
         )
     )
 
-    assert isinstance(result, QueueLaunchBlocked)
-    assert result.item.blockers == (QueueBlockerKind.START_REFUSED,)
+    assert isinstance(result, DurableStateCorrupt)
     with engine.connect() as connection:
         assert (
             connection.scalar(
@@ -927,6 +938,13 @@ def test_v43_to_v44_preserves_populated_rows_and_invents_no_queue_decision(
         assert legacy.proposal is None
         assert legacy.launch_binding is None
         assert legacy.blockers == (QueueBlockerKind.LEGACY_REVIEW_REQUIRED,)
+        (outcome,) = advance_queue_module.advance_queue(
+            DbosQueueProjectionStore(reopened),
+            DbosCatalogStore(reopened),
+            cast(DurablePublishedRunStarter, object()),
+        )
+        assert isinstance(outcome, QueueItemBlocked)
+        assert outcome.blockers == (QueueBlockerKind.LEGACY_REVIEW_REQUIRED,)
         with reopened.connect() as connection:
             assert (
                 connection.scalar(
@@ -1055,6 +1073,7 @@ def test_advance_replays_a_reserved_binding_before_projection_blockers(
     page = queue.list_items(None, 50)
     assert isinstance(page, QueueItemsPage)
     (stored,) = page.items
+    assert stored.blockers == ()
 
     class BoundQueue:
         def list_items(self, _after: object, _limit: int) -> QueueItemsPage:
@@ -1089,13 +1108,166 @@ def test_advance_replays_a_reserved_binding_before_projection_blockers(
 
 
 @pytest.mark.parametrize(
-    "start_failure",
-    [WriteUnavailable(), StartDurableStateCorrupt()],
+    ("read_answer", "expected_error"),
+    [
+        (QueueReadUnavailable(), QueueAdvanceUnavailable),
+        (DurableStateCorrupt(), QueueAdvanceCorrupt),
+        (object(), QueueAdvanceCorrupt),
+    ],
 )
-def test_advance_fails_loud_when_a_reserved_run_cannot_start_durably(
+def test_advance_classifies_queue_read_failures(
+    read_answer: object,
+    expected_error: type[RuntimeError],
+) -> None:
+    class ReadAnswerQueue:
+        def list_items(self, _after: object, _limit: int) -> object:
+            return read_answer
+
+    with pytest.raises(expected_error):
+        advance_queue_module.advance_queue(
+            cast(Any, ReadAnswerQueue()),
+            cast(Any, object()),
+            cast(DurablePublishedRunStarter, object()),
+        )
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["proposed-without-proposal", "authority-without-proposal-revision"],
+)
+def test_advance_refuses_incomplete_phase_d_projection_before_blockers(
+    store: tuple[DbosQueueProjectionStore, Engine],
+    corruption: str,
+) -> None:
+    queue, engine = store
+    lineage_id, _revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
+    reference = _prepare_admitted(queue, lineage_id, f"gh:{corruption}")
+    page = queue.list_items(None, 50)
+    assert isinstance(page, QueueItemsPage)
+    stored = next(
+        item for item in page.items if item.item_reference.item_id == reference.item_id
+    )
+    assert stored.admission is not None
+    if corruption == "proposed-without-proposal":
+        malformed = SimpleNamespace(
+            item_reference=stored.item_reference,
+            state=QueueItemState.PROPOSED,
+            revision=QueueProjectionRevision(1),
+            admission=None,
+            proposal=None,
+            launch_binding=None,
+            blockers=(QueueBlockerKind.HUMAN_REQUIRED,),
+        )
+    else:
+        malformed = SimpleNamespace(
+            item_reference=stored.item_reference,
+            state=stored.state,
+            revision=stored.revision,
+            admission=SimpleNamespace(
+                workflow_lineage_id=lineage_id,
+                rationale=stored.admission.rationale,
+                authority=QueueDecisionAuthority.OPERATOR,
+                proposal_revision=None,
+            ),
+            proposal=stored.proposal,
+            launch_binding=None,
+            blockers=(QueueBlockerKind.CAP_REACHED,),
+        )
+
+    class MalformedProjection:
+        def list_items(self, _after: object, _limit: int) -> QueueItemsPage:
+            return QueueItemsPage((cast(QueueItemSnapshot, malformed),), None)
+
+        def reserve_launch(self, _binding: object) -> object:
+            raise AssertionError("corrupt projection must fail before reservation")
+
+    with pytest.raises(QueueAdvanceCorrupt, match="inconsistent item"):
+        advance_queue_module.advance_queue(
+            cast(Any, MalformedProjection()),
+            DbosCatalogStore(engine),
+            cast(DurablePublishedRunStarter, object()),
+        )
+
+
+@pytest.mark.parametrize(
+    ("reservation_answer", "expected_error"),
+    [
+        (DurableWriteUnavailable(), QueueAdvanceUnavailable),
+        (DurableStateCorrupt(), QueueAdvanceCorrupt),
+        (object(), QueueAdvanceCorrupt),
+    ],
+)
+def test_advance_classifies_launch_reservation_failures(
+    store: tuple[DbosQueueProjectionStore, Engine],
+    reservation_answer: object,
+    expected_error: type[RuntimeError],
+) -> None:
+    queue, engine = store
+    lineage_id, _revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
+    _prepare_admitted(queue, lineage_id)
+    page = queue.list_items(None, 50)
+    assert isinstance(page, QueueItemsPage)
+
+    class ReservationAnswerQueue:
+        def list_items(self, _after: object, _limit: int) -> QueueItemsPage:
+            return page
+
+        def reserve_launch(self, _binding: object) -> object:
+            return reservation_answer
+
+    with pytest.raises(expected_error):
+        advance_queue_module.advance_queue(
+            cast(Any, ReservationAnswerQueue()),
+            DbosCatalogStore(engine),
+            cast(DurablePublishedRunStarter, object()),
+        )
+
+
+@pytest.mark.parametrize(
+    ("catalog_answer", "expected_error"),
+    [
+        (PublishedRevisionsUnavailable(), QueueAdvanceUnavailable),
+        (DurableStateCorrupt(), QueueAdvanceCorrupt),
+        (object(), QueueAdvanceCorrupt),
+    ],
+)
+def test_advance_classifies_catalog_resolution_failures(
+    store: tuple[DbosQueueProjectionStore, Engine],
+    catalog_answer: object,
+    expected_error: type[RuntimeError],
+) -> None:
+    queue, engine = store
+    lineage_id, _revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
+    _prepare_admitted(queue, lineage_id)
+
+    class CatalogAnswer:
+        def resolve_name(self, *_args: object) -> object:
+            return catalog_answer
+
+    with pytest.raises(expected_error):
+        advance_queue_module.advance_queue(
+            queue,
+            cast(Any, CatalogAnswer()),
+            cast(DurablePublishedRunStarter, object()),
+        )
+
+
+@pytest.mark.parametrize(
+    ("start_failure", "expected_error"),
+    [
+        (WriteUnavailable(), QueueAdvanceUnavailable),
+        (StartDurableStateCorrupt(), QueueAdvanceCorrupt),
+        (object(), QueueAdvanceCorrupt),
+    ],
+)
+def test_advance_classifies_reserved_run_start_failures(
     store: tuple[DbosQueueProjectionStore, Engine],
     monkeypatch: pytest.MonkeyPatch,
     start_failure: object,
+    expected_error: type[RuntimeError],
 ) -> None:
     queue, engine = store
     lineage_id, revision_hash = _found_lineage(engine)
@@ -1118,7 +1290,7 @@ def test_advance_fails_loud_when_a_reserved_run_cannot_start_durably(
         lambda *_args, **_kwargs: start_failure,
     )
 
-    with pytest.raises(QueueAdvanceUnavailable, match="could not start"):
+    with pytest.raises(expected_error):
         advance_queue_module.advance_queue(
             queue,
             DbosCatalogStore(engine),
@@ -1355,7 +1527,7 @@ def test_corrupt_admission_proposal_identity_fails_projection_api_and_start(
     store: tuple[DbosQueueProjectionStore, Engine],
 ) -> None:
     queue, engine = store
-    lineage_id, _revision_hash = _found_lineage(engine)
+    lineage_id, revision_hash = _found_lineage(engine)
     other_lineage_id, _other_revision = _found_lineage(
         engine, BINDING_FREE_WORKFLOW.replace(b"[2, 3]", b"[4, 5]")
     )
@@ -1369,12 +1541,28 @@ def test_corrupt_admission_proposal_identity_fails_projection_api_and_start(
             .values(workflow_lineage_id=other_lineage_id.value)
         )
 
+    reservation = queue.reserve_launch(
+        QueueLaunchBinding(
+            reference.item_id,
+            QueueProjectionRevision(1),
+            RunId("corrupt-admission-reservation"),
+            revision_hash,
+        )
+    )
+    assert isinstance(reservation, DurableStateCorrupt)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(queue_launch_bindings)
+            )
+            == 0
+        )
     assert isinstance(queue.list_items(None, 50), DurableStateCorrupt)
     with _queue_api(queue) as api:
         response = api.get(QUEUE_ITEMS_PATH)
     assert response.status_code == 500
     assert response.json()["type"].endswith("durable-state-corrupt")
-    with pytest.raises(QueueAdvanceUnavailable, match="could not be read"):
+    with pytest.raises(QueueAdvanceCorrupt, match="queue is corrupt"):
         advance_queue_module.advance_queue(
             queue,
             DbosCatalogStore(engine),

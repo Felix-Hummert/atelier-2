@@ -502,8 +502,8 @@ class DbosQueueProjectionStore:
                     connection, snapshot.item_reference.project
                 )
                 if policy is None:
-                    blockers.append(QueueBlockerKind.START_REFUSED)
-                elif (
+                    return DurableStateCorrupt()
+                if (
                     self._active_launch_count(
                         connection, snapshot.item_reference.project
                     )
@@ -515,8 +515,6 @@ class DbosQueueProjectionStore:
                     or snapshot.proposal is None
                     or snapshot.admission is None
                     or snapshot.admission.proposal_revision != binding.proposal_revision
-                    or snapshot.proposal.workflow_lineage_id
-                    != snapshot.admission.workflow_lineage_id
                     or blockers
                 ):
                     return QueueLaunchBlocked(

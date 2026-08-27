@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import assert_never
 
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.application.start_published_run import (
@@ -61,6 +60,10 @@ class QueueAdvanceUnavailable(RuntimeError):
     """Durable queue or catalog truth could not be read safely."""
 
 
+class QueueAdvanceCorrupt(RuntimeError):
+    """Durable queue, catalog, or run truth contradicted its contract."""
+
+
 @dataclass(frozen=True)
 class QueueRunStarted:
     item_id: QueueItemId
@@ -95,11 +98,14 @@ def advance_queue(
     after: QueueItemId | None = None
     while True:
         page = queue.list_items(after, page_limit)
-        if isinstance(page, QueueReadUnavailable | PortDurableStateCorrupt):
+        if isinstance(page, QueueReadUnavailable):
             raise QueueAdvanceUnavailable("the queue could not be read for advance")
+        if isinstance(page, PortDurableStateCorrupt):
+            raise QueueAdvanceCorrupt("the queue is corrupt and cannot be advanced")
         if not isinstance(page, QueueItemsPage):
-            raise QueueAdvanceUnavailable("the queue answered an unknown projection")
+            raise QueueAdvanceCorrupt("the queue answered an unknown projection")
         for item in page.items:
+            item = _validated_snapshot(item)
             if item.state is QueueItemState.ADMITTED:
                 admitted_items.append(item)
         if page.next_after is None:
@@ -124,15 +130,31 @@ def _advance_one(
 ) -> QueueAdvanceOutcome:
     binding = item.launch_binding
     if binding is None:
-        if item.blockers:
-            return QueueItemBlocked(item.item_reference.item_id, item.blockers)
         proposal = item.proposal
         admission = item.admission
-        if proposal is None or admission is None or admission.proposal_revision is None:
+        if (
+            item.state is QueueItemState.ADMITTED
+            and proposal is None
+            and admission is not None
+            and admission.authority is None
+            and admission.proposal_revision is None
+        ):
             return QueueItemBlocked(
                 item.item_reference.item_id,
                 (QueueBlockerKind.LEGACY_REVIEW_REQUIRED,),
             )
+        if (
+            item.state is not QueueItemState.ADMITTED
+            or proposal is None
+            or admission is None
+            or admission.authority is None
+            or admission.proposal_revision is None
+        ):
+            raise QueueAdvanceCorrupt(
+                "the queue item does not carry one complete admitted proposal"
+            )
+        if item.blockers:
+            return QueueItemBlocked(item.item_reference.item_id, item.blockers)
         revision_hash = _resolve_head(proposal.workflow_lineage_id, catalog)
         if revision_hash is None:
             return QueueItemBlocked(
@@ -155,13 +177,18 @@ def _advance_one(
             ):
                 binding = reserved
             case QueueLaunchBlocked(item=blocked):
+                blocked = _validated_snapshot(blocked)
                 return QueueItemBlocked(
                     blocked.item_reference.item_id, blocked.blockers
                 )
-            case PortDurableStateCorrupt() | DurableWriteUnavailable():
+            case DurableWriteUnavailable():
                 raise QueueAdvanceUnavailable("the launch reservation could not commit")
-            case _ as unreachable:
-                assert_never(unreachable)
+            case PortDurableStateCorrupt():
+                raise QueueAdvanceCorrupt("the launch reservation found corrupt state")
+            case _:
+                raise QueueAdvanceCorrupt(
+                    "the queue answered an unknown launch reservation outcome"
+                )
     result = start_published_run(
         binding.run_id,
         binding.workflow_revision_hash,
@@ -196,10 +223,12 @@ def _advance_one(
                 item.item_reference.item_id,
                 (QueueBlockerKind.START_REFUSED,),
             )
-        case WriteUnavailable() | DurableStateCorrupt():
+        case WriteUnavailable():
             raise QueueAdvanceUnavailable("the reserved queue run could not start")
-        case _ as unreachable:
-            assert_never(unreachable)
+        case DurableStateCorrupt():
+            raise QueueAdvanceCorrupt("the reserved queue run found corrupt state")
+        case _:
+            raise QueueAdvanceCorrupt("run start answered an unknown outcome")
 
 
 def _resolve_head(
@@ -210,12 +239,33 @@ def _resolve_head(
             return WorkflowRevisionHash(revision_hash.value)
         case CatalogNameMissing():
             return None
-        case PublishedRevisionsUnavailable() | PortDurableStateCorrupt():
+        case PublishedRevisionsUnavailable():
             raise QueueAdvanceUnavailable(
                 f"the catalog could not resolve workflow lineage {lineage_id.value}"
             )
-        case _ as unreachable:
-            assert_never(unreachable)
+        case PortDurableStateCorrupt():
+            raise QueueAdvanceCorrupt(
+                f"workflow lineage {lineage_id.value} has corrupt catalog state"
+            )
+        case _:
+            raise QueueAdvanceCorrupt("the catalog answered an unknown resolve outcome")
+
+
+def _validated_snapshot(item: QueueItemSnapshot) -> QueueItemSnapshot:
+    try:
+        return QueueItemSnapshot(
+            item.item_reference,
+            item.state,
+            item.revision,
+            item.admission,
+            item.proposal,
+            item.launch_binding,
+            item.blockers,
+        )
+    except (AttributeError, TypeError, ValueError) as error:
+        raise QueueAdvanceCorrupt(
+            "the queue projection returned an inconsistent item"
+        ) from error
 
 
 def _derive_run_id(item_id: QueueItemId, proposal_revision: int) -> RunId:
