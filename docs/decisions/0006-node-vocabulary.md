@@ -459,12 +459,13 @@ across rounds is the loop's round identity carrying a sequence of otherwise
 stateless, individually-judged answers — not a session the node itself keeps.
 
 **Restart:** the run persists the waiting node and round. A bound-input pause's
-`WAITING_INPUT` payload is the 64-byte lowercase ASCII SHA-256 digest of its exact
-composed question; a no-input or legacy pause keeps the empty payload. Readback
-recomposes the question from durable material and requires that digest to agree,
-so a restart shows the same question without copying its potentially large bytes
-into the event projection. The answer is one attributed durable command keyed by
-run, node and answer bytes. Identical concurrent
+`WAITING_INPUT` payload is its exact composed question; the event's payload hash
+is the integrity check, never the carrier. A no-input or legacy pause keeps the
+empty payload and its existing authored-prompt read path. Readback serves an
+input-bearing question from that exact durable pause, so the question shown and
+the pause answered remain one object even if a stored source later changes. The
+answer is one attributed durable command keyed by run, node and answer bytes.
+Identical concurrent
 submissions converge on the same receipt and a different answer loses with a typed
 conflict (ADR 0002's contract, unchanged). A restart re-enters the same wait
 without a second prompt or a second acceptance; a run cancel drives it to one

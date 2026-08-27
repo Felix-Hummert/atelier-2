@@ -15,8 +15,9 @@ What the cockpit shows of that state, on `main`:
 3. Opening the V3 run shows the live graph, the rail, and an **Answer needed**
    card that names the exact question this pause bound. With no inputs that is
    the authored prompt; with inputs it also carries each declared graph input or
-   named predecessor output. Restart reads the same composed question from
-   durable material. Submitting sends the typed bytes through
+   named predecessor output. An input-bearing pause stores that exact question
+   as its payload, with the payload hash as its integrity check; restart serves
+   the question from the same pause. Submitting sends the typed bytes through
    `POST /runs/{ref}/answers`, and a named refusal of that door stays on the card.
    A wait whose published document carries no question is named as such, not as
    a bare node id.

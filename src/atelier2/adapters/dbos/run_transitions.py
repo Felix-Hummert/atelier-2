@@ -687,18 +687,12 @@ def commit_waiting_input(
 ) -> TransitionSnapshot:
     """Rest this run at this node's pause, in the round it is already turning.
 
-    The pause moves nowhere, so source and target round are the same one. A
-    composed V3 question is represented by its canonical digest rather than by
-    the full text: the durable node binding owns the exact question, while the
-    event proves which question made this execution wait without consuming the
-    event projection's payload budget. Legacy and no-input pauses keep the exact
-    empty payload they have always written.
+    The pause moves nowhere, so source and target round are the same one. An
+    input-bearing V3 Wait carries the exact composed question in this event;
+    the event's payload hash is its integrity check. Legacy and no-input pauses
+    keep the exact empty payload they have always written.
     """
-    payload = (
-        b""
-        if question is None
-        else Sha256Hash.of(question.encode("utf-8")).value.encode("ascii")
-    )
+    payload = b"" if question is None else question.encode("utf-8")
     return _commit_event(
         session,
         run_id,

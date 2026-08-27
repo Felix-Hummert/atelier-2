@@ -22,7 +22,7 @@ from atelier2.adapters.dbos.artifact_store import DbosArtifactStore
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import run_events, runs, wait_answers
+from atelier2.adapters.dbos.schema import run_events, run_inputs_v3, runs, wait_answers
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -33,12 +33,15 @@ from atelier2.adapters.yaml_workflows import (
     InvalidWorkflowDocument,
     parse_executable_workflow_document,
 )
+from atelier2.api.projection.events import run_event_resource
+from atelier2.api.references import base64_characters_for
+from atelier2.api.wire.resources import NodeRailResource
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
     UnanswerableWait,
     answer_wait_result,
 )
-from atelier2.application.compose_node_job import RESULT_HEADING
+from atelier2.application.compose_node_job import ORDER_HEADING, RESULT_HEADING
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -57,6 +60,7 @@ from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
+from atelier2.contracts.run_events import RunEventPage
 from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
@@ -89,13 +93,14 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
 )
+from atelier2.ports.run_events import AttentionEvent, AttentionEventPage
 from atelier2.ports.run_queries import NodeDetailFound
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     answering_each_execution,
     publish_checked_model_registry,
 )
-from tests.scenarios.api import durable_queries
+from tests.scenarios.api import api_limits, durable_queries, stream_projection_limit
 
 WORKFLOWS_DIRECTORY = Path(__file__).parents[2] / "workflows"
 VISION_VARIANTS_DOCUMENT = (WORKFLOWS_DIRECTORY / "vision-variants.yaml").read_bytes()
@@ -103,6 +108,28 @@ TEXT_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
     (WORKFLOWS_DIRECTORY / "schemas" / "nonempty_string.json").read_bytes(),
 )
+GRAPH_INPUT_WAIT_PROMPT = "Read the context bound below before answering."
+GRAPH_INPUT_WAIT_DOCUMENT = f"""format_version: 3
+name: A person answers with durable context
+graph_inputs:
+  - name: context
+    schema:
+      ref: nonempty_string
+      revision: {TEXT_SCHEMA.revision_hash.value}
+nodes:
+  - id: answer_with_context
+    type: wait
+    prompt: {GRAPH_INPUT_WAIT_PROMPT}
+    inputs:
+      - name: context
+        from:
+          graph_input: context
+    outputs:
+      - name: answer
+        schema:
+          ref: nonempty_string
+          revision: {TEXT_SCHEMA.revision_hash.value}
+""".encode()
 VISION_VARIANTS_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
     (WORKFLOWS_DIRECTORY / "schemas" / "vision_variants_result.json").read_bytes(),
@@ -540,7 +567,6 @@ def test_a_bound_wait_asks_with_the_predecessor_value_and_its_answer_reaches_the
     assert b"reaction" in wait_job
     assert b"acknowledged reaction" in wait_job
     assert VISIONER_ANSWER in wait_job
-    expected_pause_payload = Sha256Hash.of(expected_wait_job).value.encode("ascii")
     with runtime.engine.connect() as connection:
         pause = (
             connection.execute(
@@ -554,9 +580,8 @@ def test_a_bound_wait_asks_with_the_predecessor_value_and_its_answer_reaches_the
             .mappings()
             .one()
         )
-    assert bytes(pause["payload"]) == expected_pause_payload
-    assert len(bytes(pause["payload"])) == 64
-    assert str(pause["payload_hash"]) == Sha256Hash.of(expected_pause_payload).value
+    assert bytes(pause["payload"]) == expected_wait_job
+    assert str(pause["payload_hash"]) == Sha256Hash.of(expected_wait_job).value
 
     visioner_job = job_bytes_for(provider, "develop_variants")
     assert b"--- order: fragments ---" in visioner_job
@@ -591,6 +616,8 @@ def test_a_bound_wait_asks_with_the_predecessor_value_and_its_answer_reaches_the
 
     wait_detail = node_detail(recovered, run_id, "operator_reaction")
     assert wait_detail.detail.state is NodeState.SUCCEEDED
+    assert wait_detail.detail.job == expected_wait_job
+    assert wait_detail.detail.job_hash == Sha256Hash.of(expected_wait_job).value
     assert wait_detail.detail.answer is not None
     assert wait_detail.detail.answer.value == OPERATOR_ANSWER
 
@@ -620,6 +647,175 @@ def test_a_bound_wait_asks_with_the_predecessor_value_and_its_answer_reaches_the
     assert writer_detail.detail.answer.value == WRITER_ANSWER
     for sentence in json.loads(writer_detail.detail.answer.value)["sentences"]:
         assert sentence["traceable_to"] == "operator_reaction"
+
+
+@pytest.mark.proves("a-wait-binds-the-value-into-the-question-it-asks")
+def test_a_graph_input_wait_keeps_the_question_from_its_pause(
+    runtime: DbosRuntime,
+) -> None:
+    """Read and answer the exact pause even if its source is later changed.
+
+    The input trigger is dropped because product code cannot mutate this row.
+    Updating both value and hash models an externally rewritten but internally
+    self-consistent source, which must not rewrite a question already shown.
+    """
+    published = DbosCatalogStore(runtime.engine).publish_revision(TEXT_SCHEMA)
+    assert isinstance(
+        published, (PublishedRevisionCreated, PublishedRevisionExisting)
+    ), published
+    workflow = WorkflowRevision(GRAPH_INPUT_WAIT_DOCUMENT)
+    DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
+    run_id = RunId("v3/graph-input-wait-keeps-its-pause")
+    created = start(
+        runtime,
+        workflow,
+        AgentBindingSet(()),
+        run_id,
+        authored_orders=(AuthoredOrder("context", InlineOrderValue(CONTEXT)),),
+    )
+    assert isinstance(created, DurableRunCreated), created
+
+    runtime.launch()
+    wait_for_state(runtime, run_id, RunState.WAITING_INPUT)
+    expected_question = (
+        GRAPH_INPUT_WAIT_PROMPT.encode()
+        + b"\n\n"
+        + ORDER_HEADING.format(name="context").encode()
+        + b"\n\n"
+        + CONTEXT_TEXT.encode()
+    )
+    paused = node_detail(runtime, run_id, "answer_with_context")
+    assert paused.detail.job == expected_question
+    assert paused.detail.job_hash == Sha256Hash.of(expected_question).value
+
+    changed_context = json.dumps("context changed after the pause").encode()
+    with runtime.engine.begin() as connection:
+        connection.execute(sa.text("DROP TRIGGER run_inputs_v3_no_update"))
+        changed = connection.execute(
+            run_inputs_v3.update()
+            .where(
+                run_inputs_v3.c.run_id == run_id.value,
+                run_inputs_v3.c.name == "context",
+            )
+            .values(
+                value=changed_context,
+                value_hash=Sha256Hash.of(changed_context).value,
+            )
+        )
+    assert changed.rowcount == 1
+
+    reread = node_detail(runtime, run_id, "answer_with_context")
+    assert reread.detail.job == expected_question
+    assert reread.detail.job_hash == Sha256Hash.of(expected_question).value
+    accepted = answer_wait_result(
+        run_id,
+        workflow.revision_hash,
+        "answer_with_context",
+        FRAGMENTS,
+        DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
+    )
+    assert isinstance(accepted, AnswerAcceptedPending), accepted
+    wait_for_state(runtime, run_id, RunState.COMPLETED)
+
+    answered = node_detail(runtime, run_id, "answer_with_context")
+    assert answered.detail.state is NodeState.SUCCEEDED
+    assert answered.detail.job == expected_question
+    assert answered.detail.job_hash == Sha256Hash.of(expected_question).value
+    assert answered.detail.answer is not None
+    assert answered.detail.answer.value == FRAGMENTS
+
+
+@pytest.mark.proves("a-wait-binds-the-value-into-the-question-it-asks")
+def test_an_oversized_durable_wait_question_keeps_event_pages_readable(
+    runtime: DbosRuntime,
+) -> None:
+    """A private pause payload is fully verified without becoming wire payload."""
+    published = DbosCatalogStore(runtime.engine).publish_revision(TEXT_SCHEMA)
+    assert isinstance(
+        published, (PublishedRevisionCreated, PublishedRevisionExisting)
+    ), published
+    workflow = WorkflowRevision(GRAPH_INPUT_WAIT_DOCUMENT)
+    DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
+    run_id = RunId("v3/oversized-durable-wait-question")
+    projection_limit = stream_projection_limit()
+    question_prefix = (
+        GRAPH_INPUT_WAIT_PROMPT.encode()
+        + b"\n\n"
+        + ORDER_HEADING.format(name="context").encode()
+        + b"\n\n"
+    )
+    context_text = "x" * (
+        projection_limit.maximum_payload_bytes + 1 - len(question_prefix)
+    )
+    context_value = json.dumps(context_text).encode()
+    expected_question = question_prefix + context_text.encode()
+    assert len(expected_question) == projection_limit.maximum_payload_bytes + 1
+    created = start(
+        runtime,
+        workflow,
+        AgentBindingSet(()),
+        run_id,
+        authored_orders=(artifact_order(runtime, "context", context_value),),
+    )
+    assert isinstance(created, DurableRunCreated), created
+
+    runtime.launch()
+    wait_for_state(runtime, run_id, RunState.WAITING_INPUT)
+    detail = node_detail(runtime, run_id, "answer_with_context")
+    assert detail.detail.job == expected_question
+    assert detail.detail.job_hash == Sha256Hash.of(expected_question).value
+    with runtime.engine.connect() as connection:
+        raw_pause = (
+            connection.execute(
+                sa.select(run_events).where(
+                    run_events.c.run_id == run_id.value,
+                    run_events.c.event_kind == RunEventKind.WAITING_INPUT.value,
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert bytes(raw_pause["payload"]) == expected_question
+    assert str(raw_pause["payload_hash"]) == Sha256Hash.of(expected_question).value
+
+    bounded = durable_queries(runtime.engine, projection_limit)
+    run_page = bounded.read_run_event_page(run_id, 0, 10)
+    attention_page = bounded.read_attention_event_page(None, None, 10, ())
+
+    assert isinstance(run_page, RunEventPage), run_page
+    assert len(run_page.events) == 1
+    projected_pause = run_page.events[0]
+    assert projected_pause.event.event_kind is RunEventKind.WAITING_INPUT
+    assert projected_pause.event.payload == expected_question
+    assert projected_pause.event.payload_hash == Sha256Hash.of(expected_question)
+    limits = api_limits(
+        maximum_decoded_payload_bytes=projection_limit.maximum_payload_bytes,
+        maximum_base64_characters=base64_characters_for(
+            projection_limit.maximum_payload_bytes
+        ),
+    )
+    assert limits.maximum_base64_decoded_bytes == projection_limit.maximum_payload_bytes
+    limits.require_event_projection(projected_pause)
+    assert isinstance(attention_page, AttentionEventPage), attention_page
+    assert len(attention_page.events) == 1
+    attention_pause = attention_page.events[0]
+    assert isinstance(attention_pause, AttentionEvent), attention_pause
+    assert attention_pause.event == projected_pause
+
+    resource = run_event_resource(
+        projected_pause,
+        (
+            NodeRailResource(
+                node_id="answer_with_context",
+                state=NodeState.NEEDS_YOU,
+                attempt=None,
+            ),
+        ),
+    ).model_dump(mode="json")
+    assert resource["event"] == RunEventKind.WAITING_INPUT.value
+    assert "payload" not in resource
+    assert "payload_hash" not in resource
+    assert "question" not in resource
 
 
 @pytest.mark.parametrize(

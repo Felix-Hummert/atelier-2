@@ -175,8 +175,9 @@ the workflow revision, configuration, orders, budget accounting, or queue policy
 nonterminal origins and looped workflows are refused.
 The V3 run page shows that wait as an answer card. A Wait with no inputs shows
 the authored prompt unchanged; a Wait with inputs shows that prompt composed with
-each declared graph input or named predecessor output, and restart readback proves
-the recomposed question against the pause's durable digest. The card sends typed
+each declared graph input or named predecessor output. The exact composed question
+is the durable pause payload and its payload hash is the integrity check; restart
+readback serves that same pause rather than recomposing it. The card sends typed
 bytes through the same `POST /runs/{ref}/answers` door the API already proved.
 What that answer may be is the node's own declaration — a V1 or V2 Wait names an
 `answer_type` and admits the canonical text of an integer, while a V3 Wait declares one
