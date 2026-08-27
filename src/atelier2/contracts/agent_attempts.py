@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from atelier2.contracts.agents import (
@@ -16,6 +16,7 @@ from atelier2.contracts.agents import (
 from atelier2.contracts.artifacts import ArtifactHash
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash, frame
+from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 AGENT_ATTEMPT_ORDINAL = 1
@@ -53,6 +54,42 @@ class AgentAttemptId(Sha256Hash):
                     ">Q", attempt_ordinal
                 ),  # minted-id family; see hashing.frame
             )
+        )
+
+
+class AgentAttemptReceiptHash(Sha256Hash):
+    """Identity of the immutable evidence one attempt wrote."""
+
+
+@dataclass(frozen=True)
+class OutputSchemaRefusalReceipt:
+    """The validator evidence that orders the one bounded repair attempt."""
+
+    attempt_id: AgentAttemptId
+    reason: str
+    schema_revision: PublishedRevisionHash
+    value_hash: Sha256Hash
+    artifact_hash: ArtifactHash | None
+    receipt_hash: AgentAttemptReceiptHash = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.reason == "":
+            raise ValueError("an output-schema refusal receipt names its reason")
+        object.__setattr__(
+            self,
+            "receipt_hash",
+            AgentAttemptReceiptHash.of(
+                frame(
+                    "agent-attempt-output-schema-refusal-receipt/v1",
+                    self.attempt_id.value.encode("ascii"),
+                    self.reason.encode("utf-8"),
+                    self.schema_revision.value.encode("ascii"),
+                    self.value_hash.value.encode("ascii"),
+                    b""
+                    if self.artifact_hash is None
+                    else self.artifact_hash.value.encode("ascii"),
+                )
+            ),
         )
 
 

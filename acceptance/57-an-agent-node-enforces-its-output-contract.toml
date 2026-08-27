@@ -116,7 +116,19 @@ text = "An agent node that declares no output, or more than one, is refused unde
 
 [[sentence]]
 id = "bytes-their-own-schema-refuses-never-become-a-success"
-text = "Exact decoded output bytes that the schema their own node pinned does not admit never produce a success: the refusal is named in the words of the schema profile owner, and no agent receipt, no completion event and no advanced run are written, while bytes that schema admits are still written as the one atomic success."
+text = "Exact decoded output bytes that the schema their own node pinned does not admit never produce a success: the refusal is named in the words of the schema profile owner, and no agent receipt, no completion event and no advanced run are written, while bytes that schema admits are still written as the one atomic success; the first refusal instead prepares the one bounded repair round named below."
+
+[[sentence]]
+id = "a-schema-refusal-orders-one-durable-repair-round"
+text = "A first declared-output-schema refusal ends ordinal one FAILED under OUTPUT_SCHEMA_REFUSED and durably records its validator reason and judged bytes, then prepares exactly ordinal two for the same agent with a newly composed repair order that carries that reason while the run remains STARTED."
+
+[[sentence]]
+id = "a-schema-refusal-orders-only-one-repair-round"
+text = "A schema-refused repair round is the one and only extra round: a second refusal ends the run FAILED under OUTPUT_SCHEMA_REFUSED through the normal terminal evidence and event path."
+
+[[sentence]]
+id = "an-admitted-answer-does-not-open-a-repair-round"
+text = "An answer the declared schema admits succeeds without preparing a repair attempt."
 
 # Head 3. The two constructs the item's sentences 4 and 5 name that this build
 # really has: the omitted single-dependency join, and the replacement attempt.
@@ -124,7 +136,7 @@ text = "Exact decoded output bytes that the schema their own node pinned does no
 
 [[sentence]]
 id = "a-retry-is-held-to-the-same-contract-and-leaves-one-of-each"
-text = "A replacement attempt of a node execution answers to the same declared schema its first attempt would have met, and the node execution keeps one terminal receipt and -- only where the schema admitted the bytes -- one artifact, however many attempts stood in the store; once an output was refused, no replacement can be minted at all, so the refusal's failed receipt is the node execution's one and only ending."
+text = "A replacement attempt of a node execution answers to the same declared schema its first attempt would have met, and a first schema refusal mints its one repair replacement with a reason-bearing repair order; the second refusal is the node execution's terminal failed receipt, while an admitted repair keeps the one succeeded receipt and artifact."
 
 [[sentence]]
 id = "a-refused-output-never-releases-the-node-behind-it"
