@@ -1,6 +1,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Workshop target picture v8.13</title>
+<title>Workshop target picture v8.16</title>
 <style>
 /* ── House tokens (from frontend/src/styles.css, so the picture is the same house) ── */
 :root{
@@ -230,6 +230,16 @@ input::placeholder{color:var(--ink-dim);opacity:1}
 .loop>.lbl{position:absolute;top:-.6rem;left:.75rem;background:var(--ground);padding:0 .4rem;font-size:.68rem;color:var(--ink-dim);white-space:nowrap;font-variant-numeric:tabular-nums}
 .rounds{font-size:.8rem;color:var(--ink-dim);margin:-.3rem 0 .7rem}
 .rounds b{color:var(--ink)}
+/* Forked runs keep a borrowed prefix visibly quieter: dashed double rings are receipts reused, never steps run again. */
+.node.reused .dot{border-style:dashed;border-color:var(--ink-faint);color:var(--ink-faint);box-shadow:inset 0 0 0 3px var(--panel2),inset 0 0 0 4px var(--ink-faint)}
+.node.reused b,.node.reused small{color:var(--ink-faint)}
+.link.reused{height:0;border-top:2px dashed var(--ink-faint);background:none}
+.lineage{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;color:var(--ink-dim);font-size:.84rem;margin:-.25rem 0 .45rem}
+.lineage b{color:var(--ink);font-weight:600}.lineage .fork-mark{font-size:1.05rem;color:var(--ink-faint)}
+.lineage a{font-weight:600;color:var(--ink);text-decoration:underline;text-underline-offset:.2em;min-height:var(--tap);display:inline-flex;align-items:center}
+.fork-actions{border-top:1px solid var(--line);margin-top:.65rem;padding-top:.65rem;display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
+.fork-actions .hint{color:var(--ink-dim);font-size:.82rem}
+.fork-sheet .fact{margin:.45rem 0}.fork-sheet .fact b{color:var(--ink-dim)}
 
 /* ── Result / node panel / the back ── */
 .result{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--ink-dim);border-radius:0 var(--r-lg) var(--r-lg) 0;padding:.8rem 1rem;margin:0 0 .6rem}
@@ -259,6 +269,38 @@ details.raw{margin-top:.5rem;font-size:.82rem;color:var(--ink-dim)}
 details.raw summary{cursor:pointer;min-height:2rem;display:flex;align-items:center}
 .prose{font-size:.92rem;max-width:44rem}
 .prose p{margin:.1rem 0 .5rem}
+/* ── Stored attempt transcript: a readable receipt, not the live executor attach ── */
+.transcript{display:grid;gap:.45rem}
+.transcript-entry{background:var(--ground);border-left:3px solid var(--line);border-radius:0 var(--r) var(--r) 0;padding:.55rem .7rem;font-size:.88rem}
+.transcript-entry.turn{border-left-color:var(--ink-dim)}
+.transcript-entry.call{border-left-color:var(--ink-dim)}
+.transcript-entry.answer{border-left-color:var(--ink-faint)}
+.transcript-entry.usage{border-left-color:var(--ink-faint);font-variant-numeric:tabular-nums}
+.transcript-entry.stdout{border-left-color:var(--fail)}
+.transcript-entry .entry-head{display:flex;align-items:baseline;gap:.45rem;flex-wrap:wrap;color:var(--ink-dim);font-size:.7rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase}
+.transcript-entry .entry-head time{margin-left:auto;font-weight:400;letter-spacing:0;text-transform:none;font-variant-numeric:tabular-nums}
+.transcript-entry p{margin:.2rem 0 0}
+.transcript-entry.turn p{font-family:var(--serif);font-size:1rem}
+.transcript-entry summary{display:flex;align-items:baseline;gap:.45rem;flex-wrap:wrap;cursor:pointer;list-style:none}
+.transcript-entry summary::-webkit-details-marker{display:none}
+.transcript-entry summary::after{content:"▸";color:var(--ink-dim);font-size:.78rem}
+.transcript-entry[open] summary::after{transform:rotate(90deg)}
+.transcript-entry .entry-kind{color:var(--ink-dim);font-size:.7rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase}
+.transcript-entry .fold{color:var(--ink-dim);font-size:.8rem}
+.transcript-entry .arguments{margin:.45rem 0 0;padding:.45rem .6rem;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r);font-family:var(--mono);font-size:.76rem;overflow-wrap:anywhere}
+.redaction{display:inline-flex;align-items:center;gap:.25rem;border:1px dashed var(--ink-dim);border-radius:999px;padding:.02rem .4rem;background:var(--panel);color:var(--ink-dim);font-family:var(--sans);font-size:.7rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
+.redaction::before{content:"▰";font-size:.72rem;line-height:1}
+.stdout .log{margin-top:.45rem;border:1px solid var(--fail);white-space:pre-wrap;overflow-wrap:anywhere}
+.transcript-states{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem;margin-top:.65rem}
+.transcript-state{display:flex;align-items:center;gap:.65rem;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:.65rem .8rem;font-size:.88rem;color:var(--ink-dim)}
+.transcript-state p{margin:0}
+.transcript-state .empty-mark{width:1.25rem;height:1.25rem;border:2px solid var(--ink-faint);border-radius:50%;flex:none}
+.transcript-state.loading{border-style:dashed;border-color:var(--live)}
+.transcript-state .loading-mark{width:1.25rem;height:1.25rem;border:2px solid var(--live);border-radius:3px;position:relative;flex:none}
+.transcript-state .loading-mark::after{content:"";position:absolute;inset:.25rem;background:var(--live);opacity:.35}
+.transcript-state .loading-lines{display:grid;gap:.25rem;flex:1}
+.transcript-state .loading-lines i{display:block;height:.4rem;border-radius:999px;background:var(--chip)}
+.transcript-state .loading-lines i:last-child{width:62%}
 
 /* ── Catalog ── */
 .filters{position:sticky;top:0;z-index:2;display:flex;flex-wrap:wrap;align-items:center;gap:.3rem 1rem;padding:.4rem 0 .5rem;margin-bottom:.6rem;background:var(--ground);border-bottom:1px solid var(--line)}
@@ -289,7 +331,7 @@ details.raw summary{cursor:pointer;min-height:2rem;display:flex;align-items:cent
 .sheeted{position:relative;min-height:30rem}
 .dimmed{opacity:.4}
 /* The sheet is as tall as its content, never as tall as the room. */
-.sheet{position:absolute;right:.7rem;top:.7rem;max-height:calc(100% - 1.4rem);width:min(23rem,88%);background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:.9rem 1rem;box-shadow:var(--shadow-lift);overflow:auto}
+.sheet{position:absolute;right:.7rem;top:.7rem;z-index:4;max-height:calc(100% - 1.4rem);width:min(23rem,88%);background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:.9rem 1rem;box-shadow:var(--shadow-lift);overflow:auto}
 .sheet.static{position:static;width:auto;box-shadow:none;max-height:none}
 .sheet h5{font-family:var(--serif);font-size:1.15rem;margin:0 0 .6rem;font-weight:600}
 .sheets{display:grid;grid-template-columns:repeat(auto-fit,minmax(18rem,1fr));gap:1rem;margin-top:.5rem;align-items:start}
@@ -322,6 +364,7 @@ details.raw summary{cursor:pointer;min-height:2rem;display:flex;align-items:cent
 .found .k{color:var(--ink-dim)}
 .found .n{color:var(--ink-dim);font-variant-numeric:tabular-nums}
 .found .hooks{grid-template-columns:1.3rem minmax(0,1fr);color:var(--need)}
+.technical-action{border-top:1px solid var(--line);margin-top:.6rem;padding-top:.6rem}
 
 /* ── History table ── */
 table.hist{width:100%;border-collapse:collapse;font-size:.9rem}
@@ -407,10 +450,25 @@ table.list tr.grp td .mark{margin-right:.2rem}
   .pipe::-webkit-scrollbar{height:6px}
   .pipe::-webkit-scrollbar-track{background:var(--chip)}
   .pipe::-webkit-scrollbar-thumb{background:var(--ink-dim);border-radius:3px}
+  /* The stored-transcript run has only three completed nodes: stack its handoff so the failed node stays whole. */
+  #v8-14-run-log .pipe{flex-direction:column;gap:.15rem;overflow:visible;padding-right:.2rem}
+  #v8-14-run-log .pipe>.link{width:2px;height:1rem;margin:.1rem 0 .1rem 1.05rem}
+  #v8-14-run-log .pipe>.loop{width:100%;margin:0}
+  /* Retry keeps every inherited and newly run node legible at the narrow width: one vertical handoff, never a faded state. */
+  #v8-15-origin .pipe,#v8-15-successor .pipe{flex-direction:column;gap:.15rem;overflow:visible;mask-image:none;padding-right:.2rem}
+  #v8-15-origin .pipe>.link,#v8-15-successor .pipe>.link{width:2px;height:1rem;margin:.1rem 0 .1rem 1.05rem}
+  #v8-15-origin .pipe>.loop,#v8-15-successor .pipe>.loop{width:100%;margin:0;flex-direction:column;gap:.15rem;padding:.75rem .6rem .35rem}
+  #v8-15-origin .pipe .loop>.link,#v8-15-successor .pipe .loop>.link{width:2px;height:1rem;margin:.1rem 0 .1rem 1.05rem}
+  #v8-15-origin .pipe .node,#v8-15-successor .pipe .node{width:100%;min-width:0;flex-direction:row;justify-content:flex-start;gap:.5rem;text-align:left}
+  #v8-15-origin .pipe .node b,#v8-15-successor .pipe .node b{margin:0}
+  #v8-15-origin .pipe .node small,#v8-15-successor .pipe .node small{margin:0}
+  #v8-15-successor .log{white-space:pre-wrap;overflow:visible;mask-image:none}
   .row{flex-wrap:wrap}
   .row .dim{flex-basis:100%;white-space:normal;order:3}
   .found div{grid-template-columns:1.3rem minmax(0,1fr)}
   .found .n{display:none}
+  .transcript-states{grid-template-columns:minmax(0,1fr)}
+  .transcript-entry .entry-head time{margin-left:0}
 }
 
 /* ── Motion off when the system asks — stands after every animation rule, or the later one wins ── */
@@ -420,9 +478,10 @@ table.list tr.grp td .mark{margin-right:.2rem}
 </style>
 <main>
 <header class="doc-head">
-  <div class="eyebrow">v8.13 · 25.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
+  <div class="eyebrow">v8.16 · 27.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
   <h1>The workshop holds a piece out to you</h1>
   <p class="thesis">Everything the workshop says to you is a question it holds out — a wait node of some run. Everything you say is an answer to one. The decision with two buttons, the ear with its input line and the "yes" to the conductor are <b>one</b> mechanism in three sizes; so there is exactly Stage, Row, Card, Sheet, plus Graph, and every room is built from these four blocks. Four rooms — Workbench, Catalog, History, Settings — and the run as a view in three tenses. Colour only for what wants something from you.</p>
+  <p class="note"><b>Changelog v8.16</b> · Retire an entry from its Technical fold: its tile and Start door disappear, History keeps its references, and a duplicate import names the existing revision.</p>
   <div class="tw"><table class="doc">
     <tr><th>Room</th><th>The one question it answers</th><th>What it never does</th></tr>
     <tr><td><b>Workbench</b></td><td>What needs me now, what is moving, what did we say today — and what do I want to say next?</td><td>No chronicle, no library; it never explains itself (no shelf titles); it shows nothing twice; it carries no number that does not lead to an action.</td></tr>
@@ -458,6 +517,7 @@ table.list tr.grp td .mark{margin-right:.2rem}
   <span class="pill"><span class="glyph">⧉</span>workflow</span><span class="pill"><span class="glyph">◯</span>agent</span><span class="pill"><span class="glyph">✦</span>skill</span>
   <span class="pill dash"><span class="glyph">⌗</span>mcp server — glyph reserved, appears with ADR 0018 §5</span>
 </div>
+<div class="words"><span class="pill"><span class="redaction">redacted</span>stored transcript value removed before saving</span></div>
 <div class="words">
   <span class="pill"><i class="mark">A</i>&nbsp;Claude</span><span class="pill"><i class="mark">O</i>&nbsp;Codex</span><span class="pill"><i class="mark">X</i>&nbsp;Grok</span>
   <span class="pill"><i class="person"></i>&nbsp;a person answers here</span>
@@ -850,6 +910,74 @@ table.list tr.grp td .mark{margin-right:.2rem}
   <div><dt>Evidence: "requested gpt-5.6-sol · confirmed <span class="differs">gpt-5.5</span>"</dt><dd>"Did I get what I asked for?" — no: the provider fell back to another model, and the confirmed id says so in brick — the difference is the only thing coloured; the tooltip says what it means. The same brick id stands on the back of the run ("gpt-5.6-sol as builder (gpt-5.5 confirmed)"). A run is not failed by it; it wants a look.</dd></div>
 </dl>
 
+<h3 class="frame-title">Run view · Log (stored transcript)</h3>
+<div class="frame" id="v8-14-run-log">
+  <nav class="rail" data-on="history"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← History</a>
+    <div class="head"><h4>Sweep the docs</h4><span class="meta">iterate-code · <span class="word fail">Failed</span> · 44 min · today 11:05</span></div>
+    <div class="result fail"><p>The last attempt stopped while checking the changed files.</p></div>
+    <div class="pipe" style="padding-top:.4rem">
+      <div class="node"><div class="dot ok">✓</div><b>planner</b></div><div class="link ok"></div>
+      <div class="loop"><span class="lbl">↻ 3 of ≤3</span>
+        <div class="node"><div class="dot ok">✓</div><b>builder</b></div><div class="link ok"></div>
+        <div class="node"><div class="dot fail sel">✕</div><b>reviewer</b></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h6>reviewer<span class="who">grok-4.6 · attempt 3</span></h6>
+      <div class="tabs"><span>Result</span><span>Input</span><span>Prompt</span><span class="on">Log</span><span>Evidence</span></div>
+      <div class="transcript" aria-label="Stored attempt transcript">
+        <article class="transcript-entry turn">
+          <div class="entry-head"><span>Assistant turn</span><time>11:43:02</time></div>
+          <p>I will check the changed files against the review brief.</p>
+        </article>
+        <details class="transcript-entry call">
+          <summary><span class="entry-kind">Door call</span><b>Read file</b><span class="fold">arguments</span></summary>
+          <div class="arguments">path: docs/requirements/0003-ziel-ui.md</div>
+        </details>
+        <article class="transcript-entry answer">
+          <div class="entry-head"><span>Door answer</span><time>11:43:04</time></div>
+          <p>Read 128 lines.</p>
+        </article>
+        <article class="transcript-entry turn">
+          <div class="entry-head"><span>Assistant turn</span><time>11:43:08</time></div>
+          <p>The acceptance sentence and the picture still disagree.</p>
+        </article>
+        <details class="transcript-entry call">
+          <summary><span class="entry-kind">Door call</span><b>Run command</b><span class="fold">arguments</span></summary>
+          <div class="arguments">command: check changed files</div>
+        </details>
+        <article class="transcript-entry answer">
+          <div class="entry-head"><span>Door answer</span><time>11:43:11</time></div>
+          <p>Command ended before it returned an answer.</p>
+        </article>
+        <article class="transcript-entry usage">
+          <div class="entry-head"><span>Usage</span><time>11:43:12</time></div>
+          <p>12,400 input · 680 output tokens · 10 s</p>
+        </article>
+        <article class="transcript-entry stdout">
+          <div class="entry-head"><span>Attempt stdout</span><span class="word fail">Failed</span><time>11:43:12</time></div>
+          <div class="log">checking changed files
+canary credential: [<span class="redaction">redacted</span>]
+command stopped before an answer</div>
+        </article>
+      </div>
+      <div class="transcript-states">
+        <div class="transcript-state"><span class="empty-mark" aria-hidden="true"></span><p>no transcript for this attempt</p></div>
+        <div class="transcript-state loading"><span class="loading-mark" aria-hidden="true"></span><span class="loading-lines"><i></i><i></i></span><span>Looking…</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+<dl class="uq">
+  <div><dt>Log</dt><dd>"What happened in this attempt?" — a saved, readable sequence: assistant turns, called doors, their answers, then usage. It is not the live attach.</dd></div>
+  <div><dt>Folded arguments</dt><dd>"Which door was called without losing the thread?" — the name stays in the line; its arguments open only when needed.</dd></div>
+  <div><dt>Redaction badge</dt><dd>"Was something removed before this was saved?" — the dashed ▰ badge stays in place of the value, including the canary in failed stdout.</dd></div>
+  <div><dt>Failed stdout</dt><dd>"What did the failed attempt print?" — its dark block lives with the attempt transcript, marked in brick; it never becomes a second log surface.</dd></div>
+  <div><dt>Empty and loading</dt><dd>"Is there no stored transcript, or is it still arriving?" — the hollow mark names absence; the dashed blue shape and still lines name loading.</dd></div>
+</dl>
+
 <h3 class="frame-title">Cancel <small>— two dialogs, one per state: a hand at work, or resting at a wait</small></h3>
 <div class="sheets">
   <div class="dialog"><section class="ask">
@@ -933,6 +1061,87 @@ table.list tr.grp td .mark{margin-right:.2rem}
   <div><dt>Brick sentence</dt><dd>"What went wrong — in my words?" — never a refusal token as a headline; the token lives in Evidence.</dd></div>
   <div><dt>"Say what should change" — the one move</dt><dd>"What can I do now?" — one button under the brick sentence; it opens the ear with this run as the subject, and the conductor starts again from round 3. No second sentence.</dd></div>
   <div><dt>Panel opens on the failed node</dt><dd>"Where exactly?" — without you having to look for it.</dd></div>
+</dl>
+
+<section id="v8-15-fork">
+<h3 class="frame-title">Run view · Retry from node <small>— der vergangene Lauf bleibt, der nächste beginnt mit denselben Eingaben</small></h3>
+<div class="frame" id="v8-15-origin">
+  <nav class="rail" data-on="history"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← Verlauf</a>
+    <div class="head"><h4>Die Dokumentation aufräumen</h4><span class="meta">iterate-code · <span class="item">Dokumentation</span> · <span class="word fail">Fehlgeschlagen</span> · 44 Min · heute 11:05</span></div>
+    <p class="lineage"><b>Verlauf</b><span class="fork-mark" aria-hidden="true">↳</span> erneut <span aria-hidden="true">→</span> <a href="#">Lauf Dokumentation aufräumen</a></p>
+    <div class="result fail"><p class="fail">Nicht grün nach 3 Runden — die letzte Prüfung nennt noch zwei Befunde.</p></div>
+    <div class="pipe" style="padding-top:.4rem">
+      <div class="node"><div class="dot ok">✓</div><b>planner</b></div><div class="link ok"></div>
+      <div class="loop"><span class="lbl" title="repeated while the review was not green">↻ 3 von ≤3</span>
+        <div class="node"><div class="dot ok">✓</div><b>builder</b></div><div class="link ok"></div>
+        <div class="node"><div class="dot fail sel">✕</div><b>reviewer</b></div><div class="link ok"></div>
+        <div class="node"><div class="dot ok">✓</div><b>fixer</b></div>
+      </div><div class="link"></div>
+      <div class="node"><div class="dot hx"><i>?</i></div><b>merge gate</b><small><i class="person"></i></small></div>
+    </div>
+    <div class="panel">
+      <h6>reviewer · Runde 3<span class="who">grok-4.6</span></h6>
+      <div class="tabs"><span class="on">Ergebnis</span><span>Eingabe</span><span>Prompt</span><span>Log</span><span>Beleg</span></div>
+      <div class="prose"><p>Zwei Befunde bleiben offen: die Reihenfolge der Ablehnung und ein Test, der den Mock statt des Ergebnisses prüft.</p></div>
+      <div class="fork-actions"><span class="btn primary">Erneut ab hier</span><span class="hint">ab reviewer</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="frame sheeted" id="v8-15-retry-confirmation">
+  <nav class="rail" data-on="history"></nav>
+  <div class="stage dimmed">
+    <a class="trail" href="#">← Verlauf</a>
+    <div class="head"><h4>Die Dokumentation aufräumen</h4><span class="meta">iterate-code · <span class="word fail">Fehlgeschlagen</span></span></div>
+    <div class="pipe" style="padding-top:.4rem">
+      <div class="node"><div class="dot ok">✓</div><b>planner</b></div><div class="link ok"></div>
+      <div class="loop"><span class="lbl">↻ 3 von ≤3</span>
+        <div class="node"><div class="dot ok">✓</div><b>builder</b></div><div class="link ok"></div>
+        <div class="node"><div class="dot fail sel">✕</div><b>reviewer</b></div>
+      </div>
+    </div>
+    <div class="panel"><h6>reviewer · Runde 3<span class="who">grok-4.6</span></h6><div class="tabs"><span class="on">Ergebnis</span><span>Eingabe</span><span>Prompt</span><span>Log</span><span>Beleg</span></div></div>
+  </div>
+  <div class="veil" aria-hidden="true"></div>
+  <section class="sheet fork-sheet" aria-label="Erneut ab reviewer bestätigen">
+    <h5>Ab reviewer erneut starten?</h5>
+    <div class="fact"><b>Übernommen</b><span>planner und builder mit ihren bestätigten Eingaben</span></div>
+    <div class="fact"><b>Neu ausgeführt</b><span>reviewer, fixer und die folgenden Knoten</span></div>
+    <div class="fact"><b>Ursprung</b><span>Lauf Die Dokumentation aufräumen</span></div>
+    <div class="foot"><span class="btn primary">Erneut starten</span><span class="btn quiet">Zurück</span></div>
+  </section>
+</div>
+
+<div class="frame" id="v8-15-successor">
+  <nav class="rail" data-on="workbench"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← Werkbank</a>
+    <div class="head"><h4>Die Dokumentation aufräumen</h4><span class="meta">iterate-code · <span class="item">Dokumentation</span> · <span class="word live">Läuft</span> · 3 Min</span></div>
+    <p class="lineage"><b>Fork von Lauf Die Dokumentation aufräumen ab reviewer</b></p>
+    <div class="pipe" style="padding-top:.4rem">
+      <div class="node reused"><div class="dot">↳</div><b>planner</b><small>übernommen</small></div><div class="link reused"></div>
+      <div class="node reused"><div class="dot">↳</div><b>builder</b><small>übernommen</small></div><div class="link reused"></div>
+      <div class="loop"><span class="lbl">erneut ab hier</span>
+        <div class="node"><div class="dot live sel">▶</div><b>reviewer</b><small>18 s</small></div><div class="link"></div>
+        <div class="node"><div class="dot">·</div><b>fixer</b></div>
+      </div><div class="link"></div>
+      <div class="node"><div class="dot hx"><i>?</i></div><b>merge gate</b><small><i class="person"></i></small></div>
+    </div>
+    <div class="panel">
+      <h6>reviewer<span class="who">grok-4.6</span></h6>
+      <div class="tabs"><span class="on">Log · live</span><span>Eingabe</span><span>Prompt</span><span>Beleg</span></div>
+      <div class="log"><span class="t">11:49:22</span> Prüfe die beiden offenen Befunde …
+<span class="t">11:49:37</span> Vergleiche die Reihenfolge mit dem Ergebnis<span class="cursor"></span></div>
+    </div>
+  </div>
+</div>
+</section>
+<dl class="uq">
+  <div><dt>Tür am fehlgeschlagenen Knoten</dt><dd>"Wo kann ich wieder einsetzen?" — nur am geöffneten Knoten eines beendeten Laufs; die Bestätigung nennt den übernommenen Präfix und die Knoten, die neu laufen.</dd></div>
+  <div><dt>Verlauf am Ursprung</dt><dd>"Was kam daraus noch?" — der Ursprung bleibt unverändert und zeigt seinen Nachfolger als eine Linie.</dd></div>
+  <div><dt>Gestrichelter Doppelring</dt><dd>"Was wurde nicht noch einmal bezahlt oder ausgeführt?" — die ruhigen, doppelt gerahmten Knoten sind übernommene Belege; ab reviewer beginnt die neue Ausführung.</dd></div>
 </dl>
 
 <h3 class="frame-title">Waiting <small>— the same stage as on the workbench</small></h3>
@@ -1259,6 +1468,82 @@ table.list tr.grp td .mark{margin-right:.2rem}
 <dl class="uq">
   <div><dt>"No executor runs Codex here yet" (dashed)</dt><dd>"Can this one run at all?" — a state on the entry, never a refusal at run start (ADR 0018, Refusals).</dd></div>
   <div><dt>"Newer revision · Pull" in the head</dt><dd>"Is this the current file?" — the same pair as on the card and in Settings; Pull is the attributed click.</dd></div>
+</dl>
+
+<section id="v8-16-retire">
+<h3 class="frame-title">Catalog · Retire an entry <small>— remove its current lineage from the shelf, not its history</small></h3>
+<div class="frame" id="v8-16-retire-door">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← Catalog</a>
+    <div class="head"><h4><span class="glyph">⧉</span>iterate-code</h4><div class="right"><span class="btn primary">Start</span></div></div>
+    <div class="pipe" style="padding-top:.3rem">
+      <div class="node"><div class="dot">·</div><b>planner</b></div><div class="link"></div>
+      <div class="node"><div class="dot">·</div><b>builder</b></div><div class="link"></div>
+      <div class="node"><div class="dot">·</div><b>reviewer</b></div><div class="link"></div>
+      <div class="node"><div class="dot hx"><i>?</i></div><b>merge gate</b><small><i class="person"></i></small></div>
+    </div>
+    <details class="back" open><summary>Technical</summary><dl><dt>revision</dt><dd>3</dd><dt>source</dt><dd>Git · leonardo/atelier-kit · workflows/iterate-code.yaml</dd><dt>format</dt><dd>workflow/v3</dd></dl><div class="technical-action"><span class="btn danger">Retire</span></div></details>
+    <p class="shelf">Same fold, every catalog kind</p>
+    <div class="sheets">
+      <div class="panel"><div class="head" style="margin-bottom:.2rem"><h4 style="font-size:1.05rem"><span class="glyph">◯</span>reviewer</h4><span class="meta"><i class="mark" title="Claude">A</i> Claude</span></div><details class="back" open><summary>Technical</summary><dl><dt>revision</dt><dd>2</dd><dt>format</dt><dd>agent · Claude Markdown</dd></dl><div class="technical-action"><span class="btn danger">Retire</span></div></details></div>
+      <div class="panel"><div class="head" style="margin-bottom:.2rem"><h4 style="font-size:1.05rem"><span class="glyph">✦</span>design-interface</h4></div><details class="back" open><summary>Technical</summary><dl><dt>revision</dt><dd>1</dd><dt>format</dt><dd>skill · Markdown</dd></dl><div class="technical-action"><span class="btn danger">Retire</span></div></details></div>
+    </div>
+  </div>
+</div>
+
+<div class="frame sheeted" id="v8-16-retire-confirmation">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage dimmed">
+    <a class="trail" href="#">← Catalog</a>
+    <div class="head"><h4><span class="glyph">⧉</span>iterate-code</h4><div class="right"><span class="btn primary">Start</span></div></div>
+    <div class="pipe" style="padding-top:.3rem"><div class="node"><div class="dot">·</div><b>planner</b></div><div class="link"></div><div class="node"><div class="dot">·</div><b>builder</b></div><div class="link"></div><div class="node"><div class="dot">·</div><b>reviewer</b></div></div>
+    <details class="back" open><summary>Technical</summary><dl><dt>revision</dt><dd>3</dd><dt>format</dt><dd>workflow/v3</dd></dl><div class="technical-action"><span class="btn danger">Retire</span></div></details>
+  </div>
+  <div class="veil" aria-hidden="true"></div>
+  <section class="sheet" aria-label="Confirm retiring iterate-code">
+    <h5>Retire iterate-code?</h5>
+    <div class="fact"><b>Disappears</b><span>Catalog tile and Start door</span></div>
+    <div class="fact"><b>Stays</b><span>Runs in History keep their reference</span></div>
+    <div class="fact"><b>Again</b><span>Import admits this lineage as a new revision</span></div>
+    <div class="foot"><span class="btn danger">Retire</span><span class="btn quiet">Cancel</span></div>
+  </section>
+</div>
+
+<div class="frame short" id="v8-16-retired-list">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage">
+    <div class="head"><h4>Catalog</h4><div class="right"><span class="btn">Import</span></div></div>
+    <div class="filters"><span class="f on">All</span><span class="f">Workflows <b>2</b></span><span class="f">Agents <b>2</b></span><span class="f">Skills <b>0</b></span><input placeholder="Search…" aria-label="Search the catalog"></div>
+    <div class="cards">
+      <a class="card" href="#"><b><span class="glyph">⧉</span>diff-review</b><small>One diff, one verdict.</small><div class="pills"><span class="pill warn">Newer revision</span><span class="act">Pull</span></div></a>
+      <a class="card" href="#"><b><span class="glyph">⧉</span>digest</b><small>Yesterday's runs, in one page.</small><div class="pills"><span class="pill dash">Not executable</span></div></a>
+      <a class="card" href="#"><b><span class="glyph">◯</span>builder</b><small>Implements a bounded change and pins it with tests.</small><span class="use"><i class="mark" title="Codex">O</i></span></a>
+      <a class="card" href="#"><b><span class="glyph">◯</span>reviewer</b><small>Reads a diff and names what bothers it.</small><span class="use"><i class="mark" title="Claude">A</i></span></a>
+    </div>
+  </div>
+</div>
+
+<div class="frame sheeted" id="v8-16-duplicate-import">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage dimmed">
+    <div class="head"><h4>Catalog</h4><div class="right"><span class="btn">Import</span></div></div>
+    <div class="filters"><span class="f on">All</span><span class="f">Workflows <b>3</b></span><span class="f">Agents <b>2</b></span><span class="f">Skills <b>0</b></span></div>
+    <div class="cards"><span class="card"><b><span class="glyph">⧉</span>iterate-code</b><small>build → review → fix, until green; then a merge gate and a PR.</small></span></div>
+  </div>
+  <section class="sheet" aria-label="Duplicate import recognised">
+    <h5>Import</h5>
+    <div class="found"><div><span class="k">⧉</span><span class="n">1 workflow</span><b>iterate-code</b></div></div>
+    <div class="err">already in the catalog — revision 3</div>
+    <div class="foot"><span class="btn quiet">Close</span></div>
+  </section>
+</div>
+</section>
+<dl class="uq">
+  <div><dt>Retire in Technical</dt><dd>"Where may I remove this?" — the destructive door belongs to the entry's folded technical record on workflows, agents, and skills; tiles stay one door in, never a second action surface.</dd></div>
+  <div><dt>Confirmation</dt><dd>"What changes, and what does not?" — it names the tile and Start door that disappear, the History references that remain, and that importing may admit the lineage again as a new revision. Agent and skill confirmations omit the Start door because neither kind owns one.</dd></div>
+  <div><dt>List after retire</dt><dd>"Did it leave the shelf?" — iterate-code is absent and the workflow count falls from 3 to 2; the History is deliberately not redrawn because it keeps the immutable revision reference.</dd></div>
+  <div><dt>Duplicate recognition</dt><dd>"Why was this not added?" — the recognition sheet says that its existing lineage is already in the catalog and names revision 3; there is no Add button.</dd></div>
 </dl>
 
 <h3 class="frame-title">Skills, empty</h3>

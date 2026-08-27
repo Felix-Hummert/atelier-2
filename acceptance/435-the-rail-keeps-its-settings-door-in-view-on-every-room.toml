@@ -1,0 +1,10 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/435"
+
+# The workshop shell (ADR 0019 §1): Settings is the door in every room.
+# Overflowing History is the witness; the rail is the same shell on every room.
+
+[[sentence]]
+id = "the-rail-keeps-its-settings-door-in-view-on-every-room"
+requirement = "REQ-UIQ-02"
+text = "The rail keeps its Settings door in view on every room, including overflowing History before and after scroll, at 1280px and 390px."

@@ -95,6 +95,7 @@ from tests.scenarios.agents import commit_configured_agent
 from tests.scenarios.api import (
     RECONCILIATION_APPLIED_RESULT_HASH,
     RECONCILIATION_LOGICAL_KEY,
+    RECONCILIATION_REQUEST,
     RECONCILIATION_REQUEST_HASH,
     RECONCILIATION_REVISION_HASH,
     api_limits,
@@ -1289,7 +1290,7 @@ def test_http_reconciliation_exact_applied_retry_survives_run_advancement(
     expected_intent = {
         "logical_key": logical_key,
         "run_id": "reconcile-run",
-        "canonical_request": b"request",
+        "canonical_request": RECONCILIATION_REQUEST,
         "request_hash": request_hash,
         "workflow_revision_hash": revision_hash,
         "adapter_revision": "loopback-v1",
@@ -1378,7 +1379,7 @@ def test_http_reconciliation_exact_applied_retry_survives_run_advancement(
     assert dict(receipt_row) == {
         "logical_key": logical_key,
         "run_id": "reconcile-run",
-        "canonical_request": b"request",
+        "canonical_request": RECONCILIATION_REQUEST,
         "request_hash": request_hash,
         "workflow_revision_hash": revision_hash,
         "adapter_revision": "loopback-v1",

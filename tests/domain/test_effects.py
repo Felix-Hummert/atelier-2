@@ -7,6 +7,11 @@ from dataclasses import replace
 import pytest
 
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
+from atelier2.contracts.effect_requests import (
+    HeadBranch,
+    ReviewedDocumentationPullRequest,
+    ReviewedDocumentReplacement,
+)
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -692,3 +697,21 @@ def test_prepared_effect_and_reconcile_state_cannot_be_rebound(
     for target, attribute, value in rebindings:
         with pytest.raises((AttributeError, TypeError)):
             setattr(target, attribute, value)
+
+
+def test_a_documentation_release_request_keeps_the_exact_reviewed_replacement() -> None:
+    request = ReviewedDocumentationPullRequest(
+        "a" * 40,
+        "b" * 64,
+        "c" * 64,
+        (ReviewedDocumentReplacement("docs/PRODUCT.md", "d" * 64, b"new bytes\n"),),
+        "Documentation release",
+        "The independently reviewed change.",
+        HeadBranch("atelier2/work-item/" + "e" * 64),
+        draft=True,
+    )
+
+    assert (
+        ReviewedDocumentationPullRequest.from_canonical_bytes(request.canonical_bytes())
+        == request
+    )
