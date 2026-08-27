@@ -91,6 +91,7 @@ from atelier2.application.execute_agent_attempt_on_runner import (
 from atelier2.application.start_admitted_queue_items import (
     start_admitted_queue_items,
 )
+from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.agent_attempts import (
     TERMINAL_AGENT_ATTEMPT_STATES,
     AgentAttempt,
@@ -143,7 +144,13 @@ from atelier2.ports.agent_executions import (
     AgentExecutorRegistry,
     AgentExecutorV2,
 )
-from atelier2.ports.effects import EffectAdapter, EffectAdapterFactory
+from atelier2.ports.effects import (
+    EffectAdapter,
+    EffectAdapterFactory,
+    EffectAdapterRegistration,
+    EffectAdapterRegistry,
+    OpenEffectAdapterRegistry,
+)
 from atelier2.ports.project_verification import DeclaredProject
 from atelier2.ports.runner_leases import RunnerLeaseWithdrawn
 
@@ -181,7 +188,7 @@ class DbosRuntimeBinding:
     application_version: str
     agent_executor: AgentExecutorBinding
     agent_executors_v2: tuple[AgentExecutorManifestEntry, ...]
-    effect_adapter: EffectAdapterBinding
+    effect_adapters: tuple[EffectAdapterBinding, ...]
     agent_process_control_root: Path | None
     agent_process_cgroup_root: Path | None
     agent_scratch_root: Path | None
@@ -297,7 +304,7 @@ class DbosRuntimeSettings:
         self,
         agent_executor: AgentExecutorBinding,
         agent_executors_v2: tuple[AgentExecutorManifestEntry, ...],
-        effect_adapter: EffectAdapterBinding,
+        effect_adapters: tuple[EffectAdapterBinding, ...],
     ) -> DbosRuntimeBinding:
         # Only a `LOCAL_PROCESS`-carried key needs Serve's own supervisor and
         # scratch root (`#540` C-3.6): a deployment serving nothing but
@@ -311,7 +318,7 @@ class DbosRuntimeSettings:
             self.application_version,
             agent_executor,
             agent_executors_v2,
-            effect_adapter,
+            effect_adapters,
             self.process_control_root() if process_runner_required else None,
             self.process_cgroup_root() if process_runner_required else None,
             (
@@ -392,8 +399,8 @@ class _BoundRuntime:
     agent_executor: AgentExecutor
     agent_executor_registry: AgentExecutorRegistry
     agent_executors_v2: tuple[tuple[AgentExecutorManifestEntry, AgentExecutorV2], ...]
-    effect_adapter_binding: EffectAdapterBinding
-    effect_adapter: EffectAdapter
+    effect_adapter_bindings: tuple[EffectAdapterBinding, ...]
+    effect_adapters: OpenEffectAdapterRegistry
     agent_process_supervisor: AgentProcessSupervisor | None
     agent_workspace_owner: LocalAgentAttemptWorkspaceOwner | None
     declared_project: DeclaredProject | None
@@ -842,27 +849,28 @@ def _open_binding(
     agent_binding: AgentExecutorBinding,
     agent_registry: AgentExecutorRegistry,
     agent_manifest: tuple[AgentExecutorManifestEntry, ...],
-    effect_factory: EffectAdapterFactory,
-    effect_binding: EffectAdapterBinding,
+    effect_registry: EffectAdapterRegistry,
+    effect_bindings: tuple[EffectAdapterBinding, ...],
 ) -> _BoundRuntime:
     canonical_database = settings.database_path.resolve()
     # H2's sole concrete adapter binds its resolved external SQLite path here.
     # This closes file-alias corruption without widening the generic factory port.
-    external_database = Path(effect_binding.operational_identity.value)
-    same_existing_file = False
-    if (
-        external_database.is_absolute()
-        and canonical_database.exists()
-        and external_database.exists()
-    ):
-        try:
-            same_existing_file = canonical_database.samefile(external_database)
-        except OSError:
-            same_existing_file = True
-    if str(canonical_database) == str(external_database) or same_existing_file:
-        raise DbosRuntimeBindingConflict(
-            "canonical and external effect stores must be distinct"
-        )
+    for effect_binding in effect_bindings:
+        external_database = Path(effect_binding.operational_identity.value)
+        same_existing_file = False
+        if (
+            external_database.is_absolute()
+            and canonical_database.exists()
+            and external_database.exists()
+        ):
+            try:
+                same_existing_file = canonical_database.samefile(external_database)
+            except OSError:
+                same_existing_file = True
+        if str(canonical_database) == str(external_database) or same_existing_file:
+            raise DbosRuntimeBindingConflict(
+                "canonical and external effect stores must be distinct"
+            )
     local_process_keys = any(
         entry.manifest_entry.carrier is AgentExecutorCarrier.LOCAL_PROCESS
         for entry in agent_registry.entries
@@ -886,7 +894,7 @@ def _open_binding(
     )
     agent_executor: AgentExecutor | None = None
     agent_executors_v2: list[tuple[AgentExecutorManifestEntry, AgentExecutorV2]] = []
-    adapter: EffectAdapter | None = None
+    adapters: OpenEffectAdapterRegistry | None = None
     agent_process_supervisor: AgentProcessSupervisor | None = None
     agent_workspace_owner: LocalAgentAttemptWorkspaceOwner | None = None
     runner_lease_driver: RunnerLeaseAttemptDriver | None = None
@@ -927,12 +935,14 @@ def _open_binding(
                     AdapterOperationalIdentity(
                         str(record.adapter_operational_identity)
                     ),
+                    AdapterOperationName(str(record.operation_name)),
                 )
                 for record in connection.execute(
                     sa.select(
                         effect_intents.c.adapter_revision,
                         effect_intents.c.destination_identity,
                         effect_intents.c.adapter_operational_identity,
+                        effect_intents.c.operation_name,
                     ).distinct()
                 )
             }
@@ -978,7 +988,7 @@ def _open_binding(
             raise DbosRuntimeBindingConflict(
                 "runtime agent binding differs from durable agent receipts"
             )
-        if durable_bindings and durable_bindings != {effect_binding}:
+        if not durable_bindings.issubset(set(effect_bindings)):
             raise DbosRuntimeBindingConflict(
                 "runtime adapter binding differs from durable effect intents"
             )
@@ -1000,7 +1010,7 @@ def _open_binding(
                 agent_executors_v2.append(
                     (registry_entry.manifest_entry, registry_entry.factory.open())
                 )
-        adapter = effect_factory.open()
+        adapters = effect_registry.open()
         datasource = SQLAlchemyDatasource.create(
             sqlite_url(settings.database_path), engine=engine
         )
@@ -1034,8 +1044,9 @@ def _open_binding(
             agent_process_supervisor,
             agent_workspace_owner,
             declared_project_source,
-            adapter,
-            effect_binding,
+            adapters,
+            effect_bindings,
+            settings.project_id,
             runner_lease_driver,
             runner_lease_publisher,
         )
@@ -1051,9 +1062,11 @@ def _open_binding(
                 agent_workspace_owner.close()
             except BaseException as cleanup_error:
                 cleanup_errors.append(cleanup_error)
-        resources: list[EffectAdapter | AgentExecutorV2 | AgentExecutor] = []
-        if adapter is not None:
-            resources.append(adapter)
+        resources: list[
+            OpenEffectAdapterRegistry | EffectAdapter | AgentExecutorV2 | AgentExecutor
+        ] = []
+        if adapters is not None:
+            resources.append(adapters)
         resources.extend(executor for _entry, executor in reversed(agent_executors_v2))
         if agent_executor is not None:
             resources.append(agent_executor)
@@ -1079,8 +1092,8 @@ def _open_binding(
         agent_executor,
         agent_registry,
         tuple(agent_executors_v2),
-        effect_binding,
-        adapter,
+        effect_bindings,
+        adapters,
         agent_process_supervisor,
         agent_workspace_owner,
         declared_project_source,
@@ -1152,14 +1165,14 @@ class _DbosProcessOwner:
         settings: DbosRuntimeSettings,
         agent_factory: AgentExecutorFactory,
         agent_registry: AgentExecutorRegistry,
-        effect_factory: EffectAdapterFactory,
+        effect_registry: EffectAdapterRegistry,
     ) -> _BoundRuntime:
         with self._lock:
             agent_binding = agent_factory.binding
             agent_manifest = agent_registry.manifest
-            effect_binding = effect_factory.binding
+            effect_bindings = effect_registry.bindings
             requested_binding = settings.binding(
-                agent_binding, agent_manifest, effect_binding
+                agent_binding, agent_manifest, effect_bindings
             )
             if self._bound is None:
                 self._bound = _open_binding(
@@ -1168,20 +1181,20 @@ class _DbosProcessOwner:
                     agent_binding,
                     agent_registry,
                     agent_manifest,
-                    effect_factory,
-                    effect_binding,
+                    effect_registry,
+                    effect_bindings,
                 )
             elif (
                 self._bound.settings.binding(
                     self._bound.agent_executor_binding,
                     self._bound.agent_executor_registry.manifest,
-                    self._bound.effect_adapter_binding,
+                    self._bound.effect_adapter_bindings,
                 )
                 != requested_binding
             ):
                 raise DbosRuntimeBindingConflict(
                     "this process already owns "
-                    f"{self._bound.settings.binding(self._bound.agent_executor_binding, self._bound.agent_executor_registry.manifest, self._bound.effect_adapter_binding)}; "
+                    f"{self._bound.settings.binding(self._bound.agent_executor_binding, self._bound.agent_executor_registry.manifest, self._bound.effect_adapter_bindings)}; "
                     f"refusing {requested_binding}"
                 )
             self._bound.leases += 1
@@ -1205,9 +1218,12 @@ class _DbosProcessOwner:
                     )
                 except BaseException as error:
                     errors.append(error)
-                resources: list[EffectAdapter | AgentExecutorV2 | AgentExecutor] = [
-                    bound.effect_adapter
-                ]
+                resources: list[
+                    OpenEffectAdapterRegistry
+                    | EffectAdapter
+                    | AgentExecutorV2
+                    | AgentExecutor
+                ] = [bound.effect_adapters]
                 if bound.agent_process_supervisor is not None:
                     try:
                         bound.agent_process_supervisor.close()
@@ -1414,7 +1430,7 @@ class DbosRuntime:
     def __init__(
         self,
         settings: DbosRuntimeSettings,
-        effect_adapter_factory: EffectAdapterFactory,
+        effect_adapter_factory: EffectAdapterFactory | EffectAdapterRegistry,
         agent_executor_factory: AgentExecutorFactory,
         agent_executor_factories_v2: tuple[
             AgentExecutorFactoryV2 | AgentExecutorRegistration, ...
@@ -1422,8 +1438,20 @@ class DbosRuntime:
     ) -> None:
         self._close_lock = threading.Lock()
         registry = AgentExecutorRegistry(agent_executor_factories_v2)
+        effect_registry = (
+            effect_adapter_factory
+            if isinstance(effect_adapter_factory, EffectAdapterRegistry)
+            else EffectAdapterRegistry(
+                (
+                    EffectAdapterRegistration(
+                        effect_adapter_factory.binding.operation_name,
+                        effect_adapter_factory,
+                    ),
+                )
+            )
+        )
         self._bound: _BoundRuntime | None = _PROCESS_OWNER.acquire(
-            settings, agent_executor_factory, registry, effect_adapter_factory
+            settings, agent_executor_factory, registry, effect_registry
         )
 
     @property
@@ -1440,7 +1468,8 @@ class DbosRuntime:
 
     @property
     def effect_adapter(self) -> EffectAdapter:
-        return self._held().effect_adapter
+        binding = self.effect_adapter_binding
+        return self._held().effect_adapters.adapter_for(binding.operation_name, binding)
 
     @property
     def agent_executor(self) -> AgentExecutor:
@@ -1474,7 +1503,11 @@ class DbosRuntime:
 
     @property
     def effect_adapter_binding(self) -> EffectAdapterBinding:
-        return self._held().effect_adapter_binding
+        bindings = self._held().effect_adapter_bindings
+        for binding in bindings:
+            if binding.operation_name is AdapterOperationName.OPEN_PR:
+                return binding
+        return bindings[0]
 
     def launch(self) -> None:
         _PROCESS_OWNER.launch(self._held())

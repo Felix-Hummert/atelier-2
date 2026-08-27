@@ -513,6 +513,57 @@ export const catalogAdmissionSchema = z
   })
   .strict();
 
+export const libraryRecognitionSchema = z.discriminatedUnion("outcome", [
+  z.object({
+    outcome: z.literal("workflow"),
+    workflow_format_version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    name: z.string().nullable(),
+    description: z.string().nullable(),
+  }).strict(),
+  z.object({
+    outcome: z.literal("agent_definition"),
+    name: z.string().min(1),
+    description: z.string().min(1),
+    provider_id: z.string().min(1),
+  }).strict(),
+  z.object({
+    outcome: z.literal("not_held"),
+    kind: z.union([z.literal("skill"), z.literal("mcp_server")]),
+    reason: z.string().min(1),
+  }).strict(),
+  z.object({
+    outcome: z.literal("unrecognized"),
+    refusals: z.array(z.object({
+      kind: z.union([
+        z.literal("workflow"),
+        z.literal("agent_definition"),
+        z.literal("skill"),
+        z.literal("mcp_server"),
+      ]),
+      expected: z.string().min(1),
+      refused_because: z.string().min(1),
+    }).strict()),
+  }).strict(),
+]);
+
+export const libraryAdditionSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("workflow"),
+    name: z.string().min(1).max(128),
+    description: z.string().nullable(),
+    lineage_id: sha256,
+    workflow_revision_hash: sha256,
+    revision_number: positiveSafeInteger,
+  }).strict(),
+  z.object({
+    kind: z.literal("agent_definition"),
+    name: z.string().min(1),
+    description: z.string().min(1),
+    provider_id: z.string().min(1),
+    agent_definition_revision_hash: sha256,
+  }).strict(),
+]);
+
 export interface CatalogAdmissionInput {
   workflow_revision_hash: string;
   actor: string;
@@ -1032,8 +1083,12 @@ export const runV3Schema = z
  * #664 omits the key entirely, and that reads exactly as the absence it is
  * (`?? null` at every reader), never a parse failure.
  *
- * Usage is not here because no receipt holds it. Duration sits beside the
- * attempt as started_at / ended_at, not on the receipt.
+ * `transcript` is the decoded, already-redacted steps of the attempt that
+ * named one. Optional the same way: the server omits the key when no attempt
+ * stored a transcript, and an older fixture that never heard of the field
+ * still decodes. Usage is still not a receipt field; it can appear as a
+ * `usage` transcript event when the attempt stored one. Duration sits beside
+ * the attempt as started_at / ended_at, not on the receipt.
  */
 const nodeProvenanceSchema = z
   .object({
@@ -1076,6 +1131,85 @@ const nodeRefusalOutputSchema = z
   })
   .strict();
 
+/**
+ * `MAXIMUM_TRANSCRIPT_STEP_CHARACTERS` (`contracts/agent_transcripts.py`),
+ * mirrored here as a plain number the way every other server-owned wire bound
+ * already is on this side.
+ */
+export const MAXIMUM_TRANSCRIPT_STEP_CHARACTERS = 8_192;
+
+const transcriptStepTextSchema = z.string().max(MAXIMUM_TRANSCRIPT_STEP_CHARACTERS);
+
+export const toolCalledEventSchema = z
+  .object({
+    event: z.literal("tool-called"),
+    name: transcriptStepTextSchema,
+    arguments: transcriptStepTextSchema,
+    redacted: z.boolean(),
+  })
+  .strict();
+
+export const toolReturnedEventSchema = z
+  .object({
+    event: z.literal("tool-returned"),
+    name: transcriptStepTextSchema,
+    result: transcriptStepTextSchema,
+    redacted: z.boolean(),
+  })
+  .strict();
+
+export const assistantTurnEventSchema = z
+  .object({
+    event: z.literal("assistant-turn"),
+    text: transcriptStepTextSchema,
+    redacted: z.boolean(),
+  })
+  .strict();
+
+export const usageEventSchema = z
+  .object({
+    event: z.literal("usage"),
+    input_tokens: nonnegativeSafeInteger,
+    output_tokens: nonnegativeSafeInteger,
+    cache_read_input_tokens: nonnegativeSafeInteger,
+    cache_creation_input_tokens: nonnegativeSafeInteger,
+  })
+  .strict();
+
+export const unrecognisedProviderOutputEventSchema = z
+  .object({
+    event: z.literal("unrecognised-provider-output"),
+    text: transcriptStepTextSchema,
+    redacted: z.boolean(),
+  })
+  .strict();
+
+export const transcriptTruncatedEventSchema = z
+  .object({
+    event: z.literal("transcript-truncated"),
+    dropped_events: positiveSafeInteger,
+  })
+  .strict();
+
+export const attemptTranscriptSchema = z
+  .object({
+    events: z
+      .array(
+        z.discriminatedUnion("event", [
+          toolCalledEventSchema,
+          toolReturnedEventSchema,
+          assistantTurnEventSchema,
+          usageEventSchema,
+          unrecognisedProviderOutputEventSchema,
+          transcriptTruncatedEventSchema,
+        ]),
+      )
+      .min(1),
+  })
+  .strict();
+
+export type AttemptTranscript = z.infer<typeof attemptTranscriptSchema>;
+
 export const nodeDetailSchema = z
   .object({
     run_id: z.string().min(1),
@@ -1090,6 +1224,7 @@ export const nodeDetailSchema = z
     refusal_output: nodeRefusalOutputSchema.nullable().optional(),
     started_at: z.string().nullable().optional(),
     ended_at: z.string().nullable().optional(),
+    transcript: attemptTranscriptSchema.nullable().optional(),
   })
   .strict();
 
@@ -2544,6 +2679,8 @@ export type WorkflowRevisionSummary = z.infer<
 >;
 export type CatalogNameResolution = z.infer<typeof catalogNameResolutionSchema>;
 export type CatalogAdmission = z.infer<typeof catalogAdmissionSchema>;
+export type LibraryRecognition = z.infer<typeof libraryRecognitionSchema>;
+export type LibraryAddition = z.infer<typeof libraryAdditionSchema>;
 export type ProjectResource = z.infer<typeof projectResourceSchema>;
 export type ProjectList = z.infer<typeof projectListSchema>;
 export type ProjectSourceConnectionRevision = z.infer<
@@ -2688,6 +2825,16 @@ export interface CockpitApi {
   listAgentDefinitionRevisions(
     after?: string,
   ): Promise<AgentDefinitionRevisionPage>;
+  recognizeLibraryDocument(
+    document: Uint8Array,
+    fileName: string | null,
+  ): Promise<LibraryRecognition>;
+  addLibraryDocument(
+    document: Uint8Array,
+    fileName: string | null,
+    actor: string,
+    activatedAt: string,
+  ): Promise<HttpResult<LibraryAddition>>;
   publishAgentDefinition(
     document: string,
   ): Promise<HttpResult<AgentDefinitionRevision>>;
@@ -3001,6 +3148,30 @@ export function createCockpitApi(
         [200],
         agentDefinitionRevisionPageSchema,
       ),
+    recognizeLibraryDocument: (document, fileName) =>
+      requestJson(
+        fetcher,
+        libraryDocumentTarget("/atelier/api/v1/library/recognitions", fileName),
+        {
+          method: "POST",
+          headers: { "content-type": "application/octet-stream" },
+          body: opaqueDocumentBody(document),
+        },
+        [200],
+        libraryRecognitionSchema,
+      ),
+    addLibraryDocument: (document, fileName, actor, activatedAt) =>
+      requestJsonResult(
+        fetcher,
+        libraryAdditionTarget(fileName, actor, activatedAt),
+        {
+          method: "POST",
+          headers: { "content-type": "application/octet-stream" },
+          body: opaqueDocumentBody(document),
+        },
+        [200, 201],
+        libraryAdditionSchema,
+      ),
     // The authored file travels as the exact bytes the author wrote, so the
     // hash the store answers with is the hash of what is on their disk.
     publishAgentDefinition: (document: string) =>
@@ -3243,6 +3414,21 @@ export function createCockpitApi(
         handlers,
       ),
   };
+}
+
+function libraryDocumentTarget(path: string, fileName: string | null): string {
+  if (fileName === null) return path;
+  return `${path}?${new URLSearchParams({ file_name: fileName }).toString()}`;
+}
+
+function libraryAdditionTarget(fileName: string | null, actor: string, activatedAt: string): string {
+  const query = new URLSearchParams({ actor, activated_at: activatedAt });
+  if (fileName !== null) query.set("file_name", fileName);
+  return `/atelier/api/v1/library/additions?${query.toString()}`;
+}
+
+function opaqueDocumentBody(document: Uint8Array): ArrayBuffer {
+  return document.slice().buffer as ArrayBuffer;
 }
 
 function subscribeEventSource(

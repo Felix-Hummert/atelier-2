@@ -1302,6 +1302,7 @@ nodes:
                     ),
                     "destination_identity": "destination",
                     "adapter_operational_identity": "operation",
+                    "operation_name": "open-pr",
                     "state": EffectIntentState.WAITING_RECONCILIATION.value,
                     "state_version": 1,
                     "reconciliation_owner_command_id": None,

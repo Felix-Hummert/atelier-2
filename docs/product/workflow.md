@@ -132,11 +132,15 @@ rule behind it.
 Inside that shape the runtime drives the line its author wrote. Each Agent node runs
 its attempt through the same durable path a V2 node uses, and the heir its author
 declared starts when its predecessor completes. A linear Action node pins a published
-adapter-operation revision; the one operation this runtime performs is `open-pr`.
+adapter-operation revision; the runtime dispatches each durable intent by its persisted
+operation and exact adapter binding, and its closed registry performs `open-pr` and
+`push-atelier-commit`. An Agent reaches the push only through a tool grant that pins
+that exact published operation revision.
 `POST /adapter-operation-revisions` is the publication door (bytes in, hash out,
 idempotent), and a start whose `operation.revision` is that hash gets past the
-reference that used to refuse as unpublished. The Action's request bytes are the
-predecessor Agent's output. A V3 Agent request hashes the current job composition:
+reference that used to refuse as unpublished. A project-bound open-PR request carries
+the predecessor Agent's output as its body and the run's derived work-item branch. A
+V3 Agent request hashes the current job composition:
 declared root-string orders appear as their text while every other order keeps its
 JSON representation. Readers first recompute that composition, then prove a
 pre-change request against the legacy all-JSON composition when necessary. The
@@ -221,7 +225,7 @@ event and no advanced run, so a run can no longer end successfully on work its
 own contract rejects. The catalog `code-review` and `plan-review` result schemas
 refuse a `revise` with no finding or risk and admit `cannot-judge` only with a
 reason, so a reviewer that cannot judge the evidence names that instead of
-emitting an empty revise. The refusal is durable and named. The record family ADR
+emitting an empty revise. Both catalog review workflows take a required `context` order carrying the owner-document excerpt the reviewer must judge against; a head that has no excerpt passes the explicit word none. The refusal is durable and named. The record family ADR
 0006 declared has its production writer: the public start persists each node's
 `node-execution-request/v3` and `context-package/v3` inside the start
 transaction -- an order the run carries binds into that package as a material

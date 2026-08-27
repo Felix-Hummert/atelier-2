@@ -11,6 +11,8 @@ import {
   decodeWorkflowRevisionDetail,
   executableGraph,
   isRunV3,
+  MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
+  nodeDetailSchema,
   projectSourceConnectionRevisionSchema,
   problemDefinitions,
   type Problem,
@@ -1182,6 +1184,68 @@ describe("the published agent definitions the catalog reads", () => {
   });
 });
 
+describe("the one-step catalog import", () => {
+  const document = new TextEncoder().encode("format_version: 3\nname: import-proof\n");
+
+  it("recognizes opaque file bytes before the operator confirms an addition", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        outcome: "workflow",
+        workflow_format_version: 3,
+        name: "import-proof",
+        description: null
+      }), { status: 200, headers: { "content-type": "application/json" } })
+    );
+
+    const recognition = await createCockpitApi(fetcher).recognizeLibraryDocument(
+      document,
+      "import-proof.yaml"
+    );
+
+    const request = fetcher.mock.calls[0]?.[1];
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      "/atelier/api/v1/library/recognitions?file_name=import-proof.yaml"
+    );
+    expect((request?.headers as Record<string, string>)["content-type"]).toBe(
+      "application/octet-stream"
+    );
+    expect(new TextDecoder().decode(request?.body as ArrayBuffer)).toBe(
+      new TextDecoder().decode(document)
+    );
+    expect(recognition.outcome).toBe("workflow");
+  });
+
+  it("adds a recognized file through the atomic library admission door", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        kind: "workflow",
+        name: "import-proof",
+        description: null,
+        lineage_id: digest,
+        workflow_revision_hash: "b".repeat(64),
+        revision_number: 1
+      }), { status: 201, headers: { "content-type": "application/json" } })
+    );
+
+    const addition = await createCockpitApi(fetcher).addLibraryDocument(
+      document,
+      "import-proof.yaml",
+      "atelier2-cockpit",
+      "2026-08-27T10:00:00Z"
+    );
+
+    const request = fetcher.mock.calls[0]?.[1];
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      "/atelier/api/v1/library/additions?actor=atelier2-cockpit&activated_at=2026-08-27T10%3A00%3A00Z&file_name=import-proof.yaml"
+    );
+    expect(new TextDecoder().decode(request?.body as ArrayBuffer)).toBe(
+      new TextDecoder().decode(document)
+    );
+    expect(addition.status).toBe(201);
+    expect(addition.value.kind).toBe("workflow");
+  });
+});
+
 describe("the graph a run is allowed to hold", () => {
   it("refuses a published V3 graph by name instead of reading it as an empty workflow", () => {
     const published = {
@@ -1556,5 +1620,166 @@ describe("the node a click asks the server about", () => {
     await expect(
       createCockpitApi(fetcher).getNodeDetail(publicReference, "review")
     ).rejects.toThrow(/named another node/);
+  });
+
+  function answering(payload: unknown) {
+    return vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+  }
+
+  const succeededTranscript = {
+    events: [
+      {
+        event: "tool-called" as const,
+        name: "Read",
+        arguments: '{"file_path":"src/app.ts"}',
+        redacted: false
+      },
+      {
+        event: "tool-returned" as const,
+        name: "Read",
+        result: "export function start() {}",
+        redacted: false
+      },
+      {
+        event: "assistant-turn" as const,
+        text: "I read the file and will write the three sentences.",
+        redacted: false
+      },
+      {
+        event: "usage" as const,
+        input_tokens: 1200,
+        output_tokens: 48,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0
+      }
+    ]
+  };
+
+  it("asks the node route and decodes a succeeded attempt transcript", async () => {
+    const payload = {
+      ...nodeDetail,
+      node_id: "implement",
+      state: "succeeded",
+      transcript: succeededTranscript
+    };
+    const fetcher = answering(payload);
+
+    const detail = await createCockpitApi(fetcher).getNodeDetail(publicReference, "implement");
+
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      `/atelier/api/v1/runs/${publicReference}/nodes/implement`
+    );
+    expect(detail.transcript).toEqual(succeededTranscript);
+  });
+
+  it("carries a failed attempt's already-redacted stdout as unrecognised provider output", async () => {
+    const servedStdout = {
+      event: "unrecognised-provider-output" as const,
+      text: "fatal: token [redacted] rejected",
+      redacted: true
+    };
+    const fetcher = answering({
+      ...nodeDetail,
+      state: "failed",
+      transcript: { events: [servedStdout] }
+    });
+
+    const detail = await createCockpitApi(fetcher).getNodeDetail(publicReference, "review");
+
+    expect(detail.transcript).toEqual({ events: [servedStdout] });
+  });
+
+  it("still decodes a node payload that omits transcript", async () => {
+    const detail = await createCockpitApi(answering(nodeDetail)).getNodeDetail(
+      publicReference,
+      "review"
+    );
+
+    expect(detail).not.toHaveProperty("transcript");
+    expect(nodeDetailSchema.parse({ ...nodeDetail, transcript: null }).transcript).toBeNull();
+  });
+
+  it("refuses an empty transcript events list", () => {
+    expect(() =>
+      nodeDetailSchema.parse({ ...nodeDetail, transcript: { events: [] } })
+    ).toThrow();
+  });
+
+  it("refuses an unknown transcript event kind", () => {
+    expect(() =>
+      nodeDetailSchema.parse({
+        ...nodeDetail,
+        transcript: {
+          events: [{ event: "thinking", text: "a private chain of thought", redacted: false }]
+        }
+      })
+    ).toThrow();
+  });
+
+  it("refuses transcript keys the wire does not serve", () => {
+    const turn = {
+      event: "assistant-turn" as const,
+      text: "done",
+      redacted: false
+    };
+
+    expect(() =>
+      nodeDetailSchema.parse({
+        ...nodeDetail,
+        transcript: { events: [turn], kind: "claude-json" }
+      })
+    ).toThrow();
+    expect(() =>
+      nodeDetailSchema.parse({
+        ...nodeDetail,
+        transcript: { events: [turn], document: "e30=" }
+      })
+    ).toThrow();
+    expect(() =>
+      nodeDetailSchema.parse({
+        ...nodeDetail,
+        transcript: { events: [{ ...turn, invented: true }] }
+      })
+    ).toThrow();
+    expect(() =>
+      nodeDetailSchema.parse({
+        ...nodeDetail,
+        transcript: {
+          events: [
+            {
+              event: "usage",
+              input_tokens: 1,
+              output_tokens: 1,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+              redacted: false
+            }
+          ]
+        }
+      })
+    ).toThrow();
+  });
+
+  it("accepts a transcript step at the 8192-character bound and refuses one character over", () => {
+    const atBound = {
+      event: "assistant-turn" as const,
+      text: "a".repeat(MAXIMUM_TRANSCRIPT_STEP_CHARACTERS),
+      redacted: false
+    };
+
+    expect(
+      nodeDetailSchema.parse({ ...nodeDetail, transcript: { events: [atBound] } }).transcript
+    ).toEqual({ events: [atBound] });
+    expect(() =>
+      nodeDetailSchema.parse({
+        ...nodeDetail,
+        transcript: { events: [{ ...atBound, text: `${atBound.text}a` }] }
+      })
+    ).toThrow();
   });
 });

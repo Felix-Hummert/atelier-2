@@ -12,12 +12,12 @@ was declared rather than resolved and then silently unredeemed, because a run
 started under a capability nothing performs would tell its author that the
 atelier did what the document asked.
 
-Two capabilities live here, and two runtimes redeem them because they have two
-different shapes. `RUN_PROJECT_VERIFICATION` is synchronous and exec-shaped -- a
-command, an exit code, a hash of what it said -- redeemed inside the attempt's
-own lease. `OPEN_PR` is an external platform effect, redeemed through the same
-durable, retryable `EffectAdapter` an Action node drives and answered with an
-`EffectReceipt` rather than an exit code. `redeems_as_platform_effect` is the
+Three capabilities live here under two redemption shapes.
+`RUN_PROJECT_VERIFICATION` is synchronous and exec-shaped -- a command, an exit
+code, a hash of what it said -- redeemed inside the attempt's own lease.
+`OPEN_PR` and `PUSH_ATELIER_COMMIT` are external effects, redeemed through the
+same durable, retryable `EffectAdapter` an Action node drives and answered with
+an `EffectReceipt` rather than an exit code. `redeems_as_platform_effect` is the
 one owner of that split, so the two runtimes never disagree about which shape a
 capability is, and the exec-shaped redemption receipt below is kept only for the
 exec-shaped capability.
@@ -43,6 +43,7 @@ from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.workflows_v3 import VersionedReference
 
 MAXIMUM_TOOL_GRANT_DOCUMENT_BYTES = 4_096
 """How large a grant document may be. It names one capability; nothing needs more."""
@@ -55,14 +56,14 @@ class ToolGrantCapability(StrEnum):
     """The closed set of capabilities a published tool grant may name.
 
     A capability enters here together with the runtime that performs it, so the
-    set and the performance never disagree. The two members are redeemed by two
-    different runtimes -- `redeems_as_platform_effect` names which -- because an
-    exec-shaped verification and an external platform effect cannot honestly
-    share one redemption shape.
+    set and the performance never disagree. `redeems_as_platform_effect` names
+    which of the two redemption shapes owns each member, because an exec-shaped
+    verification and an external effect cannot honestly share one receipt.
     """
 
     RUN_PROJECT_VERIFICATION = "run-project-verification"
     OPEN_PR = "open-pr"
+    PUSH_ATELIER_COMMIT = "push-atelier-commit"
 
 
 def redeems_as_platform_effect(capability: ToolGrantCapability) -> bool:
@@ -77,7 +78,7 @@ def redeems_as_platform_effect(capability: ToolGrantCapability) -> bool:
     is the one place that decides which redemption a capability takes.
     """
     match capability:
-        case ToolGrantCapability.OPEN_PR:
+        case ToolGrantCapability.OPEN_PR | ToolGrantCapability.PUSH_ATELIER_COMMIT:
             return True
         case ToolGrantCapability.RUN_PROJECT_VERIFICATION:
             return False
@@ -120,6 +121,7 @@ class ToolGrantAccepted:
     """These bytes grant exactly this capability."""
 
     capability: ToolGrantCapability
+    operation: VersionedReference | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +139,7 @@ class ToolGrantRefused:
 type ToolGrantVerdict = ToolGrantAccepted | ToolGrantRefused
 
 _CAPABILITY_FIELD = "capability"
+_OPERATION_FIELD = "operation"
 
 
 def read_tool_grant_document(document: bytes) -> ToolGrantVerdict:
@@ -159,13 +162,6 @@ def read_tool_grant_document(document: bytes) -> ToolGrantVerdict:
             ToolGrantRefusal.NOT_A_GRANT_OBJECT,
             f"a tool grant is an object, not {type(decoded).__name__}",
         )
-    unknown = sorted(name for name in decoded if name != _CAPABILITY_FIELD)
-    if unknown:
-        return ToolGrantRefused(
-            ToolGrantRefusal.UNKNOWN_FIELD,
-            f"a tool grant names {_CAPABILITY_FIELD} and nothing else, "
-            f"not {', '.join(unknown)}",
-        )
     named = decoded.get(_CAPABILITY_FIELD)
     if not isinstance(named, str):
         return ToolGrantRefused(
@@ -179,7 +175,47 @@ def read_tool_grant_document(document: bytes) -> ToolGrantVerdict:
             ToolGrantRefusal.UNKNOWN_CAPABILITY,
             f"no runtime here redeems {named!r}",
         )
-    return ToolGrantAccepted(capability)
+    expected = (
+        frozenset((_CAPABILITY_FIELD, _OPERATION_FIELD))
+        if capability is ToolGrantCapability.PUSH_ATELIER_COMMIT
+        else frozenset((_CAPABILITY_FIELD,))
+    )
+    unknown = sorted(set(decoded) - expected)
+    if unknown:
+        if _OPERATION_FIELD in unknown:
+            return ToolGrantRefused(
+                ToolGrantRefusal.NOT_A_GRANT_OBJECT,
+                "only a push grant pins an adapter operation",
+            )
+        return ToolGrantRefused(
+            ToolGrantRefusal.UNKNOWN_FIELD,
+            f"{capability.value} does not declare {', '.join(unknown)}",
+        )
+    if set(decoded) != expected:
+        return ToolGrantRefused(
+            ToolGrantRefusal.NOT_A_GRANT_OBJECT,
+            "push-atelier-commit pins one adapter operation",
+        )
+    if capability is not ToolGrantCapability.PUSH_ATELIER_COMMIT:
+        return ToolGrantAccepted(capability)
+    operation = decoded[_OPERATION_FIELD]
+    if not isinstance(operation, dict) or set(operation) != {"ref", "revision"}:
+        return ToolGrantRefused(
+            ToolGrantRefusal.NOT_A_GRANT_OBJECT,
+            "a pinned adapter operation carries ref and revision",
+        )
+    ref = operation["ref"]
+    revision = operation["revision"]
+    try:
+        if not isinstance(ref, str) or not ref or not isinstance(revision, str):
+            raise ValueError
+        PublishedRevisionHash(revision)
+    except (TypeError, ValueError):
+        return ToolGrantRefused(
+            ToolGrantRefusal.NOT_A_GRANT_OBJECT,
+            "a pinned adapter operation names a nonempty ref and exact revision hash",
+        )
+    return ToolGrantAccepted(capability, VersionedReference(ref=ref, revision=revision))
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,12 +224,16 @@ class DeclaredToolGrant:
 
     revision_hash: PublishedRevisionHash
     capability: ToolGrantCapability
+    operation: VersionedReference | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.revision_hash, PublishedRevisionHash):
             raise TypeError("a declared tool grant names its published revision")
         if not isinstance(self.capability, ToolGrantCapability):
             raise TypeError("a declared tool grant uses the closed vocabulary")
+        push = self.capability is ToolGrantCapability.PUSH_ATELIER_COMMIT
+        if push != (self.operation is not None):
+            raise ValueError("only a push grant pins one adapter operation")
 
 
 class ToolRedemptionReceiptHash(Sha256Hash):

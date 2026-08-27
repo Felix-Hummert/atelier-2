@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
-from atelier2.adapters.github.marker import body_carries_request_hash
+from atelier2.contracts.effect_markers import body_carries_request_hash
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from tests.crash.effect_harness import ADAPTER_EXECUTE_AFTER_COMMIT, CRASHED
 from tests.crash.open_pr_harness import CANARY_TOKEN

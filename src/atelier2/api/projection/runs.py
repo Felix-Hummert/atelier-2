@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Literal, cast
+from typing import Literal, assert_never, cast
 
 from atelier2.api.projection.workflows import command_resource, node_resource
 from atelier2.api.references import (
@@ -17,6 +17,8 @@ from atelier2.api.wire.resources import (
     AgentBindingResourceV2,
     AgentReceiptResource,
     AnyRunResource,
+    AssistantTurnEventResource,
+    AttemptTranscriptResource,
     CancellationDispositionName,
     NodeAnswerResource,
     NodeDetailResource,
@@ -39,6 +41,11 @@ from atelier2.api.wire.resources import (
     RunResource,
     RunResourceV2,
     RunResourceV3,
+    ToolCalledEventResource,
+    ToolReturnedEventResource,
+    TranscriptTruncatedEventResource,
+    UnrecognisedProviderOutputEventResource,
+    UsageEventResource,
     WaitingInputResource,
     WaitingInputResourceV2,
     WaitingReconciliationResource,
@@ -47,6 +54,17 @@ from atelier2.api.wire.resources import (
     WaitingResourceV2,
 )
 from atelier2.application.project_node_rail import NodeRailEntry, project_node_rail
+from atelier2.contracts.agent_transcripts import (
+    AssistantTurn,
+    AttemptTranscript,
+    ToolCalled,
+    ToolReturned,
+    TranscriptEvent,
+    TranscriptEventKind,
+    TranscriptTruncated,
+    UnrecognisedProviderOutput,
+    Usage,
+)
 from atelier2.contracts.agents import AgentReceiptV2
 from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.node_records_v3 import RunInput
@@ -472,7 +490,76 @@ def node_detail_resource(detail: NodeDetail) -> NodeDetailResource:
         ),
         started_at=None if detail.started_at is None else detail.started_at.value,
         ended_at=None if detail.ended_at is None else detail.ended_at.value,
+        transcript=(
+            None
+            if detail.transcript is None
+            else attempt_transcript_resource(detail.transcript)
+        ),
     )
+
+
+def attempt_transcript_resource(
+    transcript: AttemptTranscript,
+) -> AttemptTranscriptResource:
+    """The decoded events on the wire, without the stored document envelope."""
+
+    return AttemptTranscriptResource(
+        events=tuple(_transcript_event_resource(event) for event in transcript.events)
+    )
+
+
+def _transcript_event_resource(
+    event: TranscriptEvent,
+) -> (
+    ToolCalledEventResource
+    | ToolReturnedEventResource
+    | AssistantTurnEventResource
+    | UsageEventResource
+    | UnrecognisedProviderOutputEventResource
+    | TranscriptTruncatedEventResource
+):
+    match event:
+        case ToolCalled(name, arguments, redacted):
+            return ToolCalledEventResource(
+                event=TranscriptEventKind.TOOL_CALLED,
+                name=name,
+                arguments=arguments,
+                redacted=redacted,
+            )
+        case ToolReturned(name, result, redacted):
+            return ToolReturnedEventResource(
+                event=TranscriptEventKind.TOOL_RETURNED,
+                name=name,
+                result=result,
+                redacted=redacted,
+            )
+        case AssistantTurn(text, redacted):
+            return AssistantTurnEventResource(
+                event=TranscriptEventKind.ASSISTANT_TURN,
+                text=text,
+                redacted=redacted,
+            )
+        case Usage(input_tokens, output_tokens, cache_read, cache_creation):
+            return UsageEventResource(
+                event=TranscriptEventKind.USAGE,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_creation,
+            )
+        case UnrecognisedProviderOutput(text, redacted):
+            return UnrecognisedProviderOutputEventResource(
+                event=TranscriptEventKind.UNRECOGNISED_PROVIDER_OUTPUT,
+                text=text,
+                redacted=redacted,
+            )
+        case TranscriptTruncated(dropped_events):
+            return TranscriptTruncatedEventResource(
+                event=TranscriptEventKind.TRANSCRIPT_TRUNCATED,
+                dropped_events=dropped_events,
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def agent_receipt_resource(receipt: AgentReceiptV2) -> AgentReceiptResource:

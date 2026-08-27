@@ -33,16 +33,14 @@ from typing import Any
 import githubkit
 import githubkit.exception
 import httpx
-from githubkit_schemas.latest.types import (
-    ReposOwnerRepoGitRefsPostBodyType,
-    ReposOwnerRepoPullsPostBodyType,
-)
+from githubkit_schemas.latest.types import ReposOwnerRepoPullsPostBodyType
 
-from atelier2.adapters.github.marker import body_carries_request_hash, marker_line
+from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
+from atelier2.contracts.effect_markers import body_carries_request_hash, marker_line
+from atelier2.contracts.effect_requests import OpenPullRequest
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
-    CanonicalRequest,
     ConfirmationSource,
     EffectAdapterBinding,
     EffectDestination,
@@ -57,13 +55,6 @@ from atelier2.contracts.effects import (
 )
 
 GITHUB_TOKEN_CREDENTIAL_ENTRY = "token"
-
-# A pull request search that returns nothing is eventually consistent and
-# never an authoritative negative for a create (ADR 0010 §5). A ref that
-# already exists is one of two create-time failures this adapter treats as
-# "a concurrent execute already won this race" rather than a refusal, because
-# it is the crash-then-retry case the readback-then-create rule exists for.
-_GIT_REFERENCE_ALREADY_EXISTS_STATUS = 422
 
 # GitHub's own head+base uniqueness constraint on pull requests: the second of
 # the two create-time races. A concurrent execute can create both the branch
@@ -85,6 +76,10 @@ class GitHubCredentialUnresolvable(RuntimeError):
 
 class GitHubUnexpectedResponse(RuntimeError):
     """A platform response did not carry the shape this operation reads."""
+
+
+class GitHubEffectRefused(RuntimeError):
+    """The durable request does not carry the typed open-PR contract."""
 
 
 @dataclass(frozen=True)
@@ -139,19 +134,8 @@ class _RecordedPullRequest:
     body: str
 
 
-def _branch_for(request_hash: str) -> str:
-    return f"atelier2-open-pr-{request_hash[:12]}"
-
-
-def _decoded_text(payload: bytes) -> str:
-    try:
-        return payload.decode("utf-8")
-    except UnicodeDecodeError:
-        return payload.hex()
-
-
-def _body_for(request: CanonicalRequest) -> str:
-    return f"{_decoded_text(request.payload)}\n\n{marker_line(request.request_hash.value)}\n"
+def _body_for(request: OpenPullRequest, request_hash: str) -> str:
+    return f"{request.body}\n\n{marker_line(request_hash)}\n"
 
 
 def _title_for(body: str) -> str:
@@ -211,6 +195,7 @@ class LiveGitHubEffectAdapterFactory:
             AdapterOperationalIdentity(
                 f"{self.repository.owner}/{self.repository.name}"
             ),
+            AdapterOperationName.OPEN_PR,
         )
 
     @property
@@ -247,16 +232,18 @@ class LiveGitHubEffectAdapter:
         self._closed = False
 
     def readback(self, intent: EffectIntent) -> EffectReadback:
-        self._authorize_binding(intent)
-        found = self._find_recorded_pull_request(intent)
+        request = self._authorized_request(intent)
+        found = self._find_recorded_pull_request(intent, request)
         if found is None:
             return EffectUnknownOutcome(intent.reference)
         return self._receipt(intent, found)
 
     def execute(self, intent: EffectIntent) -> PerformedEffect:
-        self._authorize_binding(intent)
-        found = self._find_recorded_pull_request(intent)
-        record = found if found is not None else self._create_pull_request(intent)
+        request = self._authorized_request(intent)
+        found = self._find_recorded_pull_request(intent, request)
+        record = (
+            found if found is not None else self._create_pull_request(intent, request)
+        )
         return self._performed(record)
 
     def close(self) -> None:
@@ -269,14 +256,23 @@ class LiveGitHubEffectAdapter:
                 "effect intent does not belong to this adapter binding"
             )
 
+    def _authorized_request(self, intent: EffectIntent) -> OpenPullRequest:
+        self._authorize_binding(intent)
+        try:
+            return OpenPullRequest.from_canonical_bytes(intent.request.payload)
+        except (TypeError, ValueError) as error:
+            raise GitHubEffectRefused(
+                "open-pr effect requires one canonical open-pr request"
+            ) from error
+
     def _require_open(self) -> None:
         if self._closed:
             raise RuntimeError("github live effect adapter is closed")
 
     def _find_recorded_pull_request(
-        self, intent: EffectIntent
+        self, intent: EffectIntent, request: OpenPullRequest
     ) -> _RecordedPullRequest | None:
-        branch = _branch_for(intent.request.request_hash.value)
+        branch = request.head_branch.value
         response = self._client.rest.pulls.list(
             self._repository.owner,
             self._repository.name,
@@ -297,11 +293,11 @@ class LiveGitHubEffectAdapter:
         self._verify_recorded_body(intent, body)
         return _RecordedPullRequest(branch, number, body)
 
-    def _create_pull_request(self, intent: EffectIntent) -> _RecordedPullRequest:
-        branch = _branch_for(intent.request.request_hash.value)
-        body = _body_for(intent.request)
-        base_sha = self._base_branch_sha()
-        self._create_branch(branch, base_sha)
+    def _create_pull_request(
+        self, intent: EffectIntent, request: OpenPullRequest
+    ) -> _RecordedPullRequest:
+        branch = request.head_branch.value
+        body = _body_for(request, intent.request.request_hash.value)
         create_body: ReposOwnerRepoPullsPostBodyType = {
             "title": _title_for(body),
             "head": branch,
@@ -322,7 +318,7 @@ class LiveGitHubEffectAdapter:
             # converges on its result rather than this attempt raising or
             # creating a twin GitHub's own constraint would have refused
             # anyway.
-            found = self._find_recorded_pull_request(intent)
+            found = self._find_recorded_pull_request(intent, request)
             if found is None:
                 raise
             return found
@@ -333,39 +329,6 @@ class LiveGitHubEffectAdapter:
             )
         number = _integer_field(created, "number", "pull request creation result")
         return _RecordedPullRequest(branch, number, body)
-
-    def _base_branch_sha(self) -> str:
-        response = self._client.rest.repos.get_branch(
-            self._repository.owner,
-            self._repository.name,
-            self._repository.base_branch,
-        )
-        branch = response.raw_response.json()
-        if not isinstance(branch, dict):
-            raise GitHubUnexpectedResponse(
-                "base branch lookup did not return an object"
-            )
-        commit = branch.get("commit")
-        if not isinstance(commit, dict):
-            raise GitHubUnexpectedResponse(
-                "base branch lookup carried no commit object"
-            )
-        return _string_field(commit, "sha", "base branch commit")
-
-    def _create_branch(self, branch: str, base_sha: str) -> None:
-        ref_body: ReposOwnerRepoGitRefsPostBodyType = {
-            "ref": f"refs/heads/{branch}",
-            "sha": base_sha,
-        }
-        try:
-            self._client.rest.git.create_ref(
-                self._repository.owner,
-                self._repository.name,
-                data=ref_body,
-            )
-        except githubkit.exception.RequestFailed as error:
-            if error.response.status_code != _GIT_REFERENCE_ALREADY_EXISTS_STATUS:
-                raise
 
     def _verify_recorded_body(self, intent: EffectIntent, body: str) -> None:
         request_hash = intent.request.request_hash.value

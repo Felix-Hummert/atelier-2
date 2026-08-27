@@ -473,8 +473,8 @@ def assert_exact_waiting_input_vector(
 @pytest.mark.parametrize(
     ("operation", "timing", "outer_results_before"),
     [
-        pytest.param(OBSERVE_STEP_NAME, "after-record", 1, id="C1-after-observe"),
-        pytest.param(COMMIT_STEP_NAME, "before-record", 2, id="post-confirm"),
+        pytest.param(OBSERVE_STEP_NAME, "after-record", 2, id="C1-after-observe"),
+        pytest.param(COMMIT_STEP_NAME, "before-record", 3, id="post-confirm"),
     ],
 )
 def test_named_crash_boundaries_recover_without_duplicate_effect(
@@ -538,7 +538,7 @@ def test_c2_crash_after_external_commit_before_adapter_return_recovers_once(
         scalar(
             tmp_path,
             "atelier.sqlite",
-            "SELECT COUNT(*) FROM datasource_outputs WHERE workflow_id=? AND step_id=2",
+            "SELECT COUNT(*) FROM datasource_outputs WHERE workflow_id=? AND step_id=3",
             (workflow_id,),
         )
         == 0

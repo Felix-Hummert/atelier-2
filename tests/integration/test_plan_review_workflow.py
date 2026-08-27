@@ -55,7 +55,9 @@ from atelier2.ports.artifacts import ArtifactCreated, ArtifactExisting
 from atelier2.ports.durable_runs import (
     AuthoredOrder,
     DurableRunCreated,
+    DurableV3StartInputRefused,
     StartPublishedRunRequestV3,
+    V3InputRefusal,
 )
 from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
@@ -80,8 +82,10 @@ RESULT_SCHEMA = PublishedRevision(
 )
 ITEM_BODY_TEXT = "Build a catalog plan review workflow."
 OWNER_DOCUMENTS_TEXT = "The workflow schema owns its output contract."
+CONTEXT_TEXT = "The plan must preserve its owner documents."
 ITEM_BODY = json.dumps(ITEM_BODY_TEXT).encode()
 OWNER_DOCUMENTS = json.dumps(OWNER_DOCUMENTS_TEXT).encode()
+CONTEXT = json.dumps(CONTEXT_TEXT).encode()
 REVIEW = {
     "risks": [{"text": "The owner documents may be incomplete."}],
     "plan": [
@@ -234,6 +238,30 @@ def wait_for_completion(runtime: DbosRuntime, run_id: RunId) -> None:
     raise AssertionError("plan review run did not complete")
 
 
+def test_a_plan_review_without_context_is_refused_before_a_run_exists(
+    runtime: DbosRuntime,
+) -> None:
+    workflow, bindings = publish(runtime)
+    refused = DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_published(
+        StartPublishedRunRequestV3(
+            RunId("v3/plan-review-without-context"),
+            workflow.revision_hash,
+            bindings,
+            orders=(
+                artifact_order(runtime, "item_body", ITEM_BODY),
+                artifact_order(runtime, "owner_documents", OWNER_DOCUMENTS),
+            ),
+        )
+    )
+    assert isinstance(refused, DurableV3StartInputRefused), refused
+    assert refused.name == "context"
+    assert refused.refusal is V3InputRefusal.MISSING
+    with runtime.engine.connect() as connection:
+        assert connection.scalar(sa.select(sa.func.count()).select_from(runs)) == 0
+
+
 def test_a_plan_review_round_trips_artifact_orders_to_an_object_result(
     runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
 ) -> None:
@@ -253,6 +281,7 @@ def test_a_plan_review_round_trips_artifact_orders_to_an_object_result(
             orders=(
                 artifact_order(runtime, "item_body", ITEM_BODY),
                 artifact_order(runtime, "owner_documents", OWNER_DOCUMENTS),
+                artifact_order(runtime, "context", CONTEXT),
             ),
         )
     )
@@ -265,6 +294,7 @@ def test_a_plan_review_round_trips_artifact_orders_to_an_object_result(
     handed = provider.opened.requests[0].job_bytes
     assert ITEM_BODY_TEXT.encode() in handed
     assert OWNER_DOCUMENTS_TEXT.encode() in handed
+    assert CONTEXT_TEXT.encode() in handed
     detail = durable_queries(runtime.engine).get_node_detail(run_id, "review")
     assert isinstance(detail, NodeDetailFound), detail
     assert detail.detail.state is NodeState.SUCCEEDED
@@ -312,6 +342,7 @@ def test_a_plan_review_object_the_schema_refuses_never_becomes_a_success(
             orders=(
                 artifact_order(runtime, "item_body", ITEM_BODY),
                 artifact_order(runtime, "owner_documents", OWNER_DOCUMENTS),
+                artifact_order(runtime, "context", CONTEXT),
             ),
         )
     )

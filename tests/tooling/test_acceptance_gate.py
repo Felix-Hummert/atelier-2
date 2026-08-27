@@ -29,7 +29,8 @@ A_DECLARED_REQUIREMENT = "REQ-KATALOG-04"
 AN_UNDECLARED_REQUIREMENT = "REQ-NOBODY-99"
 PROOFS = Path("tests/tooling/test_acceptance_gate.py")
 REQUIREMENT_CONTRACT = Path("scripts/requirement_contract.py")
-COPIED_FILES = (GATE, REQUIREMENT_CONTRACT, PROOFS)
+DOCUMENTATION_FRESHNESS = Path("scripts/documentation_freshness.py")
+COPIED_FILES = (GATE, REQUIREMENT_CONTRACT, DOCUMENTATION_FRESHNESS, PROOFS)
 
 BOUND_START = "<!-- acceptance-gate-bound:start -->"
 BOUND_END = "<!-- acceptance-gate-bound:end -->"

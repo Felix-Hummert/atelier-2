@@ -36,6 +36,8 @@ export function cockpitApiStub(overrides: Partial<CockpitApi> = {}): CockpitApi 
       items: [],
       next_after_revision_hash: null
     })),
+    recognizeLibraryDocument: vi.fn(),
+    addLibraryDocument: vi.fn(),
     publishAgentDefinition: vi.fn(),
     getRevisionByName: vi.fn(),
     foundCatalogLineage: vi.fn(),

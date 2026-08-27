@@ -1,14 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import type { CockpitApi } from "../api/client";
-  import CatalogImportDoor from "../components/CatalogImportDoor.svelte";
+  import { CockpitRequestError, type CockpitApi, type LibraryRecognition, type Problem } from "../api/client";
+  import CatalogImportSheet from "../components/CatalogImportSheet.svelte";
+  import CatalogTile from "../components/CatalogTile.svelte";
   import ReadState from "../components/ReadState.svelte";
-  import {
-    admitPublishedRevision,
-    catalogActivatedAt,
-    COCKPIT_CATALOG_ACTOR
-  } from "../lib/catalogAdmission";
+  import { catalogActivatedAt, COCKPIT_CATALOG_ACTOR } from "../lib/catalogAdmission";
   import { catalogHeadsOf, catalogNameStateOf, type CatalogNameState } from "../lib/catalogName";
   import { catalogPageCopy } from "../lib/catalogPageCopy";
   import {
@@ -21,7 +18,6 @@
   import { onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { humanErrorMessage } from "../lib/humanRefusal";
-  import { publicationMutation } from "../lib/mutationJournal";
   import {
     beginRead,
     confirmRead,
@@ -38,15 +34,45 @@
   type ReadFailure =
     | { kind: "unavailable"; title: string }
     | { kind: "incomplete"; title: string };
+  type CatalogGroup = "all" | "workflows" | "agents" | "skills";
 
   let workflows: RetainedRead<CatalogWorkflowRow[], ReadFailure> =
     retainedRead<CatalogWorkflowRow[], ReadFailure>();
   let agents: RetainedRead<CatalogAgentRow[], ReadFailure> =
     retainedRead<CatalogAgentRow[], ReadFailure>();
-  let admittingHash: string | null = null;
-  let admissionFailure: string | null = null;
+  type ImportResult = {
+    document: Uint8Array;
+    fileName: string;
+    recognition: LibraryRecognition | null;
+    problem: Problem | null;
+    failure: string | null;
+  };
+  type ImportFile = {
+    readonly name: string;
+    arrayBuffer(): Promise<ArrayBuffer>;
+  };
+
+  let fileInput: HTMLInputElement;
+  let importResult: ImportResult | null = null;
+  let isDropTarget = false;
+  let activeGroup: CatalogGroup = "all";
+  let search = "";
+
+  $: workflowRows = workflows.confirmed ?? [];
+  $: agentRows = agents.confirmed ?? [];
+  $: hasCatalogEntries = workflowRows.length + agentRows.length > 0;
+  $: matchingWorkflows = catalogMatches(workflowRows, search);
+  $: matchingAgents = catalogMatches(agentRows, search);
 
   onMount(() => {
+    // Navigating into the Catalog focuses the stage. On a phone that focus can
+    // leave the rail above the viewport, even though it is the only room door.
+    if (
+      typeof globalThis.matchMedia === "function" &&
+      globalThis.matchMedia("(max-width: 48rem)").matches
+    ) {
+      globalThis.requestAnimationFrame(() => globalThis.scrollTo({ top: 0, left: 0 }));
+    }
     void loadWorkflows();
     void loadAgents();
     // A read that failed while the connection was lost is worth asking again
@@ -122,243 +148,383 @@
     }
   }
 
-  /**
-   * Publication is idempotent by hash, so this door needs no journal.
-   *
-   * The start door journals its publication because a lost response there
-   * leaves an exact request nobody can replay. Here the operator still holds
-   * the file, and importing it again answers with the same revision — so the
-   * retry is the Import button, not a pending-request list.
-   */
-  async function importWorkflow(exactYaml: string): Promise<void> {
-    await cockpitApi.publish(await publicationMutation(exactYaml));
-    await loadWorkflows();
+  function openFilePicker(): void {
+    fileInput.click();
   }
 
-  async function importAgent(exactMarkdown: string): Promise<void> {
-    await cockpitApi.publishAgentDefinition(exactMarkdown);
-    await loadAgents();
-  }
-
-  async function admit(revisionHash: string): Promise<void> {
-    admittingHash = revisionHash;
-    admissionFailure = null;
+  async function recognizeFile(file: ImportFile): Promise<void> {
+    isDropTarget = false;
     try {
-      const revision = await cockpitApi.getWorkflowRevision(revisionHash);
-      await admitPublishedRevision(
-        cockpitApi,
-        revision,
-        COCKPIT_CATALOG_ACTOR,
-        catalogActivatedAt()
-      );
-      await loadWorkflows();
+      const document = new Uint8Array(await file.arrayBuffer());
+      importResult = {
+        document,
+        fileName: file.name,
+        recognition: await cockpitApi.recognizeLibraryDocument(document, file.name),
+        problem: null,
+        failure: null
+      };
     } catch (error) {
-      admissionFailure = humanErrorMessage(error, catalogPageCopy.admitFailed);
-    } finally {
-      admittingHash = null;
+      importResult = {
+        document: new Uint8Array(),
+        fileName: file.name,
+        recognition: null,
+        problem: error instanceof CockpitRequestError ? error.problem : null,
+        failure: error instanceof CockpitRequestError
+          ? null
+          : humanErrorMessage(error, catalogPageCopy.recognitionFailed)
+      };
     }
+  }
+
+  function chooseFile(event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (file !== undefined) void recognizeFile(file);
+  }
+
+  function receiveDrop(event: {
+    preventDefault(): void;
+    dataTransfer: { files: ArrayLike<ImportFile> } | null;
+  }): void {
+    event.preventDefault();
+    const file = event.dataTransfer?.files[0];
+    if (file !== undefined) void recognizeFile(file);
+  }
+
+  async function addLibraryDocument(document: Uint8Array, fileName: string | null): Promise<void> {
+    await cockpitApi.addLibraryDocument(
+      document,
+      fileName,
+      COCKPIT_CATALOG_ACTOR,
+      catalogActivatedAt()
+    );
+    await Promise.all([loadWorkflows(), loadAgents()]);
+  }
+
+  function workflowTileStatus(
+    row: CatalogWorkflowRow
+  ): { label: string; description: string; dashed: boolean } | null {
+    if (row.state?.kind === "not-executable") {
+      return {
+        label: catalogPageCopy.notExecutable,
+        description: row.state.reason,
+        dashed: true
+      };
+    }
+    if (row.newerRevisionAvailable) {
+      return {
+        label: catalogPageCopy.newerRevision,
+        description: catalogPageCopy.newerRevisionHint,
+        dashed: false
+      };
+    }
+    if (row.state?.kind === "not-admitted") {
+      return {
+        label: catalogPageCopy.notAdmitted,
+        description: catalogPageCopy.notAdmittedHint,
+        dashed: false
+      };
+    }
+    return null;
+  }
+
+  function catalogMatches<T extends CatalogWorkflowRow | CatalogAgentRow>(
+    rows: readonly T[],
+    term: string
+  ): T[] {
+    const normalizedTerm = term.trim().toLocaleLowerCase();
+    if (normalizedTerm === "") return [...rows];
+    return rows.filter((row) =>
+      [row.title, row.description, "provider" in row ? row.provider : ""]
+        .filter((value): value is string => value !== null)
+        .some((value) => value.toLocaleLowerCase().includes(normalizedTerm))
+    );
+  }
+
+  function catalogGroupChoices(): readonly {
+    group: CatalogGroup;
+    label: string;
+    count: number | null;
+  }[] {
+    return [
+      { group: "all", label: catalogPageCopy.all, count: null },
+      { group: "workflows", label: catalogPageCopy.workflowsTitle, count: workflowRows.length },
+      { group: "agents", label: catalogPageCopy.agentsTitle, count: agentRows.length },
+      { group: "skills", label: catalogPageCopy.skillsTitle, count: 0 }
+    ];
   }
 </script>
 
-<section class="surface" aria-labelledby="catalog-title">
-  <header class="surface-head">
+<section
+  class="surface catalog-drop-target"
+  aria-labelledby="catalog-title"
+  ondragover={(event) => { event.preventDefault(); isDropTarget = true; }}
+  ondragleave={(event) => { if (event.currentTarget === event.target) isDropTarget = false; }}
+  ondrop={receiveDrop}
+>
+  <input
+    bind:this={fileInput}
+    class="visually-hidden"
+    type="file"
+    aria-label={wrapDisplayCopy(catalogPageCopy.filePicker)}
+    onchange={chooseFile}
+  />
+  <header class="surface-head catalog-head">
     <h1 id="catalog-title">{wrapDisplayCopy(catalogPageCopy.title)}</h1>
-    <p>{wrapDisplayCopy(catalogPageCopy.lead)}</p>
+    <button type="button" onclick={openFilePicker}>
+      {wrapDisplayCopy(catalogPageCopy.import)}
+    </button>
   </header>
 
-  <section aria-labelledby="catalog-workflows-title">
-    <h2 id="catalog-workflows-title">{wrapDisplayCopy(catalogPageCopy.workflowsTitle)}</h2>
-    <ReadState read={workflows} label="workflows" onRetry={() => { void loadWorkflows(); }} />
-    {#if admissionFailure !== null}<p class="failure" role="alert">{admissionFailure}</p>{/if}
+  <ReadState read={workflows} label="workflows" onRetry={() => { void loadWorkflows(); }} />
+  <ReadState read={agents} label="agents" onRetry={() => { void loadAgents(); }} />
 
-    {#if workflows.confirmed !== null && workflows.confirmed.length === 0}
-      <p class="empty">{wrapDisplayCopy(catalogPageCopy.workflowsEmpty)}</p>
+  {#if hasCatalogEntries}
+    <div class="catalog-filters" role="group" aria-label={wrapDisplayCopy(catalogPageCopy.catalogGroups)}>
+      {#each catalogGroupChoices() as { group, label, count } (group)}
+        <button
+          class="filter-chip"
+          class:active={activeGroup === group}
+          type="button"
+          aria-pressed={activeGroup === group}
+          onclick={() => { activeGroup = group as CatalogGroup; }}
+        >{wrapDisplayCopy(label)}{#if count !== null} <b>{count}</b>{/if}</button>
+      {/each}
+      <input bind:value={search} type="search" placeholder={wrapDisplayCopy(catalogPageCopy.search)} aria-label={wrapDisplayCopy(catalogPageCopy.searchLabel)} />
+    </div>
+
+    {#if activeGroup === "all" || activeGroup === "workflows"}
+      <section aria-label={wrapDisplayCopy(catalogPageCopy.workflowsTitle)}>
+        <ul class="tile-grid">
+          {#each matchingWorkflows as row (row.revisionHash)}
+            <CatalogTile
+              kind="workflow"
+              title={row.title}
+              ariaLabel={wrapDisplayCopy(row.title)}
+              description={row.description ?? wrapDisplayCopy(catalogPageCopy.noDescription)}
+              provenance={catalogRowFacts()}
+              href={row.name === null ? null : workflowPath(row.name)}
+              status={workflowTileStatus(row)}
+              onOpen={navigate}
+            />
+          {/each}
+        </ul>
+      </section>
     {/if}
 
-    <ul class="entries">
-      {#each workflows.confirmed ?? [] as row (row.revisionHash)}
-        <li class="entry card">
-          <div class="entry-head">
-            <strong>{row.title}</strong>
-            {#if row.state?.kind === "startable"}
-              <span class="entry-state">{wrapDisplayCopy(catalogPageCopy.startable)}</span>
-            {:else if row.state?.kind === "not-admitted"}
-              <span class="entry-state attention">{wrapDisplayCopy(catalogPageCopy.notAdmitted)}</span>
-            {:else if row.state?.kind === "not-executable"}
-              <span class="entry-state failed">{wrapDisplayCopy(catalogPageCopy.notExecutable)}</span>
-            {/if}
-            {#if row.newerRevisionAvailable}
-              <span class="entry-state attention"
-                >{wrapDisplayCopy(catalogPageCopy.newerRevisionAvailable)}</span
-              >
-            {/if}
-          </div>
-          <p class="entry-line">{row.description ?? wrapDisplayCopy(catalogPageCopy.noDescription)}</p>
-          {#if row.state?.kind === "not-executable"}
-            <p class="entry-line failure">{row.state.reason}</p>
-          {/if}
-          <p class="entry-facts">{catalogRowFacts(row.revisionHash).join(" · ")}</p>
-          {#if row.name !== null}
-            {@const detailPath = workflowPath(row.name)}
-            <div class="entry-actions">
-              {#if row.state?.kind === "not-admitted" && row.admittable}
-                <button
-                  type="button"
-                  disabled={admittingHash !== null}
-                  onclick={() => { void admit(row.revisionHash); }}
-                  >{wrapDisplayCopy(
-                    admittingHash === row.revisionHash
-                      ? catalogPageCopy.admitting
-                      : catalogPageCopy.admit
-                  )}</button
-                >
-              {/if}
-              <a
-                class="button"
-                href={detailPath}
-                onclick={(event) => { event.preventDefault(); navigate(detailPath); }}
-                >{wrapDisplayCopy(catalogPageCopy.details)}</a
-              >
-            </div>
-          {/if}
-        </li>
-      {/each}
-    </ul>
-
-    <CatalogImportDoor
-      title={catalogPageCopy.importWorkflowTitle}
-      hint={catalogPageCopy.importWorkflowHint}
-      label={catalogPageCopy.importWorkflowLabel}
-      accept=".yaml,.yml,text/yaml,application/yaml"
-      fieldId="import-workflow"
-      failureTitle={catalogPageCopy.importWorkflowFailed}
-      onImport={importWorkflow}
-    />
-  </section>
-
-  <section aria-labelledby="catalog-agents-title">
-    <h2 id="catalog-agents-title">{wrapDisplayCopy(catalogPageCopy.agentsTitle)}</h2>
-    <ReadState read={agents} label="agents" onRetry={() => { void loadAgents(); }} />
-
-    {#if agents.confirmed !== null && agents.confirmed.length === 0}
-      <p class="empty">{wrapDisplayCopy(catalogPageCopy.agentsEmpty)}</p>
+    {#if activeGroup === "all" || activeGroup === "agents"}
+      <section aria-label={wrapDisplayCopy(catalogPageCopy.agentsByProvider)}>
+        <ul class="tile-grid">
+          {#each matchingAgents as row (row.revisionHash)}
+            <CatalogTile
+              kind="agent"
+              title={row.title}
+              ariaLabel={wrapDisplayCopy(row.title)}
+              description={row.description}
+              provenance={catalogRowFacts()}
+              provider={wrapDisplayCopy(row.provider)}
+            />
+          {/each}
+        </ul>
+      </section>
     {/if}
 
-    <ul class="entries">
-      {#each agents.confirmed ?? [] as row (row.revisionHash)}
-        <li class="entry card">
-          <div class="entry-head">
-            <strong>{row.title}</strong>
-            <span class="entry-provider">{wrapDisplayCopy(row.provider)}</span>
-            <span class="entry-state">{wrapDisplayCopy(catalogPageCopy.agentPublishedOnly)}</span>
-          </div>
-          <p class="entry-line">{row.description}</p>
-          <p class="entry-facts">{catalogRowFacts(row.revisionHash).join(" · ")}</p>
-        </li>
-      {/each}
-    </ul>
+    {#if activeGroup === "skills"}
+      <section aria-label={wrapDisplayCopy(catalogPageCopy.skillsTitle)}>
+        <p class="empty"><span aria-hidden="true">✦ </span><span>{wrapDisplayCopy(catalogPageCopy.skillsNone)}</span></p>
+      </section>
+    {/if}
+  {:else if workflows.confirmed !== null && agents.confirmed !== null}
+    <p class="empty">{wrapDisplayCopy(catalogPageCopy.catalogEmpty)}</p>
+  {/if}
 
-    <CatalogImportDoor
-      title={catalogPageCopy.importAgentTitle}
-      hint={catalogPageCopy.importAgentHint}
-      label={catalogPageCopy.importAgentLabel}
-      accept=".md,text/markdown"
-      fieldId="import-agent"
-      failureTitle={catalogPageCopy.importAgentFailed}
-      onImport={importAgent}
+  {#if isDropTarget}
+    <div class="drop-veil" aria-hidden="true">
+      <p>{wrapDisplayCopy(catalogPageCopy.catalogEmpty)}</p>
+    </div>
+  {/if}
+
+  {#if importResult !== null}
+    <CatalogImportSheet
+      document={importResult.document}
+      fileName={importResult.fileName}
+      recognition={importResult.recognition}
+      recognitionProblem={importResult.problem}
+      recognitionFailure={importResult.failure}
+      add={addLibraryDocument}
+      onClose={() => { importResult = null; }}
     />
-  </section>
-
-  <section aria-labelledby="catalog-skills-title">
-    <h2 id="catalog-skills-title">{wrapDisplayCopy(catalogPageCopy.skillsTitle)}</h2>
-    <p class="empty">{wrapDisplayCopy(catalogPageCopy.skillsNone)}</p>
-  </section>
+  {/if}
 </section>
 
 <style>
-  h2 {
-    margin: 0 0 var(--space-3);
-    font-size: var(--text-lg);
-  }
-
   p {
     margin: 0;
   }
 
-  .empty {
-    color: var(--ink-dim);
-    font-size: var(--text-sm);
+  .catalog-head {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: var(--space-4);
   }
 
-  /* The provider is what an imported agent belongs to, so it wears the ink of
-     a fact rather than the colour of a state. */
-  .entry-provider {
-    border: var(--edge) solid var(--line);
-    border-radius: var(--r-pill);
-    padding: 0 var(--space-2);
-    font-size: var(--text-2xs);
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
-  .failure {
-    color: var(--signal-failure);
+  .catalog-drop-target {
+    position: relative;
   }
 
-  .entries {
+  .drop-veil {
+    position: absolute;
+    z-index: 1;
+    inset: 0;
     display: grid;
+    place-items: center;
+    padding: var(--space-4);
+    background: color-mix(in srgb, var(--ground) 80%, transparent);
+  }
+
+  .drop-veil p {
+    max-width: var(--reading-width);
+    padding: var(--space-4) var(--space-5);
+    border: var(--edge-strong) dashed var(--ink);
+    border-radius: var(--r-lg);
+    background: var(--panel2);
+    font-family: var(--serif);
+    text-align: center;
+  }
+
+  .empty {
+    padding: var(--space-3) var(--space-4);
+    border: var(--edge) solid var(--line);
+    border-radius: var(--r-lg);
+    background: var(--panel2);
+    color: var(--ink-dim);
+    font-size: var(--text-xs);
+  }
+
+  .catalog-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-3);
+    padding-bottom: var(--space-2);
+    border-bottom: var(--edge) solid var(--line);
+  }
+
+  .filter-chip {
+    min-height: var(--tap);
+    padding: var(--space-2) 0;
+    border: 0;
+    border-bottom: var(--edge-strong) solid transparent;
+    border-radius: 0;
+    color: var(--ink-dim);
+    background: transparent;
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-heavy);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+  }
+
+  .filter-chip.active {
+    border-bottom-color: var(--ink);
+    color: var(--ink);
+    background: transparent;
+  }
+
+  .filter-chip b {
+    margin-left: var(--space-1);
+    color: var(--ink);
+  }
+
+  .catalog-filters input {
+    width: min(var(--catalog-search-width), 100%);
+    min-height: var(--tap);
+    margin-left: auto;
+    border: var(--edge) solid var(--line);
+    border-radius: var(--r);
+    padding: var(--space-2) var(--space-3);
+    color: var(--ink);
+    background: var(--panel2);
+    font-size: var(--text-xs);
+  }
+
+  .tile-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(var(--card-min), 1fr));
     gap: var(--space-3);
-    margin: 0 0 var(--space-4);
+    margin: 0;
     padding: 0;
     list-style: none;
   }
 
-  .entry {
-    display: grid;
-    gap: var(--space-1);
-    justify-items: start;
+  /* At phone width the rail is one row. Its former flex layout gave Settings'
+     project context an unshrinkable width, which pushed History and Settings
+     onto a second line and left the Catalog action outside the viewport. The
+     grid reserves room for the room doors and lets only the context elide. */
+  @media (max-width: 48rem) {
+    :global(.workshop .workshop-rail) {
+      display: grid;
+      grid-template-columns: max-content repeat(3, max-content) minmax(0, 1fr);
+      gap: var(--space-1);
+      padding: var(--space-2);
+    }
+
+    :global(.workshop .workshop-rail .rail-brand) {
+      padding: var(--space-1);
+      font-size: var(--text-sm);
+    }
+
+    :global(.workshop .workshop-rail .nav-destination) {
+      gap: var(--space-1);
+      min-width: 0;
+      padding: var(--space-1);
+      font-size: var(--text-2xs);
+    }
+
+    :global(.workshop .workshop-rail .nav-destination-mark) {
+      width: auto;
+    }
+
+    :global(.workshop .workshop-rail .rail-grow) {
+      display: none;
+    }
+
+    :global(.workshop .workshop-rail > a:nth-of-type(1)) { grid-column: 2; grid-row: 1; }
+    :global(.workshop .workshop-rail > a:nth-of-type(2)) { grid-column: 3; grid-row: 1; }
+    :global(.workshop .workshop-rail > a:nth-of-type(3)) { grid-column: 4; grid-row: 1; }
+
+    :global(.workshop .workshop-rail .rail-foot) {
+      grid-column: 5;
+      grid-row: 1;
+      margin-left: 0;
+      justify-self: end;
+    }
+
+    :global(.workshop .workshop-rail .rail-project) {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
   }
 
-  .entry-head {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: var(--space-2);
+  @media (max-width: 48rem) {
+    .catalog-filters input {
+      margin-left: auto;
+    }
   }
 
-  .entry strong {
-    font-size: var(--text-sm);
-  }
-
-  .entry-line {
-    font-size: var(--text-xs);
-  }
-
-  .entry-facts {
-    color: var(--ink-dim);
-    font-size: var(--text-2xs);
-  }
-
-  .entry-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2);
-    margin-top: var(--space-2);
-  }
-
-  /* Colour is for what asks of you, so a state that asks nothing — startable,
-     or an agent that is simply published — stays ink. What waits for an
-     admission calls in clay; what cannot run calls in brick. */
-  .entry-state {
-    color: var(--ink-dim);
-    font-size: var(--text-2xs);
-    text-transform: uppercase;
-    letter-spacing: var(--tracking-label);
-  }
-
-  .entry-state.attention {
-    color: var(--signal-attention);
-  }
-
-  .entry-state.failed {
-    color: var(--signal-failure);
-  }
 </style>

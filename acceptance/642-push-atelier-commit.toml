@@ -1,0 +1,6 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/642"
+
+[[sentence]]
+id = "an-authorised-candidate-is-pushed-before-its-pr-opens"
+text = "A publicly started run with one issue order and an exact push-atelier-commit grant captures the Agent's candidate, publishes exactly that tree to the derived work-item branch after accountable absence authorization, records the push receipt, and only then opens one pull request whose head is that pushed commit."

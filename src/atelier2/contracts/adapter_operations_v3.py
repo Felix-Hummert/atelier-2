@@ -8,7 +8,7 @@ because someone called them one, so this module is the reading that turns them
 into one -- a pure function over bytes, asked once by the publication door and
 again by the reference resolution that binds a run.
 
-The vocabulary is closed and deliberately holds one operation. A document naming
+The vocabulary is closed and deliberately holds two operations. A document naming
 anything else is refused where it was declared rather than resolved and then
 silently unperformed, because a run started under an operation nothing performs
 would tell its author that the atelier did what the document asked.
@@ -20,6 +20,8 @@ import json
 from dataclasses import dataclass
 from enum import StrEnum
 
+from atelier2.contracts.effect_requests import GitCommitIdentity
+
 MAXIMUM_ADAPTER_OPERATION_DOCUMENT_BYTES = 4_096
 """How large an adapter-operation document may be. It names one operation."""
 
@@ -27,12 +29,12 @@ MAXIMUM_ADAPTER_OPERATION_DOCUMENT_BYTES = 4_096
 class AdapterOperationName(StrEnum):
     """The closed set of operations a published adapter-operation revision may name.
 
-    One entry, because one is what this runtime performs. A second operation
-    enters here together with the adapter that performs it, so the set and the
-    performance never disagree.
+    An operation enters here together with the adapter that performs it, so the
+    set and the performance never disagree.
     """
 
     OPEN_PR = "open-pr"
+    PUSH_ATELIER_COMMIT = "push-atelier-commit"
 
 
 class AdapterOperationRefusal(StrEnum):
@@ -51,6 +53,8 @@ class AdapterOperationAccepted:
     """These bytes name exactly this adapter operation."""
 
     operation: AdapterOperationName
+    author: GitCommitIdentity | None = None
+    committer: GitCommitIdentity | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +72,7 @@ class AdapterOperationRefused:
 type AdapterOperationVerdict = AdapterOperationAccepted | AdapterOperationRefused
 
 _OPERATION_FIELD = "operation"
+_IDENTITY_FIELDS = frozenset(("author", "committer"))
 
 
 def read_adapter_operation_document(document: bytes) -> AdapterOperationVerdict:
@@ -94,13 +99,6 @@ def read_adapter_operation_document(document: bytes) -> AdapterOperationVerdict:
             AdapterOperationRefusal.NOT_AN_OPERATION_OBJECT,
             f"an adapter operation is an object, not {type(decoded).__name__}",
         )
-    unknown = sorted(name for name in decoded if name != _OPERATION_FIELD)
-    if unknown:
-        return AdapterOperationRefused(
-            AdapterOperationRefusal.UNKNOWN_FIELD,
-            f"an adapter operation names {_OPERATION_FIELD} and nothing else, "
-            f"not {', '.join(unknown)}",
-        )
     named = decoded.get(_OPERATION_FIELD)
     if not isinstance(named, str):
         return AdapterOperationRefused(
@@ -115,4 +113,29 @@ def read_adapter_operation_document(document: bytes) -> AdapterOperationVerdict:
             AdapterOperationRefusal.UNKNOWN_OPERATION,
             f"no runtime here performs {named!r}",
         )
-    return AdapterOperationAccepted(operation)
+    allowed = (
+        frozenset((_OPERATION_FIELD,))
+        if operation is AdapterOperationName.OPEN_PR
+        else frozenset((_OPERATION_FIELD, *_IDENTITY_FIELDS))
+    )
+    unknown = sorted(set(decoded) - allowed)
+    if unknown:
+        return AdapterOperationRefused(
+            AdapterOperationRefusal.UNKNOWN_FIELD,
+            f"{operation.value} does not declare {', '.join(unknown)}",
+        )
+    if set(decoded) != allowed:
+        return AdapterOperationRefused(
+            AdapterOperationRefusal.NOT_AN_OPERATION_OBJECT,
+            "push-atelier-commit declares author and committer identities",
+        )
+    if operation is AdapterOperationName.OPEN_PR:
+        return AdapterOperationAccepted(operation)
+    try:
+        author = GitCommitIdentity.from_json(decoded["author"])
+        committer = GitCommitIdentity.from_json(decoded["committer"])
+    except (TypeError, ValueError) as error:
+        return AdapterOperationRefused(
+            AdapterOperationRefusal.NOT_AN_OPERATION_OBJECT, str(error)
+        )
+    return AdapterOperationAccepted(operation, author, committer)

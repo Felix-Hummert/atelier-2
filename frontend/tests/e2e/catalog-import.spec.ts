@@ -7,26 +7,28 @@ import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
  *
  * "I have no workflow and cannot build one" was the report this room answers,
  * so the proof is the report's own path: open the Catalog, put a file in, see
- * it listed, admit it, and read that it is startable. Everything below happens
+ * it listed and read that it is startable. Everything below happens
  * through the browser — the only two API calls stage a schema the workflow
  * pins, which no surface publishes and no part of this journey is about.
  */
 
-const WORKFLOW_NAME = "catalog-import-proof";
-const LINEAGE_WORKFLOW_NAME = "catalog-lineage-proof";
-const AGENT_NAME = "catalog-import-scribe";
+function scenarioName(stem: string, repetition: number): string {
+  return `${stem}-${repetition}`;
+}
 
-const AGENT_FILE = [
-  "---",
-  `name: ${AGENT_NAME}`,
-  "description: Proves an authored agent file reaches the catalog.",
-  "model: sonnet",
-  "tools: Read, Grep",
-  "---",
-  "",
-  "You write down exactly what the stage asks for.",
-  ""
-].join("\n");
+function agentFile(name: string): string {
+  return [
+    "---",
+    `name: ${name}`,
+    "description: Proves an authored agent file reaches the catalog.",
+    "model: sonnet",
+    "tools: Read, Grep",
+    "---",
+    "",
+    "You write down exactly what the stage asks for.",
+    ""
+  ].join("\n");
+}
 
 async function anyJsonSchema(page: Page): Promise<string> {
   const published = await page.request.post("/atelier/api/v1/schema-revisions", {
@@ -39,8 +41,8 @@ async function anyJsonSchema(page: Page): Promise<string> {
 
 function workflowFile(
   schemaHash: string,
-  promptText = "Is the import door open?",
-  name = WORKFLOW_NAME
+  promptText: string | undefined,
+  name: string
 ): string {
   return [
     "format_version: 3",
@@ -48,7 +50,7 @@ function workflowFile(
     "nodes:",
     "  - id: ask",
     "    type: wait",
-    `    prompt: ${promptText}`,
+    `    prompt: ${promptText ?? "Is the import door open?"}`,
     "    outputs:",
     "      - name: answer",
     "        schema:",
@@ -63,101 +65,107 @@ function entry(page: Page, name: string) {
   return page.getByRole("listitem").filter({ hasText: name });
 }
 
-async function importInto(page: Page, label: string, document: string): Promise<void> {
-  const door = page.getByLabel(label);
-  await door.fill(document);
-  await door
-    .locator("xpath=ancestor::section[1]")
-    .getByRole("button", { name: catalogPageCopy.importAction })
-    .click();
+async function importInto(page: Page, fileName: string, document: string): Promise<void> {
+  await page.getByRole("button", { name: catalogPageCopy.import }).click();
+  await expect(page.getByRole("dialog", { name: catalogPageCopy.import })).toHaveCount(0);
+  await page.getByLabel(catalogPageCopy.filePicker).setInputFiles({
+    name: fileName,
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from(document)
+  });
+  await page.getByRole("button", { name: catalogPageCopy.addToCatalog }).click();
 }
 
-test("proves(the-operator-imports-a-workflow-and-an-agent-and-starts-what-was-imported): the catalog import doors carry a file from disk to startable", async ({
+test("proves(the-operator-imports-a-workflow-and-an-agent-and-starts-what-was-imported): the catalog import sheet carries a file from disk to startable", async ({
   page
-}) => {
+}, testInfo) => {
+  const workflowName = scenarioName("catalog-import-proof", testInfo.repeatEachIndex);
+  const agentName = scenarioName("catalog-import-scribe", testInfo.repeatEachIndex);
   const schemaHash = await anyJsonSchema(page);
 
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/atelier");
-  await page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: "Catalog" }).click();
+  const catalogLink = page.getByRole("navigation", { name: "Workshop" }).getByRole("link", { name: "Catalog" });
+  await catalogLink.click();
   await expect(page.getByRole("heading", { name: catalogPageCopy.title })).toBeVisible();
-  await expect(page.getByText(catalogPageCopy.agentsEmpty)).toBeVisible();
-  await expect(page.getByText(catalogPageCopy.skillsNone)).toBeVisible();
-  await expect(entry(page, WORKFLOW_NAME)).toHaveCount(0);
+  await expect(catalogLink).toBeInViewport();
+  await expect(entry(page, workflowName)).toHaveCount(0);
+  await expect(entry(page, agentName)).toHaveCount(0);
 
-  await importInto(page, catalogPageCopy.importWorkflowLabel, workflowFile(schemaHash));
-  await expect(entry(page, WORKFLOW_NAME)).toBeVisible();
-  await expect(entry(page, WORKFLOW_NAME).getByText(catalogPageCopy.notAdmitted)).toBeVisible();
-  await expect(entry(page, WORKFLOW_NAME).getByText(catalogPageCopy.provenanceManual)).toBeVisible();
+  await importInto(page, `${workflowName}.yaml`, workflowFile(schemaHash, undefined, workflowName));
+  await expect(entry(page, workflowName)).toBeVisible();
+  await expect(entry(page, workflowName).getByText(catalogPageCopy.provenanceManual)).toBeVisible();
 
-  await importInto(page, catalogPageCopy.importAgentLabel, AGENT_FILE);
-  await expect(entry(page, AGENT_NAME)).toBeVisible();
+  await importInto(page, `${agentName}.agent.md`, agentFile(agentName));
+  await expect(entry(page, agentName)).toBeVisible();
   // An imported agent belongs to the provider whose format it arrived in, and
   // the row says so instead of implying it runs anywhere.
-  await expect(entry(page, AGENT_NAME).getByText(catalogPageCopy.agentProviderClaude)).toBeVisible();
-  await expect(entry(page, AGENT_NAME).getByText(catalogPageCopy.agentPublishedOnly)).toBeVisible();
+  await expect(entry(page, agentName).getByLabel(catalogPageCopy.agentProviderClaude)).toBeVisible();
 
-  await entry(page, WORKFLOW_NAME).getByRole("button", { name: catalogPageCopy.admit }).click();
-  await expect(entry(page, WORKFLOW_NAME).getByText(catalogPageCopy.startable)).toBeVisible();
-  await expect(
-    entry(page, WORKFLOW_NAME).getByRole("button", { name: catalogPageCopy.admit })
-  ).toHaveCount(0);
+  const catalogGroups = page.getByRole("group", { name: catalogPageCopy.catalogGroups });
+  // The picture makes All the reset action, not a tally; only the three
+  // concrete kinds carry their catalog counts.
+  const filterChips = catalogGroups.locator(".filter-chip");
+  await expect(filterChips.nth(0)).toHaveText(catalogPageCopy.all);
+  await expect(filterChips.nth(1)).toHaveText(new RegExp(`^${catalogPageCopy.workflowsTitle}\\d+$`));
+  await expect(filterChips.nth(2)).toHaveText(new RegExp(`^${catalogPageCopy.agentsTitle}\\d+$`));
+  await expect(filterChips.nth(3)).toHaveText(new RegExp(`^${catalogPageCopy.skillsTitle}0$`));
+  await catalogGroups.getByRole("button", { name: /^Agents/ }).click();
+  await expect(entry(page, agentName)).toBeVisible();
+  await expect(entry(page, workflowName)).toHaveCount(0);
+  await page.getByLabel(catalogPageCopy.searchLabel).fill(agentName);
+  await expect(entry(page, agentName)).toBeVisible();
+  await catalogGroups.getByRole("button", { name: /^Skills/ }).click();
+  await expect(page.getByText(catalogPageCopy.skillsNone)).toBeVisible();
+  await catalogGroups.getByRole("button", { name: /^All/ }).click();
+  await page.getByLabel(catalogPageCopy.searchLabel).fill("");
 
   // The admission is durable, not a screen state: a cold load of the room
-  // reads the same verdict back out of the catalog.
+  // reads the admitted entry back and offers its enabled manual start door.
   await page.reload();
-  await expect(entry(page, WORKFLOW_NAME).getByText(catalogPageCopy.startable)).toBeVisible();
-
-  // And what the admission is for: the name now resolves in the library the
-  // start door reads, which is what "startable" claims.
-  const resolved = await page.request.get(
-    `/atelier/api/v1/workflow-revisions/by-name/${WORKFLOW_NAME}`
-  );
-  expect(resolved.status()).toBe(200);
-  expect((await resolved.json()).display_name).toBe(WORKFLOW_NAME);
+  await expect(entry(page, workflowName).getByText(catalogPageCopy.newerRevision)).toHaveCount(0);
+  await expect(page.getByText(catalogPageCopy.notAdmittedHint)).toHaveCount(0);
+  await entry(page, workflowName).getByRole("link", { name: workflowName }).click();
+  await expect(page.getByRole("heading", { name: workflowName })).toBeVisible();
+  await expect(page.getByRole("button", { name: catalogPageCopy.start })).toBeEnabled();
 });
 
 test("an unadmitted sibling of an admitted name shows as a newer revision, not a second card", async ({
   page
-}) => {
+}, testInfo) => {
+  const workflowName = scenarioName("catalog-lineage-proof", testInfo.repeatEachIndex);
   const schemaHash = await anyJsonSchema(page);
 
   await page.goto("/atelier/catalog");
-  await importInto(
-    page,
-    catalogPageCopy.importWorkflowLabel,
-    workflowFile(schemaHash, undefined, LINEAGE_WORKFLOW_NAME)
-  );
-  await entry(page, LINEAGE_WORKFLOW_NAME).getByRole("button", { name: catalogPageCopy.admit }).click();
-  await expect(entry(page, LINEAGE_WORKFLOW_NAME).getByText(catalogPageCopy.startable)).toBeVisible();
+  await importInto(page, `${workflowName}.yaml`, workflowFile(schemaHash, undefined, workflowName));
 
   // A second, unadmitted revision is published under the same name -- the
   // live duplicate-card finding (#659): the room must not draw a second
   // "catalog-lineage-proof" card for it.
-  await importInto(
-    page,
-    catalogPageCopy.importWorkflowLabel,
-    workflowFile(schemaHash, "Is the door still open?", LINEAGE_WORKFLOW_NAME)
-  );
+  const published = await page.request.post("/atelier/api/v1/workflow-revisions", {
+    headers: { "content-type": "application/yaml" },
+    data: workflowFile(schemaHash, "Is the door still open?", workflowName)
+  });
+  expect([200, 201]).toContain(published.status());
+  await page.reload();
 
-  await expect(page.getByRole("listitem").filter({ hasText: LINEAGE_WORKFLOW_NAME })).toHaveCount(1);
-  await expect(entry(page, LINEAGE_WORKFLOW_NAME).getByText(catalogPageCopy.startable)).toBeVisible();
-  await expect(
-    entry(page, LINEAGE_WORKFLOW_NAME).getByText(catalogPageCopy.newerRevisionAvailable)
-  ).toBeVisible();
+  await expect(page.getByRole("listitem").filter({ hasText: workflowName })).toHaveCount(1);
+  await expect(entry(page, workflowName).getByText(catalogPageCopy.newerRevision)).toBeVisible();
 });
 
-test("the catalog names the refusal the API gave instead of guessing at one", async ({ page }) => {
+test("the catalog names an unrecognized file without adding it", async ({ page }) => {
   await page.goto("/atelier/catalog");
   await expect(page.getByRole("heading", { name: catalogPageCopy.title })).toBeVisible();
 
-  await importInto(
-    page,
-    catalogPageCopy.importAgentLabel,
-    "---\nname: nameless\ndescription: Has a key nobody knows.\ncolor: cyan\n---\n\nBody.\n"
-  );
+  await page.getByLabel(catalogPageCopy.filePicker).setInputFiles({
+    name: "nameless.agent.md",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from("---\nname: nameless\ndescription: Has a key nobody knows.\ncolor: cyan\n---\n\nBody.\n")
+  });
 
-  await expect(page.getByText("Invalid agent definition document")).toBeVisible();
-  await expect(page.getByText("field-unknown: color")).toBeVisible();
+  await expect(page.getByText(catalogPageCopy.unrecognized)).toBeVisible();
+  await expect(page.getByRole("button", { name: catalogPageCopy.close })).toBeVisible();
+  await expect(page.getByText("Choose a file", { exact: true })).toHaveCount(0);
 });
 
 test("the catalog room is composed, not squeezed, at 390 pixels", async ({ page }) => {
@@ -165,9 +173,24 @@ test("the catalog room is composed, not squeezed, at 390 pixels", async ({ page 
   await page.goto("/atelier/catalog");
   await expect(page.getByRole("heading", { name: catalogPageCopy.title })).toBeVisible();
 
-  const overflow = await page.evaluate(
-    () => document.documentElement.scrollWidth - document.documentElement.clientWidth
-  );
+  const navigation = page.getByRole("navigation", { name: "Workshop" });
+  await expect(navigation).toBeVisible();
+  await expect(navigation.getByRole("link")).toHaveCount(4);
+  await expect(page.getByRole("button", { name: catalogPageCopy.import })).toBeInViewport();
 
-  expect(overflow).toBeLessThanOrEqual(0);
+  // The phone rail puts every destination in its grid's first row. Prove that
+  // layout contract, rather than measuring text-dependent pixel offsets.
+  const railLayout = await navigation.evaluate((element) => ({
+    display: getComputedStyle(element).display,
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth
+  }));
+  expect(railLayout.display).toBe("grid");
+  expect(railLayout.scrollWidth).toBeLessThanOrEqual(railLayout.clientWidth);
+  expect(
+    await navigation.getByRole("link").evaluateAll((links) =>
+      links.map((link) => getComputedStyle(link).gridRowStart)
+    )
+  ).toEqual(["1", "1", "1", "1"]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });

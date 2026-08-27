@@ -182,6 +182,17 @@ A crash between the two leaves the work readable beside an attempt that reports
 it possibly ran. Nothing deletes a candidate yet: the store grows until the
 project root is destroyed.
 
+An Agent whose exact grant pins `push-atelier-commit` now publishes that kept
+candidate before the following open-PR Action. From the run's single issue order,
+pinned project source and operation identities, the runtime derives one
+`atelier2/work-item/<id>` branch and one deterministic commit over the candidate
+tree, persists the operation with the intent and receipt, and admits success only
+when the configured remote reads back that exact commit; the PR uses the same
+branch as its head. Because neither remote absence nor an inconclusive post-send
+readback proves what happened, both enter or remain in durable reconciliation
+instead of permitting another push, while an operator-authorized send is still
+fenced by a create-only lease.
+
 An attempt now leaves behind what it did, not only what it answered. The
 executor decodes its provider's own structured stream into one neutral shape --
 a tool call with its arguments, the result that came back, an assistant turn,
@@ -206,8 +217,8 @@ either — building a transcript at all is what makes its steps safe. What the
 boundary to a Runner cannot yet carry it refuses out loud instead of dropping:
 that record is bounded far below one transcript and its hash is part of Core's
 acceptance chain, so carrying one is its own decision rather than a silent
-truncation. No read surface serves the transcript yet — the API projection and
-the node panel's Log tab are the next slice.
+truncation. Node detail serves the decoded, redacted events of a stored
+transcript; the node panel's Log tab is still not built.
 
 The first real provider now sits behind that durable contract. When the operator
 declares a Claude executable and a credential directory, the host composes one
