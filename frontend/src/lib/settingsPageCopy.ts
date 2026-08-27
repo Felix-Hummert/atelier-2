@@ -20,6 +20,7 @@ export const settingsPageCopy = {
   discovery: "Models are listed as published; discovery from the connected providers follows.",
   defaultsTitle: "Model defaults",
   defaultsEmptyRegistry: "No models are registered",
+  defaultsNoCheckedModels: "Check a model above before choosing defaults",
   defaultsUnavailableModels: "No startable models are available",
   writeFailed: "Change not saved",
 } as const;

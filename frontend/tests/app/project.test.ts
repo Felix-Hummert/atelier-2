@@ -3,11 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
 import {
+  CockpitRequestError,
   createCockpitApi,
   type AgentConfigurationRevisionListItem,
   type AuthProfileRevision,
   type CockpitApi,
   type ModelRegistryRevision,
+  type Problem,
   type ProjectModelDefaultsRevision
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
@@ -30,21 +32,10 @@ const LIVE_REGISTRY_ANTHROPIC =
 const LIVE_MODEL_DEFAULTS_MISSING =
   '{"type":"urn:atelier2:problem:v1:project-model-defaults-missing","title":"Project model defaults not found","status":404,"detail":"Choose the project\'s model defaults for difficulty 1, 2, and 3."}';
 const LIVE_PROJECT_REFERENCE = "project1.YXRlbGllcg";
-const LIVE_ANTHROPIC_CONFIGURATION_HASH =
-  "1a9498d43ace23b3cb9e56d374734b0a17648a5e092205b52497535a1749dfff";
-const LIVE_CHECKED_ANTHROPIC_REGISTRY_HASH =
-  "bb511b61604fff9ca85de239f2b4e4c21c2bd9ef252fca5cfc66b4617fd0535f";
-const LIVE_CHECKED_ANTHROPIC_REGISTRY = {
-  provider_id: "anthropic",
-  revision_number: 2,
-  model_registry_revision_hash: LIVE_CHECKED_ANTHROPIC_REGISTRY_HASH,
-  entries: [{
-    model_id: "claude-opus-4-6",
-    agent_configuration_revision_hash: LIVE_ANTHROPIC_CONFIGURATION_HASH,
-    source: "operator" as const,
-    provider_check: "checked" as const
-  }]
-};
+const LIVE_XAI_CONFIGURATION_HASH =
+  "6ee1d546804f5f18eb6da493905e6eefce27d12a4f6af82b804ee2359b9ba7e0";
+const LIVE_XAI_REGISTRY_HASH =
+  "fc2d1c4a3aeaf8233fb0c692168339ac355d911cad9933aaae367ac5c7637e21";
 
 const configurationHash = "a".repeat(64);
 const profileHash = "b".repeat(64);
@@ -150,12 +141,6 @@ function liveSettingsFetcher(
       return jsonResponse(LIVE_MODEL_DEFAULTS_MISSING, 404, "application/problem+json");
     }
     if (
-      method === "POST"
-      && url.pathname === "/atelier/api/v1/model-registries/anthropic/validations"
-    ) {
-      return jsonResponse(JSON.stringify(LIVE_CHECKED_ANTHROPIC_REGISTRY), 201);
-    }
-    if (
       method === "PUT"
       && url.pathname === `/atelier/api/v1/projects/${LIVE_PROJECT_REFERENCE}/model-defaults`
     ) {
@@ -175,6 +160,15 @@ function liveSettingsFetcher(
     }
     throw new Error(`unmocked ${method} ${url.pathname}`);
   };
+}
+
+function modelRegistryMissing(): CockpitRequestError {
+  return new CockpitRequestError("missing", {
+    type: "urn:atelier2:problem:v1:model-registry-missing",
+    title: "Model registry not found",
+    status: 404,
+    detail: "Publish a model-registry revision for this provider."
+  } as Problem, true);
 }
 
 function openSettings(overrides: Partial<CockpitApi> = {}) {
@@ -352,19 +346,13 @@ describe("Settings owns project sources, models, and defaults", () => {
     )).toBeNull();
   });
 
-  it("offers a not-yet-checked startable model and checks it on first use", async () => {
-    const validatedRegistry = {
-      ...registry([{ ...registeredEntry, provider_check: "checked" as const }]),
-      revision_number: 2,
-      model_registry_revision_hash: "f".repeat(64)
-    };
+  it("checks an operator model before offering it as a default", async () => {
     const validateModelRegistryEntry = vi.fn(async () => ({
       status: 201,
-      value: validatedRegistry
-    }));
-    const putProjectModelDefaults = vi.fn(async (_reference, write) => ({
-      status: 200,
-      value: { ...defaults(write.input.defaults), revision_number: write.input.revision_number }
+      value: {
+        ...registry([{ ...registeredEntry, provider_check: "checked" as const }]),
+        revision_number: 2
+      }
     }));
     openSettings({
       getModelRegistry: vi.fn(async () => registry([{
@@ -372,134 +360,70 @@ describe("Settings owns project sources, models, and defaults", () => {
         provider_check: "not-checked"
       }])),
       getProjectModelDefaults: vi.fn(async () => defaults([])),
-      validateModelRegistryEntry,
-      putProjectModelDefaults
+      validateModelRegistryEntry
     });
 
-    expect(await screen.findByRole("button", { name: "Check" })).toBeTruthy();
-    expect(screen.queryByText("Check a model above before choosing defaults")).toBeNull();
-    const difficultyTwo = screen.getByRole("combobox", { name: "Difficulty 2" });
-    expect(within(difficultyTwo).getByRole(
+    expect(await screen.findByText(settingsPageCopy.defaultsNoCheckedModels)).toBeTruthy();
+    expect(within(screen.getByRole("combobox", { name: "Difficulty 2" })).queryByRole(
+      "option",
+      { name: new RegExp(configuration.model) }
+    )).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Check" }));
+
+    await waitFor(() => expect(validateModelRegistryEntry).toHaveBeenCalledWith(
+      "anthropic",
+      configurationHash
+    ));
+    expect(within(screen.getByRole("combobox", { name: "Difficulty 2" })).getByRole(
       "option",
       { name: new RegExp(configuration.model) }
     )).toBeTruthy();
-
-    await fireEvent.change(difficultyTwo, { target: { value: configurationHash } });
-
-    await waitFor(() => expect(putProjectModelDefaults).toHaveBeenCalledTimes(1));
-    expect(validateModelRegistryEntry).toHaveBeenCalledWith("anthropic", configurationHash);
-    expect(validateModelRegistryEntry.mock.invocationCallOrder[0])
-      .toBeLessThan(putProjectModelDefaults.mock.invocationCallOrder[0] ?? 0);
-    const [, write] = putProjectModelDefaults.mock.calls[0] ?? [];
-    expect(write.body).toBe(JSON.stringify(write.input));
-    expect(write.input).toEqual({
-      revision_number: 2,
-      defaults: [{
-        difficulty: 2,
-        model_registry_revision_hash: validatedRegistry.model_registry_revision_hash,
-        provider_id: "anthropic",
-        model_id: configuration.model,
-        agent_configuration_revision_hash: configurationHash
-      }]
-    });
   });
 
-  it("retries an uncertain first-use check as the same defaults write", async () => {
-    const retained = {
-      difficulty: 1 as const,
-      model_registry_revision_hash: "1".repeat(64),
-      provider_id: "openai",
-      model_id: "gpt-retained",
-      agent_configuration_revision_hash: "2".repeat(64)
-    };
-    const validatedRegistry = {
-      ...registry([{ ...registeredEntry, provider_check: "checked" as const }]),
-      revision_number: 2,
-      model_registry_revision_hash: "f".repeat(64)
-    };
-    const validateModelRegistryEntry = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("uncertain"))
-      .mockResolvedValueOnce({ status: 201, value: validatedRegistry });
-    const putProjectModelDefaults = vi.fn(async (_reference, write) => ({
-      status: 200,
-      value: { ...defaults(write.input.defaults), revision_number: write.input.revision_number }
+  it("renders a startable provider with no registry as unavailable with Check", async () => {
+    const putModelRegistry = vi.fn(async (_providerId, write) => ({
+      status: 201,
+      value: {
+        ...registry([{ ...registeredEntry, provider_check: "not-checked" as const }]),
+        revision_number: write.input.revision_number,
+        model_registry_revision_hash: "f".repeat(64)
+      }
     }));
-    openSettings({
-      getModelRegistry: vi.fn(async () => registry([{
-        ...registeredEntry,
-        provider_check: "not-checked"
-      }])),
-      getProjectModelDefaults: vi.fn(async () => defaults([retained])),
-      validateModelRegistryEntry,
-      putProjectModelDefaults
-    });
-
-    await fireEvent.change(await screen.findByRole("combobox", { name: "Difficulty 2" }), {
-      target: { value: configurationHash }
-    });
-    expect(await screen.findByText(settingsPageCopy.writeFailed)).toBeTruthy();
-    expect(putProjectModelDefaults).not.toHaveBeenCalled();
-    expect(validateModelRegistryEntry).toHaveBeenCalledTimes(1);
-
-    await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-
-    await waitFor(() => {
-      expect(putProjectModelDefaults).toHaveBeenCalledTimes(1);
-      expect(screen.queryByText(settingsPageCopy.writeFailed)).toBeNull();
-    });
-    expect(validateModelRegistryEntry.mock.calls).toEqual([
-      ["anthropic", configurationHash],
-      ["anthropic", configurationHash]
-    ]);
-    const [, write] = putProjectModelDefaults.mock.calls[0] ?? [];
-    expect(write.body).toBe(JSON.stringify(write.input));
-    expect(write.input).toEqual({
-      revision_number: 2,
-      defaults: [retained, {
-        difficulty: 2,
-        model_registry_revision_hash: validatedRegistry.model_registry_revision_hash,
-        provider_id: "anthropic",
-        model_id: configuration.model,
-        agent_configuration_revision_hash: configurationHash
-      }]
-    });
-    expect(screen.getByRole("combobox", { name: "Difficulty 2" })).toHaveProperty("value", configurationHash);
-  });
-
-  it("does not treat unknown-at-provider first-use as an unsaved default", async () => {
-    const unknownRegistry = {
-      ...registry([{ ...registeredEntry, provider_check: "unknown-at-provider" as const }]),
-      revision_number: 2,
-      model_registry_revision_hash: "f".repeat(64)
-    };
     const validateModelRegistryEntry = vi.fn(async () => ({
       status: 201,
-      value: unknownRegistry
+      value: {
+        ...registry([{ ...registeredEntry, provider_check: "checked" as const }]),
+        revision_number: 2,
+        model_registry_revision_hash: "f".repeat(64)
+      }
     }));
-    const putProjectModelDefaults = vi.fn();
     openSettings({
-      getModelRegistry: vi.fn(async () => registry([{
-        ...registeredEntry,
-        provider_check: "not-checked"
-      }])),
+      getModelRegistry: vi.fn(async () => { throw modelRegistryMissing(); }),
       getProjectModelDefaults: vi.fn(async () => defaults([])),
-      validateModelRegistryEntry,
-      putProjectModelDefaults
+      putModelRegistry,
+      validateModelRegistryEntry
     });
 
-    await fireEvent.change(await screen.findByRole("combobox", { name: "Difficulty 2" }), {
-      target: { value: configurationHash }
-    });
+    expect(await screen.findByText("anthropic")).toBeTruthy();
+    expect(screen.getByText(configuration.model)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check" })).toBeTruthy();
+    expect(screen.getByText(settingsPageCopy.defaultsNoCheckedModels)).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: "Add a model" })).toBeNull();
+    expect(within(screen.getByRole("combobox", { name: "Difficulty 3" })).queryByRole(
+      "option",
+      { name: new RegExp(configuration.model) }
+    )).toBeNull();
 
-    expect(await screen.findByText("◇ unknown at provider")).toBeTruthy();
-    expect(validateModelRegistryEntry).toHaveBeenCalledTimes(1);
-    expect(putProjectModelDefaults).not.toHaveBeenCalled();
-    expect(screen.queryByText(settingsPageCopy.writeFailed)).toBeNull();
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
-    const difficultyTwo = screen.getByRole("combobox", { name: "Difficulty 2" });
-    expect(difficultyTwo).toHaveProperty("value", "");
-    expect(within(difficultyTwo).queryByRole("option", { name: new RegExp(configuration.model) })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Check" }));
+
+    await waitFor(() => {
+      expect(putModelRegistry).toHaveBeenCalledTimes(1);
+      expect(validateModelRegistryEntry).toHaveBeenCalledWith("anthropic", configurationHash);
+      expect(within(screen.getByRole("combobox", { name: "Difficulty 3" })).getByRole(
+        "option",
+        { name: new RegExp(configuration.model) }
+      )).toBeTruthy();
+    });
   });
 
   it("lists every live startable model and writes the first default through the real decoder", async () => {
@@ -520,27 +444,25 @@ describe("Settings owns project sources, models, and defaults", () => {
     expect(screen.getByText("operator-anthropic-subscription")).toBeTruthy();
     expect(screen.getByText("grok-4.6")).toBeTruthy();
     expect(screen.getByText("grok-felix")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check" })).toBeTruthy();
     expect(screen.queryByRole("combobox", { name: "Add a model" })).toBeNull();
 
     for (const difficulty of [3, 2, 1]) {
       const select = screen.getByRole("combobox", { name: `Difficulty ${difficulty}` });
-      expect(within(select).getByRole("option", {
+      expect(within(select).queryByRole("option", {
         name: "claude-opus-4-6 · Account operator-anthropic-subscription"
-      })).toBeTruthy();
+      })).toBeNull();
       expect(within(select).getByRole("option", {
         name: "grok-4.6 · Account grok-felix"
       })).toBeTruthy();
     }
 
     await fireEvent.change(screen.getByRole("combobox", { name: "Difficulty 3" }), {
-      target: { value: LIVE_ANTHROPIC_CONFIGURATION_HASH }
+      target: { value: LIVE_XAI_CONFIGURATION_HASH }
     });
 
     await waitFor(() => expect(putProjectModelDefaults).toHaveBeenCalledTimes(1));
-    expect(validateModelRegistryEntry).toHaveBeenCalledWith(
-      "anthropic",
-      LIVE_ANTHROPIC_CONFIGURATION_HASH
-    );
+    expect(validateModelRegistryEntry).not.toHaveBeenCalled();
     const write = putProjectModelDefaults.mock.calls[0]?.[1];
     if (write === undefined) throw new Error("expected a defaults write");
     expect(write.body).toBe(JSON.stringify(write.input));
@@ -548,10 +470,10 @@ describe("Settings owns project sources, models, and defaults", () => {
       revision_number: 1,
       defaults: [{
         difficulty: 3,
-        model_registry_revision_hash: LIVE_CHECKED_ANTHROPIC_REGISTRY_HASH,
-        provider_id: "anthropic",
-        model_id: "claude-opus-4-6",
-        agent_configuration_revision_hash: LIVE_ANTHROPIC_CONFIGURATION_HASH
+        model_registry_revision_hash: LIVE_XAI_REGISTRY_HASH,
+        provider_id: "xai",
+        model_id: "grok-4.6",
+        agent_configuration_revision_hash: LIVE_XAI_CONFIGURATION_HASH
       }]
     });
     expect(writes.defaults).toEqual([write.body]);

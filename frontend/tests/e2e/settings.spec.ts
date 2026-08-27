@@ -383,8 +383,9 @@ test("Settings tells the truth while reads load, fail, and recover at desktop an
   }
 });
 
-test("Settings lists every startable model and saves a default at desktop", async ({ page }) => {
-  const stamp = `${Date.now()}-${test.info().repeatEachIndex}`;
+for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+  test(`Settings lists every startable model and saves a default at ${viewport.width}`, async ({ page }) => {
+  const stamp = `${Date.now()}-${test.info().repeatEachIndex}-${viewport.width}`;
   const first = await publishStartableProvider(page, "e2e-v3", "immediate/v1", stamp);
   const second = await publishStartableProvider(page, "e2e-v3-slow", "delayed/v1", stamp);
   const projects = await page.request.get("/atelier/api/v1/projects");
@@ -401,7 +402,7 @@ test("Settings lists every startable model and saves a default at desktop", asyn
     }
   });
 
-  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.setViewportSize(viewport);
   await page.goto("/atelier/settings");
   await expect(page.getByText(first.providerId, { exact: true })).toBeVisible();
   await expect(page.getByText(second.providerId, { exact: true })).toBeVisible();
@@ -478,3 +479,4 @@ test("Settings lists every startable model and saves a default at desktop", asyn
     agent_configuration_revision_hash: first.agentConfigurationRevisionHash
   }]));
 });
+}

@@ -53,15 +53,6 @@
         configurationHash: string;
       }
     | {
-        kind: "choose";
-        projectReference: string;
-        providerId: string;
-        configurationHash: string;
-        difficulty: Difficulty;
-        revision_number: number;
-        untouched: ProjectModelDefaultsRevision["defaults"];
-      }
-    | {
         kind: "defaults";
         projectReference: string;
         write: ExactProjectModelDefaultsRevisionWrite;
@@ -192,6 +183,19 @@
     };
   }
 
+  async function publishRegistry(
+    providerId: string,
+    write: ExactModelRegistryRevisionWrite
+  ): Promise<"ok" | "uncertain"> {
+    try {
+      const result = await cockpitApi.putModelRegistry(providerId, write);
+      updateRegistry(result.value);
+      return "ok";
+    } catch {
+      return "uncertain";
+    }
+  }
+
   async function sendRegistryWrite(
     providerId: string,
     write: ExactModelRegistryRevisionWrite,
@@ -200,27 +204,16 @@
     if (writing || (failedWrite !== null && !retrying)) return;
     writing = true;
     try {
-      const result = await cockpitApi.putModelRegistry(providerId, write);
-      updateRegistry(result.value);
-      failedWrite = null;
-    } catch {
-      if (!retrying) failedWrite = { kind: "registry", providerId, write };
+      const outcome = await publishRegistry(providerId, write);
+      if (outcome === "ok") failedWrite = null;
+      else if (!retrying) failedWrite = { kind: "registry", providerId, write };
     } finally {
       writing = false;
     }
   }
 
   async function addModel(configuration: AgentConfigurationRevisionListItem): Promise<void> {
-    const registry = registryFor(configuration.provider_id);
-    const entries = [
-      ...(registry?.entries ?? []).map(registryEntryInput),
-      {
-        model_id: configuration.model,
-        agent_configuration_revision_hash: configuration.agent_configuration_revision_hash
-      }
-    ];
-    const input = { revision_number: (registry?.revision_number ?? 0) + 1, entries };
-    await sendRegistryWrite(configuration.provider_id, { input, body: JSON.stringify(input) });
+    await sendRegistryWrite(configuration.provider_id, additionWrite(configuration));
   }
 
   async function removeModel(
@@ -243,6 +236,19 @@
       model_id: entry.model_id,
       agent_configuration_revision_hash: entry.agent_configuration_revision_hash
     };
+  }
+
+  function additionWrite(configuration: AgentConfigurationRevisionListItem): ExactModelRegistryRevisionWrite {
+    const registry = registryFor(configuration.provider_id);
+    const entries = [
+      ...(registry?.entries ?? []).map(registryEntryInput),
+      {
+        model_id: configuration.model,
+        agent_configuration_revision_hash: configuration.agent_configuration_revision_hash
+      }
+    ];
+    const input = { revision_number: (registry?.revision_number ?? 0) + 1, entries };
+    return { input, body: JSON.stringify(input) };
   }
 
   async function applyValidation(
@@ -269,6 +275,25 @@
     if (writing || (failedWrite !== null && !retrying)) return;
     writing = true;
     try {
+      if (entryFor(configurationHash) === null) {
+        const configuration = settings.confirmed?.configurations.find(
+          (candidate) =>
+            candidate.agent_configuration_revision_hash === configurationHash
+            && candidate.provider_id === providerId
+        );
+        if (configuration === undefined) return;
+        const write = additionWrite(configuration);
+        const published = await publishRegistry(providerId, write);
+        if (published === "uncertain") {
+          if (!retrying) failedWrite = { kind: "registry", providerId, write };
+          return;
+        }
+      }
+      const found = entryFor(configurationHash);
+      if (found === null || found.entry.provider_check !== "not-checked") {
+        failedWrite = null;
+        return;
+      }
       const outcome = await applyValidation(providerId, configurationHash);
       if (outcome === "uncertain") {
         if (!retrying) failedWrite = { kind: "validation", providerId, configurationHash };
@@ -289,19 +314,6 @@
     );
   }
 
-  async function putDefaults(
-    projectReference: string,
-    write: ExactProjectModelDefaultsRevisionWrite
-  ): Promise<void> {
-    try {
-      const result = await cockpitApi.putProjectModelDefaults(projectReference, write);
-      updateDefaults(result.value);
-      failedWrite = null;
-    } catch {
-      failedWrite = { kind: "defaults", projectReference, write };
-    }
-  }
-
   async function sendDefaultsWrite(
     projectReference: string,
     write: ExactProjectModelDefaultsRevisionWrite,
@@ -310,7 +322,11 @@
     if (writing || (failedWrite !== null && !retrying)) return;
     writing = true;
     try {
-      await putDefaults(projectReference, write);
+      const result = await cockpitApi.putProjectModelDefaults(projectReference, write);
+      updateDefaults(result.value);
+      failedWrite = null;
+    } catch {
+      if (!retrying) failedWrite = { kind: "defaults", projectReference, write };
     } finally {
       writing = false;
     }
@@ -336,75 +352,18 @@
     const untouched = snapshot.defaults?.defaults.filter(
       (item) => item.difficulty !== difficulty
     ) ?? [];
-    const revision_number = (snapshot.defaults?.revision_number ?? 0) + 1;
-    writing = true;
-    try {
-      if (configurationHash === "") {
-        const input = { revision_number, defaults: untouched };
-        await putDefaults(snapshot.projectReference, { input, body: JSON.stringify(input) });
-        return;
-      }
+    let defaults = untouched;
+    if (configurationHash !== "") {
       const found = entryFor(configurationHash);
-      if (found === null || found.entry.provider_check === "unknown-at-provider") return;
+      if (found === null || found.entry.provider_check !== "checked") return;
       const configuration = snapshot.configurations.find(
         (candidate) => candidate.agent_configuration_revision_hash === configurationHash
       );
       if (configuration === undefined || !configuration.startable) return;
-      let admitted = found;
-      if (found.entry.provider_check === "not-checked") {
-        const outcome = await applyValidation(found.registry.provider_id, configurationHash);
-        if (outcome === "uncertain") {
-          failedWrite = {
-            kind: "choose",
-            projectReference: snapshot.projectReference,
-            providerId: found.registry.provider_id,
-            configurationHash,
-            difficulty,
-            revision_number,
-            untouched
-          };
-          return;
-        }
-        if (outcome !== "checked") return;
-        const checked = entryFor(configurationHash);
-        if (checked === null || checked.entry.provider_check !== "checked") return;
-        admitted = checked;
-      }
-      const input = {
-        revision_number,
-        defaults: [...untouched, defaultReplacement(difficulty, admitted)]
-      };
-      await putDefaults(snapshot.projectReference, { input, body: JSON.stringify(input) });
-    } finally {
-      writing = false;
+      defaults = [...untouched, defaultReplacement(difficulty, found)];
     }
-  }
-
-  async function retryChoose(pending: Extract<FailedWrite, { kind: "choose" }>): Promise<void> {
-    writing = true;
-    try {
-      const outcome = await applyValidation(pending.providerId, pending.configurationHash);
-      if (outcome === "uncertain") {
-        failedWrite = pending;
-        return;
-      }
-      if (outcome !== "checked") {
-        failedWrite = null;
-        return;
-      }
-      const found = entryFor(pending.configurationHash);
-      if (found === null || found.entry.provider_check !== "checked") {
-        failedWrite = null;
-        return;
-      }
-      const input = {
-        revision_number: pending.revision_number,
-        defaults: [...pending.untouched, defaultReplacement(pending.difficulty, found)]
-      };
-      await putDefaults(pending.projectReference, { input, body: JSON.stringify(input) });
-    } finally {
-      writing = false;
-    }
+    const input = { revision_number: (snapshot.defaults?.revision_number ?? 0) + 1, defaults };
+    await sendDefaultsWrite(snapshot.projectReference, { input, body: JSON.stringify(input) });
   }
 
   async function retryWrite(): Promise<void> {
@@ -413,13 +372,12 @@
     if (retry.kind === "registry") await sendRegistryWrite(retry.providerId, retry.write, true);
     else if (retry.kind === "validation") {
       await validateModel(retry.providerId, retry.configurationHash, true);
-    } else if (retry.kind === "choose") await retryChoose(retry);
-    else await sendDefaultsWrite(retry.projectReference, retry.write, true);
+    } else await sendDefaultsWrite(retry.projectReference, retry.write, true);
   }
 
   $: registeredChoices = (settings.confirmed?.registries ?? []).flatMap((registry) =>
     registry.entries.flatMap((entry) => {
-      if (entry.provider_check === "unknown-at-provider") return [];
+      if (entry.provider_check !== "checked") return [];
       const configuration = settings.confirmed?.configurations.find(
         (candidate) => candidate.agent_configuration_revision_hash === entry.agent_configuration_revision_hash
       );
@@ -445,11 +403,26 @@
   }
 
   $: availableConfigurations = (settings.confirmed?.configurations ?? []).filter(
-    (configuration) => entryFor(configuration.agent_configuration_revision_hash) === null
+    (configuration) =>
+      entryFor(configuration.agent_configuration_revision_hash) === null
+      && !(configuration.startable && registryFor(configuration.provider_id) === null)
+  );
+  $: missingRegistryStartable = (settings.confirmed?.configurations ?? []).filter(
+    (configuration) => configuration.startable && registryFor(configuration.provider_id) === null
   );
   $: registryEntries = (settings.confirmed?.registries ?? []).flatMap(
     (registry) => registry.entries
   );
+  $: checkableEntries = registryEntries.filter(
+    (entry) => entry.provider_check === "not-checked"
+  );
+  $: listedModelCount = registryEntries.length + missingRegistryStartable.length;
+  $: modelProviders = [...new Set([
+    ...(settings.confirmed?.registries ?? [])
+      .filter((registry) => registry.entries.length > 0)
+      .map((registry) => registry.provider_id),
+    ...missingRegistryStartable.map((configuration) => configuration.provider_id)
+  ])].sort();
 </script>
 
 <section class="settings-page" aria-labelledby="settings-title">
@@ -474,29 +447,43 @@
 
     <section class="settings-block" aria-labelledby="models-title">
       <h2 id="models-title">{wrapDisplayCopy(settingsPageCopy.modelsTitle)}</h2>
-      {#if settings.confirmed.registries.flatMap((registry) => registry.entries).length === 0}
+      {#if listedModelCount === 0}
         <div class="empty-state" role="status"><span aria-hidden="true">◇</span><strong>{settingsPageCopy.modelsEmpty}</strong></div>
       {:else}
         <div class="table-wrap">
           <table>
             <thead><tr><th>Model</th><th>Account</th><th><span class="sr-only">Registry</span></th></tr></thead>
             <tbody>
-              {#each settings.confirmed.registries as registry (registry.model_registry_revision_hash)}
-                <tr class="provider-row"><td colspan="3">{registry.provider_id}</td></tr>
-                {#each registry.entries as entry (entry.agent_configuration_revision_hash)}
-                  {@const configuration = settings.confirmed.configurations.find((candidate) => candidate.agent_configuration_revision_hash === entry.agent_configuration_revision_hash)}
-                  <tr>
-                    <td data-label="Model"><code>{entry.model_id}</code></td>
-                    <td data-label="Account">{configuration === undefined ? "Unknown account" : accountFor(configuration)}</td>
-                    <td data-label="Registry">
-                      {#if registryEntryDetails(entry) !== ""}<span class:unchecked={entry.provider_check !== "checked"}>{registryEntryDetails(entry)}</span>{/if}
-                      {#if entry.provider_check === "not-checked"}
-                        <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void validateModel(registry.provider_id, entry.agent_configuration_revision_hash); }}>Check</button>
-                      {/if}
-                      <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void removeModel(registry, entry); }}>Remove</button>
-                    </td>
-                  </tr>
-                {/each}
+              {#each modelProviders as providerId (providerId)}
+                {@const registry = registryFor(providerId)}
+                <tr class="provider-row"><td colspan="3">{providerId}</td></tr>
+                {#if registry !== null}
+                  {#each registry.entries as entry (entry.agent_configuration_revision_hash)}
+                    {@const configuration = settings.confirmed.configurations.find((candidate) => candidate.agent_configuration_revision_hash === entry.agent_configuration_revision_hash)}
+                    <tr>
+                      <td data-label="Model"><code>{entry.model_id}</code></td>
+                      <td data-label="Account">{configuration === undefined ? "Unknown account" : accountFor(configuration)}</td>
+                      <td data-label="Registry">
+                        {#if registryEntryDetails(entry) !== ""}<span class:unchecked={entry.provider_check !== "checked"}>{registryEntryDetails(entry)}</span>{/if}
+                        {#if entry.provider_check === "not-checked"}
+                          <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void validateModel(registry.provider_id, entry.agent_configuration_revision_hash); }}>Check</button>
+                        {/if}
+                        <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void removeModel(registry, entry); }}>Remove</button>
+                      </td>
+                    </tr>
+                  {/each}
+                {:else}
+                  {#each missingRegistryStartable.filter((configuration) => configuration.provider_id === providerId) as configuration (configuration.agent_configuration_revision_hash)}
+                    <tr>
+                      <td data-label="Model"><code>{configuration.model}</code></td>
+                      <td data-label="Account">{accountFor(configuration)}</td>
+                      <td data-label="Registry">
+                        <span class="unchecked">◇ not checked yet</span>
+                        <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void validateModel(configuration.provider_id, configuration.agent_configuration_revision_hash); }}>Check</button>
+                      </td>
+                    </tr>
+                  {/each}
+                {/if}
               {/each}
             </tbody>
           </table>
@@ -528,7 +515,7 @@
     <section class="settings-block" aria-labelledby="defaults-title">
       <h2 id="defaults-title">{wrapDisplayCopy(settingsPageCopy.defaultsTitle)}</h2>
       {#if registeredChoices.length === 0}
-        <div class="empty-state" role="status"><span aria-hidden="true">◇</span><strong>{registryEntries.length === 0 ? settingsPageCopy.defaultsEmptyRegistry : settingsPageCopy.defaultsUnavailableModels}</strong></div>
+        <div class="empty-state" role="status"><span aria-hidden="true">◇</span><strong>{listedModelCount === 0 ? settingsPageCopy.defaultsEmptyRegistry : checkableEntries.length > 0 || missingRegistryStartable.length > 0 ? settingsPageCopy.defaultsNoCheckedModels : settingsPageCopy.defaultsUnavailableModels}</strong></div>
       {/if}
       <div class="table-wrap">
         <table class="defaults-table">
