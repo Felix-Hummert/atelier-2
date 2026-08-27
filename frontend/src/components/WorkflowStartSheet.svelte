@@ -1,21 +1,24 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
 
   import type {
     AgentConfigurationRevisionListItem,
+    AuthProfileRevision,
     CockpitApi,
+    ModelRegistryRevision,
     ObservedQueueItem,
+    ProjectModelResolution,
     WorkflowRevisionDetail
   } from "../api/client";
   import { workflowStartCopy } from "../lib/catalogPageCopy";
+  import { problemCode } from "../lib/catalogName";
   import { humanErrorMessage } from "../lib/humanRefusal";
   import {
     createRunId as makeRunId,
-    requestedStartAgentBindings,
     startMutationV3,
     type MutationJournal
   } from "../lib/mutationJournal";
-  import { namedAgentLabel } from "../lib/namedAgentChoice";
   import {
     classifyStartOrderSchema,
     summarizeOrderSchema,
@@ -24,7 +27,7 @@
     type OrderSchemaResource,
     type StartOrderSchemaShape
   } from "../lib/orderSchema";
-  import { readEveryAgentConfiguration } from "../lib/runPages";
+  import { readEveryAgentConfiguration, readEveryAuthProfile } from "../lib/runPages";
   import { agentRolesOf } from "../lib/savedWorkflows";
   import InfoHint from "./InfoHint.svelte";
 
@@ -45,6 +48,15 @@
     values: Record<string, string>;
   }
 
+  type RoleResolution = ProjectModelResolution["resolutions"][number];
+  type ModelOverride = { role: string; agent_configuration_revision_hash: string };
+
+  interface RegisteredConfiguration {
+    configuration: AgentConfigurationRevisionListItem;
+    modelId: string;
+    accountId: string;
+  }
+
   type DialogElement = HTMLElement & {
     open: boolean;
     showModal?: () => void;
@@ -52,25 +64,28 @@
   };
 
   let configurations: readonly AgentConfigurationRevisionListItem[] = [];
+  let registeredConfigurations: readonly RegisteredConfiguration[] = [];
   let observedQueueItems: readonly ObservedQueueItem[] = [];
-  let selectedBindings: Record<string, string> = {};
+  let projectReference: string | null = null;
+  let resolutions: Record<string, RoleResolution> = {};
+  let manualOverrides: Record<string, string> = {};
+  let resolutionGeneration = 0;
   let orders: OrderDraft[] = [];
   let loading = true;
+  let resolving = false;
   let starting = false;
   let failure: string | null = null;
+  let startFailure: string | null = null;
   let dialogElement: DialogElement;
   let closeButton: HTMLButtonElement;
   let opener: HTMLElement | null = null;
 
   $: roles = agentRolesOf(revision.graph);
-  $: startableConfigurations = configurations.filter((configuration) => configuration.startable);
-  $: roleSources = Object.fromEntries(
-    roles.map((role) => [role, roleSource(selectedBindings[role])])
-  ) as Record<string, string>;
   $: canStart =
     !loading &&
+    !resolving &&
     !starting &&
-    roles.every((role) => (selectedBindings[role]?.length ?? 0) > 0) &&
+    roles.every(roleCanStart) &&
     orders.every(orderCanStart);
   $: observedItemsBySource = groupObservedItemsBySource(observedQueueItems);
 
@@ -86,22 +101,194 @@
   async function load(): Promise<void> {
     loading = true;
     failure = null;
+    startFailure = null;
     try {
-      const [configurationsPage, loadedOrders] = await Promise.all([
+      const [projects, configurationsPage, profilesPage, loadedOrders] = await Promise.all([
+        cockpitApi.listProjects(),
         readEveryAgentConfiguration((after) => cockpitApi.listAgentConfigurationRevisions(after)),
+        readEveryAuthProfile((after) => cockpitApi.listAuthProfileRevisions(after)),
         Promise.all(declaredOrders().map(loadOrder))
       ]);
       if (!configurationsPage.complete) throw new Error("Agent configurations are incomplete.");
+      if (!profilesPage.complete) throw new Error("Accounts are incomplete.");
+      projectReference = projects.items[0]?.public_project_reference ?? null;
+      if (projectReference === null && roles.length > 0) throw new Error("Served project missing.");
       configurations = configurationsPage.configurations;
+      registeredConfigurations = await registeredConfigurationsOf(
+        configurations,
+        profilesPage.profiles
+      );
       orders = loadedOrders;
       if (loadedOrders.some((order) => order.shape?.kind === "work_item")) {
         observedQueueItems = await readEveryObservedQueueItem();
       }
+      if (roles.length > 0) await resolveModels(false);
     } catch (error) {
       failure = humanErrorMessage(error, workflowStartCopy.sheetUnavailable);
     } finally {
       loading = false;
     }
+  }
+
+  async function registeredConfigurationsOf(
+    available: readonly AgentConfigurationRevisionListItem[],
+    profiles: readonly AuthProfileRevision[]
+  ): Promise<RegisteredConfiguration[]> {
+    const providers = [...new Set(available.map((configuration) => configuration.provider_id))]
+      .sort();
+    const registries = (await Promise.all(providers.map(async (providerId) => {
+      try {
+        return await cockpitApi.getModelRegistry(providerId);
+      } catch (error) {
+        if (problemCode(error) === "model-registry-missing") return null;
+        throw error;
+      }
+    }))).filter((registry): registry is ModelRegistryRevision => registry !== null);
+    const registered: RegisteredConfiguration[] = [];
+    const included = new SvelteSet<string>();
+    for (const registry of registries) {
+      for (const entry of registry.entries) {
+        if (entry.provider_check !== "checked") continue;
+        const configuration = available.find((candidate) =>
+          candidate.agent_configuration_revision_hash === entry.agent_configuration_revision_hash &&
+          candidate.provider_id === registry.provider_id
+        );
+        const profile = configuration === undefined
+          ? undefined
+          : profiles.find((candidate) =>
+              candidate.auth_profile_revision_hash === configuration.auth_profile_revision_hash &&
+              candidate.provider_id === configuration.provider_id
+            );
+        if (
+          configuration === undefined ||
+          profile === undefined ||
+          included.has(configuration.agent_configuration_revision_hash)
+        ) continue;
+        included.add(configuration.agent_configuration_revision_hash);
+        registered.push({ configuration, modelId: entry.model_id, accountId: profile.profile_id });
+      }
+    }
+    return registered;
+  }
+
+  function modelOverrides(): ModelOverride[] {
+    return roles.flatMap((role) => {
+      const configurationHash = manualOverrides[role];
+      return configurationHash === undefined || configurationHash.length === 0
+        ? []
+        : [{ role, agent_configuration_revision_hash: configurationHash }];
+    });
+  }
+
+  function exactResolutions(
+    response: ProjectModelResolution
+  ): Record<string, RoleResolution> | null {
+    if (
+      response.workflow_revision_hash !== revision.workflow_revision_hash ||
+      response.public_project_reference !== projectReference ||
+      response.resolutions.length !== roles.length
+    ) return null;
+    const byRole: Record<string, RoleResolution> = {};
+    for (const resolution of response.resolutions) {
+      if (!roles.includes(resolution.role) || byRole[resolution.role] !== undefined) return null;
+      byRole[resolution.role] = resolution;
+    }
+    return roles.every((role) => byRole[role] !== undefined) ? byRole : null;
+  }
+
+  async function resolveModels(forStart: boolean): Promise<Record<string, RoleResolution> | null> {
+    if (roles.length === 0) return {};
+    const reference = projectReference;
+    if (reference === null) throw new Error("Served project missing.");
+    const generation = ++resolutionGeneration;
+    resolving = true;
+    try {
+      const response = await cockpitApi.resolveProjectModels(
+        reference,
+        revision.workflow_revision_hash,
+        modelOverrides()
+      );
+      const exact = exactResolutions(response);
+      if (exact === null) throw new Error("Model resolution did not name exactly these roles.");
+      if (generation !== resolutionGeneration) return null;
+      resolutions = exact;
+      return exact;
+    } catch (error) {
+      if (generation !== resolutionGeneration) return null;
+      if (forStart) startFailure = humanErrorMessage(error, workflowStartCopy.startUnavailable);
+      else throw error;
+      return null;
+    } finally {
+      if (generation === resolutionGeneration) resolving = false;
+    }
+  }
+
+  function registeredConfiguration(configurationHash: string | null): RegisteredConfiguration | undefined {
+    if (configurationHash === null) return undefined;
+    return registeredConfigurations.find(({ configuration }) =>
+      configuration.agent_configuration_revision_hash === configurationHash
+    );
+  }
+
+  function roleCanStart(role: string): boolean {
+    const resolution = resolutions[role];
+    if (resolution?.agent_configuration_revision_hash === null) return false;
+    return registeredConfiguration(resolution?.agent_configuration_revision_hash ?? null)
+      ?.configuration.startable === true;
+  }
+
+  function configurationLabel(registered: RegisteredConfiguration): string {
+    return `${registered.configuration.provider_id} · ${registered.modelId} · Account ${registered.accountId}`;
+  }
+
+  function resolvedConfigurationLabel(
+    resolution: RoleResolution,
+    registered: RegisteredConfiguration | undefined
+  ): string {
+    const model = resolution.model_id ?? workflowStartCopy.unavailable;
+    const account = registered === undefined ? "" : ` · Account ${registered.accountId}`;
+    const unavailable = registered?.configuration.startable === false
+      ? ` · ◇ ${workflowStartCopy.unavailable}`
+      : "";
+    if (resolution.source === "pinned-in-workflow") {
+      return `${workflowStartCopy.pinnedInWorkflow} → ${model}${account}${unavailable}`;
+    }
+    if (resolution.source === "from-project") {
+      const fallback = resolution.default_difficulty === resolution.declared_difficulty
+        ? ""
+        : ` (${workflowStartCopy.nextHigher})`;
+      return `difficulty ${resolution.declared_difficulty} → ${model}${fallback}${account}${unavailable}`;
+    }
+    return registered === undefined ? model : configurationLabel(registered);
+  }
+
+  function refusalHint(resolution: RoleResolution | undefined): string {
+    if (resolution === undefined) return workflowStartCopy.missingRoleResolution;
+    if (resolution.uncast_reason === "override-not-registered") {
+      return workflowStartCopy.overrideNotRegistered;
+    }
+    if (resolution.uncast_reason === "workflow-model-not-registered") {
+      return workflowStartCopy.workflowModelNotRegistered;
+    }
+    if (resolution.uncast_reason === "workflow-model-ambiguous") {
+      return workflowStartCopy.workflowModelAmbiguous;
+    }
+    if (resolution.uncast_reason === "family-difference-unavailable") {
+      return resolution.family_differs_from === null
+        ? workflowStartCopy.familyDifferenceUnavailable
+        : `${workflowStartCopy.familyDifferenceFrom} ${resolution.family_differs_from}.`;
+    }
+    return workflowStartCopy.noProjectDefault;
+  }
+
+  async function chooseConfiguration(role: string, configurationHash: string): Promise<void> {
+    manualOverrides = { ...manualOverrides };
+    if (configurationHash.length === 0) delete manualOverrides[role];
+    else manualOverrides[role] = configurationHash;
+    startFailure = null;
+    await resolveModels(false).catch((error: unknown) => {
+      failure = humanErrorMessage(error, workflowStartCopy.sheetUnavailable);
+    });
   }
 
   async function readEveryObservedQueueItem(): Promise<readonly ObservedQueueItem[]> {
@@ -216,12 +403,6 @@
     return grouped;
   }
 
-  function roleSource(selectedBinding: string | undefined): string {
-    return selectedBinding === undefined
-      ? workflowStartCopy.interimConfigurationNeeded
-      : workflowStartCopy.interimConfigurationChosen;
-  }
-
   function dismiss(): void {
     if (dialogElement.open && typeof dialogElement.close === "function") dialogElement.close();
     else dialogElement.open = false;
@@ -256,22 +437,31 @@
   async function start(): Promise<void> {
     if (!canStart || revision.graph.workflow_format_version !== 3) return;
     starting = true;
-    failure = null;
-    const mutation = startMutationV3(
-      createRunId(),
-      revision.workflow_revision_hash,
-      roles.map((role) => ({ role, agent_configuration_revision_hash: selectedBindings[role]! })),
-      orders.map(wireOrder)
-    );
+    startFailure = null;
     try {
+      const refreshed = await resolveModels(true);
+      if (refreshed === null || !roles.every((role) => {
+        const hash = refreshed[role]?.agent_configuration_revision_hash ?? null;
+        return hash !== null && registeredConfiguration(hash)?.configuration.startable === true;
+      })) return;
+      const expectedBindings = roles.map((role) => ({
+        role,
+        agent_configuration_revision_hash: refreshed[role]!.agent_configuration_revision_hash!
+      }));
+      const mutation = startMutationV3(
+        createRunId(),
+        revision.workflow_revision_hash,
+        modelOverrides(),
+        orders.map(wireOrder)
+      );
       await mutationJournal.prepare(mutation);
       const result = await cockpitApi.start(mutation);
-      const expected = requestedStartAgentBindings(mutation);
       const returned = "workflow_format_version" in result.value ? result.value.agent_bindings : null;
       if (
-        expected === null ||
         returned === null ||
-        expected.some(
+        returned.length !== expectedBindings.length ||
+        new SvelteSet(returned.map((binding) => binding.role)).size !== returned.length ||
+        expectedBindings.some(
           (binding) =>
             returned.find((candidate) => candidate.role === binding.role)
               ?.agent_configuration_revision_hash !== binding.agent_configuration_revision_hash
@@ -291,7 +481,7 @@
       if (!resolved) throw new Error("The start response did not prove the exact request.");
       navigate(`/atelier/runs/${result.value.public_run_reference}`);
     } catch (error) {
-      failure = humanErrorMessage(error, workflowStartCopy.startUnavailable);
+      startFailure = humanErrorMessage(error, workflowStartCopy.startUnavailable);
     } finally {
       starting = false;
     }
@@ -385,43 +575,69 @@
         </fieldset>
       {/each}
       {#if roles.length > 0}
-        <fieldset class="interim-configuration" aria-label={workflowStartCopy.interim}>
-          <legend>
-            {workflowStartCopy.interim}
-            <InfoHint
-              label={workflowStartCopy.interimConfigurationInfo}
-              exact={workflowStartCopy.interimConfiguration}
-              text={workflowStartCopy.info}
-            />
-          </legend>
+        <fieldset class="role-configurations" aria-label={workflowStartCopy.roles}>
+          <legend>{workflowStartCopy.roles}</legend>
           {#each roles as role (role)}
+            {@const resolution = resolutions[role]}
+            {@const resolvedHash = resolution?.agent_configuration_revision_hash ?? null}
+            {@const resolvedConfiguration = registeredConfiguration(resolvedHash)}
             <div class="role-row">
               <label>
                 {role}
-                <select
-                  aria-label={`Configuration for ${role}`}
-                  value={selectedBindings[role] ?? ""}
-                  disabled={starting}
-                  onchange={(event) => { selectedBindings = { ...selectedBindings, [role]: event.currentTarget.value }; }}
-                >
-                  <option value="">{workflowStartCopy.choose}</option>
-                  {#each startableConfigurations as configuration (configuration.agent_configuration_revision_hash)}
-                    <option value={configuration.agent_configuration_revision_hash}>{namedAgentLabel(configuration)}</option>
-                  {/each}
-                </select>
+                <span class="role-control">
+                  <select
+                    class:needs-choice={resolvedHash === null}
+                    aria-invalid={resolvedHash === null}
+                    aria-label={`Configuration for ${role}`}
+                    disabled={starting || resolving}
+                    onchange={(event) => { void chooseConfiguration(role, event.currentTarget.value); }}
+                  >
+                    <option value="" selected={resolvedHash === null}>{workflowStartCopy.choose}</option>
+                    {#if resolvedHash !== null && resolvedConfiguration === undefined}
+                      <option value={resolvedHash} selected disabled>
+                        {resolvedConfigurationLabel(resolution!, undefined)}
+                      </option>
+                    {/if}
+                    {#each registeredConfigurations as registered (registered.configuration.agent_configuration_revision_hash)}
+                      <option
+                        value={registered.configuration.agent_configuration_revision_hash}
+                        selected={resolvedHash === registered.configuration.agent_configuration_revision_hash}
+                        disabled={!registered.configuration.startable}
+                      >{resolvedHash === registered.configuration.agent_configuration_revision_hash
+                          ? resolvedConfigurationLabel(resolution!, registered)
+                          : configurationLabel(registered)}</option>
+                    {/each}
+                  </select>
+                  {#if resolvedHash === null}
+                    <InfoHint
+                      label={`Why ${role} needs a configuration`}
+                      exact={refusalHint(resolution)}
+                      text={workflowStartCopy.info}
+                    />
+                  {/if}
+                </span>
               </label>
-              <p class="role-source">{roleSources[role]}</p>
+              {#if resolvedHash !== null && resolution?.source === "chosen-now"}
+                <p class="role-source">
+                  {#if resolvedConfiguration?.configuration.startable === false}
+                    <span class="unavailable">◇ {workflowStartCopy.unavailable}</span> ·
+                  {/if}
+                  {workflowStartCopy.chosenNow}
+                </p>
+              {/if}
             </div>
           {/each}
         </fieldset>
       {/if}
-      {#if roles.length > 0 && startableConfigurations.length === 0}
-        <p class="failure">{workflowStartCopy.noConfiguration}</p>
+      {#if startFailure !== null}
+        <p class="failure" role="alert">{startFailure}</p>
       {/if}
     {/if}
     <footer>
       {#if !loading && failure === null}
-        <button type="button" class="primary" disabled={!canStart} onclick={start}>{workflowStartCopy.startRun}</button>
+        <button type="button" class="primary" disabled={!canStart} onclick={start}>
+          {startFailure === null ? workflowStartCopy.startRun : workflowStartCopy.tryAgain}
+        </button>
       {/if}
       <button bind:this={closeButton} type="button" class="quiet" disabled={starting} onclick={dismiss}>{workflowStartCopy.cancel}</button>
     </footer>
@@ -439,10 +655,13 @@
   .failure { color: var(--signal-failure); }
   .degraded { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); border: 1px dashed var(--signal-attention); padding: var(--space-2); color: var(--signal-attention); }
   .link { min-height: var(--tap); border: 0; background: transparent; color: var(--ink); font: inherit; font-weight: var(--weight-strong); text-decoration: underline; }
-  .interim-configuration { border-color: var(--ink); margin: var(--space-5) 0; padding: var(--space-3); }
-  .interim-configuration legend { color: var(--ink); font-weight: var(--weight-strong); padding: 0 var(--space-1); }
+  .role-configurations { border-color: var(--ink); margin: var(--space-5) 0; padding: var(--space-3); }
+  .role-configurations legend { color: var(--ink); font-weight: var(--weight-strong); padding: 0 var(--space-1); }
   .role-row { margin: var(--space-4) 0; }
   .role-row label { margin: 0; }
+  .role-control { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); }
+  .needs-choice { border-color: var(--signal-attention); color: var(--signal-attention); }
   .role-source { color: var(--ink); font-size: var(--text-2xs); font-weight: var(--weight-strong); margin: var(--space-1) 0 0; }
+  .unavailable { color: var(--ink-dim); }
   @media (max-width: 480px) { .sheet { inset: auto 0 0 0; width: 100%; height: auto; max-height: 85vh; border-radius: var(--r-lg) var(--r-lg) 0 0; } }
 </style>

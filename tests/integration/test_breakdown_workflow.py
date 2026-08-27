@@ -1,4 +1,4 @@
-"""The committed `code-review` workflow executes its object result contract."""
+"""The committed `breakdown` workflow executes its object result contract."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
+from atelier2.contracts.orders import ArtifactOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
@@ -68,46 +68,38 @@ from tests.scenarios.agents import (
 from tests.scenarios.api import durable_queries
 
 WORKFLOWS_DIRECTORY = Path(__file__).parents[2] / "workflows"
-CODE_REVIEW_DOCUMENT = (WORKFLOWS_DIRECTORY / "code-review.yaml").read_bytes()
+BREAKDOWN_DOCUMENT = (WORKFLOWS_DIRECTORY / "breakdown.yaml").read_bytes()
 TEXT_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
     (WORKFLOWS_DIRECTORY / "schemas" / "nonempty_string.json").read_bytes(),
 )
 RESULT_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
-    (WORKFLOWS_DIRECTORY / "schemas" / "code_review_result.json").read_bytes(),
+    (WORKFLOWS_DIRECTORY / "schemas" / "breakdown_result.json").read_bytes(),
 )
-DIFF_TEXT = "diff --git a/app.py b/app.py\n+print('reviewed')\n"
-QUESTIONS_TEXT = "Does this change preserve the review contract?"
-DIFF = json.dumps(DIFF_TEXT).encode()
-QUESTIONS = json.dumps(QUESTIONS_TEXT).encode()
-REVIEW = {
-    "findings": [
+ITEM_BODY_TEXT = "Build a catalog workflow for breakdown planning."
+OWNER_DOCUMENTS_TEXT = "The workflow schema owns its output contract."
+ITEM_BODY = json.dumps(ITEM_BODY_TEXT).encode()
+OWNER_DOCUMENTS = json.dumps(OWNER_DOCUMENTS_TEXT).encode()
+BREAKDOWN = {
+    "slices": [
         {
-            "file": "app.py",
-            "line": 1,
-            "severity": "low",
-            "text": "The change is safe to approve.",
+            "title": "Publish the breakdown workflow",
+            "files": ["workflows/breakdown.yaml"],
+            "done_when": "The catalog admits the workflow.",
+            "depends_on": [],
+            "builder_class": "mechanical",
+            "risk": [],
         }
     ],
-    "verdict": "approve",
+    "contradictions": [],
+    "verdict": "buildable",
 }
-ANSWER = json.dumps(REVIEW, ensure_ascii=False).encode()
-REFUSED_REVIEWS = {
-    "finding missing its file": {
-        "findings": [
-            {
-                "line": 1,
-                "severity": "low",
-                "text": "A finding must name its file.",
-            }
-        ],
-        "verdict": "revise",
-    },
-    "unknown verdict": {
-        "findings": [],
-        "verdict": "pass",
-    },
+ANSWER = json.dumps(BREAKDOWN, ensure_ascii=False).encode()
+INVALID_BREAKDOWN = {
+    "slices": [],
+    "contradictions": [],
+    "verdict": "approved",
 }
 
 
@@ -116,7 +108,7 @@ def runtime_over(
 ) -> DbosRuntime:
     return DbosRuntime(
         DbosRuntimeSettings(
-            root / "atelier.sqlite", "code-review-test", agent_scratch_root=scratch_root
+            root / "atelier.sqlite", "breakdown-test", agent_scratch_root=scratch_root
         ),
         LoopbackEffectAdapterFactory(
             root / "external.sqlite",
@@ -140,7 +132,7 @@ def runtime(
     tmp_path: Path, provider: RecordingAgentExecutorFactoryV2
 ) -> Iterator[DbosRuntime]:
     with tempfile.TemporaryDirectory(
-        prefix="atelier2-code-review-scratch-", dir="/var/tmp"
+        prefix="atelier2-breakdown-scratch-", dir="/var/tmp"
     ) as directory:
         started = runtime_over(tmp_path, provider, Path(directory))
         started.initialize_storage()
@@ -178,99 +170,20 @@ def publish(runtime: DbosRuntime) -> tuple[WorkflowRevision, AgentBindingSet]:
     publish_checked_model_registry(
         runtime.engine, ProviderId("exact"), (configuration,)
     )
-    workflow = WorkflowRevision(CODE_REVIEW_DOCUMENT)
+    workflow = WorkflowRevision(BREAKDOWN_DOCUMENT)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     return workflow, AgentBindingSet(
-        (AgentBinding(AgentRole("reviewer"), configuration.revision_hash),)
+        (AgentBinding(AgentRole("planner"), configuration.revision_hash),)
     )
 
 
-def artifact_order(runtime: DbosRuntime) -> AuthoredOrder:
-    published = DbosArtifactStore(runtime.engine).publish_artifact(Artifact(DIFF))
+def artifact_order(runtime: DbosRuntime, name: str, content: bytes) -> AuthoredOrder:
+    published = DbosArtifactStore(runtime.engine).publish_artifact(Artifact(content))
     assert isinstance(published, (ArtifactCreated, ArtifactExisting)), published
-    return AuthoredOrder("diff", ArtifactOrderValue(published.artifact.artifact_hash))
+    return AuthoredOrder(name, ArtifactOrderValue(published.artifact.artifact_hash))
 
 
-def wait_for_completion(runtime: DbosRuntime, run_id: RunId) -> None:
-    deadline = time.monotonic() + 8
-    while time.monotonic() < deadline:
-        with runtime.engine.connect() as connection:
-            state = connection.scalar(
-                sa.select(runs.c.state).where(runs.c.run_id == run_id.value)
-            )
-        if state == RunState.COMPLETED.value:
-            return
-        time.sleep(0.025)
-    raise AssertionError("code review run did not complete")
-
-
-def test_a_code_review_round_trips_an_artifact_and_inline_question_to_an_object_result(
-    runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
-) -> None:
-    schema = read_schema_document(RESULT_SCHEMA.document)
-    assert isinstance(schema, SchemaAccepted), schema
-    assert isinstance(read_instance_document(ANSWER, schema), InstanceAccepted)
-
-    workflow, bindings = publish(runtime)
-    run_id = RunId("v3/code-review-object")
-    created = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
-    ).start_published(
-        StartPublishedRunRequestV3(
-            run_id,
-            workflow.revision_hash,
-            bindings,
-            orders=(
-                artifact_order(runtime),
-                AuthoredOrder("review_questions", InlineOrderValue(QUESTIONS)),
-            ),
-        )
-    )
-    assert isinstance(created, DurableRunCreated), created
-
-    runtime.launch()
-    wait_for_completion(runtime, run_id)
-
-    assert provider.opened is not None
-    handed = provider.opened.requests[0].job_bytes
-    assert DIFF in handed
-    assert QUESTIONS in handed
-    detail = durable_queries(runtime.engine).get_node_detail(run_id, "review")
-    assert isinstance(detail, NodeDetailFound), detail
-    assert detail.detail.state is NodeState.SUCCEEDED
-    assert detail.detail.answer is not None
-    assert detail.detail.answer.value == ANSWER
-
-
-@pytest.mark.parametrize(
-    "provider",
-    [
-        pytest.param(json.dumps(review).encode(), id=case)
-        for case, review in REFUSED_REVIEWS.items()
-    ],
-    indirect=True,
-)
-def test_a_code_review_object_the_schema_refuses_never_becomes_a_success(
-    runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
-) -> None:
-    workflow, bindings = publish(runtime)
-    run_id = RunId("v3/code-review-refused")
-    created = DbosDurableRunStarter(
-        runtime.engine, runtime.settings, runtime.agent_executor_registry
-    ).start_published(
-        StartPublishedRunRequestV3(
-            run_id,
-            workflow.revision_hash,
-            bindings,
-            orders=(
-                artifact_order(runtime),
-                AuthoredOrder("review_questions", InlineOrderValue(QUESTIONS)),
-            ),
-        )
-    )
-    assert isinstance(created, DurableRunCreated), created
-
-    runtime.launch()
+def wait_for_state(runtime: DbosRuntime, run_id: RunId, state: RunState) -> None:
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         with runtime.engine.connect() as connection:
@@ -278,14 +191,74 @@ def test_a_code_review_object_the_schema_refuses_never_becomes_a_success(
                 connection.scalar(
                     sa.select(runs.c.state).where(runs.c.run_id == run_id.value)
                 )
-                == RunState.FAILED.value
+                == state.value
             ):
-                break
+                return
         time.sleep(0.025)
-    else:
-        raise AssertionError("code review refusal did not fail the run")
+    raise AssertionError(f"breakdown run did not reach {state.value}")
 
-    detail = durable_queries(runtime.engine).get_node_detail(run_id, "review")
+
+def start_breakdown(
+    runtime: DbosRuntime,
+    workflow: WorkflowRevision,
+    bindings: AgentBindingSet,
+    run_id: RunId,
+) -> None:
+    created = DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    ).start_published(
+        StartPublishedRunRequestV3(
+            run_id,
+            workflow.revision_hash,
+            bindings,
+            orders=(
+                artifact_order(runtime, "item_body", ITEM_BODY),
+                artifact_order(runtime, "owner_documents", OWNER_DOCUMENTS),
+            ),
+        )
+    )
+    assert isinstance(created, DurableRunCreated), created
+
+
+def test_a_breakdown_round_trips_artifact_orders_to_an_object_result(
+    runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
+) -> None:
+    schema = read_schema_document(RESULT_SCHEMA.document)
+    assert isinstance(schema, SchemaAccepted), schema
+    assert isinstance(read_instance_document(ANSWER, schema), InstanceAccepted)
+
+    workflow, bindings = publish(runtime)
+    run_id = RunId("v3/breakdown-object")
+    start_breakdown(runtime, workflow, bindings, run_id)
+
+    runtime.launch()
+    wait_for_state(runtime, run_id, RunState.COMPLETED)
+
+    assert provider.opened is not None
+    handed = provider.opened.requests[0].job_bytes
+    assert ITEM_BODY_TEXT.encode() in handed
+    assert OWNER_DOCUMENTS_TEXT.encode() in handed
+    detail = durable_queries(runtime.engine).get_node_detail(run_id, "plan")
+    assert isinstance(detail, NodeDetailFound), detail
+    assert detail.detail.state is NodeState.SUCCEEDED
+    assert detail.detail.answer is not None
+    assert detail.detail.answer.value == ANSWER
+
+
+@pytest.mark.parametrize(
+    "provider", [json.dumps(INVALID_BREAKDOWN).encode()], indirect=True
+)
+def test_an_invalid_breakdown_object_fails_admission(
+    runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
+) -> None:
+    workflow, bindings = publish(runtime)
+    run_id = RunId("v3/breakdown-refused")
+    start_breakdown(runtime, workflow, bindings, run_id)
+
+    runtime.launch()
+    wait_for_state(runtime, run_id, RunState.FAILED)
+
+    detail = durable_queries(runtime.engine).get_node_detail(run_id, "plan")
     assert isinstance(detail, NodeDetailFound), detail
     assert detail.detail.state is NodeState.FAILED
     assert detail.detail.answer is None

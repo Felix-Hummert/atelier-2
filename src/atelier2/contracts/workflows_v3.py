@@ -1511,10 +1511,6 @@ V3_UNBOUND_AUTHORED_FORMS = (
     "cancellation",
     "required_context",
     "available_context",
-    "difficulty",
-    "kind",
-    "family_differs_from",
-    "model",
 )
 """Every authored form of an interpreted V3 node that nothing binds at run start.
 
@@ -1528,15 +1524,10 @@ for the Wait kind too without naming it twice: a Wait node carries `join`,
 `cancellation` and `required_context` and no others, and each of the three is
 refused on it for the same reason it is refused on an Agent node.
 
-The four role forms joined it with the grammar that introduced them. A start
-resolves a role against the project's model defaults and the host's model
-registry, and neither exists yet, so a document naming a difficulty, a family
-rule or a model pin would start having decided nothing by them; those three
-leave together with `cast_unbound_roles`'s difficulty lookup. `kind` is not
-resolved at a start at all -- it is what the role *is*, read wherever the role
-is shown -- so it leaves this list when a surface reads it, which is the node
-panel beside the difficulty (ADR 0019 §3). Until then the grammar is authorable
-and refused, rather than accepted and ignored.
+The four role forms left together when `cast_unbound_roles` gained the host
+registry and project difficulty lookup. Difficulty, the optional exact model
+pin, and the family rule now affect that binding decision; kind is the role's
+declared description and needs no separate runtime action.
 
 `inputs` left this list when the start began binding one: it is admitted per
 source by `V3_BOUND_INPUT_SOURCES` rather than as a whole form, because only an

@@ -126,6 +126,7 @@ from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_attempt_execution,
     agent_scratch_root,
+    publish_checked_model_registry,
 )
 from tests.scenarios.api import (
     api_limits,
@@ -210,6 +211,9 @@ def _publish_matrix(
             catalog.publish_agent_configuration_revision(configuration),
             AgentConfigurationRevisionCreated,
         )
+        publish_checked_model_registry(
+            runtime.engine, ProviderId(provider), (configuration,)
+        )
         bindings.append(AgentBinding(AgentRole(role), configuration.revision_hash))
     workflow = WorkflowRevision(_DOCUMENT)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
@@ -242,6 +246,9 @@ def _publish_single_capability(
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),
         AgentConfigurationRevisionCreated,
+    )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("anthropic"), (configuration,)
     )
     workflow = WorkflowRevision(
         b"""format_version: 2

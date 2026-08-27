@@ -17,44 +17,69 @@ from sqlalchemy.exc import IntegrityError
 from atelier2.adapters.dbos.host_configuration import (
     DbosHostConfigurationChannel,
     append_project_root,
-    latest_occupancy_revision,
     latest_project_root_revision,
     project_root_for,
-    publish_occupancy_revision,
     publish_project_root_revision,
 )
 from atelier2.adapters.dbos.runtime import DbosRuntimeSettings, create_canonical_engine
 from atelier2.adapters.dbos.schema import (
-    host_occupancy_bindings,
-    host_occupancy_revisions,
+    agent_configuration_revisions,
+    auth_profile_revisions,
+    host_model_registry_entries,
+    host_model_registry_revisions,
+    host_project_model_defaults,
+    host_project_model_defaults_revisions,
     host_project_root_revisions,
     initialize_schema,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.app import create_app
 from atelier2.api.openapi import PROJECT_PATH, PROJECTS_PATH
-from atelier2.contracts.agents import AgentConfigurationRevisionHash, AgentRole
-from atelier2.contracts.catalog_v3 import CatalogLineageId
+from atelier2.application.model_configuration import (
+    ProjectModelDefaultsInvalid,
+    publish_project_model_defaults,
+)
+from atelier2.contracts.agents import (
+    AgentConfigurationRevision,
+    AgentConfigurationRevisionFormatVersion,
+    AgentConfigurationRevisionHash,
+    AgentExecutionCapability,
+    AgentExecutorRevision,
+    AuthMode,
+    AuthProfileRevision,
+    ProviderId,
+)
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.host_configuration import (
     HOST_CONFIGURATION_UNREADABLE,
-    OCCUPANCY_REVISION_CONFLICT,
     PROJECT_ROOT_MISSING,
     PROJECT_UNKNOWN,
     HostConfigurationUnreadable,
+    HostModelConfigurationSnapshot,
     HostProjectRootRevisionHash,
-    OccupancyBinding,
-    OccupancyRevision,
-    OccupancyRevisionConflict,
+    ModelRegistryEntry,
+    ModelRegistryEntrySource,
+    ModelRegistryRevision,
     ProjectId,
+    ProjectModelDefault,
+    ProjectModelDefaultsRevision,
     ProjectRootBytesDisagree,
     ProjectRootMissing,
     ProjectRootRevision,
     ProjectRootRevisionConflict,
     ProjectUnknown,
+    ProviderModelCheck,
 )
 from atelier2.host import main
 from atelier2.host.serving import compose_application
+from atelier2.ports.host_configuration import (
+    ModelRegistryRevisionConflict,
+    ModelRegistryRevisionCreated,
+    ModelRegistryRevisionExisting,
+    ProjectModelDefaultsRevisionCreated,
+    ProjectModelDefaultsRevisionExisting,
+    PublishProjectModelDefaultsResult,
+)
 from tests.host.test_local_host import serve_arguments, served_settings
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 from tests.scenarios.projects import declaring_verification, git_project
@@ -489,132 +514,302 @@ def test_a_project_root_flag_without_a_project_id_refuses_to_serve(
     assert "--project-id" in capsys.readouterr().err
 
 
-def _occupancy(
-    *,
-    project: str = "studio",
-    lineage: str = "ab" * 32,
-    revision_number: int = 1,
-    bindings: tuple[OccupancyBinding, ...] | None = None,
-) -> OccupancyRevision:
-    if bindings is None:
-        bindings = (
-            OccupancyBinding(
-                AgentRole("chef"), AgentConfigurationRevisionHash("cd" * 32)
-            ),
-        )
-    return OccupancyRevision(
-        ProjectId(project),
-        CatalogLineageId(lineage),
-        revision_number,
-        bindings,
+def _store_configuration(engine: Engine, provider: str, model: str) -> str:
+    profile = AuthProfileRevision(
+        f"profile/{provider}/{model}", 1, ProviderId(provider), AuthMode.API_KEY
     )
-
-
-def test_a_written_occupancy_revision_is_read_back(tmp_path: Path) -> None:
-    engine = opened_channel(tmp_path)
-    revision = _occupancy()
-
-    try:
-        stored = publish_occupancy_revision(engine, revision)
-
-        assert stored == revision
-        assert (
-            latest_occupancy_revision(engine, revision.project_id, revision.lineage_id)
-            == revision
+    configuration = AgentConfigurationRevision(
+        model,
+        profile.revision_hash,
+        AgentExecutorRevision(f"executor/{provider}"),
+        AgentExecutionCapability.HEADLESS,
+        AgentConfigurationRevisionFormatVersion.V2,
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            auth_profile_revisions.insert().values(
+                revision_hash=profile.revision_hash.value,
+                profile_id=profile.profile_id,
+                revision_number=profile.revision_number,
+                provider_id=profile.provider_id.value,
+                auth_mode=profile.auth_mode.value,
+            )
         )
-    finally:
-        engine.dispose()
+        connection.execute(
+            agent_configuration_revisions.insert().values(
+                revision_hash=configuration.revision_hash.value,
+                model=configuration.model,
+                auth_profile_revision_hash=profile.revision_hash.value,
+                executor_revision=configuration.executor_revision.value,
+                revision_format_version=configuration.revision_format_version,
+                requested_capability=configuration.requested_capability.value,
+            )
+        )
+    return configuration.revision_hash.value
 
 
-def test_the_latest_occupancy_revision_is_what_a_read_returns(tmp_path: Path) -> None:
-    engine = opened_channel(tmp_path)
-    first = _occupancy()
-    later = _occupancy(
-        revision_number=2,
-        bindings=(
-            OccupancyBinding(
-                AgentRole("chef"), AgentConfigurationRevisionHash("ee" * 32)
+def _registry(
+    provider: str, model: str, configuration_hash: str
+) -> ModelRegistryRevision:
+    return ModelRegistryRevision(
+        ProviderId(provider),
+        1,
+        (
+            ModelRegistryEntry(
+                model,
+                AgentConfigurationRevisionHash(configuration_hash),
+                ModelRegistryEntrySource.DISCOVERED,
+                ProviderModelCheck.CHECKED,
             ),
         ),
     )
 
-    try:
-        publish_occupancy_revision(engine, first)
-        publish_occupancy_revision(engine, later)
 
-        assert (
-            latest_occupancy_revision(engine, first.project_id, first.lineage_id)
-            == later
-        )
-        with engine.connect() as connection:
-            assert (
-                connection.scalar(
-                    sa.select(sa.func.count()).select_from(host_occupancy_revisions)
-                )
-                == 2
-            )
-            assert (
-                connection.scalar(
-                    sa.select(sa.func.count()).select_from(host_occupancy_bindings)
-                )
-                == 2
-            )
-    finally:
-        engine.dispose()
-
-
-def test_the_same_occupancy_bytes_at_the_same_key_are_idempotent(
+def test_model_registry_and_project_defaults_round_trip_idempotently(
     tmp_path: Path,
 ) -> None:
     engine = opened_channel(tmp_path)
-    revision = _occupancy()
+    configuration_hash = _store_configuration(engine, "openai", "gpt-5.6")
+    registry = _registry("openai", "gpt-5.6", configuration_hash)
+    defaults = ProjectModelDefaultsRevision(
+        ProjectId("studio"),
+        1,
+        (
+            ProjectModelDefault(
+                2,
+                registry.revision_hash,
+                registry.provider_id,
+                registry.entries[0].model_id,
+                registry.entries[0].agent_configuration_revision_hash,
+            ),
+        ),
+    )
+    channel = DbosHostConfigurationChannel(engine)
 
     try:
-        first = publish_occupancy_revision(engine, revision)
-        second = publish_occupancy_revision(engine, revision)
-
-        assert first == second == revision
-        with engine.connect() as connection:
-            assert (
-                connection.scalar(
-                    sa.select(sa.func.count()).select_from(host_occupancy_revisions)
-                )
-                == 1
-            )
+        assert channel.publish_model_registry_revision(registry) == (
+            ModelRegistryRevisionCreated(registry)
+        )
+        assert channel.publish_model_registry_revision(registry) == (
+            ModelRegistryRevisionExisting(registry)
+        )
+        assert channel.latest_model_registry_revision(registry.provider_id) == registry
+        assert channel.publish_project_model_defaults_revision(defaults) == (
+            ProjectModelDefaultsRevisionCreated(defaults)
+        )
+        assert channel.publish_project_model_defaults_revision(defaults) == (
+            ProjectModelDefaultsRevisionExisting(defaults)
+        )
+        assert channel.latest_project_model_defaults_revision(defaults.project_id) == (
+            defaults
+        )
     finally:
         engine.dispose()
 
 
-def test_a_different_occupancy_at_the_same_key_conflicts(tmp_path: Path) -> None:
+def test_defaults_retry_and_carry_forward_survive_a_registry_advance(
+    tmp_path: Path,
+) -> None:
     engine = opened_channel(tmp_path)
-    first = _occupancy()
-    other = _occupancy(
-        bindings=(
-            OccupancyBinding(
-                AgentRole("chef"), AgentConfigurationRevisionHash("ee" * 32)
+    configuration_hash = _store_configuration(engine, "openai", "gpt-5.6")
+    registry = _registry("openai", "gpt-5.6", configuration_hash)
+    defaults = ProjectModelDefaultsRevision(
+        ProjectId("studio"),
+        1,
+        (
+            ProjectModelDefault(
+                2,
+                registry.revision_hash,
+                registry.provider_id,
+                registry.entries[0].model_id,
+                registry.entries[0].agent_configuration_revision_hash,
+            ),
+        ),
+    )
+    advanced = ModelRegistryRevision(ProviderId("openai"), 2, ())
+    carried = ProjectModelDefaultsRevision(defaults.project_id, 2, defaults.defaults)
+    channel = DbosHostConfigurationChannel(engine)
+
+    try:
+        assert channel.publish_model_registry_revision(registry) == (
+            ModelRegistryRevisionCreated(registry)
+        )
+        assert channel.publish_project_model_defaults_revision(defaults) == (
+            ProjectModelDefaultsRevisionCreated(defaults)
+        )
+        assert channel.publish_model_registry_revision(advanced) == (
+            ModelRegistryRevisionCreated(advanced)
+        )
+
+        assert channel.publish_project_model_defaults_revision(defaults) == (
+            ProjectModelDefaultsRevisionExisting(defaults)
+        )
+        assert channel.publish_project_model_defaults_revision(carried) == (
+            ProjectModelDefaultsRevisionCreated(carried)
+        )
+        assert channel.latest_project_model_defaults_revision(defaults.project_id) == (
+            carried
+        )
+    finally:
+        engine.dispose()
+
+
+def test_defaults_do_not_append_after_a_registry_revision_interleaves(
+    tmp_path: Path,
+) -> None:
+    """The registry check and defaults append share the write transaction."""
+
+    engine = opened_channel(tmp_path)
+    project = ProjectId("studio")
+    configuration_hash = _store_configuration(engine, "openai", "gpt-5.6")
+    registry = _registry("openai", "gpt-5.6", configuration_hash)
+    replacement = ModelRegistryRevision(ProviderId("openai"), 2, ())
+
+    class InterleavingChannel(DbosHostConfigurationChannel):
+        def publish_project_model_defaults_revision(
+            self, revision: ProjectModelDefaultsRevision
+        ) -> PublishProjectModelDefaultsResult:
+            published = self.publish_model_registry_revision(replacement)
+            assert isinstance(published, ModelRegistryRevisionCreated)
+            return super().publish_project_model_defaults_revision(revision)
+
+    channel = InterleavingChannel(engine)
+    try:
+        publish_project_root_revision(
+            engine, ProjectRootRevision(project, 1, tmp_path / "project")
+        )
+        assert isinstance(
+            channel.publish_model_registry_revision(registry),
+            ModelRegistryRevisionCreated,
+        )
+
+        result = publish_project_model_defaults(
+            project.value,
+            project,
+            1,
+            (
+                (
+                    2,
+                    registry.revision_hash.value,
+                    registry.provider_id.value,
+                    registry.entries[0].model_id,
+                    registry.entries[0].agent_configuration_revision_hash.value,
+                ),
+            ),
+            channel,
+        )
+
+        assert isinstance(result, ProjectModelDefaultsInvalid)
+        assert channel.latest_project_model_defaults_revision(project) is None
+    finally:
+        engine.dispose()
+
+
+def test_model_configuration_snapshot_never_mixes_interleaved_revisions(
+    tmp_path: Path,
+) -> None:
+    engine = opened_channel(tmp_path)
+    project = ProjectId("studio")
+    old_configuration_hash = _store_configuration(engine, "openai", "gpt-old")
+    new_configuration_hash = _store_configuration(engine, "openai", "gpt-new")
+    old_registry = _registry("openai", "gpt-old", old_configuration_hash)
+    new_registry = ModelRegistryRevision(
+        ProviderId("openai"),
+        2,
+        (
+            ModelRegistryEntry(
+                "gpt-new",
+                AgentConfigurationRevisionHash(new_configuration_hash),
+                ModelRegistryEntrySource.DISCOVERED,
+                ProviderModelCheck.CHECKED,
             ),
         ),
     )
 
+    def defaults_for(
+        revision_number: int, registry: ModelRegistryRevision
+    ) -> ProjectModelDefaultsRevision:
+        entry = registry.entries[0]
+        return ProjectModelDefaultsRevision(
+            project,
+            revision_number,
+            (
+                ProjectModelDefault(
+                    2,
+                    registry.revision_hash,
+                    registry.provider_id,
+                    entry.model_id,
+                    entry.agent_configuration_revision_hash,
+                ),
+            ),
+        )
+
+    old_defaults = defaults_for(1, old_registry)
+    new_defaults = defaults_for(2, new_registry)
+    channel = DbosHostConfigurationChannel(engine)
+    channel.publish_model_registry_revision(old_registry)
+    channel.publish_project_model_defaults_revision(old_defaults)
+    first_snapshot_query = Barrier(2)
+    writer_finished = Barrier(2)
+    paused = False
+
+    def pause_after_snapshot_begins(
+        connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: object,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        nonlocal paused
+        if paused or "SELECT DISTINCT" not in statement.upper():
+            return
+        paused = True
+        assert connection.connection.driver_connection.in_transaction
+        first_snapshot_query.wait(timeout=5)
+        writer_finished.wait(timeout=5)
+
+    event.listen(engine, "after_cursor_execute", pause_after_snapshot_begins)
     try:
-        publish_occupancy_revision(engine, first)
-        with pytest.raises(
-            OccupancyRevisionConflict, match=OCCUPANCY_REVISION_CONFLICT
-        ):
-            publish_occupancy_revision(engine, other)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            reading = pool.submit(channel.model_configuration_snapshot, project)
+            first_snapshot_query.wait(timeout=5)
+            channel.publish_model_registry_revision(new_registry)
+            channel.publish_project_model_defaults_revision(new_defaults)
+            writer_finished.wait(timeout=5)
+            snapshot = reading.result(timeout=5)
     finally:
+        event.remove(engine, "after_cursor_execute", pause_after_snapshot_begins)
         engine.dispose()
 
+    assert isinstance(snapshot, HostModelConfigurationSnapshot)
+    observed = (
+        snapshot.registries[0].revision_hash,
+        None
+        if snapshot.project_defaults is None
+        else snapshot.project_defaults.revision_hash,
+    )
+    assert observed in {
+        (old_registry.revision_hash, old_defaults.revision_hash),
+        (new_registry.revision_hash, new_defaults.revision_hash),
+    }
 
-def test_a_missing_occupancy_is_none(tmp_path: Path) -> None:
+
+def test_a_different_registry_at_the_same_provider_revision_conflicts(
+    tmp_path: Path,
+) -> None:
     engine = opened_channel(tmp_path)
+    first_hash = _store_configuration(engine, "openai", "gpt-5.6")
+    second_hash = _store_configuration(engine, "anthropic", "claude-opus-5")
+    channel = DbosHostConfigurationChannel(engine)
+    first = _registry("openai", "gpt-5.6", first_hash)
+    other = _registry("openai", "claude-opus-5", second_hash)
 
     try:
-        assert (
-            latest_occupancy_revision(
-                engine, ProjectId("studio"), CatalogLineageId("ab" * 32)
-            )
-            is None
+        channel.publish_model_registry_revision(first)
+        assert isinstance(
+            channel.publish_model_registry_revision(other),
+            ModelRegistryRevisionConflict,
         )
     finally:
         engine.dispose()
@@ -624,26 +819,41 @@ def test_a_missing_occupancy_is_none(tmp_path: Path) -> None:
     "rewrite",
     [
         pytest.param(
-            host_occupancy_revisions.update().values(project_id="tampered"),
-            id="header-update",
+            host_model_registry_revisions.update().values(provider_id="tampered"),
+            id="registry-header-update",
         ),
-        pytest.param(host_occupancy_revisions.delete(), id="header-delete"),
+        pytest.param(host_model_registry_entries.delete(), id="registry-entry-delete"),
         pytest.param(
-            host_occupancy_bindings.update().values(role="tampered"),
-            id="binding-update",
+            host_project_model_defaults_revisions.update().values(
+                project_id="tampered"
+            ),
+            id="defaults-header-update",
         ),
-        pytest.param(host_occupancy_bindings.delete(), id="binding-delete"),
+        pytest.param(host_project_model_defaults.delete(), id="default-delete"),
     ],
 )
-def test_an_occupancy_revision_can_no_longer_be_rewritten(
+def test_model_configuration_revisions_cannot_be_rewritten(
     tmp_path: Path, rewrite: sa.Executable
 ) -> None:
     engine = opened_channel(tmp_path)
-    publish_occupancy_revision(engine, _occupancy())
+    configuration_hash = _store_configuration(engine, "openai", "gpt-5.6")
+    registry = _registry("openai", "gpt-5.6", configuration_hash)
+    default = ProjectModelDefault(
+        2,
+        registry.revision_hash,
+        registry.provider_id,
+        registry.entries[0].model_id,
+        registry.entries[0].agent_configuration_revision_hash,
+    )
+    channel = DbosHostConfigurationChannel(engine)
+    channel.publish_model_registry_revision(registry)
+    channel.publish_project_model_defaults_revision(
+        ProjectModelDefaultsRevision(ProjectId("studio"), 1, (default,))
+    )
 
     try:
         with (
-            pytest.raises(IntegrityError, match="host occupancy"),
+            pytest.raises(IntegrityError, match=r"host (project )?model"),
             engine.begin() as connection,
         ):
             connection.execute(rewrite)

@@ -53,6 +53,7 @@ from atelier2.api.wire.resources import (
     NodeDetailResource,
     OperatorFoundDeterminationResource,
     RunReceiptResource,
+    UncastRoleResource,
     VersionedRunPageResource,
 )
 from atelier2.application.answer_wait import (
@@ -125,6 +126,7 @@ from atelier2.application.start_published_run import (
     RunFormatNotExecutable,
     RunIdentityConflict,
     RunInputRefused,
+    UncastAgentRoles,
     WorkItemOrderUnreadable,
 )
 from atelier2.application.start_published_run import (
@@ -276,6 +278,18 @@ async def start_run_route(
             _refuse_work_item_order(name, reason)
         case InvalidAgentBindings():
             raise ApiProblem("invalid-agent-bindings")
+        case UncastAgentRoles(roles):
+            raise ApiProblem(
+                "uncast-agent-roles",
+                uncast_roles=tuple(
+                    UncastRoleResource(
+                        role=role.role,
+                        reason=role.reason.value,
+                        family_differs_from=role.family_differs_from,
+                    )
+                    for role in roles
+                ),
+            )
         case BindingConstraintRefused(node, distinct_from):
             raise ApiProblem(
                 "binding-constraint-refused",

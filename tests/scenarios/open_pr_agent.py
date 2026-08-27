@@ -60,7 +60,10 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionCreated,
     PublishedRevisionExisting,
 )
-from tests.scenarios.agents import RecordingAgentExecutorFactoryV2
+from tests.scenarios.agents import (
+    RecordingAgentExecutorFactoryV2,
+    publish_checked_model_registry,
+)
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
 
 PROVIDER = "exact"
@@ -150,6 +153,9 @@ def publish_open_pr_agent_run(
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),
         AgentConfigurationRevisionCreated,
+    )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId(PROVIDER), (configuration,)
     )
     workflow = WorkflowRevision(
         _grant_document(_granted_tools_line() if granted else "", loop_maximum_rounds)

@@ -18,21 +18,26 @@ from atelier2.application.project_root import (
     publish_project_root_revision,
 )
 from atelier2.application.refusals import DurableStateCorrupt
-from atelier2.contracts.catalog_v3 import CatalogLineageId
+from atelier2.contracts.agents import ProviderId
 from atelier2.contracts.host_configuration import (
-    OccupancyRevision,
+    ModelRegistryRevision,
     ProjectId,
+    ProjectModelDefaultsRevision,
     ProjectRootRevision,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.host_configuration import (
     HostConfigurationReadUnavailable,
-    LatestOccupancyResult,
+    HostModelConfigurationSnapshotResult,
+    LatestModelRegistriesResult,
+    LatestModelRegistryResult,
+    LatestProjectModelDefaultsResult,
     LatestProjectRootResult,
     ProjectRootRevisionConflict,
     ProjectRootRevisionCreated,
     ProjectRootRevisionExisting,
-    PublishOccupancyResult,
+    PublishModelRegistryResult,
+    PublishProjectModelDefaultsResult,
     PublishProjectRootResult,
 )
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
@@ -47,7 +52,7 @@ class RecordingChannel:
     This suite calls `application.project_root` directly for the paths the HTTP
     surface cannot reach (a malformed raw project id, a corrupt durable read), so
     the fake must satisfy the whole protocol structurally even though its
-    occupancy half never runs here.
+    model-configuration half never runs here.
     """
 
     root: ProjectRootRevision | None
@@ -73,15 +78,33 @@ class RecordingChannel:
         self.root = revision
         return ProjectRootRevisionCreated(revision)
 
-    def latest_occupancy_revision(
-        self, project_id: ProjectId, lineage_id: CatalogLineageId
-    ) -> LatestOccupancyResult:
-        raise AssertionError("test_project_root does not exercise occupancy")
+    def latest_model_registry_revision(
+        self, provider_id: ProviderId
+    ) -> LatestModelRegistryResult:
+        raise AssertionError("test_project_root does not exercise model registries")
 
-    def publish_occupancy_revision(
-        self, revision: OccupancyRevision
-    ) -> PublishOccupancyResult:
-        raise AssertionError("test_project_root does not exercise occupancy")
+    def latest_model_registry_revisions(self) -> LatestModelRegistriesResult:
+        raise AssertionError("test_project_root does not exercise model registries")
+
+    def publish_model_registry_revision(
+        self, revision: ModelRegistryRevision
+    ) -> PublishModelRegistryResult:
+        raise AssertionError("test_project_root does not exercise model registries")
+
+    def latest_project_model_defaults_revision(
+        self, project_id: ProjectId
+    ) -> LatestProjectModelDefaultsResult:
+        raise AssertionError("test_project_root does not exercise model defaults")
+
+    def publish_project_model_defaults_revision(
+        self, revision: ProjectModelDefaultsRevision
+    ) -> PublishProjectModelDefaultsResult:
+        raise AssertionError("test_project_root does not exercise model defaults")
+
+    def model_configuration_snapshot(
+        self, project_id: ProjectId | None
+    ) -> HostModelConfigurationSnapshotResult:
+        raise AssertionError("test_project_root does not exercise model snapshots")
 
 
 def _client(channel: RecordingChannel, limits: ApiLimits | None = None) -> TestClient:

@@ -28,13 +28,13 @@ const PUBLIC_RUN = "run1.cnVu";
 
 function problemError(
   client: ClientModule,
-  code: "catalog-name-not-found" | "occupancy-missing"
+  code: "catalog-name-not-found"
 ): Error {
   return new client.CockpitRequestError(
     code,
     client.decodeProblem({
       type: `urn:atelier2:problem:v1:${code}`,
-      title: code === "occupancy-missing" ? "Occupancy not found" : "Catalog name not found",
+      title: "Catalog name not found",
       status: 404,
       detail: "not there"
     })
@@ -71,13 +71,20 @@ function connectedApiStub(overrides: Partial<CockpitApi> = {}): CockpitApi {
     })),
     getWorkflowRevision: vi.fn(async () => conductorRevisionDetail()),
     listProjects: vi.fn(async () => ({ items: [{ public_project_reference: "proj1.d29ya3Nob3A" }] })),
-    getProjectOccupancy: vi.fn(async () => ({
+    resolveProjectModels: vi.fn(async () => ({
       project_id: "workshop",
       public_project_reference: "proj1.d29ya3Nob3A",
-      lineage_id: "a".repeat(64),
-      revision_number: 1,
-      occupancy_revision_hash: "e".repeat(64),
-      bindings: [{ role: "conductor", agent_configuration_revision_hash: CONFIGURATION_HASH }]
+      workflow_revision_hash: REVISION_HASH,
+      resolutions: [{
+        role: "conductor",
+        agent_configuration_revision_hash: CONFIGURATION_HASH,
+        source: "from-project" as const,
+        model_id: "sonnet",
+        declared_difficulty: 2 as const,
+        default_difficulty: 2 as const,
+        uncast_reason: null,
+        family_differs_from: null
+      }]
     })),
     listAgentConfigurationRevisions: vi.fn(async () => ({
       items: [configurationItem(true)],
@@ -152,7 +159,7 @@ beforeEach(() => {
 });
 
 describe("whether a conductor is connected", () => {
-  it("resolves the catalog name, the occupancy binding and a startable configuration into one connection", async () => {
+  it("resolves the catalog name, project model, and startable configuration into one connection", async () => {
     const { episode } = await bootModules();
 
     const connection = await episode.resolveConductorConnection(connectedApiStub());
@@ -176,12 +183,24 @@ describe("whether a conductor is connected", () => {
     expect(await episode.resolveConductorConnection(api)).toBeNull();
   });
 
-  it("is not connected while the project recommends no occupancy for it", async () => {
-    const { episode, client } = await bootModules();
+  it("is not connected while the project leaves its role uncast", async () => {
+    const { episode } = await bootModules();
     const api = connectedApiStub({
-      getProjectOccupancy: vi.fn(async () => {
-        throw problemError(client, "occupancy-missing");
-      })
+      resolveProjectModels: vi.fn(async () => ({
+        project_id: "workshop",
+        public_project_reference: "proj1.d29ya3Nob3A",
+        workflow_revision_hash: REVISION_HASH,
+        resolutions: [{
+          role: "conductor",
+          agent_configuration_revision_hash: null,
+          source: "uncast" as const,
+          model_id: null,
+          declared_difficulty: 2 as const,
+          default_difficulty: null,
+          uncast_reason: "no-project-default" as const,
+          family_differs_from: null
+        }]
+      }))
     });
 
     expect(await episode.resolveConductorConnection(api)).toBeNull();

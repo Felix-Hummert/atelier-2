@@ -1,0 +1,12 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/711"
+
+[[sentence]]
+id = "settings-preserves-confirmed-truth-and-retries-only-its-failed-read"
+requirement = "REQ-UIQ-10"
+text = "Settings names an unavailable joint read without exposing transport trivia, and one accessible Retry repeats that complete logical read until confirmed Sources, Models, and Model defaults replace the failure."
+
+[[sentence]]
+id = "settings-reads-every-model-configuration-page-or-says-it-could-not"
+requirement = "REQ-UIQ-10"
+text = "Settings reads every page of model configurations before presenting Models and Model defaults as complete, and names the joint read unavailable when any page cannot be confirmed."

@@ -1,12 +1,11 @@
 """The host's one live-versioned configuration channel.
 
-The first entry is `project id → root path`. The second is recommended occupancy
-per workflow lineage. The third is the project's source connection: which
-external platform holds the project's tracked source, by an address only the
-connected platform adapter interprets, and where the host resolves its
-credential from — always a directory reference, never a credential value
-(ADR 0010 decision 2, ADR 0009 §6). CLI flags name where this channel lives;
-they are not a second copy of the map.
+The channel owns project roots, provider model registries, project model
+defaults, and project source connections. Model entries point at immutable
+agent configurations: that existing configuration carries today's public
+auth-profile predecessor of ADR 0017's Account, while no credential value ever
+enters this channel. CLI flags name where the channel lives; they are not a
+second copy of it.
 """
 
 from __future__ import annotations
@@ -17,12 +16,13 @@ from enum import StrEnum
 from pathlib import Path
 
 from atelier2.contracts.agents import (
+    MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_SIGNED_INT64,
     AgentConfigurationRevisionHash,
-    AgentRole,
+    ProviderId,
 )
-from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.hashing import Sha256Hash, frame
+from atelier2.contracts.workflows_v3 import RoleDifficulty
 
 MAXIMUM_PROJECT_ID_CHARACTERS = 1_024
 # This serve slice opens no more than the single project id bound at composition.
@@ -31,10 +31,13 @@ MAXIMUM_SERVED_PROJECTS = 1
 # Linux PATH_MAX is 4096 including the terminating NUL; a 4096-character
 # path is not openable. The published CHECK must match what open will admit.
 MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS = 4_095
-# Occupancy is one recommended role per binding. This family owns the count;
-# the run-start wire bound is a different question and must not cap a stored
-# occupancy after the fact.
-MAXIMUM_OCCUPANCY_BINDINGS = 100
+# A provider's discovered or operator-added catalog is configuration, not a
+# product inventory. The bound prevents one immutable revision becoming an
+# unbounded document without constraining which exact ids may appear in it.
+MAXIMUM_MODEL_REGISTRY_ENTRIES = 100
+MAXIMUM_PROJECT_MODEL_DEFAULTS = 3
+MAXIMUM_EXACT_MODEL_ID_CHARACTERS = MAXIMUM_AGENT_FIELD_CHARACTERS
+EXACT_MODEL_ID_PATTERN = r"^\S+$"
 # A source kind names one platform adapter family; it is a short word, not an
 # address.
 MAXIMUM_SOURCE_KIND_CHARACTERS = 64
@@ -49,7 +52,8 @@ MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS = MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS
 PROJECT_UNKNOWN = "project-unknown"
 PROJECT_ROOT_MISSING = "project-root-missing"
 HOST_CONFIGURATION_UNREADABLE = "host-configuration-unreadable"
-OCCUPANCY_REVISION_CONFLICT = "occupancy-revision-conflict"
+MODEL_REGISTRY_REVISION_CONFLICT = "model-registry-revision-conflict"
+PROJECT_MODEL_DEFAULTS_REVISION_CONFLICT = "project-model-defaults-revision-conflict"
 # ADR 0010's refusal for an operation or observation naming a project with no
 # connection record.
 PLATFORM_CONNECTION_UNKNOWN = "platform-connection-unknown"
@@ -148,99 +152,267 @@ class ProjectRootRevision:
         )
 
 
-class OccupancyRevisionConflict(Exception):
-    """The same project, lineage, and revision number already hold different bytes."""
+class ModelRegistryRevisionConflict(Exception):
+    """The same provider and revision number already hold different bytes."""
 
 
-class OccupancyBytesDisagree(Exception):
-    """Stored occupancy fields do not hash to the revision hash they carry."""
+class ModelRegistryBytesDisagree(Exception):
+    """Stored registry fields do not hash to the revision hash they carry."""
 
 
-class OccupancyRevisionHashCollision(Exception):
-    """The same occupancy revision hash already names different fields."""
+class ModelRegistryRevisionHashCollision(Exception):
+    """The same registry revision hash already names different fields."""
 
 
-class HostOccupancyRevisionHash(Sha256Hash):
-    """Identity of one immutable occupancy mapping revision."""
+class ProjectModelDefaultsRevisionConflict(Exception):
+    """The same project and revision number already hold different bytes."""
+
+
+class ProjectModelDefaultsBytesDisagree(Exception):
+    """Stored model-default fields do not hash to their revision hash."""
+
+
+class ProjectModelDefaultsRevisionHashCollision(Exception):
+    """The same defaults revision hash already names different fields."""
+
+
+class HostModelRegistryRevisionHash(Sha256Hash):
+    """Identity of one provider's immutable exact-model registry revision."""
+
+
+class HostProjectModelDefaultsRevisionHash(Sha256Hash):
+    """Identity of one project's immutable three-row model-default revision."""
+
+
+class ModelRegistryEntrySource(StrEnum):
+    """How an exact id entered configuration; never a rating or capability."""
+
+    DISCOVERED = "discovered"
+    OPERATOR = "operator"
+
+
+class ProviderModelCheck(StrEnum):
+    """What the provider has said about one exact model id."""
+
+    NOT_CHECKED = "not-checked"
+    CHECKED = "checked"
+    UNKNOWN_AT_PROVIDER = "unknown-at-provider"
+
+
+class ModelResolutionUncastReason(StrEnum):
+    """Why one declared role has no configuration at the casting boundary."""
+
+    OVERRIDE_NOT_REGISTERED = "override-not-registered"
+    WORKFLOW_MODEL_NOT_REGISTERED = "workflow-model-not-registered"
+    WORKFLOW_MODEL_AMBIGUOUS = "workflow-model-ambiguous"
+    NO_PROJECT_DEFAULT = "no-project-default"
+    FAMILY_DIFFERENCE_UNAVAILABLE = "family-difference-unavailable"
 
 
 @dataclass(frozen=True)
-class OccupancyBinding:
-    """One recommended role occupation on a lineage."""
+class UncastRole:
+    """One role a start cannot cast, including the workflow's family condition."""
 
-    role: AgentRole
-    agent_configuration_revision_hash: AgentConfigurationRevisionHash
+    role: str
+    reason: ModelResolutionUncastReason
+    family_differs_from: str | None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.role, AgentRole):
-            raise TypeError("occupancy binding role must use its typed contract")
+        if type(self.role) is not str or self.role == "":
+            raise ValueError("an uncast role must be named")
+        if not isinstance(self.reason, ModelResolutionUncastReason):
+            raise TypeError("an uncast role reason must use its typed contract")
+        if self.family_differs_from is not None and (
+            type(self.family_differs_from) is not str or self.family_differs_from == ""
+        ):
+            raise ValueError("an uncast family reference must name a role")
+
+
+def _exact_model_id(value: object) -> str:
+    if (
+        type(value) is not str
+        or not 1 <= len(value) <= MAXIMUM_EXACT_MODEL_ID_CHARACTERS
+        or any(character.isspace() for character in value)
+    ):
+        raise ValueError(
+            "a model id must contain 1.."
+            f"{MAXIMUM_EXACT_MODEL_ID_CHARACTERS} exact non-whitespace characters"
+        )
+    return value
+
+
+@dataclass(frozen=True)
+class ModelRegistryEntry:
+    """One exact provider id and the configured Account/executor that runs it."""
+
+    model_id: str
+    agent_configuration_revision_hash: AgentConfigurationRevisionHash
+    source: ModelRegistryEntrySource
+    provider_check: ProviderModelCheck
+
+    def __post_init__(self) -> None:
+        _exact_model_id(self.model_id)
         if not isinstance(
             self.agent_configuration_revision_hash, AgentConfigurationRevisionHash
         ):
-            raise TypeError(
-                "occupancy binding configuration hash must use its typed contract"
-            )
+            raise TypeError("model registry configuration hash must be typed")
+        if not isinstance(self.source, ModelRegistryEntrySource):
+            raise TypeError("model registry source must use its typed contract")
+        if not isinstance(self.provider_check, ProviderModelCheck):
+            raise TypeError("model registry provider check must use its typed contract")
 
 
 @dataclass(frozen=True)
-class OccupancyRevision:
-    project_id: ProjectId
-    lineage_id: CatalogLineageId
+class ModelRegistryRevision:
+    provider_id: ProviderId
     revision_number: int
-    bindings: tuple[OccupancyBinding, ...]
-    revision_hash: HostOccupancyRevisionHash = field(init=False)
+    entries: tuple[ModelRegistryEntry, ...]
+    revision_hash: HostModelRegistryRevisionHash = field(init=False)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.project_id, ProjectId):
-            raise TypeError("project id must use its typed contract")
-        if not isinstance(self.lineage_id, CatalogLineageId):
-            raise TypeError("lineage id must use its typed contract")
+        if not isinstance(self.provider_id, ProviderId):
+            raise TypeError("model registry provider must use its typed contract")
         if (
             type(self.revision_number) is not int
             or not 1 <= self.revision_number <= MAXIMUM_SIGNED_INT64
         ):
             raise ValueError(
-                "host occupancy revision number must be a positive signed int64"
+                "model registry revision number must be a positive signed int64"
             )
-        if not isinstance(self.bindings, tuple) or any(
-            not isinstance(binding, OccupancyBinding) for binding in self.bindings
+        if not isinstance(self.entries, tuple) or any(
+            not isinstance(entry, ModelRegistryEntry) for entry in self.entries
         ):
-            raise TypeError("occupancy bindings must be occupancy binding records")
+            raise TypeError("model registry entries must use their typed contract")
         ordered = tuple(
-            sorted(
-                self.bindings, key=lambda binding: binding.role.value.encode("utf-8")
-            )
+            sorted(self.entries, key=lambda entry: entry.model_id.encode("utf-8"))
         )
-        if len({binding.role for binding in ordered}) != len(ordered):
-            raise ValueError("occupancy binding roles must be unique")
-        if len(ordered) > MAXIMUM_OCCUPANCY_BINDINGS:
+        if len({entry.model_id for entry in ordered}) != len(ordered):
+            raise ValueError("model registry model ids must be unique per provider")
+        if len(ordered) > MAXIMUM_MODEL_REGISTRY_ENTRIES:
             raise ValueError(
-                "occupancy bindings must contain at most "
-                f"{MAXIMUM_OCCUPANCY_BINDINGS} roles"
+                "model registry revisions must contain at most "
+                f"{MAXIMUM_MODEL_REGISTRY_ENTRIES} entries"
             )
-        object.__setattr__(self, "bindings", ordered)
+        object.__setattr__(self, "entries", ordered)
         object.__setattr__(
             self,
             "revision_hash",
-            HostOccupancyRevisionHash.of(
+            HostModelRegistryRevisionHash.of(
                 frame(
-                    "host-occupancy-revision/v1",
-                    self.project_id.value.encode("utf-8"),
-                    self.lineage_id.value.encode("ascii"),
+                    "host-model-registry-revision/v1",
+                    self.provider_id.value.encode("ascii"),
                     struct.pack(">Q", self.revision_number),
                     *(
                         frame(
-                            "host-occupancy-binding/v1",
-                            binding.role.value.encode("utf-8"),
-                            binding.agent_configuration_revision_hash.value.encode(
+                            "host-model-registry-entry/v1",
+                            entry.model_id.encode("utf-8"),
+                            entry.agent_configuration_revision_hash.value.encode(
                                 "ascii"
                             ),
+                            entry.source.value.encode("ascii"),
+                            entry.provider_check.value.encode("ascii"),
                         )
-                        for binding in ordered
+                        for entry in ordered
                     ),
                 )
             ),
         )
+
+
+@dataclass(frozen=True)
+class ProjectModelDefault:
+    difficulty: RoleDifficulty
+    model_registry_revision_hash: HostModelRegistryRevisionHash
+    provider_id: ProviderId
+    model_id: str
+    agent_configuration_revision_hash: AgentConfigurationRevisionHash
+
+    def __post_init__(self) -> None:
+        if type(self.difficulty) is not int or self.difficulty not in {1, 2, 3}:
+            raise ValueError("a model default difficulty must be 1, 2 or 3")
+        if not isinstance(
+            self.model_registry_revision_hash, HostModelRegistryRevisionHash
+        ):
+            raise TypeError("model default registry hash must be typed")
+        if not isinstance(self.provider_id, ProviderId):
+            raise TypeError("model default provider must use its typed contract")
+        _exact_model_id(self.model_id)
+        if not isinstance(
+            self.agent_configuration_revision_hash, AgentConfigurationRevisionHash
+        ):
+            raise TypeError("model default configuration hash must be typed")
+
+
+@dataclass(frozen=True)
+class ProjectModelDefaultsRevision:
+    project_id: ProjectId
+    revision_number: int
+    defaults: tuple[ProjectModelDefault, ...]
+    revision_hash: HostProjectModelDefaultsRevisionHash = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.project_id, ProjectId):
+            raise TypeError("project id must use its typed contract")
+        if (
+            type(self.revision_number) is not int
+            or not 1 <= self.revision_number <= MAXIMUM_SIGNED_INT64
+        ):
+            raise ValueError(
+                "project model-default revision number must be a positive signed int64"
+            )
+        if not isinstance(self.defaults, tuple) or any(
+            not isinstance(default, ProjectModelDefault) for default in self.defaults
+        ):
+            raise TypeError("project model defaults must use their typed contract")
+        ordered = tuple(sorted(self.defaults, key=lambda default: default.difficulty))
+        if len({default.difficulty for default in ordered}) != len(ordered):
+            raise ValueError("project model-default difficulties must be unique")
+        if len(ordered) > MAXIMUM_PROJECT_MODEL_DEFAULTS:
+            raise ValueError("a project has at most three model defaults")
+        object.__setattr__(self, "defaults", ordered)
+        object.__setattr__(
+            self,
+            "revision_hash",
+            HostProjectModelDefaultsRevisionHash.of(
+                frame(
+                    "host-project-model-defaults-revision/v1",
+                    self.project_id.value.encode("utf-8"),
+                    struct.pack(">Q", self.revision_number),
+                    *(
+                        frame(
+                            "host-project-model-default/v1",
+                            struct.pack(">Q", default.difficulty),
+                            default.model_registry_revision_hash.value.encode("ascii"),
+                            default.provider_id.value.encode("ascii"),
+                            default.model_id.encode("utf-8"),
+                            default.agent_configuration_revision_hash.value.encode(
+                                "ascii"
+                            ),
+                        )
+                        for default in ordered
+                    ),
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class HostModelConfigurationSnapshot:
+    """The latest registries and one project's defaults seen at one instant."""
+
+    registries: tuple[ModelRegistryRevision, ...]
+    project_defaults: ProjectModelDefaultsRevision | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.registries, tuple) or any(
+            not isinstance(registry, ModelRegistryRevision)
+            for registry in self.registries
+        ):
+            raise TypeError("model configuration registries must use their contract")
+        if self.project_defaults is not None and not isinstance(
+            self.project_defaults, ProjectModelDefaultsRevision
+        ):
+            raise TypeError("model configuration defaults must use their contract")
 
 
 class ProjectSourceConnectionConflict(Exception):

@@ -85,9 +85,17 @@ durable home, so a verifier copies that hash rather than recomputing it.
 
 The host keeps one live-versioned configuration channel. It is durable,
 append-only-versioned in the `auth_profile_revisions` form, and readable at
-runtime. The first entry is `project id → root path`. The second is recommended
-occupancy per workflow lineage, versioned beside that mapping and readable
-over HTTP. Today's store is the
+runtime. The first entry is `project id → root path`. Provider-scoped model
+registries append immutable revisions of exact model id,
+agent-configuration revision, server-derived discovery or operator provenance,
+and the provider check. The registry PUT accepts only the exact id and
+configuration hash. A pinned CLI list marks discovered ids checked; a provider
+without a list leaves an operator id not checked until the validation door runs
+the composed executor's bounded dry run and appends the checked or
+unknown-at-provider result as another registry revision. Only checked entries
+may be referenced by defaults or role resolution.
+Project-scoped model defaults append the operator's Difficulty 1/2/3
+selections as exact registry tuples. Today's store is the
 first project: that configuration entry, and the reads that treat it as a
 project. CLI flags remain bootstrap of where the channel lives --
 `--database` is the store, and `--project-id` with `--project-root` may write
@@ -102,10 +110,19 @@ resource. That resource exposes neither the internal id nor the root path. A
 different well-formed reference is `project-unknown`; a malformed reference is
 `invalid-public-project-reference`. A configured id with no root is not an
 empty collection, and unreadable or corrupt configuration stays visibly
-unavailable or corrupt. There is no HTTP project write, second project,
-pagination, project editor, or store-per-project process.
+unavailable or corrupt. There is no HTTP write to a project's identity or root,
+second project, pagination, project editor, or store-per-project process. The
+bounded configuration writes are `PUT /atelier/api/v1/model-registries/{provider_id}`
+for a provider registry, `POST
+/atelier/api/v1/model-registries/{provider_id}/validations` for the server-owned
+first-use check, and `PUT
+/atelier/api/v1/projects/{public_project_reference}/model-defaults` for one
+project's defaults; the latter cannot create or alter a project. Every project
+defaults and resolution operation first proves that the reference names the
+project this process serves; a foreign configured project never reaches the
+model-configuration channel.
 
-The channel's third family is the project-source connection record
+The channel also holds the project-source connection record
 ([ADR 0010](../decisions/0010-github-platform-adapter.md) decision 2). `atelier2
 connect` is the explicit offline operator act: it appends one immutable
 revision binding a configured project to a source kind, an opaque source
@@ -116,7 +133,7 @@ identities and the reference, never a credential value, and every read answers
 the same; a project without a record is refused in the
 `platform-connection-unknown` shape. Revisions are keyed per project and
 source kind so a second source stays representable, while today's read returns
-the single latest connection. Schema V33 gives the family its append-only
+the single latest connection. Schema V40 retains the family's append-only
 table under the same immutability trigger pair the channel's other two
 families carry. Serve composes from the record: a served project whose latest
 connection revision names a GitHub source gets the live `open-pr` adapter, and
@@ -129,7 +146,7 @@ bind refuses to start, admission refuses an agent-authored `open-pr` grant,
 and a start refuses while an earlier run still owes an agent `open-pr`
 redemption.
 
-The canonical store is schema V33. A fresh store is created as exact V33 and
+The canonical store is schema V40. A fresh store is created as exact V40 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output
@@ -139,8 +156,10 @@ orders a run was started with, the immutable proof of every redeemed tool
 grant, the receipt hash an agent completion binds, immutable content-addressed
 artifacts an order may name instead of carrying their bytes, the round a
 declared loop was turning when each run, event and agent receipt was written,
-the host configuration channel's project-root, occupancy, and project-source
-connection revisions, and the queue projection's admission row per work item. The catalog adapter founds a lineage
+the host configuration channel's project-root, project-source, provider model
+registry, and project model-default revisions, and the queue projection's
+admission row per work item. V40 retires lineage occupancy instead of carrying
+both authorities. The catalog adapter founds a lineage
 and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An
 admitted name or lineage id resolves to the exact published bytes; a missing

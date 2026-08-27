@@ -14,8 +14,8 @@ from atelier2.adapters.dbos.agent_catalog import (
     auth_profile_from_record,
 )
 from atelier2.adapters.dbos.artifact_store import read_stored_artifact
-from atelier2.adapters.dbos.catalog_store import DbosCatalogStore, revision_owner
-from atelier2.adapters.dbos.host_configuration import DbosHostConfigurationChannel
+from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
+from atelier2.adapters.dbos.host_configuration import model_configuration_snapshot
 from atelier2.adapters.dbos.instants import record_run_started
 from atelier2.adapters.dbos.names import QUEUE_NAME, WORKFLOW_NAME
 from atelier2.adapters.dbos.node_records import persist_bound_node_executions
@@ -49,8 +49,8 @@ from atelier2.application.resolve_start_bindings import (
     AuthProfileMissingForConfiguration,
     agent_role_completeness_refusal,
     cast_unbound_roles,
-    declared_agent_roles,
     resolve_start_bindings,
+    undeclared_agent_role_refusal,
 )
 from atelier2.contracts.agents import (
     AgentBindingSet,
@@ -61,7 +61,11 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.hashing import Sha256Hash
-from atelier2.contracts.host_configuration import OccupancyRevision
+from atelier2.contracts.host_configuration import (
+    HostModelConfigurationSnapshot,
+    ModelRegistryBytesDisagree,
+    ProjectModelDefaultsBytesDisagree,
+)
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.orders import (
     ArtifactOrderValue,
@@ -112,6 +116,7 @@ from atelier2.ports.durable_runs import (
     DurableRunIdentityConflict,
     DurableRunRevisionMissing,
     DurableStateCorrupt,
+    DurableUncastAgentRoles,
     DurableV3StartInputRefused,
     DurableWorkItemOrderUnread,
     DurableWriteUnavailable,
@@ -120,7 +125,6 @@ from atelier2.ports.durable_runs import (
     StartPublishedRunRequestV3,
     V3InputRefusal,
 )
-from atelier2.ports.host_configuration import HostConfigurationReadUnavailable
 from atelier2.ports.workflow_revisions import (
     DurableRevisionCollision,
     DurableRevisionCreated,
@@ -562,7 +566,6 @@ class DbosDurableRunStarter:
         self._settings = settings
         self._agent_executor_registry = agent_executor_registry
         self._published_revisions = DbosCatalogStore(engine)
-        self._host_configuration = DbosHostConfigurationChannel(engine)
 
     def start_published(
         self, request: AnyStartPublishedRunRequest
@@ -585,23 +588,18 @@ class DbosDurableRunStarter:
         """
         return self._start(request)
 
-    def _cast_against_occupancy(
-        self, request: AnyStartPublishedRunRequest, graph: AnyWorkflowDocument
-    ) -> AnyStartPublishedRunRequest | DurableWriteUnavailable | DurableStateCorrupt:
-        """The same start, with roles nobody bound filled from the served project.
-
-        The occupancy is what the operator cast in the console, and until now
-        only the manual start page read it: a caller that names no binding --
-        the conductor's start, the queue's auto-start -- was refused for a
-        matrix the project had already answered. It is decided here rather than
-        at each caller because this is where the document's roles are known and
-        where the run's binding-set hash is about to be frozen. A deployment
-        serving no project reads nothing and starts exactly what it was handed.
-        """
-        project_id = self._settings.project_id
-        if project_id is None or not isinstance(
-            graph, (WorkflowGraphV2, WorkflowGraphV3)
-        ):
+    def _cast_against_model_configuration(
+        self,
+        connection: Connection,
+        request: AnyStartPublishedRunRequest,
+        graph: AnyWorkflowDocument,
+    ) -> (
+        AnyStartPublishedRunRequest
+        | DurableInvalidAgentBindings
+        | DurableUncastAgentRoles
+    ):
+        """Resolve every V3 role at the one seam that freezes run bindings."""
+        if not isinstance(graph, WorkflowGraphV3):
             return request
         requested = (
             request.agent_bindings
@@ -610,36 +608,39 @@ class DbosDurableRunStarter:
             )
             else AgentBindingSet(())
         )
-        bound = {binding.role.value for binding in requested.bindings}
-        if declared_agent_roles(graph) <= bound:
-            return request
-        with self._engine.connect() as connection:
-            lineage_id = revision_owner(
-                connection,
-                RevisionKind.WORKFLOW,
-                PublishedRevisionHash(request.revision_hash.value),
+        role_refusal = undeclared_agent_role_refusal(graph, requested)
+        if role_refusal is not None:
+            return role_refusal
+        snapshot = model_configuration_snapshot(connection, self._settings.project_id)
+        assert isinstance(snapshot, HostModelConfigurationSnapshot)
+        binding_reads = _TransactionAgentConfigurationReads(connection)
+        override_models: dict[AgentConfigurationRevisionHash, tuple[str, str]] = {}
+        for binding in requested.bindings:
+            found = binding_reads.agent_configuration_revision(
+                binding.agent_configuration_revision_hash
             )
-        if lineage_id is None:
-            return request
-        latest = self._host_configuration.latest_occupancy_revision(
-            project_id, lineage_id
+            if found is not None:
+                configuration, auth_profile = found
+                override_models[binding.agent_configuration_revision_hash] = (
+                    auth_profile.provider_id.value,
+                    configuration.model,
+                )
+        resolved = cast_unbound_roles(
+            graph,
+            requested,
+            snapshot.project_defaults,
+            snapshot.registries,
+            override_models,
         )
-        match latest:
-            case OccupancyRevision() | None:
-                cast = cast_unbound_roles(graph, requested, latest)
-            case HostConfigurationReadUnavailable():
-                return DurableWriteUnavailable()
-            case DurableStateCorrupt():
-                return DurableStateCorrupt()
-            case _ as unreachable:
-                assert_never(unreachable)
-        if cast == requested:
+        if resolved.uncast_roles:
+            return DurableUncastAgentRoles(resolved.uncast_roles)
+        if resolved.agent_bindings == requested:
             return request
         if isinstance(request, StartPublishedRunRequest):
             return StartPublishedRunRequestV2(
-                request.run_id, request.revision_hash, cast
+                request.run_id, request.revision_hash, resolved.agent_bindings
             )
-        return replace(request, agent_bindings=cast)
+        return replace(request, agent_bindings=resolved.agent_bindings)
 
     def _start(
         self,
@@ -672,21 +673,6 @@ class DbosDurableRunStarter:
                     return DurableStateCorrupt()
                 case _ as unreachable:
                     assert_never(unreachable)
-            cast = self._cast_against_occupancy(request, graph)
-            if isinstance(cast, (DurableWriteUnavailable, DurableStateCorrupt)):
-                return cast
-            request = cast
-            run_configuration: RunConfigurationRevision | None = None
-            if isinstance(graph, WorkflowGraphV3):
-                if not isinstance(
-                    request, (StartPublishedRunRequestV2, StartPublishedRunRequestV3)
-                ):
-                    return DurableInvalidAgentBindings()
-                run_configuration = RunConfigurationRevision(
-                    WorkflowRevisionHash(revision.revision_hash.value),
-                    request.agent_bindings.binding_set_hash,
-                    executability.resolutions,
-                )
         except (OperationalError, PoolTimeoutError):
             return DurableWriteUnavailable()
         except (ValueError, RuntimeError, DatabaseError):
@@ -715,6 +701,26 @@ class DbosDurableRunStarter:
                 if stored_revision.revision_hash != request.revision_hash:
                     raise RuntimeError(
                         "published revision bytes disagree with their hash"
+                    )
+                run_configuration: RunConfigurationRevision | None = None
+                if isinstance(graph, WorkflowGraphV3):
+                    cast = self._cast_against_model_configuration(
+                        connection, request, graph
+                    )
+                    if isinstance(
+                        cast, (DurableInvalidAgentBindings, DurableUncastAgentRoles)
+                    ):
+                        return cast
+                    request = cast
+                    if not isinstance(
+                        request,
+                        (StartPublishedRunRequestV2, StartPublishedRunRequestV3),
+                    ):
+                        return DurableInvalidAgentBindings()
+                    run_configuration = RunConfigurationRevision(
+                        WorkflowRevisionHash(revision.revision_hash.value),
+                        request.agent_bindings.binding_set_hash,
+                        executability.resolutions,
                     )
                 if isinstance(graph, WorkflowGraph):
                     if not isinstance(request, StartPublishedRunRequest):
@@ -993,6 +999,8 @@ class DbosDurableRunStarter:
             return DurableWriteUnavailable()
         except (
             AuthProfileMissingForConfiguration,
+            ModelRegistryBytesDisagree,
+            ProjectModelDefaultsBytesDisagree,
             ValueError,
             RuntimeError,
             DatabaseError,

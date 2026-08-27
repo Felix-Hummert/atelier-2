@@ -26,6 +26,7 @@ from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTER
 from atelier2.contracts.host_configuration import (
     MAXIMUM_CONNECTION_ACTOR_CHARACTERS,
     MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS,
+    MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
     MAXIMUM_PROJECT_ID_CHARACTERS,
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
@@ -58,12 +59,11 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head gives an attempt the word for work that was done and
-# could not be kept (#642), so an attempt whose candidate was never anchored
-# ends by its own name instead of borrowing one that would be a lie. Predecessor
-# is the published schema that admitted `ABANDONED` as an intent ending (#705).
+# Movable hop: this head replaces lineage occupancy with the host model registry
+# and the project's three difficulty defaults (#711). The old rows are dropped:
+# no value in the new project-scoped model can honestly retain their lineage key.
 # Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 38
+_HOP_PREDECESSOR_VERSION = 39
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -96,6 +96,7 @@ _VERSION_THIRTY_SIX = 36
 _VERSION_THIRTY_SEVEN = 37
 _VERSION_THIRTY_EIGHT = 38
 _VERSION_THIRTY_NINE = 39
+_VERSION_FORTY = 40
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -234,6 +235,10 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # changes, and until then it would hold two disagreeing answers to "which codes
 # exist". Only the vocabulary widens; every stored row keeps its bytes, its key
 # and its meaning.
+# V40 removes occupancy per workflow lineage and adds two append-only host
+# configuration families: exact model ids per provider and three optional
+# project defaults keyed by difficulty. Occupancy rows are deliberately not
+# migrated because the replacement has no lineage dimension.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -270,6 +275,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     37: "e41cf318212e0a79d6605413b5818ef68d6245baaf05a53b888b8aac40131a13",
     38: "aebd8b6bad8a719864f0c02828db643dd3dcbe7c89198beb6a8c1c4c30100824",
     39: "3c0cc05dd977fd61d2c88d78ba7566fdc0146e2d7af27df61aea636a4ac2c4be",
+    40: "d8d7b89cc0cacd15dfde84bf15f796f0e03d9b571c26be0309ed87a60960071d",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -390,6 +396,10 @@ V37_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V38_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_THIRTY_EIGHT,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_EIGHT],
+)
+V39_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_THIRTY_NINE,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_THIRTY_NINE],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1693,18 +1703,90 @@ host_project_root_revisions = sa.Table(
         f"length(root_path) BETWEEN 1 AND {MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS}"
     ),
 )
-host_occupancy_revisions = sa.Table(
-    "host_occupancy_revisions",
+host_model_registry_revisions = sa.Table(
+    "host_model_registry_revisions",
+    metadata,
+    sa.Column("revision_hash", sa.Text, primary_key=True),
+    sa.Column("provider_id", sa.Text, nullable=False),
+    sa.Column("revision_number", sa.Integer, nullable=False),
+    sa.UniqueConstraint("provider_id", "revision_number"),
+    sa.UniqueConstraint(
+        "revision_hash",
+        "provider_id",
+        "revision_number",
+    ),
+    sa.UniqueConstraint("revision_hash", "provider_id"),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        f"length(provider_id) BETWEEN 1 AND {MAXIMUM_PROVIDER_ID_CHARACTERS}"
+    ),
+    sa.CheckConstraint("provider_id GLOB '[a-z]*'"),
+    sa.CheckConstraint("provider_id NOT GLOB '*[^a-z0-9._-]*'"),
+    sa.CheckConstraint(f"revision_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
+)
+host_model_registry_entries = sa.Table(
+    "host_model_registry_entries",
+    metadata,
+    sa.Column("revision_hash", sa.Text, nullable=False),
+    sa.Column("provider_id", sa.Text, nullable=False),
+    sa.Column("model_id", sa.Text, nullable=False),
+    sa.Column("agent_configuration_revision_hash", sa.Text, nullable=False),
+    sa.Column("source", sa.Text, nullable=False),
+    sa.Column("provider_check", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("revision_hash", "model_id"),
+    sa.UniqueConstraint(
+        "revision_hash",
+        "provider_id",
+        "model_id",
+        "agent_configuration_revision_hash",
+    ),
+    sa.ForeignKeyConstraint(
+        ("revision_hash", "provider_id"),
+        (
+            "host_model_registry_revisions.revision_hash",
+            "host_model_registry_revisions.provider_id",
+        ),
+    ),
+    sa.ForeignKeyConstraint(
+        ("agent_configuration_revision_hash",),
+        ("agent_configuration_revisions.revision_hash",),
+    ),
+    sa.CheckConstraint(
+        "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        f"length(provider_id) BETWEEN 1 AND {MAXIMUM_PROVIDER_ID_CHARACTERS}"
+    ),
+    sa.CheckConstraint("provider_id GLOB '[a-z]*'"),
+    sa.CheckConstraint("provider_id NOT GLOB '*[^a-z0-9._-]*'"),
+    sa.CheckConstraint(
+        f"length(model_id) BETWEEN 1 AND {MAXIMUM_EXACT_MODEL_ID_CHARACTERS}"
+    ),
+    sa.CheckConstraint(
+        "instr(model_id, ' ') = 0 AND instr(model_id, char(9)) = 0 "
+        "AND instr(model_id, char(10)) = 0 AND instr(model_id, char(13)) = 0"
+    ),
+    sa.CheckConstraint(
+        "length(agent_configuration_revision_hash) = 64 "
+        "AND agent_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint("source IN ('discovered', 'operator')"),
+    sa.CheckConstraint(
+        "provider_check IN ('not-checked', 'checked', 'unknown-at-provider')"
+    ),
+)
+host_project_model_defaults_revisions = sa.Table(
+    "host_project_model_defaults_revisions",
     metadata,
     sa.Column("revision_hash", sa.Text, primary_key=True),
     sa.Column("project_id", sa.Text, nullable=False),
-    sa.Column("lineage_id", sa.Text, nullable=False),
     sa.Column("revision_number", sa.Integer, nullable=False),
-    sa.UniqueConstraint("project_id", "lineage_id", "revision_number"),
+    sa.UniqueConstraint("project_id", "revision_number"),
     sa.UniqueConstraint(
         "revision_hash",
         "project_id",
-        "lineage_id",
         "revision_number",
     ),
     sa.CheckConstraint(
@@ -1713,30 +1795,55 @@ host_occupancy_revisions = sa.Table(
     sa.CheckConstraint(
         f"length(project_id) BETWEEN 1 AND {MAXIMUM_PROJECT_ID_CHARACTERS}"
     ),
-    sa.CheckConstraint("length(lineage_id) = 64 AND lineage_id NOT GLOB '*[^0-9a-f]*'"),
     sa.CheckConstraint(f"revision_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
 )
-host_occupancy_bindings = sa.Table(
-    "host_occupancy_bindings",
+host_project_model_defaults = sa.Table(
+    "host_project_model_defaults",
     metadata,
     sa.Column(
         "revision_hash",
         sa.Text,
-        sa.ForeignKey("host_occupancy_revisions.revision_hash"),
+        sa.ForeignKey("host_project_model_defaults_revisions.revision_hash"),
         nullable=False,
     ),
-    sa.Column("role", sa.Text, nullable=False),
+    sa.Column("difficulty", sa.Integer, nullable=False),
+    sa.Column("model_registry_revision_hash", sa.Text, nullable=False),
+    sa.Column("provider_id", sa.Text, nullable=False),
+    sa.Column("model_id", sa.Text, nullable=False),
     sa.Column("agent_configuration_revision_hash", sa.Text, nullable=False),
-    sa.PrimaryKeyConstraint("revision_hash", "role"),
-    sa.UniqueConstraint(
-        "revision_hash",
-        "role",
-        "agent_configuration_revision_hash",
+    sa.PrimaryKeyConstraint("revision_hash", "difficulty"),
+    sa.ForeignKeyConstraint(
+        (
+            "model_registry_revision_hash",
+            "provider_id",
+            "model_id",
+            "agent_configuration_revision_hash",
+        ),
+        (
+            "host_model_registry_entries.revision_hash",
+            "host_model_registry_entries.provider_id",
+            "host_model_registry_entries.model_id",
+            "host_model_registry_entries.agent_configuration_revision_hash",
+        ),
     ),
     sa.CheckConstraint(
         "length(revision_hash) = 64 AND revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
-    sa.CheckConstraint(f"length(role) BETWEEN 1 AND {MAXIMUM_AGENT_FIELD_CHARACTERS}"),
+    sa.CheckConstraint("difficulty IN (1, 2, 3)"),
+    sa.CheckConstraint(
+        "length(model_registry_revision_hash) = 64 "
+        "AND model_registry_revision_hash NOT GLOB '*[^0-9a-f]*'"
+    ),
+    sa.CheckConstraint(
+        f"length(provider_id) BETWEEN 1 AND {MAXIMUM_PROVIDER_ID_CHARACTERS}"
+    ),
+    sa.CheckConstraint(
+        f"length(model_id) BETWEEN 1 AND {MAXIMUM_EXACT_MODEL_ID_CHARACTERS}"
+    ),
+    sa.CheckConstraint(
+        "instr(model_id, ' ') = 0 AND instr(model_id, char(9)) = 0 "
+        "AND instr(model_id, char(10)) = 0 AND instr(model_id, char(13)) = 0"
+    ),
     sa.CheckConstraint(
         "length(agent_configuration_revision_hash) = 64 "
         "AND agent_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
@@ -2572,28 +2679,52 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'host project-root revisions are immutable');
         END
     """,
-    "host_occupancy_revisions_no_update": """
-        CREATE TRIGGER host_occupancy_revisions_no_update
-        BEFORE UPDATE ON host_occupancy_revisions BEGIN
-          SELECT RAISE(ABORT, 'host occupancy revisions are immutable');
+    "host_model_registry_revisions_no_update": """
+        CREATE TRIGGER host_model_registry_revisions_no_update
+        BEFORE UPDATE ON host_model_registry_revisions BEGIN
+          SELECT RAISE(ABORT, 'host model registry revisions are immutable');
         END
     """,
-    "host_occupancy_revisions_no_delete": """
-        CREATE TRIGGER host_occupancy_revisions_no_delete
-        BEFORE DELETE ON host_occupancy_revisions BEGIN
-          SELECT RAISE(ABORT, 'host occupancy revisions are immutable');
+    "host_model_registry_revisions_no_delete": """
+        CREATE TRIGGER host_model_registry_revisions_no_delete
+        BEFORE DELETE ON host_model_registry_revisions BEGIN
+          SELECT RAISE(ABORT, 'host model registry revisions are immutable');
         END
     """,
-    "host_occupancy_bindings_no_update": """
-        CREATE TRIGGER host_occupancy_bindings_no_update
-        BEFORE UPDATE ON host_occupancy_bindings BEGIN
-          SELECT RAISE(ABORT, 'host occupancy bindings are immutable');
+    "host_model_registry_entries_no_update": """
+        CREATE TRIGGER host_model_registry_entries_no_update
+        BEFORE UPDATE ON host_model_registry_entries BEGIN
+          SELECT RAISE(ABORT, 'host model registry entries are immutable');
         END
     """,
-    "host_occupancy_bindings_no_delete": """
-        CREATE TRIGGER host_occupancy_bindings_no_delete
-        BEFORE DELETE ON host_occupancy_bindings BEGIN
-          SELECT RAISE(ABORT, 'host occupancy bindings are immutable');
+    "host_model_registry_entries_no_delete": """
+        CREATE TRIGGER host_model_registry_entries_no_delete
+        BEFORE DELETE ON host_model_registry_entries BEGIN
+          SELECT RAISE(ABORT, 'host model registry entries are immutable');
+        END
+    """,
+    "host_project_model_defaults_revisions_no_update": """
+        CREATE TRIGGER host_project_model_defaults_revisions_no_update
+        BEFORE UPDATE ON host_project_model_defaults_revisions BEGIN
+          SELECT RAISE(ABORT, 'host project model-default revisions are immutable');
+        END
+    """,
+    "host_project_model_defaults_revisions_no_delete": """
+        CREATE TRIGGER host_project_model_defaults_revisions_no_delete
+        BEFORE DELETE ON host_project_model_defaults_revisions BEGIN
+          SELECT RAISE(ABORT, 'host project model-default revisions are immutable');
+        END
+    """,
+    "host_project_model_defaults_no_update": """
+        CREATE TRIGGER host_project_model_defaults_no_update
+        BEFORE UPDATE ON host_project_model_defaults BEGIN
+          SELECT RAISE(ABORT, 'host project model defaults are immutable');
+        END
+    """,
+    "host_project_model_defaults_no_delete": """
+        CREATE TRIGGER host_project_model_defaults_no_delete
+        BEFORE DELETE ON host_project_model_defaults BEGIN
+          SELECT RAISE(ABORT, 'host project model defaults are immutable');
         END
     """,
     "host_project_source_connection_revisions_no_update": """
@@ -2802,18 +2933,27 @@ _V27_ACCESS_TRIGGER_NAMES = (
 def _table_names_for_version(version: int) -> frozenset[str]:
     later = {run_instants.name, attempt_instants.name, event_instants.name}
     host_channel = {host_project_root_revisions.name}
-    occupancy = {host_occupancy_revisions.name, host_occupancy_bindings.name}
+    occupancy = {"host_occupancy_revisions", "host_occupancy_bindings"}
+    model_configuration = {
+        host_model_registry_revisions.name,
+        host_model_registry_entries.name,
+        host_project_model_defaults_revisions.name,
+        host_project_model_defaults.name,
+    }
     connections = {host_project_source_connection_revisions.name}
+    before_model_configuration = (PRODUCT_TABLE_NAMES - model_configuration) | occupancy
     predecessor_tables = (
-        PRODUCT_TABLE_NAMES
+        before_model_configuration
         - {queue_items.name, webhook_delivery_cursor.name}
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
-    # V33 to V38 hold the same tables as the current version: the hops between
+    if version == SCHEMA_VERSION:
+        return PRODUCT_TABLE_NAMES
+    # V33 to V39 hold the same tables: the hops between
     # them moved one table's key and columns, three tables' state vocabulary, one
     # table's index and one table's column set, never the set of tables.
     if version in {
-        SCHEMA_VERSION,
+        _VERSION_THIRTY_NINE,
         _VERSION_THIRTY_EIGHT,
         _VERSION_THIRTY_SEVEN,
         _VERSION_THIRTY_SIX,
@@ -2821,11 +2961,11 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         _VERSION_THIRTY_FOUR,
         _VERSION_THIRTY_THREE,
     }:
-        return PRODUCT_TABLE_NAMES
+        return before_model_configuration
     if version in {_VERSION_THIRTY_TWO, _VERSION_THIRTY_ONE}:
-        return PRODUCT_TABLE_NAMES - connections
+        return before_model_configuration - connections
     if version in {_VERSION_THIRTY, _VERSION_TWENTY_NINE}:
-        return PRODUCT_TABLE_NAMES - connections - {webhook_delivery_cursor.name}
+        return before_model_configuration - connections - {webhook_delivery_cursor.name}
     if version == _VERSION_TWENTY_EIGHT:
         return predecessor_tables - {_V27_ACCESS_TABLE_NAME}
     if version in {_VERSION_TWENTY_SEVEN, _VERSION_TWENTY_SIX}:
@@ -4161,13 +4301,36 @@ def _apply_v23_to_v24(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_TWENTY_THREE, _VERSION_TWENTY_FOUR)
 
 
-_OCCUPANCY_TABLES = (host_occupancy_revisions, host_occupancy_bindings)
-_OCCUPANCY_TRIGGERS = (
-    "host_occupancy_revisions_no_update",
-    "host_occupancy_revisions_no_delete",
-    "host_occupancy_bindings_no_update",
-    "host_occupancy_bindings_no_delete",
+_OCCUPANCY_TABLE_NAMES = (
+    "host_occupancy_revisions",
+    "host_occupancy_bindings",
 )
+_OCCUPANCY_TRIGGER_STATEMENTS = {
+    "host_occupancy_revisions_no_update": """
+        CREATE TRIGGER host_occupancy_revisions_no_update
+        BEFORE UPDATE ON host_occupancy_revisions BEGIN
+          SELECT RAISE(ABORT, 'host occupancy revisions are immutable');
+        END
+    """,
+    "host_occupancy_revisions_no_delete": """
+        CREATE TRIGGER host_occupancy_revisions_no_delete
+        BEFORE DELETE ON host_occupancy_revisions BEGIN
+          SELECT RAISE(ABORT, 'host occupancy revisions are immutable');
+        END
+    """,
+    "host_occupancy_bindings_no_update": """
+        CREATE TRIGGER host_occupancy_bindings_no_update
+        BEFORE UPDATE ON host_occupancy_bindings BEGIN
+          SELECT RAISE(ABORT, 'host occupancy bindings are immutable');
+        END
+    """,
+    "host_occupancy_bindings_no_delete": """
+        CREATE TRIGGER host_occupancy_bindings_no_delete
+        BEFORE DELETE ON host_occupancy_bindings BEGIN
+          SELECT RAISE(ABORT, 'host occupancy bindings are immutable');
+        END
+    """,
+}
 
 
 def _apply_v25_to_v26(connection: sqlite3.Connection) -> None:
@@ -4178,21 +4341,19 @@ def _apply_v25_to_v26(connection: sqlite3.Connection) -> None:
     recommended a binding" means.
     """
 
-    for table in _OCCUPANCY_TABLES:
+    for table_name in _OCCUPANCY_TABLE_NAMES:
         existing = connection.execute(
             "SELECT name FROM sqlite_master WHERE name=?",
-            (table.name,),
+            (table_name,),
         ).fetchone()
         if existing is not None:
             raise StoreMigrationRefused(
-                f"schema version {_VERSION_TWENTY_FIVE} already has {table.name}; "
+                f"schema version {_VERSION_TWENTY_FIVE} already has {table_name}; "
                 "this command will not alter it"
             )
-        connection.execute(
-            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
-        )
-    for trigger in _OCCUPANCY_TRIGGERS:
-        connection.execute(_PRODUCT_TRIGGERS[trigger])
+        connection.execute(PUBLISHED_TABLE_SHAPES[(_VERSION_TWENTY_SIX, table_name)])
+    for statement in _OCCUPANCY_TRIGGER_STATEMENTS.values():
+        connection.execute(statement)
     _raise_declared_version(connection, _VERSION_TWENTY_FIVE, _VERSION_TWENTY_SIX)
 
 
@@ -4587,6 +4748,59 @@ def _apply_v38_to_v39(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_THIRTY_EIGHT, _VERSION_THIRTY_NINE)
 
 
+_MODEL_CONFIGURATION_TABLES = (
+    host_model_registry_revisions,
+    host_model_registry_entries,
+    host_project_model_defaults_revisions,
+    host_project_model_defaults,
+)
+_MODEL_CONFIGURATION_TRIGGERS = (
+    "host_model_registry_revisions_no_update",
+    "host_model_registry_revisions_no_delete",
+    "host_model_registry_entries_no_update",
+    "host_model_registry_entries_no_delete",
+    "host_project_model_defaults_revisions_no_update",
+    "host_project_model_defaults_revisions_no_delete",
+    "host_project_model_defaults_no_update",
+    "host_project_model_defaults_no_delete",
+)
+
+
+def _apply_v39_to_v40(connection: sqlite3.Connection) -> None:
+    """Replace lineage occupancy with registry and difficulty configuration.
+
+    No occupancy row is carried: its project-and-lineage key has no equivalent
+    in either replacement record, so any mapping would silently invent which
+    difficulty a role meant. The preflight happens before the first drop, and
+    the migration transaction keeps every old row intact if any replacement
+    name is already occupied.
+    """
+
+    for name in (
+        *(table.name for table in _MODEL_CONFIGURATION_TABLES),
+        *_MODEL_CONFIGURATION_TRIGGERS,
+    ):
+        existing = connection.execute(
+            "SELECT type FROM sqlite_master WHERE name=?", (name,)
+        ).fetchone()
+        if existing is not None:
+            raise StoreMigrationRefused(
+                f"schema version {_VERSION_THIRTY_NINE} already has {name}; "
+                "this command will not alter it"
+            )
+    for trigger_name in _OCCUPANCY_TRIGGER_STATEMENTS:
+        connection.execute(f"DROP TRIGGER {trigger_name}")
+    connection.execute("DROP TABLE host_occupancy_bindings")
+    connection.execute("DROP TABLE host_occupancy_revisions")
+    for table in _MODEL_CONFIGURATION_TABLES:
+        connection.execute(
+            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
+        )
+    for trigger_name in _MODEL_CONFIGURATION_TRIGGERS:
+        connection.execute(_PRODUCT_TRIGGERS[trigger_name])
+    _raise_declared_version(connection, _VERSION_THIRTY_NINE, _VERSION_FORTY)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -4724,6 +4938,11 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _VERSION_THIRTY_EIGHT,
         _VERSION_THIRTY_NINE,
         _apply_v38_to_v39,
+    ),
+    _SchemaMigrationStep(
+        _VERSION_THIRTY_NINE,
+        _VERSION_FORTY,
+        _apply_v39_to_v40,
     ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
