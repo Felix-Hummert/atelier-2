@@ -22,6 +22,8 @@
 </script>
 
 <script lang="ts">
+  import { tick } from "svelte";
+
   import type { NodeDetail, RunV3 } from "../api/client";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { decodeUtf8Base64 } from "../lib/exactBytes";
@@ -206,6 +208,43 @@
   function keyboardScrollableRegion(region: HTMLElement): void {
     region.tabIndex = 0;
   }
+
+  function selectTab(next: NodeTab): void {
+    tab = next;
+    void tick().then(() => {
+      globalThis.document.getElementById(`node-tab-${next}`)?.focus();
+    });
+  }
+
+  function onTabKeydown(event: KeyboardEvent, candidate: NodeTab): void {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    selectTab(candidate);
+  }
+
+  function onTabListKeydown(event: KeyboardEvent): void {
+    const current = NODE_TABS.indexOf(tab);
+    if (current < 0) {
+      return;
+    }
+    let next: NodeTab | null = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      next = NODE_TABS[(current + 1) % NODE_TABS.length] ?? null;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      next = NODE_TABS[(current - 1 + NODE_TABS.length) % NODE_TABS.length] ?? null;
+    } else if (event.key === "Home") {
+      next = NODE_TABS[0] ?? null;
+    } else if (event.key === "End") {
+      next = NODE_TABS[NODE_TABS.length - 1] ?? null;
+    }
+    if (next === null) {
+      return;
+    }
+    event.preventDefault();
+    selectTab(next);
+  }
 </script>
 
 <aside class="node-panel" aria-labelledby="node-panel-title">
@@ -217,7 +256,13 @@
   </header>
   <p class="node-facts">{nodeFactLine}</p>
 
-  <div class="node-tabs" role="tablist" aria-label={wrapDisplayCopy(runPageCopy.tabsLabel)}>
+  <div
+    class="node-tabs"
+    role="tablist"
+    tabindex="-1"
+    aria-label={wrapDisplayCopy(runPageCopy.tabsLabel)}
+    on:keydown={onTabListKeydown}
+  >
     {#each NODE_TABS as candidate (candidate)}
       <button
         type="button"
@@ -225,9 +270,11 @@
         id={`node-tab-${candidate}`}
         class="node-tab"
         class:on={tab === candidate}
+        tabindex={tab === candidate ? 0 : -1}
         aria-selected={tab === candidate}
         aria-controls={`node-tabpanel-${candidate}`}
-        on:click={() => { tab = candidate; }}
+        on:click={() => { selectTab(candidate); }}
+        on:keydown={(event) => onTabKeydown(event, candidate)}
       >{wrapDisplayCopy(tabLabels[candidate])}</button>
     {/each}
   </div>
@@ -470,34 +517,30 @@
     color: var(--ink-dim);
   }
 
-  /* One line that scrolls, never a second line: a tab that wraps below the
-     rule reads as a heading for what follows it, not as a tab. */
+  /* Each tab carries its own line: at 390 the row wraps, and the second
+     row still reads as tabs, not as a heading (picture v8, 390 rule). */
   .node-tabs {
     display: flex;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     gap: var(--space-1);
-    overflow-x: auto;
-    border-bottom: var(--edge) solid var(--line);
   }
 
   .node-tab {
     flex: none;
-  }
-
-  .node-tab {
     border: 0;
+    border-bottom: var(--edge-strong) solid var(--line);
     border-radius: 0;
     padding: var(--space-2) var(--space-3);
     color: var(--ink-dim);
     background: transparent;
     font-size: var(--text-xs);
     font-weight: var(--weight-strong);
+    white-space: nowrap;
   }
 
   .node-tab.on {
     color: var(--ink);
-    border-bottom: var(--edge-strong) solid var(--accent);
-    margin-bottom: calc(var(--edge) * -1);
+    border-bottom-color: var(--accent);
   }
 
   .node-tabpanel {

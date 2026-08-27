@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AttemptTranscript, NodeDetail } from "../../src/api/client";
@@ -171,14 +171,13 @@ describe("the node panel Log tab renders the stored attempt transcript (#666)", 
     });
     await fireEvent.click(screen.getByRole("tab", { name: wrapDisplayCopy(runPageCopy.tabLog) }));
 
-    expect(screen.getByText(runPageCopy.transcriptEmpty).isConnected).toBe(true);
-    expect(document.querySelector(".empty-mark")).not.toBeNull();
+    expect(screen.getByRole("status").textContent).toContain(runPageCopy.transcriptEmpty);
     expect(screen.queryByText(runPageCopy.processLogInLease)).toBeNull();
     expect(screen.queryByText(runPageCopy.logAbsent)).toBeNull();
     expect(screen.queryByRole("region", { name: runPageCopy.transcriptRegion })).toBeNull();
   });
 
-  it("shows Looking… and the loading mark, never a progressbar, while detail is in flight", async () => {
+  it("shows Looking… as status, never a progressbar, while detail is in flight", async () => {
     render(NodeDetailPanel, {
       props: {
         detail: null,
@@ -192,8 +191,7 @@ describe("the node panel Log tab renders the stored attempt transcript (#666)", 
     expect(screen.getByRole("heading", { name: "reviewer" }).isConnected).toBe(true);
     await fireEvent.click(screen.getByRole("tab", { name: wrapDisplayCopy(runPageCopy.tabLog) }));
 
-    expect(screen.getByText(runPageCopy.questionLooking).isConnected).toBe(true);
-    expect(document.querySelector(".loading-mark")).not.toBeNull();
+    expect(screen.getByRole("status").textContent).toContain(runPageCopy.questionLooking);
     expect(screen.queryByRole("progressbar")).toBeNull();
     expect(screen.queryByText(runPageCopy.processLogInLease)).toBeNull();
   });
@@ -234,6 +232,77 @@ describe("the node panel Log tab renders the stored attempt transcript (#666)", 
     ).toBe(true);
   });
 
+  it("moves between tabs with arrows and activates one with Enter or Space", async () => {
+    render(NodeDetailPanel, {
+      props: { detail: nodeDetail({ transcript: sequenceTranscript() }), onClose: () => {}, runEvidence }
+    });
+    const tablist = screen.getByRole("tablist", { name: wrapDisplayCopy(runPageCopy.tabsLabel) });
+    const resultTab = within(tablist).getByRole("tab", { name: wrapDisplayCopy(runPageCopy.tabResult) });
+    const inputTab = within(tablist).getByRole("tab", { name: wrapDisplayCopy(runPageCopy.tabInput) });
+    const logTab = within(tablist).getByRole("tab", { name: wrapDisplayCopy(runPageCopy.tabLog) });
+    const evidenceTab = within(tablist).getByRole("tab", {
+      name: wrapDisplayCopy(runPageCopy.tabEvidence)
+    });
+
+    expect(resultTab.getAttribute("aria-selected")).toBe("true");
+    expect(resultTab.tabIndex).toBe(0);
+    expect(inputTab.tabIndex).toBe(-1);
+
+    resultTab.focus();
+    expect(document.activeElement).toBe(resultTab);
+    await fireEvent.keyDown(resultTab, { key: "Tab" });
+    expect(document.activeElement).toBe(resultTab);
+    expect(inputTab.tabIndex).toBe(-1);
+
+    await fireEvent.keyDown(resultTab, { key: "ArrowRight" });
+    await waitFor(() => expect(inputTab.getAttribute("aria-selected")).toBe("true"));
+    expect(inputTab.tabIndex).toBe(0);
+    expect(resultTab.tabIndex).toBe(-1);
+
+    logTab.focus();
+    await fireEvent.keyDown(logTab, { key: "Enter" });
+    await waitFor(() => expect(logTab.getAttribute("aria-selected")).toBe("true"));
+    expect(
+      screen.getByRole("region", { name: wrapDisplayCopy(runPageCopy.transcriptRegion) }).isConnected
+    ).toBe(true);
+
+    await fireEvent.keyDown(logTab, { key: "End" });
+    await waitFor(() => expect(evidenceTab.getAttribute("aria-selected")).toBe("true"));
+
+    await fireEvent.keyDown(evidenceTab, { key: "Home" });
+    await waitFor(() => expect(resultTab.getAttribute("aria-selected")).toBe("true"));
+
+    await fireEvent.keyDown(resultTab, { key: " " });
+    expect(resultTab.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("opens and closes a door-call fold with Enter and Space", async () => {
+    const region = await openLog(nodeDetail({ transcript: sequenceTranscript() }));
+    const fold = within(region).getByText(runPageCopy.argumentsFold);
+    const summary = fold.closest("summary");
+    const details = fold.closest("details");
+    expect(summary).not.toBeNull();
+    expect(details).not.toBeNull();
+    expect(details?.open).toBe(false);
+
+    summary?.focus();
+    expect(document.activeElement).toBe(summary);
+    await fireEvent.keyDown(summary as HTMLElement, { key: "Enter" });
+    if (details !== null && !details.open) {
+      await fireEvent.click(summary as HTMLElement);
+    }
+    expect(details?.open).toBe(true);
+    expect(within(region).getByText('{"path":"docs/requirements/0003-ziel-ui.md"}').isConnected).toBe(
+      true
+    );
+
+    await fireEvent.keyDown(summary as HTMLElement, { key: " " });
+    if (details !== null && details.open) {
+      await fireEvent.click(summary as HTMLElement);
+    }
+    expect(details?.open).toBe(false);
+  });
+
   it("names how many events the stored transcript dropped", async () => {
     const region = await openLog(
       nodeDetail({
@@ -255,7 +324,7 @@ describe("the node panel Log tab renders the stored attempt transcript (#666)", 
 });
 
 describe("the run view shows panel chrome while node detail is still arriving", () => {
-  it("keeps the node id and tabs, and the Log tab's loading skeleton, until the node is read", async () => {
+  it("keeps the node id and tabs, and the Log tab's Looking… status, until the node is read", async () => {
     const cockpitApi = cockpitApiStub({
       getWorkflowRevision: vi.fn(async () => ({
         workflow_revision_hash: digest,
@@ -322,8 +391,7 @@ describe("the run view shows panel chrome while node detail is still arriving", 
     expect(screen.queryByText(/Reading reviewer/)).toBeNull();
 
     await fireEvent.click(within(panel).getByRole("tab", { name: runPageCopy.tabLog }));
-    expect(within(panel).getByText(runPageCopy.questionLooking).isConnected).toBe(true);
-    expect(panel.querySelector(".loading-mark")).not.toBeNull();
+    expect(within(panel).getByRole("status").textContent).toContain(runPageCopy.questionLooking);
     expect(screen.queryByRole("progressbar")).toBeNull();
   });
 });

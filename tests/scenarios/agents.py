@@ -43,6 +43,14 @@ from atelier2.contracts.agent_attempts import (
     AgentAttemptState,
     ProcessExitSignature,
 )
+from atelier2.contracts.agent_transcripts import (
+    AssistantTurn,
+    AttemptTranscript,
+    ToolCalled,
+    ToolReturned,
+    UnrecognisedProviderOutput,
+    Usage,
+)
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -96,6 +104,63 @@ from atelier2.ports.host_configuration import (
 
 SCENARIO_PROVIDER_FRAME_BYTES = 49_152
 """The raw stdout frame a scenario provider declares when it is not the subject."""
+
+# The #666 Log-tab e2e plants this sentence in the reviewer instruction so the
+# fixture server's existing e2e-v3 recording executor writes the raw canary to
+# stdout and keeps a transcript. serve_cockpit.py cannot grow a second factory
+# while another lane holds it.
+E2E_LOG_TAB_INSTRUCTION_MARK = "atelier2-e2e-log-tab-canary-666"
+E2E_LOG_TAB_CANARY = "sk-ant" + "-plantedcanarysecret0123456789"
+
+
+def e2e_log_tab_stdout() -> bytes:
+    return (
+        "checking changed files\n"
+        f"canary credential: {E2E_LOG_TAB_CANARY}\n"
+        "command stopped before an answer"
+    ).encode()
+
+
+def e2e_log_tab_request(request: AgentExecutionRequestV2) -> bool:
+    return E2E_LOG_TAB_INSTRUCTION_MARK.encode() in request.job_bytes
+
+
+def e2e_log_tab_command(request: AgentExecutionRequestV2) -> AgentProcessCommand:
+    return launching(
+        sys.executable,
+        "-c",
+        "import os, sys; os.write(1, bytes.fromhex(sys.argv[1])); sys.exit(int(sys.argv[2]))",
+        e2e_log_tab_stdout().hex(),
+        "1",
+    )(request)
+
+
+def e2e_log_tab_decode(
+    completion: AgentProcessCompletion,
+) -> AgentExecutionFailure:
+    stdout = completion.standard_output.decode("utf-8")
+    return AgentExecutionFailure(
+        AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+        AttemptTranscript.of(
+            (
+                AssistantTurn(
+                    "I will check the changed files against the review brief."
+                ),
+                ToolCalled(
+                    "Read",
+                    '{"path":"docs/requirements/0003-ziel-ui.md"}',
+                ),
+                ToolReturned("Read", "Read 128 lines."),
+                AssistantTurn(
+                    "The acceptance sentence and the picture still disagree."
+                ),
+                ToolCalled("Bash", '{"command":"check changed files"}'),
+                ToolReturned("Bash", "Command ended before it returned an answer."),
+                Usage(12_400, 680),
+                UnrecognisedProviderOutput(stdout),
+            )
+        ),
+    )
 
 
 def publish_checked_model_registry(
@@ -705,13 +770,20 @@ class RecordingAgentExecutorV2:
     def prepare_process(self, request: AgentExecutionRequestV2) -> AgentProcessCommand:
         self.requests.append(request)
         self.lifecycle.append(f"execute:{self.name}")
+        if e2e_log_tab_request(request):
+            return e2e_log_tab_command(request)
         return (self.command or emitting(self.output))(request)
 
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
         self.completions.append(completion)
-        result = self.decoder(completion)
+        request = self.requests[-1]
+        result = (
+            e2e_log_tab_decode(completion)
+            if e2e_log_tab_request(request)
+            else self.decoder(completion)
+        )
         self.results.append(result)
         return result
 
