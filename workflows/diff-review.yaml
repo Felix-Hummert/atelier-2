@@ -9,6 +9,10 @@ graph_inputs:
     schema:
       ref: diff_review_diff
       revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+  - name: review_questions
+    schema:
+      ref: nonempty_string
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
 nodes:
   - id: review
     type: agent
@@ -17,12 +21,16 @@ nodes:
     instruction: >-
       Review the diff carried under "diff". You cannot read files, run
       anything, or use tools in this headless call; the diff text is your only
-      evidence. Accept the diff when nothing you find blocks it; otherwise
-      revise it.
+      evidence. Answer every question carried under "review_questions" with
+      evidence from the diff. List findings with their file and text. Accept
+      the diff when nothing you find blocks it; otherwise revise it.
     inputs:
       - name: diff
         from:
           graph_input: diff
+      - name: review_questions
+        from:
+          graph_input: review_questions
     outputs:
       - name: finding
         schema:
