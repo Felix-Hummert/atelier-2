@@ -16,9 +16,11 @@ drifts.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from multiprocessing import get_context
 from pathlib import Path
 
 import pytest
@@ -423,6 +425,20 @@ table would prove the shape and nothing about what stood in it.
 def _logical_dump(database_path: Path) -> tuple[str, ...]:
     with sqlite3.connect(database_path) as connection:
         return tuple(connection.iterdump())
+
+
+def _crash_v44_migration_after_queue_copy(database_path: str) -> None:
+    raise_declared_version = schema_module._raise_declared_version
+
+    def exit_after_v44_copy(
+        connection: sqlite3.Connection, expected_version: int, target_version: int
+    ) -> None:
+        raise_declared_version(connection, expected_version, target_version)
+        if expected_version == 43:
+            os._exit(79)
+
+    schema_module._raise_declared_version = exit_after_v44_copy
+    migrate_store(Path(database_path))
 
 
 def _restore_v43_queue_predecessor(connection: sqlite3.Connection) -> None:
@@ -859,7 +875,7 @@ def test_every_populated_v42_product_row_crosses_v43_and_v44_unchanged(
         "f7d299ab865b87ca47a399d4897f8c7b273085c4d206fac9eb882d47198b9782"
     )
     assert PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256 == (
-        "ea0b11faca1afb24de03bd15b4f576ddc55972b8a50ca0523241516aca9144c1"
+        "b8a176e76092a24fa0c8ac1caafdd69e57f4ff404ecb5560a1dd426d32a3ee9b"
     )
     database = tmp_path / "atelier.sqlite"
     _create_populated_v42_store(database)
@@ -916,6 +932,87 @@ def test_v43_failpoint_after_version_cas_restores_the_exact_v42_store(
         assert schema_module._fingerprint_for_version(connection, 42) == (
             V42_SCHEMA_HANDOFF.fingerprint_sha256
         )
+
+
+def test_v44_process_loss_after_queue_copy_rolls_back_then_reruns_cleanly(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    engine = create_canonical_engine(database)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database) as connection:
+        _restore_v43_queue_predecessor(connection)
+        connection.execute("UPDATE atelier_schema_versions SET version = 43")
+        connection.commit()
+        _require_product_shape(connection, 43)
+    before = _logical_dump(database)
+    child = get_context("spawn").Process(
+        target=_crash_v44_migration_after_queue_copy,
+        args=(str(database),),
+    )
+    child.start()
+    child.join(timeout=20)
+    if child.is_alive():
+        child.terminate()
+        child.join(timeout=5)
+        if child.is_alive():
+            child.kill()
+            child.join(timeout=5)
+        pytest.fail("the crashing migration child did not exit within 20 seconds")
+
+    assert child.exitcode == 79
+    assert _logical_dump(database) == before
+    with sqlite3.connect(database) as connection:
+        assert schema_module._fingerprint_for_version(connection, 43) == (
+            V43_SCHEMA_HANDOFF.fingerprint_sha256
+        )
+
+    report = migrate_store(database)
+
+    assert (report.source_version, report.target_version) == (43, 44)
+    with sqlite3.connect(database) as connection:
+        assert schema_module._fingerprint_for_version(connection, 44) == (
+            PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        )
+
+
+def test_migrate_refuses_a_hand_corrupted_partial_v44_queue_row(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    engine = create_canonical_engine(database)
+    initialize_schema(engine)
+    item_id = "b2" * 32
+    with engine.begin() as connection:
+        connection.execute(
+            queue_items.insert().values(
+                item_id=item_id,
+                project_id="project1",
+                tracker_item_reference="gh:partial",
+                state="OBSERVED",
+                state_version=0,
+            )
+        )
+    engine.dispose()
+    with sqlite3.connect(database) as connection:
+        connection.execute("DROP TRIGGER queue_items_state_transition")
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            "UPDATE queue_items SET state='ADMITTED', state_version=2, "
+            "workflow_lineage_id=?, admission_rationale='approved', "
+            "current_proposal_revision=1 WHERE item_id=?",
+            ("a1" * 32, item_id),
+        )
+        connection.commit()
+
+    with pytest.raises(StoreMigrationRefused, match="partial or inconsistent V44"):
+        migrate_store(database)
+
+
+def test_predecessor_rebuild_without_a_frozen_shape_fails_loud() -> None:
+    with pytest.raises(StoreMigrationRefused, match="no published shape of runs"):
+        schema_module._table_shape_at(43, runs)
 
 
 def test_v43_refusal_receipts_are_immutable_after_the_additive_hop(

@@ -2158,6 +2158,14 @@ export const problemDefinitions = {
     status: 409,
     title: "Queue item is already admitted",
   },
+  "queue-admission-authority-refused": {
+    status: 409,
+    title: "Queue admission authority refused",
+  },
+  "queue-admission-proposal-required": {
+    status: 409,
+    title: "Queue admission requires a proposal",
+  },
   "queue-policy-revision-conflict": {
     status: 409,
     title: "Queue policy revision conflict",
@@ -2686,6 +2694,14 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant(
     "queue-admission-already-decided",
     problemDefinitions["queue-admission-already-decided"],
+  ),
+  problemVariant(
+    "queue-admission-authority-refused",
+    problemDefinitions["queue-admission-authority-refused"],
+  ),
+  problemVariant(
+    "queue-admission-proposal-required",
+    problemDefinitions["queue-admission-proposal-required"],
   ),
   problemVariant(
     "queue-policy-revision-conflict",

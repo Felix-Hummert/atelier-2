@@ -14,6 +14,7 @@ import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
+from sqlalchemy.sql.functions import Function
 
 import atelier2.application.advance_queue as advance_queue_module
 from atelier2.adapters.dbos import schema as schema_module
@@ -35,6 +36,7 @@ from atelier2.adapters.dbos.schema import (
     queue_launch_bindings,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.app import create_app
 from atelier2.api.openapi import (
     API_PREFIX,
     PROJECT_QUEUE_POLICY_PATH,
@@ -43,7 +45,11 @@ from atelier2.api.openapi import (
     QUEUE_PROPOSALS_PATH,
 )
 from atelier2.api.references import encode_public_project_reference
-from atelier2.application.advance_queue import QueueRunStarted
+from atelier2.application.advance_queue import QueueAdvanceUnavailable, QueueRunStarted
+from atelier2.application.refusals import (
+    DurableStateCorrupt as StartDurableStateCorrupt,
+)
+from atelier2.application.refusals import WriteUnavailable
 from atelier2.application.start_published_run import RunCreated
 from atelier2.contracts.catalog_v3 import (
     CatalogActivatedAt,
@@ -72,6 +78,8 @@ from atelier2.contracts.queue_projection import (
     QueueProjectPolicyRevision,
     QueueProposal,
     QueueProposalAlreadyCurrent,
+    QueueProposalRefusal,
+    QueueProposalRefused,
     QueueProposalRevisionConflict,
     TrackerItemReference,
     WorkItemReference,
@@ -84,7 +92,10 @@ from atelier2.contracts.runs import (
     WorkflowRevision,
     WorkflowRevisionHash,
 )
-from atelier2.ports.durable_runs import DurablePublishedRunStarter
+from atelier2.ports.durable_runs import (
+    DurablePublishedRunStarter,
+    DurableStateCorrupt,
+)
 from atelier2.ports.published_revisions import CatalogLineageFounded
 from atelier2.ports.queue_projection import (
     QueueItemsPage,
@@ -92,7 +103,12 @@ from atelier2.ports.queue_projection import (
     QueueLaunchReserved,
     QueueProjectPolicyPublished,
 )
-from tests.scenarios.api import durable_api_client
+from tests.scenarios.api import (
+    api_limits,
+    api_ports,
+    durable_api_client,
+    event_poll_backoff,
+)
 from tests.scenarios.runs import publish_revision
 from tests.scenarios.runtime import exact_output_runtime
 
@@ -145,6 +161,35 @@ def _proposal(
         QueueAutomationDisposition.HUMAN_REQUIRED,
         1,
     )
+
+
+def _insert_dependency_proposal(
+    engine: Engine,
+    item: WorkItemReference,
+    lineage_id: CatalogLineageId,
+    prerequisite: WorkItemReference,
+    revision: int,
+) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            schema_module.queue_proposal_revisions.insert().values(
+                item_id=item.item_id.value,
+                proposal_revision=revision,
+                project_id=item.project.value,
+                priority_rank=1,
+                workflow_lineage_id=lineage_id.value,
+                automation_disposition=QueueAutomationDisposition.HUMAN_REQUIRED.value,
+                policy_revision=1,
+            )
+        )
+        connection.execute(
+            schema_module.queue_dependency_edges.insert().values(
+                item_id=item.item_id.value,
+                proposal_revision=revision,
+                project_id=item.project.value,
+                prerequisite_item_id=prerequisite.item_id.value,
+            )
+        )
 
 
 def _prepare_admitted(
@@ -301,6 +346,33 @@ def test_v44_fresh_shape_and_phase_d_vocabulary_are_exact(tmp_path: Path) -> Non
     }
 
 
+def test_v44_check_rejects_a_sql_null_partial_admission(tmp_path: Path) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    reference = WorkItemReference(PROJECT, TrackerItemReference("gh:partial-check"))
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO queue_items "
+            "(item_id, project_id, tracker_item_reference, state, state_version) "
+            "VALUES (?, ?, ?, 'OBSERVED', 0)",
+            (
+                reference.item_id.value,
+                reference.project.value,
+                reference.tracker_item.value,
+            ),
+        )
+        connection.execute("DROP TRIGGER queue_items_state_transition")
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+            connection.execute(
+                "UPDATE queue_items SET state='ADMITTED', state_version=2, "
+                "workflow_lineage_id=?, admission_rationale='approved', "
+                "current_proposal_revision=1 WHERE item_id=?",
+                ("a1" * 32, reference.item_id.value),
+            )
+
+
 def test_policy_and_launch_reservation_are_atomic_under_the_project_cap(
     store: tuple[DbosQueueProjectionStore, Engine],
 ) -> None:
@@ -333,6 +405,90 @@ def test_policy_and_launch_reservation_are_atomic_under_the_project_cap(
         outcome for outcome in outcomes if isinstance(outcome, QueueLaunchBlocked)
     )
     assert QueueBlockerKind.CAP_REACHED in blocked.item.blockers
+
+
+def test_missing_policy_refuses_start_without_inventing_a_capacity_decision(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    queue, engine = store
+    lineage_id, revision_hash = _found_lineage(engine)
+    reference = WorkItemReference(PROJECT, TrackerItemReference("gh:no-policy"))
+    queue.observe((reference,))
+    proposed = queue.plan(
+        PlanQueueItem(
+            reference,
+            QueueProposal(
+                QueuePriorityRank(1),
+                lineage_id,
+                (),
+                QueueAutomationDisposition.HUMAN_REQUIRED,
+                None,
+            ),
+            QueueProjectionRevision(0),
+        )
+    )
+    assert isinstance(proposed, QueueItemProposed)
+    admitted = queue.confirm(
+        ConfirmQueueProposal(
+            reference,
+            proposed.revision,
+            QueueAdmissionRationale("approved without an invented policy"),
+        )
+    )
+    assert isinstance(admitted, QueueItemAdmitted)
+
+    result = queue.reserve_launch(
+        QueueLaunchBinding(
+            reference.item_id,
+            proposed.revision,
+            RunId("missing-policy-run"),
+            revision_hash,
+        )
+    )
+
+    assert isinstance(result, QueueLaunchBlocked)
+    assert result.item.blockers == (QueueBlockerKind.START_REFUSED,)
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count()).select_from(queue_launch_bindings)
+            )
+            == 0
+        )
+
+
+def test_unreadable_capacity_count_fails_the_reservation_loud(
+    store: tuple[DbosQueueProjectionStore, Engine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue, engine = store
+    lineage_id, revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
+    reference = _prepare_admitted(queue, lineage_id)
+    scalar = cast(Any, sa.engine.Connection.scalar)
+
+    def unreadable_count(
+        connection: sa.engine.Connection, statement: Any, *args: Any, **kwargs: Any
+    ) -> Any:
+        if any(
+            isinstance(element, Function) and element.name.lower() == "count"
+            for element in sa.sql.visitors.iterate(statement)
+        ):
+            return None
+        return scalar(connection, statement, *args, **kwargs)
+
+    monkeypatch.setattr(sa.engine.Connection, "scalar", unreadable_count)
+
+    result = queue.reserve_launch(
+        QueueLaunchBinding(
+            reference.item_id,
+            QueueProjectionRevision(1),
+            RunId("unreadable-count-run"),
+            revision_hash,
+        )
+    )
+
+    assert isinstance(result, DurableStateCorrupt)
 
 
 def test_dependencies_require_completed_and_ready_items_order_by_rank_then_id(
@@ -425,6 +581,286 @@ def test_dependencies_require_completed_and_ready_items_order_by_rank_then_id(
         *sorted((dependent.item_id, peer.item_id), key=lambda item_id: item_id.value),
         prerequisite.item_id,
     ]
+
+
+@pytest.mark.parametrize("proposal_revision", [None, 1])
+def test_phase_d_state_without_its_proposal_fails_loud(
+    store: tuple[DbosQueueProjectionStore, Engine], proposal_revision: int | None
+) -> None:
+    queue, engine = store
+    reference = WorkItemReference(PROJECT, TrackerItemReference("gh:corrupt-proposed"))
+    queue.observe((reference,))
+    with sqlite3.connect(str(engine.url.database)) as connection:
+        connection.execute("DROP TRIGGER queue_items_state_transition")
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            "UPDATE queue_items SET state='PROPOSED', state_version=1, "
+            "current_proposal_revision=? WHERE item_id=?",
+            (proposal_revision, reference.item_id.value),
+        )
+        connection.commit()
+
+    assert isinstance(queue.list_items(None, 50), DurableStateCorrupt)
+
+
+def test_unknown_prerequisite_run_state_fails_loud(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    queue, engine = store
+    lineage_id, revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 2, None), 0)
+    prerequisite = _prepare_admitted(queue, lineage_id, "gh:corrupt-run")
+    _prepare_admitted(
+        queue, lineage_id, "gh:dependent-on-corrupt-run", (prerequisite.item_id,)
+    )
+    run_id = RunId("corrupt-prerequisite-run")
+    assert isinstance(
+        queue.reserve_launch(
+            QueueLaunchBinding(
+                prerequisite.item_id,
+                QueueProjectionRevision(1),
+                run_id,
+                revision_hash,
+            )
+        ),
+        QueueLaunchReserved,
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            schema_module.runs.insert().values(
+                run_id=run_id.value,
+                bootstrap_workflow_id="corrupt-prerequisite-bootstrap",
+                revision_hash=revision_hash.value,
+                workflow_format_version=1,
+                current_node_id="final",
+                current_round_ordinal=1,
+                state=RunState.STARTED.value,
+                state_version=0,
+                last_event_sequence=0,
+                terminal_hash=None,
+            )
+        )
+        connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            schema_module.runs.update()
+            .where(schema_module.runs.c.run_id == run_id.value)
+            .values(state="UNKNOWN_DURABLE_STATE")
+        )
+
+    assert isinstance(queue.list_items(None, 50), DurableStateCorrupt)
+
+
+def test_plan_fails_loud_when_derived_identity_collides_with_another_reference(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    queue, engine = store
+    lineage_id, _revision_hash = _found_lineage(engine)
+    reference = WorkItemReference(PROJECT, TrackerItemReference("gh:identity"))
+    with engine.begin() as connection:
+        connection.execute(
+            schema_module.queue_items.insert().values(
+                item_id=reference.item_id.value,
+                project_id="different-project",
+                tracker_item_reference="gh:different",
+                state=QueueItemState.OBSERVED.value,
+                state_version=0,
+            )
+        )
+
+    result = queue.plan(
+        PlanQueueItem(reference, _proposal(lineage_id), QueueProjectionRevision(0))
+    )
+
+    assert isinstance(result, DurableStateCorrupt)
+
+
+def test_dependency_cycle_check_ignores_superseded_same_project_edges(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    queue, engine = store
+    lineage_id, _revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
+    first = WorkItemReference(PROJECT, TrackerItemReference("gh:first"))
+    second = WorkItemReference(PROJECT, TrackerItemReference("gh:second"))
+    queue.observe((first, second))
+    assert isinstance(
+        queue.plan(
+            PlanQueueItem(
+                first,
+                QueueProposal(
+                    QueuePriorityRank(1),
+                    lineage_id,
+                    (second.item_id,),
+                    QueueAutomationDisposition.HUMAN_REQUIRED,
+                    1,
+                ),
+                QueueProjectionRevision(0),
+            )
+        ),
+        QueueItemProposed,
+    )
+    _insert_dependency_proposal(engine, second, lineage_id, first, 99)
+    command_reference = WorkItemReference(PROJECT, TrackerItemReference("gh:no-deps"))
+
+    result = queue.plan(
+        PlanQueueItem(
+            command_reference,
+            _proposal(lineage_id),
+            QueueProjectionRevision(0),
+        )
+    )
+
+    assert isinstance(result, QueueItemProposed)
+
+
+def test_dependency_cycle_check_ignores_current_cross_project_edges(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    queue, engine = store
+    lineage_id, _revision_hash = _found_lineage(engine)
+    other_project = ProjectId("other-project")
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
+    queue.put_policy(QueueProjectPolicyRevision(other_project, 1, 1, None), 0)
+    first = WorkItemReference(other_project, TrackerItemReference("gh:first"))
+    second = WorkItemReference(other_project, TrackerItemReference("gh:second"))
+    queue.observe((first, second))
+    assert isinstance(
+        queue.plan(
+            PlanQueueItem(
+                first,
+                QueueProposal(
+                    QueuePriorityRank(1),
+                    lineage_id,
+                    (second.item_id,),
+                    QueueAutomationDisposition.HUMAN_REQUIRED,
+                    1,
+                ),
+                QueueProjectionRevision(0),
+            )
+        ),
+        QueueItemProposed,
+    )
+    _insert_dependency_proposal(engine, second, lineage_id, first, 1)
+    with engine.begin() as connection:
+        connection.execute(
+            schema_module.queue_items.update()
+            .where(schema_module.queue_items.c.item_id == second.item_id.value)
+            .values(
+                state=QueueItemState.PROPOSED.value,
+                state_version=1,
+                current_proposal_revision=1,
+            )
+        )
+    command_reference = WorkItemReference(PROJECT, TrackerItemReference("gh:no-deps"))
+
+    result = queue.plan(
+        PlanQueueItem(
+            command_reference,
+            _proposal(lineage_id),
+            QueueProjectionRevision(0),
+        )
+    )
+
+    assert isinstance(result, QueueItemProposed)
+
+
+def test_queue_proposal_refusals_are_closed_typed_decisions(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    queue, engine = store
+    lineage_id, _revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
+
+    def plan(
+        tracker: str,
+        prerequisites: tuple[QueueItemId, ...],
+        policy_revision: int = 1,
+    ) -> object:
+        reference = WorkItemReference(PROJECT, TrackerItemReference(tracker))
+        return queue.plan(
+            PlanQueueItem(
+                reference,
+                QueueProposal(
+                    QueuePriorityRank(1),
+                    lineage_id,
+                    prerequisites,
+                    QueueAutomationDisposition.HUMAN_REQUIRED,
+                    policy_revision,
+                ),
+                QueueProjectionRevision(0),
+            )
+        )
+
+    self_reference = WorkItemReference(PROJECT, TrackerItemReference("gh:self"))
+    self_refusal = queue.plan(
+        PlanQueueItem(
+            self_reference,
+            QueueProposal(
+                QueuePriorityRank(1),
+                lineage_id,
+                (self_reference.item_id,),
+                QueueAutomationDisposition.HUMAN_REQUIRED,
+                1,
+            ),
+            QueueProjectionRevision(0),
+        )
+    )
+    missing_policy = plan("gh:policy-missing", (), 99)
+    missing_prerequisite = plan("gh:prerequisite-missing", (QueueItemId("c3" * 32),))
+    other_project_reference = WorkItemReference(
+        ProjectId("other-project"), TrackerItemReference("gh:outside-project")
+    )
+    queue.observe((other_project_reference,))
+    outside_project = plan("gh:outside-dependent", (other_project_reference.item_id,))
+    first = WorkItemReference(PROJECT, TrackerItemReference("gh:cycle-first"))
+    second = WorkItemReference(PROJECT, TrackerItemReference("gh:cycle-second"))
+    queue.observe((first, second))
+    assert isinstance(
+        queue.plan(
+            PlanQueueItem(
+                first,
+                _proposal(lineage_id, (second.item_id,)),
+                QueueProjectionRevision(0),
+            )
+        ),
+        QueueItemProposed,
+    )
+    cycle = queue.plan(
+        PlanQueueItem(
+            second,
+            _proposal(lineage_id, (first.item_id,)),
+            QueueProjectionRevision(0),
+        )
+    )
+
+    assert self_refusal == QueueProposalRefused(QueueProposalRefusal.SELF_DEPENDENCY)
+    assert missing_policy == QueueProposalRefused(
+        QueueProposalRefusal.POLICY_REVISION_MISSING
+    )
+    assert missing_prerequisite == QueueProposalRefused(
+        QueueProposalRefusal.PREREQUISITE_NOT_IN_PROJECT
+    )
+    assert outside_project == QueueProposalRefused(
+        QueueProposalRefusal.PREREQUISITE_NOT_IN_PROJECT
+    )
+    assert cycle == QueueProposalRefused(QueueProposalRefusal.DEPENDENCY_CYCLE)
+    api_reference = WorkItemReference(PROJECT, TrackerItemReference("gh:api-self"))
+    with _queue_api(queue) as api:
+        response = api.put(
+            QUEUE_PROPOSALS_PATH,
+            json={
+                "project_id": PROJECT.value,
+                "tracker_item_reference": api_reference.tracker_item.value,
+                "expected_revision": 0,
+                "priority": {"rank": 1},
+                "workflow_lineage_id": lineage_id.value,
+                "prerequisite_item_ids": [api_reference.item_id.value],
+                "automation_disposition": "HUMAN_REQUIRED",
+                "policy_revision": 1,
+            },
+        )
+    assert response.status_code == 422
+    assert response.json()["type"].endswith("queue-proposal-refused")
 
 
 def _restore_v43(database_path: Path) -> None:
@@ -601,6 +1037,95 @@ def test_one_manually_approved_item_starts_once_across_a_crash(
         reopened.close()
 
 
+def test_advance_replays_a_reserved_binding_before_projection_blockers(
+    store: tuple[DbosQueueProjectionStore, Engine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queue, engine = store
+    lineage_id, revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
+    reference = _prepare_admitted(queue, lineage_id)
+    binding = QueueLaunchBinding(
+        reference.item_id,
+        QueueProjectionRevision(1),
+        RunId("reserved-replay"),
+        revision_hash,
+    )
+    assert isinstance(queue.reserve_launch(binding), QueueLaunchReserved)
+    page = queue.list_items(None, 50)
+    assert isinstance(page, QueueItemsPage)
+    (stored,) = page.items
+
+    class BoundQueue:
+        def list_items(self, _after: object, _limit: int) -> QueueItemsPage:
+            return QueueItemsPage(
+                (replace(stored, blockers=(QueueBlockerKind.CAP_REACHED,)),), None
+            )
+
+        def reserve_launch(self, _binding: object) -> object:
+            raise AssertionError("a stored binding must not be reserved again")
+
+    def started(
+        run_id: RunId,
+        workflow_revision_hash: WorkflowRevisionHash,
+        _bindings: object,
+        _starter: object,
+        **_kwargs: object,
+    ) -> RunCreated:
+        return RunCreated(
+            Run(run_id, workflow_revision_hash, RunState.STARTED, "final", 0, 0)
+        )
+
+    monkeypatch.setattr(advance_queue_module, "start_published_run", started)
+
+    outcomes = advance_queue_module.advance_queue(
+        cast(Any, BoundQueue()),
+        DbosCatalogStore(engine),
+        cast(DurablePublishedRunStarter, object()),
+    )
+
+    assert isinstance(outcomes[0], QueueRunStarted)
+    assert outcomes[0].binding == binding
+
+
+@pytest.mark.parametrize(
+    "start_failure",
+    [WriteUnavailable(), StartDurableStateCorrupt()],
+)
+def test_advance_fails_loud_when_a_reserved_run_cannot_start_durably(
+    store: tuple[DbosQueueProjectionStore, Engine],
+    monkeypatch: pytest.MonkeyPatch,
+    start_failure: object,
+) -> None:
+    queue, engine = store
+    lineage_id, revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
+    reference = _prepare_admitted(queue, lineage_id)
+    assert isinstance(
+        queue.reserve_launch(
+            QueueLaunchBinding(
+                reference.item_id,
+                QueueProjectionRevision(1),
+                RunId("reserved-start-failure"),
+                revision_hash,
+            )
+        ),
+        QueueLaunchReserved,
+    )
+    monkeypatch.setattr(
+        advance_queue_module,
+        "start_published_run",
+        lambda *_args, **_kwargs: start_failure,
+    )
+
+    with pytest.raises(QueueAdvanceUnavailable, match="could not start"):
+        advance_queue_module.advance_queue(
+            queue,
+            DbosCatalogStore(engine),
+            cast(DurablePublishedRunStarter, object()),
+        )
+
+
 @pytest.mark.proves("a-manually-approved-queue-item-starts-once")
 def test_a_moved_lineage_head_does_not_launch_the_item_again(tmp_path: Path) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -708,3 +1233,150 @@ def test_queue_api_exposes_one_typed_projection_and_confirmation_matrix(
         assert api.get(API_PREFIX + "/observed-queue-items").status_code == 404
     finally:
         runtime.close()
+
+
+def _queue_api(queue: object) -> TestClient:
+    return TestClient(
+        create_app(
+            source_commit="commit",
+            source_tree="tree",
+            ports=api_ports(queue_projection=queue),
+            limits=api_limits(),
+            event_poll_backoff=event_poll_backoff(),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "observed-revision",
+        "observed-admission",
+        "proposed-revision",
+        "proposed-mismatched-revisions",
+        "proposed-admission",
+        "admitted-null-rationale",
+    ],
+)
+def test_queue_api_fails_loud_for_illegal_raw_lifecycle_shapes(
+    store: tuple[DbosQueueProjectionStore, Engine],
+    corruption: str,
+) -> None:
+    queue, engine = store
+    lineage_id, _revision_hash = _found_lineage(engine)
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
+    reference = WorkItemReference(PROJECT, TrackerItemReference(f"gh:{corruption}"))
+    if corruption.startswith("admitted"):
+        _prepare_admitted(queue, lineage_id, reference.tracker_item.value)
+    else:
+        queue.observe((reference,))
+        if corruption.startswith("proposed"):
+            assert isinstance(
+                queue.plan(
+                    PlanQueueItem(
+                        reference,
+                        _proposal(lineage_id),
+                        QueueProjectionRevision(0),
+                    )
+                ),
+                QueueItemProposed,
+            )
+    corrupt_values_by_case: dict[str, dict[str, Any]] = {
+        "observed-revision": {"state_version": 1},
+        "observed-admission": {"admission_rationale": "ghost admission"},
+        "proposed-revision": {"state_version": 0},
+        "proposed-mismatched-revisions": {"state_version": 2},
+        "proposed-admission": {"workflow_lineage_id": lineage_id.value},
+        "admitted-null-rationale": {"admission_rationale": None},
+    }
+    corrupt_values = corrupt_values_by_case[corruption]
+    with engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER queue_items_state_transition")
+        connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            schema_module.queue_items.update()
+            .where(schema_module.queue_items.c.item_id == reference.item_id.value)
+            .values(**corrupt_values)
+        )
+
+    with _queue_api(queue) as api:
+        response = api.get(QUEUE_ITEMS_PATH)
+
+    assert response.status_code == 500
+    assert response.json()["type"].endswith("durable-state-corrupt")
+
+
+def test_queue_admission_authority_refusal_has_its_own_problem() -> None:
+    class AuthorityRefusingQueue:
+        def confirm(self, _command: object) -> QueueAdmissionAuthorityRefused:
+            return QueueAdmissionAuthorityRefused(
+                QueueDecisionAuthority.AUTOMATION_RULE,
+                QueueAutomationDisposition.HUMAN_REQUIRED,
+            )
+
+    with _queue_api(AuthorityRefusingQueue()) as api:
+        response = api.post(
+            QUEUE_ADMISSIONS_PATH,
+            json={
+                "project_id": PROJECT.value,
+                "tracker_item_reference": "gh:79",
+                "expected_revision": 1,
+                "rationale": "automation tried",
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["type"].endswith("queue-admission-authority-refused")
+
+
+def test_queue_admission_api_requires_a_proposal_before_confirmation(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    queue, _engine = store
+    reference = WorkItemReference(PROJECT, TrackerItemReference("gh:unproposed"))
+    queue.observe((reference,))
+
+    with _queue_api(queue) as api:
+        response = api.post(
+            QUEUE_ADMISSIONS_PATH,
+            json={
+                "project_id": PROJECT.value,
+                "tracker_item_reference": reference.tracker_item.value,
+                "expected_revision": 0,
+                "rationale": "cannot skip proposal",
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["type"].endswith("queue-admission-proposal-required")
+
+
+def test_corrupt_admission_proposal_identity_fails_projection_api_and_start(
+    store: tuple[DbosQueueProjectionStore, Engine],
+) -> None:
+    queue, engine = store
+    lineage_id, _revision_hash = _found_lineage(engine)
+    other_lineage_id, _other_revision = _found_lineage(
+        engine, BINDING_FREE_WORKFLOW.replace(b"[2, 3]", b"[4, 5]")
+    )
+    queue.put_policy(QueueProjectPolicyRevision(PROJECT, 1, 1, None), 0)
+    reference = _prepare_admitted(queue, lineage_id, "gh:corrupt-admission")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER queue_items_state_transition")
+        connection.execute(
+            schema_module.queue_items.update()
+            .where(schema_module.queue_items.c.item_id == reference.item_id.value)
+            .values(workflow_lineage_id=other_lineage_id.value)
+        )
+
+    assert isinstance(queue.list_items(None, 50), DurableStateCorrupt)
+    with _queue_api(queue) as api:
+        response = api.get(QUEUE_ITEMS_PATH)
+    assert response.status_code == 500
+    assert response.json()["type"].endswith("durable-state-corrupt")
+    with pytest.raises(QueueAdvanceUnavailable, match="could not be read"):
+        advance_queue_module.advance_queue(
+            queue,
+            DbosCatalogStore(engine),
+            cast(DurablePublishedRunStarter, object()),
+        )

@@ -667,6 +667,16 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Queue item is already admitted",
         "This item is already admitted under a different workflow binding or reason.",
     ),
+    "queue-admission-authority-refused": ProblemDefinition(
+        409,
+        "Queue admission authority refused",
+        "The proposal does not authorize admission by this decision authority.",
+    ),
+    "queue-admission-proposal-required": ProblemDefinition(
+        409,
+        "Queue admission requires a proposal",
+        "Propose the queue item before confirming its admission.",
+    ),
     "queue-policy-revision-conflict": ProblemDefinition(
         409,
         "Queue policy revision conflict",

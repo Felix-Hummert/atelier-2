@@ -39,6 +39,8 @@ from atelier2.contracts.queue_projection import (
     QueueProjectionRevision,
     QueueProjectPolicyRevision,
     QueueProposal,
+    QueueProposalRefusal,
+    QueueProposalRefused,
     TrackerItemReference,
     WorkItemReference,
 )
@@ -62,7 +64,6 @@ from atelier2.ports.queue_projection import (
     QueueProjectPolicyPublished,
     QueueProjectPolicyRevisionConflict,
     QueueProjectPolicyUnchanged,
-    QueueProposalRefused,
     QueueReadUnavailable,
     ReserveQueueLaunchResult,
 )
@@ -86,16 +87,41 @@ def _snapshot_from_record(
     )
     if item_reference.item_id.value != record["item_id"]:
         raise ValueError("durable queue item id disagrees with its derived identity")
+    state = QueueItemState(str(record["state"]))
     lineage_id = record["workflow_lineage_id"]
-    admission = (
-        None
-        if lineage_id is None
-        else QueueAdmission(
-            CatalogLineageId(str(lineage_id)),
-            QueueAdmissionRationale(str(record["admission_rationale"])),
-        )
-    )
+    rationale = record["admission_rationale"]
     proposal_revision = record["current_proposal_revision"]
+    state_version = record["state_version"]
+    decision_authority = record["decision_authority"]
+    admission = None
+    if state is not QueueItemState.ADMITTED:
+        if (
+            lineage_id is not None
+            or rationale is not None
+            or decision_authority is not None
+        ):
+            raise ValueError("a non-admitted queue item cannot carry admission fields")
+        if state is QueueItemState.OBSERVED and proposal_revision is not None:
+            raise ValueError("an observed queue item cannot carry a proposal revision")
+        if state is QueueItemState.PROPOSED and state_version != proposal_revision:
+            raise ValueError("a proposed queue item must name its current revision")
+    else:
+        if not isinstance(lineage_id, str) or not isinstance(rationale, str):
+            raise ValueError(
+                "an admitted queue item must carry its lineage and rationale"
+            )
+        legacy_admission = proposal_revision is None and decision_authority is None
+        proposed_admission = (
+            proposal_revision is not None and decision_authority is not None
+        )
+        if not legacy_admission and not proposed_admission:
+            raise ValueError("an admitted queue item has a partial proposal decision")
+        if proposed_admission and not isinstance(decision_authority, str):
+            raise ValueError("an admitted queue item decision authority must be text")
+        admission = QueueAdmission(
+            CatalogLineageId(lineage_id),
+            QueueAdmissionRationale(rationale),
+        )
     proposal = None
     if proposal_revision is not None:
         proposal_record = (
@@ -107,8 +133,10 @@ def _snapshot_from_record(
                 )
             )
             .mappings()
-            .one()
+            .one_or_none()
         )
+        if proposal_record is None:
+            raise ValueError("queue item points to a missing proposal revision")
         prerequisites = tuple(
             QueueItemId(str(value))
             for value in connection.scalars(
@@ -136,7 +164,7 @@ def _snapshot_from_record(
             admission = QueueAdmission(
                 admission.workflow_lineage_id,
                 admission.rationale,
-                QueueDecisionAuthority(str(record["decision_authority"])),
+                QueueDecisionAuthority(decision_authority),
                 QueueProjectionRevision(int(proposal_revision)),
             )
     binding_record = (
@@ -161,14 +189,14 @@ def _snapshot_from_record(
     blockers = _blockers_for(
         connection,
         item_reference,
-        QueueItemState(str(record["state"])),
+        state,
         proposal,
         launch_binding,
     )
     return QueueItemSnapshot(
         item_reference,
-        QueueItemState(str(record["state"])),
-        QueueProjectionRevision(int(record["state_version"])),
+        state,
+        QueueProjectionRevision(int(state_version)),
         admission,
         proposal,
         launch_binding,
@@ -186,7 +214,9 @@ def _blockers_for(
     if state is QueueItemState.OBSERVED:
         return (QueueBlockerKind.PRIORITY_UNSET,)
     if proposal is None:
-        return (QueueBlockerKind.LEGACY_REVIEW_REQUIRED,)
+        if state is QueueItemState.ADMITTED:
+            return (QueueBlockerKind.LEGACY_REVIEW_REQUIRED,)
+        raise ValueError("a Phase-D queue state must carry its proposal")
     if state is QueueItemState.PROPOSED:
         return (
             (QueueBlockerKind.HUMAN_REQUIRED,)
@@ -214,9 +244,13 @@ def _blockers_for(
     open_prerequisite = False
     failed_prerequisite = False
     for value in dependency_states:
-        if value in _UNSUCCESSFUL_TERMINAL_RUN_STATE_VALUES:
+        if value is None:
+            open_prerequisite = True
+            continue
+        prerequisite_state = RunState(str(value))
+        if prerequisite_state.value in _UNSUCCESSFUL_TERMINAL_RUN_STATE_VALUES:
             failed_prerequisite = True
-        elif value != RunState.COMPLETED.value:
+        elif prerequisite_state is not RunState.COMPLETED:
             open_prerequisite = True
     if failed_prerequisite:
         return (QueueBlockerKind.PREREQUISITE_FAILED,)
@@ -467,9 +501,10 @@ class DbosQueueProjectionStore:
                 policy = self._current_policy(
                     connection, snapshot.item_reference.project
                 )
-                if (
-                    policy is None
-                    or self._active_launch_count(
+                if policy is None:
+                    blockers.append(QueueBlockerKind.START_REFUSED)
+                elif (
+                    self._active_launch_count(
                         connection, snapshot.item_reference.project
                     )
                     >= policy.maximum_active_runs
@@ -482,7 +517,7 @@ class DbosQueueProjectionStore:
                     or snapshot.admission.proposal_revision != binding.proposal_revision
                     or snapshot.proposal.workflow_lineage_id
                     != snapshot.admission.workflow_lineage_id
-                    or snapshot.blockers
+                    or blockers
                 ):
                     return QueueLaunchBlocked(
                         QueueItemSnapshot(
@@ -492,18 +527,6 @@ class DbosQueueProjectionStore:
                             snapshot.admission,
                             snapshot.proposal,
                             snapshot.launch_binding,
-                            tuple(dict.fromkeys(blockers)),
-                        )
-                    )
-                if QueueBlockerKind.CAP_REACHED in blockers:
-                    return QueueLaunchBlocked(
-                        QueueItemSnapshot(
-                            snapshot.item_reference,
-                            snapshot.state,
-                            snapshot.revision,
-                            snapshot.admission,
-                            snapshot.proposal,
-                            None,
                             tuple(dict.fromkeys(blockers)),
                         )
                     )
@@ -547,6 +570,14 @@ class DbosQueueProjectionStore:
                 decision_authority=None,
             )
         )
+        stored_reference = connection.execute(
+            sa.select(
+                queue_items.c.project_id,
+                queue_items.c.tracker_item_reference,
+            ).where(queue_items.c.item_id == reference.item_id.value)
+        ).one_or_none()
+        if stored_reference != (reference.project.value, reference.tracker_item.value):
+            raise ValueError("queue item id collides with a different work item")
 
     @staticmethod
     def _proposal_refusal(
@@ -554,7 +585,7 @@ class DbosQueueProjectionStore:
     ) -> QueueProposalRefused | None:
         proposal = command.proposal
         if command.item_reference.item_id in proposal.prerequisite_item_ids:
-            return QueueProposalRefused("a queue proposal cannot depend on itself")
+            return QueueProposalRefused(QueueProposalRefusal.SELF_DEPENDENCY)
         if proposal.policy_revision is not None:
             policy_exists = connection.scalar(
                 sa.select(sa.literal(True)).where(
@@ -570,7 +601,7 @@ class DbosQueueProjectionStore:
             )
             if policy_exists is not True:
                 return QueueProposalRefused(
-                    "a queue proposal must name an existing project policy revision"
+                    QueueProposalRefusal.POLICY_REVISION_MISSING
                 )
         if proposal.prerequisite_item_ids:
             rows = connection.execute(
@@ -583,7 +614,7 @@ class DbosQueueProjectionStore:
             ).scalars()
             if set(rows) != {item.value for item in proposal.prerequisite_item_ids}:
                 return QueueProposalRefused(
-                    "queue proposal prerequisites must exist in the same project"
+                    QueueProposalRefusal.PREREQUISITE_NOT_IN_PROJECT
                 )
         edges = {
             (str(item), str(prerequisite))
@@ -591,6 +622,19 @@ class DbosQueueProjectionStore:
                 sa.select(
                     queue_dependency_edges.c.item_id,
                     queue_dependency_edges.c.prerequisite_item_id,
+                )
+                .join(
+                    queue_items,
+                    sa.and_(
+                        queue_items.c.item_id == queue_dependency_edges.c.item_id,
+                        queue_items.c.current_proposal_revision
+                        == queue_dependency_edges.c.proposal_revision,
+                    ),
+                )
+                .where(
+                    queue_items.c.project_id == command.item_reference.project.value,
+                    queue_dependency_edges.c.project_id
+                    == command.item_reference.project.value,
                 )
             )
         }
@@ -618,9 +662,7 @@ class DbosQueueProjectionStore:
             return False
 
         if any(cycle(node) for node in tuple(graph)):
-            return QueueProposalRefused(
-                "queue proposal dependencies must remain acyclic"
-            )
+            return QueueProposalRefused(QueueProposalRefusal.DEPENDENCY_CYCLE)
         return None
 
     @staticmethod
@@ -641,26 +683,26 @@ class DbosQueueProjectionStore:
 
     @staticmethod
     def _active_launch_count(connection: Connection, project: ProjectId) -> int:
-        return int(
-            connection.scalar(
-                sa.select(sa.func.count())
-                .select_from(
-                    queue_launch_bindings.outerjoin(
-                        runs, queue_launch_bindings.c.run_id == runs.c.run_id
-                    )
-                )
-                .where(
-                    queue_launch_bindings.c.project_id == project.value,
-                    sa.or_(
-                        runs.c.run_id.is_(None),
-                        runs.c.state.not_in(
-                            tuple(state.value for state in TERMINAL_RUN_STATES)
-                        ),
-                    ),
+        count = connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(
+                queue_launch_bindings.outerjoin(
+                    runs, queue_launch_bindings.c.run_id == runs.c.run_id
                 )
             )
-            or 0
+            .where(
+                queue_launch_bindings.c.project_id == project.value,
+                sa.or_(
+                    runs.c.run_id.is_(None),
+                    runs.c.state.not_in(
+                        tuple(state.value for state in TERMINAL_RUN_STATES)
+                    ),
+                ),
+            )
         )
+        if count is None:
+            raise ValueError("active queue launch count could not be read")
+        return int(count)
 
     def _page_in_state(
         self, state: QueueItemState | None, after: QueueItemId | None, limit: int

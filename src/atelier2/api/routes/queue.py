@@ -50,7 +50,6 @@ from atelier2.application.plan_queue_item import (
     QueueProjectPolicyPublished,
     QueueProjectPolicyRevisionConflict,
     QueueProjectPolicyUnchanged,
-    QueueProposalRefused,
 )
 from atelier2.application.refusals import (
     DurableStateCorrupt,
@@ -68,6 +67,7 @@ from atelier2.contracts.queue_projection import (
     QueueAdmissionAlreadyCurrent,
     QueueAdmissionAlreadyDecided,
     QueueAdmissionAuthorityRefused,
+    QueueAdmissionProposalRequired,
     QueueAdmissionRationale,
     QueueAdmissionRevisionConflict,
     QueueAutomationDisposition,
@@ -82,6 +82,7 @@ from atelier2.contracts.queue_projection import (
     QueueProposal,
     QueueProposalAlreadyCurrent,
     QueueProposalAlreadyDecided,
+    QueueProposalRefused,
     QueueProposalRevisionConflict,
     TrackerItemReference,
     WorkItemReference,
@@ -173,8 +174,8 @@ async def put_queue_proposal_route(
             raise ApiProblem("queue-proposal-revision-conflict")
         case QueueProposalAlreadyDecided():
             raise ApiProblem("queue-proposal-already-decided")
-        case QueueProposalRefused(reason):
-            raise ApiProblem("queue-proposal-refused", reason)
+        case QueueProposalRefused():
+            raise ApiProblem("queue-proposal-refused")
         case WriteUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case DurableStateCorrupt():
@@ -225,7 +226,9 @@ async def confirm_queue_proposal_route(
         case QueueAdmissionAlreadyDecided():
             raise ApiProblem("queue-admission-already-decided")
         case QueueAdmissionAuthorityRefused():
-            raise ApiProblem("invalid-request")
+            raise ApiProblem("queue-admission-authority-refused")
+        case QueueAdmissionProposalRequired():
+            raise ApiProblem("queue-admission-proposal-required")
         case WriteUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case DurableStateCorrupt():
@@ -354,15 +357,37 @@ def _snapshot_resource(snapshot: QueueItemSnapshot) -> QueueItemResource:
     proposal = snapshot.proposal
     admission = snapshot.admission
     binding = snapshot.launch_binding
-    proposal_revision = (
-        snapshot.revision
-        if proposal is not None and admission is None
-        else (
-            admission.proposal_revision
-            if admission is not None and admission.proposal_revision is not None
-            else None
+    if proposal is None:
+        legal_without_proposal = (
+            snapshot.state is QueueItemState.OBSERVED
+            and admission is None
+            and binding is None
+        ) or (
+            snapshot.state is QueueItemState.ADMITTED
+            and admission is not None
+            and admission.proposal_revision is None
+            and admission.authority is None
+            and binding is None
         )
-    )
+        if not legal_without_proposal:
+            raise ApiProblem("durable-state-corrupt")
+        proposal_revision = None
+    elif snapshot.state is QueueItemState.PROPOSED:
+        if admission is not None or binding is not None:
+            raise ApiProblem("durable-state-corrupt")
+        proposal_revision = snapshot.revision
+    elif snapshot.state is QueueItemState.ADMITTED:
+        if (
+            admission is None
+            or admission.proposal_revision is None
+            or admission.authority is None
+            or admission.workflow_lineage_id != proposal.workflow_lineage_id
+            or snapshot.revision.value != admission.proposal_revision.value + 1
+        ):
+            raise ApiProblem("durable-state-corrupt")
+        proposal_revision = admission.proposal_revision
+    else:
+        raise ApiProblem("durable-state-corrupt")
     return QueueItemResource(
         project_id=snapshot.item_reference.project.value,
         tracker_item_reference=snapshot.item_reference.tracker_item.value,

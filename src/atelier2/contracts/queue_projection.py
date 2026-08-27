@@ -128,6 +128,13 @@ class QueueAutomationDisposition(StrEnum):
     AUTOMATION_AUTHORIZED = "AUTOMATION_AUTHORIZED"
 
 
+class QueueProposalRefusal(StrEnum):
+    SELF_DEPENDENCY = "SELF_DEPENDENCY"
+    POLICY_REVISION_MISSING = "POLICY_REVISION_MISSING"
+    PREREQUISITE_NOT_IN_PROJECT = "PREREQUISITE_NOT_IN_PROJECT"
+    DEPENDENCY_CYCLE = "DEPENDENCY_CYCLE"
+
+
 class QueueBlockerKind(StrEnum):
     PRIORITY_UNSET = "PRIORITY_UNSET"
     HUMAN_REQUIRED = "HUMAN_REQUIRED"
@@ -337,12 +344,21 @@ class QueueAdmissionAuthorityRefused:
     disposition: QueueAutomationDisposition
 
 
+@dataclass(frozen=True)
+class QueueAdmissionProposalRequired:
+    """Confirmation cannot skip the proposal decision."""
+
+    item_reference: WorkItemReference
+    state: QueueItemState
+
+
 type QueueAdmissionOutcome = (
     QueueItemAdmitted
     | QueueAdmissionAlreadyCurrent
     | QueueAdmissionRevisionConflict
     | QueueAdmissionAlreadyDecided
     | QueueAdmissionAuthorityRefused
+    | QueueAdmissionProposalRequired
 )
 
 
@@ -372,11 +388,17 @@ class QueueProposalAlreadyDecided:
     state: QueueItemState
 
 
+@dataclass(frozen=True)
+class QueueProposalRefused:
+    refusal: QueueProposalRefusal
+
+
 type QueueProposalOutcome = (
     QueueItemProposed
     | QueueProposalAlreadyCurrent
     | QueueProposalRevisionConflict
     | QueueProposalAlreadyDecided
+    | QueueProposalRefused
 )
 
 
@@ -397,6 +419,13 @@ class QueueItemSnapshot:
     blockers: tuple[QueueBlockerKind, ...] = ()
 
     def __post_init__(self) -> None:
+        if (
+            self.state is QueueItemState.OBSERVED
+            and self.revision != QUEUE_PROJECTION_REVISION_OBSERVED
+        ):
+            raise ValueError("an observed queue item must be at revision zero")
+        if self.state is QueueItemState.PROPOSED and self.revision.value < 1:
+            raise ValueError("a proposed queue item must have a positive revision")
         admitted = self.state is QueueItemState.ADMITTED
         if admitted != (self.admission is not None):
             raise ValueError(
@@ -410,8 +439,28 @@ class QueueItemSnapshot:
             raise ValueError(
                 "a proposed queue lifecycle carries the proposal it is based on"
             )
+        admission = self.admission
+        if legacy_admission:
+            if (
+                admission is None
+                or admission.authority is not None
+                or admission.proposal_revision is not None
+            ):
+                raise ValueError("only a proposal-less admission may be legacy-shaped")
+        elif admitted:
+            proposal = self.proposal
+            if (
+                admission is None
+                or proposal is None
+                or admission.authority is None
+                or admission.proposal_revision is None
+                or admission.workflow_lineage_id != proposal.workflow_lineage_id
+                or self.revision.value != admission.proposal_revision.value + 1
+            ):
+                raise ValueError(
+                    "an admitted proposal must name its exact authority and revision"
+                )
         if self.launch_binding is not None:
-            admission = self.admission
             if not admitted or self.proposal is None or admission is None:
                 raise ValueError("only a proposed admission can carry a launch binding")
             if self.launch_binding.item_id != self.item_reference.item_id:
@@ -463,8 +512,9 @@ class QueueItemSnapshot:
                 )
             return QueueAdmissionAlreadyDecided(self.item_reference, current)
         if self.state is not QueueItemState.PROPOSED or self.proposal is None:
-            return QueueAdmissionRevisionConflict(
-                command.expected_revision, self.revision
+            return QueueAdmissionProposalRequired(
+                self.item_reference,
+                self.state,
             )
         if command.expected_revision != self.revision:
             return QueueAdmissionRevisionConflict(

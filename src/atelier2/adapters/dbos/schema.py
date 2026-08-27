@@ -293,7 +293,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     41: "7c4bc13ceb1db7533bfdf9697c1e6b262032a516275b488eac73af9969446b68",
     42: "d2f874edd0dbbecb677b284db8e41cd3a681fae99703d126764bc90fa0cf7865",
     43: "f7d299ab865b87ca47a399d4897f8c7b273085c4d206fac9eb882d47198b9782",
-    44: "ea0b11faca1afb24de03bd15b4f576ddc55972b8a50ca0523241516aca9144c1",
+    44: "b8a176e76092a24fa0c8ac1caafdd69e57f4ff404ecb5560a1dd426d32a3ee9b",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -2158,15 +2158,21 @@ queue_items = sa.Table(
         f"AND length(admission_rationale) BETWEEN 1 AND "
         f"{MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS} "
         "AND ((current_proposal_revision IS NULL AND decision_authority IS NULL) "
-        "OR (current_proposal_revision >= 1 "
+        "OR (current_proposal_revision IS NOT NULL "
+        "AND current_proposal_revision >= 1 "
+        "AND state_version = current_proposal_revision + 1 "
+        "AND decision_authority IS NOT NULL "
         f"AND decision_authority IN ('{QueueDecisionAuthority.OPERATOR.value}', "
         f"'{QueueDecisionAuthority.AUTOMATION_RULE.value}')))) "
         "OR (state = 'PROPOSED' "
+        "AND current_proposal_revision IS NOT NULL "
         "AND current_proposal_revision >= 1 "
+        "AND state_version = current_proposal_revision "
         "AND workflow_lineage_id IS NULL "
         "AND admission_rationale IS NULL "
         "AND decision_authority IS NULL) "
         "OR (state = 'OBSERVED' "
+        "AND state_version = 0 "
         "AND workflow_lineage_id IS NULL "
         "AND admission_rationale IS NULL "
         "AND current_proposal_revision IS NULL "
@@ -3846,14 +3852,10 @@ def _table_shape_at(version: int, table: sa.Table) -> str:
     frozen_shape = PUBLISHED_TABLE_SHAPES.get((version, table.name))
     if frozen_shape is not None:
         return frozen_shape
-    if version in {_VERSION_FORTY_TWO, _VERSION_FORTY_THREE}:
-        return str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
-    if frozen_shape is None:
-        raise StoreMigrationRefused(
-            f"no published shape of {table.name} at schema version {version} is "
-            "recorded, so this hop cannot rebuild it"
-        )
-    return frozen_shape
+    raise StoreMigrationRefused(
+        f"no published shape of {table.name} at schema version {version} is "
+        "recorded, so this hop cannot rebuild it"
+    )
 
 
 def _column_names(connection: sqlite3.Connection, table_name: str) -> tuple[str, ...]:
@@ -5737,6 +5739,60 @@ def _fingerprint_for_version(connection: sqlite3.Connection, version: int) -> st
     )
 
 
+def _validate_v44_queue_rows(connection: sqlite3.Connection) -> None:
+    """Refuse queue rows that SQL NULL could otherwise disguise as valid."""
+
+    invalid = connection.execute(
+        """
+        SELECT item.item_id
+        FROM queue_items AS item
+        LEFT JOIN queue_proposal_revisions AS proposal
+          ON proposal.item_id = item.item_id
+         AND proposal.proposal_revision = item.current_proposal_revision
+        WHERE NOT (
+          (item.state = 'OBSERVED'
+           AND item.state_version = 0
+           AND item.workflow_lineage_id IS NULL
+           AND item.admission_rationale IS NULL
+           AND item.current_proposal_revision IS NULL
+           AND item.decision_authority IS NULL)
+          OR
+          (item.state = 'PROPOSED'
+           AND item.current_proposal_revision IS NOT NULL
+           AND item.current_proposal_revision >= 1
+           AND item.state_version = item.current_proposal_revision
+           AND item.workflow_lineage_id IS NULL
+           AND item.admission_rationale IS NULL
+           AND item.decision_authority IS NULL
+           AND proposal.item_id IS NOT NULL)
+          OR
+          (item.state = 'ADMITTED'
+           AND item.workflow_lineage_id IS NOT NULL
+           AND item.admission_rationale IS NOT NULL
+           AND item.current_proposal_revision IS NULL
+           AND item.decision_authority IS NULL)
+          OR
+          (item.state = 'ADMITTED'
+           AND item.workflow_lineage_id IS NOT NULL
+           AND item.admission_rationale IS NOT NULL
+           AND item.current_proposal_revision IS NOT NULL
+           AND item.current_proposal_revision >= 1
+           AND item.state_version = item.current_proposal_revision + 1
+           AND item.decision_authority IS NOT NULL
+           AND item.decision_authority IN ('OPERATOR', 'AUTOMATION_RULE')
+           AND proposal.item_id IS NOT NULL
+           AND proposal.workflow_lineage_id = item.workflow_lineage_id)
+        )
+        LIMIT 1
+        """
+    ).fetchone()
+    if invalid is not None:
+        raise StoreMigrationRefused(
+            f"queue item {invalid[0]} is a partial or inconsistent V44 decision; "
+            "this command will not alter it"
+        )
+
+
 def _inspect_store_readonly(database_path: Path) -> tuple[int, str | None]:
     """Read the version, and the fingerprint when this command can honour it.
 
@@ -5751,6 +5807,8 @@ def _inspect_store_readonly(database_path: Path) -> tuple[int, str | None]:
             version = _read_declared_schema_version(connection)
             if version == SCHEMA_VERSION or version in _SCHEMA_MIGRATION_BY_SOURCE:
                 try:
+                    if version == _VERSION_FORTY_FOUR:
+                        _validate_v44_queue_rows(connection)
                     return version, _fingerprint_for_version(connection, version)
                 except UnsupportedSchemaVersion as error:
                     raise StoreMigrationRefused(str(error)) from error
@@ -5880,6 +5938,7 @@ def migrate_store(database_path: Path) -> StoreMigrationReport:
                     f"the migrated store violates foreign keys in {tables}; "
                     "this command will not alter it"
                 )
+            _validate_v44_queue_rows(connection)
             connection.commit()
         except BaseException:
             connection.rollback()

@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+import pytest
+
+from atelier2.contracts.catalog_v3 import CatalogLineageId
+from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.queue_projection import (
+    ConfirmQueueProposal,
+    QueueAdmission,
+    QueueAdmissionProposalRequired,
+    QueueAdmissionRationale,
+    QueueAutomationDisposition,
+    QueueDecisionAuthority,
+    QueueItemSnapshot,
+    QueueItemState,
+    QueuePriorityRank,
+    QueueProjectionRevision,
+    QueueProposal,
+    TrackerItemReference,
+    WorkItemReference,
+)
+
+REFERENCE = WorkItemReference(ProjectId("project1"), TrackerItemReference("gh:79"))
+LINEAGE = CatalogLineageId("a1" * 32)
+OTHER_LINEAGE = CatalogLineageId("b2" * 32)
+PROPOSAL = QueueProposal(
+    QueuePriorityRank(1),
+    LINEAGE,
+    (),
+    QueueAutomationDisposition.HUMAN_REQUIRED,
+    1,
+)
+
+
+@pytest.mark.parametrize(
+    ("revision", "admission"),
+    [
+        (
+            QueueProjectionRevision(2),
+            QueueAdmission(LINEAGE, QueueAdmissionRationale("legacy-shaped")),
+        ),
+        (
+            QueueProjectionRevision(2),
+            QueueAdmission(
+                OTHER_LINEAGE,
+                QueueAdmissionRationale("wrong lineage"),
+                QueueDecisionAuthority.OPERATOR,
+                QueueProjectionRevision(1),
+            ),
+        ),
+        (
+            QueueProjectionRevision(9),
+            QueueAdmission(
+                LINEAGE,
+                QueueAdmissionRationale("wrong revision"),
+                QueueDecisionAuthority.OPERATOR,
+                QueueProjectionRevision(1),
+            ),
+        ),
+    ],
+)
+def test_admitted_proposal_requires_its_exact_typed_admission(
+    revision: QueueProjectionRevision,
+    admission: QueueAdmission,
+) -> None:
+    with pytest.raises(ValueError, match="exact authority and revision"):
+        QueueItemSnapshot(
+            REFERENCE,
+            QueueItemState.ADMITTED,
+            revision,
+            admission,
+            PROPOSAL,
+        )
+
+
+@pytest.mark.parametrize(
+    ("state", "revision", "proposal", "message"),
+    [
+        (
+            QueueItemState.OBSERVED,
+            QueueProjectionRevision(1),
+            None,
+            "revision zero",
+        ),
+        (
+            QueueItemState.PROPOSED,
+            QueueProjectionRevision(0),
+            PROPOSAL,
+            "positive revision",
+        ),
+    ],
+)
+def test_queue_lifecycle_state_requires_its_exact_revision_shape(
+    state: QueueItemState,
+    revision: QueueProjectionRevision,
+    proposal: QueueProposal | None,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        QueueItemSnapshot(REFERENCE, state, revision, None, proposal)
+
+
+def test_observed_item_requires_a_proposal_before_confirmation() -> None:
+    snapshot = QueueItemSnapshot(
+        REFERENCE,
+        QueueItemState.OBSERVED,
+        QueueProjectionRevision(0),
+        None,
+    )
+    command = ConfirmQueueProposal(
+        REFERENCE,
+        QueueProjectionRevision(0),
+        QueueAdmissionRationale("cannot skip proposal"),
+    )
+
+    assert snapshot.confirm(command) == QueueAdmissionProposalRequired(
+        REFERENCE, QueueItemState.OBSERVED
+    )

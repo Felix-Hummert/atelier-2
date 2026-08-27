@@ -25,14 +25,6 @@ from atelier2.ports.queue_projection import (
 from atelier2.ports.queue_projection import (
     QueueProjectPolicyUnchanged as PortQueueProjectPolicyUnchanged,
 )
-from atelier2.ports.queue_projection import (
-    QueueProposalRefused as PortQueueProposalRefused,
-)
-
-
-@dataclass(frozen=True)
-class QueueProposalRefused:
-    reason: str
 
 
 @dataclass(frozen=True)
@@ -52,7 +44,7 @@ class QueueProjectPolicyRevisionConflict:
 
 
 type PlanQueueItemOutcome = (
-    QueueProposalOutcome | QueueProposalRefused | WriteUnavailable | DurableStateCorrupt
+    QueueProposalOutcome | WriteUnavailable | DurableStateCorrupt
 )
 type PutQueueProjectPolicyOutcome = (
     QueueProjectPolicyPublished
@@ -71,8 +63,6 @@ def plan_queue_item(
         return WriteUnavailable()
     if isinstance(result, PortDurableStateCorrupt):
         return DurableStateCorrupt()
-    if isinstance(result, PortQueueProposalRefused):
-        return QueueProposalRefused(result.reason)
     return result
 
 

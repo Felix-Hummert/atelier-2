@@ -23,16 +23,8 @@ type ConfirmQueueProposalResult = (
 )
 
 
-@dataclass(frozen=True)
-class QueueProposalRefused:
-    reason: str
-
-
 type PlanQueueItemResult = (
-    QueueProposalOutcome
-    | QueueProposalRefused
-    | DurableWriteUnavailable
-    | DurableStateCorrupt
+    QueueProposalOutcome | DurableWriteUnavailable | DurableStateCorrupt
 )
 
 

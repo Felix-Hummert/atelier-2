@@ -588,6 +588,8 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "unsupported-media-type",
         "queue-admission-revision-conflict",
         "queue-admission-already-decided",
+        "queue-admission-authority-refused",
+        "queue-admission-proposal-required",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import closing
 from enum import IntEnum, StrEnum
 
@@ -67,6 +67,7 @@ from atelier2.contracts.queue_projection import (
     QueueAutomationDisposition,
     QueueDecisionAuthority,
     QueueItemState,
+    QueueProjectionRevision,
 )
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunState
@@ -468,6 +469,11 @@ UNOWNED_VOCABULARIES: Mapping[str, str] = {
     ),
 }
 
+OWNED_SCALAR_DOMAINS: Mapping[str, Callable[[int], object]] = {
+    "queue_items.state_version": QueueProjectionRevision,
+}
+"""Non-vocabulary CHECK operands validated by their production value contract."""
+
 DECLARED_VOCABULARIES = _declared_vocabularies(SCHEMA_CONDITIONS)
 COMPARED_LITERALS = _compared_literals(SCHEMA_CONDITIONS)
 ADMITTED_VOCABULARIES = _admitted_vocabularies(SCHEMA_CONDITIONS)
@@ -672,7 +678,16 @@ def test_the_columns_named_undeclared_are_exactly_the_ones_without_their_own_che
 def test_every_vocabulary_the_schema_spells_has_an_owner_or_a_named_exemption() -> None:
     assert set(DECLARED_VOCABULARIES) | set(COMPARED_LITERALS) == set(
         OWNED_VOCABULARIES
-    ) | set(UNOWNED_VOCABULARIES)
+    ) | set(OWNED_SCALAR_DOMAINS) | set(UNOWNED_VOCABULARIES)
+
+
+@pytest.mark.parametrize("column", sorted(OWNED_SCALAR_DOMAINS))
+def test_every_compared_scalar_literal_is_admitted_by_its_contract(
+    column: str,
+) -> None:
+    for literal in COMPARED_LITERALS[column]:
+        assert type(literal) is int
+        OWNED_SCALAR_DOMAINS[column](literal)
 
 
 def test_a_kind_dropped_from_its_own_check_is_drift_though_another_check_names_it() -> (

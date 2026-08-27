@@ -122,17 +122,17 @@ def _advance_one(
     catalog: CatalogResolver,
     starter: DurablePublishedRunStarter,
 ) -> QueueAdvanceOutcome:
-    if item.blockers:
-        return QueueItemBlocked(item.item_reference.item_id, item.blockers)
-    proposal = item.proposal
-    admission = item.admission
-    if proposal is None or admission is None or admission.proposal_revision is None:
-        return QueueItemBlocked(
-            item.item_reference.item_id,
-            (QueueBlockerKind.LEGACY_REVIEW_REQUIRED,),
-        )
     binding = item.launch_binding
     if binding is None:
+        if item.blockers:
+            return QueueItemBlocked(item.item_reference.item_id, item.blockers)
+        proposal = item.proposal
+        admission = item.admission
+        if proposal is None or admission is None or admission.proposal_revision is None:
+            return QueueItemBlocked(
+                item.item_reference.item_id,
+                (QueueBlockerKind.LEGACY_REVIEW_REQUIRED,),
+            )
         revision_hash = _resolve_head(proposal.workflow_lineage_id, catalog)
         if revision_hash is None:
             return QueueItemBlocked(
@@ -191,13 +191,13 @@ def _advance_one(
             | BindingConstraintRefused()
             | AgentConfigurationRevisionMissing()
             | AgentExecutorBindingUnavailable()
-            | WriteUnavailable()
-            | DurableStateCorrupt()
         ):
             return QueueItemBlocked(
                 item.item_reference.item_id,
                 (QueueBlockerKind.START_REFUSED,),
             )
+        case WriteUnavailable() | DurableStateCorrupt():
+            raise QueueAdvanceUnavailable("the reserved queue run could not start")
         case _ as unreachable:
             assert_never(unreachable)
 

@@ -49,10 +49,14 @@ Dependencies are project-local. A prerequisite is satisfied only when its
 launch-bound run is `COMPLETED`; any other run state remains a blocker. Ready
 items order by priority rank, then item id, so equal ranks are deterministic.
 
-The projection names blockers with `QueueBlockerKind`, including unset
-priority, human confirmation, open or failed prerequisites, capacity,
-unresolved bindings, unavailable required orders, start refusal, and legacy
-review. These are contract values, not free-form row states.
+The projection names blockers with `QueueBlockerKind`. `GET /queue-items`
+reports only facts the durable read can prove without making a reservation or
+starting a run: unset priority, human confirmation, open or failed
+prerequisites, and legacy review. An empty blocker list therefore means no
+read-time blocker was proved; it is not a start-readiness claim. Capacity,
+binding resolution, required-order availability, and start refusal are checked
+at advance or reservation time and returned by that decision. All blocker
+names are contract values, not free-form row states.
 
 ### Launch reservation is the exactly-once boundary
 
