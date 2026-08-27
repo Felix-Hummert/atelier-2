@@ -42,6 +42,7 @@ from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.contracts.schemas_v3 import (
     InstanceAccepted,
+    InstanceRefused,
     SchemaAccepted,
     read_instance_document,
     read_schema_document,
@@ -103,6 +104,38 @@ REFUSED_REVIEWS = {
         "plan": [],
         "verdict": "approve",
     },
+}
+
+RESULT_SCHEMA_CASES = {
+    "revise-without-risks": (
+        {"risks": [], "plan": [], "verdict": "revise"},
+        False,
+    ),
+    "revise-with-one-risk": (
+        {"risks": REVIEW["risks"], "plan": [], "verdict": "revise"},
+        True,
+    ),
+    "cannot-judge-without-reason": (
+        {"risks": [], "plan": [], "verdict": "cannot-judge"},
+        False,
+    ),
+    "cannot-judge-with-empty-reason": (
+        {"risks": [], "plan": [], "verdict": "cannot-judge", "reason": ""},
+        False,
+    ),
+    "cannot-judge-with-reason": (
+        {
+            "risks": [],
+            "plan": [],
+            "verdict": "cannot-judge",
+            "reason": "Insufficient evidence to judge.",
+        },
+        True,
+    ),
+    "pass-without-risks": (
+        {"risks": [], "plan": [], "verdict": "pass"},
+        True,
+    ),
 }
 
 
@@ -237,6 +270,23 @@ def test_a_plan_review_round_trips_artifact_orders_to_an_object_result(
     assert detail.detail.state is NodeState.SUCCEEDED
     assert detail.detail.answer is not None
     assert detail.detail.answer.value == ANSWER
+
+
+@pytest.mark.parametrize(
+    ("payload", "admitted"),
+    RESULT_SCHEMA_CASES.values(),
+    ids=RESULT_SCHEMA_CASES.keys(),
+)
+def test_the_plan_review_result_schema_admits_only_honest_verdicts(
+    payload: dict[str, object], admitted: bool
+) -> None:
+    schema = read_schema_document(RESULT_SCHEMA.document)
+    assert isinstance(schema, SchemaAccepted), schema
+    verdict = read_instance_document(json.dumps(payload).encode(), schema)
+    if admitted:
+        assert isinstance(verdict, InstanceAccepted), verdict
+    else:
+        assert isinstance(verdict, InstanceRefused), verdict
 
 
 @pytest.mark.parametrize(
