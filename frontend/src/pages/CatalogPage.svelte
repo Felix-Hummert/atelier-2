@@ -64,9 +64,9 @@
   $: agentRows = agents.confirmed ?? [];
   $: catalogGroupsReady =
     workflows.confirmed !== null &&
-    workflows.request.state === "idle" &&
+    workflows.request.state !== "loading" &&
     agents.confirmed !== null &&
-    agents.request.state === "idle";
+    agents.request.state !== "loading";
   $: hasCatalogEntries = workflowRows.length + agentRows.length > 0;
   $: matchingWorkflows = catalogMatches(workflowRows, search);
   $: matchingAgents = catalogMatches(agentRows, search);
@@ -287,19 +287,21 @@
   <ReadState read={workflows} label="workflows" onRetry={() => { void loadWorkflows(); }} />
   <ReadState read={agents} label="agents" onRetry={() => { void loadAgents(); }} />
 
-  {#if hasCatalogEntries && catalogGroupsReady}
-    <div class="catalog-filters" role="group" aria-label={wrapDisplayCopy(catalogPageCopy.catalogGroups)}>
-      {#each catalogGroupChoices(workflowTiles?.count ?? 0, agentRows.length) as { group, label, count } (group)}
-        <button
-          class="filter-chip"
-          class:active={activeGroup === group}
-          type="button"
-          aria-pressed={activeGroup === group}
-          onclick={() => { activeGroup = group as CatalogGroup; }}
-        >{wrapDisplayCopy(label)}{#if count !== null} <b>{count}</b>{/if}</button>
-      {/each}
-      <input bind:value={search} type="search" placeholder={wrapDisplayCopy(catalogPageCopy.search)} aria-label={wrapDisplayCopy(catalogPageCopy.searchLabel)} />
-    </div>
+  {#if hasCatalogEntries}
+    {#if catalogGroupsReady}
+      <div class="catalog-filters" role="group" aria-label={wrapDisplayCopy(catalogPageCopy.catalogGroups)}>
+        {#each catalogGroupChoices(workflowTiles?.count ?? 0, agentRows.length) as { group, label, count } (group)}
+          <button
+            class="filter-chip"
+            class:active={activeGroup === group}
+            type="button"
+            aria-pressed={activeGroup === group}
+            onclick={() => { activeGroup = group as CatalogGroup; }}
+          >{wrapDisplayCopy(label)}{#if count !== null} <b>{count}</b>{/if}</button>
+        {/each}
+        <input bind:value={search} type="search" placeholder={wrapDisplayCopy(catalogPageCopy.search)} aria-label={wrapDisplayCopy(catalogPageCopy.searchLabel)} />
+      </div>
+    {/if}
 
     {#if activeGroup === "all" || activeGroup === "workflows"}
       <section aria-label={wrapDisplayCopy(catalogPageCopy.workflowsTitle)}>
@@ -342,7 +344,11 @@
         <p class="empty"><span aria-hidden="true">✦ </span><span>{wrapDisplayCopy(catalogPageCopy.skillsNone)}</span></p>
       </section>
     {/if}
-  {:else if workflows.confirmed !== null && agents.confirmed !== null}
+  {:else if
+    workflows.confirmed !== null &&
+    workflows.request.state === "idle" &&
+    agents.confirmed !== null &&
+    agents.request.state === "idle"}
     <p class="empty">{wrapDisplayCopy(catalogPageCopy.catalogEmpty)}</p>
   {/if}
 
