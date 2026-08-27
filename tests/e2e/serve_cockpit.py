@@ -9,7 +9,8 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
@@ -116,6 +117,9 @@ CONDUCTOR_FAKE_REVISION = "conductor-fake/v1"
 # to reach and confirm the cancel by keyboard; the operator's cancel ends it far
 # sooner, so this only bounds a run nobody stops.
 HELD_ATTEMPT_SECONDS = 30.0
+# Long enough for the graph drawing to be photographed live, and interruptible
+# by the generation that opened it so a recompose does not wait this bound out.
+DELAYED_ATTEMPT_SECONDS = 3.0
 MODEL_VALIDATION_RUN_ID = "provider-model-validation"
 
 
@@ -141,14 +145,114 @@ class BrowserScratchRoot:
             shutil.rmtree(self.path)
 
 
+def replace_closed_generation_scratch_root(
+    previous: BrowserScratchRoot,
+) -> BrowserScratchRoot:
+    """Blank root for the next generation; the previous one is removed.
+
+    Call only after that generation's runtime has closed. Reusing the same
+    root would hand leftover attempt directories to the next workspace owner,
+    which reconciles them against a store that no longer has those attempts.
+    """
+
+    next_root = BrowserScratchRoot.create()
+    try:
+        previous.close()
+    except BaseException:
+        next_root.close()
+        raise
+    return next_root
+
+
 def close_runtime_and_scratch_root(
     runtime: RuntimeCloser | None, scratch_root: BrowserScratchRoot
 ) -> None:
-    try:
-        if runtime is not None:
-            runtime.close()
-    finally:
+    if runtime is None:
         scratch_root.close()
+        return
+    try:
+        runtime.close()
+    except BaseException:
+        # A failed shutdown may still have a live generation writing this
+        # workspace; deleting it would drop that work on the floor.
+        print(
+            f"preserving scratch root {scratch_root.path}: runtime shutdown failed",
+            file=sys.stderr,
+        )
+        raise
+    scratch_root.close()
+
+
+class FakeProviderHolds:
+    """Tracks in-flight fake provider decodes bound to one served generation.
+
+    Delayed, held, and blocking executors wait on a release signal instead of
+    sleeping. Drain sets that signal, seals the live generation under the same
+    lock that tracks in-flight count, then blocks until every already-admitted
+    decode has returned. Each executor captures the live generation token when
+    it is created; admission refuses when that token is not the live generation
+    or when that generation is already sealed. start_generation mints a new
+    token and does not unseal the previous one, so a decode delayed before the
+    admission lock cannot enter after the old scratch root is removed.
+    DBOS shutdown only waits one second for workflows and then
+    ThreadPoolExecutor.shutdown(wait=False), so closing the runtime or
+    removing the scratch root before those decodes finish still races a live
+    generation.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._idle = threading.Condition(self._lock)
+        self._released = threading.Event()
+        self._inflight = 0
+        self._generation: object = object()
+        self._sealed_generation: object | None = None
+
+    def bind_decode(self) -> tuple[object, threading.Event]:
+        with self._lock:
+            return self._generation, self._released
+
+    @contextmanager
+    def in_flight(self, generation: object) -> Iterator[None]:
+        with self._lock:
+            if generation is not self._generation:
+                raise RuntimeError("cannot admit a fake decode from a stale generation")
+            if generation is self._sealed_generation:
+                raise RuntimeError(
+                    "cannot admit a fake decode after this generation was sealed"
+                )
+            self._inflight += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._inflight -= 1
+                self._idle.notify_all()
+
+    def release_all(self) -> None:
+        self._released.set()
+
+    def wait_until_idle(self, timeout: float = TIMEOUT_SECONDS) -> None:
+        deadline = time.monotonic() + timeout
+        with self._lock:
+            self._sealed_generation = self._generation
+            while self._inflight > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        f"{self._inflight} in-flight fake decode(s) did not finish"
+                    )
+                self._idle.wait(remaining)
+
+    def start_generation(self) -> None:
+        with self._lock:
+            if self._inflight:
+                raise RuntimeError(
+                    "cannot start a generation while "
+                    f"{self._inflight} fake decode(s) are still in flight"
+                )
+            self._generation = object()
+            self._released = threading.Event()
 
 
 class UnknownReadbackAdapter:
@@ -190,11 +294,13 @@ class BlockingAgentExecutor(RecordingAgentExecutorV2):
         name: str,
         release: threading.Event,
         owner: BlockingAgentExecutorFactory,
+        generation: object | None,
     ) -> None:
         super().__init__(output, requests, lifecycle, name)
         self.observed = threading.Event()
         self.release = release
         self.owner = owner
+        self._generation = generation
 
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
@@ -202,10 +308,16 @@ class BlockingAgentExecutor(RecordingAgentExecutorV2):
         if self.requests[-1].run_id.value == MODEL_VALIDATION_RUN_ID:
             return super().decode_process_completion(invocation, completion)
         self.owner.observed_executor = self
-        self.observed.set()
-        if not self.release.wait(TIMEOUT_SECONDS):
-            raise RuntimeError("browser did not observe the working attempt")
-        return super().decode_process_completion(invocation, completion)
+        tracking = (
+            self.owner.holds.in_flight(self._generation)
+            if self.owner.holds is not None
+            else nullcontext()
+        )
+        with tracking:
+            self.observed.set()
+            if not self.release.wait(TIMEOUT_SECONDS):
+                raise RuntimeError("browser did not observe the working attempt")
+            return super().decode_process_completion(invocation, completion)
 
     def close(self) -> None:
         super().close()
@@ -220,33 +332,96 @@ class BlockingAgentExecutor(RecordingAgentExecutorV2):
 class BlockingAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
     observed_executor: BlockingAgentExecutor | None = None
 
+    def __init__(
+        self,
+        provider: str,
+        revision: str,
+        operational_identity_value: str,
+        output: bytes,
+        holds: FakeProviderHolds | None = None,
+    ) -> None:
+        super().__init__(provider, revision, operational_identity_value, output)
+        self.holds = holds
+
     def open(self) -> RecordingAgentExecutorV2:
         self.opens += 1
         self.lifecycle.append(f"open:{self.provider}")
+        generation: object | None = None
+        if self.holds is not None:
+            generation, _ = self.holds.bind_decode()
         self.opened = BlockingAgentExecutor(
-            self.output, [], self.lifecycle, self.provider, threading.Event(), self
+            self.output,
+            [],
+            self.lifecycle,
+            self.provider,
+            threading.Event(),
+            self,
+            generation,
         )
         return self.opened
+
+    def release_in_flight(self) -> None:
+        for executor in (self.observed_executor, self.opened):
+            if isinstance(executor, BlockingAgentExecutor):
+                executor.release.set()
+        self.observed_executor = None
+        type(self).observed_executor = None
+
+
+def drain_inflight_fake_decodes(
+    holds: FakeProviderHolds,
+    blocking: BlockingAgentExecutorFactory | None = None,
+) -> None:
+    holds.release_all()
+    if blocking is not None:
+        blocking.release_in_flight()
+    holds.wait_until_idle()
 
 
 class DelayedAgentExecutor(RecordingAgentExecutorV2):
     """Holds a V3 node in `working` long enough for the browser to draw it live."""
+
+    def __init__(
+        self,
+        output: bytes,
+        requests: list[AgentExecutionRequestV2],
+        lifecycle: list[str],
+        name: str,
+        holds: FakeProviderHolds,
+    ) -> None:
+        super().__init__(output, requests, lifecycle, name)
+        self._holds = holds
+        self._generation, self._released = holds.bind_decode()
+        self.holding = threading.Event()
 
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
         if self.requests[-1].run_id.value == MODEL_VALIDATION_RUN_ID:
             return super().decode_process_completion(invocation, completion)
-        time.sleep(3.0)
-        return super().decode_process_completion(invocation, completion)
+        with self._holds.in_flight(self._generation):
+            self.holding.set()
+            self._released.wait(DELAYED_ATTEMPT_SECONDS)
+            return super().decode_process_completion(invocation, completion)
 
 
 class DelayedAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
+    def __init__(
+        self,
+        provider: str,
+        revision: str,
+        operational_identity_value: str,
+        output: bytes,
+        holds: FakeProviderHolds,
+    ) -> None:
+        super().__init__(provider, revision, operational_identity_value, output)
+        self._holds = holds
+
     def open(self) -> RecordingAgentExecutorV2:
         self.opens += 1
         self.lifecycle.append(f"open:{self.provider}")
         self.opened = DelayedAgentExecutor(
-            self.output, [], self.lifecycle, self.provider
+            self.output, [], self.lifecycle, self.provider, self._holds
         )
         return self.opened
 
@@ -260,20 +435,48 @@ class HeldAgentExecutor(RecordingAgentExecutorV2):
     stop -- bounded, so a forgotten run never hangs the server.
     """
 
+    def __init__(
+        self,
+        output: bytes,
+        requests: list[AgentExecutionRequestV2],
+        lifecycle: list[str],
+        name: str,
+        holds: FakeProviderHolds,
+    ) -> None:
+        super().__init__(output, requests, lifecycle, name)
+        self._holds = holds
+        self._generation, self._released = holds.bind_decode()
+        self.holding = threading.Event()
+
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
         if self.requests[-1].run_id.value == MODEL_VALIDATION_RUN_ID:
             return super().decode_process_completion(invocation, completion)
-        threading.Event().wait(HELD_ATTEMPT_SECONDS)
-        return super().decode_process_completion(invocation, completion)
+        with self._holds.in_flight(self._generation):
+            self.holding.set()
+            self._released.wait(HELD_ATTEMPT_SECONDS)
+            return super().decode_process_completion(invocation, completion)
 
 
 class HeldAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
+    def __init__(
+        self,
+        provider: str,
+        revision: str,
+        operational_identity_value: str,
+        output: bytes,
+        holds: FakeProviderHolds,
+    ) -> None:
+        super().__init__(provider, revision, operational_identity_value, output)
+        self._holds = holds
+
     def open(self) -> RecordingAgentExecutorV2:
         self.opens += 1
         self.lifecycle.append(f"open:{self.provider}")
-        self.opened = HeldAgentExecutor(self.output, [], self.lifecycle, self.provider)
+        self.opened = HeldAgentExecutor(
+            self.output, [], self.lifecycle, self.provider, self._holds
+        )
         return self.opened
 
 
@@ -294,11 +497,13 @@ class BrowserProofHarness:
         recompose: Callable[[], tuple[ASGIApp, DbosRuntime]],
         request_restart: Callable[[bool], None],
         reset_state: Callable[[], None],
+        drain_inflight: Callable[[], None] | None = None,
     ) -> None:
         self.app, self.runtime, self.factory = app, runtime, factory
         self.recompose = recompose
         self.request_restart = request_restart
         self.reset_state = reset_state
+        self.drain_inflight = drain_inflight or (lambda: None)
         self.generation = 1
         self.expected_hash = hashlib.sha256(factory.output).hexdigest().encode("ascii")
         self.stream_counts: dict[str, int] = {}
@@ -411,6 +616,7 @@ class BrowserProofHarness:
         self.runtime.close()
 
     def recompose_after_server_stop(self, reset: bool) -> None:
+        self.drain_inflight()
         self.runtime.close()
         if reset:
             self.reset_state()
@@ -617,6 +823,7 @@ def main() -> None:
     application_version = "r3-phase5-e2e"
     seed_boot_baseline(database, effects, application_version)
 
+    holds = FakeProviderHolds()
     factory = BlockingAgentExecutorFactory(
         "e2e",
         "blocking/v1",
@@ -626,6 +833,7 @@ def main() -> None:
             + "Grüße 東京 — durable agent output remains readable after completion.\n"
             * 20
         ).encode(),
+        holds,
     )
     # The blocking provider exists so the browser can catch a V2 attempt
     # mid-flight. The immediate one finishes a V3 line without a hold. The
@@ -635,11 +843,15 @@ def main() -> None:
         "e2e-v3", "immediate/v1", "e2e-immediate-process", b'"V3 provider bytes"'
     )
     delayed = DelayedAgentExecutorFactory(
-        "e2e-v3-slow", "delayed/v1", "e2e-delayed-process", b"V3 provider bytes"
+        "e2e-v3-slow",
+        "delayed/v1",
+        "e2e-delayed-process",
+        b"V3 provider bytes",
+        holds,
     )
     # Held long enough for the browser to stop it by hand (#439 P6 cancel proof).
     held = HeldAgentExecutorFactory(
-        "e2e-v3-held", "held/v1", "e2e-held-process", b'"V3 provider bytes"'
+        "e2e-v3-held", "held/v1", "e2e-held-process", b'"V3 provider bytes"', holds
     )
     # The workbench chat proof (#7): a doors-shaped executor answering with the
     # production report shape, so a browser can send a message and read the
@@ -701,7 +913,17 @@ def main() -> None:
             raise RuntimeError("the e2e server is not running")
         server.should_exit = True
 
+    def drain_inflight() -> None:
+        drain_inflight_fake_decodes(holds, factory)
+
     scratch_root = BrowserScratchRoot.create()
+
+    def compose_next_generation() -> tuple[ASGIApp, DbosRuntime]:
+        nonlocal scratch_root
+        holds.start_generation()
+        scratch_root = replace_closed_generation_scratch_root(scratch_root)
+        return compose()
+
     runtime_to_close: RuntimeCloser | None = None
     try:
         app, live_runtime = compose()
@@ -710,9 +932,10 @@ def main() -> None:
             app,
             live_runtime,
             factory,
-            compose,
+            compose_next_generation,
             request_restart,
             lambda: reset_to_boot_baseline(database, effects, application_version),
+            drain_inflight,
         )
         runtime_to_close = harness
         while True:
@@ -730,6 +953,7 @@ def main() -> None:
             harness.recompose_after_server_stop(reset_requested.is_set())
             reset_requested.clear()
     finally:
+        drain_inflight()
         close_runtime_and_scratch_root(runtime_to_close, scratch_root)
 
 

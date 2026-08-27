@@ -2324,6 +2324,19 @@ class DbosAgentAttemptStore:
                 transcript=transcript,
             )
 
+    def complete_agent_refusal(
+        self, execution: AgentAttemptExecution, reason: str
+    ) -> AgentAttemptFailed:
+        """End an armed attempt whose executor did not start a provider process."""
+
+        return self._judged_armed_failure(
+            execution,
+            AgentAttemptFailureCode.AGENT_REFUSED,
+            NodeReceiptReason.AGENT_REFUSED,
+            reason,
+            None,
+        )
+
     def complete_project_verification_failure(
         self,
         execution: AgentAttemptExecution,

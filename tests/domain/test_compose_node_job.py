@@ -9,7 +9,11 @@ today -- a promise that holds by accident of its callers is not a promise.
 
 from __future__ import annotations
 
-from atelier2.application.compose_node_job import ORDER_HEADING, node_job
+from atelier2.application.compose_node_job import (
+    ORDER_HEADING,
+    NodeJobCompositionVersion,
+    node_job,
+)
 from atelier2.contracts.node_records_v3 import RunInput, RunInputSchemaKind
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
 
@@ -71,5 +75,28 @@ def test_only_a_declared_root_string_order_is_rendered_raw() -> None:
             '{ "files": 1 }',
             ORDER_HEADING.format(name="summary"),
             '"ship it"',
+        ]
+    )
+
+
+def test_the_legacy_composition_keeps_declared_root_strings_json_encoded() -> None:
+    composed = node_job(
+        "Review it.",
+        (
+            RunInput(
+                "diff",
+                SCHEMA,
+                b'"diff --git a/file.py b/file.py\\n+line"',
+                RunInputSchemaKind.PLAIN_STRING,
+            ),
+        ),
+        composition_version=NodeJobCompositionVersion.LEGACY,
+    )
+
+    assert composed == "\n\n".join(
+        [
+            "Review it.",
+            ORDER_HEADING.format(name="diff"),
+            '"diff --git a/file.py b/file.py\\n+line"',
         ]
     )
