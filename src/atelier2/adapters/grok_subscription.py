@@ -8,15 +8,12 @@ ten synthetic schema calls put one unique token halfway through a 10,000,
 non-token placeholders at 40,000 and 50,000 bytes (5.345 and 5.520 s); the
 file carrier returned one only after narrated file reading at 40,000 (16.156
 s) and a placeholder at 50,000 (5.460 s). A later 50,009-byte inline call
-ended successfully in 3.527 s with `{"findings":[],"verdict":"revise"}`. Its
-exact thought was `The user query appears to be a huge string of x's, but there's a
-note that the full request was offloaded to a file. I need to read that file to
-get the actual question.` This tool-free adapter therefore uses inline `-p`
-only through the measured 30,000-byte bound and returns typed `AGENT_REFUSED`
-before launch above it; a post-launch offload announcement is also a typed
-refusal, never a minimal object accepted as success. Standard input is not a
-documented prompt carrier. The version gate admits exactly this measured
-release. The child environment is only `HOME`, `GROK_HOME` and `PATH` -- and
+ended successfully in 3.527 s with `{"findings":[],"verdict":"revise"}`.
+This tool-free adapter therefore uses inline `-p` only through the measured
+30,000-byte bound and returns typed `AGENT_REFUSED` before launch above it.
+Standard input is not a documented prompt carrier. The version gate admits
+exactly this measured release. The child environment is only `HOME`,
+`GROK_HOME` and `PATH` -- and
 `HOME` is containment, not convenience: without it the CLI resolves the
 invoking account's own profile.
 
@@ -195,13 +192,6 @@ _PROMPT_LIMIT_REFUSAL = (
     "Grok 1.0.5 inline prompt transport is measured only through 30,000 bytes"
 )
 _PROMPT_ENCODING_REFUSAL = "Grok inline prompt transport accepts UTF-8 job bytes only"
-# Grok 1.0.5's `--output-format json` puts this exact sentence in the final
-# envelope's `thought` when it offloads the prompt. It is a provider transport
-# quirk, not a phrase in the model's answer: a 40 KiB synthetic prompt emitted
-# it on 2026-08-27.
-_PROMPT_OFFLOAD_ANNOUNCEMENT = (
-    "The system says the full request is in a file that I need to read first."
-)
 
 
 def _unusable_provider_answer(
@@ -232,18 +222,6 @@ class GrokProviderEndedWithoutFinalMessage(AgentExecutionFailure):
 
     code: AgentAttemptFailureCode = field(
         default=AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
-        init=False,
-    )
-
-
-@dataclass(frozen=True)
-class GrokProviderOffloadedPrompt(AgentExecutionFailure):
-    """Grok announced prompt offload, so its schema-shaped answer is unusable."""
-
-    observed_prompt_bytes: int = field(kw_only=True)
-    threshold_bytes: int = field(kw_only=True)
-    code: AgentAttemptFailureCode = field(
-        default=AgentAttemptFailureCode.AGENT_REFUSED,
         init=False,
     )
 
@@ -715,17 +693,6 @@ def _final_grok_envelope_text(values: Sequence[object]) -> str | None:
     return text if isinstance(text, str) and text else None
 
 
-def _grok_announced_prompt_offload(values: Sequence[object]) -> bool:
-    """Whether the JSON envelope carries Grok's measured offload announcement."""
-
-    return any(
-        isinstance(value, dict)
-        and isinstance(value.get("thought"), str)
-        and _PROMPT_OFFLOAD_ANNOUNCEMENT in value["thought"]
-        for value in values
-    )
-
-
 def _unreadable_grok_transcript(standard_output: bytes) -> AttemptTranscript | None:
     """Keep an unreadable raw frame as bounded, redacted evidence."""
 
@@ -740,7 +707,6 @@ def _unreadable_grok_transcript(standard_output: bytes) -> AttemptTranscript | N
 class GrokSubscriptionProcessCommand(AgentProcessCommand):
     """One Grok headless command and the output schema it carried."""
 
-    prompt_bytes: int = field(kw_only=True)
     declared_output_schema_bytes: bytes | None = field(default=None, kw_only=True)
 
 
@@ -796,7 +762,6 @@ class GrokSubscriptionExecutor:
                 _child_environment(settings, state_directory),
                 b"",
                 standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
-                prompt_bytes=len(request.job_bytes),
                 declared_output_schema_bytes=request.declared_output_schema_bytes,
             )
             with self._lifecycle_lock:
@@ -820,14 +785,6 @@ class GrokSubscriptionExecutor:
         if values is None:
             return _unusable_provider_answer(
                 _unreadable_grok_transcript(completion.standard_output)
-            )
-        if isinstance(
-            command, GrokSubscriptionProcessCommand
-        ) and _grok_announced_prompt_offload(values):
-            return GrokProviderOffloadedPrompt(
-                _grok_transcript(values),
-                observed_prompt_bytes=command.prompt_bytes,
-                threshold_bytes=_MEASURED_INLINE_PROMPT_BYTES,
             )
         if completion.return_code != 0:
             return _unusable_provider_answer(_grok_transcript(values))

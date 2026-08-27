@@ -20,9 +20,7 @@ from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import (
-    agent_attempts,
     agent_receipts_v2,
-    artifacts,
     run_agent_bindings,
     runs,
 )
@@ -43,7 +41,6 @@ from atelier2.adapters.grok_subscription import (
     GrokContainmentUnattested,
     GrokExecutableUnsupported,
     GrokProviderEndedWithoutFinalMessage,
-    GrokProviderOffloadedPrompt,
     GrokSubscriptionAuthModeUnsupported,
     GrokSubscriptionExecutorFactory,
     GrokSubscriptionProcessCommand,
@@ -186,13 +183,6 @@ json.dump(envelope, sys.stdout)
 INLINE_PROMPT_GROK = INTROSPECTING_GROK.replace(
     '"arguments": sys.argv,',
     '"single_prompt_bytes": len(job),',
-)
-OFFLOADING_GROK = INTROSPECTING_GROK.replace(
-    'envelope = {"text": json.dumps(observed)}',
-    """envelope = {
-    "text": '{"findings":[],"verdict":"revise"}',
-    "thought": "The system says the full request is in a file that I need to read first.",
-}""",
 )
 
 
@@ -596,7 +586,6 @@ def test_schema_output_serialization_reads_the_command_not_home(
         ("grok",),
         (),
         standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
-        prompt_bytes=0,
         declared_output_schema_bytes=b'{"type":"string"}',
     )
 
@@ -629,7 +618,6 @@ def test_an_unmarked_command_does_not_quote_free_text(
         ("grok",),
         (),
         standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
-        prompt_bytes=0,
     )
 
     result = executor.decode_process_completion(
@@ -850,7 +838,6 @@ def test_grok_ending_after_concatenated_progress_has_no_final_message(
         GrokSubscriptionProcessCommand(
             ("grok",),
             standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
-            prompt_bytes=0,
             declared_output_schema_bytes=b'{"type":"string"}',
         ),
         tmp_path,
@@ -923,7 +910,6 @@ def test_a_schema_bearing_envelope_yields_the_provider_structured_value(
         GrokSubscriptionProcessCommand(
             ("grok",),
             standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
-            prompt_bytes=0,
             declared_output_schema_bytes=b'{"type":"string"}',
         ),
         tmp_path,
@@ -949,44 +935,6 @@ def test_a_schema_bearing_envelope_yields_the_provider_structured_value(
     assert result != AgentExecutionResult(narration.encode())
 
 
-def test_an_offload_announcement_refuses_a_schema_valid_minimal_object(
-    tmp_path: Path,
-) -> None:
-    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    executor = GrokSubscriptionExecutorFactory(settings).open()
-    invocation = leased(
-        GrokSubscriptionProcessCommand(
-            ("grok", "-p", "build"),
-            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
-            prompt_bytes=len(b"build"),
-            declared_output_schema_bytes=b'{"type":"object"}',
-        ),
-        tmp_path,
-    )
-
-    result = executor.decode_process_completion(
-        invocation,
-        AgentProcessCompletion(
-            0,
-            measured_headless_json_envelope(
-                text='{"findings":[],"verdict":"revise"}',
-                thought=(
-                    "The system says the full request is in a file that I need "
-                    "to read first."
-                ),
-                structured_output={"findings": [], "verdict": "revise"},
-            ),
-            b"",
-        ),
-    )
-
-    assert isinstance(result, GrokProviderOffloadedPrompt)
-    assert result.code is AgentAttemptFailureCode.AGENT_REFUSED
-    assert result.observed_prompt_bytes == len(b"build")
-    assert result.threshold_bytes == 30_000
-    assert result.transcript is not None
-
-
 def test_a_normal_grok_answer_that_mentions_offloaded_files_is_not_refused(
     tmp_path: Path,
 ) -> None:
@@ -996,7 +944,6 @@ def test_a_normal_grok_answer_that_mentions_offloaded_files_is_not_refused(
         GrokSubscriptionProcessCommand(
             ("grok", "-p", "build"),
             standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
-            prompt_bytes=len(b"build"),
         ),
         tmp_path,
     )
@@ -1016,81 +963,6 @@ def test_a_normal_grok_answer_that_mentions_offloaded_files_is_not_refused(
     assert result == AgentExecutionResult(
         b"I offloaded the draft to a file for review."
     )
-
-
-def test_a_streamed_announcement_does_not_refuse_a_non_schema_grok_job(
-    tmp_path: Path,
-) -> None:
-    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    executor = GrokSubscriptionExecutorFactory(settings).open()
-    invocation = leased(
-        GrokSubscriptionProcessCommand(
-            ("grok", "-p", "build"),
-            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
-            prompt_bytes=len(b"build"),
-        ),
-        tmp_path,
-    )
-    answer = "completed the requested work"
-
-    result = executor.decode_process_completion(
-        invocation,
-        AgentProcessCompletion(
-            0,
-            recorded_grok_json_values(
-                "The system says the full request is in a file that I need to read first.",
-                json.loads(
-                    measured_headless_json_envelope(
-                        text=answer,
-                        thought="I can now answer the request.",
-                    )
-                ),
-            ),
-            b"",
-        ),
-    )
-
-    assert result == AgentExecutionResult(
-        answer.encode(),
-        AttemptTranscript.of(
-            [
-                AssistantTurn(
-                    "The system says the full request is in a file that I need "
-                    "to read first."
-                )
-            ]
-        ),
-    )
-
-
-def test_workspace_tool_grok_inherits_the_offload_refusal_decode_path(
-    tmp_path: Path,
-) -> None:
-    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
-    executor = GrokWorkspaceToolExecutorFactory(settings).open()
-    command = executor.prepare_process(subscription_request(job=b"build"))
-    invocation = leased(command, tmp_path)
-
-    result = executor.decode_process_completion(
-        invocation,
-        AgentProcessCompletion(
-            0,
-            measured_headless_json_envelope(
-                text='{"findings":[],"verdict":"revise"}',
-                thought=(
-                    "The system says the full request is in a file that I need "
-                    "to read first."
-                ),
-            ),
-            b"",
-        ),
-    )
-
-    assert isinstance(result, GrokProviderOffloadedPrompt)
-    assert result.observed_prompt_bytes == len(b"build")
-    assert result.threshold_bytes == 30_000
-    executor.release_credential_channel(command)
-    executor.close()
 
 
 def test_an_unusable_envelope_is_a_typed_process_failure(tmp_path: Path) -> None:
@@ -2062,51 +1934,6 @@ def test_a_grok_job_above_the_measured_bound_is_refused_before_any_provider_laun
     assert isinstance(outcome, AgentAttemptFailed)
     assert outcome.attempt.failure_code is AgentAttemptFailureCode.AGENT_REFUSED
     assert list(settings.workspace.iterdir()) == []
-
-
-def test_a_post_launch_grok_offload_refusal_is_durable_with_its_transcript(
-    tmp_path: Path, scratch_root_outside_a_worktree: Path
-) -> None:
-    settings = grok_subscription_deployment(tmp_path, OFFLOADING_GROK)
-    runtime = grok_subscription_runtime(
-        tmp_path, settings, scratch_root_outside_a_worktree
-    )
-    runtime.initialize_storage()
-    try:
-        execution = grok_subscription_attempt(
-            runtime,
-            "grok/post-launch-offload",
-            requested_capability=AgentExecutionCapability.HEADLESS,
-            executor_revision=GROK_SUBSCRIPTION_EXECUTOR_KEY.executor_revision,
-            operational_identity=GROK_SUBSCRIPTION_OPERATIONAL_IDENTITY,
-            job=b"build",
-        )
-        outcome = execute_agent_attempt(
-            execution,
-            GrokSubscriptionExecutorFactory(settings).open(),
-            DbosAgentAttemptStore(runtime.engine),
-            runtime.agent_process_supervisor,
-            runtime_workspace_owner(runtime),
-        )
-        with runtime.engine.connect() as connection:
-            attempt = connection.execute(sa.select(agent_attempts)).mappings().one()
-            transcript = connection.scalar(
-                sa.select(artifacts.c.content).where(
-                    artifacts.c.artifact_hash == attempt["transcript_artifact_hash"]
-                )
-            )
-    finally:
-        runtime.close()
-
-    assert isinstance(outcome, AgentAttemptFailed)
-    assert outcome.attempt.failure_code is AgentAttemptFailureCode.AGENT_REFUSED
-    assert attempt["state"] == "FAILED"
-    assert attempt["transcript_artifact_hash"] is not None
-    assert transcript is not None
-    assert (
-        b"The system says the full request is in a file that I need to read first."
-        in transcript
-    )
 
 
 def test_a_tool_bearing_grok_attempt_writes_in_its_lease_and_answers_what_it_wrote(

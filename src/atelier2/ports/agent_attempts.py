@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
@@ -470,17 +470,6 @@ class AgentAttemptStore(AgentAttemptReader, Protocol):
         process_owner_id: AgentProcessOwnerId,
         watchdog_generation_id: WatchdogGenerationId,
     ) -> AgentAttempt: ...
-
-
-@runtime_checkable
-class PostLaunchAgentRefusalCompleter(Protocol):
-    """The durable completion a decoded provider refusal needs after launch."""
-
-    def complete_post_launch_agent_refusal(
-        self,
-        execution: AgentAttemptExecution,
-        transcript: AttemptTranscript | None,
-    ) -> AgentAttemptFailed: ...
 
 
 class TransactionalAgentAttemptCanceller(Protocol):
