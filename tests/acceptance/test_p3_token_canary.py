@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import os
 import sqlite3
 import subprocess
@@ -81,6 +82,8 @@ from tests.scenarios.agents import (
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.runs import submit_reconcile_command
 
+_STANDARD_LOG_RECORD_ATTRIBUTES = frozenset(logging.makeLogRecord({}).__dict__)
+
 
 @dataclass
 class RecordingRunner:
@@ -128,6 +131,12 @@ class RecordingRunner:
             completed.stdout,
             completed.stderr,
         )
+
+
+@dataclass(frozen=True)
+class RequiredSqliteRow:
+    table_name: str
+    values: Mapping[str, object]
 
 
 @dataclass
@@ -275,6 +284,8 @@ def _sqlite_value_bytes(value: object) -> bytes:
         return b""
     if isinstance(value, bytes):
         return value
+    if isinstance(value, str):
+        return value.encode("utf-8")
     if isinstance(value, (int, float)):
         return str(value).encode("ascii")
     raise AssertionError(f"unexpected SQLite column type: {type(value).__name__}")
@@ -284,9 +295,14 @@ def _quoted_sqlite_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def _sqlite_sinks(root: Path) -> Mapping[str, bytes]:
+def _sqlite_sinks(
+    root: Path, required_rows: tuple[RequiredSqliteRow, ...]
+) -> Mapping[str, bytes]:
     sinks: dict[str, bytes] = {}
-    for database_path in sorted(root.rglob("*.sqlite")):
+    scanned_rows: dict[str, list[Mapping[str, object]]] = {}
+    database_paths = tuple(sorted(root.rglob("*.sqlite")))
+    assert database_paths, f"no SQLite databases found beneath {root}"
+    for database_path in database_paths:
         database_name = database_path.relative_to(root).as_posix()
         with closing(sqlite3.connect(database_path)) as connection:
             connection.execute("PRAGMA wal_checkpoint(FULL)").fetchone()
@@ -298,8 +314,13 @@ def _sqlite_sinks(root: Path) -> Mapping[str, bytes]:
             )
             connection.text_factory = bytes
             for table_name in table_names:
-                rows = connection.execute(
+                cursor = connection.execute(
                     f"SELECT * FROM {_quoted_sqlite_identifier(table_name)}"
+                )
+                column_names = tuple(column[0] for column in cursor.description)
+                rows = tuple(cursor)
+                scanned_rows.setdefault(table_name, []).extend(
+                    dict(zip(column_names, row, strict=True)) for row in rows
                 )
                 sinks[f"{database_name} table {table_name}"] = b"\0".join(
                     _sqlite_value_bytes(value) for row in rows for value in row
@@ -307,9 +328,56 @@ def _sqlite_sinks(root: Path) -> Mapping[str, bytes]:
 
             for suffix in ("", "-wal", "-shm"):
                 storage_path = Path(f"{database_path}{suffix}")
-                sinks[f"{database_name}{suffix} file"] = (
-                    storage_path.read_bytes() if storage_path.is_file() else b""
+                assert storage_path.is_file(), (
+                    f"SQLite storage file was not available to scan: {storage_path}"
                 )
+                contents = storage_path.read_bytes()
+                if not suffix:
+                    assert contents, f"SQLite main file was empty: {storage_path}"
+                sinks[f"{database_name}{suffix} file"] = contents
+
+    for required_row in required_rows:
+        assert required_row.table_name in scanned_rows, (
+            f"required SQLite table was not scanned: {required_row.table_name}"
+        )
+        table_rows = scanned_rows[required_row.table_name]
+        assert table_rows, (
+            f"required SQLite table held no rows: {required_row.table_name}"
+        )
+        assert any(
+            all(
+                column_name in row
+                and _sqlite_value_bytes(row[column_name])
+                == _sqlite_value_bytes(expected_value)
+                for column_name, expected_value in required_row.values.items()
+            )
+            for row in table_rows
+        ), f"required SQLite row was not scanned from {required_row.table_name}"
+    return sinks
+
+
+def _log_sinks(
+    formatted_logs: str, records: tuple[logging.LogRecord, ...]
+) -> Mapping[str, bytes]:
+    sinks = {"captured logs formatted": formatted_logs.encode("utf-8")}
+    for index, record in enumerate(records):
+        extra_attributes = {
+            name: value
+            for name, value in record.__dict__.items()
+            if name not in _STANDARD_LOG_RECORD_ATTRIBUTES
+        }
+        fields = {
+            "message": record.getMessage(),
+            "args": record.args,
+            "extra attributes": extra_attributes,
+            "exception text": record.exc_text,
+            "exception info": record.exc_info,
+            "stack info": record.stack_info,
+        }
+        for field_name, value in fields.items():
+            sinks[f"captured log {index} {field_name}"] = repr(value).encode(
+                "utf-8", errors="backslashreplace"
+            )
     return sinks
 
 
@@ -504,12 +572,13 @@ def test_token_canary_is_absent_from_durable_and_process_surfaces(
     sinks = {
         **_runner_sinks(runner),
         "credential helper execve": b"\n".join(helper_process_records),
-        "captured logs": b"\n".join(
+        **_log_sinks(caplog.text, tuple(caplog.records)),
+        **_sqlite_sinks(
+            tmp_path,
             (
-                caplog.text.encode("utf-8"),
-                *(record.getMessage().encode("utf-8") for record in caplog.records),
-            )
+                RequiredSqliteRow(effect_receipts.name, dict(push_receipts[0])),
+                RequiredSqliteRow(run_events.name, dict(push_events[0])),
+            ),
         ),
-        **_sqlite_sinks(tmp_path),
     }
     _assert_canary_absent_from_sinks(canary_encodings, sinks)
