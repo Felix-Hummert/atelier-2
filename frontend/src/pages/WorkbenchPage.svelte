@@ -111,6 +111,7 @@
   const pendingEvents: RunEvent[] = [];
   let transcript: readonly ChatMessage[] = currentChatTranscript();
   let typed = "";
+  let expandedPinReference: string | null = null;
   let composer: { focus(): void };
   let conductorLink: ConductorLink = { kind: "reading" };
 
@@ -381,6 +382,9 @@
       run,
       workflowName: resolveWorkflowName(run, snapshot?.workflowNames ?? null)
     }));
+  $: if (!pins.some((pin) => pin.run.public_run_reference === expandedPinReference)) {
+    expandedPinReference = pins[0]?.run.public_run_reference ?? null;
+  }
   // Everything the pins do not already hold as a stage: what is moving, and
   // what waits in a shape this room cannot answer inline (a reconciliation, a
   // run of an older format). Each is one row, one click from its graph -- and
@@ -439,7 +443,7 @@
   {/if}
 
   {#if pins.length > 0}
-    <div class="needs-you">
+    <section class="needs-you" aria-label={wrapDisplayCopy(workbenchPageCopy.pinnedDecisionsLabel)}>
       <ul class="needs-you-list">
         {#each pins as pin (pin.run.public_run_reference)}
           <li>
@@ -450,11 +454,13 @@
               {mutationJournal}
               onRunRead={(read) => { absorbRun(read); }}
               {navigate}
+              compact={pin.run.public_run_reference !== expandedPinReference}
+              onExpand={() => { expandedPinReference = pin.run.public_run_reference; }}
             />
           </li>
         {/each}
       </ul>
-    </div>
+    </section>
   {/if}
 
   <!-- The living shelf: what is moving, one click from its graph. No title
@@ -520,7 +526,7 @@
     </ol>
   {/if}
 
-  <form class="composer" onsubmit={send}>
+  <form class="composer" aria-label={wrapDisplayCopy(workbenchPageCopy.composerRegionLabel)} onsubmit={send}>
     <label class="composer-label" for="workbench-message">
       {wrapDisplayCopy(workbenchPageCopy.composerLabel)}
     </label>
@@ -567,6 +573,14 @@
     z-index: 1;
     display: grid;
     gap: var(--space-3);
+    min-height: 0;
+    /* One expanded stage and about three compact decisions keep the ear and
+       conversation in the 390px room; more remains reachable by this stack's
+       own scroll, whose fade is the promised affordance. */
+    max-height: calc(var(--tap) * 7 + var(--space-3) * 3);
+    overflow-y: auto;
+    mask-image: linear-gradient(to bottom, var(--mask-opaque) calc(100% - var(--space-3)), transparent);
+    -webkit-mask-image: linear-gradient(to bottom, var(--mask-opaque) calc(100% - var(--space-3)), transparent);
     padding-block: var(--space-3);
     border-bottom: var(--edge) solid var(--line);
     background: var(--ground);
@@ -746,5 +760,23 @@
     margin: 0;
     color: var(--ink-dim);
     font-size: var(--text-xs);
+  }
+
+  @media (max-width: 48rem) {
+    :global(.workshop) {
+      height: 100vh;
+    }
+
+    .composer {
+      gap: var(--space-1);
+      padding-top: var(--space-1);
+    }
+
+    /* The sticky rail overlays the stream at this narrow height. Keep the
+       first visible conversation line below its fade without spending more
+       room in the document flow that anchors the composer. */
+    .needs-you ~ .conversation {
+      translate: 0 var(--space-5);
+    }
   }
 </style>

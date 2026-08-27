@@ -43,6 +43,27 @@ describe("the studio's hold of GET /events", () => {
     });
   });
 
+  it("keeps the hold live on RUN_PROJECTION_CORRUPT without queuing a run event", () => {
+    const applied = applyAttentionFrame(
+      markAttentionLive(startAttentionHold()),
+      JSON.stringify({
+        event: "RUN_PROJECTION_CORRUPT",
+        public_run_reference: publicReference,
+        problem: {
+          type: "urn:atelier2:problem:v1:durable-state-corrupt",
+          title: "Durable state is corrupt",
+          status: 500,
+          detail: "Stop mutation and inspect the durable store."
+        }
+      })
+    );
+
+    expect(applied.event).toBeNull();
+    expect(applied.hold.connection).toBe("live");
+    expect(applied.hold.protocol_problem).toBeNull();
+    expect(applied.hold.stream_failure).toBeNull();
+  });
+
   it("stops on STREAM_FAILED with the server's problem", () => {
     const applied = applyAttentionFrame(
       markAttentionLive(startAttentionHold()),

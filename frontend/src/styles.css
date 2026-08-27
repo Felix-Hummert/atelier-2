@@ -18,6 +18,7 @@
   --ink: #1b1e1a;
   --ink-dim: #4c5248;
   --ink-faint: #7b8173;
+  --mask-opaque: #000;
   --shadow: 0 1px 2px rgb(40 34 20 / 10%), 0 3px 10px rgb(40 34 20 / 7%);
   --shadow-lift: 0 1rem 3rem rgb(40 34 20 / 24%);
   --scrim: rgb(40 34 20 / 55%);
@@ -107,6 +108,7 @@
   --when-column: 6.5rem;
   --work-item-column: 5rem;
   --duration-column: 6rem;
+  --decision-question-min: 10rem;
   --card-min: 14rem;
   --table-min: 32rem;
   --tile-min: 9rem;
@@ -140,6 +142,7 @@
     --line: #33373d;
     --chip: #262a30;
     --ink: #e9e7e0;
+    --mask-opaque: #000;
     --ink-dim: #a2a8a6;
     --ink-faint: #6c7377;
     --shadow: 0 1px 2px rgb(0 0 0 / 40%);

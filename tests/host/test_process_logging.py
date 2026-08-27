@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from atelier2.api.app import create_app
+from atelier2.api.references import encode_public_run_reference
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
     AgentAttempt,
@@ -56,7 +57,7 @@ from tests.scenarios.agents import (
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
 ALWAYS_KEYS = ("ts", "level", "logger", "message")
-ATTEMPT_KEYS = ("event", "run_id", "node_id", "attempt_id")
+ATTEMPT_KEYS = ("event", "run_id", "public_run_reference", "node_id", "attempt_id")
 HTTP_KEYS = ("event", "exception")
 
 
@@ -103,6 +104,9 @@ def test_a_failed_attempt_emits_exactly_one_parseable_json_line(
     assert record["logger"] == PROCESS_LOGGER_NAME
     assert record["event"] == "agent_attempt_failed"
     assert record["run_id"] == execution.request.run_id.value
+    assert record["public_run_reference"] == encode_public_run_reference(
+        execution.request.run_id
+    )
     assert record["node_id"] == execution.request.node_id
     assert record["attempt_id"] == execution.attempt_id.value
     assert execution.request.run_id.value in record["message"]

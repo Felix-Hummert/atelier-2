@@ -11,19 +11,27 @@ from fastapi.sse import ServerSentEvent
 
 from atelier2.api.limits import ApiLimitExceeded, ApiLimits
 from atelier2.api.problems import (
+    PROBLEM_DEFINITIONS,
+    PROBLEM_TYPE_PREFIX,
     durable_projection_unrepresentable_detail,
     problem_resource,
 )
 from atelier2.api.projection.events import bounded_event_summary, run_event_resource
 from atelier2.api.projection.runs import node_rail_resources
-from atelier2.api.references import encode_public_run_reference
-from atelier2.api.wire.resources import StreamFailureResource
+from atelier2.api.references import encode_event_cursor, encode_public_run_reference
+from atelier2.api.wire.resources import (
+    DurableStateCorruptProblemResource,
+    RunProjectionCorruptResource,
+    StreamFailureResource,
+)
 from atelier2.application.project_node_rail import (
     NodeRailUnprojectable,
     project_node_rail,
 )
 from atelier2.application.read_attention_events import (
     AttentionCursorUnknown,
+    AttentionEvent,
+    AttentionEventCorrupt,
     AttentionEventPageOversized,
     AttentionEventsRead,
     ReadAttentionEventsResult,
@@ -186,6 +194,42 @@ def _stream_failure(
     )
 
 
+def _run_projection_corrupt(run_id: RunId, event_sequence: int) -> ServerSentEvent:
+    """Name one unprojectable run on the attention feed without ending it.
+
+    The cursor is the underlying attention event's identity so Last-Event-ID
+    resumes past this run instead of reconnecting into the same corruption.
+    """
+
+    return ServerSentEvent(
+        id=encode_event_cursor(run_id, event_sequence),
+        data=RunProjectionCorruptResource(
+            public_run_reference=encode_public_run_reference(run_id),
+            problem=DurableStateCorruptProblemResource.model_validate(
+                {
+                    "type": PROBLEM_TYPE_PREFIX + "durable-state-corrupt",
+                    "title": PROBLEM_DEFINITIONS["durable-state-corrupt"].title,
+                    "status": PROBLEM_DEFINITIONS["durable-state-corrupt"].status,
+                    "detail": PROBLEM_DEFINITIONS["durable-state-corrupt"].detail,
+                }
+            ),
+        ),
+    )
+
+
+def _remember_attention_identity(
+    item_recorded_at: RecordedAt,
+    run_id: RunId,
+    event_sequence: int,
+    current_instant: RecordedAt | None,
+    emitted_at_instant: set[tuple[RunId, int]],
+) -> tuple[RecordedAt, RunId, int, set[tuple[RunId, int]]]:
+    if current_instant is not None and item_recorded_at != current_instant:
+        emitted_at_instant = set()
+    emitted_at_instant.add((run_id, event_sequence))
+    return item_recorded_at, run_id, event_sequence, emitted_at_instant
+
+
 def _node_detail_path(event: PersistedRunEvent) -> str:
     encoded_node_id = quote(event.event.node_id, safe="-_.!~*'()")
     return (
@@ -320,8 +364,10 @@ async def stream_attention_events(
     """Forward the ATTENTION_EVENT_KINDS across runs until the client leaves.
 
     The feed does not end: a terminal run is one event, not the end of the
-    subscription. Backpressure and transient unavailability end regularly so
-    the client's own reconnect is the answer to both.
+    subscription. A run whose projection cannot be served is named as
+    RUN_PROJECTION_CORRUPT and does not end the subscription. Backpressure and
+    transient unavailability end regularly so the client's own reconnect is the
+    answer to both.
 
     Resume is same-instant identity exclusion: from the cursor event's instant
     T, later instants, or other identities still at T. Last-Event-ID seeds the
@@ -371,7 +417,13 @@ async def stream_attention_events(
             case _ as unreachable:
                 assert_never(unreachable)
         for item in page.events:
-            persisted = bounded_event_summary(item.event)
+            match item:
+                case AttentionEventCorrupt():
+                    continue
+                case AttentionEvent(event=event):
+                    persisted = bounded_event_summary(event)
+                case _ as unreachable:
+                    assert_never(unreachable)
             try:
                 limits.require_event_projection(persisted)
             except ApiLimitExceeded as error:
@@ -383,7 +435,30 @@ async def stream_attention_events(
         if page.events:
             next_poll_delay = poll_backoff.initial_delay_seconds
         for item in page.events:
-            persisted = bounded_event_summary(item.event)
+            match item:
+                case AttentionEventCorrupt(
+                    run_id=corrupt_run_id,
+                    event_sequence=corrupt_sequence,
+                    recorded_at=recorded_at,
+                ):
+                    yield _run_projection_corrupt(corrupt_run_id, corrupt_sequence)
+                    (
+                        current_instant,
+                        after_run_id,
+                        after_sequence,
+                        emitted_at_instant,
+                    ) = _remember_attention_identity(
+                        recorded_at,
+                        corrupt_run_id,
+                        corrupt_sequence,
+                        current_instant,
+                        emitted_at_instant,
+                    )
+                    continue
+                case AttentionEvent(event=event, recorded_at=recorded_at):
+                    persisted = bounded_event_summary(event)
+                case _ as unreachable:
+                    assert_never(unreachable)
             try:
                 run_result = await runner.run(
                     lambda current_run_id=persisted.event.run_id: get_run(
@@ -396,8 +471,22 @@ async def stream_attention_events(
                 case RunRead(projection):
                     pass
                 case RunNotFound() | DurableStateCorrupt():
-                    yield _stream_failure("durable-state-corrupt")
-                    return
+                    yield _run_projection_corrupt(
+                        persisted.event.run_id, persisted.event.event_sequence
+                    )
+                    (
+                        current_instant,
+                        after_run_id,
+                        after_sequence,
+                        emitted_at_instant,
+                    ) = _remember_attention_identity(
+                        recorded_at,
+                        persisted.event.run_id,
+                        persisted.event.event_sequence,
+                        current_instant,
+                        emitted_at_instant,
+                    )
+                    continue
                 case ReadUnavailable():
                     return
                 case ProjectionTooLarge():
@@ -414,22 +503,25 @@ async def stream_attention_events(
             except ApiLimitExceeded as error:
                 yield _projection_bounds_failure(error, persisted)
                 return
-            except (ValueError, NodeRailUnprojectable):
-                yield _stream_failure("durable-state-corrupt")
-                return
-            except AssertionError:
+            except (ValueError, NodeRailUnprojectable, AssertionError):
                 yield _stream_failure("internal-error")
                 return
             yield ServerSentEvent(
                 id=resource.cursor,
                 data=resource,
             )
-            if current_instant is not None and item.recorded_at != current_instant:
-                emitted_at_instant = set()
-            current_instant = item.recorded_at
-            after_run_id = persisted.event.run_id
-            after_sequence = persisted.event.event_sequence
-            emitted_at_instant.add((after_run_id, after_sequence))
+            (
+                current_instant,
+                after_run_id,
+                after_sequence,
+                emitted_at_instant,
+            ) = _remember_attention_identity(
+                recorded_at,
+                persisted.event.run_id,
+                persisted.event.event_sequence,
+                current_instant,
+                emitted_at_instant,
+            )
         if not page.events:
             await sleep(next_poll_delay)
             next_poll_delay = min(
