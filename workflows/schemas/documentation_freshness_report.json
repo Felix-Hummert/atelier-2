@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["stale_documents", "current_documents", "unassessed_documents"],
+  "properties": {
+    "stale_documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "bound_document_digest", "source_thread", "watermark", "later_objects"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "bound_document_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "source_thread": {"type": "string", "minLength": 1},
+          "watermark": {"$ref": "#/$defs/source_object_reference"},
+          "later_objects": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["reference", "ordinal"],
+              "properties": {
+                "reference": {"$ref": "#/$defs/source_object_reference"},
+                "ordinal": {"type": "integer", "minimum": 1}
+              }
+            }
+          }
+        }
+      }
+    },
+    "current_documents": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/document_watermark"}
+    },
+    "unassessed_documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "document_digest"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "document_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "source_object_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "identifier"],
+      "properties": {
+        "kind": {"enum": ["issue_body_revision", "issue_comment", "decision_revision"]},
+        "identifier": {"type": "string", "minLength": 1}
+      }
+    },
+    "document_watermark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "document_digest", "source_thread", "watermark"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "document_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_thread": {"type": "string", "minLength": 1},
+        "watermark": {"$ref": "#/$defs/source_object_reference"}
+      }
+    }
+  }
+}
