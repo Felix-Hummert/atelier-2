@@ -36,6 +36,8 @@
   export let mutationJournal: MutationJournal;
   export let onRunRead: (run: AnyRun) => void;
   export let navigate: (path: string) => void;
+  export let compact = false;
+  export let onExpand: () => void;
 
   type QuestionLookup =
     | { state: "loading" }
@@ -45,7 +47,12 @@
 
   type GraphLookup =
     | { state: "loading" }
-    | { state: "ready"; kind: "boolean" | "enum" | "free"; values: readonly string[] }
+    | {
+        state: "ready";
+        kind: "boolean" | "enum" | "free";
+        values: readonly string[];
+        role: string | null;
+      }
     | { state: "failed" };
 
   let question: QuestionLookup = { state: "loading" };
@@ -60,6 +67,8 @@
     pendingAnswer === null || graph.state !== "ready"
       ? null
       : confirmedDecisionLabel(graph.kind, pendingAnswer, runPageCopy.answerYes, runPageCopy.answerNo);
+  $: senderRole = graph.state === "ready" && graph.role !== null ? graph.role : run.current_node_id;
+  $: senderItem = run.orders.length === 0 ? null : run.orders.map((order) => order.name).join(", ");
 
   // One load per waiting node, guarded by node identity the same way the run
   // page guards its own: a run update that leaves this node
@@ -114,7 +123,13 @@
         return;
       }
       const schema = revision.graph.wait_answer_schemas.find((entry) => entry.node_id === nodeId);
-      graph = { state: "ready", kind: schema?.kind ?? "free", values: schema?.values ?? [] };
+      const node = revision.graph.node_previews.find((entry) => entry.id === nodeId);
+      graph = {
+        state: "ready",
+        kind: schema?.kind ?? "free",
+        values: schema?.values ?? [],
+        role: node?.role ?? null
+      };
     } catch {
       if (key === loadedNodeKey) graph = { state: "failed" };
     }
@@ -229,12 +244,42 @@
 <section
   class="pinned-decision"
   class:pinned-decision-sent={pendingWait !== null}
+  class:pinned-decision-compact={compact}
   aria-labelledby="pinned-decision-title-{run.public_run_reference}"
 >
-  <p class="from">
-    <b>{workflowName}</b>
-    {wrapDisplayCopy(workbenchPageCopy.waitingFrom)}
-  </p>
+  {#if compact && pendingWait === null}
+    <button
+      class="compact-answer"
+      type="button"
+      {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }}
+      onclick={onExpand}
+    >
+      <span class="from compact-from">
+        <b>{senderRole}</b>
+        <span> · {workflowName}</span>
+        {#if senderItem !== null}
+          <span> · {senderItem}</span>
+        {/if}
+      </span>
+      <span id="pinned-decision-title-{run.public_run_reference}" class="compact-question">
+        {question.state === "present"
+          ? question.text
+          : question.state === "missing"
+            ? wrapDisplayCopy(runPageCopy.questionMissing)
+            : question.state === "failed"
+              ? wrapDisplayCopy(runPageCopy.needsYou)
+              : wrapDisplayCopy(runPageCopy.questionLooking)}
+      </span>
+      <span class="compact-action">{wrapDisplayCopy(workbenchPageCopy.answerDecision)}</span>
+    </button>
+  {:else}
+    <p class="from">
+      <b>{senderRole}</b>
+      <span> · {workflowName}</span>
+      {#if senderItem !== null}
+        <span> · {senderItem}</span>
+      {/if}
+    </p>
 
   {#if pendingWait !== null}
     <h3 id="pinned-decision-title-{run.public_run_reference}" class="question">
@@ -277,21 +322,6 @@
       <h3 id="pinned-decision-title-{run.public_run_reference}" class="question looking">{wrapDisplayCopy(runPageCopy.questionLooking)}</h3>
     {/if}
 
-    {#if graph.state === "loading"}
-      <p class="pinned-status" role="status">{wrapDisplayCopy(runPageCopy.questionLooking)}</p>
-    {:else if graph.state === "ready" && graph.kind === "boolean"}
-      <div class="pinned-buttons" role="group" aria-label={wrapDisplayCopy(runPageCopy.answerLabel)}>
-        <button class="primary" type="button" disabled={waitBusy} {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }} onclick={() => { void decide("true"); }}>{wrapDisplayCopy(runPageCopy.answerYes)}</button>
-        <button class="primary" type="button" disabled={waitBusy} {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }} onclick={() => { void decide("false"); }}>{wrapDisplayCopy(runPageCopy.answerNo)}</button>
-      </div>
-    {:else if graph.state === "ready" && graph.kind === "enum"}
-      <div class="pinned-buttons" role="group" aria-label={wrapDisplayCopy(runPageCopy.answerLabel)}>
-        {#each graph.values as value (value)}
-          <button class="primary" type="button" disabled={waitBusy} {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }} onclick={() => { void decide(value); }}>{decisionLabel(value)}</button>
-        {/each}
-      </div>
-    {/if}
-
     {#if waitFailureMessage !== null}
       <div class="pinned-alert" role="alert" aria-label={decisionStatusCopy.sendFailed}>
         <strong>{decisionStatusCopy.sendFailed}</strong>
@@ -300,24 +330,37 @@
     {/if}
   {/if}
 
-  <!-- The one quiet door to the whole run: the story behind the question, and
-       the only place a free/written answer is composed. Deliberately
-       subordinate to the buttons above, never a second answer control of equal
-       weight (Leonardo-Gate 23.08.). -->
-  <a class="pinned-door" href={runPath(run.public_run_reference)} onclick={openRun}
-    >{graph.state === "ready" && graph.kind === "free"
-      ? wrapDisplayCopy(workbenchPageCopy.openTheRun)
-      : wrapDisplayCopy(workbenchPageCopy.openTheRunForStory)} →</a
-  >
+    <!-- The one quiet door to the whole run: the story behind the question,
+         kept as the stage's aside rather than a second decision control. -->
+    <div class="pinned-acts">
+      {#if pendingWait === null && graph.state === "loading"}
+        <p class="pinned-status" role="status">{wrapDisplayCopy(runPageCopy.questionLooking)}</p>
+      {:else if pendingWait === null && graph.state === "ready" && graph.kind === "boolean"}
+        <div class="pinned-buttons" role="group" aria-label={wrapDisplayCopy(runPageCopy.answerLabel)}>
+          <button class="primary" type="button" disabled={waitBusy} {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }} onclick={() => { void decide("true"); }}>{wrapDisplayCopy(runPageCopy.answerYes)}</button>
+          <button class="primary" type="button" disabled={waitBusy} {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }} onclick={() => { void decide("false"); }}>{wrapDisplayCopy(runPageCopy.answerNo)}</button>
+        </div>
+      {:else if pendingWait === null && graph.state === "ready" && graph.kind === "enum"}
+        <div class="pinned-buttons" role="group" aria-label={wrapDisplayCopy(runPageCopy.answerLabel)}>
+          {#each graph.values as value (value)}
+            <button class="primary" type="button" disabled={waitBusy} {...{ [workbenchQuestionAttribute]: workbenchQuestions.answerDecision.id }} onclick={() => { void decide(value); }}>{decisionLabel(value)}</button>
+          {/each}
+        </div>
+      {/if}
+      <a class="pinned-door" href={runPath(run.public_run_reference)} onclick={openRun}
+        >{wrapDisplayCopy(workbenchPageCopy.openTheRun)}</a
+      >
+    </div>
+  {/if}
 </section>
 
 <style>
   .pinned-decision {
     display: grid;
-    gap: var(--space-3);
+    gap: var(--space-2);
     border: var(--edge-strong) solid var(--signal-attention-mark);
     border-radius: var(--r-lg);
-    padding: var(--space-5);
+    padding: var(--space-3) var(--space-5);
     background: var(--panel2);
   }
 
@@ -325,21 +368,54 @@
     border-color: var(--signal-live);
   }
 
+  .pinned-decision-compact {
+    border-width: var(--edge);
+    padding: 0;
+  }
+
+  .compact-answer {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    width: 100%;
+    min-height: var(--tap);
+    gap: var(--space-2);
+    border: 0;
+    padding: var(--space-3) var(--space-4);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: var(--text-sm);
+    text-align: left;
+  }
+
+  .compact-question {
+    flex: 1;
+    min-width: var(--decision-question-min);
+  }
+
+  .compact-action {
+    margin-left: auto;
+    color: var(--signal-attention);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-strong);
+    white-space: nowrap;
+  }
+
   .from {
     margin: 0;
     color: var(--ink-dim);
     font-size: var(--text-2xs);
     font-weight: var(--weight-heavy);
-    letter-spacing: var(--tracking-label);
-    text-transform: uppercase;
+  }
+
+  .compact-from {
+    flex: 0 1 auto;
+    white-space: nowrap;
   }
 
   .from b {
-    color: var(--signal-attention);
-  }
-
-  .pinned-decision-sent .from b {
-    color: var(--signal-live);
+    color: var(--ink);
   }
 
   .question {
@@ -364,10 +440,12 @@
     overflow-wrap: anywhere;
   }
 
+  .pinned-acts,
   .pinned-buttons,
   .pinned-actions {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: var(--space-3);
   }
 
@@ -382,6 +460,7 @@
   }
 
   .pinned-door {
+    margin-left: auto;
     justify-self: start;
     color: var(--ink-dim);
     font-size: var(--text-xs);
@@ -390,5 +469,11 @@
 
   .pinned-door:hover {
     color: var(--ink);
+  }
+
+  @media (max-width: 48rem) {
+    .compact-from {
+      white-space: normal;
+    }
   }
 </style>
