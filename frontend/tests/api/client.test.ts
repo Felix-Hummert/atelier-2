@@ -7,12 +7,14 @@ import {
   decodeProblem,
   decodeRun,
   decodeRunEvent,
+  decodeStreamFrame,
   decodeWorkflowRevisionDetail,
   executableGraph,
   isRunV3,
   projectSourceConnectionRevisionSchema,
   problemDefinitions,
-  type Problem
+  type Problem,
+  type RunProjectionCorrupt
 } from "../../src/api/client";
 import { cancelMutation } from "../../src/lib/mutationJournal";
 import { cancellableBlock, notCancellableBlock } from "../support/runV3";
@@ -77,6 +79,12 @@ export type ProblemVariantIsExact = Assert<
       status: 404;
       detail: string;
     }
+  >
+>;
+export type RunProjectionCorruptProblemIsDurableStateCorrupt = Assert<
+  Equal<
+    RunProjectionCorrupt["problem"]["type"],
+    "urn:atelier2:problem:v1:durable-state-corrupt"
   >
 >;
 
@@ -426,6 +434,35 @@ describe("closed API decoders", () => {
 
   it("refuses an unknown durable event kind", () => {
     expect(() => decodeRunEvent(event("NODE_PROGRESS", { percent: 50 }))).toThrow();
+  });
+
+  it("decodes the attention feed's per-run corruption frame", () => {
+    const frame = decodeStreamFrame({
+      event: "RUN_PROJECTION_CORRUPT",
+      public_run_reference: "run1.cnVu",
+      problem: {
+        type: "urn:atelier2:problem:v1:durable-state-corrupt",
+        title: "Durable state is corrupt",
+        status: 500,
+        detail: "Stop mutation and inspect the durable store."
+      }
+    });
+    expect(frame.event).toBe("RUN_PROJECTION_CORRUPT");
+  });
+
+  it("refuses a RUN_PROJECTION_CORRUPT frame with a foreign problem type", () => {
+    expect(() =>
+      decodeStreamFrame({
+        event: "RUN_PROJECTION_CORRUPT",
+        public_run_reference: "run1.cnVu",
+        problem: {
+          type: "urn:atelier2:problem:v1:internal-error",
+          title: "Internal error",
+          status: 500,
+          detail: "Retry only after the server fault has been inspected."
+        }
+      })
+    ).toThrow();
   });
 
   it.each(["01", "+1", "-0", " 1", "1 ", "1.0", ""])(

@@ -89,11 +89,16 @@ components are byte-frozen; adding V2 or V3 does not silently widen them. The
 V3 event family publishes only the agent kinds a format-3 line actually writes.
 The SSE envelope carries only `id` and `data`: omitting the transport
 `event:` field makes every frame a default `message`, while `data.event` is the
-sole domain discriminant. The stream has exactly two frame shapes under that
+sole domain discriminant. The per-run stream has exactly two frame shapes under that
 one envelope: a durable event, which carries its cursor as `id`, and the
 terminal failure frame `STREAM_FAILED`, which carries a problem body and no
 `id`, because a resume cursor on a refusal would invite the browser to
-reconnect into the same refusal forever.
+reconnect into the same refusal forever. The attention feed `GET /events`
+adds a third shape, `RUN_PROJECTION_CORRUPT`: it names one unprojectable run
+with problem `durable-state-corrupt` and that run's `public_run_reference`,
+carries the underlying attention event's cursor as `id` so resume continues
+past it, and does not end the subscription. That run's own
+`/runs/{public_ref}/events` stream still ends with `STREAM_FAILED`.
 
 Every mutation delegates to the runtime owner and decides created-versus-
 existing from the row written in that same transaction. Only a newly created

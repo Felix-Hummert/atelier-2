@@ -24,6 +24,7 @@ from atelier2.ports.run_events import (
 )
 from atelier2.ports.run_events import (
     AttentionEvent,
+    AttentionEventCorrupt,
     AttentionEventPage,
     RunEventQueries,
 )
@@ -40,7 +41,7 @@ from atelier2.ports.workflow_revisions import (
 
 @dataclass(frozen=True)
 class AttentionEventsRead:
-    events: tuple[AttentionEvent, ...]
+    events: tuple[AttentionEvent | AttentionEventCorrupt, ...]
 
 
 @dataclass(frozen=True)

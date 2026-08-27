@@ -53,7 +53,11 @@ from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateC
 from atelier2.ports.durable_runs import (
     DurableWriteUnavailable as PortDurableWriteUnavailable,
 )
-from atelier2.ports.run_events import RunEventQueries
+from atelier2.ports.run_events import (
+    AttentionEvent,
+    AttentionEventCorrupt,
+    RunEventQueries,
+)
 from atelier2.ports.webhook_delivery import WebhookDeliveryPublisher
 from atelier2.ports.webhook_transport import (
     Delivered,
@@ -164,14 +168,19 @@ def deliver_attention_webhook(
     if not events:
         return NoAttentionEventsPending()
 
-    attention_event = events[0]
-    event = attention_event.event.event
+    match events[0]:
+        case AttentionEvent(event=persisted, recorded_at=recorded_at):
+            event = persisted.event
+        case AttentionEventCorrupt():
+            return DurableStateCorrupt()
+        case _ as unreachable:
+            assert_never(unreachable)
     payload = WebhookEventPayload(
         run_id=event.run_id,
         event_sequence=event.event_sequence,
         event_kind=event.event_kind,
         node_id=event.node_id,
-        recorded_at=attention_event.recorded_at,
+        recorded_at=recorded_at,
     )
     payload_bytes = webhook_payload_bytes(payload)
     signature = sign_webhook_payload(signing_key, payload_bytes)

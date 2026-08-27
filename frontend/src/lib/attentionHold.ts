@@ -1,5 +1,6 @@
 import {
   decodeStreamFrame,
+  isRunProjectionCorrupt,
   isStreamFailure,
   type Problem,
   type RunEvent
@@ -51,7 +52,8 @@ export function attentionStopped(hold: AttentionHold): boolean {
  * (`ATTENTION_EVENT_KINDS` in `adapters/dbos/attention_events.py`). A shorter
  * list here is not caution: a kind the door sends and this list omits is read
  * as a broken contract, which stops the hold on the first reconciliation the
- * workshop raises.
+ * workshop raises. `RUN_PROJECTION_CORRUPT` is a feed frame, not a durable
+ * kind; `applyAttentionFrame` names it without treating it as this list.
  */
 export function isAttentionEvent(event: RunEvent): boolean {
   return (
@@ -74,6 +76,9 @@ export function applyAttentionFrame(
   }
   if (isStreamFailure(frame)) {
     return { hold: markAttentionFailed(hold, frame.problem), event: null };
+  }
+  if (isRunProjectionCorrupt(frame)) {
+    return { hold, event: null };
   }
   if (!isAttentionEvent(frame)) {
     return { hold: { ...hold, protocol_problem: { type: "decoder" } }, event: null };

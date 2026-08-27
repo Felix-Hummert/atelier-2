@@ -1,6 +1,7 @@
 import {
   decodeCanonicalBase64,
   decodeStreamFrame,
+  isRunProjectionCorrupt,
   isStreamFailure,
   type Problem,
   type Run,
@@ -249,6 +250,9 @@ export async function decodeAndApplyDurableEvent(
     return { ...projection, protocol_problem: { type: "decoder" } };
   }
   if (isStreamFailure(frame)) return markFailed(projection, frame.problem);
+  if (isRunProjectionCorrupt(frame)) {
+    return { ...projection, protocol_problem: { type: "decoder" } };
+  }
   const decoded: RunEvent = frame;
   if (graph !== undefined && !eventMatchesGraph(decoded, graph)) {
     return { ...projection, protocol_problem: { type: "decoder" } };

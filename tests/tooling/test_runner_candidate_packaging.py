@@ -138,3 +138,92 @@ def test_the_witness_records_the_attempt_network_the_launcher_reported() -> None
     reported_at = text.index("sed -n 's/^attempt-network=//p'")
     recorded_at = text.index('>"$root/network"')
     assert reported_at < recorded_at
+
+
+def test_the_live_core_restart_runs_while_the_launcher_owns_the_runner() -> None:
+    """The live host leg makes same-child identity an explicit pass condition."""
+    text = LAUNCHER.read_text(encoding="utf-8")
+    cut_fifos_created = text.index('mkfifo "$root/core-store/core-started-cut.event"')
+    cut_fence_started = text.index("freeze-started-child", cut_fifos_created)
+    fence_requested = text.index("--enforce-current-process-limit", cut_fence_started)
+    launcher_started = text.index('--runner-image "$runner_image" --once >')
+    launcher_backgrounded = text.index("launcher_pid=$!", launcher_started)
+    first_core_wait = text.index(
+        'core_cut_status=$(carrier wait --container "$core")', launcher_backgrounded
+    )
+    cut_fence_waited = text.index('wait "$cut_fence_pid"', first_core_wait)
+    started_child_read = text.index("read-started-child", cut_fence_waited)
+    child_observed_after_death = text.index(
+        "--phase after-core-death", started_child_read
+    )
+    first_identity_compared = text.index(
+        'after-core-death "$started_child_identity"',
+        child_observed_after_death,
+    )
+    event_wait_started = text.index("marker_wait_pid=$!", child_observed_after_death)
+    core_restarted = text.index("restart-private-core", child_observed_after_death)
+    base_reattached = text.index(
+        'docker network connect "$base_network" "$core"', core_restarted
+    )
+    policy_reattached = text.index(
+        'carrier attach-policed --container "$core"', base_reattached
+    )
+    reconnected_started = text.index(
+        '"$root/core-store/core-reconnected-started.json"', policy_reattached
+    )
+    child_observed_after_reconnect = text.index(
+        "--phase after-core-restart", reconnected_started
+    )
+    identity_compared = text.index(
+        'after-core-restart "$started_child_identity"',
+        child_observed_after_reconnect,
+    )
+    launcher_waited = text.index('wait "$launcher_pid"', identity_compared)
+
+    assert cut_fifos_created < cut_fence_started < fence_requested < launcher_started
+    assert launcher_started < launcher_backgrounded < first_core_wait < cut_fence_waited
+    assert cut_fence_waited < started_child_read < child_observed_after_death
+    assert child_observed_after_death < first_identity_compared < event_wait_started
+    assert event_wait_started < core_restarted
+    assert core_restarted < base_reattached < policy_reattached
+    assert policy_reattached < reconnected_started
+    assert reconnected_started < child_observed_after_reconnect < identity_compared
+    assert identity_compared < launcher_waited
+    assert 'docker start "$core"' not in text
+    assert "sleep 0.05" not in text
+    for refusal in (
+        "runner-core-reconnect-container-changed",
+        "runner-core-reconnect-pid-changed",
+        "runner-core-reconnect-start-tick-changed",
+        "runner-core-reconnect-child-count-changed",
+        "runner-core-reconnect-cgroup-changed",
+    ):
+        assert refusal in text
+    assert "runner-core-reconnect-started-deadline" in text
+    assert "runner-core-reconnect-started-event-mismatch" in text
+
+
+def test_the_restart_gate_retains_witnesses_and_requires_released_cleanup() -> None:
+    text = LAUNCHER.read_text(encoding="utf-8")
+
+    assert 'scenario="core-restart"' in text
+    assert '"$root/core-store/child-survival.json"' in text
+    assert '"$root/core-store/live-restart-proof.json"' in text
+    assert '"$root/leases/released/${lease_id}.json"' in text
+    assert '"$root/labelled-object-inventory.json"' in text
+    assert '"$root/store.sha256"' in text
+    assert "runner_cgroup_limit_hit_count" in (
+        PROJECT_ROOT / "tests" / "crash" / "runner_candidate_core_restart_harness.py"
+    ).read_text(encoding="utf-8")
+
+
+def test_the_docker_restart_witness_is_not_described_as_a_deterministic_test() -> None:
+    runtime = (PROJECT_ROOT / "docs" / "product" / "runtime.md").read_text(
+        encoding="utf-8"
+    )
+    decision = (PROJECT_ROOT / "docs" / "decisions" / "0009-runner-trust.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "live Docker witness, not a deterministic test" in " ".join(runtime.split())
+    assert "live Docker witness, not a deterministic test" in " ".join(decision.split())

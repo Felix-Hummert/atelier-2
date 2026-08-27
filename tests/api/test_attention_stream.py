@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from typing import Any
 
 from fastapi.sse import ServerSentEvent
 
-from atelier2.api.references import encode_public_run_reference
+from atelier2.api.references import encode_event_cursor, encode_public_run_reference
 from atelier2.api.stream import (
     BoundedQueryRunner,
     EventPollBackoff,
@@ -16,7 +17,8 @@ from atelier2.api.stream import (
     stream_attention_events,
 )
 from atelier2.application.read_attention_events import AttentionEventsRead
-from atelier2.application.read_runs import RunRead
+from atelier2.application.read_runs import GetRunResult, RunRead
+from atelier2.application.refusals import DurableStateCorrupt
 from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import MAXIMUM_AGENT_FIELD_CHARACTERS
 from atelier2.contracts.executions import (
@@ -30,7 +32,7 @@ from atelier2.contracts.run_events import PersistedRunEvent
 from atelier2.contracts.runs import RunId
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
-from atelier2.ports.run_events import AttentionEvent
+from atelier2.ports.run_events import AttentionEvent, AttentionEventCorrupt
 from tests.scenarios.api import api_limits, stream_run_projection
 
 INSTANT = RecordedAt("2026-08-19T12:00:00Z")
@@ -224,3 +226,200 @@ def test_attention_feed_names_an_unrepresentable_event_field() -> None:
     assert "event_payload" in problem["detail"]
     assert "4 bytes" in problem["detail"]
     assert "/runs/run1.YS13YWl0/nodes/agent" in problem["detail"]
+
+
+CORRUPT_RUN = RunId("corrupt-run")
+HEALTHY_RUN = RunId("healthy-run")
+
+
+def test_attention_feed_names_one_corrupt_run_and_keeps_the_healthy_event() -> None:
+    """A get_run projection failure belongs to that run, not to the feed."""
+
+    corrupt = _completed(CORRUPT_RUN)
+    healthy = _completed(HEALTHY_RUN)
+    pages = ScriptedAttentionPages(
+        [
+            AttentionEventsRead(
+                (AttentionEvent(corrupt, INSTANT), AttentionEvent(healthy, INSTANT))
+            ),
+            AttentionEventsRead(()),
+        ]
+    )
+
+    async def sleep(_delay: float) -> None:
+        raise StopPolling()
+
+    def get_run(run_id: RunId) -> GetRunResult:
+        if run_id == CORRUPT_RUN:
+            return DurableStateCorrupt()
+        return RunRead(stream_run_projection(run_id.value))
+
+    async def collect() -> list[ServerSentEvent]:
+        frames: list[ServerSentEvent] = []
+        try:
+            async for frame in stream_attention_events(
+                PreparedAttentionStream(None, None),
+                pages,
+                get_run,
+                BoundedQueryRunner(1, admission_timeout_seconds=1),
+                page_size=PageLimit(10),
+                limits=api_limits(),
+                poll_backoff=EventPollBackoff(0.01, 0.04, 2),
+                sleep=sleep,
+            ):
+                frames.append(frame)
+        except StopPolling:
+            pass
+        return frames
+
+    frames = asyncio.run(collect())
+    payloads = [json.loads(frame.data.model_dump_json()) for frame in frames]
+    kinds = [payload["event"] for payload in payloads]
+
+    assert kinds == ["RUN_PROJECTION_CORRUPT", "AGENT_COMPLETED"]
+    corrupt_payload = payloads[0]
+    assert frames[0].id == encode_event_cursor(CORRUPT_RUN, 1)
+    assert corrupt_payload["public_run_reference"] == encode_public_run_reference(
+        CORRUPT_RUN
+    )
+    assert corrupt_payload["problem"]["type"].endswith(":durable-state-corrupt")
+    assert payloads[1]["public_run_reference"] == encode_public_run_reference(
+        HEALTHY_RUN
+    )
+    assert pages.asked[1][0] == HEALTHY_RUN
+    assert pages.asked[1][1] == 1
+    assert pages.asked[1][3] == ((CORRUPT_RUN, 1),)
+
+
+def test_page_size_one_emits_the_corrupt_row_then_the_healthy_event() -> None:
+    """limit=1 must emit the first corrupt identity so the next poll can leave it."""
+
+    healthy = _completed(HEALTHY_RUN)
+    pages = ScriptedAttentionPages(
+        [
+            AttentionEventsRead((AttentionEventCorrupt(CORRUPT_RUN, 1, INSTANT),)),
+            AttentionEventsRead((AttentionEvent(healthy, INSTANT),)),
+            AttentionEventsRead(()),
+        ]
+    )
+
+    async def sleep(_delay: float) -> None:
+        raise StopPolling()
+
+    def get_run(run_id: RunId) -> GetRunResult:
+        return RunRead(stream_run_projection(run_id.value))
+
+    async def collect() -> list[ServerSentEvent]:
+        frames: list[ServerSentEvent] = []
+        try:
+            async for frame in stream_attention_events(
+                PreparedAttentionStream(None, None),
+                pages,
+                get_run,
+                BoundedQueryRunner(1, admission_timeout_seconds=1),
+                page_size=PageLimit(1),
+                limits=api_limits(),
+                poll_backoff=EventPollBackoff(0.01, 0.04, 2),
+                sleep=sleep,
+            ):
+                frames.append(frame)
+        except StopPolling:
+            pass
+        return frames
+
+    frames = asyncio.run(collect())
+    payloads = [json.loads(frame.data.model_dump_json()) for frame in frames]
+    kinds = [payload["event"] for payload in payloads]
+
+    assert kinds == ["RUN_PROJECTION_CORRUPT", "AGENT_COMPLETED"]
+    assert frames[0].id == encode_event_cursor(CORRUPT_RUN, 1)
+    assert payloads[0]["public_run_reference"] == encode_public_run_reference(
+        CORRUPT_RUN
+    )
+    assert payloads[0]["problem"]["type"].endswith(":durable-state-corrupt")
+    assert payloads[1]["public_run_reference"] == encode_public_run_reference(
+        HEALTHY_RUN
+    )
+    assert pages.asked[0] == (None, None, 1, ())
+    assert pages.asked[1][:3] == (CORRUPT_RUN, 1, 1)
+    assert pages.asked[1][3] == ()
+    assert pages.asked[2][0] == HEALTHY_RUN
+    assert pages.asked[2][1] == 1
+    assert pages.asked[2][3] == ((CORRUPT_RUN, 1),)
+
+
+def test_attention_feed_ends_loudly_on_an_untyped_run_projection_failure() -> None:
+    """A ValueError or unprojectable rail is a stream failure, not per-run isolation."""
+
+    healthy = _completed(HEALTHY_RUN)
+    pages = ScriptedAttentionPages(
+        [AttentionEventsRead((AttentionEvent(healthy, INSTANT),))]
+    )
+
+    def get_run(run_id: RunId) -> GetRunResult:
+        projection = stream_run_projection(run_id.value)
+        return RunRead(
+            replace(projection, run=replace(projection.run, current_node_id="missing"))
+        )
+
+    async def collect() -> list[ServerSentEvent]:
+        return [
+            frame
+            async for frame in stream_attention_events(
+                PreparedAttentionStream(None, None),
+                pages,
+                get_run,
+                BoundedQueryRunner(1, admission_timeout_seconds=1),
+                page_size=PageLimit(10),
+                limits=api_limits(),
+                poll_backoff=EventPollBackoff(0.01, 0.04, 2),
+            )
+        ]
+
+    frames = asyncio.run(collect())
+    assert len(frames) == 1
+    payload = json.loads(frames[0].data.model_dump_json())
+    assert payload["event"] == "STREAM_FAILED"
+    assert payload["problem"]["type"].endswith(":internal-error")
+
+
+def test_attention_feed_ends_loudly_on_an_untyped_event_resource_failure() -> None:
+    failed = PersistedRunEvent(
+        RunEvent(
+            HEALTHY_RUN,
+            stream_run_projection(HEALTHY_RUN.value).run.revision_hash,
+            1,
+            "agent",
+            NodeExecutionId.for_node(
+                HEALTHY_RUN,
+                stream_run_projection(HEALTHY_RUN.value).run.revision_hash,
+                "agent",
+            ),
+            RunEventKind.AGENT_FAILED,
+            b"OUTPUT_SCHEMA_REFUSED",
+        ),
+        None,
+    )
+    pages = ScriptedAttentionPages(
+        [AttentionEventsRead((AttentionEvent(failed, INSTANT),))]
+    )
+
+    async def collect() -> list[ServerSentEvent]:
+        return [
+            frame
+            async for frame in stream_attention_events(
+                PreparedAttentionStream(None, None),
+                pages,
+                lambda run_id: RunRead(stream_run_projection(run_id.value)),
+                BoundedQueryRunner(1, admission_timeout_seconds=1),
+                page_size=PageLimit(10),
+                limits=api_limits(),
+                poll_backoff=EventPollBackoff(0.01, 0.04, 2),
+            )
+        ]
+
+    frames = asyncio.run(collect())
+    assert len(frames) == 1
+    payload = json.loads(frames[0].data.model_dump_json())
+    assert payload["event"] == "STREAM_FAILED"
+    assert payload["problem"]["type"].endswith(":internal-error")
