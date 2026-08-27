@@ -19,14 +19,11 @@ from atelier2.adapters.dbos.workflow_ids import (
     effect_workflow_id_for,
     node_workflow_id_for,
 )
-from atelier2.contracts.effect_requests import (
-    OpenPullRequest,
-    head_branch_for_unbound_request,
-)
 from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.executions import NodeExecutionId, logical_effect_key_for
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevision
+from tests.scenarios.effect_requests import open_pull_request_request_for_output
 
 CRASHED = 86
 ADAPTER_EXECUTE_AFTER_COMMIT = "adapter/execute-after-commit"
@@ -40,9 +37,7 @@ nodes:
   - {id: action, type: action, next: waiting}
   - {id: agent, type: agent, job: job-17, output: exact-request, next: action}
 """
-ACTION_REQUEST = OpenPullRequest(
-    "exact-request", head_branch_for_unbound_request(b"exact-request")
-).canonical_bytes()
+ACTION_REQUEST = open_pull_request_request_for_output(b"exact-request")
 ACTION_REQUEST_HASH = Sha256Hash.of(ACTION_REQUEST).value
 
 

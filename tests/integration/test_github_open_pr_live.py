@@ -315,6 +315,7 @@ def reviewed_documentation_intent() -> EffectIntent:
         "Reviewed documentation",
         "The independently approved replacement.",
         HEAD_BRANCH,
+        draft=True,
     )
     original = effect_intent()
     return EffectIntent(original.binding, CanonicalRequest(request.canonical_bytes()))
@@ -341,9 +342,11 @@ def test_a_reviewed_release_pushes_exact_content_then_uses_its_typed_pr_fields(
     assert publisher.requests == [request]
     assert len(server.pull_requests) == 1
     pull_request = server.pull_requests[0]
+    assert request.base_revision == server.base_sha
     assert pull_request["base"] == {"ref": BASE_BRANCH}
     assert pull_request["title"] == request.title
-    assert pull_request["draft"] is request.draft
+    assert request.draft is True
+    assert pull_request["draft"] is True
     assert request.body in str(pull_request["body"])
 
 
@@ -464,21 +467,13 @@ def test_readback_before_any_execute_is_unknown_never_an_authoritative_absence(
 
 
 @pytest.mark.parametrize("operation", ["readback", "execute"])
-@pytest.mark.parametrize(
-    "payload",
-    [
-        pytest.param(b"not an open-pr request", id="utf8-body"),
-        pytest.param(b"\xff", id="non-utf8-body"),
-        pytest.param(b'{"body":"missing head"}', id="incomplete-object"),
-    ],
-)
 def test_an_untyped_open_pr_payload_fails_loud_before_any_github_call(
     factory: LiveGitHubEffectAdapterFactory,
     server: _FakeGitHubServer,
     operation: str,
-    payload: bytes,
+    malformed_open_pr_payload: bytes,
 ) -> None:
-    intent = effect_intent(payload, typed=False)
+    intent = effect_intent(malformed_open_pr_payload, typed=False)
     adapter = factory.open()
     try:
         with pytest.raises(GitHubEffectRefused, match="canonical open-pr request"):

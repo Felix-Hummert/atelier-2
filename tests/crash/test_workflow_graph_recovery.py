@@ -27,10 +27,6 @@ from atelier2.adapters.dbos.workflow_ids import (
     subworkflow_workflow_id_for,
 )
 from atelier2.contracts.agents import AgentConfigurationRevisionFormatVersion
-from atelier2.contracts.effect_requests import (
-    OpenPullRequest,
-    head_branch_for_unbound_request,
-)
 from atelier2.contracts.executions import (
     NodeExecutionId,
     logical_effect_key_for,
@@ -39,6 +35,7 @@ from atelier2.contracts.executions import (
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from tests.crash.workflow_graph_harness import OPEN_PR_GRANT, OPEN_PR_OPERATION
+from tests.scenarios.effect_requests import open_pull_request_request_for_output
 from tests.scenarios.workflows import declared_output
 
 CRASHED = 86
@@ -52,9 +49,7 @@ nodes:
   - {id: action, type: action, next: waiting}
   - {id: agent, type: agent, job: job-17, output: draft-17, next: action}
 """
-ACTION_REQUEST = OpenPullRequest(
-    "draft-17", head_branch_for_unbound_request(b"draft-17")
-).canonical_bytes()
+ACTION_REQUEST = open_pull_request_request_for_output(b"draft-17")
 ACTION_REQUEST_HASH = Sha256Hash.of(ACTION_REQUEST).value
 V3_DOCUMENT = (
     b"""format_version: 3

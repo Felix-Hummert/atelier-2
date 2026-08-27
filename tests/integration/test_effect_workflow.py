@@ -32,10 +32,6 @@ from atelier2.adapters.dbos.workflow_ids import (
     reconcile_workflow_id_for,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.contracts.effect_requests import (
-    OpenPullRequest,
-    head_branch_for_unbound_request,
-)
 from atelier2.contracts.effects import (
     AdapterRevision,
     ConfirmationSource,
@@ -67,6 +63,7 @@ from atelier2.contracts.runs import (
 )
 from atelier2.ports.effects import EffectAdapter
 from tests.scenarios.agents import commit_configured_agent
+from tests.scenarios.effect_requests import open_pull_request_request_for_output
 from tests.scenarios.runs import (
     prepare_and_launch_graph_action,
     start_published_v1_run,
@@ -83,9 +80,7 @@ nodes:
   - {id: action, type: action, next: waiting}
   - {id: agent, type: agent, job: job-17, output: exact-request, next: action}
 """
-ACTION_REQUEST = OpenPullRequest(
-    "exact-request", head_branch_for_unbound_request(b"exact-request")
-).canonical_bytes()
+ACTION_REQUEST = open_pull_request_request_for_output(b"exact-request")
 
 
 class UnknownReadbackAdapter:

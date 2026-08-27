@@ -8,6 +8,17 @@ import pytest
 PROOF_MARKER = "proves"
 
 
+@pytest.fixture(
+    params=[
+        pytest.param(b"not an open-pr request", id="utf8-body"),
+        pytest.param(b"\xff", id="non-utf8-body"),
+        pytest.param(b'{"body":"missing head"}', id="incomplete-object"),
+    ]
+)
+def malformed_open_pr_payload(request: pytest.FixtureRequest) -> bytes:
+    return request.param
+
+
 @pytest.fixture
 def dbos_logging_isolation() -> Iterator[None]:
     """Keep DBOS from flushing capture handlers another test has closed."""
