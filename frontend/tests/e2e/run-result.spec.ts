@@ -1,18 +1,22 @@
 import { expect, test, type Page } from "@playwright/test";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 
 import { conductorChatCopy } from "../../src/lib/conductorChatCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { runResultCopy } from "../../src/lib/runResultCopy";
+import { standingWords } from "../../src/lib/runState";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 
 /**
- * #716: a finished run's page shows its own result without a click, and the
- * node panel's Result tab renders the identical readable form with the exact
- * JSON behind a collapsed "Exact text" disclosure -- except for the run's own
- * sink node, whose answer the banner already shows: opening that one node
- * names the banner once ("Shown above") rather than rendering the same
- * sentence and the same disclosure a second time (head decision on the #731
- * review).
+ * #666 Result tab against the ruling that the run head is the one standing
+ * sentence and the node's Result tab carries the decoded declared output
+ * (blessed frame `#v8-14-run-log` in `docs/requirements/0003-ziel-ui-mockup-v8.html`).
+ *
+ * Result shots of this journey, same viewports and themes as `run-log.spec.ts`,
+ * of the same room (workshop rail + stage):
+ *   test-results/result-666/head-{1280,390}-{light,dark}.png
+ *   test-results/result-666/result-{1280,390}-{light,dark}.png
  *
  * The scenario is the exact one the issue was filed against: the harness's
  * fake conductor episode (`/__e2e/seed-conductor` in `tests/e2e/serve_cockpit.py`)
@@ -38,6 +42,9 @@ const CONDUCTOR_FAKE_ANSWER =
 // default separators, not a compact re-serialization this page invents.
 const CONDUCTOR_FAKE_REPORT_RAW = `{"answer": "${CONDUCTOR_FAKE_ANSWER}", "started_run_ids": []}`;
 
+const frontendRoot = resolve(import.meta.dirname, "../..");
+const shotDir = resolve(frontendRoot, "test-results/result-666");
+
 const widths = [
   { name: "1280", width: 1280, height: 900 },
   { name: "390", width: 390, height: 844 }
@@ -45,15 +52,16 @@ const widths = [
 const themes = ["light", "dark"] as const;
 
 async function shoot(page: Page, name: string): Promise<void> {
+  mkdirSync(shotDir, { recursive: true });
+  const frame = page.locator(".workshop");
   for (const theme of themes) {
     await page.emulateMedia({ colorScheme: theme });
     for (const viewport of widths) {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
-      await page.waitForTimeout(150);
-      await page.screenshot({
-        path: test.info().outputPath(`${name}-${theme}-${viewport.name}.png`),
-        fullPage: true
-      });
+      await page.waitForTimeout(200);
+      const artifact = test.info().outputPath(`${name}-${theme}-${viewport.name}.png`);
+      await frame.screenshot({ path: artifact });
+      copyFileSync(artifact, `${shotDir}/${name}-${viewport.name}-${theme}.png`);
     }
   }
   await page.emulateMedia({ colorScheme: "light" });
@@ -61,6 +69,16 @@ async function shoot(page: Page, name: string): Promise<void> {
 }
 
 async function completedConductorRun(page: Page): Promise<string> {
+  // This suite shares one server across every spec file and across
+  // `--repeat-each` (#742): a previous seed of the same conductor catalog
+  // would conflict on the model registry. Reset to the cold-boot baseline,
+  // then seed, so this journey owns its own connected conductor.
+  const reset = await page.request.post("/__e2e/recompose?reset=true");
+  expect(reset.status()).toBe(202);
+  const expectedGeneration = await reset.text();
+  await expect(async () => {
+    expect(await (await page.request.get("/__e2e/generation")).text()).toBe(expectedGeneration);
+  }).toPass({ timeout: 20_000 });
   expect((await page.request.post("/__e2e/seed-conductor")).ok()).toBeTruthy();
   await page.goto("/atelier/chat");
   // The precondition this journey needs is a *connected* conductor, not
@@ -78,32 +96,43 @@ async function completedConductorRun(page: Page): Promise<string> {
   return page.url();
 }
 
-test("a finished run's own result reads above the graph, unclicked, never as a raw JSON line", async ({ page }) => {
+test("the Result tab carries the decoded result; the run head is only the standing sentence", async ({
+  page
+}) => {
   test.setTimeout(120_000);
 
   await completedConductorRun(page);
-  await expect(page.getByLabel("Where this run stands")).toContainText("Done");
+  await expect(page.getByLabel("Where this run stands")).toContainText(standingWords.done, {
+    timeout: 30_000
+  });
 
-  // The outcome is on the page before any node is opened.
-  const outcome = page.getByRole("region", { name: runPageCopy.tabResult });
-  await expect(outcome).toBeVisible();
-  await expect(outcome.getByText(CONDUCTOR_FAKE_ANSWER, { exact: true })).toBeVisible();
-  // Never a raw JSON line open on the main surface: the exact bytes stay
-  // behind a disclosure nobody opened.
-  await expect(outcome.getByText(CONDUCTOR_FAKE_REPORT_RAW)).not.toBeVisible();
-  await shoot(page, "run-outcome-unclicked");
+  await expect(page.locator("#run-outcome")).toHaveCount(0);
+  await expect(page.getByRole("region", { name: runPageCopy.tabResult })).toHaveCount(0);
+  await expect(page.getByText(CONDUCTOR_FAKE_ANSWER, { exact: true })).toHaveCount(0);
+  await shoot(page, "head");
 
-  // "conduct" is the run's own sink node -- opening it never renders its
-  // answer a second time; it names the banner once instead.
   await page.getByRole("button", { name: "conduct — Done" }).click();
   const panel = page.getByRole("complementary");
-  const shownAbove = panel.getByRole("link", { name: runResultCopy.shownAbove });
-  await expect(shownAbove).toBeVisible();
-  await expect(shownAbove).toHaveAttribute("href", "#run-outcome");
-  await expect(panel.getByText(CONDUCTOR_FAKE_ANSWER, { exact: true })).toHaveCount(0);
-  await expect(panel.getByText(runResultCopy.exactText, { exact: true })).toHaveCount(0);
-  await shoot(page, "run-node-result-shown-above");
+  await expect(panel.getByRole("heading", { name: "conduct" })).toBeVisible();
+  await expect(panel.getByRole("tab", { name: runPageCopy.tabResult })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await expect(panel.getByText(CONDUCTOR_FAKE_ANSWER, { exact: true })).toBeVisible();
+  const exactFold = panel.locator("details").filter({ hasText: runResultCopy.exactText });
+  await expect(exactFold).toBeVisible();
+  await expect(exactFold).not.toHaveAttribute("open");
+  await expect(panel.getByText(CONDUCTOR_FAKE_REPORT_RAW)).not.toBeVisible();
+  await expect(panel.getByRole("link", { name: "Shown above" })).toHaveCount(0);
+  await expect(page.locator("#run-outcome")).toHaveCount(0);
+  await shoot(page, "result");
 
-  await shownAbove.click();
-  await expect(page).toHaveURL(/#run-outcome$/);
+  for (const theme of themes) {
+    for (const viewport of widths) {
+      for (const name of ["head", "result"] as const) {
+        const stable = `${shotDir}/${name}-${viewport.name}-${theme}.png`;
+        expect(existsSync(stable), `missing result shot ${stable}`).toBe(true);
+      }
+    }
+  }
 });
