@@ -41,6 +41,7 @@ from atelier2.contracts.effects import (
     EffectDestination,
     EffectIntent,
     EffectReadback,
+    EffectUnknownOutcome,
     PerformedEffect,
 )
 from atelier2.contracts.run_bindings import AnyRun
@@ -85,7 +86,7 @@ class CountingAdapter:
     def readback(self, intent: EffectIntent) -> EffectReadback:
         return self._delegate.readback(intent)
 
-    def execute(self, intent: EffectIntent) -> PerformedEffect:
+    def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
         return self._delegate.execute(intent)
 
     def close(self) -> None:

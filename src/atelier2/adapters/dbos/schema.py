@@ -59,10 +59,10 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head adds the immutable run-fork lineage and reuse evidence,
-# and widens effect-receipt provenance for a cross-run reference (#105).
+# Movable hop: this head persists the closed effect operation on each durable
+# intent and receipt so recovery selects the exact adapter that owns it (#642 P3).
 # Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 40
+_HOP_PREDECESSOR_VERSION = 41
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -97,6 +97,7 @@ _VERSION_THIRTY_EIGHT = 38
 _VERSION_THIRTY_NINE = 39
 _VERSION_FORTY = 40
 _VERSION_FORTY_ONE = 41
+_VERSION_FORTY_TWO = 42
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -281,6 +282,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     39: "3c0cc05dd977fd61d2c88d78ba7566fdc0146e2d7af27df61aea636a4ac2c4be",
     40: "d8d7b89cc0cacd15dfde84bf15f796f0e03d9b571c26be0309ed87a60960071d",
     41: "7c4bc13ceb1db7533bfdf9697c1e6b262032a516275b488eac73af9969446b68",
+    42: "d2f874edd0dbbecb677b284db8e41cd3a681fae99703d126764bc90fa0cf7865",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -409,6 +411,10 @@ V39_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V40_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_FORTY,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FORTY],
+)
+V41_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_FORTY_ONE,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FORTY_ONE],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -629,6 +635,7 @@ effect_intents = sa.Table(
     sa.Column("adapter_revision", sa.Text, nullable=False),
     sa.Column("destination_identity", sa.Text, nullable=False),
     sa.Column("adapter_operational_identity", sa.Text, nullable=False),
+    sa.Column("operation_name", sa.Text, nullable=False),
     sa.Column("state", sa.Text, nullable=False),
     sa.Column("state_version", sa.Integer, nullable=False),
     sa.Column(
@@ -654,6 +661,7 @@ effect_intents = sa.Table(
     sa.CheckConstraint("length(adapter_revision) > 0"),
     sa.CheckConstraint("length(destination_identity) > 0"),
     sa.CheckConstraint("length(adapter_operational_identity) > 0"),
+    sa.CheckConstraint("operation_name IN ('open-pr', 'push-atelier-commit')"),
     sa.CheckConstraint(
         "state IN ('PREPARED', 'WAITING_RECONCILIATION', 'RECONCILING', "
         "'CONFIRMED', 'ABANDONED')"
@@ -725,6 +733,7 @@ effect_receipts = sa.Table(
     sa.Column("adapter_revision", sa.Text, nullable=False),
     sa.Column("destination_identity", sa.Text, nullable=False),
     sa.Column("adapter_operational_identity", sa.Text, nullable=False),
+    sa.Column("operation_name", sa.Text, nullable=False),
     sa.Column("effect_id", sa.Text, nullable=False),
     sa.Column("result", sa.LargeBinary, nullable=False),
     sa.Column("result_hash", sa.Text, nullable=False),
@@ -776,6 +785,7 @@ effect_receipts = sa.Table(
     sa.CheckConstraint("length(adapter_revision) > 0"),
     sa.CheckConstraint("length(destination_identity) > 0"),
     sa.CheckConstraint("length(adapter_operational_identity) > 0"),
+    sa.CheckConstraint("operation_name IN ('open-pr', 'push-atelier-commit')"),
     sa.CheckConstraint("length(effect_id) > 0"),
     sa.CheckConstraint(
         "length(result_hash) = 64 AND result_hash NOT GLOB '*[^0-9a-f]*'"
@@ -2275,7 +2285,7 @@ _PRODUCT_TRIGGERS = {
         CREATE TRIGGER effect_intents_binding_no_update
         BEFORE UPDATE OF logical_key, run_id, canonical_request, request_hash,
                          workflow_revision_hash, adapter_revision, destination_identity,
-                         adapter_operational_identity
+                         adapter_operational_identity, operation_name
         ON effect_intents BEGIN
           SELECT RAISE(ABORT, 'effect intent bindings are immutable');
         END
@@ -3193,6 +3203,8 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         - connections
     ) | {_V27_ACCESS_TABLE_NAME}
     if version == SCHEMA_VERSION:
+        return PRODUCT_TABLE_NAMES
+    if version == _VERSION_FORTY_ONE:
         return PRODUCT_TABLE_NAMES
     if version == _VERSION_FORTY:
         return before_forks
@@ -4814,6 +4826,13 @@ _EFFECT_INTENTS_TRIGGERS = (
     "effect_intents_binding_no_update",
     "effect_intents_no_delete",
 )
+_V41_EFFECT_INTENT_TRIGGERS = {
+    **_PRODUCT_TRIGGERS,
+    "effect_intents_binding_no_update": _PRODUCT_TRIGGERS[
+        "effect_intents_binding_no_update"
+    ].replace(", operation_name", ""),
+}
+"""The intent triggers published before V42 made the operation immutable."""
 _EFFECT_INTENTS_ABANDONMENT_TRIGGERS = (
     "effect_intents_abandonment",
     "effect_intents_no_abandoned_insert",
@@ -4844,6 +4863,7 @@ def _apply_v37_to_v38(connection: sqlite3.Connection) -> None:
         _EFFECT_INTENTS_TRIGGERS,
         _VERSION_THIRTY_SEVEN,
         _VERSION_THIRTY_EIGHT,
+        trigger_source=_V41_EFFECT_INTENT_TRIGGERS,
     )
     for trigger in _EFFECT_INTENTS_ABANDONMENT_TRIGGERS:
         connection.execute(_PRODUCT_TRIGGERS[trigger])
@@ -5101,6 +5121,55 @@ def _apply_v40_to_v41(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_FORTY, _VERSION_FORTY_ONE)
 
 
+_V41_EFFECT_INTENTS = "effect_intents_before_operation_name"
+_V41_EFFECT_RECEIPTS = "effect_receipts_before_operation_name"
+
+
+def _apply_v41_to_v42(connection: sqlite3.Connection) -> None:
+    """Persist the closed effect operation on every intent and receipt."""
+
+    mismatched = connection.execute(
+        "SELECT r.logical_key FROM effect_receipts AS r "
+        "JOIN effect_intents AS i ON i.logical_key = r.logical_key "
+        "WHERE r.run_id <> i.run_id "
+        "OR r.workflow_revision_hash <> i.workflow_revision_hash "
+        "OR r.request_hash <> i.request_hash "
+        "OR r.adapter_revision <> i.adapter_revision "
+        "OR r.destination_identity <> i.destination_identity "
+        "OR r.adapter_operational_identity <> i.adapter_operational_identity "
+        "LIMIT 1"
+    ).fetchone()
+    if mismatched is not None:
+        raise StoreMigrationRefused(
+            "schema version 41 has an effect receipt whose durable binding differs "
+            "from its intent; this command will not alter it"
+        )
+    _rebuild_product_table(
+        connection,
+        effect_receipts,
+        _V41_EFFECT_RECEIPTS,
+        _EFFECT_RECEIPTS_TRIGGERS,
+        _VERSION_FORTY_ONE,
+        _VERSION_FORTY_TWO,
+        {"operation_name": "'open-pr'"},
+    )
+    _rebuild_product_table(
+        connection,
+        effect_intents,
+        _V41_EFFECT_INTENTS,
+        (
+            "effect_intents_binding_no_update",
+            "effect_intents_no_delete",
+            "effect_intents_abandonment",
+            "effect_intents_no_abandoned_insert",
+        ),
+        _VERSION_FORTY_ONE,
+        _VERSION_FORTY_TWO,
+        {"operation_name": "'open-pr'"},
+    )
+    _raise_declared_version(connection, _VERSION_FORTY_ONE, _VERSION_FORTY_TWO)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -5248,6 +5317,11 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _VERSION_FORTY,
         _VERSION_FORTY_ONE,
         _apply_v40_to_v41,
+    ),
+    _SchemaMigrationStep(
+        _VERSION_FORTY_ONE,
+        _VERSION_FORTY_TWO,
+        _apply_v41_to_v42,
     ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {

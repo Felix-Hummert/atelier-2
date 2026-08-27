@@ -59,6 +59,7 @@ from atelier2.adapters.dbos.schema import (
     _V27_AGENT_ATTEMPT_STATE_TRANSITION,
     _V32_AGENT_ATTEMPT_TRIGGERS,
     _V38_AGENT_ATTEMPT_TRIGGERS,
+    _V41_EFFECT_INTENT_TRIGGERS,
     _VERSION_TWENTY,
     _WAIT_ANSWERS_TRIGGERS,
     PRODUCT_SCHEMA_HANDOFF,
@@ -83,6 +84,7 @@ from atelier2.adapters.dbos.schema import (
     V38_SCHEMA_HANDOFF,
     V39_SCHEMA_HANDOFF,
     V40_SCHEMA_HANDOFF,
+    V41_SCHEMA_HANDOFF,
     MigrationRequired,
     StoreMigrationRefused,
     _rebuild_product_table,
@@ -134,6 +136,7 @@ from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
     answer_wait_result,
 )
+from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.agent_attempts import (
     AGENT_ATTEMPT_ORDINAL,
     REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
@@ -451,6 +454,8 @@ def _restore_v39_configuration_tables(connection: sqlite3.Connection) -> None:
 def _restore_v40_fork_predecessor(connection: sqlite3.Connection) -> None:
     """Remove V41's additive fork family and restore V40's receipt shape."""
 
+    _restore_v41_operation_predecessor(connection)
+
     for trigger in (
         "run_fork_effect_fences_no_delete",
         "run_fork_effect_fences_no_update",
@@ -487,6 +492,56 @@ def _restore_v40_fork_predecessor(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE effect_receipts_v41")
     for trigger in ("effect_receipts_no_update", "effect_receipts_no_delete"):
         connection.execute(_PRODUCT_TRIGGERS[trigger])
+
+
+def _restore_v41_operation_predecessor(connection: sqlite3.Connection) -> None:
+    """Restore the two V41 effect tables before operation identity was durable."""
+
+    intent_triggers = (
+        "effect_intents_binding_no_update",
+        "effect_intents_no_delete",
+        "effect_intents_abandonment",
+        "effect_intents_no_abandoned_insert",
+    )
+    receipt_triggers = ("effect_receipts_no_update", "effect_receipts_no_delete")
+    for trigger in (*intent_triggers, *receipt_triggers):
+        connection.execute(f"DROP TRIGGER {trigger}")
+    for table_name, parked, columns in (
+        (
+            "effect_receipts",
+            "effect_receipts_v42",
+            (
+                "logical_key, run_id, canonical_request, request_hash, "
+                "workflow_revision_hash, adapter_revision, destination_identity, "
+                "adapter_operational_identity, effect_id, result, result_hash, "
+                "confirmation_source, reconcile_command_id, fork_source_logical_key, "
+                "fork_source_run_id, fork_source_workflow_revision_hash, "
+                "fork_source_result_hash"
+            ),
+        ),
+        (
+            "effect_intents",
+            "effect_intents_v42",
+            (
+                "logical_key, run_id, canonical_request, request_hash, "
+                "workflow_revision_hash, adapter_revision, destination_identity, "
+                "adapter_operational_identity, state, state_version, "
+                "reconciliation_owner_command_id"
+            ),
+        ),
+    ):
+        connection.execute("PRAGMA legacy_alter_table=ON")
+        try:
+            connection.execute(f"ALTER TABLE {table_name} RENAME TO {parked}")
+        finally:
+            connection.execute("PRAGMA legacy_alter_table=OFF")
+        connection.execute(PUBLISHED_TABLE_SHAPES[(41, table_name)])
+        connection.execute(
+            f"INSERT INTO {table_name} ({columns}) SELECT {columns} FROM {parked}"
+        )
+        connection.execute(f"DROP TABLE {parked}")
+    for trigger in (*intent_triggers, *receipt_triggers):
+        connection.execute(_V41_EFFECT_INTENT_TRIGGERS[trigger])
 
 
 def _create_populated_v40_store(database_path: Path) -> tuple[object, ...]:
@@ -529,16 +584,17 @@ def _create_populated_v40_store(database_path: Path) -> tuple[object, ...]:
         connection.execute(
             "INSERT INTO effect_intents (logical_key, run_id, canonical_request, "
             "request_hash, workflow_revision_hash, adapter_revision, "
-            "destination_identity, adapter_operational_identity, state, "
-            "state_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CONFIRMED', 1)",
+            "destination_identity, adapter_operational_identity, operation_name, "
+            "state, state_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open-pr', "
+            "'CONFIRMED', 1)",
             shared,
         )
         connection.execute(
             "INSERT INTO effect_receipts (logical_key, run_id, canonical_request, "
             "request_hash, workflow_revision_hash, adapter_revision, "
-            "destination_identity, adapter_operational_identity, effect_id, result, "
-            "result_hash, confirmation_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "?, ?, 'ADAPTER_EXECUTION')",
+            "destination_identity, adapter_operational_identity, operation_name, "
+            "effect_id, result, result_hash, confirmation_source) VALUES (?, ?, ?, "
+            "?, ?, ?, ?, ?, 'open-pr', ?, ?, ?, 'ADAPTER_EXECUTION')",
             (*shared, "pull-request/41", b"confirmed result", result_hash),
         )
         _restore_v40_fork_predecessor(connection)
@@ -571,7 +627,15 @@ def test_populated_v40_receipt_crosses_the_v41_hop_unchanged(
         migrated = connection.execute(
             "SELECT * FROM effect_receipts WHERE logical_key = 'v40-effect'"
         ).fetchone()
-        assert migrated == (*predecessor_receipt, None, None, None, None)
+        assert migrated == (
+            *predecessor_receipt[:8],
+            "open-pr",
+            *predecessor_receipt[8:],
+            None,
+            None,
+            None,
+            None,
+        )
         assert connection.execute(
             "SELECT version FROM atelier_schema_versions"
         ).fetchone() == (SCHEMA_VERSION,)
@@ -607,6 +671,90 @@ def test_v41_failpoint_after_version_cas_restores_the_exact_v40_store(
             "SELECT version FROM atelier_schema_versions"
         ).fetchone() == (V40_SCHEMA_HANDOFF.version,)
         _require_product_shape(connection, V40_SCHEMA_HANDOFF.version)
+
+
+def _create_populated_v41_store(
+    database_path: Path, *, corrupt_receipt_binding: bool = False
+) -> None:
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    revision = "51" * 32
+    request_hash = "52" * 32
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO workflow_revisions VALUES (?, ?)",
+            (revision, b"name: v41\nsteps: []\n"),
+        )
+        connection.execute(
+            "INSERT INTO runs (run_id, bootstrap_workflow_id, revision_hash, "
+            "workflow_format_version, current_node_id, current_round_ordinal, "
+            "state, state_version, last_event_sequence) VALUES "
+            "('v41-run', 'v41-bootstrap', ?, 1, 'effect', 1, 'STARTED', 1, 0)",
+            (revision,),
+        )
+        shared = (
+            "v41-effect",
+            "v41-run",
+            b"request",
+            request_hash,
+            revision,
+            "adapter-v1",
+            "github",
+            "github:owner/repository",
+        )
+        connection.execute(
+            "INSERT INTO effect_intents VALUES (?, ?, ?, ?, ?, ?, ?, ?, "
+            "'open-pr', 'CONFIRMED', 1, NULL)",
+            shared,
+        )
+        receipt_binding = (
+            *shared[:6],
+            "corrupt-destination" if corrupt_receipt_binding else shared[6],
+            *shared[7:],
+        )
+        connection.execute(
+            "INSERT INTO effect_receipts VALUES (?, ?, ?, ?, ?, ?, ?, ?, "
+            "'open-pr', 'pr/1', X'01', ?, 'ADAPTER_EXECUTION', NULL, NULL, NULL, "
+            "NULL, NULL)",
+            (*receipt_binding, "53" * 32),
+        )
+        _restore_v41_operation_predecessor(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V41_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V41_SCHEMA_HANDOFF.version)
+
+
+def test_v41_effect_rows_cross_v42_with_open_pr_backfilled(tmp_path: Path) -> None:
+    database = tmp_path / "atelier.sqlite"
+    _create_populated_v41_store(database)
+
+    report = migrate_store(database)
+
+    assert (report.source_version, report.target_version) == (41, 42)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT operation_name FROM effect_intents"
+        ).fetchone() == ("open-pr",)
+        assert connection.execute(
+            "SELECT operation_name FROM effect_receipts"
+        ).fetchone() == ("open-pr",)
+
+
+def test_v41_receipt_binding_corruption_is_refused_without_mutation(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    _create_populated_v41_store(database, corrupt_receipt_binding=True)
+    before = _logical_dump(database)
+
+    with pytest.raises(StoreMigrationRefused, match="binding differs"):
+        migrate_store(database)
+
+    assert _logical_dump(database) == before
 
 
 _PREDECESSOR_RUN_EVENTS_INDEX_DDL = (
@@ -4345,6 +4493,7 @@ def _revert_the_abandoned_intent_state(connection: sqlite3.Connection) -> None:
         _EFFECT_INTENTS_TRIGGERS,
         SCHEMA_VERSION,
         V37_SCHEMA_HANDOFF.version,
+        trigger_source=_V41_EFFECT_INTENT_TRIGGERS,
     )
 
 
@@ -4691,6 +4840,7 @@ def test_a_v38_intent_is_never_written_abandoned_in_the_first_place(
     capsys.readouterr()
     values = _prepared_intent_values() | {
         "logical_key": "wirken/nie-vorbereitet",
+        "operation_name": AdapterOperationName.OPEN_PR.value,
         "state": EffectIntentState.ABANDONED.value,
         "state_version": EFFECT_INTENT_VERSION_ABANDONED.value,
     }

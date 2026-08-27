@@ -6,6 +6,7 @@ from dataclasses import replace
 
 import pytest
 
+from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -13,6 +14,7 @@ from atelier2.contracts.effects import (
     CanonicalRequest,
     ConfirmationSource,
     EffectAbsence,
+    EffectAdapterBinding,
     EffectAdapterResponseConflict,
     EffectBinding,
     EffectDestination,
@@ -45,6 +47,11 @@ from atelier2.contracts.effects import (
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevision
+from atelier2.ports.effects import (
+    EffectAdapterRegistration,
+    EffectAdapterRegistry,
+    EffectAdapterRegistryConflict,
+)
 
 IDENTIFIER_TYPES: list[type[EffectIdentifier]] = [
     AdapterRevision,
@@ -444,6 +451,106 @@ def test_receipt_rejects_a_reconcile_command_contradicting_its_source(
 ) -> None:
     with pytest.raises(ValueError, match="reconcile command"):
         found_receipt(intent, confirmation_source, reconcile_command_id)
+
+
+class _RegistryAdapter:
+    def __init__(self, identity: str) -> None:
+        self.identity = identity
+
+    def readback(self, intent: EffectIntent) -> EffectReadback:
+        return EffectUnknownOutcome(intent.reference)
+
+    def execute(self, intent: EffectIntent) -> EffectUnknownOutcome:
+        return EffectUnknownOutcome(intent.reference)
+
+    def close(self) -> None:
+        pass
+
+
+class _RegistryFactory:
+    def __init__(self, operation: AdapterOperationName, identity: str) -> None:
+        self.identity = identity
+        self.binding = EffectAdapterBinding(
+            AdapterRevision("adapter-v1"),
+            EffectDestination("platform"),
+            AdapterOperationalIdentity(identity),
+            operation,
+        )
+        self.proves_absence = True
+
+    def open(self) -> _RegistryAdapter:
+        return _RegistryAdapter(self.identity)
+
+
+def test_effect_registry_selects_one_open_adapter_by_its_typed_operation() -> None:
+    open_pr = _RegistryFactory(AdapterOperationName.OPEN_PR, "open-pr")
+    push = _RegistryFactory(AdapterOperationName.PUSH_ATELIER_COMMIT, "push")
+    registry = EffectAdapterRegistry(
+        (
+            EffectAdapterRegistration(AdapterOperationName.OPEN_PR, open_pr),
+            EffectAdapterRegistration(AdapterOperationName.PUSH_ATELIER_COMMIT, push),
+        )
+    )
+
+    opened = registry.open()
+    try:
+        selected_open_pr = opened.adapter_for(
+            AdapterOperationName.OPEN_PR, open_pr.binding
+        )
+        selected_push = opened.adapter_for(
+            AdapterOperationName.PUSH_ATELIER_COMMIT, push.binding
+        )
+        assert isinstance(selected_open_pr, _RegistryAdapter)
+        assert selected_open_pr.identity == "open-pr"
+        assert isinstance(selected_push, _RegistryAdapter)
+        assert selected_push.identity == "push"
+    finally:
+        opened.close()
+
+
+@pytest.mark.parametrize("duplicate", ["operation", "binding", "factory"])
+def test_effect_registry_refuses_every_ambiguous_registration(duplicate: str) -> None:
+    open_pr = _RegistryFactory(AdapterOperationName.OPEN_PR, "open-pr")
+    push = _RegistryFactory(AdapterOperationName.PUSH_ATELIER_COMMIT, "push")
+    if duplicate == "operation":
+        registrations = (
+            EffectAdapterRegistration(AdapterOperationName.OPEN_PR, open_pr),
+            EffectAdapterRegistration(
+                AdapterOperationName.OPEN_PR,
+                _RegistryFactory(AdapterOperationName.OPEN_PR, "other"),
+            ),
+        )
+    elif duplicate == "binding":
+        push.binding = replace(
+            open_pr.binding, operation_name=AdapterOperationName.PUSH_ATELIER_COMMIT
+        )
+        registrations = (
+            EffectAdapterRegistration(AdapterOperationName.OPEN_PR, open_pr),
+            EffectAdapterRegistration(AdapterOperationName.PUSH_ATELIER_COMMIT, push),
+        )
+    else:
+        registrations = (
+            EffectAdapterRegistration(AdapterOperationName.OPEN_PR, open_pr),
+            EffectAdapterRegistration(
+                AdapterOperationName.PUSH_ATELIER_COMMIT, open_pr
+            ),
+        )
+
+    with pytest.raises(EffectAdapterRegistryConflict):
+        EffectAdapterRegistry(registrations)
+
+
+def test_effect_registry_refuses_a_registration_mismatched_to_its_factory() -> None:
+    factory = _RegistryFactory(AdapterOperationName.OPEN_PR, "open-pr")
+
+    with pytest.raises(EffectAdapterRegistryConflict, match="operation"):
+        EffectAdapterRegistry(
+            (
+                EffectAdapterRegistration(
+                    AdapterOperationName.PUSH_ATELIER_COMMIT, factory
+                ),
+            )
+        )
 
 
 def test_operator_found_command_resolves_to_a_receipt_for_the_prepared_intent(

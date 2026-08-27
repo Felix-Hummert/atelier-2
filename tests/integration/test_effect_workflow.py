@@ -22,6 +22,7 @@ from atelier2.adapters.dbos.runtime import (
 from atelier2.adapters.dbos.schema import (
     effect_intents,
     effect_receipts,
+    reconcile_commands,
     run_events,
     runs,
 )
@@ -90,7 +91,9 @@ class UnknownReadbackAdapter:
             return EffectUnknownOutcome(intent.reference)
         return self._delegate.readback(intent)
 
-    def execute(self, intent: EffectIntent) -> PerformedEffect:
+    def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
+        if self._owner.execute_unknown:
+            return EffectUnknownOutcome(intent.reference)
         return self._delegate.execute(intent)
 
     def close(self) -> None:
@@ -103,6 +106,7 @@ class UnknownReadbackFactory:
     def __init__(self, delegate: LoopbackEffectAdapterFactory) -> None:
         self._delegate = delegate
         self.unknown = True
+        self.execute_unknown = False
         self.opened: UnknownReadbackAdapter | None = None
 
     @property
@@ -538,5 +542,71 @@ def test_authorized_absence_keeps_operator_provenance_after_later_readback(
             assert connection.execute(
                 "SELECT calls FROM loopback_effect_calls"
             ).fetchall() == [(1,)]
+    finally:
+        runtime.close()
+
+
+def test_authorized_execution_unknown_reopens_the_reconciliation_door(
+    tmp_path: Path,
+) -> None:
+    external = tmp_path / "external.sqlite"
+    factory = UnknownReadbackFactory(
+        LoopbackEffectAdapterFactory(
+            external,
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        )
+    )
+    runtime, intent, _external = prepare_with_factory(tmp_path, factory)
+    try:
+        runtime.launch()
+        assert (
+            wait_for_workflow(
+                runtime, effect_workflow_id_for(intent.binding.logical_key)
+            )
+            == "SUCCESS"
+        )
+        factory.execute_unknown = True
+        submitted = reconcile_command(intent, OperatorAuthoritativeAbsence())
+        submit_reconcile_command(runtime.engine, runtime.settings, submitted)
+
+        assert (
+            wait_for_workflow(runtime, reconcile_workflow_id_for(submitted.command_id))
+            == "SUCCESS"
+        )
+        with runtime.engine.connect() as connection:
+            assert connection.execute(
+                sa.select(
+                    runs.c.state,
+                    effect_intents.c.state,
+                    effect_intents.c.state_version,
+                    effect_intents.c.reconciliation_owner_command_id,
+                    reconcile_commands.c.state,
+                )
+                .join(effect_intents, effect_intents.c.run_id == runs.c.run_id)
+                .join(
+                    reconcile_commands,
+                    reconcile_commands.c.logical_key == effect_intents.c.logical_key,
+                )
+            ).one() == (
+                RunState.WAITING_RECONCILIATION.value,
+                EffectIntentState.WAITING_RECONCILIATION.value,
+                1,
+                None,
+                ReconcileCommandState.REJECTED_CONFLICT.value,
+            )
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(effect_receipts)
+                )
+                == 0
+            )
+        with sqlite3.connect(external) as connection:
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM loopback_effect_calls"
+                ).fetchone()[0]
+                == 0
+            )
     finally:
         runtime.close()

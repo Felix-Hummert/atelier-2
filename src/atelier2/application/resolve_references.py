@@ -70,45 +70,69 @@ def resolve_declared_reference(
     resolver: PublishedRevisionResolver,
 ) -> ReferenceResolution:
     """The published revision one declared reference binds, or the named refusal."""
+    resolution, _revision = resolve_declared_reference_with_revision(declared, resolver)
+    return resolution
+
+
+def resolve_declared_reference_with_revision(
+    declared: DeclaredReference,
+    resolver: PublishedRevisionResolver,
+) -> tuple[ReferenceResolution, PublishedRevision | None]:
+    """Resolve once, retaining exact bytes for a caller following a typed pin."""
     try:
         revision_hash = PublishedRevisionHash(declared.reference.revision)
     except ValueError:
-        return _refusal(
-            ReferenceRefusalReason.MALFORMED_REVISION,
-            declared,
-            "a pinned revision must be 64 lowercase hexadecimal characters",
+        return (
+            _refusal(
+                ReferenceRefusalReason.MALFORMED_REVISION,
+                declared,
+                "a pinned revision must be 64 lowercase hexadecimal characters",
+            ),
+            None,
         )
     resolved = resolver.resolve(declared.kind, revision_hash)
     match resolved:
         case PublishedRevisionFound(revision):
             if revision.kind is not declared.kind:
-                return _refusal(
-                    ReferenceRefusalReason.REVISION_KIND_MISMATCH,
-                    declared,
-                    f"the registry answered with a {revision.kind.value} revision",
+                return (
+                    _refusal(
+                        ReferenceRefusalReason.REVISION_KIND_MISMATCH,
+                        declared,
+                        f"the registry answered with a {revision.kind.value} revision",
+                    ),
+                    revision,
                 )
             if revision.revision_hash != revision_hash:
-                return _refusal(
-                    ReferenceRefusalReason.RESOLVED_REVISION_MISMATCH,
-                    declared,
-                    f"the registry answered with revision {revision.revision_hash.value}",
+                return (
+                    _refusal(
+                        ReferenceRefusalReason.RESOLVED_REVISION_MISMATCH,
+                        declared,
+                        f"the registry answered with revision {revision.revision_hash.value}",
+                    ),
+                    revision,
                 )
             unusable = _unreadable_document(declared, revision)
             if unusable is not None:
-                return unusable
-            return ResolvedReference(
-                declared.site, declared.kind, declared.reference, revision_hash
+                return unusable, revision
+            return (
+                ResolvedReference(
+                    declared.site, declared.kind, declared.reference, revision_hash
+                ),
+                revision,
             )
         case PublishedRevisionMissing():
-            return _refusal(
-                ReferenceRefusalReason.UNPUBLISHED_REVISION,
-                declared,
-                f"no published {declared.kind.value} revision carries this hash",
+            return (
+                _refusal(
+                    ReferenceRefusalReason.UNPUBLISHED_REVISION,
+                    declared,
+                    f"no published {declared.kind.value} revision carries this hash",
+                ),
+                None,
             )
         case PublishedRevisionsUnavailable(detail):
-            return ReadUnavailable(detail)
+            return ReadUnavailable(detail), None
         case PortDurableStateCorrupt():
-            return DurableStateCorrupt()
+            return DurableStateCorrupt(), None
         case _ as unreachable:
             assert_never(unreachable)
 

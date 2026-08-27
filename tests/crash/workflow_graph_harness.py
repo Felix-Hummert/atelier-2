@@ -109,7 +109,7 @@ class HarnessEffectAdapter:
             return EffectUnknownOutcome(intent.reference)
         return self._delegate.readback(intent)
 
-    def execute(self, intent: EffectIntent) -> PerformedEffect:
+    def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
         return self._delegate.execute(intent)
 
     def close(self) -> None:
