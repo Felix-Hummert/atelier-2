@@ -763,10 +763,6 @@
   }
 
   @media (max-width: 48rem) {
-    :global(.workshop) {
-      height: 100vh;
-    }
-
     .composer {
       gap: var(--space-1);
       padding-top: var(--space-1);
