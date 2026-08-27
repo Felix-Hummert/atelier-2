@@ -1,8 +1,12 @@
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { z } from "zod";
 
+import { nodeDetailSchema } from "../../src/api/client";
 import { workflowStartCopy } from "../../src/lib/catalogPageCopy";
+import { decodeUtf8Base64 } from "../../src/lib/exactBytes";
 import { WORK_ITEM_ORDER_SCHEMA_REVISION } from "../../src/lib/orderSchema";
 
 const shotDirectory = process.env.ATELIER2_SHOT_DIR ?? "";
@@ -17,20 +21,107 @@ const colorSchemes = ["light", "dark"] as const;
 const workItemSchemaDocument =
   '{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"body":{"type":"string"},"change_marker":{"maxLength":1024,"minLength":1,"type":"string"},"digest":{"pattern":"^[0-9a-f]{64}$","type":"string"},"kind":{"enum":["issue","change_request"],"type":"string"},"observed_at":{"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$","type":"string"},"reference":{"maxLength":1024,"minLength":1,"type":"string"}},"required":["body","change_marker","digest","kind","observed_at","reference"],"title":"work item","type":"object"}';
 const observedWorkItemBody = "e2e observed work item gh:450 — Grüße 東京";
+const workItemPickerName = `${workflowStartCopy.workItem} for work_item`;
+const observedWorkItemRevision = {
+  body: observedWorkItemBody,
+  change_marker: "e2e-etag-gh-450",
+  digest: createHash("sha256").update(observedWorkItemBody, "utf8").digest("hex"),
+  kind: "issue",
+  observed_at: "2026-08-26T09:15:00Z",
+  reference: "gh:450"
+} as const;
+const workItemOrderValueSchema = z
+  .object({
+    body: z.string(),
+    change_marker: z.string().min(1),
+    digest: z.string().regex(/^[0-9a-f]{64}$/),
+    kind: z.enum(["issue", "change_request"]),
+    observed_at: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/),
+    reference: z.string().min(1)
+  })
+  .strict();
+const groupedObservedQueueItems = {
+  items: [
+    {
+      project_id: "atelier-2",
+      tracker_item_reference: "gh:450",
+      item_id: "a".repeat(64),
+      revision: 0
+    },
+    {
+      project_id: "atelier-2",
+      tracker_item_reference: "gh:446",
+      item_id: "b".repeat(64),
+      revision: 0
+    },
+    {
+      project_id: "infra",
+      tracker_item_reference: "gl:12",
+      item_id: "c".repeat(64),
+      revision: 0
+    }
+  ],
+  next_after: null
+};
 
 async function pickWorkItem(sheet: Locator, optionLabel: string): Promise<void> {
-  await sheet
-    .getByRole("combobox", { name: `${workflowStartCopy.workItem} for work_item` })
-    .click();
-  await sheet.getByRole("option", { name: optionLabel, exact: true }).click();
+  const picker = sheet.getByRole("combobox", { name: workItemPickerName });
+  await picker.focus();
+  await picker.press("ArrowDown");
+  const listbox = sheet.getByRole("listbox", { name: workItemPickerName });
+  await expect(listbox).toBeVisible();
+  const option = sheet.getByRole("option", { name: optionLabel, exact: true });
+  await expect(option).toBeVisible();
+  const optionId = await option.getAttribute("id");
+  expect(optionId).toBeTruthy();
+  while ((await picker.getAttribute("aria-activedescendant")) !== optionId) {
+    const before = await picker.getAttribute("aria-activedescendant");
+    await picker.press("ArrowDown");
+    expect(await picker.getAttribute("aria-activedescendant")).not.toBe(before);
+  }
+  await picker.press("Enter");
+  await expect(listbox).toHaveCount(0);
+  await expect(picker).toContainText(optionLabel);
 }
 
-async function readNodeJob(page: Page, publicRef: string, nodeId: string): Promise<string | null> {
+async function openGroupedWorkItemPicker(sheet: Locator): Promise<void> {
+  const picker = sheet.getByRole("combobox", { name: workItemPickerName });
+  await picker.click();
+  await expect(sheet.getByRole("listbox", { name: workItemPickerName })).toBeVisible();
+  await expect(sheet.getByText("atelier-2 · GitHub")).toBeVisible();
+  await expect(sheet.getByText("infra · GitLab")).toBeVisible();
+  await expect(sheet.getByRole("option", { name: "#450", exact: true })).toBeVisible();
+  await expect(sheet.getByRole("option", { name: "#446", exact: true })).toBeVisible();
+  await expect(sheet.getByRole("option", { name: "!12", exact: true })).toBeVisible();
+}
+
+function observedWorkItemRevisionFromJob(job: string): z.infer<typeof workItemOrderValueSchema> {
+  for (const block of job.split("\n\n")) {
+    if (!block.startsWith("{")) continue;
+    try {
+      return workItemOrderValueSchema.parse(JSON.parse(block));
+    } catch {
+      continue;
+    }
+  }
+  throw new Error("the node job did not carry an observed work item revision");
+}
+
+async function readObservedWorkItemRevision(
+  page: Page,
+  publicRef: string,
+  nodeId: string
+): Promise<z.infer<typeof workItemOrderValueSchema> | null> {
   const response = await page.request.get(`/atelier/api/v1/runs/${publicRef}/nodes/${nodeId}`);
   if (!response.ok()) return null;
-  const detail = (await response.json()) as { job_base64?: string | null };
-  if (typeof detail.job_base64 !== "string" || detail.job_base64.length === 0) return null;
-  return Buffer.from(detail.job_base64, "base64").toString("utf8");
+  const detail = nodeDetailSchema.parse(await response.json());
+  if (detail.node_id !== nodeId) {
+    throw new Error("The node response named another node.");
+  }
+  if (detail.job_base64 === null || detail.job_base64.length === 0) return null;
+  const job = decodeUtf8Base64(detail.job_base64);
+  if (job === null) throw new Error("The node job was not UTF-8.");
+  return observedWorkItemRevisionFromJob(job);
 }
 
 async function publishCheckedRegistryEntry(
@@ -209,27 +300,17 @@ test("captures the Catalog list, detail, and start sheet at both requested width
   });
   expect([200, 201]).toContain(newerRevision.status());
 
-  let observedItems = true;
   await page.route("**/atelier/api/v1/observed-queue-items*", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        items: observedItems ? [{
-          project_id: "atelier-2",
-          tracker_item_reference: "gh:450",
-          item_id: "f".repeat(64),
-          revision: 0
-        }] : [],
-        next_after: null
-      })
+      body: JSON.stringify(groupedObservedQueueItems)
     });
   });
 
   for (const colorScheme of colorSchemes) {
     await page.emulateMedia({ colorScheme });
     for (const viewport of viewports) {
-      observedItems = viewport.name === "1280";
       await page.setViewportSize(viewport);
       await page.goto("/atelier/catalog");
       await expect(page.getByRole("heading", { name: "Catalog" })).toBeVisible();
@@ -290,11 +371,7 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       await expect(sheet).toBeVisible();
       await expect(page.getByLabel("Configuration for builder")).toBeVisible();
       await expect(sheet.getByText(workItemSchemaHash)).toHaveCount(0);
-      if (observedItems) {
-        await pickWorkItem(sheet, "#450");
-      } else {
-        await expect(sheet.getByRole("button", { name: workflowStartCopy.connectSource })).toBeVisible();
-      }
+      await openGroupedWorkItemPicker(sheet);
       await page.screenshot({ path: `${shotDirectory}/catalog-start-sheet-${viewport.name}-${colorScheme}.png`, fullPage: true });
     }
   }
@@ -364,7 +441,7 @@ for (const viewport of viewports) {
     await opener.click();
     const sheet = page.getByRole("dialog", { name: `Start ${workflowName}` });
     await expect(sheet).toBeVisible();
-    const workItem = sheet.getByRole("combobox", { name: `${workflowStartCopy.workItem} for work_item` });
+    const workItem = sheet.getByRole("combobox", { name: workItemPickerName });
     await expect(sheet.getByRole("button", { name: workflowStartCopy.cancel })).toBeFocused();
     await expect(workItem).toBeVisible();
     await page.keyboard.press("Escape");
@@ -372,6 +449,13 @@ for (const viewport of viewports) {
     await expect(opener).toBeFocused();
     await opener.click();
     await expect(sheet).toBeVisible();
+    await workItem.focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(sheet.getByRole("listbox", { name: workItemPickerName })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(sheet.getByRole("listbox", { name: workItemPickerName })).toHaveCount(0);
+    await expect(sheet).toBeVisible();
+    await expect(workItem).toBeFocused();
     await pickWorkItem(sheet, "#450");
     const roleConfiguration = sheet.getByLabel("Configuration for builder");
     await roleConfiguration.selectOption(configuration.agentConfigurationRevisionHash);
@@ -385,10 +469,7 @@ for (const viewport of viewports) {
     const publicRef = new URL(page.url()).pathname.split("/").at(-1);
     expect(publicRef).toBeTruthy();
     await expect.poll(async () => {
-      const job = await readNodeJob(page, publicRef!, "build");
-      return job !== null
-        && job.includes(observedWorkItemBody)
-        && job.includes("gh:450");
-    }, { timeout: 15_000 }).toBe(true);
+      return await readObservedWorkItemRevision(page, publicRef!, "build");
+    }, { timeout: 15_000 }).toEqual(observedWorkItemRevision);
   });
 }

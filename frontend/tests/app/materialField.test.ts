@@ -38,6 +38,15 @@ const workItemOrder = {
   schema: { ref: "work-item-schema", revision: WORK_ITEM_ORDER_SCHEMA_REVISION }
 };
 
+const groupedObservedQueueItems = {
+  items: [
+    { project_id: "atelier", tracker_item_reference: "gh:450", item_id: "1".repeat(64), revision: 0 },
+    { project_id: "atelier", tracker_item_reference: "gh:446", item_id: "3".repeat(64), revision: 0 },
+    { project_id: "infra", tracker_item_reference: "gl:12", item_id: "2".repeat(64), revision: 0 }
+  ],
+  next_after: null
+};
+
 const workItemSchema = {
   title: "work item",
   type: "object",
@@ -265,14 +274,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     const cockpitApi = api({
       getWorkflowRevision: vi.fn(async () => detail([workItemOrder])),
       getSchemaRevision: vi.fn(async () => workItemSchema),
-      listObservedQueueItems: vi.fn(async () => ({
-        items: [
-          { project_id: "atelier", tracker_item_reference: "gh:450", item_id: "1".repeat(64), revision: 0 },
-          { project_id: "atelier", tracker_item_reference: "gh:446", item_id: "3".repeat(64), revision: 0 },
-          { project_id: "infra", tracker_item_reference: "gl:12", item_id: "2".repeat(64), revision: 0 }
-        ],
-        next_after: null
-      }))
+      listObservedQueueItems: vi.fn(async () => groupedObservedQueueItems)
     });
     await openStart(cockpitApi);
 
@@ -289,6 +291,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     expect(screen.queryByRole("note")).toBeNull();
     expect(screen.getByRole("group", { name: "Roles" })).toBeTruthy();
 
+    expect(screen.getByRole("listbox", { name: "Work item for work" })).toBeTruthy();
     await fireEvent.click(screen.getByRole("option", { name: "#450" }));
     expect(picker.textContent).toContain("#450");
     await fireEvent.change(screen.getByLabelText("Configuration for cook"), {
@@ -304,6 +307,64 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     const mutation = vi.mocked(cockpitApi.start).mock.calls[0]?.[0];
     const request = JSON.parse(globalThis.atob(mutation?.body_base64 ?? ""));
     expect(request.orders).toEqual([{ name: "work", work_item: "gh:450" }]);
+  });
+
+  it("walks the work-item picker by keyboard, keeps focus on the combobox, and names the listbox", async () => {
+    const cockpitApi = api({
+      getWorkflowRevision: vi.fn(async () => detail([workItemOrder])),
+      getSchemaRevision: vi.fn(async () => workItemSchema),
+      listObservedQueueItems: vi.fn(async () => groupedObservedQueueItems)
+    });
+    await openStart(cockpitApi);
+
+    const picker = screen.getByRole("combobox", { name: "Work item for work" });
+    picker.focus();
+    expect(document.activeElement).toBe(picker);
+
+    await fireEvent.keyDown(picker, { key: "ArrowDown" });
+    const listbox = screen.getByRole("listbox", { name: "Work item for work" });
+    expect(listbox).toBeTruthy();
+    const first = screen.getByRole("option", { name: "#450" });
+    const second = screen.getByRole("option", { name: "#446" });
+    const third = screen.getByRole("option", { name: "!12" });
+    expect(picker.getAttribute("aria-activedescendant")).toBe(first.id);
+    expect(document.activeElement).toBe(picker);
+
+    await fireEvent.keyDown(picker, { key: "ArrowDown" });
+    expect(picker.getAttribute("aria-activedescendant")).toBe(second.id);
+    await fireEvent.keyDown(picker, { key: "ArrowDown" });
+    expect(picker.getAttribute("aria-activedescendant")).toBe(third.id);
+    await fireEvent.keyDown(picker, { key: "ArrowUp" });
+    expect(picker.getAttribute("aria-activedescendant")).toBe(second.id);
+
+    await fireEvent.keyDown(picker, { key: "Escape" });
+    expect(screen.queryByRole("listbox", { name: "Work item for work" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: `Start ${workflowName}` })).toBeTruthy();
+    expect(document.activeElement).toBe(picker);
+    expect(picker.textContent).toContain("Choose");
+
+    await fireEvent.keyDown(picker, { key: "ArrowUp" });
+    expect(screen.getByRole("listbox", { name: "Work item for work" })).toBeTruthy();
+    expect(picker.getAttribute("aria-activedescendant")).toBe(
+      screen.getByRole("option", { name: "!12" }).id
+    );
+    await fireEvent.keyDown(picker, { key: " " });
+    expect(screen.queryByRole("listbox", { name: "Work item for work" })).toBeNull();
+    expect(picker.textContent).toContain("!12");
+    expect(document.activeElement).toBe(picker);
+
+    await fireEvent.keyDown(picker, { key: "ArrowDown" });
+    expect(picker.getAttribute("aria-activedescendant")).toBe(
+      screen.getByRole("option", { name: "!12" }).id
+    );
+    await fireEvent.keyDown(picker, { key: "ArrowUp" });
+    expect(picker.getAttribute("aria-activedescendant")).toBe(
+      screen.getByRole("option", { name: "#446" }).id
+    );
+    await fireEvent.keyDown(picker, { key: "Enter" });
+    expect(screen.queryByRole("listbox", { name: "Work item for work" })).toBeNull();
+    expect(picker.textContent).toContain("#446");
+    expect(document.activeElement).toBe(picker);
   });
 
   it("holds Start when a work-item order has no observed source and leads to Settings", async () => {
