@@ -77,7 +77,9 @@ from atelier2.adapters.grok_subscription import (
     GrokSubscriptionSettings,
 )
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.openapi import API_PREFIX
 from atelier2.api.projection.events import bounded_event_summary
+from atelier2.api.references import encode_public_run_reference
 from atelier2.application.compose_node_job import OUTPUT_SCHEMA_REPAIR_HEADING
 from atelier2.contracts.agent_attempts import (
     MAXIMUM_RECEIPTED_STANDARD_ERROR_BYTES,
@@ -126,6 +128,7 @@ from atelier2.contracts.node_records_v3 import (
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_bindings import RunV3
 from atelier2.contracts.run_events import RunEventPage
+from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.contracts.runs import (
     RunId,
     RunState,
@@ -160,7 +163,7 @@ from tests.scenarios.agents import (
     process_invocation,
     publish_checked_model_registry,
 )
-from tests.scenarios.api import durable_queries
+from tests.scenarios.api import durable_api_client, durable_queries
 
 PLAN_SCHEMA = PublishedRevision(
     RevisionKind.SCHEMA,
@@ -529,6 +532,44 @@ def test_an_answer_its_own_schema_refuses_never_becomes_a_success(
         == DeclaredContextPackage(bytes(context)).package_hash.value
     )
     assert (int(artifacts or 0), int(outputs or 0)) == (0, 0)
+
+
+def test_get_run_reads_a_working_schema_repair_with_both_attempts(
+    runtime: DbosRuntime,
+) -> None:
+    execution = armed_attempt(runtime)
+    store = DbosAgentAttemptStore(runtime.engine, runtime.settings.application_version)
+
+    refused = store.complete_success(
+        execution, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+    )
+
+    assert isinstance(refused, AgentAttemptFailed)
+    found = durable_queries(runtime.engine).get_run(RUN)
+    assert isinstance(found, RunFound), found
+    assert tuple(
+        (attempt.attempt_ordinal, attempt.state, attempt.failure_code)
+        for attempt in found.projection.agent_attempts
+    ) == (
+        (
+            1,
+            PublicAgentAttemptState.FAILED,
+            AgentAttemptFailureCode.OUTPUT_SCHEMA_REFUSED,
+        ),
+        (2, PublicAgentAttemptState.PREPARED, None),
+    )
+
+    response = durable_api_client(runtime).get(
+        API_PREFIX + "/runs/" + encode_public_run_reference(RUN)
+    )
+
+    assert response.status_code == 200, response.text
+    rail = response.json()["node_rail"]
+    assert (rail[0]["node_id"], rail[0]["state"], rail[0]["attempt"]) == (
+        NODE,
+        "working",
+        {"ordinal": 2, "state": PublicAgentAttemptState.PREPARED.value},
+    )
 
 
 @pytest.mark.proves("a-schema-refusal-orders-one-durable-repair-round")

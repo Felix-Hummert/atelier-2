@@ -23,6 +23,8 @@ from atelier2.adapters.dbos.runtime import DbosRuntime
 from atelier2.adapters.dbos.schema import agent_attempts, run_events
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow import AgentExecutorMap, reconstruct_agent_attempt
+from atelier2.api.openapi import API_PREFIX
+from atelier2.api.references import encode_public_run_reference
 from atelier2.application.compose_node_job import NodeJobCompositionVersion
 from atelier2.application.execute_agent_attempt import execute_agent_attempt
 from atelier2.contracts.agent_attempts import (
@@ -40,12 +42,14 @@ from atelier2.contracts.executions import (
     RunEventCancellationBinding,
     RunEventKind,
 )
+from atelier2.contracts.run_projections import PublicAgentAttemptState
 from atelier2.contracts.runs import RunId
 from atelier2.ports.agent_attempts import (
     AgentAttemptCancellationAccepted,
     AgentAttemptCancellationCommandConflict,
     AgentAttemptReplacementNotAllowed,
 )
+from atelier2.ports.run_queries import RunFound
 from tests.integration.test_agent_attempts import (
     attempt_request,
     attempt_runtime,
@@ -54,6 +58,7 @@ from tests.integration.test_agent_attempts import (
 from tests.integration.test_v3_attempt_arm import runtime as _ordered_v3_runtime
 from tests.integration.test_v3_attempt_arm import started_string_ordered_v3_attempts
 from tests.scenarios.agents import agent_attempt_execution, runtime_workspace_owner
+from tests.scenarios.api import durable_api_client, durable_queries
 
 ordered_v3_runtime = _ordered_v3_runtime
 
@@ -311,6 +316,26 @@ def test_cancellation_replacement_keeps_its_base_job_and_request_hash(
         selected.request.request_hash,
         2,
     )
+    found = durable_queries(ordered_v3_runtime.engine).get_run(run_id)
+    assert isinstance(found, RunFound), found
+    assert tuple(
+        (attempt.attempt_ordinal, attempt.state)
+        for attempt in found.projection.agent_attempts
+    ) == (
+        (1, PublicAgentAttemptState.CANCELLED),
+        (2, PublicAgentAttemptState.PREPARED),
+    )
+
+    response = durable_api_client(ordered_v3_runtime).get(
+        API_PREFIX + "/runs/" + encode_public_run_reference(run_id)
+    )
+
+    assert response.status_code == 200, response.text
+    rail = response.json()["node_rail"]
+    assert rail[0]["attempt"] == {
+        "ordinal": 2,
+        "state": PublicAgentAttemptState.PREPARED.value,
+    }
 
 
 def test_durable_cancellation_workflow_reaps_the_exact_running_process(
