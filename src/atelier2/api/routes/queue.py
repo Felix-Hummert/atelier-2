@@ -1,11 +1,4 @@
-"""The queue's HTTP doors: import, list what was observed, admit, list the admitted.
-
-Phase A gave the queue an application caller and a read; nothing in production
-could reach either without a door. These are those doors. None invents a
-domain outcome: each maps exactly the outcomes its application caller already
-answers with. The import POST is the operator's trigger of #652: the served
-host owns the connected tracker, so the request carries nothing.
-"""
+"""The one typed queue projection and its policy/proposal/admission CAS doors."""
 
 from __future__ import annotations
 
@@ -16,6 +9,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from atelier2.api._support import (
+    decode_public_project_reference_value,
     parse_limit,
     require_json_media_dependency,
     resource_response,
@@ -23,25 +17,40 @@ from atelier2.api._support import (
 )
 from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.openapi import (
-    OBSERVED_QUEUE_ITEMS_PATH,
+    PROJECT_QUEUE_POLICY_PATH,
     PROJECT_SOURCE_IMPORT_PATH,
     QUEUE_ADMISSIONS_PATH,
     QUEUE_ITEMS_PATH,
+    QUEUE_PROPOSALS_PATH,
 )
 from atelier2.api.problems import ApiProblem
-from atelier2.api.wire.requests import AdmitQueueItemRequestResource
-from atelier2.api.wire.resources import (
-    AdmittedQueueItemResource,
-    InvalidFieldResource,
-    ObservedQueueItemPageResource,
-    ObservedQueueItemResource,
-    ProjectSourceImportResource,
-    QueueItemPageResource,
+from atelier2.api.wire.requests import (
+    ConfirmQueueProposalRequestResource,
+    PutQueueProjectPolicyRequestResource,
+    PutQueueProposalRequestResource,
 )
-from atelier2.application.admit_queue_item import AdmittedQueueItemsListed
+from atelier2.api.wire.resources import (
+    InvalidFieldResource,
+    ProjectSourceImportResource,
+    QueueAdmissionDecisionResource,
+    QueueAdmissionResource,
+    QueueItemPageResource,
+    QueueItemResource,
+    QueueLaunchBindingResource,
+    QueuePriorityRankResource,
+    QueueProjectPolicyResource,
+    QueueProposalDecisionResource,
+    QueueProposalResource,
+)
+from atelier2.application.admit_queue_item import QueueItemsListed
 from atelier2.application.import_project_source_issues import (
-    ObservedQueueItemsListed,
     ProjectSourceIssuesImported,
+)
+from atelier2.application.plan_queue_item import (
+    QueueProjectPolicyPublished,
+    QueueProjectPolicyRevisionConflict,
+    QueueProjectPolicyUnchanged,
+    QueueProposalRefused,
 )
 from atelier2.application.refusals import (
     DurableStateCorrupt,
@@ -53,16 +62,27 @@ from atelier2.application.refusals import (
 from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import (
-    AdmitQueueItem,
+    ConfirmQueueProposal,
+    PlanQueueItem,
     QueueAdmission,
     QueueAdmissionAlreadyCurrent,
     QueueAdmissionAlreadyDecided,
+    QueueAdmissionAuthorityRefused,
     QueueAdmissionRationale,
     QueueAdmissionRevisionConflict,
+    QueueAutomationDisposition,
     QueueItemAdmitted,
     QueueItemId,
+    QueueItemProposed,
     QueueItemSnapshot,
+    QueueItemState,
+    QueuePriorityRank,
     QueueProjectionRevision,
+    QueueProjectPolicyRevision,
+    QueueProposal,
+    QueueProposalAlreadyCurrent,
+    QueueProposalAlreadyDecided,
+    QueueProposalRevisionConflict,
     TrackerItemReference,
     WorkItemReference,
 )
@@ -70,37 +90,130 @@ from atelier2.contracts.queue_projection import (
 router = APIRouter()
 
 
-@router.post(
-    QUEUE_ADMISSIONS_PATH,
-    response_model=AdmittedQueueItemResource,
+@router.put(
+    PROJECT_QUEUE_POLICY_PATH,
+    response_model=QueueProjectPolicyResource,
     status_code=HTTPStatus.CREATED,
-    responses={HTTPStatus.OK: {"model": AdmittedQueueItemResource}},
+    responses={HTTPStatus.OK: {"model": QueueProjectPolicyResource}},
 )
-async def admit_queue_item_route(
-    request: AdmitQueueItemRequestResource,
+async def put_queue_project_policy_route(
+    public_project_reference: str,
+    body: PutQueueProjectPolicyRequestResource,
     context: ApiContext = api_context_dependency,
     _media: None = Depends(require_json_media_dependency),
 ) -> JSONResponse:
-    """Admit one observed item, or answer the queue's own refusal by name."""
-
+    project = decode_public_project_reference_value(
+        public_project_reference, context.limits
+    )
     try:
-        command = AdmitQueueItem(
-            WorkItemReference(
-                ProjectId(request.project_id),
-                TrackerItemReference(request.tracker_item_reference),
-            ),
-            QueueAdmission(
-                CatalogLineageId(request.workflow_lineage_id),
-                QueueAdmissionRationale(request.rationale),
-            ),
-            QueueProjectionRevision(request.expected_revision),
+        policy = QueueProjectPolicyRevision(
+            project,
+            body.revision_number,
+            body.maximum_active_runs,
+            body.automation_label,
         )
     except (TypeError, ValueError) as error:
         raise ApiProblem("invalid-request") from error
-
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.admit_queue_item(command),
+        lambda: context.use_cases.put_queue_project_policy(
+            policy, body.expected_revision
+        ),
+    )
+    match result:
+        case QueueProjectPolicyPublished(stored):
+            status = HTTPStatus.CREATED
+        case QueueProjectPolicyUnchanged(stored):
+            status = HTTPStatus.OK
+        case QueueProjectPolicyRevisionConflict():
+            raise ApiProblem("queue-policy-revision-conflict")
+        case WriteUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
+    return resource_response(_policy_resource(stored), status)
+
+
+@router.put(
+    QUEUE_PROPOSALS_PATH,
+    response_model=QueueProposalDecisionResource,
+    status_code=HTTPStatus.CREATED,
+    responses={HTTPStatus.OK: {"model": QueueProposalDecisionResource}},
+)
+async def put_queue_proposal_route(
+    body: PutQueueProposalRequestResource,
+    context: ApiContext = api_context_dependency,
+    _media: None = Depends(require_json_media_dependency),
+) -> JSONResponse:
+    try:
+        command = PlanQueueItem(
+            _item_reference(body.project_id, body.tracker_item_reference),
+            QueueProposal(
+                QueuePriorityRank(body.priority.rank),
+                CatalogLineageId(body.workflow_lineage_id),
+                tuple(QueueItemId(value) for value in body.prerequisite_item_ids),
+                QueueAutomationDisposition(body.automation_disposition),
+                body.policy_revision,
+            ),
+            QueueProjectionRevision(body.expected_revision),
+        )
+    except (TypeError, ValueError) as error:
+        raise ApiProblem("invalid-request") from error
+    result = await run_control_query(
+        context.control_runner, lambda: context.use_cases.plan_queue_item(command)
+    )
+    match result:
+        case QueueItemProposed(item_reference, proposal, revision):
+            status = HTTPStatus.CREATED
+        case QueueProposalAlreadyCurrent(item_reference, proposal, revision):
+            status = HTTPStatus.OK
+        case QueueProposalRevisionConflict():
+            raise ApiProblem("queue-proposal-revision-conflict")
+        case QueueProposalAlreadyDecided():
+            raise ApiProblem("queue-proposal-already-decided")
+        case QueueProposalRefused(reason):
+            raise ApiProblem("queue-proposal-refused", reason)
+        case WriteUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
+    return resource_response(
+        QueueProposalDecisionResource(
+            item_id=item_reference.item_id.value,
+            state=QueueItemState.PROPOSED,
+            revision=revision.value,
+            proposal=_proposal_resource(proposal, revision),
+        ),
+        status,
+    )
+
+
+@router.post(
+    QUEUE_ADMISSIONS_PATH,
+    response_model=QueueAdmissionDecisionResource,
+    status_code=HTTPStatus.CREATED,
+    responses={HTTPStatus.OK: {"model": QueueAdmissionDecisionResource}},
+)
+async def confirm_queue_proposal_route(
+    request: ConfirmQueueProposalRequestResource,
+    context: ApiContext = api_context_dependency,
+    _media: None = Depends(require_json_media_dependency),
+) -> JSONResponse:
+    try:
+        command = ConfirmQueueProposal(
+            _item_reference(request.project_id, request.tracker_item_reference),
+            QueueProjectionRevision(request.expected_revision),
+            QueueAdmissionRationale(request.rationale),
+        )
+    except (TypeError, ValueError) as error:
+        raise ApiProblem("invalid-request") from error
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.confirm_queue_proposal(command),
     )
     match result:
         case QueueItemAdmitted(item_reference, admission, revision):
@@ -111,6 +224,8 @@ async def admit_queue_item_route(
             raise ApiProblem("queue-admission-revision-conflict")
         case QueueAdmissionAlreadyDecided():
             raise ApiProblem("queue-admission-already-decided")
+        case QueueAdmissionAuthorityRefused():
+            raise ApiProblem("invalid-request")
         case WriteUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case DurableStateCorrupt():
@@ -118,7 +233,13 @@ async def admit_queue_item_route(
         case _ as unreachable:
             assert_never(unreachable)
     return resource_response(
-        _admitted_item_resource(item_reference, admission, revision), status
+        QueueAdmissionDecisionResource(
+            item_id=item_reference.item_id.value,
+            state=QueueItemState.ADMITTED,
+            revision=revision.value,
+            admission=_admission_resource(admission),
+        ),
+        status,
     )
 
 
@@ -128,20 +249,16 @@ async def list_queue_items_route(
     limit: str = "50",
     context: ApiContext = api_context_dependency,
 ) -> QueueItemPageResource:
-    """List admitted items, each with its binding and rationale; empty is a page."""
-
-    after_item_id = None if after is None else _parse_after(after)
-    parsed_limit = parse_limit(limit)
     result = await run_control_query(
         context.control_runner,
-        lambda: context.use_cases.list_admitted_queue_items(
-            after_item_id, parsed_limit
+        lambda: context.use_cases.list_queue_items(
+            None if after is None else _parse_after(after), parse_limit(limit)
         ),
     )
     match result:
-        case AdmittedQueueItemsListed(items, next_after):
+        case QueueItemsListed(items, next_after):
             return QueueItemPageResource(
-                items=tuple(_snapshot_resource(snapshot) for snapshot in items),
+                items=tuple(_snapshot_resource(item) for item in items),
                 next_after=None if next_after is None else next_after.value,
             )
         case ReadUnavailable(detail):
@@ -156,11 +273,8 @@ async def list_queue_items_route(
 async def import_project_source_issues_route(
     context: ApiContext = api_context_dependency,
 ) -> ProjectSourceImportResource:
-    """Observe the connected tracker's open items into the queue, idempotently."""
-
     result = await run_control_query(
-        context.control_runner,
-        context.use_cases.import_project_source_issues,
+        context.control_runner, context.use_cases.import_project_source_issues
     )
     match result:
         case ProjectSourceIssuesImported(observed, newly_observed):
@@ -181,43 +295,8 @@ async def import_project_source_issues_route(
             assert_never(unreachable)
 
 
-@router.get(OBSERVED_QUEUE_ITEMS_PATH, response_model=ObservedQueueItemPageResource)
-async def list_observed_queue_items_route(
-    after: str | None = None,
-    limit: str = "50",
-    context: ApiContext = api_context_dependency,
-) -> ObservedQueueItemPageResource:
-    """List observed items awaiting admission; empty is a page, not an error."""
-
-    after_item_id = None if after is None else _parse_after(after)
-    parsed_limit = parse_limit(limit)
-    result = await run_control_query(
-        context.control_runner,
-        lambda: context.use_cases.list_observed_queue_items(
-            after_item_id, parsed_limit
-        ),
-    )
-    match result:
-        case ObservedQueueItemsListed(items, next_after):
-            return ObservedQueueItemPageResource(
-                items=tuple(_observed_item_resource(snapshot) for snapshot in items),
-                next_after=None if next_after is None else next_after.value,
-            )
-        case ReadUnavailable(detail):
-            raise ApiProblem("temporarily-unavailable", detail)
-        case DurableStateCorrupt():
-            raise ApiProblem("durable-state-corrupt")
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
-def _observed_item_resource(snapshot: QueueItemSnapshot) -> ObservedQueueItemResource:
-    return ObservedQueueItemResource(
-        project_id=snapshot.item_reference.project.value,
-        tracker_item_reference=snapshot.item_reference.tracker_item.value,
-        item_id=snapshot.item_reference.item_id.value,
-        revision=snapshot.revision.value,
-    )
+def _item_reference(project: str, tracker: str) -> WorkItemReference:
+    return WorkItemReference(ProjectId(project), TrackerItemReference(tracker))
 
 
 def _parse_after(value: str) -> QueueItemId:
@@ -235,28 +314,77 @@ def _parse_after(value: str) -> QueueItemId:
         ) from error
 
 
-def _snapshot_resource(snapshot: QueueItemSnapshot) -> AdmittedQueueItemResource:
-    admission = snapshot.admission
-    if admission is None:
-        # `list_admitted_items` answers only ADMITTED rows, and an ADMITTED
-        # snapshot carries its admission by construction; a None here is durable
-        # state that no sequence of writes could produce.
-        raise ApiProblem("durable-state-corrupt")
-    return _admitted_item_resource(
-        snapshot.item_reference, admission, snapshot.revision
+def _policy_resource(policy: QueueProjectPolicyRevision) -> QueueProjectPolicyResource:
+    return QueueProjectPolicyResource(
+        project_id=policy.project_id.value,
+        revision_number=policy.revision_number,
+        maximum_active_runs=policy.maximum_active_runs,
+        automation_label=policy.automation_label,
     )
 
 
-def _admitted_item_resource(
-    item_reference: WorkItemReference,
-    admission: QueueAdmission,
-    revision: QueueProjectionRevision,
-) -> AdmittedQueueItemResource:
-    return AdmittedQueueItemResource(
-        project_id=item_reference.project.value,
-        tracker_item_reference=item_reference.tracker_item.value,
-        item_id=item_reference.item_id.value,
+def _proposal_resource(
+    proposal: QueueProposal, revision: QueueProjectionRevision
+) -> QueueProposalResource:
+    return QueueProposalResource(
         revision=revision.value,
-        workflow_lineage_id=admission.workflow_lineage_id.value,
+        priority=QueuePriorityRankResource(rank=proposal.priority.rank),
+        workflow_lineage_id=proposal.workflow_lineage_id.value,
+        prerequisite_item_ids=tuple(
+            item_id.value for item_id in proposal.prerequisite_item_ids
+        ),
+        automation_disposition=proposal.automation_disposition,
+        policy_revision=proposal.policy_revision,
+    )
+
+
+def _admission_resource(admission: QueueAdmission) -> QueueAdmissionResource:
+    return QueueAdmissionResource(
+        proposal_revision=(
+            None
+            if admission.proposal_revision is None
+            else admission.proposal_revision.value
+        ),
+        authority=admission.authority,
         rationale=admission.rationale.value,
+    )
+
+
+def _snapshot_resource(snapshot: QueueItemSnapshot) -> QueueItemResource:
+    proposal = snapshot.proposal
+    admission = snapshot.admission
+    binding = snapshot.launch_binding
+    proposal_revision = (
+        snapshot.revision
+        if proposal is not None and admission is None
+        else (
+            admission.proposal_revision
+            if admission is not None and admission.proposal_revision is not None
+            else None
+        )
+    )
+    return QueueItemResource(
+        project_id=snapshot.item_reference.project.value,
+        tracker_item_reference=snapshot.item_reference.tracker_item.value,
+        item_id=snapshot.item_reference.item_id.value,
+        state=snapshot.state,
+        revision=snapshot.revision.value,
+        proposal=(
+            None
+            if proposal is None or proposal_revision is None
+            else _proposal_resource(proposal, proposal_revision)
+        ),
+        admission=None if admission is None else _admission_resource(admission),
+        launch_binding=(
+            None
+            if binding is None
+            else QueueLaunchBindingResource(
+                proposal_revision=binding.proposal_revision.value,
+                run_id=binding.run_id.value,
+                workflow_revision_hash=binding.workflow_revision_hash.value,
+            )
+        ),
+        blockers=snapshot.blockers,
+        tracker_enrichment="ENRICHMENT_UNAVAILABLE",
+        title=None,
     )

@@ -478,10 +478,49 @@ CREATE TABLE effect_receipts (
 """The receipt table V41 published with immutable fork provenance."""
 
 
+_QUEUE_ITEMS_BEFORE_PHASE_D = """
+CREATE TABLE queue_items (
+	item_id TEXT NOT NULL,
+	project_id TEXT NOT NULL,
+	tracker_item_reference TEXT NOT NULL,
+	state TEXT NOT NULL,
+	state_version INTEGER NOT NULL,
+	workflow_lineage_id TEXT,
+	admission_rationale TEXT,
+	PRIMARY KEY (item_id),
+	UNIQUE (project_id, tracker_item_reference),
+	CHECK (length(item_id) = 64 AND item_id NOT GLOB '*[^0-9a-f]*'),
+	CHECK (length(project_id) BETWEEN 1 AND 1024),
+	CHECK (length(tracker_item_reference) BETWEEN 1 AND 1024),
+	CHECK (state IN ('OBSERVED', 'ADMITTED')),
+	CHECK (state_version >= 0),
+	CHECK ((state = 'ADMITTED' AND workflow_lineage_id IS NOT NULL AND length(workflow_lineage_id) = 64 AND workflow_lineage_id NOT GLOB '*[^0-9a-f]*' AND admission_rationale IS NOT NULL AND length(admission_rationale) BETWEEN 1 AND 4096) OR (state = 'OBSERVED' AND workflow_lineage_id IS NULL AND admission_rationale IS NULL)),
+	FOREIGN KEY(workflow_lineage_id) REFERENCES catalog_lineages (lineage_id)
+)
+
+"""
+"""The admission-only queue row V29 through V43 published before Phase D."""
+
+
 PUBLISHED_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
     (40, "effect_receipts"): _EFFECT_RECEIPTS_BEFORE_FORK_REFERENCE,
     (41, "effect_intents"): _EFFECT_INTENTS_WITH_ABANDONMENT,
     (41, "effect_receipts"): _EFFECT_RECEIPTS_WITH_FORK_REFERENCE,
+    (29, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (30, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (31, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (32, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (33, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (34, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (35, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (36, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (37, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (38, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (39, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (40, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (41, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (42, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (43, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
     (26, "host_occupancy_revisions"): _HOST_OCCUPANCY_REVISIONS,
     (26, "host_occupancy_bindings"): _HOST_OCCUPANCY_BINDINGS,
     (39, "host_occupancy_revisions"): _HOST_OCCUPANCY_REVISIONS,

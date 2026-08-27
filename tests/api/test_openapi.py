@@ -30,9 +30,13 @@ from atelier2.api.openapi import (
     PROJECT_MODEL_DEFAULTS_PATH,
     PROJECT_MODEL_RESOLUTION_PATH,
     PROJECT_PATH,
+    PROJECT_QUEUE_POLICY_PATH,
     PROJECT_ROOT_PATH,
     PROJECT_SOURCE_CONNECTION_PATH,
     PROJECTS_PATH,
+    QUEUE_ADMISSIONS_PATH,
+    QUEUE_ITEMS_PATH,
+    QUEUE_PROPOSALS_PATH,
     RUN_CANCELLATION_PATH,
     RUN_FORK_PATH,
 )
@@ -134,10 +138,11 @@ EXPECTED_PATHS = {
     RUN_CANCELLATION_PATH,
     EVENT_PATH,
     ATTENTION_EVENT_PATH,
-    API_PREFIX + "/queue-admissions",
-    API_PREFIX + "/queue-items",
+    PROJECT_QUEUE_POLICY_PATH,
+    QUEUE_PROPOSALS_PATH,
+    QUEUE_ADMISSIONS_PATH,
+    QUEUE_ITEMS_PATH,
     API_PREFIX + "/project-sources/import",
-    API_PREFIX + "/observed-queue-items",
 }
 
 EXPECTED_ROUTE_SEQUENCE = (
@@ -266,17 +271,18 @@ EXPECTED_ROUTE_SEQUENCE = (
     ("POST", RUN_CANCELLATION_PATH, "cancel_run_route"),
     ("GET", EVENT_PATH, "event_stream_route"),
     ("GET", ATTENTION_EVENT_PATH, "attention_event_stream_route"),
-    ("POST", API_PREFIX + "/queue-admissions", "admit_queue_item_route"),
-    ("GET", API_PREFIX + "/queue-items", "list_queue_items_route"),
+    (
+        "PUT",
+        PROJECT_QUEUE_POLICY_PATH,
+        "put_queue_project_policy_route",
+    ),
+    ("PUT", QUEUE_PROPOSALS_PATH, "put_queue_proposal_route"),
+    ("POST", QUEUE_ADMISSIONS_PATH, "confirm_queue_proposal_route"),
+    ("GET", QUEUE_ITEMS_PATH, "list_queue_items_route"),
     (
         "POST",
         API_PREFIX + "/project-sources/import",
         "import_project_source_issues_route",
-    ),
-    (
-        "GET",
-        API_PREFIX + "/observed-queue-items",
-        "list_observed_queue_items_route",
     ),
 )
 
@@ -322,6 +328,11 @@ EXPECTED_SUCCESS_STATUSES = {
     (RUN_CANCELLATION_PATH, "post"): {"200", "202"},
     (EVENT_PATH, "get"): {"200"},
     (ATTENTION_EVENT_PATH, "get"): {"200"},
+    (PROJECT_QUEUE_POLICY_PATH, "put"): {"200", "201"},
+    (QUEUE_PROPOSALS_PATH, "put"): {"200", "201"},
+    (QUEUE_ADMISSIONS_PATH, "post"): {"200", "201"},
+    (QUEUE_ITEMS_PATH, "get"): {"200"},
+    (API_PREFIX + "/project-sources/import", "post"): {"200"},
 }
 
 

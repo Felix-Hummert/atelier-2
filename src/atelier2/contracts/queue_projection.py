@@ -1,12 +1,9 @@
-"""The queue's own durable identity: one tracker-referenced item, one admission.
+"""Typed durable decisions for one tracker-referenced queue item.
 
-Core owns orchestration state keyed by a reference into whichever tracker holds
-the item (REQ-QUEUE-14): never the item's title, description, comments, or
-parent -- those stay the tracker's. What lives here is the smallest fact this
-slice proves: a work item is identified by its project and tracker reference,
-and it may be admitted into the queue under one named workflow binding, once,
-with a durable reason. Dependency edges, readiness, and priority are later
-slices and name no type here.
+Tracker content stays behind its reference. Core owns the proposal an operator
+inspects, the exact proposal admission confirms, and the immutable launch
+binding that prevents a moving catalog head or a restart from spending an item
+twice.
 """
 
 from __future__ import annotations
@@ -18,9 +15,12 @@ from typing import Final
 from atelier2.contracts.catalog_v3 import CatalogLineageId
 from atelier2.contracts.hashing import Sha256Hash, frame
 from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
 MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS = 1_024
 MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS = 4_096
+MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS = 256
+MAXIMUM_QUEUE_ACTIVE_RUNS = 1_000
 
 
 @dataclass(frozen=True)
@@ -97,14 +97,151 @@ class QueueProjectionRevision:
 
 
 QUEUE_PROJECTION_REVISION_OBSERVED: Final = QueueProjectionRevision(0)
-QUEUE_PROJECTION_REVISION_ADMITTED: Final = QueueProjectionRevision(1)
 
 
 class QueueItemState(StrEnum):
-    """The closed lifecycle this slice proves. Readiness states are later work."""
+    """Proposal and admission are distinct durable decisions."""
 
     OBSERVED = "OBSERVED"
+    PROPOSED = "PROPOSED"
     ADMITTED = "ADMITTED"
+
+
+@dataclass(frozen=True, order=True)
+class QueuePriorityRank:
+    """A positive one-based queue rank; lower ranks run first."""
+
+    rank: int
+
+    def __post_init__(self) -> None:
+        if type(self.rank) is not int or self.rank < 1:
+            raise ValueError("a queue priority rank must be a positive integer")
+
+
+class QueueDecisionAuthority(StrEnum):
+    OPERATOR = "OPERATOR"
+    AUTOMATION_RULE = "AUTOMATION_RULE"
+
+
+class QueueAutomationDisposition(StrEnum):
+    HUMAN_REQUIRED = "HUMAN_REQUIRED"
+    AUTOMATION_AUTHORIZED = "AUTOMATION_AUTHORIZED"
+
+
+class QueueBlockerKind(StrEnum):
+    PRIORITY_UNSET = "PRIORITY_UNSET"
+    HUMAN_REQUIRED = "HUMAN_REQUIRED"
+    PREREQUISITE_OPEN = "PREREQUISITE_OPEN"
+    PREREQUISITE_FAILED = "PREREQUISITE_FAILED"
+    CAP_REACHED = "CAP_REACHED"
+    BINDING_UNRESOLVED = "BINDING_UNRESOLVED"
+    REQUIRED_ORDER_UNAVAILABLE = "REQUIRED_ORDER_UNAVAILABLE"
+    START_REFUSED = "START_REFUSED"
+    LEGACY_REVIEW_REQUIRED = "LEGACY_REVIEW_REQUIRED"
+
+
+@dataclass(frozen=True)
+class QueueProjectPolicyRevision:
+    """One immutable project's automation filter and active-run ceiling."""
+
+    project_id: ProjectId
+    revision_number: int
+    maximum_active_runs: int
+    automation_label: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.project_id, ProjectId):
+            raise TypeError("a queue policy must name its project through ProjectId")
+        if type(self.revision_number) is not int or self.revision_number < 1:
+            raise ValueError("a queue policy revision number must be positive")
+        if (
+            type(self.maximum_active_runs) is not int
+            or not 1 <= self.maximum_active_runs <= MAXIMUM_QUEUE_ACTIVE_RUNS
+        ):
+            raise ValueError(
+                "a queue policy active-run cap must be between 1 and "
+                f"{MAXIMUM_QUEUE_ACTIVE_RUNS}"
+            )
+        if self.automation_label is not None and (
+            not isinstance(self.automation_label, str)
+            or not 1
+            <= len(self.automation_label)
+            <= MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS
+        ):
+            raise ValueError(
+                "a queue automation label must be absent or contain 1 to "
+                f"{MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS} characters"
+            )
+
+
+@dataclass(frozen=True)
+class QueueProposal:
+    """The exact triage decision an admission may later confirm."""
+
+    priority: QueuePriorityRank
+    workflow_lineage_id: CatalogLineageId
+    prerequisite_item_ids: tuple[QueueItemId, ...]
+    automation_disposition: QueueAutomationDisposition
+    policy_revision: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.priority, QueuePriorityRank):
+            raise TypeError("a queue proposal priority must use QueuePriorityRank")
+        if not isinstance(self.workflow_lineage_id, CatalogLineageId):
+            raise TypeError("a queue proposal workflow must use CatalogLineageId")
+        if not isinstance(self.prerequisite_item_ids, tuple) or any(
+            not isinstance(item_id, QueueItemId)
+            for item_id in self.prerequisite_item_ids
+        ):
+            raise TypeError("queue proposal prerequisites must be QueueItemId values")
+        canonical = tuple(
+            sorted(set(self.prerequisite_item_ids), key=lambda item: item.value)
+        )
+        object.__setattr__(self, "prerequisite_item_ids", canonical)
+        if not isinstance(self.automation_disposition, QueueAutomationDisposition):
+            raise TypeError("a queue proposal automation disposition must be typed")
+        if self.policy_revision is not None and (
+            type(self.policy_revision) is not int or self.policy_revision < 1
+        ):
+            raise ValueError("a proposal policy revision must be positive when present")
+
+
+@dataclass(frozen=True)
+class QueueDependencyEdge:
+    """One prerequisite bound to the exact proposal revision that declared it."""
+
+    item_id: QueueItemId
+    proposal_revision: QueueProjectionRevision
+    prerequisite_item_id: QueueItemId
+
+
+@dataclass(frozen=True)
+class QueueLaunchBinding:
+    """The one immutable launch reservation an admitted item can ever receive."""
+
+    item_id: QueueItemId
+    proposal_revision: QueueProjectionRevision
+    run_id: RunId
+    workflow_revision_hash: WorkflowRevisionHash
+
+    def __post_init__(self) -> None:
+        if self.proposal_revision.value < 1:
+            raise ValueError("a launch binding must name a proposal revision")
+
+
+@dataclass(frozen=True)
+class PlanQueueItem:
+    item_reference: WorkItemReference
+    proposal: QueueProposal
+    expected_revision: QueueProjectionRevision
+
+
+@dataclass(frozen=True)
+class ConfirmQueueProposal:
+    item_reference: WorkItemReference
+    expected_revision: QueueProjectionRevision
+    rationale: QueueAdmissionRationale
+    authority: QueueDecisionAuthority = QueueDecisionAuthority.OPERATOR
 
 
 @dataclass(frozen=True)
@@ -134,6 +271,8 @@ class QueueAdmission:
 
     workflow_lineage_id: CatalogLineageId
     rationale: QueueAdmissionRationale
+    authority: QueueDecisionAuthority | None = None
+    proposal_revision: QueueProjectionRevision | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.workflow_lineage_id, CatalogLineageId):
@@ -144,15 +283,16 @@ class QueueAdmission:
             raise TypeError(
                 "a queue admission carries its rationale through the contract"
             )
-
-
-@dataclass(frozen=True)
-class AdmitQueueItem:
-    """One caller's request to admit one item, against the revision it inspected."""
-
-    item_reference: WorkItemReference
-    admission: QueueAdmission
-    expected_revision: QueueProjectionRevision
+        if self.proposal_revision is None:
+            if self.authority is not None:
+                raise ValueError("a legacy admission cannot invent decision authority")
+        else:
+            if not isinstance(self.authority, QueueDecisionAuthority):
+                raise TypeError(
+                    "a proposed admission authority must use its typed contract"
+                )
+            if self.proposal_revision.value < 1:
+                raise ValueError("an admission proposal revision must be positive")
 
 
 @dataclass(frozen=True)
@@ -189,11 +329,54 @@ class QueueAdmissionAlreadyDecided:
     existing_admission: QueueAdmission
 
 
+@dataclass(frozen=True)
+class QueueAdmissionAuthorityRefused:
+    """An automation rule cannot confirm a proposal reserved for a human."""
+
+    authority: QueueDecisionAuthority
+    disposition: QueueAutomationDisposition
+
+
 type QueueAdmissionOutcome = (
     QueueItemAdmitted
     | QueueAdmissionAlreadyCurrent
     | QueueAdmissionRevisionConflict
     | QueueAdmissionAlreadyDecided
+    | QueueAdmissionAuthorityRefused
+)
+
+
+@dataclass(frozen=True)
+class QueueItemProposed:
+    item_reference: WorkItemReference
+    proposal: QueueProposal
+    revision: QueueProjectionRevision
+
+
+@dataclass(frozen=True)
+class QueueProposalAlreadyCurrent:
+    item_reference: WorkItemReference
+    proposal: QueueProposal
+    revision: QueueProjectionRevision
+
+
+@dataclass(frozen=True)
+class QueueProposalRevisionConflict:
+    expected: QueueProjectionRevision
+    actual: QueueProjectionRevision
+
+
+@dataclass(frozen=True)
+class QueueProposalAlreadyDecided:
+    item_reference: WorkItemReference
+    state: QueueItemState
+
+
+type QueueProposalOutcome = (
+    QueueItemProposed
+    | QueueProposalAlreadyCurrent
+    | QueueProposalRevisionConflict
+    | QueueProposalAlreadyDecided
 )
 
 
@@ -209,6 +392,9 @@ class QueueItemSnapshot:
     state: QueueItemState
     revision: QueueProjectionRevision
     admission: QueueAdmission | None
+    proposal: QueueProposal | None = None
+    launch_binding: QueueLaunchBinding | None = None
+    blockers: tuple[QueueBlockerKind, ...] = ()
 
     def __post_init__(self) -> None:
         admitted = self.state is QueueItemState.ADMITTED
@@ -216,16 +402,47 @@ class QueueItemSnapshot:
             raise ValueError(
                 "a queue item snapshot carries an admission if and only if it is ADMITTED"
             )
+        proposed = self.state in {QueueItemState.PROPOSED, QueueItemState.ADMITTED}
+        legacy_admission = (
+            admitted and self.admission is not None and self.proposal is None
+        )
+        if proposed != (self.proposal is not None) and not legacy_admission:
+            raise ValueError(
+                "a proposed queue lifecycle carries the proposal it is based on"
+            )
+        if self.launch_binding is not None:
+            admission = self.admission
+            if not admitted or self.proposal is None or admission is None:
+                raise ValueError("only a proposed admission can carry a launch binding")
+            if self.launch_binding.item_id != self.item_reference.item_id:
+                raise ValueError("a launch binding must name its queue item")
+            if self.launch_binding.proposal_revision != admission.proposal_revision:
+                raise ValueError("a launch binding must name the admitted proposal")
 
-    def admit(self, command: AdmitQueueItem) -> QueueAdmissionOutcome:
-        """The one legal transition this projection owns: OBSERVED to ADMITTED.
+    def plan(self, command: PlanQueueItem) -> QueueProposalOutcome:
+        if command.item_reference != self.item_reference:
+            raise QueueItemReferenceMismatch(
+                "a proposal command must name the item its snapshot was resolved for"
+            )
+        if self.state is QueueItemState.PROPOSED:
+            if self.proposal == command.proposal:
+                return QueueProposalAlreadyCurrent(
+                    self.item_reference, command.proposal, self.revision
+                )
+            return QueueProposalAlreadyDecided(self.item_reference, self.state)
+        if self.state is QueueItemState.ADMITTED:
+            return QueueProposalAlreadyDecided(self.item_reference, self.state)
+        if command.expected_revision != self.revision:
+            return QueueProposalRevisionConflict(
+                command.expected_revision, self.revision
+            )
+        return QueueItemProposed(
+            self.item_reference,
+            command.proposal,
+            QueueProjectionRevision(self.revision.value + 1),
+        )
 
-        Revision-checked so a caller that inspected a stale row is refused
-        rather than silently overwriting a decision it never saw, and
-        idempotent for its own exact admission so a retried command lands as
-        success without a second write.
-        """
-
+    def confirm(self, command: ConfirmQueueProposal) -> QueueAdmissionOutcome:
         if command.item_reference != self.item_reference:
             raise QueueItemReferenceMismatch(
                 "an admission command must name the item its snapshot was resolved for"
@@ -236,17 +453,40 @@ class QueueItemSnapshot:
                 raise QueueItemReferenceMismatch(
                     "an ADMITTED snapshot must carry its admission"
                 )
-            if current == command.admission:
+            if (
+                current.proposal_revision == command.expected_revision
+                and current.rationale == command.rationale
+                and current.authority is command.authority
+            ):
                 return QueueAdmissionAlreadyCurrent(
                     self.item_reference, current, self.revision
                 )
             return QueueAdmissionAlreadyDecided(self.item_reference, current)
+        if self.state is not QueueItemState.PROPOSED or self.proposal is None:
+            return QueueAdmissionRevisionConflict(
+                command.expected_revision, self.revision
+            )
         if command.expected_revision != self.revision:
             return QueueAdmissionRevisionConflict(
                 command.expected_revision, self.revision
             )
+        if (
+            command.authority is QueueDecisionAuthority.AUTOMATION_RULE
+            and self.proposal.automation_disposition
+            is not QueueAutomationDisposition.AUTOMATION_AUTHORIZED
+        ):
+            return QueueAdmissionAuthorityRefused(
+                command.authority,
+                self.proposal.automation_disposition,
+            )
+        admission = QueueAdmission(
+            self.proposal.workflow_lineage_id,
+            command.rationale,
+            command.authority,
+            self.revision,
+        )
         return QueueItemAdmitted(
             self.item_reference,
-            command.admission,
+            admission,
             QueueProjectionRevision(self.revision.value + 1),
         )

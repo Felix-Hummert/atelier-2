@@ -1,6 +1,16 @@
 # Interface status
 
 An HTTP API now projects that durable state under `/atelier/api/v1`. It can
+read the queue through one typed `GET /queue-items` projection across observed,
+proposed, and admitted rows; revise a project's queue capacity policy with a
+CAS-guarded `PUT /projects/{public_project_reference}/queue-policy`; write the
+priority, workflow lineage, and prerequisites the operator will inspect through
+`PUT /queue-proposals`; and confirm exactly that proposal through
+`POST /queue-admissions`. The priority wire shape is `{"rank": n}`. Queue
+responses use the contract's typed state, authority, automation disposition,
+and blocker values. A tracker read failure never drops a durable queue row: the
+resource instead reports `ENRICHMENT_UNAVAILABLE` and leaves its title absent.
+It can
 publish secret-free auth-profile and agent-configuration revisions and list
 both; publish
 exact JSON Schema revisions; publish and

@@ -667,6 +667,26 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Queue item is already admitted",
         "This item is already admitted under a different workflow binding or reason.",
     ),
+    "queue-policy-revision-conflict": ProblemDefinition(
+        409,
+        "Queue policy revision conflict",
+        "Reload the project queue policy and replace its next revision.",
+    ),
+    "queue-proposal-revision-conflict": ProblemDefinition(
+        409,
+        "Queue proposal revision conflict",
+        "Reload the queue item and propose against the revision inspected.",
+    ),
+    "queue-proposal-already-decided": ProblemDefinition(
+        409,
+        "Queue proposal already decided",
+        "An admitted or differently proposed item cannot be silently replanned.",
+    ),
+    "queue-proposal-refused": ProblemDefinition(
+        422,
+        "Queue proposal refused",
+        "Use existing project-local prerequisites without a dependency cycle.",
+    ),
     "route-not-found": ProblemDefinition(
         404, "Route not found", ROUTE_NOT_FOUND_ACTION + "."
     ),

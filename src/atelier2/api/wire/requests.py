@@ -36,7 +36,9 @@ from atelier2.contracts.host_configuration import (
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
 )
 from atelier2.contracts.queue_projection import (
+    MAXIMUM_QUEUE_ACTIVE_RUNS,
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
+    MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS,
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
 )
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
@@ -85,25 +87,45 @@ class AdmitCatalogMemberRequestResource(ApiModel):
     activated_at: str = Field(pattern=CATALOG_ACTIVATED_AT_PATTERN)
 
 
-class AdmitQueueItemRequestResource(ApiModel):
-    """Admit one observed work item into the queue under one workflow binding.
-
-    The item is named by its project and its tracker reference, the pair the
-    core derives one durable identity from; the caller never states that id.
-    `expected_revision` is the revision the caller inspected, so a stale
-    admission is refused rather than silently overwriting a decision it never
-    saw -- a freshly observed item is at revision 0.
-    """
+class ConfirmQueueProposalRequestResource(ApiModel):
+    """Confirm the exact proposal revision the operator inspected."""
 
     project_id: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_ID_CHARACTERS)
     tracker_item_reference: str = Field(
         min_length=1, max_length=MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
     )
-    workflow_lineage_id: str = Field(pattern=SHA256_HASH_PATTERN)
     rationale: str = Field(
         min_length=1, max_length=MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS
     )
     expected_revision: int = Field(ge=0, le=MAX_SIGNED_INT64)
+
+
+class QueuePriorityRankRequestResource(ApiModel):
+    rank: int = Field(ge=1, le=MAX_SIGNED_INT64)
+
+
+class PutQueueProposalRequestResource(ApiModel):
+    project_id: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_ID_CHARACTERS)
+    tracker_item_reference: str = Field(
+        min_length=1, max_length=MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
+    )
+    expected_revision: int = Field(ge=0, le=MAX_SIGNED_INT64)
+    priority: QueuePriorityRankRequestResource
+    workflow_lineage_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    prerequisite_item_ids: tuple[str, ...] = Field(strict=False)
+    automation_disposition: Literal["HUMAN_REQUIRED", "AUTOMATION_AUTHORIZED"]
+    policy_revision: int | None = Field(default=None, ge=1, le=MAX_SIGNED_INT64)
+
+
+class PutQueueProjectPolicyRequestResource(ApiModel):
+    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    expected_revision: int = Field(ge=0, le=MAX_SIGNED_INT64)
+    maximum_active_runs: int = Field(ge=1, le=MAXIMUM_QUEUE_ACTIVE_RUNS)
+    automation_label: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS,
+    )
 
 
 class PublishAuthProfileRevisionRequestResource(ApiModel):

@@ -62,7 +62,10 @@ from atelier2.contracts.node_records_v3 import (
 )
 from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
+    MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS,
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
+    QueueAutomationDisposition,
+    QueueDecisionAuthority,
     QueueItemState,
 )
 from atelier2.contracts.revisions_v3 import RevisionKind
@@ -414,6 +417,10 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "catalog_lineages.kind": _values(RevisionKind),
     "catalog_lineage_retirements.state": _values(CatalogRetirementState),
     "queue_items.state": _values(QueueItemState),
+    "queue_items.decision_authority": _values(QueueDecisionAuthority),
+    "queue_proposal_revisions.automation_disposition": _values(
+        QueueAutomationDisposition
+    ),
     "host_project_source_connection_revisions.auth_method": _values(
         SourceConnectionAuthMethod
     ),
@@ -430,6 +437,7 @@ UNDECLARED_VOCABULARIES: frozenset[str] = frozenset(
         "agent_attempts.replacement",
         "agent_attempts.runner_evidence_acceptance_phase",
         "agent_attempts.state",
+        "queue_items.decision_authority",
         "run_events.attempt_ordinal",
         "run_events.replacement",
     }
@@ -568,6 +576,7 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "node_receipts_v3.receipt_hash",
         "queue_items.item_id",
         "queue_items.workflow_lineage_id",
+        "queue_launch_bindings.workflow_revision_hash",
     }
 )
 
@@ -629,6 +638,10 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "queue_items.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
     "queue_items.tracker_item_reference": MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
     "queue_items.admission_rationale": MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
+    "queue_project_policy_revisions.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "queue_project_policy_revisions.automation_label": (
+        MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS
+    ),
 }
 
 
