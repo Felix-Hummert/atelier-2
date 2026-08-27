@@ -327,6 +327,12 @@ class _FailingAttemptStore:
         )
         return AgentAttemptFailed(failed)
 
+    def complete_agent_refusal(
+        self, execution: AgentAttemptExecution, reason: str
+    ) -> AgentAttemptFailed:
+        del reason
+        return self.complete_known_failure(execution, ProcessExitSignature(0, b""))
+
     def load(self, attempt_id: AgentAttemptId) -> AgentAttempt:
         del attempt_id
         return self._attempt
