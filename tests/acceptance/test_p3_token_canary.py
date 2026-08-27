@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
+import sqlite3
 import subprocess
 import sys
 from collections.abc import Mapping
+from contextlib import closing
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,7 +17,7 @@ from pathlib import Path
 from threading import Thread
 from types import TracebackType
 from typing import Self, cast
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import sqlalchemy as sa
 from dbos import DBOS
@@ -84,6 +87,8 @@ class RecordingRunner:
     trace_directory: Path
     calls: list[tuple[tuple[str, ...], Mapping[str, str]]] = field(default_factory=list)
     child_process_records: list[bytes] = field(default_factory=list)
+    standard_output_records: list[bytes] = field(default_factory=list)
+    standard_error_records: list[bytes] = field(default_factory=list)
 
     def run(
         self,
@@ -116,6 +121,8 @@ class RecordingRunner:
             check=False,
         )
         self.child_process_records.append(trace.read_bytes())
+        self.standard_output_records.append(completed.stdout)
+        self.standard_error_records.append(completed.stderr)
         return GitCommandResult(
             completed.returncode,
             completed.stdout,
@@ -226,10 +233,101 @@ class GitHttpRemote:
         return f"http://{host}:{port}/remote.git"
 
 
+def _canary_encodings(canary: str) -> Mapping[str, bytes]:
+    plaintext = canary.encode("utf-8")
+    basic_credentials = base64.b64encode(b"x-access-token:" + plaintext)
+    return {
+        "plaintext": plaintext,
+        "base64 credentials": basic_credentials,
+        "Authorization Basic value": b"Basic " + basic_credentials,
+        "URL encoded": quote(canary, safe="").encode("ascii"),
+        "percent escaped": b"".join(f"%{byte:02X}".encode() for byte in plaintext),
+        "hex": plaintext.hex().encode("ascii"),
+    }
+
+
+def _joined_text(values: tuple[str, ...]) -> bytes:
+    return b"\0".join(value.encode("utf-8") for value in values)
+
+
+def _runner_sinks(runner: RecordingRunner) -> Mapping[str, bytes]:
+    arguments = tuple(
+        argument
+        for call_arguments, _environment in runner.calls
+        for argument in call_arguments
+    )
+    environment = tuple(
+        f"{name}={value}"
+        for _arguments, call_environment in runner.calls
+        for name, value in call_environment.items()
+    )
+    return {
+        "runner argv": _joined_text(arguments),
+        "runner environment": _joined_text(environment),
+        "git stdout": b"".join(runner.standard_output_records),
+        "git stderr": b"".join(runner.standard_error_records),
+        "strace execve": b"".join(runner.child_process_records),
+    }
+
+
+def _sqlite_value_bytes(value: object) -> bytes:
+    if value is None:
+        return b""
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, (int, float)):
+        return str(value).encode("ascii")
+    raise AssertionError(f"unexpected SQLite column type: {type(value).__name__}")
+
+
+def _quoted_sqlite_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _sqlite_sinks(root: Path) -> Mapping[str, bytes]:
+    sinks: dict[str, bytes] = {}
+    for database_path in sorted(root.rglob("*.sqlite")):
+        database_name = database_path.relative_to(root).as_posix()
+        with closing(sqlite3.connect(database_path)) as connection:
+            connection.execute("PRAGMA wal_checkpoint(FULL)").fetchone()
+            table_names = tuple(
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+                )
+            )
+            connection.text_factory = bytes
+            for table_name in table_names:
+                rows = connection.execute(
+                    f"SELECT * FROM {_quoted_sqlite_identifier(table_name)}"
+                )
+                sinks[f"{database_name} table {table_name}"] = b"\0".join(
+                    _sqlite_value_bytes(value) for row in rows for value in row
+                )
+
+            for suffix in ("", "-wal", "-shm"):
+                storage_path = Path(f"{database_path}{suffix}")
+                sinks[f"{database_name}{suffix} file"] = (
+                    storage_path.read_bytes() if storage_path.is_file() else b""
+                )
+    return sinks
+
+
+def _assert_canary_absent_from_sinks(
+    encodings: Mapping[str, bytes], sinks: Mapping[str, bytes]
+) -> None:
+    for sink_name, contents in sinks.items():
+        for encoding_name, encoded_canary in encodings.items():
+            assert encoded_canary not in contents, (
+                f"{encoding_name} canary leaked to {sink_name}"
+            )
+
+
 def test_token_canary_is_absent_from_durable_and_process_surfaces(
     tmp_path: Path, caplog: LogCaptureFixture
 ) -> None:
-    canary = "p3-token-canary-never-copy"
+    canary = "p3-token+canary/never=copy"
+    canary_encodings = _canary_encodings(canary)
     token_file = tmp_path / "token"
     token_file.write_text(canary, encoding="utf-8")
     project, remote, _base = _repositories(tmp_path)
@@ -247,9 +345,7 @@ def test_token_canary_is_absent_from_durable_and_process_surfaces(
 
     with GitHttpRemote(
         tmp_path,
-        bytes.fromhex(
-            "2f98f89bf9c5691df1d4f68c99528b1491989c25211801822bb80491480c7e3f"
-        ),
+        hashlib.sha256(canary_encodings["Authorization Basic value"]).digest(),
     ) as http_remote:
         push = GitTransportEffectAdapterFactory(
             tmp_path / CANDIDATE_STORE_DIRECTORY_NAME,
@@ -395,8 +491,6 @@ def test_token_canary_is_absent_from_durable_and_process_surfaces(
                 _git(remote, "rev-parse", push_result.full_ref)
                 == push_receipts[0]["effect_id"]
             )
-            assert canary.encode() not in repr(receipt_rows).encode()
-            assert canary.encode() not in repr(event_rows).encode()
         finally:
             runtime.close()
 
@@ -407,8 +501,15 @@ def test_token_canary_is_absent_from_durable_and_process_surfaces(
         if b'execve("/bin/sh"' in line and b"username=x-access-token" in line
     )
     assert helper_process_records
-    assert canary.encode() not in repr(runner.calls).encode()
-    assert canary.encode() not in b"".join(runner.child_process_records)
-    assert canary.encode() not in b"".join(helper_process_records)
-    assert canary not in caplog.text
-    assert canary.encode() not in repr(caplog.records).encode()
+    sinks = {
+        **_runner_sinks(runner),
+        "credential helper execve": b"\n".join(helper_process_records),
+        "captured logs": b"\n".join(
+            (
+                caplog.text.encode("utf-8"),
+                *(record.getMessage().encode("utf-8") for record in caplog.records),
+            )
+        ),
+        **_sqlite_sinks(tmp_path),
+    }
+    _assert_canary_absent_from_sinks(canary_encodings, sinks)
