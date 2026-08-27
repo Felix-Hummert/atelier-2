@@ -17,7 +17,9 @@ import {
   workflowNodePreviewSchema,
   workflowRevisionDetailSchema,
   catalogNameResolutionSchema,
-  occupancyRevisionSchema,
+  modelRegistryRevisionSchema,
+  projectModelDefaultsRevisionSchema,
+  projectModelResolutionSchema,
   projectListSchema,
   projectResourceSchema,
   workflowRevisionSummarySchema
@@ -269,12 +271,17 @@ describe("the served vocabulary", () => {
     ).toEqual({ items: [{ public_project_reference: "project1.dGVhbS9yZWQ" }] });
   });
 
-  it("decodes exactly the project occupancy resource the server serves", () => {
-    const resource = servedDocument.components.schemas.OccupancyRevisionResource;
-
-    expect(Object.keys(occupancyRevisionSchema.shape).sort()).toEqual(
-      Object.keys(resource?.properties ?? {}).sort()
-    );
+  it("decodes exactly the model configuration resources the server serves", () => {
+    for (const [schema, resourceName] of [
+      [modelRegistryRevisionSchema, "ModelRegistryRevisionResource"],
+      [projectModelDefaultsRevisionSchema, "ProjectModelDefaultsRevisionResource"],
+      [projectModelResolutionSchema, "ProjectModelResolutionResource"]
+    ] as const) {
+      const resource = servedDocument.components.schemas[resourceName];
+      expect(Object.keys(schema.shape).sort()).toEqual(
+        Object.keys(resource?.properties ?? {}).sort()
+      );
+    }
   });
 
   it("decodes exactly the fields the agent-configuration listing serves", () => {

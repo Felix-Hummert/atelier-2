@@ -16,10 +16,18 @@ export function cockpitApiStub(overrides: Partial<CockpitApi> = {}): CockpitApi 
     listRuns: vi.fn(async () => ({ items: [], next_after: null })),
     listProjects: vi.fn(async () => ({ items: [] })),
     getProjectSourceConnection: vi.fn(),
-    getProjectOccupancy: vi.fn(),
-    putProjectOccupancy: vi.fn(),
+    getModelRegistry: vi.fn(),
+    putModelRegistry: vi.fn(),
+    validateModelRegistryEntry: vi.fn(),
+    getProjectModelDefaults: vi.fn(),
+    putProjectModelDefaults: vi.fn(),
+    resolveProjectModels: vi.fn(),
     listWorkflowRevisions: vi.fn(async () => ({ items: [], next_after_revision_hash: null })),
     listAgentConfigurationRevisions: vi.fn(async () => ({
+      items: [],
+      next_after_revision_hash: null
+    })),
+    listAuthProfileRevisions: vi.fn(async () => ({
       items: [],
       next_after_revision_hash: null
     })),

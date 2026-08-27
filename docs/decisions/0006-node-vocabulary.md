@@ -315,6 +315,7 @@ alike — refused with no dependency, optional with one, required with several.
 | `id`, `type` | R | R | R | R | R |
 | `depends_on`, `join` | O | O | O | O | O |
 | `role`, `mode`, `instruction` | R | — | — | — | — |
+| `difficulty`, `kind`, `family_differs_from`, `model` | O | — | — | — | — |
 | `profile`, `skills`, `tools`, `policy` | O | — | — | — | — |
 | `operation` | — | R | — | — | R |
 | `workflow` | — | — | — | R | — |
@@ -342,6 +343,8 @@ unexecutable: no V3 runtime owns retry for it.
   type: agent
   role: builder
   mode: headless
+  difficulty: 2
+  kind: build
   instruction: |
     Implement the bound story.
   profile: {ref: "<profile id>", revision: "<profile revision id>"}
@@ -542,12 +545,16 @@ accountable operator command resolves.
 | `profile` | reusable provider-neutral **task method** and house output conventions; never the worker's system identity | the document, revision-pinned | at binding like every versioned reference — an unresolved profile revision refuses. Never at executability: resolved text needs no execution capability |
 | `skills` | published **capability bundles** an adapter installs into a provider session: a named procedure and the tool grants it needs | the document, revision-pinned, attested per adapter | at binding, and at executability too — a skill the bound adapter does not attest in `skill_installation`, or a tool grant it carries that is unattested in `tool_grants`, refuses the run naming it |
 
-`role` keeps its V2 meaning exactly: the portable document names the logical role
-and the run-start command binds every graph role to exactly one immutable
-agent-configuration revision and no others. The document must not pin that
-revision, because the same published chain has to run on a different provider
-matrix without becoming a different document. Two nodes needing two configurations
-name two roles.
+`role` keeps its V2 meaning: the document names the logical role and run start
+resolves every graph role to at most one immutable agent-configuration revision.
+The agent node may add `difficulty: 1 | 2 | 3` (absent means `2`),
+`kind: build | review` (absent means `build`),
+`family_differs_from: <declared role>`, and an exact `model` pin. Repeated nodes
+for one role must declare the same values. A family rule may name neither its own
+role nor an undeclared role. The workflow pin is the one intentional exception to
+provider neutrality; [ADR 0018](0018-plugin-intake-and-neutral-roles.md) owns the
+resolution precedence and project model configuration. Two nodes needing two
+independently resolved configurations name two roles.
 
 A Markdown **agent definition is deliberately absent from this reference table**.
 It owns reusable worker identity and stable system behaviour; the node's

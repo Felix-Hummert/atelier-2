@@ -67,6 +67,7 @@ from atelier2.ports.published_revisions import (
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
+    publish_checked_model_registry,
 )
 from tests.scenarios.api import durable_asgi_app
 from tests.scenarios.workflows import ANY_JSON_SCHEMA, declared_output
@@ -163,6 +164,9 @@ def publish_one_agent(runtime: DbosRuntime) -> tuple[str, str]:
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),
         AgentConfigurationRevisionCreated,
+    )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("exact"), (configuration,)
     )
     workflow = WorkflowRevision(
         b"""format_version: 3

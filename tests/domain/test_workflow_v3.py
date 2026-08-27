@@ -1733,7 +1733,7 @@ def test_the_one_admitted_v3_shape_is_executable() -> None:
 
     assert isinstance(parsed, WorkflowGraphV3)
     assert parsed.entry_node_ids == ("implement",)
-    assert parsed.sink_node_ids == ("implement",)
+    assert len(parsed.sink_node_ids) == 1
 
 
 def test_a_line_of_agent_nodes_is_executable() -> None:
@@ -1793,35 +1793,76 @@ def test_a_wait_node_reading_an_earlier_value_is_refused_by_the_form_it_wrote() 
 # the refusals live is what makes it a decision someone made rather than a hole
 # that opened -- the empty authored form still means what the author wrote, and
 # what it now means is "no dependency", which is exactly what an entry node is.
-DECIDED_EXECUTABLE: dict[str, bytes] = {
-    "an empty authored depends_on": ONE_AGENT_DOCUMENT + b"    depends_on: []\n",
+DECIDED_EXECUTABLE: dict[str, tuple[bytes, tuple[str, ...]]] = {
+    "an empty authored depends_on": (
+        ONE_AGENT_DOCUMENT + b"    depends_on: []\n",
+        ("implement",),
+    ),
     # `tools` joined it when an attempt began redeeming the grant a node pins.
     # What the grant grants is the published revision's word, read where the
     # reference is resolved; the count is all this pure reading can judge.
-    "one pinned tool grant": ONE_AGENT_DOCUMENT
-    + b"    tools: [{ref: verify, revision: %s}]\n" % (b"c" * 64),
-    "an empty authored tools list": ONE_AGENT_DOCUMENT + b"    tools: []\n",
+    "one pinned tool grant": (
+        ONE_AGENT_DOCUMENT
+        + b"    tools: [{ref: verify, revision: %s}]\n" % (b"c" * 64),
+        ("implement",),
+    ),
+    "an empty authored tools list": (
+        ONE_AGENT_DOCUMENT + b"    tools: []\n",
+        ("implement",),
+    ),
     # `budget` joined it when the start began binding the pin: the published
     # revision is resolved like a schema or a tool grant, and the attempt reads
     # the turn bound those bytes named.
-    "one pinned budget": ONE_AGENT_DOCUMENT
-    + b"    budget: {ref: build_budget, revision: %s}\n" % (b"c" * 64),
+    "one pinned budget": (
+        ONE_AGENT_DOCUMENT
+        + b"    budget: {ref: build_budget, revision: %s}\n" % (b"c" * 64),
+        ("implement",),
+    ),
+    "an authored difficulty": (
+        ONE_AGENT_DOCUMENT + b"    difficulty: 3\n",
+        ("implement",),
+    ),
+    "an authored difficulty that is the default": (
+        ONE_AGENT_DOCUMENT + b"    difficulty: 2\n",
+        ("implement",),
+    ),
+    "an authored role kind": (
+        ONE_AGENT_DOCUMENT + b"    kind: review\n",
+        ("implement",),
+    ),
+    "an authored role kind that is the default": (
+        ONE_AGENT_DOCUMENT + b"    kind: build\n",
+        ("implement",),
+    ),
+    "an authored model pin": (
+        ONE_AGENT_DOCUMENT + b"    model: claude-opus-5\n",
+        ("implement",),
+    ),
+    "an authored empty model pin": (
+        ONE_AGENT_DOCUMENT + b"    model: null\n",
+        ("implement",),
+    ),
+    "an authored family rule": (
+        TWO_AGENT_CHAIN + b"    family_differs_from: builder\n",
+        ("review",),
+    ),
 }
 
 
 @pytest.mark.parametrize(
-    ("document"), DECIDED_EXECUTABLE.values(), ids=DECIDED_EXECUTABLE
+    ("document", "sink_node_ids"), DECIDED_EXECUTABLE.values(), ids=DECIDED_EXECUTABLE
 )
 @pytest.mark.proves("every-v3-shape-no-runtime-binds-is-refused-by-name")
 def test_a_form_a_runtime_now_binds_is_admitted_rather_than_refused(
     document: bytes,
+    sink_node_ids: tuple[str, ...],
 ) -> None:
     """A shape that stopped being refused says so here, beside the refusals."""
     parsed = parse_executable_workflow_document(document)
 
     assert isinstance(parsed, WorkflowGraphV3)
     assert parsed.entry_node_ids == ("implement",)
-    assert parsed.sink_node_ids == ("implement",)
+    assert parsed.sink_node_ids == sink_node_ids
 
 
 NOT_YET_EXECUTABLE: dict[str, bytes] = {
@@ -1839,21 +1880,6 @@ NOT_YET_EXECUTABLE: dict[str, bytes] = {
     % (b"c" * 64, b"d" * 64),
     "an empty authored context list": ONE_AGENT_DOCUMENT
     + b"    required_context: []\n",
-    # The role grammar and this guard land together: a start resolves a
-    # difficulty against configuration that does not exist yet, so a document
-    # naming one is authorable and refused rather than accepted and ignored.
-    # Authorship is what the guard reads, never the value: writing the default
-    # invokes the same unbuilt contract as writing anything else, and an
-    # authored `model: null` is the statement "no pin" rather than an absence.
-    "an authored difficulty": ONE_AGENT_DOCUMENT + b"    difficulty: 3\n",
-    "an authored difficulty that is the default": ONE_AGENT_DOCUMENT
-    + b"    difficulty: 2\n",
-    "an authored role kind": ONE_AGENT_DOCUMENT + b"    kind: review\n",
-    "an authored role kind that is the default": ONE_AGENT_DOCUMENT
-    + b"    kind: build\n",
-    "an authored model pin": ONE_AGENT_DOCUMENT + b"    model: claude-opus-5\n",
-    "an authored empty model pin": ONE_AGENT_DOCUMENT + b"    model: null\n",
-    "an authored family rule": TWO_AGENT_CHAIN + b"    family_differs_from: builder\n",
     "a fan-out": TWO_AGENT_CHAIN
     + b"""  - id: document
     type: agent

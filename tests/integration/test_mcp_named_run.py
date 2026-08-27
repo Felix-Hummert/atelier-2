@@ -99,7 +99,7 @@ def runtime(
 def served_runtime(
     tmp_path: Path,
 ) -> Iterator[tuple[DbosRuntime, RecordingAgentExecutorFactoryV2]]:
-    """The same runtime, serving one project whose occupancy a start may read."""
+    """The same runtime, serving one project whose model defaults a start may read."""
     project_root = tmp_path / "project"
     git_project(project_root, declaring_verification(["true"]))
     yield from _started_runtime(
@@ -236,28 +236,62 @@ def publish_named_line(app: FastAPI, document: bytes = DOCUMENT) -> PublishedLin
         },
     )
     assert configuration.status_code == 201, configuration.text
+    registry = api.put(
+        f"{API_PREFIX}/model-registries/exact",
+        json={
+            "revision_number": 1,
+            "entries": [
+                {
+                    "model_id": "opus",
+                    "agent_configuration_revision_hash": configuration.json()[
+                        "agent_configuration_revision_hash"
+                    ],
+                }
+            ],
+        },
+    )
+    assert registry.status_code in (200, 201), registry.text
     return PublishedLine(
         str(named.json()["lineage_id"]),
         str(configuration.json()["agent_configuration_revision_hash"]),
     )
 
 
-def occupy(app: FastAPI, line: PublishedLine, role: str) -> None:
-    """Cast this role on the served project, as the console's occupancy does."""
+def configure_project_model_default(app: FastAPI, line: PublishedLine) -> None:
+    """Choose the published exact model as the served project's level-2 default."""
     project = encode_public_project_reference(SERVED_PROJECT)
-    occupied = TestClient(app).put(
-        f"{API_PREFIX}/projects/{project}/occupancy/{line.lineage_id}",
+    api = TestClient(app)
+    registry = api.put(
+        f"{API_PREFIX}/model-registries/exact",
         json={
             "revision_number": 1,
-            "bindings": [
+            "entries": [
                 {
-                    "role": role,
+                    "model_id": "opus",
                     "agent_configuration_revision_hash": line.configuration_hash,
                 }
             ],
         },
     )
-    assert occupied.status_code == 201, occupied.text
+    assert registry.status_code in (200, 201), registry.text
+    defaults = api.put(
+        f"{API_PREFIX}/projects/{project}/model-defaults",
+        json={
+            "revision_number": 1,
+            "defaults": [
+                {
+                    "difficulty": 2,
+                    "model_registry_revision_hash": registry.json()[
+                        "model_registry_revision_hash"
+                    ],
+                    "provider_id": "exact",
+                    "model_id": "opus",
+                    "agent_configuration_revision_hash": line.configuration_hash,
+                }
+            ],
+        },
+    )
+    assert defaults.status_code == 201, defaults.text
 
 
 def wait_for_terminal(client: StdioMcpSession, reference: str) -> dict[str, object]:
@@ -383,20 +417,20 @@ def test_a_stdio_client_publishes_an_artifact_starts_by_address_and_reads_termin
 
 
 @pytest.mark.proves("mcp-and-http-never-diverge")
-def test_a_stdio_start_without_bindings_runs_on_the_projects_occupancy(
+def test_a_stdio_start_without_bindings_runs_on_the_projects_model_default(
     served_runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
 ) -> None:
-    """The conductor's start names no binding; the served project's occupancy does.
+    """The conductor names no binding; the served project's level default does.
 
     Both doors are one start: the MCP tool posts the body the HTTP door takes,
-    and the starter casts the roles nobody bound from the occupancy (#680). A
+    and the starter resolves roles nobody bound from project configuration. A
     revision the described listing calls executable therefore starts from the
     stdio door exactly as it does from the console (#701).
     """
     started_runtime, _recording = served_runtime
     app = application(started_runtime)
     line = publish_named_line(app)
-    occupy(app, line, "builder")
+    configure_project_model_default(app, line)
 
     with live_server(app) as service_url:
         client = StdioMcpSession(service_url)

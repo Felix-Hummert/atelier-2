@@ -30,22 +30,43 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import sqlalchemy as sa
 from fastapi.testclient import TestClient
 from httpx import Response
 
+from atelier2.adapters.dbos.host_configuration import publish_project_root_revision
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.schema import (
+    host_model_registry_revisions,
+    host_project_model_defaults_revisions,
+)
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.api.openapi import API_PREFIX
-from atelier2.api.references import encode_canonical_base64
+from atelier2.api.openapi import API_PREFIX, MODEL_REGISTRY_PATH
+from atelier2.api.references import (
+    encode_canonical_base64,
+    encode_public_project_reference,
+)
+from atelier2.contracts.agents import AgentConfigurationRevision, AuthProfileRevision
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.host_configuration import (
+    ProjectId,
+    ProjectRootRevision,
+    ProviderModelCheck,
+)
 from atelier2.contracts.run_projections import NodeState
 from atelier2.contracts.runs import RunState
+from atelier2.ports.host_configuration import (
+    ProviderModelDiscoveryResult,
+    ProviderModelDiscoveryUnsupported,
+    ProviderModelInspector,
+    ProviderModelValidationResult,
+)
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
 )
-from tests.scenarios.api import durable_api_client
+from tests.scenarios.api import ExactConfiguredModelInspector, durable_api_client
 
 WORKFLOW_PATH = API_PREFIX + "/workflow-revisions"
 LINEAGE_PATH = API_PREFIX + "/workflow-lineages"
@@ -54,6 +75,9 @@ ARTIFACT_PATH = API_PREFIX + "/artifacts"
 AUTH_PROFILE_PATH = API_PREFIX + "/auth-profile-revisions"
 AGENT_CONFIGURATION_PATH = API_PREFIX + "/agent-configuration-revisions"
 RUN_PATH = API_PREFIX + "/runs"
+PROJECT_MODEL_DEFAULTS_PATH = (
+    API_PREFIX + "/projects/{public_project_reference}/model-defaults"
+)
 
 ANY_JSON = b"true"
 """The schema an order and an agent output pin here: it admits every JSON value.
@@ -126,7 +150,7 @@ nodes:
 
 
 @pytest.fixture
-def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
+def runtime(tmp_path: Path, dbos_logging_isolation: None) -> Iterator[DbosRuntime]:
     """A runtime whose agents succeed, so the line reaches the person and ends."""
 
     started = DbosRuntime(
@@ -199,6 +223,91 @@ def node_owing_a_move(run: Mapping[str, Any]) -> Mapping[str, Any]:
     ]
     assert len(owing) == 1, run["node_rail"]
     return owing[0]
+
+
+def model_configuration_revision_counts(runtime: DbosRuntime) -> tuple[int, int]:
+    with runtime.engine.connect() as connection:
+        return (
+            int(
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(
+                        host_model_registry_revisions
+                    )
+                )
+                or 0
+            ),
+            int(
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(
+                        host_project_model_defaults_revisions
+                    )
+                )
+                or 0
+            ),
+        )
+
+
+def configured_model_api(
+    runtime: DbosRuntime,
+    project_root: Path,
+    inspector: ProviderModelInspector | None = None,
+) -> tuple[TestClient, str, dict[str, Any]]:
+    project = ProjectId("model-configuration-contract")
+    publish_project_root_revision(
+        runtime.engine, ProjectRootRevision(project, 1, project_root)
+    )
+    client = durable_api_client(
+        runtime,
+        served_project_id=project,
+        model_registry_inspector=inspector,
+    )
+    auth_profile = answered(
+        client.post(
+            AUTH_PROFILE_PATH,
+            json={
+                "profile_id": "model-configuration",
+                "revision_number": 1,
+                "provider_id": "exact",
+                "auth_mode": "subscription",
+            },
+        ),
+        201,
+    )
+    configuration = answered(
+        client.post(
+            AGENT_CONFIGURATION_PATH,
+            json={
+                "model": "opus",
+                "executor_revision": "exact/v1",
+                **carried(auth_profile, "auth_profile_revision_hash"),
+            },
+        ),
+        201,
+    )
+    return client, encode_public_project_reference(project), configuration
+
+
+class FirstUseModelInspector:
+    def __init__(self, validation: ProviderModelCheck) -> None:
+        self.validation = validation
+        self.validation_calls = 0
+
+    def discover_models(
+        self,
+        configuration: AgentConfigurationRevision,
+        auth_profile: AuthProfileRevision,
+    ) -> ProviderModelDiscoveryResult:
+        del configuration, auth_profile
+        return ProviderModelDiscoveryUnsupported()
+
+    def validate_model(
+        self,
+        configuration: AgentConfigurationRevision,
+        auth_profile: AuthProfileRevision,
+    ) -> ProviderModelValidationResult:
+        del configuration, auth_profile
+        self.validation_calls += 1
+        return self.validation
 
 
 @pytest.mark.proves("a-consumer-writes-every-request-out-of-the-answers-it-read")
@@ -294,6 +403,22 @@ def test_a_consumer_drives_four_round_trips_without_renaming_a_single_value(
         ),
         201,
     )
+    registered = answered(
+        client.put(
+            MODEL_REGISTRY_PATH.replace("{provider_id}", "exact"),
+            json={
+                "revision_number": 1,
+                "entries": [
+                    {
+                        "model_id": "opus",
+                        **carried(configuration, "agent_configuration_revision_hash"),
+                    }
+                ],
+            },
+        ),
+        201,
+    )
+    assert registered["provider_id"] == "exact"
 
     # Round-trip 4: material is published by its bytes and ordered by the
     # address that publication answered with.
@@ -366,3 +491,300 @@ def test_a_consumer_drives_four_round_trips_without_renaming_a_single_value(
     assert [node["state"] for node in ended["node_rail"]] == [
         NodeState.SUCCEEDED.value
     ] * 3
+
+
+@pytest.mark.parametrize(
+    ("configuration_hash", "model_id"),
+    (
+        pytest.param("0" * 64, "opus", id="missing-configuration"),
+        pytest.param(None, "other", id="mismatched-model"),
+    ),
+)
+def test_model_registry_refuses_missing_or_mismatched_configuration_without_a_write(
+    runtime: DbosRuntime,
+    tmp_path: Path,
+    configuration_hash: str | None,
+    model_id: str,
+) -> None:
+    client, _project_reference, configuration = configured_model_api(runtime, tmp_path)
+    before = model_configuration_revision_counts(runtime)
+
+    response = client.put(
+        MODEL_REGISTRY_PATH.replace("{provider_id}", "exact"),
+        json={
+            "revision_number": 1,
+            "entries": [
+                {
+                    "model_id": model_id,
+                    "agent_configuration_revision_hash": (
+                        configuration["agent_configuration_revision_hash"]
+                        if configuration_hash is None
+                        else configuration_hash
+                    ),
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["type"].endswith(":invalid-request")
+    assert model_configuration_revision_counts(runtime) == before
+
+
+@pytest.mark.parametrize(
+    ("validation", "expected_check", "defaults_status"),
+    (
+        (ProviderModelCheck.CHECKED, "checked", 201),
+        (ProviderModelCheck.UNKNOWN_AT_PROVIDER, "unknown-at-provider", 422),
+    ),
+)
+def test_operator_model_requires_a_server_validation_revision_before_use(
+    runtime: DbosRuntime,
+    tmp_path: Path,
+    validation: ProviderModelCheck,
+    expected_check: str,
+    defaults_status: int,
+) -> None:
+    inspector = FirstUseModelInspector(validation)
+    client, project_reference, configuration = configured_model_api(
+        runtime, tmp_path, inspector
+    )
+    configuration_hash = configuration["agent_configuration_revision_hash"]
+    registry_path = MODEL_REGISTRY_PATH.replace("{provider_id}", "exact")
+    first = answered(
+        client.put(
+            registry_path,
+            json={
+                "revision_number": 1,
+                "entries": [
+                    {
+                        "model_id": "opus",
+                        "agent_configuration_revision_hash": configuration_hash,
+                    }
+                ],
+            },
+        ),
+        201,
+    )
+    assert first["entries"] == [
+        {
+            "model_id": "opus",
+            "agent_configuration_revision_hash": configuration_hash,
+            "source": "operator",
+            "provider_check": "not-checked",
+        }
+    ]
+
+    forged = client.put(
+        registry_path,
+        json={
+            "revision_number": 2,
+            "entries": [
+                {
+                    "model_id": "opus",
+                    "agent_configuration_revision_hash": configuration_hash,
+                    "source": "discovered",
+                    "provider_check": "checked",
+                }
+            ],
+        },
+    )
+    assert forged.status_code == 422
+
+    defaults_path = PROJECT_MODEL_DEFAULTS_PATH.replace(
+        "{public_project_reference}", project_reference
+    )
+    unchecked_default = {
+        "difficulty": 2,
+        "model_registry_revision_hash": first["model_registry_revision_hash"],
+        "provider_id": "exact",
+        "model_id": "opus",
+        "agent_configuration_revision_hash": configuration_hash,
+    }
+    assert (
+        client.put(
+            defaults_path,
+            json={"revision_number": 1, "defaults": [unchecked_default]},
+        ).status_code
+        == 422
+    )
+
+    validated = answered(
+        client.post(
+            registry_path + "/validations",
+            json={"agent_configuration_revision_hash": configuration_hash},
+        ),
+        201,
+    )
+    assert validated["revision_number"] == 2
+    assert validated["entries"][0]["provider_check"] == expected_check
+    assert inspector.validation_calls == 1
+    retry = answered(
+        client.post(
+            registry_path + "/validations",
+            json={"agent_configuration_revision_hash": configuration_hash},
+        ),
+        200,
+    )
+    assert retry == validated
+    assert inspector.validation_calls == 1
+
+    checked_default = {
+        **unchecked_default,
+        "model_registry_revision_hash": validated["model_registry_revision_hash"],
+    }
+    response = client.put(
+        defaults_path,
+        json={"revision_number": 1, "defaults": [checked_default]},
+    )
+    assert response.status_code == defaults_status, response.text
+
+
+@pytest.mark.parametrize("tuple_kind", ("missing", "mismatched", "foreign"))
+def test_project_defaults_refuse_invalid_registry_tuples_without_a_write(
+    runtime: DbosRuntime, tmp_path: Path, tuple_kind: str
+) -> None:
+    client, project_reference, configuration = configured_model_api(
+        runtime, tmp_path, ExactConfiguredModelInspector()
+    )
+    entry = {
+        "model_id": "opus",
+        "agent_configuration_revision_hash": configuration[
+            "agent_configuration_revision_hash"
+        ],
+    }
+    answered(
+        client.put(
+            MODEL_REGISTRY_PATH.replace("{provider_id}", "exact"),
+            json={"revision_number": 1, "entries": [entry]},
+        ),
+        201,
+    )
+    current = answered(
+        client.put(
+            MODEL_REGISTRY_PATH.replace("{provider_id}", "exact"),
+            json={"revision_number": 2, "entries": [entry]},
+        ),
+        201,
+    )
+    default = {
+        "difficulty": 2,
+        "model_registry_revision_hash": current["model_registry_revision_hash"],
+        "provider_id": "exact",
+        "model_id": "opus",
+        "agent_configuration_revision_hash": configuration[
+            "agent_configuration_revision_hash"
+        ],
+    }
+    if tuple_kind == "missing":
+        default["model_registry_revision_hash"] = "0" * 64
+    elif tuple_kind == "mismatched":
+        default["model_id"] = "other"
+    elif tuple_kind == "foreign":
+        default["provider_id"] = "foreign"
+    else:
+        raise AssertionError(f"unknown tuple kind {tuple_kind!r}")
+    before = model_configuration_revision_counts(runtime)
+
+    response = client.put(
+        PROJECT_MODEL_DEFAULTS_PATH.replace(
+            "{public_project_reference}", project_reference
+        ),
+        json={"revision_number": 1, "defaults": [default]},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["type"].endswith(":invalid-request")
+    assert model_configuration_revision_counts(runtime) == before
+
+
+def test_a_saved_default_survives_a_registry_append_when_setting_its_sibling(
+    runtime: DbosRuntime, tmp_path: Path
+) -> None:
+    client, project_reference, configuration = configured_model_api(
+        runtime, tmp_path, ExactConfiguredModelInspector()
+    )
+    registry_path = MODEL_REGISTRY_PATH.replace("{provider_id}", "exact")
+    first_registry = answered(
+        client.put(
+            registry_path,
+            json={
+                "revision_number": 1,
+                "entries": [
+                    {
+                        "model_id": "opus",
+                        **carried(configuration, "agent_configuration_revision_hash"),
+                    }
+                ],
+            },
+        ),
+        201,
+    )
+    difficulty_three = {
+        "difficulty": 3,
+        "model_registry_revision_hash": first_registry["model_registry_revision_hash"],
+        "provider_id": "exact",
+        "model_id": "opus",
+        **carried(configuration, "agent_configuration_revision_hash"),
+    }
+    defaults_path = PROJECT_MODEL_DEFAULTS_PATH.replace(
+        "{public_project_reference}", project_reference
+    )
+    answered(
+        client.put(
+            defaults_path,
+            json={"revision_number": 1, "defaults": [difficulty_three]},
+        ),
+        201,
+    )
+    sibling = answered(
+        client.post(
+            AGENT_CONFIGURATION_PATH,
+            json={
+                "model": "sonnet",
+                "executor_revision": "exact/v1",
+                **carried(configuration, "auth_profile_revision_hash"),
+            },
+        ),
+        201,
+    )
+    latest_registry = answered(
+        client.put(
+            registry_path,
+            json={
+                "revision_number": 2,
+                "entries": [
+                    {
+                        "model_id": "opus",
+                        **carried(configuration, "agent_configuration_revision_hash"),
+                    },
+                    {
+                        "model_id": "sonnet",
+                        **carried(sibling, "agent_configuration_revision_hash"),
+                    },
+                ],
+            },
+        ),
+        201,
+    )
+    difficulty_two = {
+        "difficulty": 2,
+        "model_registry_revision_hash": latest_registry["model_registry_revision_hash"],
+        "provider_id": "exact",
+        "model_id": "sonnet",
+        **carried(sibling, "agent_configuration_revision_hash"),
+    }
+
+    stored = answered(
+        client.put(
+            defaults_path,
+            json={
+                "revision_number": 2,
+                "defaults": [difficulty_three, difficulty_two],
+            },
+        ),
+        201,
+    )
+
+    assert stored["defaults"] == [difficulty_two, difficulty_three]
+    assert answered(client.get(defaults_path), 200) == stored

@@ -46,10 +46,13 @@ from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.host_configuration import (
     MAXIMUM_CONNECTION_ACTOR_CHARACTERS,
     MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS,
+    MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
     MAXIMUM_PROJECT_ID_CHARACTERS,
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
     MAXIMUM_SOURCE_KIND_CHARACTERS,
+    ModelRegistryEntrySource,
+    ProviderModelCheck,
     SourceConnectionAuthMethod,
 )
 from atelier2.contracts.node_records_v3 import (
@@ -408,6 +411,9 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "host_project_source_connection_revisions.auth_method": _values(
         SourceConnectionAuthMethod
     ),
+    "host_model_registry_entries.source": _values(ModelRegistryEntrySource),
+    "host_model_registry_entries.provider_check": _values(ProviderModelCheck),
+    "host_project_model_defaults.difficulty": frozenset({1, 2, 3}),
 }
 
 UNDECLARED_VOCABULARIES: frozenset[str] = frozenset(
@@ -487,10 +493,13 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "auth_profile_revisions.revision_hash",
         "host_project_root_revisions.revision_hash",
         "host_project_source_connection_revisions.revision_hash",
-        "host_occupancy_revisions.revision_hash",
-        "host_occupancy_revisions.lineage_id",
-        "host_occupancy_bindings.revision_hash",
-        "host_occupancy_bindings.agent_configuration_revision_hash",
+        "host_model_registry_revisions.revision_hash",
+        "host_model_registry_entries.revision_hash",
+        "host_model_registry_entries.agent_configuration_revision_hash",
+        "host_project_model_defaults_revisions.revision_hash",
+        "host_project_model_defaults.revision_hash",
+        "host_project_model_defaults.model_registry_revision_hash",
+        "host_project_model_defaults.agent_configuration_revision_hash",
         "context_packages_v3.package_hash",
         "node_execution_requests_v3.context_package_hash",
         "node_execution_requests_v3.node_execution_id",
@@ -577,8 +586,12 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "host_project_source_connection_revisions.connected_by": (
         MAXIMUM_CONNECTION_ACTOR_CHARACTERS
     ),
-    "host_occupancy_revisions.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
-    "host_occupancy_bindings.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "host_model_registry_revisions.provider_id": PROVIDER_ID_BOUND,
+    "host_model_registry_entries.provider_id": PROVIDER_ID_BOUND,
+    "host_model_registry_entries.model_id": MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
+    "host_project_model_defaults_revisions.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "host_project_model_defaults.provider_id": PROVIDER_ID_BOUND,
+    "host_project_model_defaults.model_id": MAXIMUM_EXACT_MODEL_ID_CHARACTERS,
     "run_agent_bindings.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "tool_redemptions.node_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "run_events.cancellation_command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,

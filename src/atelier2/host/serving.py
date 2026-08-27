@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
+import selectors
+import signal
+import subprocess
 import sys
+import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import assert_never
@@ -9,6 +16,10 @@ from typing import assert_never
 import uvicorn
 from fastapi import FastAPI
 
+from atelier2.adapters.bounded_processes import (
+    BoundedProcessFailure,
+    bounded_process_streams,
+)
 from atelier2.adapters.claude_subscription import (
     ClaudeAtelierDoorsExecutorFactory,
     ClaudeAtelierDoorsSettings,
@@ -17,6 +28,7 @@ from atelier2.adapters.claude_subscription import (
     ClaudeWorkspaceToolExecutorFactory,
 )
 from atelier2.adapters.codex_subscription import (
+    CODEX_SUBSCRIPTION_EXECUTOR_KEY,
     CodexSubscriptionExecutorFactory,
     CodexSubscriptionSettings,
 )
@@ -52,6 +64,8 @@ from atelier2.adapters.github import (
     live_github_issue_source,
 )
 from atelier2.adapters.grok_subscription import (
+    GROK_SUBSCRIPTION_EXECUTOR_KEY,
+    GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
     GrokSubscriptionExecutorFactory,
     GrokSubscriptionSettings,
     GrokWorkspaceToolExecutorFactory,
@@ -77,22 +91,34 @@ from atelier2.application.project_connections import (
     get_project_source_connection,
 )
 from atelier2.application.refusals import DurableStateCorrupt, ReadUnavailable
+from atelier2.contracts.agent_attempts import AgentAttemptId
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_FIELD_CHARACTERS,
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
+    AgentConfigurationRevision,
+    AgentExecutionRequestV2,
+    AgentExecutionResult,
+    AgentExecutorOperationalIdentity,
+    AgentRole,
+    AuthProfileRevision,
+    ResolvedAgentBinding,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.host_configuration import (
     ProjectId,
     ProjectSourceConnectionRevision,
+    ProviderModelCheck,
 )
 from atelier2.contracts.pages import PageLimit
+from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, is_loopback_host
 from atelier2.host.conductor_workflow import (
     CONDUCTOR_DOOR_SERVER_NAME,
     CONDUCTOR_DOOR_TOOLS,
 )
 from atelier2.host.logging import configure_process_logging
+from atelier2.host.run_command import REQUEST_TIMEOUT_SECONDS
 from atelier2.host.webhook_delivery import (
     WebhookDeliveryLoop,
     WebhookDeliverySettings,
@@ -100,11 +126,24 @@ from atelier2.host.webhook_delivery import (
     webhook_delivery_lifespan,
 )
 from atelier2.ports.agent_executions import (
+    MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
+    AgentAttemptWorkspaceLease,
     AgentExecutorCarrier,
     AgentExecutorFactoryV2,
+    AgentExecutorKey,
     AgentExecutorRegistration,
+    AgentExecutorRegistry,
+    AgentProcessCompletion,
+    AgentProcessInvocation,
 )
 from atelier2.ports.effects import EffectAdapterFactory
+from atelier2.ports.host_configuration import (
+    ProviderModelDiscovery,
+    ProviderModelDiscoveryResult,
+    ProviderModelDiscoveryUnsupported,
+    ProviderModelInspectionUnavailable,
+    ProviderModelValidationResult,
+)
 
 # The edge must admit exactly the largest result the durable agent contract
 # accepts, and nothing larger: a tighter bound refuses work the store would
@@ -221,6 +260,7 @@ class HostSettings:
     # Their range rules live on `DbosRuntimeSettings`, which is built from them.
     sqlite_lock_timeout_seconds: float = SQLITE_LOCK_TIMEOUT_SECONDS
     agent_termination_grace_seconds: float = AGENT_TERMINATION_GRACE_SECONDS
+    model_inspection_timeout_seconds: float = REQUEST_TIMEOUT_SECONDS
     event_poll_backoff: EventPollBackoff = field(default_factory=event_poll_backoff)
     agent_scratch_root: Path | None = None
     project_id: ProjectId | None = None
@@ -349,6 +389,8 @@ class HostSettings:
             )
         if self.project_id is not None and not isinstance(self.project_id, ProjectId):
             raise TypeError("project id must use its typed contract")
+        if self.model_inspection_timeout_seconds <= 0:
+            raise ValueError("model inspection timeout must be positive")
         for name in (
             "effect_adapter_revision",
             "effect_destination",
@@ -585,6 +627,365 @@ def _runner_lease_executor_registrations(
     )
 
 
+_MODEL_DISCOVERY_OUTPUT_BYTES = 1_048_576
+_MODEL_VALIDATION_JOB = b"Reply with exactly OK."
+_MODEL_VALIDATION_RUN_ID = RunId("provider-model-validation")
+_MODEL_VALIDATION_WORKFLOW_HASH = WorkflowRevisionHash("0" * 64)
+_MODEL_VALIDATION_NODE_ID = "provider-model-validation"
+
+
+@dataclass(frozen=True)
+class HostProviderModelInspector:
+    """Derive registry trust from the composed provider operations.
+
+    Discovery is a non-billed pinned-CLI operation. Validation deliberately
+    travels through the same prepared command and decoder as a real attempt;
+    the host therefore marks a model checked only when that adapter can use a
+    provider answer, not because a child happened to exit zero.
+    """
+
+    registry: AgentExecutorRegistry
+    codex_settings: CodexSubscriptionSettings | None
+    grok_settings: GrokSubscriptionSettings | None
+    inspection_timeout_seconds: float
+    termination_grace_seconds: float
+
+    def discover_models(
+        self,
+        configuration: AgentConfigurationRevision,
+        auth_profile: AuthProfileRevision,
+    ) -> ProviderModelDiscoveryResult:
+        key = AgentExecutorKey(
+            auth_profile.provider_id, configuration.executor_revision
+        )
+        try:
+            if key == CODEX_SUBSCRIPTION_EXECUTOR_KEY:
+                if self.codex_settings is None:
+                    return ProviderModelInspectionUnavailable()
+                return ProviderModelDiscovery(
+                    frozenset(
+                        _discover_codex_models(
+                            self.codex_settings,
+                            self.inspection_timeout_seconds,
+                            self.termination_grace_seconds,
+                        )
+                    )
+                )
+            if key in (
+                GROK_SUBSCRIPTION_EXECUTOR_KEY,
+                GROK_WORKSPACE_TOOLS_EXECUTOR_KEY,
+            ):
+                if self.grok_settings is None:
+                    return ProviderModelInspectionUnavailable()
+                return ProviderModelDiscovery(
+                    frozenset(
+                        _discover_grok_models(
+                            self.grok_settings, self.inspection_timeout_seconds
+                        )
+                    )
+                )
+            return ProviderModelDiscoveryUnsupported()
+        except (
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            BoundedProcessFailure,
+            subprocess.SubprocessError,
+        ):
+            return ProviderModelInspectionUnavailable()
+
+    def validate_model(
+        self,
+        configuration: AgentConfigurationRevision,
+        auth_profile: AuthProfileRevision,
+    ) -> ProviderModelValidationResult:
+        key = AgentExecutorKey(
+            auth_profile.provider_id, configuration.executor_revision
+        )
+        entry = next((item for item in self.registry.entries if item.key == key), None)
+        if entry is None or entry.factory is None:
+            return ProviderModelInspectionUnavailable()
+        executor = entry.factory.open()
+        command = None
+        result: ProviderModelValidationResult = ProviderModelInspectionUnavailable()
+        try:
+            request = _model_validation_request(
+                configuration, auth_profile, entry.manifest_entry.operational_identity
+            )
+            command = executor.prepare_process(request)
+            with tempfile.TemporaryDirectory(
+                prefix="atelier2-model-validation-"
+            ) as working_directory:
+                path = Path(working_directory)
+                status = path.stat()
+                lease = AgentAttemptWorkspaceLease(
+                    AgentAttemptId.for_execution(
+                        request.node_execution_id, request.request_hash, 1
+                    ),
+                    path,
+                    status.st_dev,
+                    status.st_ino,
+                )
+                process = subprocess.Popen(
+                    command.arguments,
+                    cwd=path,
+                    env=dict(command.environment),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    start_new_session=True,
+                )
+                assert process.stdin is not None
+                try:
+                    process.stdin.write(command.standard_input)
+                    process.stdin.close()
+                    return_code, standard_output, standard_error = (
+                        bounded_process_streams(
+                            process,
+                            self.inspection_timeout_seconds,
+                            max(
+                                command.standard_output_frame_bytes,
+                                MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES,
+                            ),
+                        )
+                    )
+                finally:
+                    if not process.stdin.closed:
+                        process.stdin.close()
+                if (
+                    len(standard_output) > command.standard_output_frame_bytes
+                    or len(standard_error) > MAXIMUM_AGENT_PROCESS_STANDARD_ERROR_BYTES
+                ):
+                    result = ProviderModelCheck.UNKNOWN_AT_PROVIDER
+                else:
+                    decoded = executor.decode_process_completion(
+                        AgentProcessInvocation(command, lease),
+                        AgentProcessCompletion(
+                            return_code, standard_output, standard_error
+                        ),
+                    )
+                    result = (
+                        ProviderModelCheck.CHECKED
+                        if isinstance(decoded, AgentExecutionResult)
+                        else ProviderModelCheck.UNKNOWN_AT_PROVIDER
+                    )
+        except (
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            BoundedProcessFailure,
+            subprocess.SubprocessError,
+        ):
+            result = ProviderModelInspectionUnavailable()
+        finally:
+            try:
+                if command is not None:
+                    executor.release_credential_channel(command)
+            except (OSError, ValueError):
+                result = ProviderModelInspectionUnavailable()
+            finally:
+                executor.close()
+        return result
+
+
+def _model_validation_request(
+    configuration: AgentConfigurationRevision,
+    auth_profile: AuthProfileRevision,
+    operational_identity: AgentExecutorOperationalIdentity,
+) -> AgentExecutionRequestV2:
+    binding = ResolvedAgentBinding(
+        AgentRole(_MODEL_VALIDATION_NODE_ID), configuration, auth_profile
+    )
+    return AgentExecutionRequestV2(
+        NodeExecutionId.for_node(
+            _MODEL_VALIDATION_RUN_ID,
+            _MODEL_VALIDATION_WORKFLOW_HASH,
+            _MODEL_VALIDATION_NODE_ID,
+        ),
+        _MODEL_VALIDATION_RUN_ID,
+        _MODEL_VALIDATION_WORKFLOW_HASH,
+        _MODEL_VALIDATION_NODE_ID,
+        binding,
+        operational_identity,
+        _MODEL_VALIDATION_JOB,
+        maximum_assistant_turns=1,
+    )
+
+
+def _discover_grok_models(
+    settings: GrokSubscriptionSettings, timeout_seconds: float
+) -> tuple[str, ...]:
+    process = subprocess.Popen(
+        (str(settings.executable), "models"),
+        cwd=settings.workspace,
+        env={
+            "HOME": str(settings.credential_directory),
+            "GROK_HOME": str(settings.credential_directory),
+            "PATH": settings.search_path,
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    return_code, standard_output, _standard_error = bounded_process_streams(
+        process, timeout_seconds, _MODEL_DISCOVERY_OUTPUT_BYTES
+    )
+    if return_code != 0:
+        raise ValueError("Grok model discovery failed")
+    models: list[str] = []
+    in_models = False
+    for line in standard_output.decode("utf-8").splitlines():
+        if line.strip() == "Available models:":
+            in_models = True
+            continue
+        stripped = line.strip()
+        if not in_models or not stripped:
+            continue
+        if not stripped.startswith(("* ", "- ")):
+            raise ValueError("Grok model discovery returned an unknown shape")
+        model_id = stripped[2:].removesuffix(" (default)")
+        if not model_id:
+            raise ValueError("Grok model discovery returned an empty id")
+        models.append(model_id)
+    if not models:
+        raise ValueError("Grok model discovery returned no models")
+    return tuple(models)
+
+
+def _discover_codex_models(
+    settings: CodexSubscriptionSettings,
+    timeout_seconds: float,
+    termination_grace_seconds: float,
+) -> tuple[str, ...]:
+    process = subprocess.Popen(
+        (str(settings.executable), "app-server"),
+        cwd=settings.credential_directory,
+        env={
+            "HOME": str(settings.credential_directory),
+            "CODEX_HOME": str(settings.credential_directory),
+            "PATH": settings.search_path,
+        },
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    assert process.stdin is not None and process.stdout is not None
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        _send_json_rpc(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {
+                        "name": "atelier2",
+                        "title": "Atelier 2",
+                        "version": "1",
+                    },
+                    "capabilities": {},
+                },
+            },
+        )
+        _read_json_rpc_result(process, 1, deadline)
+        _send_json_rpc(
+            process,
+            {"jsonrpc": "2.0", "method": "initialized", "params": {}},
+        )
+        _send_json_rpc(
+            process,
+            {"jsonrpc": "2.0", "id": 2, "method": "model/list", "params": {}},
+        )
+        result = _read_json_rpc_result(process, 2, deadline)
+        data = result.get("data")
+        if not isinstance(data, list):
+            raise TypeError("Codex model discovery returned no data list")
+        models: list[str] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("model")
+            if isinstance(model_id, str):
+                models.append(model_id)
+        if len(models) != len(data) or not models:
+            raise ValueError("Codex model discovery returned an unknown shape")
+        return tuple(models)
+    finally:
+        process.stdin.close()
+        _terminate_inspection_process(process, termination_grace_seconds)
+
+
+def _send_json_rpc(process: subprocess.Popen[bytes], message: object) -> None:
+    assert process.stdin is not None
+    process.stdin.write(json.dumps(message, separators=(",", ":")).encode("utf-8"))
+    process.stdin.write(b"\n")
+    process.stdin.flush()
+
+
+def _read_json_rpc_result(
+    process: subprocess.Popen[bytes], request_id: int, deadline: float
+) -> dict[str, object]:
+    assert process.stdout is not None
+    descriptor = process.stdout.fileno()
+    os.set_blocking(descriptor, False)
+    buffered = bytearray()
+    with selectors.DefaultSelector() as selector:
+        selector.register(descriptor, selectors.EVENT_READ)
+        while time.monotonic() < deadline:
+            ready = selector.select(max(0, deadline - time.monotonic()))
+            if not ready:
+                break
+            chunk = os.read(
+                descriptor, _MODEL_DISCOVERY_OUTPUT_BYTES + 1 - len(buffered)
+            )
+            if not chunk:
+                break
+            buffered.extend(chunk)
+            if len(buffered) > _MODEL_DISCOVERY_OUTPUT_BYTES:
+                raise BoundedProcessFailure(
+                    "model discovery response exceeded its bound"
+                )
+            while b"\n" in buffered:
+                line, _, remainder = buffered.partition(b"\n")
+                buffered = bytearray(remainder)
+                try:
+                    message = json.loads(line)
+                except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                    raise ValueError(
+                        "Codex model discovery returned invalid JSON"
+                    ) from error
+                if not isinstance(message, dict) or message.get("id") != request_id:
+                    continue
+                result = message.get("result")
+                if not isinstance(result, dict):
+                    raise TypeError("Codex model discovery returned no result")
+                return result
+    raise BoundedProcessFailure("model discovery did not answer in time")
+
+
+def _terminate_inspection_process(
+    process: subprocess.Popen[bytes], termination_grace_seconds: float
+) -> None:
+    try:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=termination_grace_seconds)
+    except ProcessLookupError:
+        process.wait(timeout=termination_grace_seconds)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=termination_grace_seconds)
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+
+
 def _log_unstartable_executors(settings: HostSettings) -> None:
     logger = logging.getLogger("atelier2")
     seen: set[str] = set()
@@ -777,6 +1178,13 @@ def compose_application(settings: HostSettings) -> tuple[FastAPI, DbosRuntime]:
                     None
                     if source_connection is None
                     else live_github_issue_source(source_connection)
+                ),
+                model_registry_inspector=HostProviderModelInspector(
+                    runtime.agent_executor_registry,
+                    settings.codex_subscription,
+                    settings.grok_subscription,
+                    settings.model_inspection_timeout_seconds,
+                    settings.agent_termination_grace_seconds,
                 ),
             ),
             limits=limits,

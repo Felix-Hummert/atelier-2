@@ -70,6 +70,7 @@ from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
     launching,
+    publish_checked_model_registry,
 )
 from tests.scenarios.runs import (
     start_published_v1_run,
@@ -221,6 +222,9 @@ def seed_v3(
         assert isinstance(
             catalog.publish_agent_configuration_revision(configuration),
             AgentConfigurationRevisionCreated,
+        )
+        publish_checked_model_registry(
+            lease.engine, ProviderId("exact"), (configuration,)
         )
         catalog_store = DbosCatalogStore(lease.engine)
         for revision in (ANY_JSON_SCHEMA, OPEN_PR_OPERATION, OPEN_PR_GRANT):

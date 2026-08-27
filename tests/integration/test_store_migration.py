@@ -43,6 +43,7 @@ from atelier2.adapters.dbos.schema import (
     _AGENT_ATTEMPTS_TRIGGERS,
     _EFFECT_INTENTS_ABANDONMENT_TRIGGERS,
     _EFFECT_INTENTS_TRIGGERS,
+    _OCCUPANCY_TRIGGER_STATEMENTS,
     _PREDECESSOR_ATTEMPTS_BEFORE_THE_TRANSCRIPT,
     _PREDECESSOR_INTENTS_BEFORE_ABANDONMENT,
     _PREDECESSOR_WAIT_ANSWERS,
@@ -79,6 +80,7 @@ from atelier2.adapters.dbos.schema import (
     V36_SCHEMA_HANDOFF,
     V37_SCHEMA_HANDOFF,
     V38_SCHEMA_HANDOFF,
+    V39_SCHEMA_HANDOFF,
     MigrationRequired,
     StoreMigrationRefused,
     _rebuild_product_table,
@@ -96,8 +98,10 @@ from atelier2.adapters.dbos.schema import (
     context_packages_v3,
     effect_intents,
     event_instants,
-    host_occupancy_bindings,
-    host_occupancy_revisions,
+    host_model_registry_entries,
+    host_model_registry_revisions,
+    host_project_model_defaults,
+    host_project_model_defaults_revisions,
     host_project_root_revisions,
     host_project_source_connection_revisions,
     initialize_schema,
@@ -118,6 +122,9 @@ from atelier2.adapters.dbos.schema import (
     workflow_revisions,
 )
 from atelier2.adapters.dbos.workflow_ids import answer_workflow_id_for
+
+host_occupancy_revisions = sa.table("host_occupancy_revisions")
+host_occupancy_bindings = sa.table("host_occupancy_bindings")
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
     answer_wait_result,
@@ -408,6 +415,33 @@ def _logical_dump(database_path: Path) -> tuple[str, ...]:
         return tuple(connection.iterdump())
 
 
+def _restore_v39_configuration_tables(connection: sqlite3.Connection) -> None:
+    """Turn the current create path back into V39's retired configuration shape."""
+
+    for trigger in (
+        "host_project_model_defaults_no_delete",
+        "host_project_model_defaults_no_update",
+        "host_project_model_defaults_revisions_no_delete",
+        "host_project_model_defaults_revisions_no_update",
+        "host_model_registry_entries_no_delete",
+        "host_model_registry_entries_no_update",
+        "host_model_registry_revisions_no_delete",
+        "host_model_registry_revisions_no_update",
+    ):
+        connection.execute(f"DROP TRIGGER {trigger}")
+    for table in (
+        host_project_model_defaults,
+        host_project_model_defaults_revisions,
+        host_model_registry_entries,
+        host_model_registry_revisions,
+    ):
+        connection.execute(f"DROP TABLE {table.name}")
+    connection.execute(PUBLISHED_TABLE_SHAPES[(39, "host_occupancy_revisions")])
+    connection.execute(PUBLISHED_TABLE_SHAPES[(39, "host_occupancy_bindings")])
+    for statement in _OCCUPANCY_TRIGGER_STATEMENTS.values():
+        connection.execute(statement)
+
+
 _PREDECESSOR_RUN_EVENTS_INDEX_DDL = (
     (
         "CREATE UNIQUE INDEX run_events_attempt_kind_unique ON run_events "
@@ -656,6 +690,7 @@ def _create_populated_v13_store(database_path: Path) -> None:
     engine = create_canonical_engine(database_path)
     initialize_schema(engine)
     with sqlite3.connect(database_path) as predecessor:
+        _restore_v39_configuration_tables(predecessor)
         _restore_v27_access_store(predecessor)
         _drop_queue_items_table(predecessor)
         _drop_webhook_delivery_cursor_table(predecessor)
@@ -1246,6 +1281,7 @@ def _create_exact_v21_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
@@ -1285,6 +1321,7 @@ def _create_exact_v22_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
@@ -1311,6 +1348,7 @@ def _create_exact_v23_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
@@ -1337,6 +1375,7 @@ def _create_exact_v24_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
@@ -1363,6 +1402,7 @@ def _create_exact_v25_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
@@ -1388,6 +1428,7 @@ def _create_exact_v26_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
@@ -1442,6 +1483,7 @@ def _create_exact_v27_store(database_path: Path, *, access: bool = False) -> Non
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_attempt_transcript_pointer(connection)
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
@@ -1468,6 +1510,7 @@ def _create_exact_v28_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_attempt_transcript_pointer(connection)
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
@@ -1496,6 +1539,7 @@ def _create_exact_v29_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_attempt_transcript_pointer(connection)
         _drop_webhook_delivery_cursor_table(connection)
         _drop_project_source_connection_table(connection)
@@ -1701,7 +1745,7 @@ def test_an_exact_v24_store_migrates_to_v25(
         )
         assert (
             connection.scalar(
-                sa.select(sa.func.count()).select_from(host_occupancy_revisions)
+                sa.select(sa.func.count()).select_from(host_model_registry_revisions)
             )
             == 0
         )
@@ -1810,13 +1854,15 @@ def test_an_exact_v25_store_migrates_through_v27_and_v28_and_v29_to_v30(
         )
         assert (
             connection.scalar(
-                sa.select(sa.func.count()).select_from(host_occupancy_revisions)
+                sa.select(sa.func.count()).select_from(host_model_registry_revisions)
             )
             == 0
         )
         assert (
             connection.scalar(
-                sa.select(sa.func.count()).select_from(host_occupancy_bindings)
+                sa.select(sa.func.count()).select_from(
+                    host_project_model_defaults_revisions
+                )
             )
             == 0
         )
@@ -1868,6 +1914,7 @@ def test_v26_attempt_bytes_cross_v27_and_v28_unchanged_with_none_evidence(
     runtime.close()
 
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _restore_v27_access_store(connection)
         _drop_queue_items_table(connection)
         _drop_webhook_delivery_cursor_table(connection)
@@ -2304,6 +2351,7 @@ def _create_exact_v31_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_attempt_transcript_pointer(connection)
         _drop_project_source_connection_table(connection)
         _revert_wait_cancelled_event_kind(connection)
@@ -2383,6 +2431,7 @@ def test_a_populated_v31_runner_attempt_survives_the_v32_trigger_swap(
     runtime.close()
 
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_attempt_transcript_pointer(connection)
         _drop_project_source_connection_table(connection)
         _revert_wait_cancelled_event_kind(connection)
@@ -2433,6 +2482,7 @@ def _create_exact_v32_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_attempt_transcript_pointer(connection)
         _drop_project_source_connection_table(connection)
         _revert_wait_cancelled_event_kind(connection)
@@ -2592,6 +2642,7 @@ def _create_exact_v33_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_attempt_transcript_pointer(connection)
         _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
@@ -2855,6 +2906,7 @@ def _recorded_invocation(
 
 def _downgrade_a_driven_store_to_v33(database_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_attempt_transcript_pointer(connection)
         _revert_wait_cancelled_event_kind(connection)
         _revert_wait_answers_execution_key(connection)
@@ -2977,6 +3029,7 @@ def _create_exact_v34_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_attempt_transcript_pointer(connection)
         _revert_wait_cancelled_event_kind(connection)
         _revert_the_abandoned_intent_state(connection)
@@ -3398,6 +3451,7 @@ def _create_exact_v35_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_attempt_transcript_pointer(connection)
         _revert_the_round_scoped_event_key(connection)
         _revert_the_abandoned_intent_state(connection)
@@ -3636,6 +3690,7 @@ def _create_exact_v36_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_attempt_transcript_pointer(connection)
         _revert_the_abandoned_intent_state(connection)
         connection.execute(
@@ -3746,6 +3801,7 @@ def _populate_v36_attempt(database_path: Path) -> None:
     """A store claiming the pre-transcript version, holding one armed attempt."""
 
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_attempt_transcript_pointer(connection)
         _write_armed_attempt(connection)
         _revert_the_abandoned_intent_state(connection)
@@ -4202,6 +4258,7 @@ def _create_exact_v37_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_candidate_capture_code(connection)
         _revert_the_abandoned_intent_state(connection)
         connection.execute(
@@ -4257,6 +4314,7 @@ def _create_populated_v37_store(database_path: Path) -> None:
     revision = _DRIVERLESS_REVISION
     values = _prepared_intent_values()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_candidate_capture_code(connection)
         _revert_the_abandoned_intent_state(connection)
         connection.execute("PRAGMA foreign_keys=ON")
@@ -4571,6 +4629,7 @@ def _create_exact_v38_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_candidate_capture_code(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
@@ -4587,6 +4646,7 @@ def _create_populated_v38_store(database_path: Path) -> None:
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_candidate_capture_code(connection)
         _write_armed_attempt(connection)
         connection.execute(
@@ -4595,6 +4655,141 @@ def _create_populated_v38_store(database_path: Path) -> None:
         )
         connection.commit()
         _require_product_shape(connection, V38_SCHEMA_HANDOFF.version)
+
+
+def _create_populated_v39_store(database_path: Path) -> None:
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
+        connection.execute(
+            "INSERT INTO host_occupancy_revisions VALUES (?, ?, ?, ?)",
+            ("ab" * 32, "studio", "cd" * 32, 1),
+        )
+        connection.execute(
+            "INSERT INTO host_occupancy_bindings VALUES (?, ?, ?)",
+            ("ab" * 32, "builder", "ef" * 32),
+        )
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V39_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V39_SCHEMA_HANDOFF.version)
+
+
+def test_v40_retires_populated_lineage_occupancy_without_inventing_defaults(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v39_store(database_path)
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    shown = capsys.readouterr()
+    assert "39" in shown.out and "40" in shown.out
+
+    with sqlite3.connect(database_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert "host_occupancy_revisions" not in tables
+        assert "host_occupancy_bindings" not in tables
+        assert {
+            "host_model_registry_revisions",
+            "host_model_registry_entries",
+            "host_project_model_defaults_revisions",
+            "host_project_model_defaults",
+        } <= tables
+        assert connection.execute(
+            "SELECT count(*) FROM host_project_model_defaults"
+        ).fetchone() == (0,)
+        _require_product_shape(connection, SCHEMA_VERSION)
+
+
+@pytest.mark.parametrize(
+    ("collision_sql", "drop_sql", "name"),
+    (
+        pytest.param(
+            ("CREATE TABLE host_model_registry_revisions(wrong TEXT)",),
+            ("DROP TABLE host_model_registry_revisions",),
+            "host_model_registry_revisions",
+            id="replacement-table",
+        ),
+        pytest.param(
+            ("CREATE VIEW host_model_registry_entries AS SELECT 1 AS wrong",),
+            ("DROP VIEW host_model_registry_entries",),
+            "host_model_registry_entries",
+            id="replacement-view",
+        ),
+        pytest.param(
+            (
+                "CREATE TABLE replacement_trigger_target(wrong TEXT)",
+                (
+                    "CREATE TRIGGER host_project_model_defaults_no_update "
+                    "AFTER INSERT ON replacement_trigger_target BEGIN SELECT 1; END"
+                ),
+            ),
+            (
+                "DROP TRIGGER host_project_model_defaults_no_update",
+                "DROP TABLE replacement_trigger_target",
+            ),
+            "host_project_model_defaults_no_update",
+            id="replacement-trigger",
+        ),
+    ),
+)
+def test_v40_collision_keeps_occupancy_and_version_until_a_clean_retry(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    collision_sql: tuple[str, ...],
+    drop_sql: tuple[str, ...],
+    name: str,
+) -> None:
+    """The replacement preflight refuses before it retires V39 occupancy."""
+
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v39_store(database_path)
+    with sqlite3.connect(database_path) as connection:
+        occupancy_before = (
+            connection.execute("SELECT * FROM host_occupancy_revisions").fetchall(),
+            connection.execute("SELECT * FROM host_occupancy_bindings").fetchall(),
+        )
+        for statement in collision_sql:
+            connection.execute(statement)
+        connection.commit()
+
+    assert main(["migrate", "--database", str(database_path)]) == 1
+    shown = capsys.readouterr()
+    assert name in shown.err
+    assert "will not alter" in shown.err
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (V39_SCHEMA_HANDOFF.version,)
+        assert (
+            connection.execute("SELECT * FROM host_occupancy_revisions").fetchall(),
+            connection.execute("SELECT * FROM host_occupancy_bindings").fetchall(),
+        ) == occupancy_before
+        for statement in drop_sql:
+            connection.execute(statement)
+        connection.commit()
+
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    capsys.readouterr()
+    migrated = _logical_dump(database_path)
+    assert main(["migrate", "--database", str(database_path)]) == 0
+    assert _logical_dump(database_path) == migrated
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (SCHEMA_VERSION,)
+        assert connection.execute(
+            "SELECT count(*) FROM host_project_model_defaults"
+        ).fetchone() == (0,)
 
 
 def test_an_exact_v38_store_migrates_to_v39_by_admitting_a_lost_candidate(
@@ -4675,6 +4870,7 @@ def _populated_v38_store_with(
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_candidate_capture_code(connection)
         _write_armed_attempt(connection, binding)
         connection.execute(
@@ -4989,6 +5185,7 @@ def _create_v38_store_that_cannot_be_re_owned(
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_candidate_capture_code(connection)
         if succeeded:
             # No catalog is published here: every store this builds is one
@@ -5197,6 +5394,7 @@ def _create_v38_store_from_a_real_redemption(database_path: Path) -> WrittenAtte
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
+        _restore_v39_configuration_tables(connection)
         _revert_the_candidate_capture_code(connection)
         _publish_the_catalog_a_receipt_names(connection)
         attempt = _write_a_succeeded_attempt(

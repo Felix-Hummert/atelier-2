@@ -15,9 +15,7 @@ clean, which is the more dangerous of the two mistakes.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -57,54 +55,31 @@ from tests.scenarios.agents import (
 
 
 @pytest.fixture
-def runtime(tmp_path: Path) -> Iterator[DbosRuntime]:
+def runtime(tmp_path: Path, dbos_logging_isolation: None) -> Iterator[DbosRuntime]:
     """A runtime with no provider that can answer: these tests drive the store.
 
-    Built here rather than borrowed from another file so that the handler
-    isolation below wraps the construction. A command-line entry point elsewhere
-    in the suite installs a logging handler bound to the standard error pytest
-    captured for *that* test, and building a durable runtime flushes every
-    handler -- a stream closed long ago then fails a test that never touched it.
+    The shared DBOS logging fixture isolates the process handlers because a
+    durable runtime flushes every handler during construction.
     """
-
-    with logging_of_its_own():
-        started = DbosRuntime(
-            DbosRuntimeSettings(
-                tmp_path / "atelier.sqlite",
-                "redeemed-proof-test",
-                agent_scratch_root=agent_scratch_root(tmp_path),
-            ),
-            LoopbackEffectAdapterFactory(
-                tmp_path / "external.sqlite",
-                AdapterRevision("loopback-v1"),
-                EffectDestination("loopback-test"),
-            ),
-            ExactOutputAgentExecutorFactory(),
-            (failing_agent_executor_factory("exact", []),),
-        )
-        started.initialize_storage()
+    started = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "redeemed-proof-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
+        LoopbackEffectAdapterFactory(
+            tmp_path / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+        ExactOutputAgentExecutorFactory(),
+        (failing_agent_executor_factory("exact", []),),
+    )
+    started.initialize_storage()
     try:
         yield started
     finally:
         started.close()
-
-
-@contextmanager
-def logging_of_its_own() -> Iterator[None]:
-    """Run with the handlers this process installs, not ones left behind.
-
-    Narrow on purpose: it neither silences nor reconfigures anything, it only
-    keeps a handler bound to another test's closed capture from being flushed
-    by code that legitimately flushes all of them.
-    """
-
-    root = logging.getLogger()
-    inherited = root.handlers[:]
-    root.handlers = []
-    try:
-        yield
-    finally:
-        root.handlers = inherited
 
 
 THE_GRANT = DeclaredToolGrant(

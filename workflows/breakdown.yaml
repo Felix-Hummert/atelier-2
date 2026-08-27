@@ -1,0 +1,41 @@
+format_version: 3
+name: breakdown
+description: >-
+  One headless planner turns an item into independently buildable slices using
+  the item body and its owner documents as durable evidence.
+graph_inputs:
+  - name: item_body
+    schema:
+      ref: nonempty_string
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+  - name: owner_documents
+    schema:
+      ref: nonempty_string
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+nodes:
+  - id: plan
+    type: agent
+    role: planner
+    mode: headless
+    instruction: >-
+      Decompose the item body carried under "item_body" against the owner
+      documents carried under "owner_documents". You cannot read files, run
+      anything, or use tools in this headless call; these artifacts are your
+      only evidence. Make slices independently buildable where possible, state
+      their dependencies explicitly, and name contradictions that need an
+      operator decision. Keep each slice to at most five files. Do not assign
+      a path already covered by an in-flight exclusive claim; when the supplied
+      evidence does not establish claim ownership, record the conflict as a
+      contradiction rather than assuming it is available.
+    inputs:
+      - name: item_body
+        from:
+          graph_input: item_body
+      - name: owner_documents
+        from:
+          graph_input: owner_documents
+    outputs:
+      - name: result
+        schema:
+          ref: breakdown_result
+          revision: "6544084aa981e767b9aea12855fce481d911d1e2dbb49d1dd82c934fb2bf613d"

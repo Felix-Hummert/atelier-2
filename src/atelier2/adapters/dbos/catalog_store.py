@@ -233,10 +233,8 @@ def revision_owner(
 ) -> CatalogLineageId | None:
     """The lineage one published revision belongs to, read through one connection.
 
-    Public because a caller outside the catalog needs it: a start reads the
-    served project's occupancy, and an occupancy is keyed by lineage. It asks
-    by revision rather than by name because a document that carries no display
-    name would otherwise be skipped in silence.
+    Public because catalog publication decisions share this lookup. It asks by
+    revision rather than by name because a document can carry no display name.
     """
     owner = connection.scalar(
         sa.select(catalog_lineage_members.c.lineage_id)

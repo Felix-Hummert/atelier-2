@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slices", "contradictions", "verdict"],
+  "properties": {
+    "slices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "files",
+          "done_when",
+          "depends_on",
+          "builder_class",
+          "risk"
+        ],
+        "properties": {
+          "title": {"type": "string"},
+          "files": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "done_when": {"type": "string"},
+          "depends_on": {
+            "type": "array",
+            "items": {"type": "integer"}
+          },
+          "builder_class": {
+            "enum": ["mechanical", "normal", "architecture"]
+          },
+          "risk": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text"],
+        "properties": {
+          "text": {"type": "string"}
+        }
+      }
+    },
+    "verdict": {
+      "enum": ["buildable", "needs_decision"]
+    }
+  }
+}

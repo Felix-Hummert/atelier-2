@@ -74,7 +74,6 @@ type GetProjectSourceConnectionResult = (
     | ReadUnavailable
     | DurableStateCorrupt
 )
-
 type GetServedProjectSourceConnectionResult = (
     GetProjectSourceConnectionResult | ServedProjectUnknown
 )
