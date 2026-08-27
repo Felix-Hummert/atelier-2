@@ -21,9 +21,9 @@ from pydantic import TypeAdapter
 from atelier2.api.openapi import API_PREFIX, WORKFLOW_DOCUMENT_COMPONENT
 from atelier2.api.problems import problem_resource
 from atelier2.api.wire.requests import (
-    AnyStartRunOrderResource,
-    InlineOrderResource,
+    ArtifactOrderResource,
     StartRunAgentBindingResourceV2,
+    WorkItemOrderResource,
 )
 from atelier2.api.wire.resources import (
     ArtifactResource,
@@ -34,11 +34,13 @@ from atelier2.api.wire.resources import (
     VersionedWorkflowRevisionPageResource,
     WorkflowRevisionSummaryResourceV2,
 )
+from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.run_projections import NodeState
 from atelier2.host import main
 from atelier2.host.mcp_command import (
     JSONRPC_METHOD_NOT_FOUND,
     JSONRPC_PARSE_ERROR,
+    MAXIMUM_MCP_INPUT_LINE_BYTES,
     dispatch_message,
     read_message,
     serve_mcp,
@@ -46,7 +48,10 @@ from atelier2.host.mcp_command import (
 )
 from atelier2.host.mcp_tools import (
     JSONRPC_VERSION,
+    MAXIMUM_MCP_ARTIFACT_BASE64_CHARACTERS,
+    MAXIMUM_MCP_ARTIFACT_BYTES,
     MCP_PROTOCOL_VERSION,
+    MCP_PUBLISH_ARTIFACT_REQUEST_ENVELOPE_RESERVATION_BYTES,
     MCP_TOOL_HTTP_DOORS,
     METHOD_INITIALIZE,
     METHOD_INITIALIZED,
@@ -58,7 +63,6 @@ from atelier2.host.mcp_tools import (
 from atelier2.host.run_command import (
     AgentRoleBinding,
     SuppliedArtifactOrder,
-    SuppliedOrder,
     SuppliedStartOrder,
     SuppliedWorkItemOrder,
     start_request_body,
@@ -397,9 +401,7 @@ def test_each_tool_is_bound_to_paths_the_published_openapi_still_serves() -> Non
 
 
 @pytest.mark.proves("mcp-tools-are-the-published-http-doors")
-def test_start_run_schema_references_the_published_grammar_instead_of_copying_it() -> (
-    None
-):
+def test_start_run_schema_references_its_artifact_and_work_item_mcp_subset() -> None:
     start = next(
         definition
         for definition in tool_definitions()
@@ -407,17 +409,41 @@ def test_start_run_schema_references_the_published_grammar_instead_of_copying_it
     )
     orders = start["inputSchema"]["properties"]["orders"]
     bindings = start["inputSchema"]["properties"]["agent_bindings"]
-    union_schema = TypeAdapter(AnyStartRunOrderResource).json_schema()
+    union_schema = TypeAdapter(
+        ArtifactOrderResource | WorkItemOrderResource
+    ).json_schema()
     union_defs = union_schema["$defs"]
     union_items = {key: value for key, value in union_schema.items() if key != "$defs"}
 
     assert WORKFLOW_DOCUMENT_COMPONENT in start["description"]
+    assert "two calls" in start["description"]
+    assert "reusable" in start["description"]
     assert WORKFLOW_DOCUMENT_COMPONENT in orders["description"]
     assert orders["items"] == union_items
     assert start["inputSchema"]["$defs"] == union_defs
     assert "ArtifactOrderResource" in union_defs
-    assert orders["items"] != InlineOrderResource.model_json_schema()
+    assert "WorkItemOrderResource" in union_defs
+    assert "InlineOrderResource" not in union_defs
     assert bindings["items"] == StartRunAgentBindingResourceV2.model_json_schema()
+
+
+def test_publish_artifact_schema_declares_its_named_mcp_payload_limit() -> None:
+    publish = next(
+        definition
+        for definition in tool_definitions()
+        if definition["name"] == McpToolName.PUBLISH_ARTIFACT.value
+    )
+
+    description = publish["description"]
+    content = publish["inputSchema"]["properties"]["content_base64"]["description"]
+
+    assert str(MAXIMUM_MCP_ARTIFACT_BYTES) in description
+    assert "mcp-artifact-payload-too-large" in description
+    assert str(MAXIMUM_MCP_ARTIFACT_BYTES) in content
+    assert (
+        publish["inputSchema"]["properties"]["content_base64"]["maxLength"]
+        == MAXIMUM_MCP_ARTIFACT_BASE64_CHARACTERS
+    )
 
 
 @pytest.mark.proves("mcp-and-http-never-diverge")
@@ -531,21 +557,6 @@ def test_list_workflows_answers_the_same_catalog_resolution_http_would(
                         "agent_configuration_revision_hash": AGENT_CONFIGURATION_HASH,
                     }
                 ],
-                "orders": [{"name": "order", "value": '{"portions": 2}'}],
-            },
-            (AgentRoleBinding("builder", AGENT_CONFIGURATION_HASH),),
-            (SuppliedOrder("order", b'{"portions": 2}'),),
-        ),
-        (
-            {
-                "name": WORKFLOW_NAME,
-                "run_id": "named-run",
-                "agent_bindings": [
-                    {
-                        "role": "builder",
-                        "agent_configuration_revision_hash": AGENT_CONFIGURATION_HASH,
-                    }
-                ],
                 "orders": [{"name": "order", "artifact_hash": ARTIFACT_HASH}],
             },
             (AgentRoleBinding("builder", AGENT_CONFIGURATION_HASH),),
@@ -570,7 +581,6 @@ def test_list_workflows_answers_the_same_catalog_resolution_http_would(
     ids=(
         "v1-bare",
         "v2-bindings",
-        "v3-orders",
         "v3-artifact-order",
         "v3-work-item-order",
     ),
@@ -597,6 +607,40 @@ def test_start_run_posts_the_same_start_body_the_http_door_already_owns(
         assert posted["orders"] == [{"name": "order", "artifact_hash": ARTIFACT_HASH}]
     if any(isinstance(order, SuppliedWorkItemOrder) for order in orders):
         assert posted["orders"] == [{"name": "order", "work_item": WORK_ITEM_REFERENCE}]
+
+
+@pytest.mark.parametrize(
+    "orders",
+    (
+        [{"name": "order", "value": '{"portions": 2}'}],
+        [{"name": "order"}],
+        [{"artifact_hash": ARTIFACT_HASH}],
+        [{"name": "order", "artifact_hash": "not-a-hash"}],
+        [{"name": "order", "artifact_hash": ARTIFACT_HASH, "value": "extra"}],
+    ),
+    ids=(
+        "inline",
+        "missing-discriminator",
+        "missing-name",
+        "malformed-artifact-hash",
+        "extra-field",
+    ),
+)
+def test_start_run_refuses_orders_outside_its_mcp_subset_before_http(
+    session: tuple[ScriptedService, StdioMcpSession], orders: list[dict[str, str]]
+) -> None:
+    service, client = session
+
+    payload, is_error = client.call_tool(
+        McpToolName.START_RUN.value,
+        {"name": WORKFLOW_NAME, "run_id": "named-run", "orders": orders},
+    )
+
+    assert is_error
+    assert "error" in payload
+    assert payload["error"].startswith("mcp-start-run-order-invalid")
+    assert "ValidationError" not in str(payload["error"])
+    assert service.calls == []
 
 
 @pytest.mark.proves("mcp-and-http-never-diverge")
@@ -644,6 +688,97 @@ def test_publish_artifact_treats_an_already_stored_body_as_success() -> None:
     assert not created_failed
     assert not existing_failed
     assert created == existing == expected
+
+
+def test_publish_artifact_limit_fits_the_bounded_jsonrpc_request(
+    session: tuple[ScriptedService, StdioMcpSession],
+) -> None:
+    service, _client = session
+    content = b"x" * MAXIMUM_MCP_ARTIFACT_BYTES
+    request = {
+        "jsonrpc": JSONRPC_VERSION,
+        "id": "publish-artifact-boundary-request-0001",
+        "method": METHOD_TOOLS_CALL,
+        "params": {
+            "name": McpToolName.PUBLISH_ARTIFACT.value,
+            "arguments": {
+                "content_base64": base64.standard_b64encode(content).decode()
+            },
+        },
+    }
+    request_line = json.dumps(request).encode() + b"\n"
+    stdout = BytesIO()
+
+    serve_mcp(service.url, BytesIO(request_line), stdout)
+
+    replies = reply_lines(stdout.getvalue())
+    assert len(replies) == 1
+    reply = replies[0]
+    result = reply["result"]
+    assert isinstance(result, dict)
+    response_content = result["content"]
+    assert isinstance(response_content, list)
+    response_first = response_content[0]
+    assert isinstance(response_first, dict)
+    payload = json.loads(str(response_first["text"]))
+
+    assert len(request_line) - 1 <= MAXIMUM_MCP_INPUT_LINE_BYTES
+    assert MAXIMUM_MCP_ARTIFACT_BYTES == min(
+        MAXIMUM_ARTIFACT_BYTES,
+        3
+        * (
+            (
+                MAXIMUM_MCP_INPUT_LINE_BYTES
+                - MCP_PUBLISH_ARTIFACT_REQUEST_ENVELOPE_RESERVATION_BYTES
+            )
+            // 4
+        ),
+    )
+    assert MAXIMUM_MCP_ARTIFACT_BYTES < MAXIMUM_ARTIFACT_BYTES
+    assert not result["isError"]
+    assert payload == published_artifact().model_dump(mode="json")
+    assert (
+        next(call for call in service.calls if call.path == ARTIFACTS_PATH).body
+        == content
+    )
+
+
+def test_publish_artifact_refuses_content_larger_than_its_mcp_limit_before_http(
+    session: tuple[ScriptedService, StdioMcpSession],
+) -> None:
+    service, _client = session
+    content_base64 = base64.standard_b64encode(
+        b"x" * (MAXIMUM_MCP_ARTIFACT_BYTES + 1)
+    ).decode()
+
+    request = {
+        "jsonrpc": JSONRPC_VERSION,
+        "id": "publish-artifact-boundary-request-0002",
+        "method": METHOD_TOOLS_CALL,
+        "params": {
+            "name": McpToolName.PUBLISH_ARTIFACT.value,
+            "arguments": {"content_base64": content_base64},
+        },
+    }
+    request_line = json.dumps(request).encode() + b"\n"
+    stdout = BytesIO()
+
+    serve_mcp(service.url, BytesIO(request_line), stdout)
+
+    replies = reply_lines(stdout.getvalue())
+    assert len(request_line) - 1 <= MAXIMUM_MCP_INPUT_LINE_BYTES
+    assert len(replies) == 1
+    reply = replies[0]
+    result = reply["result"]
+    assert isinstance(result, dict)
+    assert result["isError"]
+    content = result["content"]
+    assert isinstance(content, list)
+    first = content[0]
+    assert isinstance(first, dict)
+    payload = json.loads(str(first["text"]))
+    assert payload["error"].startswith("mcp-artifact-payload-too-large")
+    assert service.calls == []
 
 
 @pytest.mark.proves("mcp-and-http-never-diverge")

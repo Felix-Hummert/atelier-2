@@ -88,21 +88,21 @@ could decide an exit code still does not exist.
 
 That API now also has a third door: `atelier2 mcp` speaks MCP as one
 JSON-RPC object per line on standard input and standard output against the
-same public HTTP API. A client launches
-it as a child. There is no listener, no port and no token. The five tools
-are `list_workflows` (catalog name, lineage and head), `start_run` (the
-revision a name holds, the same resolution `run --name` asks, with the same
-inline-or-artifact order union `POST /runs` already publishes),
-`run_status` (the run resource as the API answers it), `answer_wait` (the
-#194 door) and `publish_artifact` (`POST /artifacts` as octet-stream; MCP
-JSON carries those bytes as standard Base64 because it cannot speak
-octet-stream). Each call is the HTTP door; a typed problem is returned
-unchanged, field pointers included. The artifact size bound stays the
-store's own: this door does not invent a second cap. A stdio JSON-RPC line
-cannot carry a maximum-size artifact after Base64 expansion; that leftover
-is named, not papered over by shrinking the bound. The API has no caller
-authentication: #82 is human OIDC and ADR 0009 (machine credentials) is not
-landed, so this child invents none and refuses any service that is not a
-literal loopback address — the same trust the browser already has on this
-machine. Instants on the run wait for #355; this door does not invent them.
-
+same public HTTP API. A client launches it as a child. There is no listener,
+no port and no token. The five tools are `list_workflows` (catalog name,
+lineage and head), `start_run` (the revision a name holds, the same resolution
+`run --name` asks, with artifact and work-item orders only; inline orders remain
+an HTTP-only form until their retirement is a later slice), `run_status` (the
+run resource as the API answers it), `answer_wait` (the #194 door) and
+`publish_artifact` (`POST /artifacts` as octet-stream; MCP JSON carries those
+bytes as standard Base64 because it cannot speak octet-stream). Each call is
+the HTTP door; a typed problem is returned unchanged, field pointers included.
+`publish_artifact` accepts at most 1,047,552 Base64 characters, or 785,664
+decoded bytes, derived from `min(artifact bound, (1 MiB JSON-RPC line cap − 1
+KiB envelope) × 3/4)`. Publishing material and starting a run are two calls;
+if the start is refused or fails, its already-published immutable artifact
+remains reusable and no run exists. The API has no caller authentication: #82
+is human OIDC and ADR 0009 (machine credentials) is not landed, so this child
+invents none and refuses any service that is not a literal loopback address —
+the same trust the browser already has on this machine. Instants on the run
+wait for #355; this door does not invent them.
