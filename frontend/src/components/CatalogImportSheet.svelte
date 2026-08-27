@@ -19,6 +19,7 @@
 
   let dialogElement: DialogElement;
   let closeButton: HTMLButtonElement;
+  let primaryAction: HTMLButtonElement;
   let adding = false;
   let problem: Problem | null = null;
   let failure: string | null = null;
@@ -26,7 +27,8 @@
   onMount(() => {
     if (typeof dialogElement.showModal === "function") dialogElement.showModal();
     else dialogElement.open = true;
-    closeButton.focus();
+    if (recognition !== null && canAdd(recognition)) primaryAction.focus();
+    else closeButton.focus();
   });
 
   function dismiss(): void {
@@ -106,7 +108,7 @@
 
     <footer>
       {#if recognition !== null && canAdd(recognition)}
-        <button class="primary" type="button" disabled={adding} onclick={() => { void addRecognizedDocument(); }}>
+        <button bind:this={primaryAction} class="primary" type="button" disabled={adding} onclick={() => { void addRecognizedDocument(); }}>
           {wrapDisplayCopy(adding ? catalogPageCopy.addingToCatalog : catalogPageCopy.addToCatalog)}
         </button>
       {/if}
@@ -121,11 +123,12 @@
   .sheet-positioner { position: fixed; inset: 0; z-index: 10; pointer-events: none; }
   .sheet { box-sizing: border-box; position: fixed; inset: var(--space-5) var(--space-5) auto auto; width: min(var(--dialog-width), calc(100% - (var(--space-5) * 2))); max-height: calc(100vh - (var(--space-5) * 2)); margin: 0; padding: var(--space-5); background: var(--panel2); border: var(--edge) solid var(--ink); border-radius: var(--r-lg); box-shadow: var(--shadow-lift); pointer-events: auto; }
   .sheet::backdrop { background: color-mix(in srgb, var(--ground) 80%, transparent); }
-  header, footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+  header, footer { display: flex; align-items: center; gap: var(--space-3); }
   h2 { margin: 0; font-family: var(--serif); }
   .found { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: baseline; gap: var(--space-2); margin-bottom: var(--space-4); }
   .glyph { color: var(--ink-dim); }
-  .count { color: var(--ink-dim); font-size: var(--text-2xs); font-weight: var(--weight-strong); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+  .count { color: var(--ink-dim); font-size: var(--text-2xs); }
   .failure { color: var(--signal-failure); }
+  @media (min-width: 481px) { .count { display: none; } }
   @media (max-width: 480px) { .sheet { inset: auto 0 0 0; width: 100%; max-height: 85vh; border-radius: var(--r-lg) var(--r-lg) 0 0; } }
 </style>

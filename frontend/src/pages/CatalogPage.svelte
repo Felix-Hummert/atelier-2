@@ -205,7 +205,6 @@
 
 <section
   class="surface catalog-drop-target"
-  class:drop-target-active={isDropTarget}
   aria-labelledby="catalog-title"
   ondragover={(event) => { event.preventDefault(); isDropTarget = true; }}
   ondragleave={(event) => { if (event.currentTarget === event.target) isDropTarget = false; }}
@@ -312,6 +311,12 @@
     <p class="empty">{wrapDisplayCopy(catalogPageCopy.skillsNone)}</p>
   </section>
 
+  {#if isDropTarget}
+    <div class="drop-veil" aria-hidden="true">
+      <p>Drop a workflow, an agent, or a plugin folder — anywhere on this page.</p>
+    </div>
+  {/if}
+
   {#if importResult !== null}
     <CatalogImportSheet
       document={importResult.document}
@@ -365,9 +370,28 @@
     border: 0;
   }
 
-  .catalog-drop-target.drop-target-active {
-    outline: var(--edge-strong) dashed var(--signal-attention);
-    outline-offset: calc(var(--space-2) * -1);
+  .catalog-drop-target {
+    position: relative;
+  }
+
+  .drop-veil {
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: var(--space-4);
+    background: color-mix(in srgb, var(--ground) 80%, transparent);
+  }
+
+  .drop-veil p {
+    max-width: var(--reading-width);
+    padding: var(--space-4) var(--space-5);
+    border: var(--edge-strong) dashed var(--ink);
+    border-radius: var(--r-lg);
+    background: var(--panel2);
+    font-family: var(--serif);
+    text-align: center;
   }
 
   .empty {

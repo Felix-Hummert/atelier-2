@@ -220,6 +220,11 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       await expect(whyMarked).toBeVisible();
       await page.screenshot({ path: `${shotDirectory}/catalog-list-${viewport.name}-${colorScheme}.png`, fullPage: true });
 
+      await page.locator(".catalog-drop-target").dispatchEvent("dragover");
+      await expect(page.getByText("Drop a workflow, an agent, or a plugin folder — anywhere on this page.")).toBeVisible();
+      await page.screenshot({ path: `${shotDirectory}/catalog-import-dragover-${viewport.name}-${colorScheme}.png`, fullPage: true });
+      await page.locator(".catalog-drop-target").dispatchEvent("dragleave");
+
       await page.getByLabel("Catalog file picker").setInputFiles({
         name: "catalog-recognition-shot.yaml",
         mimeType: "application/yaml",
@@ -241,8 +246,13 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       const importSheet = page.getByRole("dialog", { name: "Import" });
       await expect(importSheet).toBeVisible();
       await expect(importSheet.getByText("⧉")).toBeVisible();
-      await expect(importSheet.getByText("1 workflow")).toBeVisible();
+      if (viewport.name === "390") {
+        await expect(importSheet.getByText("1 workflow")).toBeVisible();
+      } else {
+        await expect(importSheet.getByText("1 workflow")).toBeHidden();
+      }
       await expect(importSheet.getByText("catalog-recognition-shot")).toBeVisible();
+      await expect(importSheet.getByRole("button", { name: "Add to catalog" })).toBeFocused();
       await page.screenshot({ path: `${shotDirectory}/catalog-import-found-${viewport.name}-${colorScheme}.png`, fullPage: true });
       await importSheet.getByRole("button", { name: "Cancel" }).click();
 
