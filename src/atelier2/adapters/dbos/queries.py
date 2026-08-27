@@ -53,7 +53,7 @@ from atelier2.adapters.dbos.workflow import (
     _pinned_maximum_assistant_turns,
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.application.compose_node_job import node_job
+from atelier2.application.compose_node_job import NodeJobCompositionVersion, node_job
 from atelier2.application.project_node_rail import (
     never_launched_cleanup_on_failed_run,
     project_node_rail,
@@ -400,40 +400,52 @@ def _current_attempt_projection(
     # is given: the orders the run was started with and the work earlier nodes
     # handed on. A recomputation that knew only part of it would answer a run
     # that really was a chain with a conflict about its own identity.
-    authored_job = (
-        node.job
-        if isinstance(node, AgentNodeV2)
-        else node_job(
-            node.instruction,
-            load_run_inputs(session, run.run_id, node),
-            load_node_outputs(
-                session,
-                run.run_id,
-                run.revision_hash,
-                graph,
-                node,
-                run.current_round_ordinal,
-            ),
-        )
-    ).encode("utf-8")
-    exact_request = AgentExecutionRequestV2(
-        execution_id,
-        run.run_id,
-        run.revision_hash,
-        run.current_node_id,
-        binding,
-        operational_identity,
-        authored_job,
-        (
-            None
-            if (output_schema := _declared_output_schema_document(session, node))
-            is None
-            else output_schema.encode("utf-8")
-        ),
-        run.current_round_ordinal,
-        _pinned_maximum_assistant_turns(session, node),
-    )
     request_hash = AgentExecutionRequestHash(str(record["request_hash"]))
+    output_schema = _declared_output_schema_document(session, node)
+
+    def request_for(authored_job: bytes) -> AgentExecutionRequestV2:
+        return AgentExecutionRequestV2(
+            execution_id,
+            run.run_id,
+            run.revision_hash,
+            run.current_node_id,
+            binding,
+            operational_identity,
+            authored_job,
+            None if output_schema is None else output_schema.encode("utf-8"),
+            run.current_round_ordinal,
+            _pinned_maximum_assistant_turns(session, node),
+        )
+
+    if isinstance(node, AgentNodeV2):
+        exact_request = request_for(node.job.encode("utf-8"))
+    else:
+        orders = load_run_inputs(session, run.run_id, node)
+        results = load_node_outputs(
+            session,
+            run.run_id,
+            run.revision_hash,
+            graph,
+            node,
+            run.current_round_ordinal,
+        )
+        exact_request = request_for(
+            node_job(
+                node.instruction,
+                orders,
+                results,
+                NodeJobCompositionVersion.CURRENT,
+            ).encode("utf-8")
+        )
+        if request_hash != exact_request.request_hash:
+            exact_request = request_for(
+                node_job(
+                    node.instruction,
+                    orders,
+                    results,
+                    NodeJobCompositionVersion.LEGACY,
+                ).encode("utf-8")
+            )
     attempt_id = AgentAttemptId(str(record["attempt_id"]))
     ordinal = int(record["attempt_ordinal"])
     if (

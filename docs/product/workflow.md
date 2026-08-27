@@ -136,8 +136,13 @@ adapter-operation revision; the one operation this runtime performs is `open-pr`
 `POST /adapter-operation-revisions` is the publication door (bytes in, hash out,
 idempotent), and a start whose `operation.revision` is that hash gets past the
 reference that used to refuse as unpublished. The Action's request bytes are the
-predecessor Agent's output. Tests inject a fake GitHub `EffectAdapterFactory` that
-records a branch and pull-request number, writes the request hash into the pull
+predecessor Agent's output. A V3 Agent request hashes the current job composition:
+declared root-string orders appear as their text while every other order keeps its
+JSON representation. Readers first recompute that composition, then prove a
+pre-change request against the legacy all-JSON composition when necessary. The
+attempt record does not yet persist its composition version; that unambiguous
+future choice requires the next schema hop. Tests inject a fake GitHub
+`EffectAdapterFactory` that records a branch and pull-request number, writes the request hash into the pull
 request body, and answers a replay by readback rather than creating a twin. The
 served host composes the loopback adapter unless the served project's
 source-connection record names a GitHub source, in which case serve composes the
@@ -304,4 +309,3 @@ receipt, intent, command, run, and resolved event. The later `ACTION_COMPLETED`
 transition is another crash-safe transaction.
 [ADR 0001](../decisions/0001-durable-runtime.md) owns the runtime and recovery
 boundary.
-
