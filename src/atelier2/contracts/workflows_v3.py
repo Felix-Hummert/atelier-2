@@ -1721,24 +1721,20 @@ def _unbound_wait_forms(graph: WorkflowGraphV3) -> str | None:
 def _unbound_action_forms(graph: WorkflowGraphV3) -> str | None:
     """What an authored Action node declares that this effect path does not bind.
 
-    The request bytes are the predecessor Agent's output, the same path V1
-    Action already uses. Authored `inputs` and `outputs` would be ignored, so
-    they are refused by the form they wrote. An Action with no Agent predecessor
-    has nothing to land.
+    An Action with inputs composes an operation-specific request from those
+    declared sources. The predecessor-output form remains the legacy form for
+    an Action that declares no inputs.
     """
     for node in graph.nodes:
         if not isinstance(node, ActionNodeV3):
             continue
-        if "inputs" in node.model_fields_set:
-            return (
-                f"inputs on action node {node.id!r} that nothing composes; "
-                "the request is the predecessor Agent output"
-            )
         if "outputs" in node.model_fields_set:
             return (
                 f"outputs on action node {node.id!r} that nothing hands on; "
                 "the effect receipt is the Action's result"
             )
+        if node.inputs:
+            continue
         if len(node.depends_on) != 1:
             return f"action node {node.id!r} has no single Agent predecessor"
         predecessor = graph.node(node.depends_on[0])

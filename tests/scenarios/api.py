@@ -66,8 +66,14 @@ from atelier2.ports.workflow_revisions import (
 RECONCILIATION_REVISION_HASH = (
     "c93767cc7790bdb39258bb6d9bdfb3168218705038932119e6628c6312c6e34e"
 )
-RECONCILIATION_REQUEST_HASH = (
+RECONCILIATION_AGENT_OUTPUT_HASH = (
     "1f58b9145b24d108d7ac38887338b3ea3229833b9c1e418250343f907bfd1047"
+)
+RECONCILIATION_REQUEST = (
+    b'{"body":"request","head_branch":"atelier2-open-pr-1f58b9145b24"}'
+)
+RECONCILIATION_REQUEST_HASH = (
+    "d4d42b951a6678c6a14de919e1e7a3b661ff986cf11dd019d664b78fcd9b972d"
 )
 RECONCILIATION_APPLIED_RESULT_HASH = (
     "fbf5b216105e471c4f89e92a1ec12897ee9f2b439eb200a4f7855901d2889e7e"
@@ -92,7 +98,7 @@ SSE_COMPLETE_HISTORY: list[dict[str, object]] = [
             ),
             "event": "AGENT_COMPLETED",
             "output": "request",
-            "payload_hash": RECONCILIATION_REQUEST_HASH,
+            "payload_hash": RECONCILIATION_AGENT_OUTPUT_HASH,
         },
     },
     {
@@ -107,10 +113,13 @@ SSE_COMPLETE_HISTORY: list[dict[str, object]] = [
                 "c834c9c196ada921f7bb8f03e1a5d11db01b87b68186e043e424995a4c608840"
             ),
             "event_hash": (
-                "915d3c895503c1c82c08f6cdd74bd6aa9e24f375297e04050c15a5abcb77725b"
+                "82925553c1a9595672797f0efc4c8bc0bda9fe14f100d3b82cbc5ee6aa8029f2"
             ),
             "event": "ACTION_RECONCILIATION_REQUIRED",
-            "request_base64": "cmVxdWVzdA==",
+            "request_base64": (
+                "eyJib2R5IjoicmVxdWVzdCIsImhlYWRfYnJhbmNoIjoiYXRlbGllcjItb3Blbi1wci0x"
+                "ZjU4YjkxNDViMjQifQ=="
+            ),
             "request_hash": RECONCILIATION_REQUEST_HASH,
         },
     },

@@ -26,7 +26,12 @@ from atelier2.adapters.github.live_effects import (
     LiveGitHubEffectAdapterFactory,
 )
 from atelier2.contracts.effect_markers import body_carries_request_hash, marker_line
-from atelier2.contracts.effect_requests import HeadBranch, OpenPullRequest
+from atelier2.contracts.effect_requests import (
+    HeadBranch,
+    OpenPullRequest,
+    ReviewedDocumentationPullRequest,
+    ReviewedDocumentReplacement,
+)
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -143,6 +148,8 @@ class _FakeGitHubServer:
             pull_request = {
                 "number": number,
                 "body": payload.get("body", ""),
+                "title": payload["title"],
+                "draft": payload.get("draft", False),
                 "head": {"label": head_label},
                 "base": {"ref": payload["base"]},
             }
@@ -274,6 +281,102 @@ def effect_intent(payload: bytes = AGENT_OUTPUT, *, typed: bool = True) -> Effec
     )
 
 
+@dataclass
+class _RecordingDocumentationPublisher:
+    requests: list[ReviewedDocumentationPullRequest] = field(default_factory=list)
+
+    def publish(
+        self, intent: EffectIntent, request: ReviewedDocumentationPullRequest
+    ) -> None:
+        self.requests.append(request)
+
+    def close(self) -> None:
+        pass
+
+
+@dataclass(frozen=True)
+class _DocumentationPublisherFactory:
+    publisher: _RecordingDocumentationPublisher
+
+    def open(self) -> _RecordingDocumentationPublisher:
+        return self.publisher
+
+
+def reviewed_documentation_intent() -> EffectIntent:
+    request = ReviewedDocumentationPullRequest(
+        BASE_SHA,
+        "c" * 64,
+        "d" * 64,
+        (
+            ReviewedDocumentReplacement(
+                "docs/PRODUCT.md", "e" * 64, b"exact replacement\n"
+            ),
+        ),
+        "Reviewed documentation",
+        "The independently approved replacement.",
+        HEAD_BRANCH,
+        draft=True,
+    )
+    original = effect_intent()
+    return EffectIntent(original.binding, CanonicalRequest(request.canonical_bytes()))
+
+
+def test_a_reviewed_release_pushes_exact_content_then_uses_its_typed_pr_fields(
+    factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
+) -> None:
+    publisher = _RecordingDocumentationPublisher()
+    reviewed_factory = replace(
+        factory,
+        documentation_publisher_factory=_DocumentationPublisherFactory(publisher),
+    )
+    intent = reviewed_documentation_intent()
+    request = ReviewedDocumentationPullRequest.from_canonical_bytes(
+        intent.request.payload
+    )
+    adapter = reviewed_factory.open()
+    try:
+        adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert publisher.requests == [request]
+    assert len(server.pull_requests) == 1
+    pull_request = server.pull_requests[0]
+    assert request.base_revision == server.base_sha
+    assert pull_request["base"] == {"ref": BASE_BRANCH}
+    assert pull_request["title"] == request.title
+    assert request.draft is True
+    assert pull_request["draft"] is True
+    assert request.body in str(pull_request["body"])
+
+
+def test_a_reviewed_release_refuses_when_its_typed_base_is_not_the_bound_base(
+    factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
+) -> None:
+    publisher = _RecordingDocumentationPublisher()
+    reviewed_factory = replace(
+        factory,
+        documentation_publisher_factory=_DocumentationPublisherFactory(publisher),
+    )
+    original = reviewed_documentation_intent()
+    request = ReviewedDocumentationPullRequest.from_canonical_bytes(
+        original.request.payload
+    )
+    mismatched = replace(request, base_revision="f" * 40)
+    intent = EffectIntent(
+        original.binding, CanonicalRequest(mismatched.canonical_bytes())
+    )
+    adapter = reviewed_factory.open()
+    try:
+        with pytest.raises(GitHubEffectRefused, match="base differs"):
+            adapter.execute(intent)
+    finally:
+        adapter.close()
+
+    assert publisher.requests == []
+    assert server.pull_requests == []
+
+
 def test_execute_uses_the_push_created_branch_and_opens_one_marked_pull_request(
     factory: LiveGitHubEffectAdapterFactory, server: _FakeGitHubServer
 ) -> None:
@@ -364,21 +467,13 @@ def test_readback_before_any_execute_is_unknown_never_an_authoritative_absence(
 
 
 @pytest.mark.parametrize("operation", ["readback", "execute"])
-@pytest.mark.parametrize(
-    "payload",
-    [
-        pytest.param(b"not an open-pr request", id="utf8-body"),
-        pytest.param(b"\xff", id="non-utf8-body"),
-        pytest.param(b'{"body":"missing head"}', id="incomplete-object"),
-    ],
-)
 def test_an_untyped_open_pr_payload_fails_loud_before_any_github_call(
     factory: LiveGitHubEffectAdapterFactory,
     server: _FakeGitHubServer,
     operation: str,
-    payload: bytes,
+    malformed_open_pr_payload: bytes,
 ) -> None:
-    intent = effect_intent(payload, typed=False)
+    intent = effect_intent(malformed_open_pr_payload, typed=False)
     adapter = factory.open()
     try:
         with pytest.raises(GitHubEffectRefused, match="canonical open-pr request"):
