@@ -14,6 +14,7 @@ reaches GitHub, never during composition.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import assert_never
 
@@ -68,9 +69,6 @@ def live_github_effect_registry(
     destination: EffectDestination,
 ) -> EffectAdapterRegistry:
     repository = _connected_repository(connection)
-    open_pr = live_github_effect_adapter_factory(
-        connection, adapter_revision, destination
-    )
     push = compose_git_transport_effect_adapter(
         candidate_store,
         GitTransportConfiguration(
@@ -78,6 +76,10 @@ def live_github_effect_registry(
             f"https://github.com/{repository.owner}/{repository.name}.git",
             connection.credential_directory / GITHUB_TOKEN_CREDENTIAL_ENTRY,
         ),
+    )
+    open_pr = replace(
+        live_github_effect_adapter_factory(connection, adapter_revision, destination),
+        documentation_publisher_factory=push,
     )
     return EffectAdapterRegistry(
         (

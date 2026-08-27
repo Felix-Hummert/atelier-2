@@ -35,9 +35,18 @@ import githubkit.exception
 import httpx
 from githubkit_schemas.latest.types import ReposOwnerRepoPullsPostBodyType
 
+from atelier2.adapters.github.effects import (
+    GitHubEffectRefused,
+    OpenPullRequestRequest,
+    ReviewedDocumentationPublisher,
+    ReviewedDocumentationPublisherFactory,
+    open_pull_request,
+)
 from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effect_markers import body_carries_request_hash, marker_line
-from atelier2.contracts.effect_requests import OpenPullRequest
+from atelier2.contracts.effect_requests import (
+    ReviewedDocumentationPullRequest,
+)
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -76,10 +85,6 @@ class GitHubCredentialUnresolvable(RuntimeError):
 
 class GitHubUnexpectedResponse(RuntimeError):
     """A platform response did not carry the shape this operation reads."""
-
-
-class GitHubEffectRefused(RuntimeError):
-    """The durable request does not carry the typed open-PR contract."""
 
 
 @dataclass(frozen=True)
@@ -134,7 +139,7 @@ class _RecordedPullRequest:
     body: str
 
 
-def _body_for(request: OpenPullRequest, request_hash: str) -> str:
+def _body_for(request: OpenPullRequestRequest, request_hash: str) -> str:
     return f"{request.body}\n\n{marker_line(request_hash)}\n"
 
 
@@ -186,6 +191,7 @@ class LiveGitHubEffectAdapterFactory:
     repository: GitHubRepository
     token_credential: GitHubTokenCredential
     transport: httpx.BaseTransport | None = None
+    documentation_publisher_factory: ReviewedDocumentationPublisherFactory | None = None
 
     @property
     def binding(self) -> EffectAdapterBinding:
@@ -216,7 +222,12 @@ class LiveGitHubEffectAdapterFactory:
             # the readback-then-create rule exists to prevent.
             http_cache=False,
         )
-        return LiveGitHubEffectAdapter(client, self.repository, self.binding)
+        publisher = (
+            None
+            if self.documentation_publisher_factory is None
+            else self.documentation_publisher_factory.open()
+        )
+        return LiveGitHubEffectAdapter(client, self.repository, self.binding, publisher)
 
 
 class LiveGitHubEffectAdapter:
@@ -225,10 +236,12 @@ class LiveGitHubEffectAdapter:
         client: githubkit.GitHub[githubkit.TokenAuthStrategy],
         repository: GitHubRepository,
         binding: EffectAdapterBinding,
+        documentation_publisher: ReviewedDocumentationPublisher | None,
     ) -> None:
         self._client = client
         self._repository = repository
         self._binding = binding
+        self._documentation_publisher = documentation_publisher
         self._closed = False
 
     def readback(self, intent: EffectIntent) -> EffectReadback:
@@ -241,12 +254,21 @@ class LiveGitHubEffectAdapter:
     def execute(self, intent: EffectIntent) -> PerformedEffect:
         request = self._authorized_request(intent)
         found = self._find_recorded_pull_request(intent, request)
-        record = (
-            found if found is not None else self._create_pull_request(intent, request)
-        )
+        if found is not None:
+            return self._performed(found)
+        if isinstance(request, ReviewedDocumentationPullRequest):
+            self._verify_reviewed_base(request)
+            if self._documentation_publisher is None:
+                raise GitHubEffectRefused(
+                    "reviewed documentation open-pr requires its push publisher"
+                )
+            self._documentation_publisher.publish(intent, request)
+        record = self._create_pull_request(intent, request)
         return self._performed(record)
 
     def close(self) -> None:
+        if self._documentation_publisher is not None:
+            self._documentation_publisher.close()
         self._closed = True
 
     def _authorize_binding(self, intent: EffectIntent) -> None:
@@ -256,21 +278,37 @@ class LiveGitHubEffectAdapter:
                 "effect intent does not belong to this adapter binding"
             )
 
-    def _authorized_request(self, intent: EffectIntent) -> OpenPullRequest:
+    def _authorized_request(self, intent: EffectIntent) -> OpenPullRequestRequest:
         self._authorize_binding(intent)
-        try:
-            return OpenPullRequest.from_canonical_bytes(intent.request.payload)
-        except (TypeError, ValueError) as error:
+        return open_pull_request(intent.request)
+
+    def _verify_reviewed_base(self, request: ReviewedDocumentationPullRequest) -> None:
+        response = self._client.rest.repos.get_branch(
+            self._repository.owner,
+            self._repository.name,
+            self._repository.base_branch,
+        )
+        branch = response.raw_response.json()
+        if not isinstance(branch, dict):
+            raise GitHubUnexpectedResponse(
+                "base branch read did not return a branch object"
+            )
+        commit = branch.get("commit")
+        if not isinstance(commit, dict):
+            raise GitHubUnexpectedResponse(
+                "base branch read did not return a commit object"
+            )
+        if _string_field(commit, "sha", "base branch commit") != request.base_revision:
             raise GitHubEffectRefused(
-                "open-pr effect requires one canonical open-pr request"
-            ) from error
+                "reviewed documentation base differs from the connected base branch"
+            )
 
     def _require_open(self) -> None:
         if self._closed:
             raise RuntimeError("github live effect adapter is closed")
 
     def _find_recorded_pull_request(
-        self, intent: EffectIntent, request: OpenPullRequest
+        self, intent: EffectIntent, request: OpenPullRequestRequest
     ) -> _RecordedPullRequest | None:
         branch = request.head_branch.value
         response = self._client.rest.pulls.list(
@@ -294,16 +332,22 @@ class LiveGitHubEffectAdapter:
         return _RecordedPullRequest(branch, number, body)
 
     def _create_pull_request(
-        self, intent: EffectIntent, request: OpenPullRequest
+        self, intent: EffectIntent, request: OpenPullRequestRequest
     ) -> _RecordedPullRequest:
         branch = request.head_branch.value
         body = _body_for(request, intent.request.request_hash.value)
         create_body: ReposOwnerRepoPullsPostBodyType = {
-            "title": _title_for(body),
+            "title": (
+                request.title
+                if isinstance(request, ReviewedDocumentationPullRequest)
+                else _title_for(body)
+            ),
             "head": branch,
             "base": self._repository.base_branch,
             "body": body,
         }
+        if isinstance(request, ReviewedDocumentationPullRequest):
+            create_body["draft"] = request.draft
         try:
             response = self._client.rest.pulls.create(
                 self._repository.owner,

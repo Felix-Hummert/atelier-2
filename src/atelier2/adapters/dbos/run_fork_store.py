@@ -47,6 +47,7 @@ from atelier2.adapters.dbos.schema import (
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.dbos.workflow_ids import fork_bootstrap_workflow_id_for
+from atelier2.contracts.effect_requests import OpenPullRequest
 from atelier2.contracts.effects import ConfirmationSource, LogicalEffectKey
 from atelier2.contracts.executions import (
     NodeExecutionId,
@@ -725,11 +726,16 @@ def _effective_receipt_record(
         if source_receipt is None:
             return None
         receipt = receipt_from_record(source_receipt)
-        if (
-            agent_output is None
-            or receipt.intent.request.payload != bytes(agent_output.output_bytes)
-            or receipt.intent.request.request_hash.value
-            != str(agent_output.output_hash)
+        try:
+            request = OpenPullRequest.from_canonical_bytes(
+                receipt.intent.request.payload
+            )
+        except (TypeError, ValueError) as error:
+            raise RuntimeError(
+                "reused agent effect receipt has no typed open-pr request"
+            ) from error
+        if agent_output is None or request.body.encode("utf-8") != bytes(
+            agent_output.output_bytes
         ):
             raise RuntimeError("reused agent effect receipt disagrees with its output")
         return source_receipt

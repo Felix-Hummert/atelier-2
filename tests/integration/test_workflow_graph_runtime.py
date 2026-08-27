@@ -29,6 +29,10 @@ from atelier2.application.answer_wait import (
     UnanswerableWait,
     answer_wait_result,
 )
+from atelier2.contracts.effect_requests import (
+    OpenPullRequest,
+    head_branch_for_unbound_request,
+)
 from atelier2.contracts.effects import (
     AdapterRevision,
     EffectAdapterBinding,
@@ -67,6 +71,9 @@ nodes:
   - {id: action, type: action, next: waiting}
   - {id: agent, type: agent, job: job-17, output: draft-17, next: action}
 """
+ACTION_REQUEST = OpenPullRequest(
+    "draft-17", head_branch_for_unbound_request(b"draft-17")
+).canonical_bytes()
 
 
 class UnknownAdapter:
@@ -232,7 +239,7 @@ def test_unordered_yaml_alone_drives_agent_action_wait_subworkflow(
 
         assert events(lease) == [
             (1, "AGENT_COMPLETED", b"draft-17"),
-            (2, "ACTION_COMPLETED", b"draft-17"),
+            (2, "ACTION_COMPLETED", ACTION_REQUEST),
             (3, "WAITING_INPUT", b""),
             (4, "WAIT_ANSWERED", b"5"),
             (5, "SUBWORKFLOW_COMPLETED", b"5"),
@@ -291,7 +298,7 @@ def test_wait_and_unknown_effect_expose_durable_reasons(tmp_path: Path) -> None:
 
         assert events(lease) == [
             (1, "AGENT_COMPLETED", b"draft-17"),
-            (2, "ACTION_RECONCILIATION_REQUIRED", b"draft-17"),
+            (2, "ACTION_RECONCILIATION_REQUIRED", ACTION_REQUEST),
         ]
         with lease.engine.connect() as connection:
             assert (
@@ -315,7 +322,7 @@ def test_initial_and_reconciled_action_share_one_continuation(tmp_path: Path) ->
         initial_identity = action_path_identity(initial, revision)
         assert events(initial) == [
             (1, "AGENT_COMPLETED", b"draft-17"),
-            (2, "ACTION_COMPLETED", b"draft-17"),
+            (2, "ACTION_COMPLETED", ACTION_REQUEST),
             (3, "WAITING_INPUT", b""),
         ]
     finally:
@@ -348,9 +355,9 @@ def test_initial_and_reconciled_action_share_one_continuation(tmp_path: Path) ->
         reconciled_identity = action_path_identity(reconciled, reconciled_revision)
         assert events(reconciled) == [
             (1, "AGENT_COMPLETED", b"draft-17"),
-            (2, "ACTION_RECONCILIATION_REQUIRED", b"draft-17"),
-            (3, "ACTION_RECONCILIATION_RESOLVED", b"draft-17"),
-            (4, "ACTION_COMPLETED", b"draft-17"),
+            (2, "ACTION_RECONCILIATION_REQUIRED", ACTION_REQUEST),
+            (3, "ACTION_RECONCILIATION_RESOLVED", ACTION_REQUEST),
+            (4, "ACTION_COMPLETED", ACTION_REQUEST),
             (5, "WAITING_INPUT", b""),
         ]
         assert reconciled_revision.revision_hash == (
@@ -377,7 +384,7 @@ def action_path_identity(
         logical_key.value,
         "run-1",
         revision.revision_hash.value,
-        Sha256Hash.of(b"draft-17").value,
+        Sha256Hash.of(ACTION_REQUEST).value,
     )
     with lease.engine.connect() as connection:
         assert connection.execute(
