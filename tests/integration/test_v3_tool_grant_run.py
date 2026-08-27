@@ -66,12 +66,14 @@ from atelier2.contracts.node_records_v3 import (
     read_stored_node_receipt_reason,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
+from atelier2.contracts.run_forks import RunForkCommandId
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
 from atelier2.contracts.tool_grants_v3 import ToolGrantCapability
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
     AuthProfileRevisionCreated,
 )
+from atelier2.ports.durable_run_forks import DurableRunForkCreated, ForkRunRequest
 from atelier2.ports.durable_runs import (
     DurableRunCreated,
     DurableRunFormatNotExecutable,
@@ -386,6 +388,35 @@ def test_a_granted_node_runs_the_projects_verification_and_leaves_the_proof(
             started_runtime.engine.begin() as connection,
         ):
             connection.execute(rewrite)
+
+
+def test_a_completed_verification_tool_node_can_be_forked_without_an_effect_receipt(
+    runtime: tuple[DbosRuntime, Path, Path],
+) -> None:
+    started_runtime, _scratch_root, _cwd_record = runtime
+    workflow, bindings, _grant_revision = publish_granted_node(started_runtime)
+    starter = DbosDurableRunStarter(
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
+    )
+    assert isinstance(
+        starter.start_published(
+            StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
+        ),
+        DurableRunCreated,
+    )
+    started_runtime.launch()
+    wait_for_state(started_runtime, RunState.COMPLETED)
+
+    forked = starter.fork_run(
+        ForkRunRequest(RUN, "verification-is-not-an-effect", "implement")
+    )
+
+    assert isinstance(forked, DurableRunForkCreated)
+    assert forked.fork.command_id == RunForkCommandId.for_request(
+        RUN, "verification-is-not-an-effect"
+    )
 
 
 @pytest.mark.proves("a-nonzero-project-verification-fails-the-attempt-durably-named")

@@ -809,7 +809,7 @@ export const NODE_STATES = [
   "interrupted",
 ] as const;
 
-const nodeRailEntrySchema = z
+export const nodeRailEntrySchema = z
   .object({
     node_id: z.string().min(1),
     state: z.enum(NODE_STATES),
@@ -820,8 +820,33 @@ const nodeRailEntrySchema = z
       })
       .strict()
       .nullable(),
+    reused_from_run_reference: publicRunReference.nullable().optional(),
+    source_event_hash: sha256.nullable().optional(),
+    source_receipt_hash: sha256.nullable().optional(),
+    source_declared_context_package_hash: sha256.nullable().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((entry, context) => {
+    const reuseEvidence = [
+      entry.reused_from_run_reference,
+      entry.source_event_hash,
+      entry.source_receipt_hash,
+      entry.source_declared_context_package_hash,
+    ];
+    const namedEvidence = reuseEvidence.filter((value) => value != null).length;
+    if (namedEvidence !== 0 && namedEvidence !== reuseEvidence.length) {
+      context.addIssue({
+        code: "custom",
+        message: "a reused rail node names its complete source evidence",
+      });
+    }
+    if (namedEvidence === reuseEvidence.length && entry.state !== "succeeded") {
+      context.addIssue({
+        code: "custom",
+        message: "only a succeeded rail node can be reused",
+      });
+    }
+  });
 
 const runV2Schema = z
   .object({
@@ -945,7 +970,26 @@ const runOrderSchema = z
 
 export type RunOrder = z.infer<typeof runOrderSchema>;
 
-const runV3Schema = z
+const runForkOriginSchema = z
+  .object({
+    public_run_reference: publicRunReference,
+    terminal_hash: sha256,
+    restart_from_node_id: z.string().min(1),
+    fork_hash: sha256,
+  })
+  .strict();
+
+const runForkSuccessorSchema = z
+  .object({
+    public_run_reference: publicRunReference,
+    restart_from_node_id: z.string().min(1),
+    fork_hash: sha256,
+  })
+  .strict();
+
+export const MAXIMUM_RUN_FORK_SUCCESSORS = 100;
+
+export const runV3Schema = z
   .object({
     workflow_format_version: z.literal(3),
     run_id: z.string().min(1),
@@ -955,6 +999,11 @@ const runV3Schema = z
     run_configuration_revision_hash: sha256,
     agent_bindings: z.array(agentBindingV2Schema).max(100),
     orders: z.array(runOrderSchema),
+    fork_origin: runForkOriginSchema.nullable().optional(),
+    fork_successors: z
+      .array(runForkSuccessorSchema)
+      .max(MAXIMUM_RUN_FORK_SUCCESSORS)
+      .optional(),
     state_version: nonnegativeSafeInteger,
     state: z.enum(RUN_STATES_V3),
     current_node_id: z.string().min(1),
@@ -1139,6 +1188,14 @@ export const runPageSchema = z
  * carries.
  */
 
+export const EFFECT_CONFIRMATION_SOURCES = [
+  "ADAPTER_READBACK",
+  "ADAPTER_EXECUTION",
+  "OPERATOR_FOUND",
+  "OPERATOR_AUTHORIZED_EXECUTION",
+  "FORK_REFERENCE",
+] as const;
+
 const receiptSchema = z
   .object({
     logical_effect_key: z.string().min(1),
@@ -1146,12 +1203,7 @@ const receiptSchema = z
     effect_id: z.string().min(1),
     result_hash: sha256,
     result_base64: standardBase64,
-    confirmation_source: z.enum([
-      "ADAPTER_READBACK",
-      "ADAPTER_EXECUTION",
-      "OPERATOR_FOUND",
-      "OPERATOR_AUTHORIZED_EXECUTION",
-    ]),
+    confirmation_source: z.enum(EFFECT_CONFIRMATION_SOURCES),
     reconcile_command_id: z.string().min(1).nullable(),
   })
   .strict();
@@ -1840,6 +1892,26 @@ export const problemDefinitions = {
   },
   "run-input-refused": { status: 422, title: "Run input refused" },
   "run-identity-conflict": { status: 409, title: "Run identity conflict" },
+  "run-fork-origin-not-terminal": {
+    status: 409,
+    title: "Run fork origin is not terminal",
+  },
+  "run-fork-node-missing": {
+    status: 409,
+    title: "Run fork node is missing",
+  },
+  "run-fork-loop-unsupported": {
+    status: 409,
+    title: "Run fork loop is unsupported",
+  },
+  "run-fork-prefix-not-reusable": {
+    status: 409,
+    title: "Run fork prefix is not reusable",
+  },
+  "run-fork-command-conflict": {
+    status: 409,
+    title: "Run fork command conflict",
+  },
   "answer-revision-conflict": {
     status: 409,
     title: "Answer revision conflict",
@@ -2320,6 +2392,26 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant(
     "run-identity-conflict",
     problemDefinitions["run-identity-conflict"],
+  ),
+  problemVariant(
+    "run-fork-origin-not-terminal",
+    problemDefinitions["run-fork-origin-not-terminal"],
+  ),
+  problemVariant(
+    "run-fork-node-missing",
+    problemDefinitions["run-fork-node-missing"],
+  ),
+  problemVariant(
+    "run-fork-loop-unsupported",
+    problemDefinitions["run-fork-loop-unsupported"],
+  ),
+  problemVariant(
+    "run-fork-prefix-not-reusable",
+    problemDefinitions["run-fork-prefix-not-reusable"],
+  ),
+  problemVariant(
+    "run-fork-command-conflict",
+    problemDefinitions["run-fork-command-conflict"],
   ),
   problemVariant(
     "answer-revision-conflict",

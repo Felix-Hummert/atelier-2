@@ -9,7 +9,11 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
-from atelier2.adapters.dbos.effect_store import commit_resolution
+from atelier2.adapters.dbos.effect_store import (
+    commit_resolution,
+    decode_found,
+    encode_found,
+)
 from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 from atelier2.adapters.dbos.runtime import (
     DbosRuntime,
@@ -37,8 +41,10 @@ from atelier2.contracts.effects import (
     EffectIntentState,
     EffectIntentStateVersion,
     EffectReadback,
+    EffectReceiptReference,
     EffectResult,
     EffectUnknownOutcome,
+    LogicalEffectKey,
     OperatorAuthoritativeAbsence,
     OperatorFoundEffect,
     PerformedEffect,
@@ -47,7 +53,13 @@ from atelier2.contracts.effects import (
     ReconcileCommandId,
     ReconcileCommandState,
 )
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.hashing import Sha256Hash
+from atelier2.contracts.runs import (
+    RunId,
+    RunState,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
 from atelier2.ports.effects import EffectAdapter
 from tests.scenarios.agents import commit_configured_agent
 from tests.scenarios.runs import (
@@ -282,6 +294,36 @@ def test_unknown_commits_waiting_state_and_required_event_together(
             ("AGENT_COMPLETED", b"exact-request"),
             ("ACTION_RECONCILIATION_REQUIRED", b"exact-request"),
         ]
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    (
+        "fork_source_logical_key",
+        "fork_source_run_id",
+        "fork_source_workflow_revision_hash",
+        "fork_source_result_hash",
+    ),
+)
+def test_encoded_fork_resolution_refuses_a_partial_source_identity(
+    prepared: tuple[DbosRuntime, EffectIntent, Path], missing_field: str
+) -> None:
+    _runtime, intent, _external = prepared
+    source_result_hash = Sha256Hash.of(b"source-result")
+    encoded = encode_found(
+        PerformedEffect(EffectId("source-effect"), EffectResult(b"source-result")),
+        ConfirmationSource.FORK_REFERENCE,
+        source_receipt=EffectReceiptReference(
+            LogicalEffectKey("source-logical-key"),
+            RunId("source-run"),
+            WorkflowRevisionHash(intent.binding.workflow_revision_hash.value),
+            source_result_hash,
+        ),
+    )
+    encoded[missing_field] = None
+
+    with pytest.raises(ValueError, match="fork receipt source identity is incomplete"):
+        decode_found(intent, encoded)
 
 
 def test_authoritative_absence_executes_once_and_atomically_confirms_the_run(

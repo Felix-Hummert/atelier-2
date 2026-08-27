@@ -31,6 +31,7 @@ from atelier2.contracts.node_records_v3 import (
     ContextPackageMember,
     DeclaredContextPackage,
     DeclaredOutput,
+    InputEnvelope,
     MaterializedOrderMember,
     NodeExecutionRequest,
     NodeKindV3,
@@ -108,6 +109,7 @@ def bind_node_execution(
     node_id: str,
     run_configuration: RunConfigurationRevision,
     orders: tuple[RunInput, ...] = (),
+    inherited_inputs: tuple[InputEnvelope, ...] = (),
 ) -> BoundNodeExecution:
     """What this node was asked to do, as the two records that say it.
 
@@ -146,7 +148,7 @@ def bind_node_execution(
             if isinstance(node, AgentNodeV3)
             else None
         ),
-        inputs=(),
+        inputs=inherited_inputs,
         bound_revisions=_bound_revisions_of(node, resolution),
         declared_outputs=_declared_outputs_of(node, resolution),
     )

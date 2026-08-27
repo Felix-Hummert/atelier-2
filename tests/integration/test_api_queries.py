@@ -1189,7 +1189,7 @@ def test_run_page_batches_rows_and_parses_each_distinct_revision_once(
     assert isinstance(page, RunPage)
     assert len(page.runs) == len(assignments)
     assert parse_calls == 2
-    assert selects <= 4
+    assert selects <= 6
 
 
 def test_run_page_batches_orders_in_one_query_and_a_run_without_one_answers_empty(
@@ -1356,7 +1356,7 @@ nodes:
         event.remove(engine, "before_cursor_execute", count_selects)
 
     assert isinstance(page, RunPage)
-    assert selects == 6
+    assert selects == 8
     assert len(intent_selects) == 1
     assert "effect_intents.logical_key IN" in intent_selects[0]
     assert "effect_intents.run_id IN" not in intent_selects[0]
