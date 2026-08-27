@@ -11,3 +11,7 @@ text = "Every active requirement rule names OPERATOR or DESK and a source pointe
 [[sentence]]
 id = "the-documentation-order-gate-states-the-bound-of-what-it-proves"
 text = "The documentation-order gate states the same bound the documentation states: it proves versioned shape and byte binding without claiming that a cited live source or approval says what review recorded."
+
+[[sentence]]
+id = "a-new-source-object-after-a-bound-watermark-names-the-document-as-stale"
+text = "For each source-bound active requirement revision, a newly observed thread or decision object after its bound watermark causes the pure freshness read to name that document exactly once as stale; no later object yields a current reading, and an unresolved watermark yields no freshness report."

@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 
@@ -22,6 +23,14 @@ DOCUMENTATION = REQUIREMENTS / "README.md"
 LEGACY_DOCUMENT = REQUIREMENTS / "0008-example.md"
 BOUND_START = "<!-- documentation-order-gate-bound:start -->"
 BOUND_END = "<!-- documentation-order-gate-bound:end -->"
+SOURCE_BINDING = (
+    "[[source_binding]]\n"
+    'document = "0004"\n'
+    'content_sha256 = "866b718c0be69be0121dfcda77c75d18f70bbee150e277e2fad503bbaf02efb3"\n'
+    'source_thread = "github-issue:21"\n'
+    'watermark_kind = "issue_body_revision"\n'
+    'watermark = "3c1f663cd51a1c7aedbeffc39c3f38ee2ed6174d16103ab68d9d811014352ed0"\n'
+)
 
 
 def copied_project(tmp_path: Path) -> Path:
@@ -340,6 +349,85 @@ def test_an_unresolvable_exact_base_revision_fails_closed(tmp_path: Path) -> Non
 
     assert result.returncode != 0
     assert "absent or unresolvable" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("change", "document"),
+    [
+        (
+            lambda content: content.replace(
+                'document = "0004"\ncontent_sha256 = '
+                '"866b718c0be69be0121dfcda77c75d18f70bbee150e277e2fad503bbaf02efb3"\n'
+                'source_thread = "github-issue:21"',
+                'document = "0003"\ncontent_sha256 = '
+                '"866b718c0be69be0121dfcda77c75d18f70bbee150e277e2fad503bbaf02efb3"\n'
+                'source_thread = "github-issue:21"',
+            ),
+            "0003",
+        ),
+        (lambda content: content + "\n" + SOURCE_BINDING, "0004"),
+        (
+            lambda content: (
+                content + "\n[[source_binding]]\n"
+                'document = "0004"\n'
+                'content_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"\n'
+                'source_thread = "github-issue:21"\n'
+                'watermark_kind = "issue_body_revision"\n'
+                'watermark = "unknown"\n'
+            ),
+            "0004",
+        ),
+        (
+            lambda content: content.replace(
+                'watermark_kind = "issue_body_revision"',
+                'watermark_kind = "unrecognized_kind"',
+            ),
+            "0004",
+        ),
+    ],
+    ids=(
+        "wrong-document-digest",
+        "duplicate-binding",
+        "unregistered-revision",
+        "unsupported-watermark-kind",
+    ),
+)
+def test_source_bindings_fail_by_document_when_they_are_not_exact(
+    tmp_path: Path,
+    change: Callable[[str], str],
+    document: str,
+) -> None:
+    project = copied_project(tmp_path)
+    registry = project / REGISTRY
+    registry.write_text(change(registry.read_text(encoding="utf-8")), encoding="utf-8")
+
+    result = run_gate(project)
+
+    assert result.returncode != 0
+    assert f"source binding {document}" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda content: content.replace('watermark = "3c1', 'watermark = "4c1'),
+        lambda content: content.replace("\n" + SOURCE_BINDING, "\n"),
+    ],
+    ids=("changed", "deleted"),
+)
+def test_existing_source_bindings_are_append_only_against_the_base(
+    tmp_path: Path, change: Callable[[str], str]
+) -> None:
+    project = copied_project(tmp_path)
+    base_revision = commit_project(project)
+    registry = project / REGISTRY
+    registry.write_text(change(registry.read_text(encoding="utf-8")), encoding="utf-8")
+
+    result = run_gate(project, base_revision=base_revision)
+
+    assert result.returncode != 0
+    assert "source binding 0004" in result.stderr
+    assert "changed or deleted" in result.stderr
 
 
 @pytest.mark.proves("the-documentation-order-gate-states-the-bound-of-what-it-proves")
