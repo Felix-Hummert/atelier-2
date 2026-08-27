@@ -12,12 +12,20 @@ from atelier2.contracts.node_records_v3 import (
 from atelier2.contracts.run_configuration_v3 import RunConfigurationRevisionHash
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 
+MAXIMUM_RUN_FORK_SUCCESSORS = 100
+"""How many successor lineage records one run projection may carry."""
+
+MAXIMUM_RUN_FORK_EVIDENCE_RECORDS = 100
+"""How many ordered reuse and effect-fence records one fork may carry."""
+
 
 class RunForkCommandId(Sha256Hash):
     """The command identity owned by the origin run and the caller's retry key."""
 
     @classmethod
-    def for_request(cls, origin_run_id: RunId, idempotency_key: str) -> RunForkCommandId:
+    def for_request(
+        cls, origin_run_id: RunId, idempotency_key: str
+    ) -> RunForkCommandId:
         if idempotency_key == "":
             raise ValueError("a run-fork idempotency key must be nonempty")
         return cls.of(
@@ -144,6 +152,11 @@ class RunFork:
         )
         if len(set(fence_coordinates)) != len(fence_coordinates):
             raise ValueError("a run fork fences each effect execution once")
+        if (
+            len(self.reused_nodes) + len(self.effect_fences)
+            > MAXIMUM_RUN_FORK_EVIDENCE_RECORDS
+        ):
+            raise ValueError("a run fork exceeds its evidence record limit")
         object.__setattr__(
             self,
             "fork_hash",

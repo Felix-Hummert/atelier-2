@@ -21,7 +21,7 @@ from atelier2.adapters.dbos.continuation import (
 from atelier2.adapters.dbos.effect_store import (
     EncodedEffectResolution,
     commit_resolution,
-    observe_adapter,
+    observe_adapter_with_fork_fence,
     observe_reconcile_command,
     resolve_observation,
 )
@@ -56,10 +56,10 @@ from atelier2.adapters.dbos.node_binding_codec import (
     encode_node_binding,
 )
 from atelier2.adapters.dbos.run_store import (
+    bootstrap_node_for_snapshot,
     commit_agent_completed,
     commit_subworkflow_completed,
     commit_wait_answered,
-    entry_node_of,
     load_node_outputs,
     load_published_schema_document,
     load_run_inputs,
@@ -250,15 +250,7 @@ def bootstrap_run_binding(
         if run.revision_hash != revision_hash:
             raise RunBindingConflict("bootstrap requires its exact durable run binding")
         graph = load_graph(session, revision_hash)
-        entry = entry_node_of(graph)
-        if (
-            run.state is not RunState.STARTED
-            or run.current_node_id != entry
-            or run.state_version != 0
-            or run.last_event_sequence != 0
-        ):
-            raise RunBindingConflict("bootstrap requires its exact new durable run")
-        return entry
+        return bootstrap_node_for_snapshot(session, run, graph)
 
     return str(datasource.run_tx_step({"name": BOOTSTRAP_STEP_NAME}, load_binding))
 
@@ -1039,7 +1031,7 @@ def register_durable_run_workflow(
         observed = _run_effect_step(
             datasource,
             OBSERVE_STEP_NAME,
-            observe_adapter,
+            observe_adapter_with_fork_fence,
             adapter,
             logical_key,
             revision_hash,

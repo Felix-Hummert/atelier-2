@@ -280,7 +280,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     38: "aebd8b6bad8a719864f0c02828db643dd3dcbe7c89198beb6a8c1c4c30100824",
     39: "3c0cc05dd977fd61d2c88d78ba7566fdc0146e2d7af27df61aea636a4ac2c4be",
     40: "d8d7b89cc0cacd15dfde84bf15f796f0e03d9b571c26be0309ed87a60960071d",
-    41: "f7992c05c349c81e20f49ad437f0407435798dcf65592c8528897637c7ee2f6d",
+    41: "7c4bc13ceb1db7533bfdf9697c1e6b262032a516275b488eac73af9969446b68",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -800,7 +800,8 @@ effect_receipts = sa.Table(
         "AND fork_source_logical_key IS NOT NULL "
         "AND fork_source_run_id IS NOT NULL "
         "AND fork_source_workflow_revision_hash IS NOT NULL "
-        "AND fork_source_result_hash IS NOT NULL) "
+        "AND fork_source_result_hash IS NOT NULL "
+        "AND fork_source_result_hash = result_hash) "
         "OR (confirmation_source <> 'FORK_REFERENCE' "
         "AND fork_source_logical_key IS NULL "
         "AND fork_source_run_id IS NULL "
@@ -1570,7 +1571,6 @@ node_receipts_v3 = sa.Table(
         nullable=False,
     ),
     sa.Column("receipt_hash", sa.Text, unique=True, nullable=False),
-    sa.UniqueConstraint("node_execution_id", "receipt_hash"),
     sa.CheckConstraint(
         "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
     ),
@@ -1715,9 +1715,7 @@ run_forks = sa.Table(
         ("successor_run_id", "workflow_revision_hash"),
         ("runs.run_id", "runs.revision_hash"),
     ),
-    sa.CheckConstraint(
-        "length(command_id) = 64 AND command_id NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint("length(command_id) = 64 AND command_id NOT GLOB '*[^0-9a-f]*'"),
     sa.CheckConstraint("length(origin_run_id) > 0"),
     sa.CheckConstraint(
         "length(origin_terminal_hash) = 64 "
@@ -1733,9 +1731,7 @@ run_forks = sa.Table(
         "AND run_configuration_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
     sa.CheckConstraint("length(restart_from_node_id) > 0"),
-    sa.CheckConstraint(
-        "length(fork_hash) = 64 AND fork_hash NOT GLOB '*[^0-9a-f]*'"
-    ),
+    sa.CheckConstraint("length(fork_hash) = 64 AND fork_hash NOT GLOB '*[^0-9a-f]*'"),
 )
 run_fork_reused_nodes = sa.Table(
     "run_fork_reused_nodes",
@@ -1758,16 +1754,18 @@ run_fork_reused_nodes = sa.Table(
     ),
     sa.PrimaryKeyConstraint("successor_run_id", "position"),
     sa.UniqueConstraint("successor_run_id", "node_id", "round_ordinal"),
-    sa.ForeignKeyConstraint(
-        ("successor_run_id",), ("run_forks.successor_run_id",)
-    ),
+    sa.ForeignKeyConstraint(("successor_run_id",), ("run_forks.successor_run_id",)),
     sa.ForeignKeyConstraint(
         ("source_run_id", "source_workflow_revision_hash"),
         ("runs.run_id", "runs.revision_hash"),
     ),
     sa.ForeignKeyConstraint(
-        ("source_node_execution_id", "source_receipt_hash"),
-        ("node_receipts_v3.node_execution_id", "node_receipts_v3.receipt_hash"),
+        ("source_node_execution_id",),
+        ("node_execution_requests_v3.node_execution_id",),
+    ),
+    sa.ForeignKeyConstraint(
+        ("source_receipt_hash",),
+        ("node_receipts_v3.receipt_hash",),
     ),
     sa.ForeignKeyConstraint(
         ("source_declared_context_package_hash",),
@@ -1786,8 +1784,7 @@ run_fork_reused_nodes = sa.Table(
         "AND source_node_execution_id NOT GLOB '*[^0-9a-f]*'"
     ),
     sa.CheckConstraint(
-        "length(source_event_hash) = 64 "
-        "AND source_event_hash NOT GLOB '*[^0-9a-f]*'"
+        "length(source_event_hash) = 64 AND source_event_hash NOT GLOB '*[^0-9a-f]*'"
     ),
     sa.CheckConstraint(
         "length(source_receipt_hash) = 64 "
@@ -1816,9 +1813,7 @@ run_fork_effect_fences = sa.Table(
     sa.Column("source_result_hash", sa.Text, nullable=False),
     sa.PrimaryKeyConstraint("successor_run_id", "position"),
     sa.UniqueConstraint("successor_run_id", "node_id", "round_ordinal"),
-    sa.ForeignKeyConstraint(
-        ("successor_run_id",), ("run_forks.successor_run_id",)
-    ),
+    sa.ForeignKeyConstraint(("successor_run_id",), ("run_forks.successor_run_id",)),
     sa.ForeignKeyConstraint(
         (
             "source_logical_key",
@@ -1843,8 +1838,7 @@ run_fork_effect_fences = sa.Table(
         "AND source_workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
     sa.CheckConstraint(
-        "length(source_result_hash) = 64 "
-        "AND source_result_hash NOT GLOB '*[^0-9a-f]*'"
+        "length(source_result_hash) = 64 AND source_result_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
 node_receipt_outputs_v3 = sa.Table(
@@ -5080,9 +5074,12 @@ def _apply_v40_to_v41(connection: sqlite3.Connection) -> None:
         *_RUN_FORK_TRIGGERS,
         _PREDECESSOR_EFFECT_RECEIPTS_BEFORE_FORK_REFERENCE,
     ):
-        if connection.execute(
-            "SELECT type FROM sqlite_master WHERE name=?", (name,)
-        ).fetchone() is not None:
+        if (
+            connection.execute(
+                "SELECT type FROM sqlite_master WHERE name=?", (name,)
+            ).fetchone()
+            is not None
+        ):
             raise StoreMigrationRefused(
                 f"schema version {_VERSION_FORTY} already has {name}; "
                 "this command will not alter it"

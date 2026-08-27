@@ -31,6 +31,8 @@ from atelier2.api.wire.resources import (
     NoWaitingResourceV2,
     PublicAttemptStateName,
     RunCancellabilityResource,
+    RunForkOriginResource,
+    RunForkSuccessorResource,
     RunNotCancellableReasonName,
     RunOrderResource,
     RunReceiptResource,
@@ -84,6 +86,22 @@ def node_rail_resources(
                     ordinal=cast(Literal[1, 2], entry.attempt.ordinal),
                     state=cast(PublicAttemptStateName | None, entry.attempt.state),
                 )
+            ),
+            reused_from_run_reference=(
+                None
+                if entry.reused is None
+                else encode_public_run_reference(entry.reused.source_run_id)
+            ),
+            source_event_hash=(
+                None if entry.reused is None else entry.reused.source_event_hash.value
+            ),
+            source_receipt_hash=(
+                None if entry.reused is None else entry.reused.source_receipt_hash.value
+            ),
+            source_declared_context_package_hash=(
+                None
+                if entry.reused is None
+                else entry.reused.source_declared_context_package_hash.value
             ),
         )
         for entry in entries
@@ -243,6 +261,28 @@ def _run_resource_v3(projection: RunProjection, run: RunV3) -> RunResourceV3:
             for binding in run.agent_bindings
         ),
         orders=tuple(run_order_resource(order) for order in projection.orders),
+        fork_origin=(
+            None
+            if projection.fork_origin is None
+            else RunForkOriginResource(
+                public_run_reference=encode_public_run_reference(
+                    projection.fork_origin.origin_run_id
+                ),
+                terminal_hash=projection.fork_origin.terminal_hash.value,
+                restart_from_node_id=projection.fork_origin.restart_from_node_id,
+                fork_hash=projection.fork_origin.fork_hash.value,
+            )
+        ),
+        fork_successors=tuple(
+            RunForkSuccessorResource(
+                public_run_reference=encode_public_run_reference(
+                    successor.successor_run_id
+                ),
+                restart_from_node_id=successor.restart_from_node_id,
+                fork_hash=successor.fork_hash.value,
+            )
+            for successor in projection.fork_successors
+        ),
         state_version=run.state_version,
         state=cast(
             Literal[

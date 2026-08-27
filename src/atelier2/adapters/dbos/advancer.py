@@ -13,9 +13,11 @@ from atelier2.adapters.dbos.agent_effect_grants import (
 from atelier2.adapters.dbos.effect_store import (
     commit_resolution,
     encode_readback,
+    fork_fenced_resolution,
     intent_snapshot_from_record,
     load_intent,
 )
+from atelier2.adapters.dbos.run_store import load_node_output_payload
 from atelier2.adapters.dbos.run_transitions import load_graph, load_run
 from atelier2.adapters.dbos.schema import (
     agent_receipts_v2,
@@ -91,26 +93,36 @@ def graph_action_intent(
     predecessor = _action_predecessor(graph, action)
     if not isinstance(predecessor, (AgentNode, AgentNodeV2, AgentNodeV3)):
         raise RunEffectConflict("Action predecessor is not an Agent")
-    record = session.execute(
-        sa.select(run_events.c.payload, run_events.c.payload_hash).where(
-            run_events.c.run_id == run_id.value,
-            run_events.c.revision_hash == revision_hash.value,
-            run_events.c.node_id == predecessor.id,
-            run_events.c.event_kind == RunEventKind.AGENT_COMPLETED.value,
+    record = None
+    if isinstance(graph, WorkflowGraphV3):
+        payload = load_node_output_payload(
+            session,
+            run_id,
+            revision_hash,
+            graph,
+            predecessor.id,
+            run.current_round_ordinal,
         )
-    ).one_or_none()
-    if record is None:
-        raise RunEffectConflict("Action has no durable Agent output")
-    payload = bytes(record.payload)
+    else:
+        record = session.execute(
+            sa.select(run_events.c.payload, run_events.c.payload_hash).where(
+                run_events.c.run_id == run_id.value,
+                run_events.c.revision_hash == revision_hash.value,
+                run_events.c.node_id == predecessor.id,
+                run_events.c.event_kind == RunEventKind.AGENT_COMPLETED.value,
+            )
+        ).one_or_none()
+        if record is None:
+            raise RunEffectConflict("Action has no durable Agent output")
+        payload = bytes(record.payload)
     expected_output = (
         predecessor.output.encode("utf-8")
         if isinstance(predecessor, AgentNode)
         else payload
     )
     if (
-        Sha256Hash.of(payload).value != record.payload_hash
-        or payload != expected_output
-    ):
+        record is not None and Sha256Hash.of(payload).value != record.payload_hash
+    ) or payload != expected_output:
         raise RunEffectConflict("Action predecessor output binding changed")
     binding = EffectBinding(
         logical_effect_key_for_node(
@@ -387,6 +399,9 @@ def redeem_agent_open_pr(
     moves the run and its intent to reconciliation; it never guesses or lets
     the agent complete before a receipt exists.
     """
+    fenced = fork_fenced_resolution(session, logical_key, revision_hash)
+    if fenced is not None:
+        return commit_resolution(session, logical_key, revision_hash, fenced).value
     intent = load_intent(session, logical_key, revision_hash)
     redemption = redeem_prepared_tool_effect(intent, adapter)
     if isinstance(redemption, AgentToolEffectPending):

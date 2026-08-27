@@ -40,13 +40,17 @@ from atelier2.adapters.dbos.schema import (
     runs,
     tool_redemptions,
 )
-from atelier2.adapters.dbos.starter import DbosDurableRunStarter
+from atelier2.adapters.dbos.starter import (
+    DbosDurableRunStarter,
+    DbosWorkflowRevisionPublisher,
+)
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
 from atelier2.adapters.github.marker import body_carries_request_hash
 from atelier2.application.compose_node_job import node_job
 from atelier2.contracts.agents import (
+    AgentBindingSet,
     AgentExecutionRequestV2,
     AgentExecutorOperationalIdentity,
 )
@@ -78,16 +82,29 @@ from atelier2.contracts.executions import (
     logical_effect_key_for,
     logical_effect_key_for_node,
 )
+from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_bindings import RunV3
-from atelier2.contracts.runs import RunId, RunState, WorkflowRevisionHash
+from atelier2.contracts.run_forks import RunForkCommandId, successor_run_id_for
+from atelier2.contracts.runs import (
+    RunId,
+    RunState,
+    WorkflowRevision,
+    WorkflowRevisionHash,
+)
 from atelier2.contracts.workflows_v3 import AgentNodeV3
+from atelier2.ports.durable_run_forks import DurableRunForkCreated, ForkRunRequest
 from atelier2.ports.durable_runs import (
     DurableRunFormatNotExecutable,
     StartPublishedRunRequestV2,
 )
 from atelier2.ports.effects import EffectAdapter
-from tests.scenarios.agents import agent_attempt_execution, agent_scratch_root
+from tests.scenarios.agents import (
+    RecordingAgentExecutorFactoryV2,
+    agent_attempt_execution,
+    agent_scratch_root,
+)
 from tests.scenarios.open_pr_agent import (
+    OPEN_PR_GRANT,
     OPERATIONAL_IDENTITY,
     PR_SPEC,
     create_open_pr_agent_run,
@@ -95,6 +112,7 @@ from tests.scenarios.open_pr_agent import (
     publish_open_pr_agent_run,
 )
 from tests.scenarios.runs import submit_reconcile_command
+from tests.scenarios.workflows import ANY_JSON_SCHEMA
 
 RUN = RunId("v3/agent-open-pr")
 UNGRANTED_RUN = RunId("v3/agent-no-grant")
@@ -168,6 +186,43 @@ def _start(runtime: DbosRuntime, run: RunId, *, granted: bool) -> None:
     workflow, bindings = publish_open_pr_agent_run(runtime, granted=granted)
     create_open_pr_agent_run(runtime, run, workflow, bindings)
     runtime.launch()
+
+
+def _publish_two_agent_open_pr_run(
+    runtime: DbosRuntime,
+) -> tuple[WorkflowRevision, AgentBindingSet]:
+    _, bindings = publish_open_pr_agent_run(runtime, granted=True)
+    tool_revision = PublishedRevision(
+        RevisionKind.TOOL, OPEN_PR_GRANT
+    ).revision_hash.value
+    schema_revision = ANY_JSON_SCHEMA.revision_hash.value
+    workflow = WorkflowRevision(
+        f"""format_version: 3
+name: Reuse one agent effect before another agent
+nodes:
+  - id: implement
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Draft the pull request this chain opens.
+    tools:
+      - {{ref: open-pr, revision: {tool_revision}}}
+    outputs:
+      - name: result
+        schema: {{ref: any-json, revision: {schema_revision}}}
+  - id: review
+    type: agent
+    role: builder
+    mode: headless
+    instruction: Review the already-opened pull request.
+    depends_on: [implement]
+    outputs:
+      - name: result
+        schema: {{ref: any-json, revision: {schema_revision}}}
+""".encode()
+    )
+    DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
+    return workflow, bindings
 
 
 def _wait_for_state(runtime: DbosRuntime, run: RunId, state: RunState) -> None:
@@ -384,6 +439,124 @@ def test_a_granted_agent_node_opens_one_pull_request_and_leaves_one_receipt(
     assert CANARY_TOKEN not in pull_request.body
     assert not _durable_bytes_contain(atelier_sqlite, CANARY_TOKEN)
     assert not _durable_bytes_contain(github.database_path, CANARY_TOKEN)
+
+
+def test_forked_agent_open_pr_references_the_confirmed_effect_without_replay(
+    runtime: tuple[DbosRuntime, GitHubEffectAdapterFactory, Path],
+) -> None:
+    started_runtime, github, _atelier_sqlite = runtime
+    workflow, bindings = publish_open_pr_agent_run(started_runtime, granted=True)
+    create_open_pr_agent_run(started_runtime, RUN, workflow, bindings)
+    started_runtime.launch()
+    _wait_for_state(started_runtime, RUN, RunState.COMPLETED)
+    _wait_for_receipt(started_runtime)
+
+    starter = DbosDurableRunStarter(
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
+    )
+    request = ForkRunRequest(RUN, "retry-agent-open-pr", "implement")
+    forked = starter.fork_run(request)
+    assert isinstance(forked, DurableRunForkCreated)
+    successor = successor_run_id_for(
+        RunForkCommandId.for_request(RUN, "retry-agent-open-pr")
+    )
+    _wait_for_state(started_runtime, successor, RunState.COMPLETED)
+
+    assert len(github.recorded_pull_requests()) == 1
+    with started_runtime.engine.connect() as connection:
+        successor_receipt = (
+            connection.execute(
+                sa.select(effect_receipts).where(
+                    effect_receipts.c.run_id == successor.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+        events = tuple(
+            connection.execute(
+                sa.select(run_events.c.event_kind).where(
+                    run_events.c.run_id == successor.value
+                )
+            ).scalars()
+        )
+    assert events == (
+        RunEventKind.AGENT_COMPLETED.value,
+        RunEventKind.ACTION_COMPLETED.value,
+    )
+    assert successor_receipt["confirmation_source"] == "FORK_REFERENCE"
+    assert successor_receipt["fork_source_run_id"] == RUN.value
+    assert successor_receipt["fork_source_logical_key"] is not None
+    assert successor_receipt["fork_source_result_hash"] is not None
+
+
+def test_fork_of_fork_fences_an_inherited_agent_effect_before_adapter_invocation(
+    runtime: tuple[DbosRuntime, GitHubEffectAdapterFactory, Path],
+) -> None:
+    started_runtime, github, _atelier_sqlite = runtime
+    workflow, bindings = _publish_two_agent_open_pr_run(started_runtime)
+    create_open_pr_agent_run(started_runtime, RUN, workflow, bindings)
+    started_runtime.launch()
+    _wait_for_state(started_runtime, RUN, RunState.COMPLETED)
+
+    starter = DbosDurableRunStarter(
+        started_runtime.engine,
+        started_runtime.settings,
+        started_runtime.agent_executor_registry,
+    )
+    inherited = starter.fork_run(ForkRunRequest(RUN, "reuse-agent", "review"))
+    assert isinstance(inherited, DurableRunForkCreated)
+    _wait_for_state(started_runtime, inherited.run.run_id, RunState.COMPLETED)
+    assert inherited.fork.reused_nodes[0].source_run_id == RUN
+
+    exact = starter.fork_run(
+        ForkRunRequest(inherited.run.run_id, "exact-inherited-agent", "implement")
+    )
+    assert isinstance(exact, DurableRunForkCreated)
+    _wait_for_state(started_runtime, exact.run.run_id, RunState.COMPLETED)
+    assert len(github.recorded_pull_requests()) == 1
+    with started_runtime.engine.connect() as connection:
+        exact_receipt = (
+            connection.execute(
+                sa.select(effect_receipts).where(
+                    effect_receipts.c.run_id == exact.run.run_id.value
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert exact_receipt["confirmation_source"] == "FORK_REFERENCE"
+    assert exact_receipt["fork_source_run_id"] == RUN.value
+
+    factory = next(
+        entry.factory
+        for entry in started_runtime.agent_executor_registry.entries
+        if isinstance(entry.factory, RecordingAgentExecutorFactoryV2)
+    )
+    assert isinstance(factory, RecordingAgentExecutorFactoryV2)
+    assert factory.opened is not None
+    factory.opened.output = json.dumps(
+        {"title": "Changed request", "opened_by": "the nested fork"}
+    ).encode()
+    mismatched = starter.fork_run(
+        ForkRunRequest(inherited.run.run_id, "changed-inherited-agent", "implement")
+    )
+    assert isinstance(mismatched, DurableRunForkCreated)
+    _wait_for_state(
+        started_runtime, mismatched.run.run_id, RunState.WAITING_RECONCILIATION
+    )
+    assert len(github.recorded_pull_requests()) == 1
+    with started_runtime.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(effect_receipts)
+                .where(effect_receipts.c.run_id == mismatched.run.run_id.value)
+            )
+            == 0
+        )
 
 
 @pytest.mark.proves("without-the-grant-the-open-pr-tool-does-not-exist")

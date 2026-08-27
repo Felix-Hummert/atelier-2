@@ -86,6 +86,7 @@ class NodeReceiptReason(StrEnum):
     """
 
     OUTPUT_ACCEPTED = "output-accepted"
+    EFFECT_CONFIRMED = "effect-confirmed"
     OUTPUT_SCHEMA_REFUSED = "output-schema-refused"
     PROCESS_EXITED_UNSUCCESSFULLY = "process-exited-unsuccessfully"
     PROCESS_OUTPUT_LIMIT_EXCEEDED = "process-output-limit-exceeded"
@@ -516,9 +517,7 @@ class InputEnvelope:
                 raise ValueError("a succeeded input envelope carries schema and value")
             if self.receipt is not None:
                 raise ValueError("a succeeded input envelope carries no receipt")
-            if (self.source_event_hash is None) != (
-                self.source_receipt_hash is None
-            ):
+            if (self.source_event_hash is None) != (self.source_receipt_hash is None):
                 raise ValueError(
                     "a reused succeeded input names both source hashes or neither"
                 )

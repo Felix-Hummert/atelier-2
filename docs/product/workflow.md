@@ -151,6 +151,18 @@ a receipt, an event or an API projection, and the lease listing has no `.git`.
 ADR 0010 stays PROPOSED. A Wait node holds the run in
 `WAITING_INPUT` as a durable state rather than as work in progress: nothing is queued
 behind it, a restart finds it still waiting, and it moves only when a person answers.
+
+A terminal, non-looping V3 run can be forked from one node of that same revision.
+The successor does not edit or copy the origin: every successful node strictly before
+the restart node is an immutable reference to the origin execution and its receipt,
+event and declared Context-Package evidence. The successor creates node requests and
+declared packages only from the restart node onward. Confirmed effects at or after that
+node are fenced across the two runs: an identical request reuses the confirmed result
+without calling the adapter, while different bytes stop at reconciliation rather than
+replaying an already-opened pull request. The run list and detail expose the same
+origin/successor lineage and mark referenced nodes on the rail. Forking does not change
+the workflow revision, configuration, orders, budget accounting, or queue policy;
+nonterminal origins and looped workflows are refused.
 The V3 run page shows that wait as an answer card, with the authored question
 the published document already carries, and sends the typed bytes through
 the same `POST /runs/{ref}/answers` door the API already proved.

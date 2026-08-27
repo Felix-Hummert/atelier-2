@@ -249,6 +249,11 @@ class EffectReceipt:
             raise ValueError(
                 "FORK_REFERENCE names one exact source receipt and no other source does"
             )
+        if (
+            self.source_receipt is not None
+            and self.source_receipt.result_hash != self.result.payload_hash
+        ):
+            raise ValueError("FORK_REFERENCE preserves the source receipt result")
 
 
 @dataclass(frozen=True)

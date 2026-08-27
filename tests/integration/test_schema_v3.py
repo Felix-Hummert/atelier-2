@@ -592,7 +592,7 @@ def test_run_event_answer_and_action_receipt_bindings_are_immutable_and_composit
                 "INSERT INTO effect_receipts VALUES "
                 "('key','run-1',:request,:request_hash,:revision,'adapter',"
                 "'destination','operation','effect',:result,:result_hash,"
-                "'ADAPTER_EXECUTION',NULL)"
+                "'ADAPTER_EXECUTION',NULL,NULL,NULL,NULL,NULL)"
             ),
             {
                 "request": b"draft-17",
@@ -695,7 +695,7 @@ def test_run_event_schema_receipt_binding_matrix(tmp_path: Path) -> None:
                 "INSERT INTO effect_receipts VALUES "
                 "('key','run-1',:result,:result_hash,:revision,'adapter',"
                 "'destination','operation','effect',:result,:result_hash,"
-                "'ADAPTER_EXECUTION',NULL)"
+                "'ADAPTER_EXECUTION',NULL,NULL,NULL,NULL,NULL)"
             ),
             {"result": result, "result_hash": result_hash, "revision": revision},
         )
@@ -832,7 +832,7 @@ def test_composite_foreign_keys_reject_individually_valid_cross_bindings(
                     "INSERT INTO effect_receipts VALUES "
                     "(:key,:run,:payload,:payload_hash,:revision,'adapter',"
                     "'destination','operation',:effect,:payload,:payload_hash,"
-                    "'ADAPTER_EXECUTION',NULL)"
+                    "'ADAPTER_EXECUTION',NULL,NULL,NULL,NULL,NULL)"
                 ),
                 {
                     "key": f"key-{index}",
@@ -899,7 +899,7 @@ def test_composite_foreign_keys_reject_individually_valid_cross_bindings(
                 "INSERT INTO effect_receipts VALUES "
                 "('key-3','run-2',:payload,:payload_hash,:revision,'adapter',"
                 "'destination','operation','effect-3',:payload,:payload_hash,"
-                "'ADAPTER_EXECUTION',NULL)"
+                "'ADAPTER_EXECUTION',NULL,NULL,NULL,NULL,NULL)"
             ),
             {
                 "payload": payload,

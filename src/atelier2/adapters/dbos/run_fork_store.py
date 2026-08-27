@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import struct
 from collections.abc import Mapping, Sequence
-from typing import Any, assert_never
+from typing import Any
 
 import sqlalchemy as sa
 from dbos import DBOSClient
@@ -10,11 +10,20 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DatabaseError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from atelier2.adapters.dbos.agent_effect_grants import (
+    agent_node_redeems_platform_effect,
+)
 from atelier2.adapters.dbos.effect_store import receipt_from_record
 from atelier2.adapters.dbos.instants import record_run_started
 from atelier2.adapters.dbos.names import QUEUE_NAME, WORKFLOW_NAME
-from atelier2.adapters.dbos.node_records import persist_bound_node_executions
-from atelier2.adapters.dbos.run_store import load_run_orders
+from atelier2.adapters.dbos.node_records import (
+    node_receipt_from_record,
+    persist_bound_node_executions,
+)
+from atelier2.adapters.dbos.run_store import (
+    bootstrap_node_for_snapshot,
+    load_run_orders,
+)
 from atelier2.adapters.dbos.run_transitions import (
     event_from_record,
     load_graph,
@@ -26,7 +35,6 @@ from atelier2.adapters.dbos.schema import (
     context_packages_v3,
     effect_receipts,
     node_execution_requests_v3,
-    node_receipt_outputs_v3,
     node_receipts_v3,
     run_agent_bindings,
     run_configuration_revisions,
@@ -38,7 +46,7 @@ from atelier2.adapters.dbos.schema import (
     runs,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
-from atelier2.adapters.dbos.workflow_ids import bootstrap_workflow_id_for
+from atelier2.adapters.dbos.workflow_ids import fork_bootstrap_workflow_id_for
 from atelier2.contracts.effects import ConfirmationSource, LogicalEffectKey
 from atelier2.contracts.executions import (
     NodeExecutionId,
@@ -50,13 +58,9 @@ from atelier2.contracts.node_records_v3 import (
     DeclaredContextPackage,
     DeclaredContextPackageHash,
     InputEnvelope,
-    NodeExecutionRequestHash,
-    NodeReceipt,
     NodeReceiptHash,
     PersistedReceiptDisposition,
     ProjectedDeliveryStatus,
-    ReceiptOutput,
-    read_stored_node_receipt_reason,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.run_bindings import RunV3
@@ -67,6 +71,7 @@ from atelier2.contracts.run_configuration_v3 import (
     RunConfigurationRevisionHash,
 )
 from atelier2.contracts.run_forks import (
+    MAXIMUM_RUN_FORK_EVIDENCE_RECORDS,
     RunFork,
     RunForkCommandId,
     RunForkEffectFence,
@@ -138,11 +143,10 @@ class DbosRunForkStore:
                 if existing is not None:
                     if (
                         existing.origin_run_id != request.origin_run_id
-                        or existing.restart_from_node_id
-                        != request.restart_from_node_id
+                        or existing.restart_from_node_id != request.restart_from_node_id
                     ):
                         return DurableRunForkCommandConflict()
-                    successor = _load_successor(connection, existing.successor_run_id)
+                    successor = validate_stored_fork(connection, existing)
                     return DurableRunForkExisting(existing, successor)
 
                 origin_record = (
@@ -181,15 +185,11 @@ class DbosRunForkStore:
                 line = _linear_node_ids(graph)
                 target_index = line.index(request.restart_from_node_id)
                 reused = tuple(
-                    _resolve_reused_node(
-                        connection, origin, graph, node_id, position
-                    )
+                    _resolve_reused_node(connection, origin, graph, node_id, position)
                     for position, node_id in enumerate(line[:target_index])
                 )
                 reuse_by_node = {entry.node_id: entry for entry in reused}
-                fences = _effect_fences(
-                    connection, origin, graph, line[target_index:]
-                )
+                fences = _effect_fences(connection, origin, graph, line[target_index:])
                 successor_run_id = successor_run_id_for(command_id)
                 inherited_inputs = _inherited_inputs(
                     connection,
@@ -208,7 +208,7 @@ class DbosRunForkStore:
                     reused,
                     fences,
                 )
-                workflow_id = bootstrap_workflow_id_for(successor_run_id)
+                workflow_id = fork_bootstrap_workflow_id_for(successor_run_id)
                 connection.execute(
                     runs.insert().values(
                         run_id=successor_run_id.value,
@@ -282,6 +282,11 @@ class DbosRunForkStore:
                     origin.revision_hash.value,
                 )
                 successor = _load_successor(connection, successor_run_id)
+                if (
+                    bootstrap_node_for_snapshot(connection, successor, graph)
+                    != request.restart_from_node_id
+                ):
+                    raise RuntimeError("fork successor bootstrap target disagrees")
                 return DurableRunForkCreated(fork, successor)
         except _PrefixNotReusable:
             return DurableRunForkPrefixNotReusable()
@@ -295,11 +300,7 @@ class DbosRunForkStore:
 
     def _executor_refusal(
         self, origin: RunV3
-    ) -> (
-        DurableRunForkExecutorUnavailable
-        | DurableRunForkCapabilityUnavailable
-        | None
-    ):
+    ) -> DurableRunForkExecutorUnavailable | DurableRunForkCapabilityUnavailable | None:
         for binding in origin.agent_bindings:
             key = AgentExecutorKey(
                 binding.auth_profile.provider_id,
@@ -308,7 +309,9 @@ class DbosRunForkStore:
             if not self._agent_executor_registry.contains(key):
                 return DurableRunForkExecutorUnavailable()
             capability = binding.configuration.requested_capability
-            if capability not in self._agent_executor_registry.declared_capabilities(key):
+            if capability not in self._agent_executor_registry.declared_capabilities(
+                key
+            ):
                 return DurableRunForkCapabilityUnavailable()
             if not self._agent_executor_registry.is_startable(key, capability):
                 return DurableRunForkExecutorUnavailable()
@@ -382,7 +385,7 @@ def _decode_frame(payload: bytes, domain: str) -> tuple[bytes, ...]:
 
 def _resolved_reference(payload: bytes) -> ResolvedReference:
     fields = _decode_frame(payload, "run-configuration-reference/v1")
-    if len(fields) != 9:
+    if len(fields) != 8:
         raise ValueError("run configuration reference has the wrong arity")
     chain = tuple(
         VersionedReference(
@@ -390,10 +393,7 @@ def _resolved_reference(payload: bytes) -> ResolvedReference:
             revision=entry_fields[1].decode("utf-8"),
         )
         for entry in _decode_frame(fields[4], "reference-chain/v1")
-        if len(
-            entry_fields := _decode_frame(entry, "reference-chain-entry/v1")
-        )
-        == 2
+        if len(entry_fields := _decode_frame(entry, "reference-chain-entry/v1")) == 2
     )
     return ResolvedReference(
         ReferenceSite(
@@ -432,7 +432,9 @@ def _resolve_reused_node(
         reference = _reused_node_from_record(inherited)
         _validate_reused_source(connection, reference, graph)
         return reference
-    execution_id = NodeExecutionId.for_node(origin.run_id, origin.revision_hash, node_id)
+    execution_id = NodeExecutionId.for_node(
+        origin.run_id, origin.revision_hash, node_id
+    )
     event_kind = _successful_event_kind(graph.node(node_id))
     event_record = (
         connection.execute(
@@ -458,11 +460,9 @@ def _resolve_reused_node(
             f"strict predecessor {node_id!r} has no reusable success fact"
         )
     event = event_from_record(event_record)
-    receipt = _node_receipt_from_record(connection, receipt_record)
+    receipt = node_receipt_from_record(connection, receipt_record)
     if receipt.disposition is not PersistedReceiptDisposition.SUCCEEDED:
-        raise _PrefixNotReusable(
-            f"strict predecessor {node_id!r} did not succeed"
-        )
+        raise _PrefixNotReusable(f"strict predecessor {node_id!r} did not succeed")
     reference = RunForkReusedNode(
         node_id,
         1,
@@ -490,44 +490,8 @@ def _successful_event_kind(node: object) -> RunEventKind:
             return RunEventKind.WAIT_ANSWERED
         case ActionNodeV3():
             return RunEventKind.ACTION_COMPLETED
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
-def _node_receipt_from_record(
-    connection: Connection, record: Mapping[str, Any]
-) -> NodeReceipt:
-    reason, schema_revision, value_hash = read_stored_node_receipt_reason(
-        str(record["reason"])
-    )
-    outputs = tuple(
-        ReceiptOutput(
-            str(output["output_name"]),
-            PublishedRevisionHash(str(output["schema_revision_hash"])),
-            Sha256Hash(str(output["value_hash"])),
-        )
-        for output in connection.execute(
-            sa.select(node_receipt_outputs_v3)
-            .where(
-                node_receipt_outputs_v3.c.node_execution_id
-                == str(record["node_execution_id"])
-            )
-            .order_by(node_receipt_outputs_v3.c.position)
-        ).mappings()
-    )
-    receipt = NodeReceipt(
-        NodeExecutionId(str(record["node_execution_id"])),
-        PersistedReceiptDisposition(str(record["disposition"])),
-        reason,
-        NodeExecutionRequestHash(str(record["request_hash"])),
-        DeclaredContextPackageHash(str(record["context_package_hash"])),
-        outputs,
-        schema_revision,
-        value_hash,
-    )
-    if receipt.receipt_hash != NodeReceiptHash(str(record["receipt_hash"])):
-        raise RuntimeError("source node receipt bytes disagree with their hash")
-    return receipt
+        case _:
+            raise TypeError("fork prefix contains an unsupported node kind")
 
 
 def _validate_reused_source(
@@ -552,8 +516,7 @@ def _validate_reused_source(
             sa.select(node_receipts_v3).where(
                 node_receipts_v3.c.node_execution_id
                 == reference.source_node_execution_id.value,
-                node_receipts_v3.c.receipt_hash
-                == reference.source_receipt_hash.value,
+                node_receipts_v3.c.receipt_hash == reference.source_receipt_hash.value,
             )
         )
         .mappings()
@@ -583,7 +546,7 @@ def _validate_reused_source(
     ):
         raise RuntimeError("reused source evidence is incomplete")
     event = event_from_record(event_record)
-    receipt = _node_receipt_from_record(connection, receipt_record)
+    receipt = node_receipt_from_record(connection, receipt_record)
     package = DeclaredContextPackage(bytes(package_manifest))
     if (
         event.event_kind != _successful_event_kind(graph.node(reference.node_id))
@@ -615,10 +578,19 @@ def _effect_fences(
 ) -> tuple[RunForkEffectFence, ...]:
     fences: list[RunForkEffectFence] = []
     for node_id in node_ids:
-        receipt_record = _effective_receipt_record(
-            connection, origin, node_id
+        node = graph.node(node_id)
+        effect_bearing = isinstance(node, ActionNodeV3) or (
+            isinstance(node, AgentNodeV3)
+            and agent_node_redeems_platform_effect(connection, node)
         )
+        receipt_record = _effective_receipt_record(connection, origin, graph, node_id)
         if receipt_record is None:
+            if effect_bearing and _effective_node_succeeded(
+                connection, origin, graph, node_id
+            ):
+                raise RuntimeError(
+                    f"succeeded effect-bearing node {node_id!r} has no receipt"
+                )
             continue
         ultimate = _ultimate_effect_receipt_record(connection, receipt_record)
         receipt = receipt_from_record(ultimate)
@@ -635,10 +607,53 @@ def _effect_fences(
     return tuple(fences)
 
 
+def _effective_node_succeeded(
+    connection: Connection,
+    origin: RunV3,
+    graph: WorkflowGraphV3,
+    node_id: str,
+) -> bool:
+    execution_id = NodeExecutionId.for_node(
+        origin.run_id, origin.revision_hash, node_id
+    )
+    direct = connection.scalar(
+        sa.select(sa.literal(True)).where(
+            sa.exists().where(
+                run_events.c.run_id == origin.run_id.value,
+                run_events.c.revision_hash == origin.revision_hash.value,
+                run_events.c.node_execution_id == execution_id.value,
+                run_events.c.event_kind
+                == _successful_event_kind(graph.node(node_id)).value,
+            )
+        )
+    )
+    if direct is not None:
+        return True
+    inherited = (
+        connection.execute(
+            sa.select(run_fork_reused_nodes).where(
+                run_fork_reused_nodes.c.successor_run_id == origin.run_id.value,
+                run_fork_reused_nodes.c.node_id == node_id,
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if inherited is None:
+        return False
+    _validate_reused_source(connection, _reused_node_from_record(inherited), graph)
+    return True
+
+
 def _effective_receipt_record(
-    connection: Connection, origin: RunV3, node_id: str
-) -> Mapping[str, Any] | None:
-    logical_key = logical_effect_key_for_node(origin.run_id, origin.revision_hash, node_id)
+    connection: Connection,
+    origin: RunV3,
+    graph: WorkflowGraphV3,
+    node_id: str,
+) -> Mapping[Any, Any] | None:
+    logical_key = logical_effect_key_for_node(
+        origin.run_id, origin.revision_hash, node_id
+    )
     direct = (
         connection.execute(
             sa.select(effect_receipts).where(
@@ -662,6 +677,8 @@ def _effective_receipt_record(
     )
     if inherited is None:
         return None
+    reference = _reused_node_from_record(inherited)
+    _validate_reused_source(connection, reference, graph)
     source_event = (
         connection.execute(
             sa.select(run_events).where(
@@ -671,8 +688,55 @@ def _effective_receipt_record(
         .mappings()
         .one_or_none()
     )
-    if source_event is None or source_event["receipt_logical_key"] is None:
-        return None
+    if source_event is None:
+        raise RuntimeError("reused effect source event is missing")
+    if source_event["receipt_logical_key"] is None:
+        if reference.source_agent_receipt_hash is None:
+            return None
+        source_logical_key = logical_effect_key_for_node(
+            reference.source_run_id,
+            reference.source_workflow_revision_hash,
+            reference.node_id,
+            reference.round_ordinal,
+        )
+        agent_output = connection.execute(
+            sa.select(
+                agent_receipts_v2.c.output_bytes,
+                agent_receipts_v2.c.output_hash,
+            ).where(
+                agent_receipts_v2.c.node_execution_id
+                == reference.source_node_execution_id.value,
+                agent_receipts_v2.c.receipt_hash
+                == reference.source_agent_receipt_hash.value,
+            )
+        ).one_or_none()
+        source_receipt = (
+            connection.execute(
+                sa.select(effect_receipts).where(
+                    effect_receipts.c.logical_key == source_logical_key.value,
+                    effect_receipts.c.run_id == reference.source_run_id.value,
+                    effect_receipts.c.workflow_revision_hash
+                    == reference.source_workflow_revision_hash.value,
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if source_receipt is None:
+            return None
+        receipt = receipt_from_record(source_receipt)
+        if (
+            agent_output is None
+            or receipt.intent.request.payload != bytes(agent_output.output_bytes)
+            or receipt.intent.request.request_hash.value
+            != str(agent_output.output_hash)
+        ):
+            raise RuntimeError("reused agent effect receipt disagrees with its output")
+        return source_receipt
+    if source_event["receipt_result_hash"] is None:
+        raise RuntimeError("reused action effect source is incomplete")
+    if reference.source_agent_receipt_hash is not None:
+        raise RuntimeError("reused agent effect carries an action receipt binding")
     return (
         connection.execute(
             sa.select(effect_receipts).where(
@@ -691,8 +755,8 @@ def _effective_receipt_record(
 
 
 def _ultimate_effect_receipt_record(
-    connection: Connection, record: Mapping[str, Any]
-) -> Mapping[str, Any]:
+    connection: Connection, record: Mapping[Any, Any]
+) -> Mapping[Any, Any]:
     seen: set[tuple[str, str, str, str]] = set()
     current = record
     while str(current["confirmation_source"]) == ConfirmationSource.FORK_REFERENCE:
@@ -719,6 +783,34 @@ def _ultimate_effect_receipt_record(
         )
     receipt_from_record(current)
     return current
+
+
+def _validate_effect_fence(connection: Connection, fence: RunForkEffectFence) -> None:
+    record = (
+        connection.execute(
+            sa.select(effect_receipts).where(
+                effect_receipts.c.logical_key == fence.source_logical_key.value,
+                effect_receipts.c.run_id == fence.source_run_id.value,
+                effect_receipts.c.workflow_revision_hash
+                == fence.source_workflow_revision_hash.value,
+                effect_receipts.c.result_hash == fence.source_result_hash.value,
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if record is None:
+        raise RuntimeError("fork effect fence source receipt is missing")
+    ultimate = _ultimate_effect_receipt_record(connection, record)
+    receipt = receipt_from_record(ultimate)
+    if (
+        receipt.intent.binding.logical_key != fence.source_logical_key
+        or receipt.intent.binding.run_id != fence.source_run_id
+        or receipt.intent.binding.workflow_revision_hash
+        != fence.source_workflow_revision_hash
+        or receipt.result.payload_hash != fence.source_result_hash
+    ):
+        raise RuntimeError("fork effect fence source receipt disagrees")
 
 
 def _inherited_inputs(
@@ -859,6 +951,7 @@ def _stored_fork_for_command(
                 == str(record["successor_run_id"])
             )
             .order_by(run_fork_reused_nodes.c.position)
+            .limit(MAXIMUM_RUN_FORK_EVIDENCE_RECORDS + 1)
         ).mappings()
     )
     fences = tuple(
@@ -877,6 +970,7 @@ def _stored_fork_for_command(
                 == str(record["successor_run_id"])
             )
             .order_by(run_fork_effect_fences.c.position)
+            .limit(MAXIMUM_RUN_FORK_EVIDENCE_RECORDS + 1)
         ).mappings()
     )
     fork = RunFork(
@@ -885,9 +979,7 @@ def _stored_fork_for_command(
         Sha256Hash(str(record["origin_terminal_hash"])),
         RunId(str(record["successor_run_id"])),
         WorkflowRevisionHash(str(record["workflow_revision_hash"])),
-        RunConfigurationRevisionHash(
-            str(record["run_configuration_revision_hash"])
-        ),
+        RunConfigurationRevisionHash(str(record["run_configuration_revision_hash"])),
         str(record["restart_from_node_id"]),
         reused,
         fences,
@@ -897,7 +989,38 @@ def _stored_fork_for_command(
     return fork
 
 
-def _reused_node_from_record(record: Mapping[str, Any]) -> RunForkReusedNode:
+def validate_stored_fork(connection: Connection, fork: RunFork) -> RunV3:
+    """Reconstruct and prove one stored fork before any caller projects it."""
+
+    origin = _load_successor(connection, fork.origin_run_id)
+    successor = _load_successor(connection, fork.successor_run_id)
+    _validate_stored_fork_header(connection, fork, successor)
+    graph = load_graph(connection, fork.workflow_revision_hash)
+    if not isinstance(graph, WorkflowGraphV3) or graph.loops:
+        raise RuntimeError("stored fork graph is no longer executable")
+    line = _linear_node_ids(graph)
+    target_index = line.index(fork.restart_from_node_id)
+    if tuple(entry.node_id for entry in fork.reused_nodes) != line[:target_index]:
+        raise RuntimeError("stored fork prefix disagrees with its graph")
+    try:
+        expected_reused_nodes = tuple(
+            _resolve_reused_node(connection, origin, graph, node_id, position)
+            for position, node_id in enumerate(line[:target_index])
+        )
+    except _PrefixNotReusable as error:
+        raise RuntimeError(
+            "stored fork prefix evidence is no longer reusable"
+        ) from error
+    if expected_reused_nodes != fork.reused_nodes:
+        raise RuntimeError("stored fork prefix evidence disagrees")
+    if _effect_fences(connection, origin, graph, line[target_index:]) != (
+        fork.effect_fences
+    ):
+        raise RuntimeError("stored fork effect evidence disagrees")
+    return successor
+
+
+def _reused_node_from_record(record: Mapping[Any, Any]) -> RunForkReusedNode:
     agent_receipt = record["source_agent_receipt_hash"]
     return RunForkReusedNode(
         str(record["node_id"]),
@@ -907,9 +1030,7 @@ def _reused_node_from_record(record: Mapping[str, Any]) -> RunForkReusedNode:
         NodeExecutionId(str(record["source_node_execution_id"])),
         Sha256Hash(str(record["source_event_hash"])),
         NodeReceiptHash(str(record["source_receipt_hash"])),
-        DeclaredContextPackageHash(
-            str(record["source_declared_context_package_hash"])
-        ),
+        DeclaredContextPackageHash(str(record["source_declared_context_package_hash"])),
         None if agent_receipt is None else Sha256Hash(str(agent_receipt)),
     )
 
@@ -926,3 +1047,46 @@ def _load_successor(connection: Connection, run_id: RunId) -> RunV3:
     if not isinstance(run, RunV3):
         raise TypeError("run fork successor is not a V3 run")
     return run
+
+
+def _validate_stored_fork_header(
+    connection: Connection, fork: RunFork, successor: RunV3
+) -> None:
+    origin = (
+        connection.execute(
+            sa.select(
+                runs.c.terminal_hash,
+                runs.c.revision_hash,
+                runs.c.agent_binding_set_hash,
+                runs.c.run_configuration_revision_hash,
+            ).where(runs.c.run_id == fork.origin_run_id.value)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    bootstrap_workflow_id = connection.scalar(
+        sa.select(runs.c.bootstrap_workflow_id).where(
+            runs.c.run_id == fork.successor_run_id.value
+        )
+    )
+    if (
+        origin is None
+        or str(origin["terminal_hash"]) != fork.origin_terminal_hash.value
+        or str(origin["revision_hash"]) != fork.workflow_revision_hash.value
+        or str(origin["agent_binding_set_hash"]) != successor.binding_set_hash.value
+        or str(origin["run_configuration_revision_hash"])
+        != fork.run_configuration_revision_hash.value
+        or successor.revision_hash != fork.workflow_revision_hash
+        or successor.run_configuration_revision_hash
+        != fork.run_configuration_revision_hash
+        or bootstrap_workflow_id
+        != fork_bootstrap_workflow_id_for(fork.successor_run_id)
+    ):
+        raise RuntimeError("durable run fork header disagrees with its runs")
+    orders = load_run_orders(
+        connection, (fork.origin_run_id.value, fork.successor_run_id.value)
+    )
+    if orders.get(fork.origin_run_id.value, ()) != orders.get(
+        fork.successor_run_id.value, ()
+    ):
+        raise RuntimeError("durable run fork orders disagree with its origin")

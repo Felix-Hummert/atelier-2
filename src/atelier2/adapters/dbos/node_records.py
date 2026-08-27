@@ -43,6 +43,7 @@ from atelier2.contracts.node_records_v3 import (
     ReceiptOutput,
     RunInput,
     node_receipt_reason_names_a_schema_judgment,
+    read_stored_node_receipt_reason,
     store_node_receipt_reason,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
@@ -58,6 +59,42 @@ class NodeReceiptConflict(RuntimeError):
     something else is the store contradicting itself -- surfaced, never absorbed
     by the insert's identity rule.
     """
+
+
+def node_receipt_from_record(connection: Any, record: Mapping[Any, Any]) -> NodeReceipt:
+    """Rebuild and verify one immutable node receipt and its ordered outputs."""
+
+    reason, schema_revision, value_hash = read_stored_node_receipt_reason(
+        str(record["reason"])
+    )
+    outputs = tuple(
+        ReceiptOutput(
+            str(output["output_name"]),
+            PublishedRevisionHash(str(output["schema_revision_hash"])),
+            Sha256Hash(str(output["value_hash"])),
+        )
+        for output in connection.execute(
+            sa.select(node_receipt_outputs_v3)
+            .where(
+                node_receipt_outputs_v3.c.node_execution_id
+                == str(record["node_execution_id"])
+            )
+            .order_by(node_receipt_outputs_v3.c.position)
+        ).mappings()
+    )
+    receipt = NodeReceipt(
+        NodeExecutionId(str(record["node_execution_id"])),
+        PersistedReceiptDisposition(str(record["disposition"])),
+        reason,
+        NodeExecutionRequestHash(str(record["request_hash"])),
+        DeclaredContextPackageHash(str(record["context_package_hash"])),
+        outputs,
+        schema_revision,
+        value_hash,
+    )
+    if receipt.receipt_hash.value != str(record["receipt_hash"]):
+        raise NodeReceiptConflict("durable node receipt bytes disagree with their hash")
+    return receipt
 
 
 def persist_bound_node_executions(

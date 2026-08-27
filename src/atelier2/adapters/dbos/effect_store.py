@@ -16,6 +16,7 @@ from atelier2.adapters.dbos.schema import (
     effect_intents,
     effect_receipts,
     reconcile_commands,
+    run_fork_effect_fences,
     runs,
 )
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
@@ -205,6 +206,7 @@ def encode_found(
     performed: PerformedEffect,
     source: ConfirmationSource,
     command_id: ReconcileCommandId | None = None,
+    source_receipt: EffectReceiptReference | None = None,
 ) -> EncodedEffectResolution:
     return {
         "outcome": "FOUND",
@@ -213,6 +215,20 @@ def encode_found(
         "result_hash": performed.result.payload_hash.value,
         "confirmation_source": source.value,
         "reconcile_command_id": None if command_id is None else command_id.value,
+        "fork_source_logical_key": (
+            None if source_receipt is None else source_receipt.logical_key.value
+        ),
+        "fork_source_run_id": None
+        if source_receipt is None
+        else source_receipt.run_id.value,
+        "fork_source_workflow_revision_hash": (
+            None
+            if source_receipt is None
+            else source_receipt.workflow_revision_hash.value
+        ),
+        "fork_source_result_hash": (
+            None if source_receipt is None else source_receipt.result_hash.value
+        ),
     }
 
 
@@ -224,6 +240,7 @@ def encode_readback(
             PerformedEffect(readback.effect_id, readback.result),
             readback.confirmation_source,
             readback.reconcile_command_id,
+            readback.source_receipt,
         )
     return {"outcome": readback.outcome.value}
 
@@ -234,6 +251,7 @@ def decode_found(intent: EffectIntent, encoded: Mapping[str, Any]) -> EffectRece
         Sha256Hash(str(encoded["result_hash"])),
     )
     command_id = encoded.get("reconcile_command_id")
+    source_logical_key = encoded.get("fork_source_logical_key")
     return EffectReceipt(
         intent,
         effect_id=EffectId(str(encoded["effect_id"])),
@@ -242,6 +260,85 @@ def decode_found(intent: EffectIntent, encoded: Mapping[str, Any]) -> EffectRece
         reconcile_command_id=(
             None if command_id is None else ReconcileCommandId(str(command_id))
         ),
+        source_receipt=(
+            None
+            if source_logical_key is None
+            else EffectReceiptReference(
+                LogicalEffectKey(str(source_logical_key)),
+                RunId(str(encoded["fork_source_run_id"])),
+                WorkflowRevisionHash(
+                    str(encoded["fork_source_workflow_revision_hash"])
+                ),
+                Sha256Hash(str(encoded["fork_source_result_hash"])),
+            )
+        ),
+    )
+
+
+def fork_fenced_resolution(
+    session: Any, logical_key: str, revision_hash: str
+) -> EncodedEffectResolution | None:
+    """Resolve a successor effect from its source fence, before any adapter call."""
+
+    intent = load_intent(session, logical_key, revision_hash)
+    fences = tuple(
+        session.execute(
+            sa.select(run_fork_effect_fences).where(
+                run_fork_effect_fences.c.successor_run_id == intent.binding.run_id.value
+            )
+        ).mappings()
+    )
+    matching = tuple(
+        fence
+        for fence in fences
+        if logical_effect_key_for_node(
+            intent.binding.run_id,
+            intent.binding.workflow_revision_hash,
+            str(fence["node_id"]),
+            int(fence["round_ordinal"]),
+        ).value
+        == logical_key
+    )
+    if not matching:
+        return None
+    if len(matching) != 1:
+        raise DurableEffectConflict("fork effect fence is not unique")
+    fence = matching[0]
+    source_record = (
+        session.execute(
+            sa.select(effect_receipts).where(
+                effect_receipts.c.logical_key == str(fence["source_logical_key"]),
+                effect_receipts.c.run_id == str(fence["source_run_id"]),
+                effect_receipts.c.workflow_revision_hash
+                == str(fence["source_workflow_revision_hash"]),
+                effect_receipts.c.result_hash == str(fence["source_result_hash"]),
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if source_record is None:
+        raise DurableEffectConflict("fork effect fence source receipt is missing")
+    source = receipt_from_record(source_record)
+    exact = (
+        source.intent.request == intent.request
+        and source.intent.binding.adapter_revision == intent.binding.adapter_revision
+        and source.intent.binding.destination == intent.binding.destination
+        and source.intent.binding.adapter_operational_identity
+        == intent.binding.adapter_operational_identity
+    )
+    if not exact:
+        return {"outcome": EffectOutcome.UNKNOWN.value}
+    source_reference = EffectReceiptReference(
+        source.intent.binding.logical_key,
+        source.intent.binding.run_id,
+        source.intent.binding.workflow_revision_hash,
+        source.result.payload_hash,
+    )
+    return encode_found(
+        PerformedEffect(source.effect_id, source.result),
+        ConfirmationSource.FORK_REFERENCE,
+        source_receipt=source_reference,
     )
 
 
@@ -255,6 +352,20 @@ def observe_adapter(
     readback = adapter.readback(intent)
     intent.authorize_adapter_readback(readback)
     return encode_readback(readback)
+
+
+def observe_adapter_with_fork_fence(
+    session: Any,
+    adapter: EffectAdapter,
+    logical_key: str,
+    revision_hash: str,
+) -> EncodedEffectResolution:
+    """Apply the cross-run fence before allowing an adapter readback or execution."""
+
+    fenced = fork_fenced_resolution(session, logical_key, revision_hash)
+    if fenced is not None:
+        return fenced
+    return observe_adapter(session, adapter, logical_key, revision_hash)
 
 
 def resolve_observation(
@@ -420,6 +531,7 @@ def commit_resolution(
             not in {
                 ConfirmationSource.ADAPTER_READBACK,
                 ConfirmationSource.ADAPTER_EXECUTION,
+                ConfirmationSource.FORK_REFERENCE,
             }
             or receipt.reconcile_command_id is not None
         ):
