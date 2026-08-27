@@ -56,7 +56,7 @@ const OPEN_TILE_GLANCES = 2;
 const REACH_START_CLICKS = 2;
 const REACH_START_GLANCES = 1;
 
-/** Frame "Import — the sheet after the drop" (§04). §07 via Import: button · file · Add = 3 from Catalog; from another room Catalog +1. */
+/** Frame "List" Import door + "Import — the sheet after the drop" (§04). §07 via Import: button · file · Add = 3 from Catalog; from another room Catalog +1. Glances: door, sheet (via-button analog of §07 "veil, sheet"). */
 const IMPORT_VIA_BUTTON_CLICKS = 4;
 const IMPORT_VIA_BUTTON_GLANCES = 2;
 
@@ -523,6 +523,8 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
     await expect(page.getByRole("heading", { name: catalogPageCopy.title })).toBeVisible();
     const importButton = page.getByRole("button", { name: catalogPageCopy.import });
     await expect(importButton).toBeVisible();
+    await expect(importButton, `import-via-button door glance at ${viewport.width}`).toBeInViewport();
+    let importGlances = 1;
     await importPath.click(importButton);
     await expect(page.getByRole("dialog", { name: catalogPageCopy.import })).toHaveCount(0);
     await importPath.pickFile(page.getByLabel(catalogPageCopy.filePicker), {
@@ -533,11 +535,10 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History
     const importSheet = page.getByRole("dialog", { name: catalogPageCopy.import });
     const addToCatalog = page.getByRole("button", { name: catalogPageCopy.addToCatalog });
     await expect(importSheet).toBeVisible({ timeout: 20_000 });
-    const importGlances = [importSheet, addToCatalog];
-    for (const glance of importGlances) {
-      await expect(glance, `import-via-button glance at ${viewport.width}`).toBeInViewport();
-    }
-    expect(importGlances.length).toBe(IMPORT_VIA_BUTTON_GLANCES);
+    await expect(importSheet, `import-via-button sheet glance at ${viewport.width}`).toBeInViewport();
+    importGlances += 1;
+    await expect(addToCatalog, `import-via-button add door at ${viewport.width}`).toBeInViewport();
+    expect(importGlances).toBe(IMPORT_VIA_BUTTON_GLANCES);
     await importPath.click(addToCatalog);
     await expect(importSheet).toHaveCount(0, { timeout: 20_000 });
     await expect(catalogTile(page, catalogName)).toBeVisible({ timeout: 20_000 });
