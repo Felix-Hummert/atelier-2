@@ -1974,16 +1974,19 @@ test("a wait that opens while the operator stands in the room appears without a 
 test("the Workbench pins a run that is waiting for a person, by its catalog name", async ({ page }) => {
   const api = "/atelier/api/v1";
   const schemaHash = await anyJsonSchema(page);
+  const foregroundRunId = "workbench/a-foreground-decision";
   const runId = "workbench/waiting-inbox";
+  const workflowName = "Waiting on the workbench";
+  const question = "Approve this, or name the blocking defect.";
   const published = await page.request.post(`${api}/workflow-revisions`, {
     headers: { "content-type": "application/yaml" },
     data: [
       "format_version: 3",
-      "name: Waiting on the workbench",
+      `name: ${workflowName}`,
       "nodes:",
       "  - id: ask",
       "    type: wait",
-      "    prompt: Approve this, or name the blocking defect.",
+      `    prompt: ${question}`,
       ...declaredOutput(schemaHash, "approval"),
       ""
     ].join("\n")
@@ -1991,6 +1994,18 @@ test("the Workbench pins a run that is waiting for a person, by its catalog name
   expect(published.status()).toBe(201);
   const revisionHash = (await published.json()).workflow_revision_hash as string;
 
+  // The first decision is expanded. A second named waiting run proves the
+  // compact pin still carries the sender, question, and clear way to answer.
+  const foreground = await page.request.post(`${api}/runs`, {
+    data: {
+      workflow_format_version: 3,
+      run_id: foregroundRunId,
+      workflow_revision_hash: revisionHash,
+      agent_bindings: [],
+      orders: []
+    }
+  });
+  expect(foreground.status()).toBe(201);
   const started = await page.request.post(`${api}/runs`, {
     data: {
       workflow_format_version: 3,
@@ -2012,14 +2027,12 @@ test("the Workbench pins a run that is waiting for a person, by its catalog name
 
   await page.goto("/atelier");
   // This backend is shared across every earlier test in this file, so other
-  // runs may already wait here: this run is named, not counted.
-  const pin = page.locator("section.pinned-decision").filter({ hasText: "Waiting on the workbench" });
+  // runs may already wait here: this run is named in its sender line, not counted.
+  const pin = page.locator("section.pinned-decision-compact").filter({ hasText: question });
   await expect(pin).toBeVisible();
-  // The stage carries the question itself, and one quiet door to the whole run
-  // beside it -- never a second answer control of equal weight.
-  await expect(pin.getByRole("heading", { name: /Approve this/ })).toBeVisible();
-  const door = pin.getByRole("link");
-  await expect(door).toHaveCount(1);
+  await expect(pin.locator(".from")).toContainText(`ask · ${workflowName}`);
+  await expect(pin.getByText(question, { exact: true })).toBeVisible();
+  await expect(pin.getByText("Answer →", { exact: true })).toBeVisible();
   // The one number the rail carries, ochre and only where something wants you.
   const workbenchLink = page
     .getByRole("navigation", { name: "Workshop" })
@@ -2032,6 +2045,13 @@ test("the Workbench pins a run that is waiting for a person, by its catalog name
   await assertMobileSurface(page);
   await page.screenshot({ path: "test-results/workbench-inbox-390x844.png", fullPage: true });
 
+  await pin.getByText("Answer →", { exact: true }).click();
+  const expandedPin = page.locator(
+    `section.pinned-decision:has(a[href="/atelier/runs/${reference}"])`
+  );
+  await expect(expandedPin.getByRole("heading", { name: question })).toBeVisible();
+  const door = expandedPin.getByRole("link", { name: "open the run" });
+  await expect(door).toHaveCount(1);
   await door.click();
   await expect(page).toHaveURL(new RegExp(`/atelier/runs/${reference.replace(".", "\\.")}$`));
 });

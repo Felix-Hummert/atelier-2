@@ -18,6 +18,7 @@ precisely so a receipt cannot name a request nobody wrote.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import sqlalchemy as sa
@@ -34,6 +35,7 @@ from atelier2.contracts.executions import NodeExecutionId
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.node_records_v3 import (
     DeclaredContextPackageHash,
+    InputEnvelope,
     NodeArtifact,
     NodeExecutionRequestHash,
     NodeReceipt,
@@ -41,6 +43,7 @@ from atelier2.contracts.node_records_v3 import (
     ReceiptOutput,
     RunInput,
     node_receipt_reason_names_a_schema_judgment,
+    read_stored_node_receipt_reason,
     store_node_receipt_reason,
 )
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash
@@ -58,6 +61,42 @@ class NodeReceiptConflict(RuntimeError):
     """
 
 
+def node_receipt_from_record(connection: Any, record: Mapping[Any, Any]) -> NodeReceipt:
+    """Rebuild and verify one immutable node receipt and its ordered outputs."""
+
+    reason, schema_revision, value_hash = read_stored_node_receipt_reason(
+        str(record["reason"])
+    )
+    outputs = tuple(
+        ReceiptOutput(
+            str(output["output_name"]),
+            PublishedRevisionHash(str(output["schema_revision_hash"])),
+            Sha256Hash(str(output["value_hash"])),
+        )
+        for output in connection.execute(
+            sa.select(node_receipt_outputs_v3)
+            .where(
+                node_receipt_outputs_v3.c.node_execution_id
+                == str(record["node_execution_id"])
+            )
+            .order_by(node_receipt_outputs_v3.c.position)
+        ).mappings()
+    )
+    receipt = NodeReceipt(
+        NodeExecutionId(str(record["node_execution_id"])),
+        PersistedReceiptDisposition(str(record["disposition"])),
+        reason,
+        NodeExecutionRequestHash(str(record["request_hash"])),
+        DeclaredContextPackageHash(str(record["context_package_hash"])),
+        outputs,
+        schema_revision,
+        value_hash,
+    )
+    if receipt.receipt_hash.value != str(record["receipt_hash"]):
+        raise NodeReceiptConflict("durable node receipt bytes disagree with their hash")
+    return receipt
+
+
 def persist_bound_node_executions(
     connection: Any,
     run_id: RunId,
@@ -65,6 +104,9 @@ def persist_bound_node_executions(
     graph: WorkflowGraphV3,
     run_configuration: RunConfigurationRevision,
     orders: tuple[RunInput, ...],
+    *,
+    node_ids: frozenset[str] | None = None,
+    inherited_inputs: Mapping[str, tuple[InputEnvelope, ...]] = {},
 ) -> None:
     """Write what every node of this run was asked to do, before any of them runs.
 
@@ -87,6 +129,8 @@ def persist_bound_node_executions(
     something else is the run identity check this write sits behind.
     """
     for node in graph.nodes:
+        if node_ids is not None and node.id not in node_ids:
+            continue
         bound = bind_node_execution(
             run_id,
             workflow_revision_hash,
@@ -94,6 +138,7 @@ def persist_bound_node_executions(
             node.id,
             run_configuration,
             orders,
+            inherited_inputs.get(node.id, ()),
         )
         connection.execute(
             context_packages_v3.insert()

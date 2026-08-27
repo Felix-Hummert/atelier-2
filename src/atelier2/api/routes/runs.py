@@ -23,7 +23,6 @@ from atelier2.api.context import ApiContext, api_context_dependency
 from atelier2.api.limits import ApiLimitExceeded
 from atelier2.api.openapi import API_PREFIX
 from atelier2.api.problems import (
-    PROJECTION_LIMIT_DETAIL,
     ApiProblem,
     bounded_invalid_field,
 )
@@ -40,6 +39,7 @@ from atelier2.api.wire.requests import (
     ArtifactOrderResource,
     CancelAgentAttemptRequestResource,
     CancelRunRequestResource,
+    ForkRunRequestResource,
     InlineOrderResource,
     ReconcileRunRequestResource,
     StartRunRequestResourceV2,
@@ -86,6 +86,18 @@ from atelier2.application.cancel_run import (
     CancelRunMissing,
     CancelTerminalRetry,
     MalformedIdempotencyKey,
+)
+from atelier2.application.fork_run import (
+    RunForkCapabilityUnavailable,
+    RunForkCommandConflict,
+    RunForkCreated,
+    RunForkExecutorUnavailable,
+    RunForkExisting,
+    RunForkLoopUnsupported,
+    RunForkNodeMissing,
+    RunForkOriginMissing,
+    RunForkOriginNotTerminal,
+    RunForkPrefixNotReusable,
 )
 from atelier2.application.read_runs import (
     NodeDetailRead,
@@ -354,7 +366,7 @@ async def list_runs(
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case ProjectionTooLarge():
-            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
+            raise ApiProblem("durable-projection-unrepresentable")
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
@@ -368,6 +380,55 @@ async def get_run_route(
     return await _run_resource_of(
         decode_public_reference(public_ref, context.limits), context
     )
+
+
+@router.post(
+    API_PREFIX + "/runs/{public_ref}/forks",
+    response_model=AnyRunResource,
+    status_code=HTTPStatus.CREATED,
+    responses={HTTPStatus.OK: {"model": AnyRunResource}},
+)
+async def fork_run_route(
+    public_ref: str,
+    body: ForkRunRequestResource,
+    context: ApiContext = api_context_dependency,
+    _media: None = Depends(require_json_media_dependency),
+) -> JSONResponse:
+    origin_run_id = decode_public_reference(public_ref, context.limits)
+    result = await run_control_query(
+        context.control_runner,
+        lambda: context.use_cases.fork_run(
+            origin_run_id, body.idempotency_key, body.restart_from_node_id
+        ),
+    )
+    match result:
+        case RunForkCreated(_fork, run):
+            status = HTTPStatus.CREATED
+        case RunForkExisting(_fork, run):
+            status = HTTPStatus.OK
+        case RunForkOriginMissing():
+            raise ApiProblem("run-not-found")
+        case RunForkOriginNotTerminal():
+            raise ApiProblem("run-fork-origin-not-terminal")
+        case RunForkNodeMissing():
+            raise ApiProblem("run-fork-node-missing")
+        case RunForkLoopUnsupported():
+            raise ApiProblem("run-fork-loop-unsupported")
+        case RunForkPrefixNotReusable():
+            raise ApiProblem("run-fork-prefix-not-reusable")
+        case RunForkCommandConflict():
+            raise ApiProblem("run-fork-command-conflict")
+        case RunForkExecutorUnavailable():
+            raise ApiProblem("agent-executor-binding-unavailable")
+        case RunForkCapabilityUnavailable():
+            raise ApiProblem("agent-executor-binding-unavailable")
+        case WriteUnavailable(detail):
+            raise ApiProblem("temporarily-unavailable", detail)
+        case DurableStateCorrupt():
+            raise ApiProblem("durable-state-corrupt")
+        case _ as unreachable:
+            assert_never(unreachable)
+    return resource_response(await _run_resource_of(run.run_id, context), status)
 
 
 @router.get(
@@ -403,7 +464,7 @@ async def get_node_detail_route(
         case ReadUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case ProjectionTooLarge():
-            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
+            raise ApiProblem("durable-projection-unrepresentable")
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:
@@ -623,7 +684,7 @@ async def reconcile_run_route(
         case WriteUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case ProjectionTooLarge():
-            raise ApiProblem("temporarily-unavailable", PROJECTION_LIMIT_DETAIL)
+            raise ApiProblem("durable-projection-unrepresentable")
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _ as unreachable:

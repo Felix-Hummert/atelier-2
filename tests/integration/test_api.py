@@ -710,7 +710,7 @@ def test_concurrent_same_command_http_reconciliation_creates_one_command_and_wor
     }
 
 
-def test_run_projection_over_response_limit_is_temporarily_unavailable(
+def test_run_projection_over_response_limit_is_unrepresentable(
     runtime: DbosRuntime,
 ) -> None:
     intent = _waiting_reconciliation(runtime)
@@ -724,10 +724,10 @@ def test_run_projection_over_response_limit_is_temporarily_unavailable(
 
     response = _client(runtime, api_limits(maximum_field_characters=100)).get(path)
 
-    assert response.status_code == 503
-    assert response.json()["type"].endswith(":temporarily-unavailable")
-    assert response.json()["detail"] == (
-        "Durable projection exceeds configured API limits."
+    assert response.status_code == 500
+    assert response.json()["type"].endswith(":durable-projection-unrepresentable")
+    assert (
+        response.json()["detail"] == "Inspect the durable projection before retrying."
     )
     with runtime.engine.connect() as connection:
         assert (
@@ -762,7 +762,7 @@ def _client(
     )
 
 
-def test_valid_r1_revision_over_projection_limit_is_temporarily_unavailable(
+def test_valid_r1_revision_over_projection_limit_is_unrepresentable(
     runtime: DbosRuntime,
 ) -> None:
     revision = WorkflowRevision(DOCUMENT)
@@ -779,10 +779,10 @@ def test_valid_r1_revision_over_projection_limit_is_temporarily_unavailable(
         "/atelier/api/v1/workflow-revisions/" + revision.revision_hash.value
     )
 
-    assert response.status_code == 503
-    assert response.json()["type"].endswith(":temporarily-unavailable")
-    assert response.json()["detail"] == (
-        "Durable projection exceeds configured API limits."
+    assert response.status_code == 500
+    assert response.json()["type"].endswith(":durable-projection-unrepresentable")
+    assert (
+        response.json()["detail"] == "Inspect the durable projection before retrying."
     )
     with runtime.engine.connect() as connection:
         assert (
@@ -1387,6 +1387,10 @@ def test_http_reconciliation_exact_applied_retry_survives_run_advancement(
         "result_hash": result_hash,
         "confirmation_source": "OPERATOR_FOUND",
         "reconcile_command_id": "applied-command",
+        "fork_source_logical_key": None,
+        "fork_source_run_id": None,
+        "fork_source_workflow_revision_hash": None,
+        "fork_source_result_hash": None,
     }
     assert dict(applied_command_row) == {**expected_command, "state": "APPLIED"}
     assert dict(confirmed_intent_row) == {

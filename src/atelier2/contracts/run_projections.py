@@ -137,6 +137,30 @@ class AgentAttemptProjection:
 
 
 @dataclass(frozen=True)
+class RunForkOriginProjection:
+    origin_run_id: RunId
+    terminal_hash: Sha256Hash
+    restart_from_node_id: str
+    fork_hash: Sha256Hash
+
+
+@dataclass(frozen=True)
+class RunForkSuccessorProjection:
+    successor_run_id: RunId
+    restart_from_node_id: str
+    fork_hash: Sha256Hash
+
+
+@dataclass(frozen=True)
+class ReusedNodeProjection:
+    node_id: str
+    source_run_id: RunId
+    source_event_hash: Sha256Hash
+    source_receipt_hash: Sha256Hash
+    source_declared_context_package_hash: Sha256Hash
+
+
+@dataclass(frozen=True)
 class RunProjection:
     run: AnyRun
     graph: AnyWorkflowDocument
@@ -145,6 +169,9 @@ class RunProjection:
     started_at: RecordedAt | None = None
     ended_at: RecordedAt | None = None
     orders: tuple[RunInput, ...] = ()
+    fork_origin: RunForkOriginProjection | None = None
+    fork_successors: tuple[RunForkSuccessorProjection, ...] = ()
+    reused_nodes: tuple[ReusedNodeProjection, ...] = ()
 
     @property
     def current_agent_attempt(self) -> AgentAttemptProjection | None:

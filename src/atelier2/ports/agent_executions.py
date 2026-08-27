@@ -93,6 +93,16 @@ class AgentExecutionFailure:
     transcript: AttemptTranscript | None = None
 
 
+class AgentExecutionPreflightRefusal(Exception):
+    """An executor refused a job before it could start a provider process."""
+
+    code = AgentAttemptFailureCode.AGENT_REFUSED
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 @dataclass(frozen=True)
 class AgentProcessCommand:
     """What one provider asks to be run, whose secrets remain reference-only.

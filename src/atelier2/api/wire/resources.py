@@ -61,6 +61,7 @@ from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
 )
+from atelier2.contracts.run_forks import MAXIMUM_RUN_FORK_SUCCESSORS
 from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState
 
 
@@ -1125,6 +1126,42 @@ class NodeRailResource(ApiModel):
     node_id: str = Field(min_length=1)
     state: NodeStateName
     attempt: NodeRailAttemptResource | None
+    reused_from_run_reference: str | None = Field(
+        default=None,
+        pattern=PUBLIC_RUN_REFERENCE_PATTERN,
+        exclude_if=lambda value: value is None,
+    )
+    source_event_hash: str | None = Field(
+        default=None,
+        pattern=SHA256_HASH_PATTERN,
+        exclude_if=lambda value: value is None,
+    )
+    source_receipt_hash: str | None = Field(
+        default=None,
+        pattern=SHA256_HASH_PATTERN,
+        exclude_if=lambda value: value is None,
+    )
+    source_declared_context_package_hash: str | None = Field(
+        default=None,
+        pattern=SHA256_HASH_PATTERN,
+        exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def validate_reuse_shape(self) -> NodeRailResource:
+        values = (
+            self.reused_from_run_reference,
+            self.source_event_hash,
+            self.source_receipt_hash,
+            self.source_declared_context_package_hash,
+        )
+        if any(value is None for value in values) and not all(
+            value is None for value in values
+        ):
+            raise ValueError("a reused rail node names its complete source evidence")
+        if self.reused_from_run_reference is not None and self.state != "succeeded":
+            raise ValueError("only a succeeded rail node can be reused")
+        return self
 
 
 class NodeAnswerResource(ApiModel):
@@ -1360,6 +1397,19 @@ class RunOrderResource(ApiModel):
     schema_revision_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 
 
+class RunForkOriginResource(ApiModel):
+    public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
+    terminal_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+    restart_from_node_id: str = Field(min_length=1)
+    fork_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class RunForkSuccessorResource(ApiModel):
+    public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
+    restart_from_node_id: str = Field(min_length=1)
+    fork_hash: str = Field(pattern=SHA256_HASH_PATTERN)
+
+
 class RunResourceV3(ApiModel):
     """One V3 run as it reads back: its own format, never a V2 one renumbered.
 
@@ -1397,6 +1447,10 @@ class RunResourceV3(ApiModel):
         max_length=MAXIMUM_RUN_AGENT_BINDINGS
     )
     orders: tuple[RunOrderResource, ...] = Field(max_length=MAXIMUM_RUN_ORDERS)
+    fork_origin: RunForkOriginResource | None = None
+    fork_successors: tuple[RunForkSuccessorResource, ...] = Field(
+        default=(), max_length=MAXIMUM_RUN_FORK_SUCCESSORS
+    )
     """Every order this run was started with, in the order the store returns them.
 
     A run's purpose is what these were, not a guess parsed back out of one
@@ -1466,6 +1520,7 @@ class EffectReceiptResource(ApiModel):
         "ADAPTER_EXECUTION",
         "OPERATOR_FOUND",
         "OPERATOR_AUTHORIZED_EXECUTION",
+        "FORK_REFERENCE",
     ]
     reconcile_command_id: str | None
 

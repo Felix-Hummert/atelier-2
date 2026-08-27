@@ -1,0 +1,617 @@
+from __future__ import annotations
+
+import time
+from pathlib import Path
+
+import pytest
+import sqlalchemy as sa
+from sqlalchemy.exc import OperationalError
+
+from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.schema import (
+    agent_attempts,
+    node_execution_requests_v3,
+    node_receipts_v3,
+    run_agent_bindings,
+    run_events,
+    run_fork_reused_nodes,
+    run_forks,
+    run_inputs_v3,
+    runs,
+)
+from atelier2.adapters.dbos.starter import (
+    DbosDurableRunStarter,
+    DbosWorkflowRevisionPublisher,
+)
+from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
+from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.api.openapi import API_PREFIX
+from atelier2.api.references import encode_public_run_reference
+from atelier2.contracts.agents import AgentExecutionCapability
+from atelier2.contracts.effects import AdapterRevision, EffectDestination
+from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.run_forks import (
+    MAXIMUM_RUN_FORK_SUCCESSORS,
+    RunForkCommandId,
+    successor_run_id_for,
+)
+from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.ports.agent_executions import AgentExecutorRegistry
+from atelier2.ports.durable_run_forks import (
+    DurableRunForkCapabilityUnavailable,
+    DurableRunForkCommandConflict,
+    DurableRunForkCreated,
+    DurableRunForkExecutorUnavailable,
+    DurableRunForkExisting,
+    DurableRunForkLoopUnsupported,
+    DurableRunForkNodeMissing,
+    DurableRunForkOriginMissing,
+    DurableRunForkOriginNotTerminal,
+    DurableRunForkPrefixNotReusable,
+    DurableRunForkWriteUnavailable,
+    ForkRunRequest,
+)
+from atelier2.ports.durable_runs import (
+    DurableRunCreated,
+    StartPublishedRunRequestV2,
+    StartPublishedRunRequestV3,
+)
+from atelier2.ports.workflow_revisions import ProjectionTooLarge
+from tests.integration.test_v3_ordered_run import (
+    PORTIONS_SCHEMA,
+    order,
+    publish_ordered_workflow,
+)
+from tests.integration.test_v3_self_driving_run import (
+    PROVIDER_OUTPUT,
+    RUN,
+    RecordingAgentExecutorFactoryV2,
+    publish_two_node_line,
+)
+from tests.integration.test_v3_wait_run import (
+    ANSWER as WAIT_ANSWER,
+)
+from tests.integration.test_v3_wait_run import (
+    RUN as WAIT_RUN,
+)
+from tests.integration.test_v3_wait_run import (
+    WAIT_IN_THE_MIDDLE,
+)
+from tests.integration.test_v3_wait_run import (
+    answer as answer_wait,
+)
+from tests.integration.test_v3_wait_run import (
+    start_and_launch as start_and_launch_wait,
+)
+from tests.scenarios.agents import agent_scratch_root
+from tests.scenarios.api import durable_api_client, durable_queries
+from tests.scenarios.workflows import LOOPED_LINE_DOCUMENT
+
+
+def _wait_for_run(runtime: DbosRuntime, run_id: RunId, state: RunState) -> None:
+    deadline = time.monotonic() + 8
+    observed: str | None = None
+    while time.monotonic() < deadline:
+        with runtime.engine.connect() as connection:
+            observed = connection.scalar(
+                sa.select(runs.c.state).where(runs.c.run_id == run_id.value)
+            )
+        if observed == state.value:
+            return
+        time.sleep(0.025)
+    raise AssertionError(f"run {run_id.value!r} stayed {observed!r}")
+
+
+def _runtime(
+    tmp_path: Path, output: bytes = PROVIDER_OUTPUT
+) -> tuple[DbosRuntime, RecordingAgentExecutorFactoryV2]:
+    recording = RecordingAgentExecutorFactoryV2(
+        "exact", "exact/v1", "exact-operation", output
+    )
+    runtime = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "run-fork-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
+        LoopbackEffectAdapterFactory(
+            tmp_path / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+        ExactOutputAgentExecutorFactory(),
+        (recording,),
+    )
+    runtime.initialize_storage()
+    return runtime, recording
+
+
+def _completed_origin(
+    runtime: DbosRuntime,
+) -> tuple[DbosDurableRunStarter, object]:
+    workflow, bindings = publish_two_node_line(runtime)
+    starter = DbosDurableRunStarter(
+        runtime.engine, runtime.settings, runtime.agent_executor_registry
+    )
+    started = starter.start_published(
+        StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
+    )
+    assert isinstance(started, DurableRunCreated)
+    runtime.launch()
+    _wait_for_run(runtime, RUN, RunState.COMPLETED)
+    return starter, workflow
+
+
+def test_fork_reuses_only_the_strict_prefix_and_executes_from_the_target(
+    tmp_path: Path,
+) -> None:
+    runtime, recording = _runtime(tmp_path)
+    try:
+        starter, _workflow = _completed_origin(runtime)
+
+        request = ForkRunRequest(RUN, "retry-review", "review")
+        created = starter.fork_run(request)
+        assert isinstance(created, DurableRunForkCreated)
+        successor = successor_run_id_for(
+            RunForkCommandId.for_request(RUN, "retry-review")
+        )
+        assert created.run.run_id == successor
+        assert tuple(entry.node_id for entry in created.fork.reused_nodes) == (
+            "implement",
+        )
+        _wait_for_run(runtime, successor, RunState.COMPLETED)
+
+        retried = starter.fork_run(request)
+        assert isinstance(retried, DurableRunForkExisting)
+        assert retried.fork == created.fork
+        assert isinstance(
+            starter.fork_run(ForkRunRequest(RUN, "retry-review", "implement")),
+            DurableRunForkCommandConflict,
+        )
+        successor_execution_id = NodeExecutionId.for_node(
+            successor, created.run.revision_hash, "review"
+        )
+        with runtime.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count()).select_from(run_fork_reused_nodes)
+                )
+                == 1
+            )
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(run_events)
+                    .where(run_events.c.run_id == successor.value)
+                )
+                == 1
+            )
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(agent_attempts)
+                    .where(agent_attempts.c.run_id == successor.value)
+                )
+                == 1
+            )
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(node_execution_requests_v3)
+                    .where(
+                        node_execution_requests_v3.c.node_execution_id
+                        == successor_execution_id.value
+                    )
+                )
+                == 1
+            )
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(node_receipts_v3)
+                    .where(
+                        node_receipts_v3.c.node_execution_id
+                        == successor_execution_id.value
+                    )
+                )
+                == 1
+            )
+        assert recording.opened is not None
+        assert [request.node_id for request in recording.opened.requests] == [
+            "implement",
+            "review",
+            "review",
+        ]
+
+        api = durable_api_client(runtime)
+        listed = api.get(API_PREFIX + "/runs?limit=50")
+        detail = api.get(API_PREFIX + "/runs/" + encode_public_run_reference(successor))
+        origin_detail = api.get(
+            API_PREFIX + "/runs/" + encode_public_run_reference(RUN)
+        )
+        assert (
+            listed.status_code == detail.status_code == origin_detail.status_code == 200
+        )
+        listed_by_id = {item["run_id"]: item for item in listed.json()["items"]}
+        assert listed_by_id[successor.value] == detail.json()
+        assert listed_by_id[RUN.value] == origin_detail.json()
+        assert detail.json()["node_rail"][0]["reused_from_run_reference"] == (
+            encode_public_run_reference(RUN)
+        )
+        assert detail.json()["fork_origin"]["public_run_reference"] == (
+            encode_public_run_reference(RUN)
+        )
+        assert origin_detail.json()["fork_successors"] == [
+            {
+                "public_run_reference": encode_public_run_reference(successor),
+                "restart_from_node_id": "review",
+                "fork_hash": created.fork.fork_hash.value,
+            }
+        ]
+    finally:
+        runtime.close()
+
+
+def test_fork_reuses_a_successfully_answered_wait_before_the_target(
+    tmp_path: Path,
+) -> None:
+    runtime, _recording = _runtime(tmp_path)
+    try:
+        workflow = start_and_launch_wait(runtime, WAIT_IN_THE_MIDDLE)
+        _wait_for_run(runtime, WAIT_RUN, RunState.WAITING_INPUT)
+        answer_wait(runtime, workflow, WAIT_ANSWER)
+        _wait_for_run(runtime, WAIT_RUN, RunState.COMPLETED)
+
+        created = DbosDurableRunStarter(
+            runtime.engine, runtime.settings, runtime.agent_executor_registry
+        ).fork_run(ForkRunRequest(WAIT_RUN, "reuse-wait", "review"))
+
+        assert isinstance(created, DurableRunForkCreated)
+        assert tuple(entry.node_id for entry in created.fork.reused_nodes) == (
+            "implement",
+            "approve",
+        )
+        _wait_for_run(runtime, created.run.run_id, RunState.COMPLETED)
+    finally:
+        runtime.close()
+
+
+def test_fork_refuses_a_missing_or_nonterminal_origin_without_creating_rows(
+    tmp_path: Path,
+) -> None:
+    runtime, _recording = _runtime(tmp_path)
+    try:
+        workflow, bindings = publish_two_node_line(runtime)
+        starter = DbosDurableRunStarter(
+            runtime.engine, runtime.settings, runtime.agent_executor_registry
+        )
+        assert isinstance(
+            starter.fork_run(ForkRunRequest(RunId("missing"), "key", "implement")),
+            DurableRunForkOriginMissing,
+        )
+        started = starter.start_published(
+            StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
+        )
+        assert isinstance(started, DurableRunCreated)
+        assert isinstance(
+            starter.fork_run(ForkRunRequest(RUN, "key", "implement")),
+            DurableRunForkOriginNotTerminal,
+        )
+        with runtime.engine.connect() as connection:
+            assert (
+                connection.scalar(sa.select(sa.func.count()).select_from(run_forks))
+                == 0
+            )
+    finally:
+        runtime.close()
+
+
+def test_fork_refuses_when_the_durable_executor_is_missing_or_lacks_capability(
+    tmp_path: Path,
+) -> None:
+    runtime, recording = _runtime(tmp_path)
+    try:
+        _completed_origin(runtime)
+        missing = DbosDurableRunStarter(
+            runtime.engine, runtime.settings, AgentExecutorRegistry()
+        )
+        assert isinstance(
+            missing.fork_run(ForkRunRequest(RUN, "missing-executor", "implement")),
+            DurableRunForkExecutorUnavailable,
+        )
+
+        incompatible = RecordingAgentExecutorFactoryV2(
+            recording.provider,
+            recording.revision,
+            recording.operational_identity_value,
+            recording.output,
+            capability_set=frozenset({AgentExecutionCapability.HEADLESS_WITH_TOOLS}),
+        )
+        incapable = DbosDurableRunStarter(
+            runtime.engine,
+            runtime.settings,
+            AgentExecutorRegistry((incompatible,)),
+        )
+        assert isinstance(
+            incapable.fork_run(ForkRunRequest(RUN, "missing-capability", "implement")),
+            DurableRunForkCapabilityUnavailable,
+        )
+        with runtime.engine.connect() as connection:
+            assert (
+                connection.scalar(sa.select(sa.func.count()).select_from(run_forks))
+                == 0
+            )
+    finally:
+        runtime.close()
+
+
+def test_fork_copies_exact_bindings_and_orders_without_changing_the_origin(
+    tmp_path: Path,
+) -> None:
+    runtime, _recording = _runtime(tmp_path, b'"cooked"')
+    origin = RunId("ordered-origin")
+    try:
+        workflow, bindings = publish_ordered_workflow(runtime, PORTIONS_SCHEMA)
+        starter = DbosDurableRunStarter(
+            runtime.engine, runtime.settings, runtime.agent_executor_registry
+        )
+        started = starter.start_published(
+            StartPublishedRunRequestV3(
+                origin,
+                workflow.revision_hash,
+                bindings,
+                run_inputs=(order(b'{"portions": 4}', PORTIONS_SCHEMA),),
+            )
+        )
+        assert isinstance(started, DurableRunCreated)
+        runtime.launch()
+        _wait_for_run(runtime, origin, RunState.COMPLETED)
+        with runtime.engine.connect() as connection:
+            origin_bindings = tuple(
+                dict(row)
+                for row in connection.execute(
+                    sa.select(run_agent_bindings).where(
+                        run_agent_bindings.c.run_id == origin.value
+                    )
+                ).mappings()
+            )
+            origin_orders = tuple(
+                dict(row)
+                for row in connection.execute(
+                    sa.select(run_inputs_v3).where(
+                        run_inputs_v3.c.run_id == origin.value
+                    )
+                ).mappings()
+            )
+
+        created = starter.fork_run(ForkRunRequest(origin, "copy", "cook"))
+        assert isinstance(created, DurableRunForkCreated)
+        with runtime.engine.connect() as connection:
+            after_origin_bindings = tuple(
+                dict(row)
+                for row in connection.execute(
+                    sa.select(run_agent_bindings).where(
+                        run_agent_bindings.c.run_id == origin.value
+                    )
+                ).mappings()
+            )
+            after_origin_orders = tuple(
+                dict(row)
+                for row in connection.execute(
+                    sa.select(run_inputs_v3).where(
+                        run_inputs_v3.c.run_id == origin.value
+                    )
+                ).mappings()
+            )
+            successor_bindings = tuple(
+                dict(row)
+                for row in connection.execute(
+                    sa.select(run_agent_bindings).where(
+                        run_agent_bindings.c.run_id == created.run.run_id.value
+                    )
+                ).mappings()
+            )
+            successor_orders = tuple(
+                dict(row)
+                for row in connection.execute(
+                    sa.select(run_inputs_v3).where(
+                        run_inputs_v3.c.run_id == created.run.run_id.value
+                    )
+                ).mappings()
+            )
+
+        assert after_origin_bindings == origin_bindings
+        assert after_origin_orders == origin_orders
+        assert [{**row, "run_id": origin.value} for row in successor_bindings] == list(
+            origin_bindings
+        )
+        assert [{**row, "run_id": origin.value} for row in successor_orders] == list(
+            origin_orders
+        )
+    finally:
+        runtime.close()
+
+
+def test_enqueue_failure_rolls_back_the_whole_fork_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, _recording = _runtime(tmp_path)
+    try:
+        starter, _workflow = _completed_origin(runtime)
+        command_id = RunForkCommandId.for_request(RUN, "failed-enqueue")
+        successor = successor_run_id_for(command_id)
+
+        def fail_enqueue(*_args: object, **_kwargs: object) -> None:
+            raise OperationalError("enqueue", {}, RuntimeError("busy"))
+
+        monkeypatch.setattr(
+            "atelier2.adapters.dbos.run_fork_store.DBOSClient.enqueue_in_transaction",
+            fail_enqueue,
+        )
+        result = starter.fork_run(ForkRunRequest(RUN, "failed-enqueue", "review"))
+
+        assert isinstance(result, DurableRunForkWriteUnavailable)
+        with runtime.engine.connect() as connection:
+            assert (
+                connection.scalar(sa.select(sa.func.count()).select_from(run_forks))
+                == 0
+            )
+            assert (
+                connection.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(runs)
+                    .where(runs.c.run_id == successor.value)
+                )
+                == 0
+            )
+    finally:
+        runtime.close()
+
+
+def test_fork_refuses_a_missing_node_and_an_unreusable_failed_prefix(
+    tmp_path: Path,
+) -> None:
+    runtime, _recording = _runtime(tmp_path, b"not-json")
+    try:
+        workflow, bindings = publish_two_node_line(runtime)
+        starter = DbosDurableRunStarter(
+            runtime.engine, runtime.settings, runtime.agent_executor_registry
+        )
+        started = starter.start_published(
+            StartPublishedRunRequestV2(RUN, workflow.revision_hash, bindings)
+        )
+        assert isinstance(started, DurableRunCreated)
+        runtime.launch()
+        _wait_for_run(runtime, RUN, RunState.FAILED)
+
+        assert isinstance(
+            starter.fork_run(ForkRunRequest(RUN, "missing-node", "absent")),
+            DurableRunForkNodeMissing,
+        )
+        assert isinstance(
+            starter.fork_run(ForkRunRequest(RUN, "failed-prefix", "review")),
+            DurableRunForkPrefixNotReusable,
+        )
+    finally:
+        runtime.close()
+
+
+def test_fork_refuses_a_loop_instead_of_guessing_its_round(
+    tmp_path: Path,
+) -> None:
+    runtime, _recording = _runtime(tmp_path)
+    try:
+        _line, bindings = publish_two_node_line(runtime)
+        looped = WorkflowRevision(LOOPED_LINE_DOCUMENT)
+        DbosWorkflowRevisionPublisher(runtime.engine).publish(looped)
+        starter = DbosDurableRunStarter(
+            runtime.engine, runtime.settings, runtime.agent_executor_registry
+        )
+        started = starter.start_published(
+            StartPublishedRunRequestV2(RUN, looped.revision_hash, bindings)
+        )
+        assert isinstance(started, DurableRunCreated)
+        runtime.launch()
+        _wait_for_run(runtime, RUN, RunState.COMPLETED)
+
+        assert isinstance(
+            starter.fork_run(ForkRunRequest(RUN, "loop", "implement")),
+            DurableRunForkLoopUnsupported,
+        )
+    finally:
+        runtime.close()
+
+
+def test_full_run_fork_starts_at_entry_and_fork_of_fork_flattens_reuse(
+    tmp_path: Path,
+) -> None:
+    runtime, recording = _runtime(tmp_path)
+    try:
+        starter, _workflow = _completed_origin(runtime)
+        full = starter.fork_run(ForkRunRequest(RUN, "full", "implement"))
+        assert isinstance(full, DurableRunForkCreated)
+        full_successor = full.run.run_id
+        _wait_for_run(runtime, full_successor, RunState.COMPLETED)
+        assert full.fork.reused_nodes == ()
+
+        partial = starter.fork_run(ForkRunRequest(RUN, "partial", "review"))
+        assert isinstance(partial, DurableRunForkCreated)
+        _wait_for_run(runtime, partial.run.run_id, RunState.COMPLETED)
+
+        nested = starter.fork_run(
+            ForkRunRequest(partial.run.run_id, "nested-review", "review")
+        )
+        assert isinstance(nested, DurableRunForkCreated)
+        _wait_for_run(runtime, nested.run.run_id, RunState.COMPLETED)
+        assert tuple(entry.node_id for entry in nested.fork.reused_nodes) == (
+            "implement",
+        )
+        assert nested.fork.reused_nodes[0].source_run_id == RUN
+        assert recording.opened is not None
+        assert [request.node_id for request in recording.opened.requests] == [
+            "implement",
+            "review",
+            "implement",
+            "review",
+            "review",
+            "review",
+        ]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("corruption", ["fork-hash", "reused-source"])
+def test_run_projection_refuses_corrupt_fork_headers_and_reuse_evidence(
+    tmp_path: Path, corruption: str
+) -> None:
+    runtime, _recording = _runtime(tmp_path)
+    try:
+        starter, _workflow = _completed_origin(runtime)
+        created = starter.fork_run(ForkRunRequest(RUN, "corrupt", "review"))
+        assert isinstance(created, DurableRunForkCreated)
+        with runtime.engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            if corruption == "fork-hash":
+                connection.exec_driver_sql("DROP TRIGGER run_forks_no_update")
+                connection.execute(run_forks.update().values(fork_hash="0" * 64))
+                projected_run = RUN
+            else:
+                connection.exec_driver_sql("DROP TRIGGER node_receipts_v3_no_delete")
+                connection.execute(
+                    node_receipts_v3.delete().where(
+                        node_receipts_v3.c.node_execution_id
+                        == NodeExecutionId.for_node(
+                            RUN, created.run.revision_hash, "implement"
+                        ).value
+                    )
+                )
+                projected_run = created.run.run_id
+            connection.commit()
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+
+        response = durable_api_client(runtime).get(
+            API_PREFIX + "/runs/" + encode_public_run_reference(projected_run)
+        )
+        assert response.status_code == 500
+        assert response.json()["type"].endswith(":durable-state-corrupt")
+    finally:
+        runtime.close()
+
+
+def test_run_projection_refuses_more_than_one_bounded_successor_lineage(
+    tmp_path: Path,
+) -> None:
+    runtime, _recording = _runtime(tmp_path)
+    try:
+        starter, _workflow = _completed_origin(runtime)
+        for index in range(MAXIMUM_RUN_FORK_SUCCESSORS + 1):
+            assert isinstance(
+                starter.fork_run(
+                    ForkRunRequest(RUN, f"successor-{index}", "implement")
+                ),
+                DurableRunForkCreated,
+            )
+
+        assert durable_queries(runtime.engine).get_run(RUN) == ProjectionTooLarge()
+    finally:
+        runtime.close()

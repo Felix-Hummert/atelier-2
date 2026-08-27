@@ -20,6 +20,10 @@ from atelier2.adapters.dbos.effect_store import (
     intent_snapshot_from_record,
     receipt_from_record,
 )
+from atelier2.adapters.dbos.run_fork_store import (
+    _stored_fork_for_command,
+    validate_stored_fork,
+)
 from atelier2.adapters.dbos.run_store import (
     NodeOutputNotWritten,
     NodeOutputSchemaRefused,
@@ -44,6 +48,7 @@ from atelier2.adapters.dbos.schema import (
     node_receipts_v3,
     reconcile_commands,
     run_events,
+    run_forks,
     run_instants,
     runs,
     workflow_revisions,
@@ -53,7 +58,7 @@ from atelier2.adapters.dbos.workflow import (
     _pinned_maximum_assistant_turns,
 )
 from atelier2.adapters.yaml_workflows import parse_workflow_document
-from atelier2.application.compose_node_job import node_job
+from atelier2.application.compose_node_job import NodeJobCompositionVersion, node_job
 from atelier2.application.project_node_rail import (
     never_launched_cleanup_on_failed_run,
     project_node_rail,
@@ -94,12 +99,19 @@ from atelier2.contracts.run_events import (
     PersistedRunEvent,
     RunEventPage,
 )
+from atelier2.contracts.run_forks import (
+    MAXIMUM_RUN_FORK_SUCCESSORS,
+    RunForkCommandId,
+)
 from atelier2.contracts.run_projections import (
     AgentAttemptCancellationProjection,
     AgentAttemptProjection,
     NodeAnswer,
     NodeDetail,
     NodeProvenance,
+    ReusedNodeProjection,
+    RunForkOriginProjection,
+    RunForkSuccessorProjection,
     RunPage,
     RunProjection,
     WaitingReconciliationProjection,
@@ -121,8 +133,14 @@ from atelier2.contracts.workflow_projections import (
     WorkflowRevisionPage,
     WorkflowRevisionProjection,
 )
-from atelier2.contracts.workflows import AgentNodeV2, WorkflowGraphV2, round_of
+from atelier2.contracts.workflows import (
+    ActionNode,
+    AgentNodeV2,
+    WorkflowGraphV2,
+    round_of,
+)
 from atelier2.contracts.workflows_v3 import (
+    ActionNodeV3,
     AgentNodeV3,
     AnyWorkflowDocument,
     WaitNodeV3,
@@ -216,6 +234,9 @@ _RECEIPT_FIELD_COLUMNS = frozenset(
         "effect_id",
         "reconcile_command_id",
     )
+)
+_RUN_FORK_FIELD_COLUMNS = frozenset(
+    ("origin_run_id", "successor_run_id", "restart_from_node_id")
 )
 
 
@@ -394,40 +415,52 @@ def _current_attempt_projection(
     # is given: the orders the run was started with and the work earlier nodes
     # handed on. A recomputation that knew only part of it would answer a run
     # that really was a chain with a conflict about its own identity.
-    authored_job = (
-        node.job
-        if isinstance(node, AgentNodeV2)
-        else node_job(
-            node.instruction,
-            load_run_inputs(session, run.run_id, node),
-            load_node_outputs(
-                session,
-                run.run_id,
-                run.revision_hash,
-                graph,
-                node,
-                run.current_round_ordinal,
-            ),
-        )
-    ).encode("utf-8")
-    exact_request = AgentExecutionRequestV2(
-        execution_id,
-        run.run_id,
-        run.revision_hash,
-        run.current_node_id,
-        binding,
-        operational_identity,
-        authored_job,
-        (
-            None
-            if (output_schema := _declared_output_schema_document(session, node))
-            is None
-            else output_schema.encode("utf-8")
-        ),
-        run.current_round_ordinal,
-        _pinned_maximum_assistant_turns(session, node),
-    )
     request_hash = AgentExecutionRequestHash(str(record["request_hash"]))
+    output_schema = _declared_output_schema_document(session, node)
+
+    def request_for(authored_job: bytes) -> AgentExecutionRequestV2:
+        return AgentExecutionRequestV2(
+            execution_id,
+            run.run_id,
+            run.revision_hash,
+            run.current_node_id,
+            binding,
+            operational_identity,
+            authored_job,
+            None if output_schema is None else output_schema.encode("utf-8"),
+            run.current_round_ordinal,
+            _pinned_maximum_assistant_turns(session, node),
+        )
+
+    if isinstance(node, AgentNodeV2):
+        exact_request = request_for(node.job.encode("utf-8"))
+    else:
+        orders = load_run_inputs(session, run.run_id, node)
+        results = load_node_outputs(
+            session,
+            run.run_id,
+            run.revision_hash,
+            graph,
+            node,
+            run.current_round_ordinal,
+        )
+        exact_request = request_for(
+            node_job(
+                node.instruction,
+                orders,
+                results,
+                NodeJobCompositionVersion.CURRENT,
+            ).encode("utf-8")
+        )
+        if request_hash != exact_request.request_hash:
+            exact_request = request_for(
+                node_job(
+                    node.instruction,
+                    orders,
+                    results,
+                    NodeJobCompositionVersion.LEGACY,
+                ).encode("utf-8")
+            )
     attempt_id = AgentAttemptId(str(record["attempt_id"]))
     ordinal = int(record["attempt_ordinal"])
     if (
@@ -582,6 +615,19 @@ def _node_receipt_refusal_output(
     except UnicodeDecodeError:
         return None
     return NodeAnswer(redact_credentials(text).text.encode("utf-8"), value_hash)
+
+
+def _abandoned_intent_refusal(projection: RunProjection, node_id: str) -> str | None:
+    """ABANDONED, when this node is the prepared effect the ended run never resolved."""
+
+    reconciliation = projection.reconciliation
+    if (
+        reconciliation is None
+        or reconciliation.intent.state is not EffectIntentState.ABANDONED
+        or projection.run.current_node_id != node_id
+    ):
+        return None
+    return EffectIntentState.ABANDONED.value
 
 
 def _unavailable_executor_refusal(
@@ -1054,6 +1100,11 @@ class DbosQueries:
                     connection, execution_id
                 ) or _unavailable_executor_refusal(connection, execution_id)
                 started_at, ended_at = _node_instants(connection, execution_id)
+                named_refusal = durable_refusal
+                if named_refusal is None:
+                    named_refusal = refusal
+                if named_refusal is None:
+                    named_refusal = _abandoned_intent_refusal(projection, node_id)
                 return NodeDetailFound(
                     NodeDetail(
                         run_id=run_id,
@@ -1063,9 +1114,7 @@ class DbosQueries:
                         job_hash=job_hash,
                         answer=_node_answer(connection, execution_id),
                         provenance=_node_provenance(connection, execution_id),
-                        refusal=durable_refusal
-                        if durable_refusal is not None
-                        else refusal,
+                        refusal=named_refusal,
                         refusal_output=_node_receipt_refusal_output(
                             connection, execution_id
                         ),
@@ -1282,6 +1331,96 @@ class DbosQueries:
         loaded_runs = tuple(
             run_from_record_with_bindings(connection, record) for record in records
         )
+        run_ids = tuple(run.run_id.value for run in loaded_runs)
+        successor_fork_records = tuple(
+            connection.execute(
+                _bounded_projection_select(
+                    run_forks,
+                    self._projection_limit,
+                    field_columns=_RUN_FORK_FIELD_COLUMNS,
+                ).where(run_forks.c.successor_run_id.in_(run_ids))
+            ).mappings()
+        )
+        maximum_successor_records = len(run_ids) * MAXIMUM_RUN_FORK_SUCCESSORS
+        origin_fork_records = tuple(
+            connection.execute(
+                _bounded_projection_select(
+                    run_forks,
+                    self._projection_limit,
+                    field_columns=_RUN_FORK_FIELD_COLUMNS,
+                )
+                .where(run_forks.c.origin_run_id.in_(run_ids))
+                .order_by(run_forks.c.origin_run_id, run_forks.c.successor_run_id)
+                .limit(maximum_successor_records + 1)
+            ).mappings()
+        )
+        if len(origin_fork_records) > maximum_successor_records:
+            raise ProjectionLimitExceeded(
+                "run fork successor projection exceeds its limit"
+            )
+        successor_counts: dict[str, int] = {}
+        for record in origin_fork_records:
+            origin_id = str(record["origin_run_id"])
+            successor_counts[origin_id] = successor_counts.get(origin_id, 0) + 1
+            if successor_counts[origin_id] > MAXIMUM_RUN_FORK_SUCCESSORS:
+                raise ProjectionLimitExceeded(
+                    "run fork successor projection exceeds its limit"
+                )
+        fork_records = tuple(
+            {
+                str(record["command_id"]): record
+                for record in (*successor_fork_records, *origin_fork_records)
+            }.values()
+        )
+        for fork_record in fork_records:
+            _validate_bounded_record(
+                fork_record,
+                self._projection_limit,
+                field_columns=_RUN_FORK_FIELD_COLUMNS,
+            )
+        stored_forks = []
+        for record in fork_records:
+            fork = _stored_fork_for_command(
+                connection, RunForkCommandId(str(record["command_id"]))
+            )
+            if fork is None:
+                raise RunTransitionConflict("run fork disappeared during projection")
+            validate_stored_fork(connection, fork)
+            stored_forks.append(fork)
+        origin_by_successor = {
+            fork.successor_run_id.value: RunForkOriginProjection(
+                fork.origin_run_id,
+                fork.origin_terminal_hash,
+                fork.restart_from_node_id,
+                fork.fork_hash,
+            )
+            for fork in stored_forks
+            if fork.successor_run_id.value in run_ids
+        }
+        successors_by_origin: dict[str, list[RunForkSuccessorProjection]] = {}
+        reused_by_successor: dict[str, list[ReusedNodeProjection]] = {}
+        for fork in stored_forks:
+            if fork.origin_run_id.value in run_ids:
+                successors_by_origin.setdefault(fork.origin_run_id.value, []).append(
+                    RunForkSuccessorProjection(
+                        fork.successor_run_id,
+                        fork.restart_from_node_id,
+                        fork.fork_hash,
+                    )
+                )
+            if fork.successor_run_id.value in run_ids:
+                reused_by_successor[fork.successor_run_id.value] = [
+                    ReusedNodeProjection(
+                        entry.node_id,
+                        entry.source_run_id,
+                        entry.source_event_hash,
+                        entry.source_receipt_hash,
+                        entry.source_declared_context_package_hash,
+                    )
+                    for entry in fork.reused_nodes
+                ]
+        for successors in successors_by_origin.values():
+            successors.sort(key=lambda item: item.successor_run_id.value.encode())
         revision_hashes = {run.revision_hash for run in loaded_runs}
         revision_rows = tuple(
             connection.execute(
@@ -1377,6 +1516,16 @@ class DbosQueries:
         waiting_runs = tuple(
             run for run in loaded_runs if run.state is RunState.WAITING_RECONCILIATION
         )
+        ended_action_runs = tuple(
+            run
+            for run in loaded_runs
+            if run.state in {RunState.FAILED, RunState.CANCELLED, RunState.COMPLETED}
+            and isinstance(
+                graphs[run.revision_hash].node(run.current_node_id),
+                (ActionNode, ActionNodeV3),
+            )
+        )
+        intent_runs = waiting_runs + ended_action_runs
         logical_keys_by_run = {
             run.run_id: logical_effect_key_for_node(
                 run.run_id,
@@ -1388,10 +1537,10 @@ class DbosQueries:
                     run.current_round_ordinal,
                 ),
             )
-            for run in waiting_runs
+            for run in intent_runs
         }
         intent_records: dict[str, Mapping[Any, Any]] = {}
-        if waiting_runs:
+        if intent_runs:
             for record in connection.execute(
                 _bounded_projection_select(
                     effect_intents,
@@ -1414,7 +1563,10 @@ class DbosQueries:
                 if key in intent_records:
                     raise RunTransitionConflict("durable intent primary key repeated")
                 intent_records[key] = record
-        if set(intent_records) != {key.value for key in logical_keys_by_run.values()}:
+        waiting_key_values = {
+            logical_keys_by_run[run.run_id].value for run in waiting_runs
+        }
+        if waiting_key_values - set(intent_records):
             raise RunTransitionConflict(
                 "WAITING_RECONCILIATION run has no exact durable intent"
             )
@@ -1503,6 +1655,26 @@ class DbosQueries:
                         "waiting reconciliation run has inconsistent intent state"
                     )
                 reconciliation = WaitingReconciliationProjection(intent, pending)
+            elif run.run_id in logical_keys_by_run:
+                logical_key = logical_keys_by_run[run.run_id]
+                intent_record = intent_records.get(logical_key.value)
+                if intent_record is not None:
+                    intent = intent_snapshot_from_record(intent_record)
+                    if (
+                        intent.intent.binding.run_id != run.run_id
+                        or intent.intent.binding.workflow_revision_hash
+                        != run.revision_hash
+                        or intent.intent.binding.logical_key != logical_key
+                    ):
+                        raise RunTransitionConflict(
+                            "ended run intent binding disagrees with its logical key"
+                        )
+                    if intent.state is EffectIntentState.ABANDONED:
+                        if intent_record["reconciliation_owner_command_id"] is not None:
+                            raise RunTransitionConflict(
+                                "abandoned intent has a command owner"
+                            )
+                        reconciliation = WaitingReconciliationProjection(intent, None)
             attempt_projections: tuple[AgentAttemptProjection, ...] = ()
             execution = current_agent_executions.get(run.run_id)
             if execution is not None:
@@ -1544,6 +1716,11 @@ class DbosQueries:
                     None if instant is None else instant[0],
                     None if instant is None else instant[1],
                     orders=orders_by_run.get(run.run_id.value, ()),
+                    fork_origin=origin_by_successor.get(run.run_id.value),
+                    fork_successors=tuple(
+                        successors_by_origin.get(run.run_id.value, ())
+                    ),
+                    reused_nodes=tuple(reused_by_successor.get(run.run_id.value, ())),
                 )
             )
         return tuple(projections)

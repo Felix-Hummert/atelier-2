@@ -1,16 +1,27 @@
 """One headless `grok` subscription executor.
 
-Containment flags and the version set are measured against grok 1.0.4. Job
-bytes travel through `--prompt-file` so they never appear on the argument
-vector; standard input is empty. The child environment is only `HOME`,
+Containment flags are measured against grok 1.0.4. On grok 1.0.5 / grok-4.6,
+ten synthetic schema calls put one unique token halfway through a 10,000,
+20,000, 30,000, 40,000 or 50,000-byte prompt. Both `--prompt-file` and inline
+`-p` echoed it at 10,000, 20,000 and 30,000 bytes (file: 2.966, 2.968 and
+8.234 s; inline: 2.774, 3.209 and 7.542 s). Inline returned schema-valid
+non-token placeholders at 40,000 and 50,000 bytes (5.345 and 5.520 s); the
+file carrier returned one only after narrated file reading at 40,000 (16.156
+s) and a placeholder at 50,000 (5.460 s). This tool-free adapter therefore
+uses inline `-p` only through the measured 30,000-byte bound and returns typed
+`AGENT_REFUSED` before launch above it, rather than accepting a minimal object.
+Narration was none at file/inline 10,000 and 20,000 bytes; it was present at
+30,000 bytes for both carriers, at file 40,000 and 50,000 bytes, and at inline
+40,000 and 50,000 bytes. Standard input is not a documented prompt carrier.
+The version gate admits exactly this measured release. The child environment is only `HOME`,
 `GROK_HOME` and `PATH` -- and `HOME` is containment, not convenience: without
 it the CLI resolves the invoking account's own profile.
 
 Every invocation gets one private disposable `HOME`/`GROK_HOME`. The seam
-copies only `auth.json` into it, writes an inert compatibility configuration
-and the prompt with exclusive no-follow opens, then removes the whole home on
-every lifecycle path. Provider-created sessions therefore never enter the
-source credential directory or outlive their invocation.
+copies only `auth.json` into it and writes an inert compatibility configuration
+with exclusive no-follow opens, then removes the whole home on every lifecycle
+path. Provider-created sessions therefore never enter the source credential
+directory or outlive their invocation.
 
 Flags alone do not bound what the CLI discovers. `grok inspect --json` reports
 the plugins, hooks, MCP servers, skills, marketplaces, LSP servers, permission
@@ -56,6 +67,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.ports.agent_executions import (
     AgentExecutionFailure,
+    AgentExecutionPreflightRefusal,
     AgentExecutorKey,
     AgentProcessCommand,
     AgentProcessCompletion,
@@ -81,7 +93,7 @@ GROK_SUBSCRIPTION_FRAME_BYTES = (
     GROK_SUBSCRIPTION_ENVELOPE_BYTES + MAXIMUM_ATTEMPT_TRANSCRIPT_BYTES
 )
 
-CONFORMANT_GROK_VERSIONS = frozenset({(1, 0, 4)})
+CONFORMANT_GROK_VERSIONS = frozenset({(1, 0, 5)})
 
 _VERSION_FLAG = "--version"
 _VERSION_PROBE_TIMEOUT_SECONDS = 30.0
@@ -91,7 +103,6 @@ _OUTPUT_FORMAT_FLAG = "--output-format"
 _JSON_OUTPUT_FORMAT = "json"
 _JSON_SCHEMA_FLAG = "--json-schema"
 _MODEL_FLAG = "--model"
-_PROMPT_FILE_FLAG = "--prompt-file"
 _MAXIMUM_TURNS_FLAG = "--max-turns"
 # Headless one-answer class, not a heartbeat. A Diff-Review-sized order
 # (~14 KB, #295) dies at one turn (`max turns reached`) because the CLI
@@ -163,20 +174,24 @@ _USER_CONFIG_SOURCE_ROLE = "user"
 _CONFIG_SOURCE = "config"
 
 _JOB_DIRECTORY_PREFIX = "atelier2-grok-job-"
-_JOB_FILE_NAME = "job"
 _CONFIG_FILE_NAME = "config.toml"
 _AUTHENTICATION_FILE_NAME = "auth.json"
 _JOB_DIRECTORY_MODE = 0o700
-_JOB_FILE_MODE = 0o600
 _CONFIG_FILE_MODE = 0o600
 _AUTHENTICATION_FILE_MODE = 0o400
-_JOB_FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+_PRIVATE_FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
 _MAXIMUM_AUTHENTICATION_FILE_BYTES = 1_048_576
 
 _HOME_VARIABLE = "HOME"
 _CREDENTIAL_DIRECTORY_VARIABLE = "GROK_HOME"
 _SEARCH_PATH_VARIABLE = "PATH"
 _TEXT_FIELD = "text"
+_SINGLE_PROMPT_FLAG = "-p"
+_MEASURED_INLINE_PROMPT_BYTES = 30_000
+_PROMPT_LIMIT_REFUSAL = (
+    "Grok 1.0.5 inline prompt transport is measured only through 30,000 bytes"
+)
+_PROMPT_ENCODING_REFUSAL = "Grok inline prompt transport accepts UTF-8 job bytes only"
 
 
 def _unusable_provider_answer(
@@ -212,7 +227,7 @@ class GrokProviderEndedWithoutFinalMessage(AgentExecutionFailure):
 
 
 def _parsed_version(reported: str) -> tuple[int, int, int] | None:
-    """Read `grok 1.0.4 (d846eb93d9) [stable]` or `1.0.4 (...)` as the version."""
+    """Read `grok 1.0.5 (...)` as the version."""
 
     tokens = reported.strip().split()
     if not tokens:
@@ -508,7 +523,7 @@ def attest_grok_containment(
 
 
 def _write_private_file(path: Path, payload: bytes, mode: int) -> None:
-    descriptor = os.open(path, _JOB_FILE_FLAGS, mode)
+    descriptor = os.open(path, _PRIVATE_FILE_FLAGS, mode)
     try:
         remaining = memoryview(payload)
         while remaining:
@@ -541,10 +556,8 @@ def _authentication_bytes(settings: GrokSubscriptionSettings) -> bytes:
         os.close(descriptor)
 
 
-def _open_job_directory(
-    settings: GrokSubscriptionSettings, job_bytes: bytes
-) -> tuple[Path, Path]:
-    """Prepare one private, disposable Grok home and prompt."""
+def _open_job_directory(settings: GrokSubscriptionSettings) -> Path:
+    """Prepare one private, disposable Grok home."""
 
     directory = Path(
         tempfile.mkdtemp(prefix=_JOB_DIRECTORY_PREFIX, dir=settings.workspace)
@@ -562,10 +575,8 @@ def _open_job_directory(
             _configuration_bytes(),
             _CONFIG_FILE_MODE,
         )
-        job_file = directory / _JOB_FILE_NAME
-        _write_private_file(job_file, job_bytes, _JOB_FILE_MODE)
         prepared = True
-        return directory, job_file
+        return directory
     finally:
         if not prepared:
             try:
@@ -574,20 +585,28 @@ def _open_job_directory(
                 pass
 
 
+def _validated_inline_prompt(job_bytes: bytes) -> str:
+    """Return a measured Grok prompt or refuse before creating a provider command."""
+
+    if len(job_bytes) > _MEASURED_INLINE_PROMPT_BYTES:
+        raise AgentExecutionPreflightRefusal(_PROMPT_LIMIT_REFUSAL)
+    try:
+        return job_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise AgentExecutionPreflightRefusal(_PROMPT_ENCODING_REFUSAL) from error
+
+
 def _headless_arguments(
     executable: Path,
     model: str,
-    job_file: Path,
+    prompt: str,
     declared_output_schema_bytes: bytes | None,
 ) -> tuple[str, ...]:
     """The exact argument vector one tool-free invocation is launched with.
 
-    Measured on grok 1.0.4 (build d846eb93d9): `-p` is the short alias for
-    `--single <PROMPT>`, a flag that requires an inline value, not the bare
-    print flag this executor once assumed -- the CLI refuses the launch with
-    "a value is required for '--single <PROMPT>' but none was supplied"
-    before any billing occurs. `--prompt-file` is left as the only
-    single-turn carrier.
+    The grok 1.0.5 transport measurement above established `-p` as the only
+    carrier that echoed every deep token through the 30,000-byte bound. The
+    prompt has already passed this carrier's UTF-8 and measured-size boundary.
     """
 
     return (
@@ -597,8 +616,8 @@ def _headless_arguments(
         *_json_schema_flag(declared_output_schema_bytes),
         _MODEL_FLAG,
         model,
-        _PROMPT_FILE_FLAG,
-        str(job_file),
+        _SINGLE_PROMPT_FLAG,
+        prompt,
         _TOOLS_FLAG,
         _PERMISSION_MODE_FLAG,
         _DONT_ASK,
@@ -707,7 +726,7 @@ class GrokSubscriptionExecutor:
     def _invocation_arguments(
         self,
         model: str,
-        job_file: Path,
+        prompt: str,
         declared_output_schema_bytes: bytes | None,
         maximum_assistant_turns: int | None = None,
     ) -> tuple[str, ...]:
@@ -715,7 +734,7 @@ class GrokSubscriptionExecutor:
         return _headless_arguments(
             self.settings.executable,
             model,
-            job_file,
+            prompt,
             declared_output_schema_bytes,
         )
 
@@ -727,15 +746,16 @@ class GrokSubscriptionExecutor:
         binding = request.resolved_binding
         if binding.auth_profile.auth_mode is not AuthMode.SUBSCRIPTION:
             raise GrokSubscriptionAuthModeUnsupported(self._unsupported_auth_message)
+        prompt = _validated_inline_prompt(request.job_bytes)
         settings = self.settings
-        state_directory, job_file = _open_job_directory(settings, request.job_bytes)
+        state_directory = _open_job_directory(settings)
         registered = False
         try:
             attest_grok_containment(settings, state_directory)
             command = GrokSubscriptionProcessCommand(
                 self._invocation_arguments(
                     binding.configuration.model,
-                    job_file,
+                    prompt,
                     request.declared_output_schema_bytes,
                     request.maximum_assistant_turns,
                 ),
@@ -760,6 +780,7 @@ class GrokSubscriptionExecutor:
     def decode_process_completion(
         self, invocation: AgentProcessInvocation, completion: AgentProcessCompletion
     ) -> AgentExecutionResult | AgentExecutionFailure:
+        command = invocation.command
         values = _json_values(completion.standard_output)
         if values is None:
             return _unusable_provider_answer(
@@ -775,7 +796,6 @@ class GrokSubscriptionExecutor:
         # GrokProviderEndedWithoutFinalMessage. `text` is the final answer and
         # `thought` is narration. `--json-schema`
         # adds `structuredOutput` as the parsed form of `text`, not a later
-        command = invocation.command
         schema_bearing = (
             isinstance(command, GrokSubscriptionProcessCommand)
             and command.declared_output_schema_bytes is not None
@@ -918,7 +938,7 @@ _INVOCATION_PROBE_PREFIX = "atelier2-grok-invocation-"
 def _workspace_tool_arguments(
     executable: Path,
     model: str,
-    job_file: Path,
+    prompt: str,
     declared_output_schema_bytes: bytes | None,
     maximum_assistant_turns: int | None = None,
 ) -> tuple[str, ...]:
@@ -934,8 +954,8 @@ def _workspace_tool_arguments(
         *_json_schema_flag(declared_output_schema_bytes),
         _MODEL_FLAG,
         model,
-        _PROMPT_FILE_FLAG,
-        str(job_file),
+        _SINGLE_PROMPT_FLAG,
+        prompt,
         _TOOLS_OPTION,
         _WORKSPACE_TOOL_LIST,
         *allow,
@@ -1033,10 +1053,8 @@ def attest_grok_workspace_tool_invocation(
             _configuration_bytes(),
             _CONFIG_FILE_MODE,
         )
-        job_file = state_directory / _JOB_FILE_NAME
-        _write_private_file(job_file, b"", _JOB_FILE_MODE)
         arguments = _workspace_tool_arguments(
-            settings.executable, _INVOCATION_PROBE_MODEL, job_file, None
+            settings.executable, _INVOCATION_PROBE_MODEL, "", None
         )
         started = _jobless_invocation_answer(
             settings, arguments, state_directory, timeout_seconds
@@ -1086,7 +1104,7 @@ class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
     this executor does not pretend it validates them.
 
     WHAT IT KEEPS. Every other flag and the whole private HOME of the
-    tool-free call, unchanged: `--prompt-file`, `--output-format json`, the
+    tool-free call, unchanged: inline `-p`, `--output-format json`, the
     inert compatibility configuration, no memory, no subagents, no web
     search, a bounded turn count. Schema-bearing calls take `structuredOutput`;
     calls without a schema take nonempty `text`.
@@ -1118,14 +1136,14 @@ class GrokWorkspaceToolExecutor(GrokSubscriptionExecutor):
     def _invocation_arguments(
         self,
         model: str,
-        job_file: Path,
+        prompt: str,
         declared_output_schema_bytes: bytes | None,
         maximum_assistant_turns: int | None = None,
     ) -> tuple[str, ...]:
         return _workspace_tool_arguments(
             self.settings.executable,
             model,
-            job_file,
+            prompt,
             declared_output_schema_bytes,
             maximum_assistant_turns,
         )

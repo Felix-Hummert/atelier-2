@@ -91,6 +91,7 @@ CANCELLATION_PATH = (
     API_PREFIX + "/runs/{public_ref}/agent-attempts/{attempt_id}/cancellations"
 )
 RUN_CANCELLATION_PATH = API_PREFIX + "/runs/{public_ref}/cancellations"
+RUN_FORK_PATH = API_PREFIX + "/runs/{public_ref}/forks"
 PROJECTS_PATH = API_PREFIX + "/projects"
 PROJECT_PATH = PROJECTS_PATH + "/{public_project_reference}"
 PROJECT_ROOT_PATH = PROJECT_PATH + "/root"
@@ -285,6 +286,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/workflow-revisions", "get"): (
         "invalid-revision-hash",
         "invalid-request",
+        "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -295,6 +297,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "catalog-revision-unpublished",
         "catalog-name-held",
         "catalog-revision-owned",
+        "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -307,6 +310,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "catalog-revision-owned",
         "catalog-lineage-missing",
         "catalog-lineage-retired",
+        "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -322,6 +326,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/workflow-revisions/{workflow_revision_hash}", "get"): (
         "invalid-revision-hash",
         "workflow-revision-not-found",
+        "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -439,6 +444,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "project-source-not-connected",
         "project-source-unavailable",
         "project-source-payload-malformed",
+        "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -446,6 +452,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/runs", "get"): (
         "invalid-public-run-reference",
         "invalid-request",
+        "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -453,6 +460,23 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (API_PREFIX + "/runs/{public_ref}", "get"): (
         "invalid-public-run-reference",
         "run-not-found",
+        "durable-projection-unrepresentable",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (RUN_FORK_PATH, "post"): (
+        "invalid-public-run-reference",
+        "invalid-request",
+        "unsupported-media-type",
+        "run-not-found",
+        "run-fork-origin-not-terminal",
+        "run-fork-node-missing",
+        "run-fork-loop-unsupported",
+        "run-fork-prefix-not-reusable",
+        "run-fork-command-conflict",
+        "agent-executor-binding-unavailable",
+        "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -461,6 +485,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "invalid-public-run-reference",
         "run-not-found",
         "node-not-found",
+        "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -484,6 +509,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "agent-attempt-terminal",
         "cancellation-command-conflict",
         "replacement-not-allowed",
+        "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -499,6 +525,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "answer-revision-conflict",
         "answer-state-conflict",
         "answer-bytes-conflict",
+        "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -514,6 +541,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "reconciliation-command-conflict",
         "reconciliation-determination-conflict",
         "reconciliation-rejected",
+        "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -526,6 +554,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "run-not-cancellable",
         "run-cancellation-command-conflict",
         "run-cancellation-overtaken-by-success",
+        "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -537,6 +566,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "event-cursor-ahead",
         "not-acceptable",
         "run-not-found",
+        "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -544,6 +574,7 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
     (ATTENTION_EVENT_PATH, "get"): (
         "invalid-event-cursor",
         "not-acceptable",
+        "durable-projection-unrepresentable",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",

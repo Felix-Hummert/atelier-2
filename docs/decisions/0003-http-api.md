@@ -51,6 +51,18 @@ problems (`run-not-cancellable`, `run-cancellation-command-conflict`), and
 whether a run can be cancelled at all is the server's own
 `RunResourceV3.cancellation` predicate, not the cockpit's guess.
 
+A terminal V3 run is forked through `POST /runs/{public_ref}/forks`. The closed
+body carries only `idempotency_key` and `restart_from_node_id`; the command and
+successor identities are server-owned derivations. The first accepted command
+returns the successor `RunResourceV3` with `201`, and an exact retry returns the
+same resource with `200`. A missing origin is `404 run-not-found`. Nonterminal
+origins, missing restart nodes, looped workflows, a non-reusable prefix, a
+different target under the same command, and unavailable executor or runtime
+capability are closed `409` refusals. Admission failure remains `503`, while
+corrupt durable truth and an unrepresentable durable projection remain closed
+`500` problems. The API never edits the origin and never accepts a successor id
+or replacement revision from the caller.
+
 A value that crosses from an answer into the next request is named for what it
 identifies, not for where it stands: a workflow's revision hash is
 `workflow_revision_hash` and its format version `workflow_format_version` on
@@ -98,6 +110,11 @@ ceiling and resets that delay after progress. Cancellation keeps the applicable
 bound occupied until the underlying blocking durable call has actually returned.
 
 Run references are canonical `run1` encodings of the domain's UTF-8 run ID.
+Both V3 list and detail resources carry the same optional fork-origin record and
+bounded successor lineage. Reused strict-prefix nodes remain ordinary succeeded
+rail entries, augmented as one all-or-none group with the source run reference,
+source event hash, source receipt hash, and source declared Context-Package hash.
+The resource does not copy the origin receipt or output.
 Event cursors canonically bind that reference to a positive durable sequence as
 `event1`. Run pagination uses SQLite's `BINARY` ordering for `TEXT`, then refuses
 the projection if that observed order or boundary disagrees with the exact UTF-8
@@ -124,8 +141,8 @@ oversize bodies before route parsing and stop undeclared or chunked bodies while
 they are received; they also bound individual fields, encoded and decoded payloads,
 workflow graphs, response projections, and concurrent query work. Durable
 control-read projections outside those limits have their encoded workflow bytes
-refused before YAML parsing and are refused before serialization as temporarily
-unavailable; their durable rows are not changed.
+refused before YAML parsing and are refused before serialization as the 500
+`durable-projection-unrepresentable` problem; their durable rows are not changed.
 After an SSE response has started, the same failures the REST surface names are
 named in the stream: a corrupt or unprojectable durable row, a durable row
 outside the configured projection limits, and a port that breaks its page

@@ -27,6 +27,7 @@ from dbos import DBOSClient, EnqueueOptions
 from dbos._serialization import DefaultSerializer
 from sqlalchemy.engine import Connection
 
+from atelier2.adapters.dbos import schema as schema_module
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.names import ANSWER_WORKFLOW_NAME, QUEUE_NAME
 from atelier2.adapters.dbos.published_schema_shapes import PUBLISHED_TABLE_SHAPES
@@ -81,6 +82,7 @@ from atelier2.adapters.dbos.schema import (
     V37_SCHEMA_HANDOFF,
     V38_SCHEMA_HANDOFF,
     V39_SCHEMA_HANDOFF,
+    V40_SCHEMA_HANDOFF,
     MigrationRequired,
     StoreMigrationRefused,
     _rebuild_product_table,
@@ -113,6 +115,9 @@ from atelier2.adapters.dbos.schema import (
     run_agent_bindings,
     run_configuration_revisions,
     run_events,
+    run_fork_effect_fences,
+    run_fork_reused_nodes,
+    run_forks,
     run_inputs_v3,
     run_instants,
     runs,
@@ -418,6 +423,7 @@ def _logical_dump(database_path: Path) -> tuple[str, ...]:
 def _restore_v39_configuration_tables(connection: sqlite3.Connection) -> None:
     """Turn the current create path back into V39's retired configuration shape."""
 
+    _restore_v40_fork_predecessor(connection)
     for trigger in (
         "host_project_model_defaults_no_delete",
         "host_project_model_defaults_no_update",
@@ -440,6 +446,167 @@ def _restore_v39_configuration_tables(connection: sqlite3.Connection) -> None:
     connection.execute(PUBLISHED_TABLE_SHAPES[(39, "host_occupancy_bindings")])
     for statement in _OCCUPANCY_TRIGGER_STATEMENTS.values():
         connection.execute(statement)
+
+
+def _restore_v40_fork_predecessor(connection: sqlite3.Connection) -> None:
+    """Remove V41's additive fork family and restore V40's receipt shape."""
+
+    for trigger in (
+        "run_fork_effect_fences_no_delete",
+        "run_fork_effect_fences_no_update",
+        "run_fork_reused_nodes_no_delete",
+        "run_fork_reused_nodes_no_update",
+        "run_forks_no_delete",
+        "run_forks_no_update",
+        "effect_receipts_no_delete",
+        "effect_receipts_no_update",
+    ):
+        connection.execute(f"DROP TRIGGER {trigger}")
+    for table in (
+        "run_fork_effect_fences",
+        "run_fork_reused_nodes",
+        "run_forks",
+    ):
+        connection.execute(f"DROP TABLE {table}")
+    connection.execute("PRAGMA legacy_alter_table=ON")
+    try:
+        connection.execute("ALTER TABLE effect_receipts RENAME TO effect_receipts_v41")
+    finally:
+        connection.execute("PRAGMA legacy_alter_table=OFF")
+    connection.execute(PUBLISHED_TABLE_SHAPES[(40, "effect_receipts")])
+    columns = (
+        "logical_key, run_id, canonical_request, request_hash, "
+        "workflow_revision_hash, adapter_revision, destination_identity, "
+        "adapter_operational_identity, effect_id, result, result_hash, "
+        "confirmation_source, reconcile_command_id"
+    )
+    connection.execute(
+        f"INSERT INTO effect_receipts ({columns}) "
+        f"SELECT {columns} FROM effect_receipts_v41"
+    )
+    connection.execute("DROP TABLE effect_receipts_v41")
+    for trigger in ("effect_receipts_no_update", "effect_receipts_no_delete"):
+        connection.execute(_PRODUCT_TRIGGERS[trigger])
+
+
+def _create_populated_v40_store(database_path: Path) -> tuple[object, ...]:
+    """Build the exact predecessor with one confirmed receipt the rebuild must keep."""
+
+    engine = create_canonical_engine(database_path)
+    initialize_schema(engine)
+    engine.dispose()
+    revision_hash = "41" * 32
+    request_hash = "42" * 32
+    result_hash = "43" * 32
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO workflow_revisions (revision_hash, document) VALUES (?, ?)",
+            (revision_hash, b"name: migrated-effect\nsteps: []\n"),
+        )
+        connection.execute(
+            "INSERT INTO runs (run_id, bootstrap_workflow_id, revision_hash, "
+            "workflow_format_version, current_node_id, current_round_ordinal, "
+            "state, state_version, last_event_sequence, terminal_hash) "
+            "VALUES (?, ?, ?, 1, ?, 1, 'COMPLETED', 1, 0, ?)",
+            (
+                "v40-effect-run",
+                "v40-effect-bootstrap",
+                revision_hash,
+                "effect",
+                "44" * 32,
+            ),
+        )
+        shared = (
+            "v40-effect",
+            "v40-effect-run",
+            b"one canonical request",
+            request_hash,
+            revision_hash,
+            "open-pr/v1",
+            "repository/project",
+            "github/project",
+        )
+        connection.execute(
+            "INSERT INTO effect_intents (logical_key, run_id, canonical_request, "
+            "request_hash, workflow_revision_hash, adapter_revision, "
+            "destination_identity, adapter_operational_identity, state, "
+            "state_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CONFIRMED', 1)",
+            shared,
+        )
+        connection.execute(
+            "INSERT INTO effect_receipts (logical_key, run_id, canonical_request, "
+            "request_hash, workflow_revision_hash, adapter_revision, "
+            "destination_identity, adapter_operational_identity, effect_id, result, "
+            "result_hash, confirmation_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "?, ?, 'ADAPTER_EXECUTION')",
+            (*shared, "pull-request/41", b"confirmed result", result_hash),
+        )
+        _restore_v40_fork_predecessor(connection)
+        connection.execute(
+            "UPDATE atelier_schema_versions SET version = ?",
+            (V40_SCHEMA_HANDOFF.version,),
+        )
+        connection.commit()
+        _require_product_shape(connection, V40_SCHEMA_HANDOFF.version)
+        receipt = connection.execute(
+            "SELECT * FROM effect_receipts WHERE logical_key = 'v40-effect'"
+        ).fetchone()
+    assert receipt is not None
+    return receipt
+
+
+def test_populated_v40_receipt_crosses_the_v41_hop_unchanged(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    predecessor_receipt = _create_populated_v40_store(database_path)
+
+    report = migrate_store(database_path)
+
+    assert (report.source_version, report.target_version) == (
+        V40_SCHEMA_HANDOFF.version,
+        SCHEMA_VERSION,
+    )
+    with sqlite3.connect(database_path) as connection:
+        migrated = connection.execute(
+            "SELECT * FROM effect_receipts WHERE logical_key = 'v40-effect'"
+        ).fetchone()
+        assert migrated == (*predecessor_receipt, None, None, None, None)
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (SCHEMA_VERSION,)
+        for table in (run_forks, run_fork_reused_nodes, run_fork_effect_fences):
+            assert connection.execute(
+                f"SELECT count(*) FROM {table.name}"
+            ).fetchone() == (0,)
+
+
+def test_v41_failpoint_after_version_cas_restores_the_exact_v40_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "atelier.sqlite"
+    _create_populated_v40_store(database_path)
+    before = _logical_dump(database_path)
+    raise_declared_version = schema_module._raise_declared_version
+
+    def fail_after_v41_cas(
+        connection: sqlite3.Connection, expected_version: int, target_version: int
+    ) -> None:
+        raise_declared_version(connection, expected_version, target_version)
+        if expected_version == V40_SCHEMA_HANDOFF.version:
+            raise sqlite3.OperationalError("v41-after-version-cas-failpoint")
+
+    monkeypatch.setattr(schema_module, "_raise_declared_version", fail_after_v41_cas)
+
+    with pytest.raises(StoreMigrationRefused, match="v41-after-version-cas-failpoint"):
+        migrate_store(database_path)
+
+    assert _logical_dump(database_path) == before
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version FROM atelier_schema_versions"
+        ).fetchone() == (V40_SCHEMA_HANDOFF.version,)
+        _require_product_shape(connection, V40_SCHEMA_HANDOFF.version)
 
 
 _PREDECESSOR_RUN_EVENTS_INDEX_DDL = (

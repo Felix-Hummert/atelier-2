@@ -63,6 +63,7 @@ from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
 )
+from atelier2.contracts.run_forks import MAXIMUM_RUN_FORK_SUCCESSORS
 from atelier2.contracts.schemas_v3 import MAXIMUM_INSTANCE_DOCUMENT_BYTES
 
 WIRE_MODULES: tuple[ModuleType, ...] = (requests, resources, events, library)
@@ -131,6 +132,8 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "AuthProfileRevisionResource.provider_id": MAXIMUM_PROVIDER_ID_CHARACTERS,
     "CancelAgentAttemptRequestResource.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "CancelRunRequestResource.idempotency_key": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "ForkRunRequestResource.idempotency_key": MAXIMUM_AGENT_FIELD_CHARACTERS,
+    "ForkRunRequestResource.restart_from_node_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "CatalogNameResolutionResource.display_name": (
         MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
     ),
@@ -149,6 +152,7 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "RunResourceV2.agent_attempts": REPLACEMENT_AGENT_ATTEMPT_ORDINAL,
     "RunResourceV2.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
     "RunResourceV3.agent_bindings": MAXIMUM_RUN_AGENT_BINDINGS,
+    "RunResourceV3.fork_successors": MAXIMUM_RUN_FORK_SUCCESSORS,
     "RunResourceV3.orders": MAXIMUM_RUN_ORDERS,
     # A document declares no more roles than a run can bind: one role is one
     # binding, so the two carry the same limit for the same reason.
