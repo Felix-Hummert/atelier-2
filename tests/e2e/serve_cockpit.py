@@ -389,10 +389,7 @@ def active_dbos_workflow_ids() -> tuple[str, ...]:
     instance = dbos_runtime._dbos_global_instance
     if instance is None:
         return ()
-    active = getattr(instance, "_active_workflows_set", None)
-    if active is None:
-        return ()
-    return tuple(active.activeList())
+    return tuple(instance._active_workflows_set.activeList())
 
 
 def wait_until_dbos_workflows_idle(
