@@ -113,8 +113,16 @@ REFUSED_REVIEWS = {
 
 RESULT_SCHEMA_CASES = {
     "revise-without-findings": ({"findings": [], "verdict": "revise"}, False),
+    "revise-with-one-finding": (
+        {"findings": REVIEW["findings"], "verdict": "revise"},
+        True,
+    ),
     "cannot-judge-without-reason": (
         {"findings": [], "verdict": "cannot-judge"},
+        False,
+    ),
+    "cannot-judge-with-empty-reason": (
+        {"findings": [], "verdict": "cannot-judge", "reason": ""},
         False,
     ),
     "cannot-judge-with-reason": (

@@ -111,8 +111,16 @@ RESULT_SCHEMA_CASES = {
         {"risks": [], "plan": [], "verdict": "revise"},
         False,
     ),
+    "revise-with-one-risk": (
+        {"risks": REVIEW["risks"], "plan": [], "verdict": "revise"},
+        True,
+    ),
     "cannot-judge-without-reason": (
         {"risks": [], "plan": [], "verdict": "cannot-judge"},
+        False,
+    ),
+    "cannot-judge-with-empty-reason": (
+        {"risks": [], "plan": [], "verdict": "cannot-judge", "reason": ""},
         False,
     ),
     "cannot-judge-with-reason": (
