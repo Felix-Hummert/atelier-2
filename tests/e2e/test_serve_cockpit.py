@@ -706,9 +706,7 @@ def test_scratch_root_removal_cannot_precede_capture_after_decode(
     order: list[str] = []
     original_wait = harness.FakeProviderHolds.wait_until_idle
 
-    def wait_and_signal(
-        self: object, timeout: float = harness.TIMEOUT_SECONDS
-    ) -> None:
+    def wait_and_signal(self: object, timeout: float = harness.TIMEOUT_SECONDS) -> None:
         entered_idle_wait.set()
         original_wait(self, timeout)
 
@@ -772,17 +770,19 @@ def test_scratch_root_removal_cannot_precede_an_active_dbos_workflow(
     scratch_root = harness.BrowserScratchRoot.create()
     runtime = ClosingRuntime(scratch_root.path)
     holds = harness.FakeProviderHolds()
-    remaining = ["atelier2-node-still-capturing"]
+    workflow_id = "atelier2-node-still-capturing"
+    workflows = harness.NotifyingActiveWorkflows()
+    workflows.acquire(workflow_id)
     seen_active = threading.Event()
     order: list[str] = []
 
-    def fake_ids() -> tuple[str, ...]:
-        ids = tuple(remaining)
-        if ids:
-            seen_active.set()
-        return ids
+    def fake_notifying_active_workflows() -> object:
+        seen_active.set()
+        return workflows
 
-    monkeypatch.setattr(harness, "active_dbos_workflow_ids", fake_ids)
+    monkeypatch.setattr(
+        harness, "notifying_active_workflows", fake_notifying_active_workflows
+    )
 
     def drain_then_remove() -> None:
         harness.drain_inflight_fake_decodes(holds)
@@ -798,12 +798,24 @@ def test_scratch_root_removal_cannot_precede_an_active_dbos_workflow(
         assert "idle" not in order
         assert "removed" not in order
         assert not runtime.closed
-        remaining.clear()
+        workflows.release(workflow_id)
         closer.join(timeout=harness.TIMEOUT_SECONDS)
         assert not closer.is_alive()
         assert order == ["idle", "removed"]
         assert runtime.closed
         assert not created_root.exists()
     finally:
-        remaining.clear()
+        if workflow_id in workflows.activeList():
+            workflows.release(workflow_id)
         holds.release_all()
+
+
+def test_wait_until_dbos_workflows_idle_fails_loud_when_a_workflow_does_not_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#747 (c2): drain fails loud when an in-process workflow never finishes."""
+    workflows = harness.NotifyingActiveWorkflows()
+    workflows.acquire("atelier2-node-still-capturing")
+    monkeypatch.setattr(harness, "notifying_active_workflows", lambda: workflows)
+    with pytest.raises(RuntimeError, match="did not finish"):
+        harness.wait_until_dbos_workflows_idle(timeout=0)
