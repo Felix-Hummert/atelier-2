@@ -277,6 +277,33 @@ describe("the catalog room", () => {
     expect(screen.getAllByRole("link", { name: /catalog-(first|second|third)/ })).toHaveLength(3);
   });
 
+  it("withholds catalog group counts until both collections confirm", async () => {
+    let resolveWorkflows!: (page: { items: WorkflowRevisionSummary[]; next_after_revision_hash: null }) => void;
+    const workflowsPending = new Promise<{ items: WorkflowRevisionSummary[]; next_after_revision_hash: null }>((resolve) => {
+      resolveWorkflows = resolve;
+    });
+    let resolveAgents!: (page: { items: AgentDefinitionRevisionListItem[]; next_after_revision_hash: null }) => void;
+    const agentsPending = new Promise<{ items: AgentDefinitionRevisionListItem[]; next_after_revision_hash: null }>((resolve) => {
+      resolveAgents = resolve;
+    });
+
+    const listWorkflowRevisions = vi.fn(() => workflowsPending);
+    const listAgentDefinitionRevisions = vi.fn(() => agentsPending);
+    openCatalog({ listWorkflowRevisions, listAgentDefinitionRevisions });
+
+    await waitFor(() => expect(listWorkflowRevisions).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(listAgentDefinitionRevisions).toHaveBeenCalledTimes(1));
+
+    resolveAgents({ items: [agentItem()], next_after_revision_hash: null });
+    await waitFor(() => expect(screen.getAllByRole("status")).toHaveLength(1));
+
+    expect(screen.queryByRole("group", { name: catalogPageCopy.catalogGroups })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Workflows\s*0/ })).toBeNull();
+
+    resolveWorkflows({ items: [], next_after_revision_hash: null });
+    expect((await screen.findByRole("button", { name: /Workflows\s*0/ })).isConnected).toBe(true);
+  });
+
   it("opens the selected workflow's start sheet instead of leaving the catalog detail", async () => {
     openCatalog({
       ...listing([workflowSummary()]),

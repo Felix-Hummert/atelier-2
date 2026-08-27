@@ -62,6 +62,11 @@
   $: workflowTiles = workflows.confirmed;
   $: workflowRows = workflowTiles?.rows ?? [];
   $: agentRows = agents.confirmed ?? [];
+  $: catalogGroupsReady =
+    workflows.confirmed !== null &&
+    workflows.request.state === "idle" &&
+    agents.confirmed !== null &&
+    agents.request.state === "idle";
   $: hasCatalogEntries = workflowRows.length + agentRows.length > 0;
   $: matchingWorkflows = catalogMatches(workflowRows, search);
   $: matchingAgents = catalogMatches(agentRows, search);
@@ -282,7 +287,7 @@
   <ReadState read={workflows} label="workflows" onRetry={() => { void loadWorkflows(); }} />
   <ReadState read={agents} label="agents" onRetry={() => { void loadAgents(); }} />
 
-  {#if hasCatalogEntries}
+  {#if hasCatalogEntries && catalogGroupsReady}
     <div class="catalog-filters" role="group" aria-label={wrapDisplayCopy(catalogPageCopy.catalogGroups)}>
       {#each catalogGroupChoices(workflowTiles?.count ?? 0, agentRows.length) as { group, label, count } (group)}
         <button
