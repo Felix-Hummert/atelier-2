@@ -7,15 +7,18 @@ ten synthetic schema calls put one unique token halfway through a 10,000,
 8.234 s; inline: 2.774, 3.209 and 7.542 s). Inline returned schema-valid
 non-token placeholders at 40,000 and 50,000 bytes (5.345 and 5.520 s); the
 file carrier returned one only after narrated file reading at 40,000 (16.156
-s) and a placeholder at 50,000 (5.460 s). This tool-free adapter therefore
-uses inline `-p` only through the measured 30,000-byte bound and returns typed
-`AGENT_REFUSED` before launch above it, rather than accepting a minimal object.
-Narration was none at file/inline 10,000 and 20,000 bytes; it was present at
-30,000 bytes for both carriers, at file 40,000 and 50,000 bytes, and at inline
-40,000 and 50,000 bytes. Standard input is not a documented prompt carrier.
-The version gate admits exactly this measured release. The child environment is only `HOME`,
-`GROK_HOME` and `PATH` -- and `HOME` is containment, not convenience: without
-it the CLI resolves the invoking account's own profile.
+s) and a placeholder at 50,000 (5.460 s). A later 50,009-byte inline call
+ended successfully in 3.527 s with `{"findings":[],"verdict":"revise"}`. Its
+exact thought was `The user query appears to be a huge string of x's, but there's a
+note that the full request was offloaded to a file. I need to read that file to
+get the actual question.` This tool-free adapter therefore uses inline `-p`
+only through the measured 30,000-byte bound and returns typed `AGENT_REFUSED`
+before launch above it; a post-launch offload announcement is also a typed
+refusal, never a minimal object accepted as success. Standard input is not a
+documented prompt carrier. The version gate admits exactly this measured
+release. The child environment is only `HOME`, `GROK_HOME` and `PATH` -- and
+`HOME` is containment, not convenience: without it the CLI resolves the
+invoking account's own profile.
 
 Every invocation gets one private disposable `HOME`/`GROK_HOME`. The seam
 copies only `auth.json` into it and writes an inert compatibility configuration
@@ -192,6 +195,8 @@ _PROMPT_LIMIT_REFUSAL = (
     "Grok 1.0.5 inline prompt transport is measured only through 30,000 bytes"
 )
 _PROMPT_ENCODING_REFUSAL = "Grok inline prompt transport accepts UTF-8 job bytes only"
+_PROMPT_OFFLOAD_NOTICE_TERMS = ("offload", "file")
+_PROMPT_OFFLOAD_SUBJECTS = ("prompt", "request")
 
 
 def _unusable_provider_answer(
@@ -222,6 +227,16 @@ class GrokProviderEndedWithoutFinalMessage(AgentExecutionFailure):
 
     code: AgentAttemptFailureCode = field(
         default=AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY,
+        init=False,
+    )
+
+
+@dataclass(frozen=True)
+class GrokProviderOffloadedPrompt(AgentExecutionFailure):
+    """Grok announced prompt offload, so its schema-shaped answer is unusable."""
+
+    code: AgentAttemptFailureCode = field(
+        default=AgentAttemptFailureCode.AGENT_REFUSED,
         init=False,
     )
 
@@ -693,6 +708,25 @@ def _final_grok_envelope_text(values: Sequence[object]) -> str | None:
     return text if isinstance(text, str) and text else None
 
 
+def _grok_announced_prompt_offload(values: Sequence[object]) -> bool:
+    """Whether provider narration says it received a file reference, not the job."""
+
+    narration = (
+        value
+        if isinstance(value, str)
+        else value.get("thought")
+        if isinstance(value, dict)
+        else None
+        for value in values
+    )
+    return any(
+        isinstance(message, str)
+        and all(term in message.lower() for term in _PROMPT_OFFLOAD_NOTICE_TERMS)
+        and any(subject in message.lower() for subject in _PROMPT_OFFLOAD_SUBJECTS)
+        for message in narration
+    )
+
+
 def _unreadable_grok_transcript(standard_output: bytes) -> AttemptTranscript | None:
     """Keep an unreadable raw frame as bounded, redacted evidence."""
 
@@ -786,6 +820,8 @@ class GrokSubscriptionExecutor:
             return _unusable_provider_answer(
                 _unreadable_grok_transcript(completion.standard_output)
             )
+        if _grok_announced_prompt_offload(values):
+            return GrokProviderOffloadedPrompt(_grok_transcript(values))
         if completion.return_code != 0:
             return _unusable_provider_answer(_grok_transcript(values))
         if not values:

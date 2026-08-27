@@ -37,6 +37,7 @@ from atelier2.adapters.grok_subscription import (
     GrokContainmentUnattested,
     GrokExecutableUnsupported,
     GrokProviderEndedWithoutFinalMessage,
+    GrokProviderOffloadedPrompt,
     GrokSubscriptionAuthModeUnsupported,
     GrokSubscriptionExecutorFactory,
     GrokSubscriptionProcessCommand,
@@ -929,6 +930,42 @@ def test_a_schema_bearing_envelope_yields_the_provider_structured_value(
     assert result == AgentExecutionResult(b'"pass-token"')
     assert result != AgentExecutionResult(answer.encode())
     assert result != AgentExecutionResult(narration.encode())
+
+
+def test_an_offload_announcement_refuses_a_schema_valid_minimal_object(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    invocation = leased(
+        GrokSubscriptionProcessCommand(
+            ("grok",),
+            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+            declared_output_schema_bytes=b'{"type":"object"}',
+        ),
+        tmp_path,
+    )
+
+    result = executor.decode_process_completion(
+        invocation,
+        AgentProcessCompletion(
+            0,
+            measured_headless_json_envelope(
+                text='{"findings":[],"verdict":"revise"}',
+                thought=(
+                    "The user query appears to be a huge string of x's, but "
+                    "there's a note that the full request was offloaded to a "
+                    "file. I need to read that file to get the actual question."
+                ),
+                structured_output={"findings": [], "verdict": "revise"},
+            ),
+            b"",
+        ),
+    )
+
+    assert isinstance(result, GrokProviderOffloadedPrompt)
+    assert result.code is AgentAttemptFailureCode.AGENT_REFUSED
+    assert result.transcript is not None
 
 
 def test_an_unusable_envelope_is_a_typed_process_failure(tmp_path: Path) -> None:
