@@ -53,6 +53,7 @@ from atelier2.contracts.agents import (
     AgentExecutorOperationalIdentity,
 )
 from atelier2.contracts.effect_markers import body_carries_request_hash
+from atelier2.contracts.effect_requests import OpenPullRequest
 from atelier2.contracts.effects import (
     AdapterOperationalIdentity,
     AdapterRevision,
@@ -394,7 +395,8 @@ def test_a_granted_agent_node_opens_one_pull_request_and_leaves_one_receipt(
     # The pull request is the agent's own kept output, marked by this exact
     # prepared request -- the same shape an Action's confirmation leaves.
     assert agent_output == PR_SPEC
-    assert intent.request.payload == PR_SPEC
+    typed_request = OpenPullRequest.from_canonical_bytes(intent.request.payload)
+    assert typed_request.body.encode("utf-8") == PR_SPEC
     # #706: `graph_agent_open_pr_intent` now mints this key through the one
     # owner it shares with the Action preparer and the #646 sweep
     # (`logical_effect_key_for_node`) instead of composing `NodeExecutionId.

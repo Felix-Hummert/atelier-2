@@ -18,7 +18,7 @@
   import { whenFacts, type StreamProjection } from "../lib/runProjection";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { runPageCopy } from "../lib/runPageCopy";
-  import { runHasEnded, runStanding, standingMarks, standingWords } from "../lib/runState";
+  import { runStanding, standingMarks, standingWords } from "../lib/runState";
   import { protocolDetail, protocolTitle } from "../lib/streamStatus";
   import {
     deliverWaitAnswer,
@@ -28,7 +28,6 @@
   import { ageLabel } from "../lib/when";
   import NodeDetailPanel from "./NodeDetailPanel.svelte";
   import ProblemNotice from "./ProblemNotice.svelte";
-  import ReadableResult from "./ReadableResult.svelte";
   import RunCancelCard from "./RunCancelCard.svelte";
   import V3AnswerCard, { type WaitContextSource } from "./V3AnswerCard.svelte";
   import WorkflowGraphDrawing from "./WorkflowGraphDrawing.svelte";
@@ -38,16 +37,13 @@
    *
    * 1. what this is and where it stands — name, description, one plain state
    *    sentence with its duration, and nothing else;
-   * 2. what a run that ended wrote — its sink node's declared answer, in one
-   *    plain sentence or its fields, never a JSON line (#716). Never for a run
-   *    still going: the graph already says where an unfinished line stands.
-   * 3. what needs the operator now — the waiting question with the material it
+   * 2. what needs the operator now — the waiting question with the material it
    *    is about, as the one dominant card;
-   * 4. the run as a picture — the quiet pipe;
-   * 5. everything else only behind a click — node tabs, and every fingerprint
+   * 3. the run as a picture — the quiet pipe;
+   * 4. everything else only behind a click — node tabs, and every fingerprint
    *    inside the Evidence tab there.
    *
-   * An element that fits none of the five does not belong on this page.
+   * An element that fits none of the four does not belong on this page.
    */
   export let run: RunV3;
   export let cockpitApi: CockpitApi;
@@ -95,68 +91,6 @@
   $: pendingAnswer = pendingWait === null ? null : waitAnswerText(pendingWait);
   $: waiting = run.state === "WAITING_INPUT";
   $: standing = runStanding(run.state);
-
-  /**
-   * What the run's own sink node wrote, read the same way a click into that
-   * node would read it (#716) -- the one owner for a node's answer, never a
-   * second derivation from the event stream. A run still going or still
-   * waiting asks nothing here.
-   *
-   * `current_node_id` is the run's own name for that node, read for two
-   * different reasons depending on how the run ended: a `COMPLETED` run
-   * names its sink there, an invariant `run_transitions.py` enforces at
-   * write time (`is_sink_node`), so this read is exact. A `FAILED` or
-   * `CANCELLED` run carries no such guarantee -- `current_node_id` there is
-   * only wherever the line stopped, which may have written no answer at
-   * all. Reading it anyway is still correct: this banner shows nothing
-   * unless that node did write one, and a node that failed before writing
-   * answers with `answer: null`, which the check below already reads as
-   * "no banner".
-   */
-  let outcomeDetail: NodeDetail | null = null;
-  let outcomeFailure: string | null = null;
-  let outcomeKey = "";
-  $: runEnded = runHasEnded(run.state);
-  $: if (runEnded) void loadOutcome(run.public_run_reference, run.current_node_id);
-
-  async function loadOutcome(publicRunReference: string, nodeId: string): Promise<void> {
-    const key = `${publicRunReference}:${nodeId}`;
-    if (key === outcomeKey) return;
-    outcomeKey = key;
-    try {
-      const read = (await cockpitApi.getNodeDetail(publicRunReference, nodeId)) ?? null;
-      if (outcomeKey !== key) return;
-      outcomeDetail = read;
-      outcomeFailure = null;
-    } catch (error) {
-      if (outcomeKey !== key) return;
-      // Never a permanently poisoned key: a later trigger (a fresh read of
-      // this same run, exactly as `openNode` already retries a failed node
-      // read) tries again instead of staying silent forever.
-      outcomeKey = "";
-      outcomeFailure = error instanceof Error ? error.message : String(error);
-    }
-  }
-
-  /**
-   * The sink's answer, decoded once here (#716) -- a missing answer (a node
-   * that failed before writing one), bytes that do not decode as UTF-8, or
-   * an answer with no agent provenance all read as "nothing to show", which
-   * is honest: this banner only ever adds to what the graph and the node
-   * panel already prove, never a second, lesser source of the same fact.
-   *
-   * `provenance` is the line between the two things a V3 line can end on
-   * (#562 lets both carry an `answer` now): an agent's own structured
-   * report, whose receipt this is, and a Wait node's answer, which is what
-   * the *operator* wrote and never carries a receipt at all -- that is the
-   * node panel's business, never this run's own "what came out of it".
-   */
-  $: outcomeText =
-    outcomeDetail === null ||
-    outcomeDetail.answer === null ||
-    outcomeDetail.provenance === null
-      ? null
-      : decodeUtf8Base64(outcomeDetail.answer.value_base64);
 
   /**
    * The state sentence's relative reading: "for" counts up while the run is
@@ -528,15 +462,6 @@
       projection.connection !== "reconnecting" &&
       projection.connection !== "failed");
 
-  /**
-   * The outcome banner takes a tab stop the same way
-   * `RunCockpitPage.svelte`'s own event evidence already does: through an
-   * action, not a static `tabindex` attribute, because a static one on a
-   * non-interactive element is exactly what the house's a11y lint refuses.
-   */
-  function keyboardScrollableRegion(region: HTMLElement): void {
-    region.tabIndex = 0;
-  }
 </script>
 
 <section class="v3-run" aria-labelledby="v3-run-title">
@@ -555,19 +480,6 @@
 
   {#if stopped !== null}
     <p class="stopped" role="alert"><strong>{stopped[0]}:</strong> {stopped[1]}</p>
-  {/if}
-
-  {#if outcomeFailure !== null}
-    <ProblemNotice title="This run's result could not be read" message={outcomeFailure} />
-  {:else if outcomeText !== null}
-    <section
-      id="run-outcome"
-      class="run-outcome card"
-      use:keyboardScrollableRegion
-      aria-label={wrapDisplayCopy(runPageCopy.tabResult)}
-    >
-      <ReadableResult decodedAnswer={outcomeText} />
-    </section>
   {/if}
 
   {#if !streamSilent && projection !== null}
@@ -647,13 +559,14 @@
   {#if openNodeId !== null}
     {#if failure !== null}
       <ProblemNotice title="This node could not be read" message={failure} />
-    {:else if detail !== null}
+    {:else}
       <NodeDetailPanel
         {detail}
+        nodeId={openNodeId}
+        railState={rail.find((entry) => entry.node_id === openNodeId)?.state}
         onClose={closeNode}
-        readsFrom={readsFrom(detail.node_id)}
-        railAttempt={rail.find((entry) => entry.node_id === detail?.node_id)?.attempt ?? null}
-        resultShownAbove={outcomeText !== null && detail.node_id === run.current_node_id}
+        readsFrom={readsFrom(openNodeId)}
+        railAttempt={rail.find((entry) => entry.node_id === openNodeId)?.attempt ?? null}
         runEvidence={{
           runId: run.run_id,
           workflowRevisionHash: run.workflow_revision_hash,
@@ -661,8 +574,6 @@
           terminalHash: run.terminal_hash
         }}
       />
-    {:else}
-      <p class="muted">Reading {openNodeId}…</p>
     {/if}
   {/if}
 </section>
@@ -739,18 +650,6 @@
     background: color-mix(in srgb, var(--signal-failure) var(--wash), var(--panel2));
     color: var(--signal-failure);
     overflow-wrap: anywhere;
-  }
-
-  /* An outcome nobody bounded could grow past a screen's worth of fields --
-     the same scroll-box every exact-bytes reveal in the house clamps to. */
-  .run-outcome {
-    max-height: var(--scroll-box);
-    overflow: auto;
-  }
-
-  .run-outcome:focus-visible {
-    outline: var(--edge-focus) solid var(--accent);
-    outline-offset: var(--edge-focus);
   }
 
   .stream-stale {

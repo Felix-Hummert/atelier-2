@@ -32,12 +32,22 @@ ORDER_HEADING = "--- order: {name} ---"
 RESULT_HEADING = "--- result of {node}: {name} ---"
 """How the work of an earlier node announces itself, named by the node that did it."""
 
+OUTPUT_SCHEMA_REPAIR_HEADING = "--- repair: declared output schema ---"
+
 
 class NodeJobCompositionVersion(StrEnum):
-    """The two rendering rules whose bytes have identified agent attempts."""
+    """The three rendering rules whose bytes have identified agent attempts."""
 
     LEGACY = "json-orders/v1"
     CURRENT = "declared-root-strings/v2"
+    OUTPUT_SCHEMA_REPAIR = "declared-root-strings-with-repair/v3"
+
+
+class OutputSchemaRepair:
+    def __init__(self, refusal_reason: str) -> None:
+        if refusal_reason == "":
+            raise ValueError("an output-schema repair names a refusal reason")
+        self.refusal_reason = refusal_reason
 
 
 def node_job(
@@ -45,6 +55,7 @@ def node_job(
     orders: tuple[RunInput, ...] = (),
     results: tuple[DeliveredOutput, ...] = (),
     composition_version: NodeJobCompositionVersion = NodeJobCompositionVersion.CURRENT,
+    output_schema_repair: OutputSchemaRepair | None = None,
 ) -> str:
     """The instruction its author wrote, then what this node was given to read.
 
@@ -66,7 +77,14 @@ def node_job(
     """
     if not isinstance(composition_version, NodeJobCompositionVersion):
         raise TypeError("node job composition version must be typed")
-    if not orders and not results:
+    is_repair_version = (
+        composition_version is NodeJobCompositionVersion.OUTPUT_SCHEMA_REPAIR
+    )
+    if is_repair_version != (output_schema_repair is not None):
+        raise ValueError(
+            "an output-schema repair requires both its composition version and payload"
+        )
+    if not orders and not results and output_schema_repair is None:
         return instruction
     sections = [instruction]
     for order in sorted(orders, key=lambda supplied: supplied.name):
@@ -77,6 +95,10 @@ def node_job(
             RESULT_HEADING.format(node=result.node_id, name=result.output_name)
         )
         sections.append(result.value.decode("utf-8"))
+    if output_schema_repair is not None:
+        sections.extend(
+            (OUTPUT_SCHEMA_REPAIR_HEADING, output_schema_repair.refusal_reason)
+        )
     return "\n\n".join(sections)
 
 

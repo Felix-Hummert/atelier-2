@@ -19,7 +19,11 @@ from dbos import DBOSClient
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import agent_receipts_v2, run_agent_bindings, runs
+from atelier2.adapters.dbos.schema import (
+    agent_receipts_v2,
+    run_agent_bindings,
+    runs,
+)
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -929,6 +933,36 @@ def test_a_schema_bearing_envelope_yields_the_provider_structured_value(
     assert result == AgentExecutionResult(b'"pass-token"')
     assert result != AgentExecutionResult(answer.encode())
     assert result != AgentExecutionResult(narration.encode())
+
+
+def test_a_normal_grok_answer_that_mentions_offloaded_files_is_not_refused(
+    tmp_path: Path,
+) -> None:
+    settings = grok_subscription_deployment(tmp_path, INTROSPECTING_GROK)
+    executor = GrokSubscriptionExecutorFactory(settings).open()
+    invocation = leased(
+        GrokSubscriptionProcessCommand(
+            ("grok", "-p", "build"),
+            standard_output_frame_bytes=GROK_SUBSCRIPTION_FRAME_BYTES,
+        ),
+        tmp_path,
+    )
+
+    result = executor.decode_process_completion(
+        invocation,
+        AgentProcessCompletion(
+            0,
+            measured_headless_json_envelope(
+                text="I offloaded the draft to a file for review.",
+                thought="I considered an offloaded file while preparing the answer.",
+            ),
+            b"",
+        ),
+    )
+
+    assert result == AgentExecutionResult(
+        b"I offloaded the draft to a file for review."
+    )
 
 
 def test_an_unusable_envelope_is_a_typed_process_failure(tmp_path: Path) -> None:

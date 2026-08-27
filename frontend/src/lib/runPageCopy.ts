@@ -4,12 +4,14 @@ import type { NodeState } from "./runProjection";
 /**
  * Words the V3 run page speaks. One owner, the #333 ruling: Prompt / Output / Log.
  *
- * Log is not on the event stream (#104). The Log tab says that in
- * `processLogInLease` rather than inventing a progress bar. Usage and a
- * provider-resolved model are not recorded receipt fields, so their empty
- * words live here rather than being invented at the call site. The model on
- * the receipt is the configuration's declared model. "Yet" is only for a
- * node that may still write; a finished node is not waiting for those facts.
+ * The Log tab is the stored attempt transcript once an attempt has ended.
+ * A working node has not written that transcript yet, so `processLogInLease`
+ * still names the live process log that stays in the lease (#104 / #9).
+ * Usage and a provider-resolved model are not recorded receipt fields, so
+ * their empty words live here rather than being invented at the call site.
+ * The model on the receipt is the configuration's declared model. "Yet" is
+ * only for a node that may still write; a finished node is not waiting for
+ * those facts.
  *
  * The page reads in one order (operator ruling 23.08.): what this run is and
  * where it stands, what needs the operator now, the run as a picture, and
@@ -63,6 +65,16 @@ export const runPageCopy = {
   tabLog: "Log",
   tabEvidence: "Evidence",
   tabsLabel: "What this node carries",
+  assistantTurn: "Assistant turn",
+  doorCall: "Door call",
+  doorAnswer: "Door answer",
+  attemptStdout: "Attempt stdout",
+  argumentsFold: "arguments",
+  transcriptEmpty: "no transcript for this attempt",
+  redacted: "redacted",
+  transcriptRegion: "Stored attempt transcript",
+  usageInput: "input",
+  usageOutputTokens: "output tokens",
   logAbsent:
     "No process log is kept. It stays inside the executor's lease while the node runs and nothing stores it afterwards.",
   inputReads: "Reads from",
@@ -183,4 +195,29 @@ export function emptyWhoCopy(state: NodeState): string {
 
 export function notRecordedCopy(state: NodeState): string {
   return nodeHasEnded(state) ? runPageCopy.notRecordedEnded : runPageCopy.notRecorded;
+}
+
+/** Grouping for token counts on a usage line. The page's copy is English. */
+export function formatTokenCount(value: number): string {
+  return new Intl.NumberFormat("en-US").format(value);
+}
+
+/**
+ * The usage receipt line: input and output counts, and duration only when
+ * this node actually closed with both timestamps.
+ */
+export function usageLine(
+  inputTokens: number,
+  outputTokens: number,
+  durationWords: string | null
+): string {
+  const counts = `${formatTokenCount(inputTokens)} ${runPageCopy.usageInput} · ${formatTokenCount(outputTokens)} ${runPageCopy.usageOutputTokens}`;
+  return durationWords === null ? counts : `${counts} · ${durationWords}`;
+}
+
+/** Names how many events the stored transcript had to drop. */
+export function transcriptDroppedCopy(droppedEvents: number): string {
+  return droppedEvents === 1
+    ? "1 event dropped from this transcript."
+    : `${droppedEvents} events dropped from this transcript.`;
 }

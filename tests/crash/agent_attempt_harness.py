@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import os
 import subprocess
 import sys
@@ -8,15 +10,21 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+import sqlalchemy as sa
+from dbos import SQLAlchemyDatasource
+
+import atelier2.adapters.dbos.workflow as dbos_workflow
 from atelier2.adapters.candidate_store import GitCandidateTreeStore
 from atelier2.adapters.dbos.agent_attempt_store import DbosAgentAttemptStore
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
 from atelier2.adapters.dbos.run_transitions import load_run
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
+from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
 )
+from atelier2.adapters.dbos.workflow import AgentExecutorMap, ReconstructedAgentAttempt
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.adapters.project_verification import declared_project
@@ -57,10 +65,13 @@ from atelier2.ports.agent_attempts import (
     RunCancellationAccepted,
     RunCancellationTerminalRetry,
 )
-from atelier2.ports.agent_executions import AgentAttemptWorkspaceLease
+from atelier2.ports.agent_executions import (
+    AgentAttemptWorkspaceLease,
+    AgentExecutionResult,
+)
 from atelier2.ports.candidate_store import CandidateTreeStore
 from atelier2.ports.durable_runs import StartPublishedRunRequestV2
-from atelier2.ports.project_verification import PinnedProjectSource
+from atelier2.ports.project_verification import DeclaredProject, PinnedProjectSource
 from atelier2.ports.run_queries import (
     RunFound,
 )
@@ -175,6 +186,127 @@ def runtime(root: Path) -> DbosRuntime:
     )
 
 
+def output_schema_runtime(
+    root: Path, executor_factory: RecordingAgentExecutorFactoryV2
+) -> DbosRuntime:
+    started = DbosRuntime(
+        DbosRuntimeSettings(
+            root / "atelier.sqlite",
+            "v3-output-contract-test",
+            agent_scratch_root=agent_scratch_root(root),
+        ),
+        LoopbackEffectAdapterFactory(
+            root / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+        ExactOutputAgentExecutorFactory(),
+        (executor_factory,),
+    )
+    started.initialize_storage()
+    return started
+
+
+def repair_evidence(execution: AgentAttemptExecution) -> dict[str, object]:
+    request = execution.request
+    return {
+        "attempt_id": execution.attempt_id.value,
+        "attempt_ordinal": execution.ordinal,
+        "round_ordinal": request.round_ordinal,
+        "job_bytes_base64": base64.b64encode(request.job_bytes).decode("ascii"),
+        "request_hash": request.request_hash.value,
+    }
+
+
+def output_schema_repair_process(root: Path, mode: str) -> None:
+    from tests.integration.test_v3_output_enforcement import (
+        THE_ANSWER_THE_SCHEMA_ADMITS,
+        THE_ANSWER_THE_SCHEMA_REFUSES,
+        armed_attempt,
+    )
+
+    executor_factory = RecordingAgentExecutorFactoryV2(
+        "exact",
+        "exact/v1",
+        "exact-operation",
+        THE_ANSWER_THE_SCHEMA_ADMITS,
+    )
+    lease = output_schema_runtime(root, executor_factory)
+    try:
+        if mode == "crash-output-schema-repair-before-adapter":
+            first = armed_attempt(lease)
+            DbosAgentAttemptStore(
+                lease.engine, lease.settings.application_version
+            ).complete_success(
+                first, AgentExecutionResult(THE_ANSWER_THE_SCHEMA_REFUSES)
+            )
+
+            reconstruct = dbos_workflow.reconstruct_agent_attempt
+
+            def reconstruct_then_crash(
+                datasource: SQLAlchemyDatasource,
+                agent_executors_v2: AgentExecutorMap,
+                project: DeclaredProject | None,
+                attempt: AgentAttempt,
+            ) -> ReconstructedAgentAttempt:
+                reconstructed = reconstruct(
+                    datasource, agent_executors_v2, project, attempt
+                )
+                execution = reconstructed.execution
+                if execution.ordinal != 2:
+                    raise AssertionError("the controlled crash did not reach repair")
+                evidence = repair_evidence(execution)
+                opened = executor_factory.opened
+                evidence["adapter_requests"] = (
+                    0 if opened is None else len(opened.requests)
+                )
+                (root / "precrash-repair.json").write_text(
+                    json.dumps(evidence), encoding="utf-8"
+                )
+                os._exit(CRASHED)
+
+            dbos_workflow.reconstruct_agent_attempt = reconstruct_then_crash
+            lease.launch()
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                time.sleep(0.01)
+            raise AssertionError("the replacement workflow never reached its crash")
+        if mode == "recover-output-schema-repair":
+            lease.launch()
+            deadline = time.monotonic() + 10
+            state: object = None
+            while time.monotonic() < deadline:
+                with lease.engine.connect() as connection:
+                    state = connection.scalar(sa.select(runs.c.state))
+                if state == RunState.COMPLETED.value:
+                    opened = executor_factory.opened
+                    if opened is None or len(opened.requests) != 1:
+                        raise AssertionError(
+                            "repair did not invoke exactly one adapter"
+                        )
+                    evidence = repair_evidence(
+                        AgentAttemptExecution(
+                            opened.requests[0],
+                            AgentAttemptId.for_execution(
+                                opened.requests[0].node_execution_id,
+                                opened.requests[0].request_hash,
+                                2,
+                            ),
+                            2,
+                        )
+                    )
+                    evidence["adapter_requests"] = len(opened.requests)
+                    (root / "recovered-repair.json").write_text(
+                        json.dumps(evidence), encoding="utf-8"
+                    )
+                    return
+                time.sleep(0.01)
+            raise AssertionError(f"repair recovery left run in {state!r}")
+        raise ValueError(f"unknown output-schema mode {mode!r}")
+    finally:
+        lease.close()
+
+
 def request(lease: DbosRuntime) -> AgentExecutionRequestV2:
     lease.initialize_storage()
     auth = AuthProfileRevision("max", 1, ProviderId("anthropic"), AuthMode.SUBSCRIPTION)
@@ -217,6 +349,12 @@ def request(lease: DbosRuntime) -> AgentExecutionRequestV2:
 
 
 def main(root: Path, mode: str) -> None:
+    if mode in {
+        "crash-output-schema-repair-before-adapter",
+        "recover-output-schema-repair",
+    }:
+        output_schema_repair_process(root, mode)
+        return
     lease = runtime(root)
     try:
         exact_request = request(lease)

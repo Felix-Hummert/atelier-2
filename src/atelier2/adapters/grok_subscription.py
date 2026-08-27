@@ -7,15 +7,15 @@ ten synthetic schema calls put one unique token halfway through a 10,000,
 8.234 s; inline: 2.774, 3.209 and 7.542 s). Inline returned schema-valid
 non-token placeholders at 40,000 and 50,000 bytes (5.345 and 5.520 s); the
 file carrier returned one only after narrated file reading at 40,000 (16.156
-s) and a placeholder at 50,000 (5.460 s). This tool-free adapter therefore
-uses inline `-p` only through the measured 30,000-byte bound and returns typed
-`AGENT_REFUSED` before launch above it, rather than accepting a minimal object.
-Narration was none at file/inline 10,000 and 20,000 bytes; it was present at
-30,000 bytes for both carriers, at file 40,000 and 50,000 bytes, and at inline
-40,000 and 50,000 bytes. Standard input is not a documented prompt carrier.
-The version gate admits exactly this measured release. The child environment is only `HOME`,
-`GROK_HOME` and `PATH` -- and `HOME` is containment, not convenience: without
-it the CLI resolves the invoking account's own profile.
+s) and a placeholder at 50,000 (5.460 s). A later 50,009-byte inline call
+ended successfully in 3.527 s with `{"findings":[],"verdict":"revise"}`.
+This tool-free adapter therefore uses inline `-p` only through the measured
+30,000-byte bound and returns typed `AGENT_REFUSED` before launch above it.
+Standard input is not a documented prompt carrier. The version gate admits
+exactly this measured release. The child environment is only `HOME`,
+`GROK_HOME` and `PATH` -- and
+`HOME` is containment, not convenience: without it the CLI resolves the
+invoking account's own profile.
 
 Every invocation gets one private disposable `HOME`/`GROK_HOME`. The seam
 copies only `auth.json` into it and writes an inert compatibility configuration

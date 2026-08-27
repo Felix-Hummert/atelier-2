@@ -1351,7 +1351,7 @@ def test_a_serve_start_ends_the_recoverable_class_cases_and_leaves_the_protected
     runtime.launch()
 
     assert _run_state(runtime, interrupted) == RunState.FAILED.value
-    assert _run_state(runtime, failed) == RunState.FAILED.value
+    assert _run_state(runtime, failed) == RunState.STARTED.value
     assert _last_command(runtime, interrupted) == STOP_AFTER_DRIVER_LOSS
     assert _attempt_state(runtime, interrupted) == AgentAttemptState.INTERRUPTED.value
     assert _run_state(runtime, waiting) == RunState.WAITING_INPUT.value
