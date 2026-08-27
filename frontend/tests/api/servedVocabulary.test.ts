@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   EFFECT_CONFIRMATION_SOURCES,
   MAXIMUM_RUN_FORK_SUCCESSORS,
+  MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,
   NODE_STATES,
   PUBLIC_ATTEMPT_STATES,
   RUN_NOT_CANCELLABLE_REASONS,
@@ -12,6 +13,8 @@ import {
   agentConfigurationRevisionPageSchema,
   agentDefinitionRevisionListItemSchema,
   agentDefinitionRevisionPageSchema,
+  attemptTranscriptSchema,
+  assistantTurnEventSchema,
   authProfileRevisionPageSchema,
   waitAnswerSchemaV3Schema,
   workflowDeclaredOrderSchema,
@@ -24,7 +27,13 @@ import {
   projectModelResolutionSchema,
   projectListSchema,
   projectResourceSchema,
+  nodeDetailSchema,
   nodeRailEntrySchema,
+  toolCalledEventSchema,
+  toolReturnedEventSchema,
+  transcriptTruncatedEventSchema,
+  unrecognisedProviderOutputEventSchema,
+  usageEventSchema,
   runV3Schema,
   workflowRevisionSummarySchema,
   decodeStreamFrame
@@ -449,5 +458,98 @@ describe("the served vocabulary", () => {
     expect(Object.keys(authProfileRevisionPageSchema.shape).sort()).toEqual(
       Object.keys(served?.properties ?? {}).sort()
     );
+  });
+
+  it("decodes exactly the node-detail fields the document serves", () => {
+    expect(Object.keys(nodeDetailSchema.shape).sort()).toEqual(
+      Object.keys(servedDocument.components.schemas.NodeDetailResource?.properties ?? {}).sort()
+    );
+  });
+
+  it("decodes exactly the attempt-transcript events the document serves", () => {
+    const transcript = servedDocument.components.schemas.AttemptTranscriptResource as {
+      properties?: {
+        events?: {
+          items?: {
+            discriminator?: { mapping?: Record<string, string> };
+          };
+        };
+      };
+    };
+    const mapping = transcript.properties?.events?.items?.discriminator?.mapping ?? {};
+    const decoderByEvent = {
+      "tool-called": toolCalledEventSchema,
+      "tool-returned": toolReturnedEventSchema,
+      "assistant-turn": assistantTurnEventSchema,
+      usage: usageEventSchema,
+      "unrecognised-provider-output": unrecognisedProviderOutputEventSchema,
+      "transcript-truncated": transcriptTruncatedEventSchema
+    };
+    const servedEvents = Object.entries(mapping).map(([event, ref]) => {
+      const resourceName = ref.split("/").at(-1) ?? "";
+      return {
+        event,
+        resourceName,
+        constValue: servedDocument.components.schemas[resourceName]?.properties?.event?.const
+      };
+    });
+
+    expect(servedEvents.map(({ event }) => event).sort()).toEqual(
+      servedEvents.map(({ constValue }) => constValue).sort()
+    );
+    expect(Object.keys(attemptTranscriptSchema.shape)).toEqual(
+      Object.keys(servedDocument.components.schemas.AttemptTranscriptResource?.properties ?? {})
+    );
+    expect(Object.keys(decoderByEvent).sort()).toEqual(Object.keys(mapping).sort());
+    for (const { event, resourceName } of servedEvents) {
+      expect(
+        Object.keys(decoderByEvent[event as keyof typeof decoderByEvent].shape).sort()
+      ).toEqual(
+        Object.keys(servedDocument.components.schemas[resourceName]?.properties ?? {}).sort()
+      );
+    }
+
+    const events = [
+      { event: "tool-called" as const, name: "Read", arguments: "{}", redacted: false },
+      { event: "tool-returned" as const, name: "Read", result: "ok", redacted: false },
+      { event: "assistant-turn" as const, text: "done", redacted: false },
+      {
+        event: "usage" as const,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0
+      },
+      {
+        event: "unrecognised-provider-output" as const,
+        text: "raw",
+        redacted: true
+      },
+      { event: "transcript-truncated" as const, dropped_events: 1 }
+    ];
+    expect(events.map((step) => step.event).sort()).toEqual(Object.keys(mapping).sort());
+    expect(attemptTranscriptSchema.parse({ events })).toEqual({ events });
+  });
+
+  it("bounds transcript step strings to the length the document serves", () => {
+    const stepFields = [
+      ["ToolCalledEventResource", "name"],
+      ["ToolCalledEventResource", "arguments"],
+      ["ToolReturnedEventResource", "name"],
+      ["ToolReturnedEventResource", "result"],
+      ["AssistantTurnEventResource", "text"],
+      ["UnrecognisedProviderOutputEventResource", "text"]
+    ] as const;
+
+    for (const [resource, field] of stepFields) {
+      expect(
+        (
+          servedDocument.components.schemas[resource]?.properties?.[field] as
+            | { maxLength?: number }
+            | undefined
+        )?.maxLength
+      ).toBe(MAXIMUM_TRANSCRIPT_STEP_CHARACTERS);
+    }
+    expect(MAXIMUM_TRANSCRIPT_STEP_CHARACTERS).toBe(8_192);
   });
 });

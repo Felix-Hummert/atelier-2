@@ -106,14 +106,15 @@ describe("the catalog room", () => {
     openCatalog();
 
     expect(
-      (await screen.findByText(catalogPageCopy.workflowsEmpty)).isConnected
+      (await screen.findByText(catalogPageCopy.catalogEmpty)).isConnected
     ).toBe(true);
-    expect((await screen.findByText(catalogPageCopy.agentsEmpty)).isConnected).toBe(true);
   });
 
-  it("says skills cannot arrive yet instead of showing an empty list", async () => {
-    openCatalog();
+  it("names the source of empty skills only when the Skills group is open", async () => {
+    openCatalog({ ...listing([workflowSummary()]), ...admittedName() });
 
+    await screen.findByText(WORKFLOW_NAME);
+    await fireEvent.click(screen.getByRole("button", { name: /Skills\s*0/ }));
     expect((await screen.findByText(catalogPageCopy.skillsNone)).isConnected).toBe(true);
   });
 
@@ -133,7 +134,7 @@ describe("the catalog room", () => {
     expect(screen.queryByRole("button", { name: /Admit/ })).toBeNull();
   });
 
-  it("carries a newer revision with one solid attention shape and a Why hint, not a state band", async () => {
+  it("carries a newer revision as a compact tile pill", async () => {
     openCatalog({
       ...listing([
         workflowSummary({ workflow_revision_hash: WORKFLOW_HASH }),
@@ -143,18 +144,14 @@ describe("the catalog room", () => {
     });
 
     expect(await screen.findAllByText(WORKFLOW_NAME)).toHaveLength(1);
-    const card = screen.getByText(WORKFLOW_NAME).closest("li");
-    expect(card).not.toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: catalogPageCopy.stateHint }));
-    expect((await screen.findByText(catalogPageCopy.newerRevisionHint)).isConnected).toBe(true);
+    expect((await screen.findByText(catalogPageCopy.newerRevision)).isConnected).toBe(true);
   });
 
   it("does not mark a workflow with no newer revision", async () => {
     openCatalog({ ...listing([workflowSummary()]), ...admittedName() });
 
-    const card = (await screen.findByText(WORKFLOW_NAME)).closest("li");
-    expect(card).not.toBeNull();
-    expect(screen.queryByRole("button", { name: catalogPageCopy.stateHint })).toBeNull();
+    await screen.findByText(WORKFLOW_NAME);
+    expect(screen.queryByText(catalogPageCopy.newerRevision)).toBeNull();
   });
 
   it("opens a named workflow's own detail room from the card door", async () => {
@@ -220,12 +217,144 @@ describe("the catalog room", () => {
     await screen.findByText(WORKFLOW_NAME);
     await fireEvent.click(screen.getByRole("link", { name: WORKFLOW_NAME }));
 
+    expect(screen.queryByRole("group", { name: workflowDetailCopy.workflowRevision })).toBeNull();
+    const technicalSummary = await screen.findByText("Technical", { selector: "summary" });
+    const technical = technicalSummary.closest("details");
+    expect(technical?.open).toBe(false);
+
+    await fireEvent.click(technicalSummary);
+
     const revision = await screen.findByRole("group", { name: workflowDetailCopy.workflowRevision });
+    expect(technical?.open).toBe(true);
     expect(revision.textContent).toContain(shortFingerprint(WORKFLOW_HASH));
     expect(revision.textContent).toContain(workflowDetailCopy.sealsWorkflowRevision);
     expect((await screen.findByRole("heading", { name: workflowDetailCopy.orders })).isConnected).toBe(true);
     expect(screen.getByText(/portions-schema/).isConnected).toBe(true);
     expect(screen.getByText(/portions · integer · required/).isConnected).toBe(true);
+  });
+
+  it("counts the workflow tiles after collapsing a real-shaped library listing", async () => {
+    const secondHash = "1".repeat(64);
+    const thirdHash = "2".repeat(64);
+    const fourthHash = "3".repeat(64);
+    const firstLineageId = "5".repeat(64);
+    const thirdLineageId = "6".repeat(64);
+    const firstName = "catalog-first";
+    const secondName = "catalog-second";
+    const thirdName = "catalog-third";
+    openCatalog({
+      ...listing([
+        workflowSummary({ name: firstName, workflow_revision_hash: WORKFLOW_HASH }),
+        workflowSummary({ name: firstName, workflow_revision_hash: SIBLING_HASH }),
+        workflowSummary({ name: secondName, workflow_revision_hash: secondHash }),
+        workflowSummary({ name: thirdName, workflow_revision_hash: thirdHash }),
+        workflowSummary({ name: thirdName, workflow_revision_hash: fourthHash })
+      ]),
+      getRevisionByName: vi.fn(async (name) => {
+        if (name === firstName || name === thirdName) {
+          return {
+            display_name: name,
+            lineage_id: name === firstName ? firstLineageId : thirdLineageId,
+            workflow_revision_hash: name === firstName ? WORKFLOW_HASH : thirdHash,
+            revision_number: 1
+          };
+        }
+        throw new CockpitRequestError("no such name", {
+          type: "urn:atelier2:problem:v1:catalog-name-not-found",
+          title: "Catalog name not found",
+          status: 404,
+          detail: "no such name"
+        } as Problem);
+      }),
+      listAgentDefinitionRevisions: vi.fn(async () => ({
+        items: [agentItem(), agentItem({ agent_definition_revision_hash: "4".repeat(64), name: "reviewer" })],
+        next_after_revision_hash: null
+      }))
+    });
+
+    await screen.findByRole("link", { name: firstName });
+    expect(screen.getByRole("button", { name: /Workflows\s*3/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Agents\s*2/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Skills\s*0/ })).toBeTruthy();
+    expect(screen.getAllByRole("link", { name: /catalog-(first|second|third)/ })).toHaveLength(3);
+  });
+
+  it("withholds catalog group counts until both collections confirm", async () => {
+    let resolveWorkflows!: (page: { items: WorkflowRevisionSummary[]; next_after_revision_hash: null }) => void;
+    const workflowsPending = new Promise<{ items: WorkflowRevisionSummary[]; next_after_revision_hash: null }>((resolve) => {
+      resolveWorkflows = resolve;
+    });
+    let resolveAgents!: (page: { items: AgentDefinitionRevisionListItem[]; next_after_revision_hash: null }) => void;
+    const agentsPending = new Promise<{ items: AgentDefinitionRevisionListItem[]; next_after_revision_hash: null }>((resolve) => {
+      resolveAgents = resolve;
+    });
+
+    const listWorkflowRevisions = vi.fn(() => workflowsPending);
+    const listAgentDefinitionRevisions = vi.fn(() => agentsPending);
+    openCatalog({ listWorkflowRevisions, listAgentDefinitionRevisions });
+
+    await waitFor(() => expect(listWorkflowRevisions).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(listAgentDefinitionRevisions).toHaveBeenCalledTimes(1));
+
+    resolveAgents({ items: [agentItem()], next_after_revision_hash: null });
+    await waitFor(() => expect(screen.getAllByRole("status")).toHaveLength(1));
+
+    expect(screen.queryByRole("group", { name: catalogPageCopy.catalogGroups })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Workflows\s*0/ })).toBeNull();
+
+    resolveWorkflows({ items: [], next_after_revision_hash: null });
+    expect((await screen.findByRole("button", { name: /Workflows\s*0/ })).isConnected).toBe(true);
+  });
+
+  it("keeps confirmed tiles visible and names a failed workflow refresh", async () => {
+    let leaveAgentRefreshPending!: () => void;
+    const agentRefresh = new Promise<{
+      items: AgentDefinitionRevisionListItem[];
+      next_after_revision_hash: null;
+    }>((resolve) => {
+      leaveAgentRefreshPending = () => {
+        resolve({ items: [], next_after_revision_hash: null });
+      };
+    });
+    const listWorkflowRevisions = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [workflowSummary()], next_after_revision_hash: null })
+      .mockRejectedValueOnce(new CockpitRequestError("the store is asleep"));
+    openCatalog({
+      listWorkflowRevisions,
+      listAgentDefinitionRevisions: vi
+        .fn()
+        .mockResolvedValueOnce({ items: [], next_after_revision_hash: null })
+        .mockImplementationOnce(() => agentRefresh),
+      ...admittedName()
+    });
+
+    expect((await screen.findByRole("link", { name: WORKFLOW_NAME })).isConnected).toBe(true);
+    reportConnectionLost();
+    reportConnectionRestored();
+
+    expect((await screen.findByText(catalogPageCopy.workflowsUnavailable)).isConnected).toBe(true);
+    expect(screen.getByRole("button", { name: "Retry workflows" }).isConnected).toBe(true);
+    expect(screen.getByRole("link", { name: WORKFLOW_NAME }).isConnected).toBe(true);
+    expect(screen.queryByText(catalogPageCopy.catalogEmpty)).toBeNull();
+
+    leaveAgentRefreshPending();
+  });
+
+  it("does not replace a confirmed-empty catalog with an empty message after a failed refresh", async () => {
+    const listWorkflowRevisions = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [], next_after_revision_hash: null })
+      .mockRejectedValueOnce(new CockpitRequestError("the store is asleep"));
+    openCatalog({ listWorkflowRevisions });
+
+    expect((await screen.findByText(catalogPageCopy.catalogEmpty)).isConnected).toBe(true);
+    reportConnectionLost();
+    reportConnectionRestored();
+
+    expect((await screen.findByText(catalogPageCopy.workflowsUnavailable)).isConnected).toBe(true);
+    expect(screen.getByRole("button", { name: "Retry workflows" }).isConnected).toBe(true);
+    expect(screen.queryByText(catalogPageCopy.catalogEmpty)).toBeNull();
   });
 
   it("opens the selected workflow's start sheet instead of leaving the catalog detail", async () => {
@@ -418,10 +547,10 @@ describe("the catalog room", () => {
       (await screen.findByText(catalogPageCopy.unnamedWorkflow)).isConnected
     ).toBe(true);
     expect(screen.queryByRole("button", { name: /Admit/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: catalogPageCopy.stateHint })).toBeNull();
+    expect(screen.queryByText(catalogPageCopy.newerRevision)).toBeNull();
   });
 
-  it("proves(a-revision-no-run-can-start-says-so-before-the-operator-tries) proves(a-revision-no-run-can-start-says-so-where-it-was-published): carries a blocked workflow with a distinct shape and names why on ask", async () => {
+  it("proves(a-revision-no-run-can-start-says-so-before-the-operator-tries) proves(a-revision-no-run-can-start-says-so-where-it-was-published): carries a blocked workflow with an honest tile pill", async () => {
     openCatalog({
       ...listing([
         workflowSummary({
@@ -432,12 +561,11 @@ describe("the catalog room", () => {
       ...unlistedName()
     });
 
-    const card = (await screen.findByText(WORKFLOW_NAME)).closest("li");
-    expect(card).not.toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: catalogPageCopy.stateHint }));
-    expect((await screen.findByText(
+    await screen.findByText(WORKFLOW_NAME);
+    expect((await screen.findByText(catalogPageCopy.notExecutable)).isConnected).toBe(true);
+    expect(screen.getByTitle(
       "This workflow declares no output. Add one outputs: entry on the agent node and publish again."
-    )).isConnected).toBe(true);
+    )).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Admit/ })).toBeNull();
   });
 
@@ -467,7 +595,7 @@ describe("the catalog room", () => {
     expect((await screen.findByText(SECOND_WORKFLOW_NAME)).isConnected).toBe(true);
   });
 
-  it("carries a published agent with the dashed blocked shape and says why on ask", async () => {
+  it("carries a published agent as a provider tile without an unavailable detail door", async () => {
     openCatalog({
       listAgentDefinitionRevisions: vi.fn(async () => ({
         items: [agentItem()],
@@ -476,11 +604,7 @@ describe("the catalog room", () => {
     });
 
     expect((await screen.findByText("scribe")).isConnected).toBe(true);
-    const card = screen.getByText("scribe").closest("li");
-    expect(card).not.toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: catalogPageCopy.stateHint }));
-    expect((await screen.findByText(catalogPageCopy.agentUnavailableHint)).isConnected).toBe(true);
-    expect(screen.getByText(catalogPageCopy.agentUnavailableHint).closest("code")).toBeNull();
+    expect(screen.queryByRole("link", { name: "scribe" })).toBeNull();
   });
 
   it("marks which provider an imported agent belongs to", async () => {
@@ -491,9 +615,7 @@ describe("the catalog room", () => {
       }))
     });
 
-    expect(
-      (await screen.findByText(catalogPageCopy.agentProviderClaude)).isConnected
-    ).toBe(true);
+    expect((await screen.findByLabelText(catalogPageCopy.agentProviderClaude)).isConnected).toBe(true);
   });
 
   it("names a document the library cannot recognize without publishing it", async () => {
@@ -525,7 +647,7 @@ describe("the catalog room", () => {
     await waitFor(() => {
       expect(screen.getByText(catalogPageCopy.workflowsUnavailable).isConnected).toBe(true);
     });
-    expect(screen.queryByText(catalogPageCopy.workflowsEmpty)).toBeNull();
+    expect(screen.queryByText(catalogPageCopy.catalogEmpty)).toBeNull();
   });
 
   it("says the agent list is unavailable rather than showing it as empty", async () => {
@@ -538,7 +660,7 @@ describe("the catalog room", () => {
     await waitFor(() => {
       expect(screen.getByText(catalogPageCopy.agentsUnavailable).isConnected).toBe(true);
     });
-    expect(screen.queryByText(catalogPageCopy.agentsEmpty)).toBeNull();
+    expect(screen.queryByText(catalogPageCopy.catalogEmpty)).toBeNull();
   });
 
   it("names no local failure while the whole workshop reads unreachable, and reads itself again once the connection returns (#700)", async () => {
@@ -560,8 +682,7 @@ describe("the catalog room", () => {
     listAgentDefinitionRevisions.mockResolvedValue({ items: [], next_after_revision_hash: null });
     reportConnectionRestored();
 
-    expect((await screen.findByText(catalogPageCopy.workflowsEmpty)).isConnected).toBe(true);
-    expect(screen.getByText(catalogPageCopy.agentsEmpty).isConnected).toBe(true);
+    expect((await screen.findByText(catalogPageCopy.catalogEmpty)).isConnected).toBe(true);
     expect(screen.queryByText(catalogPageCopy.workflowsUnavailable)).toBeNull();
     expect(screen.queryByText(catalogPageCopy.agentsUnavailable)).toBeNull();
   });

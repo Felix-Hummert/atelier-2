@@ -24,6 +24,7 @@ from atelier2.contracts.adapter_operations_v3 import (
     AdapterOperationRefused,
     read_adapter_operation_document,
 )
+from atelier2.contracts.effect_requests import GitCommitIdentity
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
@@ -79,13 +80,49 @@ def resolution_of(document: bytes) -> ReferenceResolution:
     return resolve_declared_reference(declared, OneRevisionRegistry(revision))
 
 
-def test_the_one_published_operation_this_runtime_performs_is_read_and_resolves() -> (
-    None
-):
+def test_open_pr_operation_is_read_and_resolves() -> None:
     assert read_adapter_operation_document(
         THE_ONE_OPERATION
     ) == AdapterOperationAccepted(AdapterOperationName.OPEN_PR)
     assert isinstance(resolution_of(THE_ONE_OPERATION), ResolvedReference)
+
+
+def test_push_operation_requires_the_declared_git_identities() -> None:
+    document = json.dumps(
+        {
+            "operation": AdapterOperationName.PUSH_ATELIER_COMMIT.value,
+            "author": {"name": "Atelier Agent", "email": "agent@example.test"},
+            "committer": {
+                "name": "Atelier Core",
+                "email": "core@example.test",
+            },
+        }
+    ).encode()
+
+    assert read_adapter_operation_document(document) == AdapterOperationAccepted(
+        AdapterOperationName.PUSH_ATELIER_COMMIT,
+        GitCommitIdentity("Atelier Agent", "agent@example.test"),
+        GitCommitIdentity("Atelier Core", "core@example.test"),
+    )
+    assert isinstance(resolution_of(document), ResolvedReference)
+
+
+@pytest.mark.parametrize(
+    "document",
+    (
+        b'{"operation":"push-atelier-commit"}',
+        b'{"operation":"push-atelier-commit","author":{"name":"Agent","email":"agent@example.test"}}',
+        b'{"operation":"push-atelier-commit","author":{"name":"Agent\\nInjected","email":"agent@example.test"},"committer":{"name":"Core","email":"core@example.test"}}',
+        b'{"operation":"push-atelier-commit","author":{"name":7,"email":"agent@example.test"},"committer":{"name":"Core","email":"core@example.test"}}',
+    ),
+)
+def test_push_operation_refuses_missing_malformed_or_unsafe_git_identities(
+    document: bytes,
+) -> None:
+    verdict = read_adapter_operation_document(document)
+
+    assert isinstance(verdict, AdapterOperationRefused)
+    assert verdict.reason is AdapterOperationRefusal.NOT_AN_OPERATION_OBJECT
 
 
 NOT_AN_OPERATION_THIS_RUNTIME_PERFORMS: tuple[

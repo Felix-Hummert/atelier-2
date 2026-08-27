@@ -35,7 +35,9 @@ def read_pinned_tool_grant(session: Any, node: AgentNodeV3) -> DeclaredToolGrant
     grant = read_tool_grant_document(bytes(document))
     if isinstance(grant, ToolGrantRefused):
         raise RunBindingConflict(f"the pinned tool revision is no grant: {grant}")
-    return DeclaredToolGrant(PublishedRevisionHash(pinned.revision), grant.capability)
+    return DeclaredToolGrant(
+        PublishedRevisionHash(pinned.revision), grant.capability, grant.operation
+    )
 
 
 def open_pr_capability_for(
@@ -43,10 +45,27 @@ def open_pr_capability_for(
 ) -> ToolGrantCapability | None:
     if grant is None or not redeems_as_platform_effect(grant.capability):
         return None
-    if grant.capability is not ToolGrantCapability.OPEN_PR:
+    if grant.capability is ToolGrantCapability.OPEN_PR:
+        return grant.capability
+    if grant.capability is ToolGrantCapability.PUSH_ATELIER_COMMIT:
+        return None
+    raise ToolGrantCapabilityNotRedeemed(grant.capability)
+
+
+def push_atelier_commit_capability_for(
+    grant: DeclaredToolGrant | None,
+) -> ToolGrantCapability | None:
+    if grant is None or not redeems_as_platform_effect(grant.capability):
+        return None
+    if grant.capability is ToolGrantCapability.OPEN_PR:
+        return None
+    if grant.capability is not ToolGrantCapability.PUSH_ATELIER_COMMIT:
+        raise ToolGrantCapabilityNotRedeemed(grant.capability)
+    if grant.operation is None:
         raise ToolGrantCapabilityNotRedeemed(grant.capability)
     return grant.capability
 
 
 def agent_node_redeems_platform_effect(session: Any, node: AgentNodeV3) -> bool:
-    return open_pr_capability_for(read_pinned_tool_grant(session, node)) is not None
+    grant = read_pinned_tool_grant(session, node)
+    return grant is not None and redeems_as_platform_effect(grant.capability)

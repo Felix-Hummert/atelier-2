@@ -216,8 +216,7 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       await expect(page.getByRole("heading", { name: "Catalog" })).toBeVisible();
       const markedWorkflow = page.getByRole("listitem").filter({ hasText: workflowName });
       await expect(markedWorkflow).toBeVisible();
-      const whyMarked = markedWorkflow.getByRole("button", { name: "Why this card is marked" });
-      await expect(whyMarked).toBeVisible();
+      await expect(markedWorkflow.getByText("Newer revision")).toBeVisible();
       await page.screenshot({ path: `${shotDirectory}/catalog-list-${viewport.name}-${colorScheme}.png`, fullPage: true });
 
       await page.locator(".catalog-drop-target").dispatchEvent("dragover");
@@ -256,17 +255,16 @@ test("captures the Catalog list, detail, and start sheet at both requested width
       await page.screenshot({ path: `${shotDirectory}/catalog-import-found-${viewport.name}-${colorScheme}.png`, fullPage: true });
       await importSheet.getByRole("button", { name: "Cancel" }).click();
 
-      if (viewport.name === "390") {
-        await whyMarked.click();
-        const popover = markedWorkflow.getByRole("status");
-        await expect(popover).toBeVisible();
-        await page.screenshot({ path: `${shotDirectory}/catalog-list-why-390-${colorScheme}.png`, fullPage: true });
-      }
-
       const workflowEntry = page.getByRole("listitem").filter({ hasText: workflowName });
       await workflowEntry.getByRole("link", { name: workflowName }).click();
       await expect(page.getByRole("heading", { name: workflowName })).toBeVisible();
+      await expect(page.getByRole("group", { name: "Workflow revision" })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Copy Workflow revision" })).toHaveCount(0);
       await page.screenshot({ path: `${shotDirectory}/catalog-detail-${viewport.name}-${colorScheme}.png`, fullPage: true });
+
+      await page.locator("summary", { hasText: "Technical" }).click();
+      await expect(page.getByRole("group", { name: "Workflow revision" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Copy Workflow revision" })).toBeVisible();
 
       await page.getByRole("button", { name: "Start" }).click();
       const sheet = page.getByRole("dialog", { name: `Start ${workflowName}` });

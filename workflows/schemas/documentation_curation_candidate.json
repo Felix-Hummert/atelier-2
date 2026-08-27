@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["stale_documents", "unresolved_questions"],
+  "properties": {
+    "stale_documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "expected_current_digest", "replacement_utf8_content", "cited_owner_objects"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "expected_current_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "replacement_utf8_content": {"type": "string"},
+          "cited_owner_objects": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["source_thread", "reference", "digest"],
+              "properties": {
+                "source_thread": {"type": "string", "minLength": 1},
+                "reference": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["kind", "identifier"],
+                  "properties": {
+                    "kind": {"enum": ["issue_body_revision", "issue_comment", "decision_revision"]},
+                    "identifier": {"type": "string", "minLength": 1}
+                  }
+                },
+                "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "unresolved_questions": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

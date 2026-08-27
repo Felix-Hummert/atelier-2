@@ -3,7 +3,7 @@
 
   import { CockpitRequestError, type CockpitApi, type LibraryRecognition, type Problem } from "../api/client";
   import CatalogImportSheet from "../components/CatalogImportSheet.svelte";
-  import InfoHint from "../components/InfoHint.svelte";
+  import CatalogTile from "../components/CatalogTile.svelte";
   import ReadState from "../components/ReadState.svelte";
   import { catalogActivatedAt, COCKPIT_CATALOG_ACTOR } from "../lib/catalogAdmission";
   import { catalogHeadsOf, catalogNameStateOf, type CatalogNameState } from "../lib/catalogName";
@@ -11,9 +11,10 @@
   import {
     catalogAgentRows,
     catalogRowFacts,
-    catalogWorkflowRows,
+    catalogWorkflowTiles,
     type CatalogAgentRow,
-    type CatalogWorkflowRow
+    type CatalogWorkflowRow,
+    type CatalogWorkflowTiles
   } from "../lib/catalogRows";
   import { onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
@@ -34,9 +35,10 @@
   type ReadFailure =
     | { kind: "unavailable"; title: string }
     | { kind: "incomplete"; title: string };
+  type CatalogGroup = "all" | "workflows" | "agents" | "skills";
 
-  let workflows: RetainedRead<CatalogWorkflowRow[], ReadFailure> =
-    retainedRead<CatalogWorkflowRow[], ReadFailure>();
+  let workflows: RetainedRead<CatalogWorkflowTiles, ReadFailure> =
+    retainedRead<CatalogWorkflowTiles, ReadFailure>();
   let agents: RetainedRead<CatalogAgentRow[], ReadFailure> =
     retainedRead<CatalogAgentRow[], ReadFailure>();
   type ImportResult = {
@@ -54,6 +56,20 @@
   let fileInput: HTMLInputElement;
   let importResult: ImportResult | null = null;
   let isDropTarget = false;
+  let activeGroup: CatalogGroup = "all";
+  let search = "";
+
+  $: workflowTiles = workflows.confirmed;
+  $: workflowRows = workflowTiles?.rows ?? [];
+  $: agentRows = agents.confirmed ?? [];
+  $: catalogGroupsReady =
+    workflows.confirmed !== null &&
+    workflows.request.state !== "loading" &&
+    agents.confirmed !== null &&
+    agents.request.state !== "loading";
+  $: hasCatalogEntries = workflowRows.length + agentRows.length > 0;
+  $: matchingWorkflows = catalogMatches(workflowRows, search);
+  $: matchingAgents = catalogMatches(agentRows, search);
 
   onMount(() => {
     // Navigating into the Catalog focuses the stage. On a phone that focus can
@@ -100,7 +116,7 @@
       workflows = confirmRead(
         workflows,
         begun.generation,
-        catalogWorkflowRows(reading.revisions, catalogByName)
+        catalogWorkflowTiles(reading.revisions, catalogByName)
       );
     } catch {
       workflows = failRead(workflows, begun.generation, {
@@ -193,13 +209,57 @@
     await Promise.all([loadWorkflows(), loadAgents()]);
   }
 
-  function workflowStateHint(row: CatalogWorkflowRow): string | null {
+  function workflowTileStatus(
+    row: CatalogWorkflowRow
+  ): { label: string; description: string; dashed: boolean } | null {
     if (row.state?.kind === "not-executable") {
-      return row.state.reason;
+      return {
+        label: catalogPageCopy.notExecutable,
+        description: row.state.reason,
+        dashed: true
+      };
     }
-    if (row.newerRevisionAvailable) return catalogPageCopy.newerRevisionHint;
-    if (row.state?.kind === "not-admitted") return catalogPageCopy.notAdmittedHint;
+    if (row.newerRevisionAvailable) {
+      return {
+        label: catalogPageCopy.newerRevision,
+        description: catalogPageCopy.newerRevisionHint,
+        dashed: false
+      };
+    }
+    if (row.state?.kind === "not-admitted") {
+      return {
+        label: catalogPageCopy.notAdmitted,
+        description: catalogPageCopy.notAdmittedHint,
+        dashed: false
+      };
+    }
     return null;
+  }
+
+  function catalogMatches<T extends CatalogWorkflowRow | CatalogAgentRow>(
+    rows: readonly T[],
+    term: string
+  ): T[] {
+    const normalizedTerm = term.trim().toLocaleLowerCase();
+    if (normalizedTerm === "") return [...rows];
+    return rows.filter((row) =>
+      [row.title, row.description, "provider" in row ? row.provider : ""]
+        .filter((value): value is string => value !== null)
+        .some((value) => value.toLocaleLowerCase().includes(normalizedTerm))
+    );
+  }
+
+  function catalogGroupChoices(workflowCount: number, agentCount: number): readonly {
+    group: CatalogGroup;
+    label: string;
+    count: number | null;
+  }[] {
+    return [
+      { group: "all", label: catalogPageCopy.all, count: null },
+      { group: "workflows", label: catalogPageCopy.workflowsTitle, count: workflowCount },
+      { group: "agents", label: catalogPageCopy.agentsTitle, count: agentCount },
+      { group: "skills", label: catalogPageCopy.skillsTitle, count: 0 }
+    ];
   }
 </script>
 
@@ -218,102 +278,83 @@
     onchange={chooseFile}
   />
   <header class="surface-head catalog-head">
-    <div>
-      <h1 id="catalog-title">{wrapDisplayCopy(catalogPageCopy.title)}</h1>
-      <p>{wrapDisplayCopy(catalogPageCopy.lead)}</p>
-    </div>
+    <h1 id="catalog-title">{wrapDisplayCopy(catalogPageCopy.title)}</h1>
     <button type="button" onclick={openFilePicker}>
       {wrapDisplayCopy(catalogPageCopy.import)}
     </button>
   </header>
 
-  <section aria-labelledby="catalog-workflows-title">
-    <h2 id="catalog-workflows-title">{wrapDisplayCopy(catalogPageCopy.workflowsTitle)}</h2>
-    <ReadState read={workflows} label="workflows" onRetry={() => { void loadWorkflows(); }} />
-    {#if workflows.confirmed !== null && workflows.confirmed.length === 0}
-      <p class="empty">{wrapDisplayCopy(catalogPageCopy.workflowsEmpty)}</p>
+  <ReadState read={workflows} label="workflows" onRetry={() => { void loadWorkflows(); }} />
+  <ReadState read={agents} label="agents" onRetry={() => { void loadAgents(); }} />
+
+  {#if hasCatalogEntries}
+    {#if catalogGroupsReady}
+      <div class="catalog-filters" role="group" aria-label={wrapDisplayCopy(catalogPageCopy.catalogGroups)}>
+        {#each catalogGroupChoices(workflowTiles?.count ?? 0, agentRows.length) as { group, label, count } (group)}
+          <button
+            class="filter-chip"
+            class:active={activeGroup === group}
+            type="button"
+            aria-pressed={activeGroup === group}
+            onclick={() => { activeGroup = group as CatalogGroup; }}
+          >{wrapDisplayCopy(label)}{#if count !== null} <b>{count}</b>{/if}</button>
+        {/each}
+        <input bind:value={search} type="search" placeholder={wrapDisplayCopy(catalogPageCopy.search)} aria-label={wrapDisplayCopy(catalogPageCopy.searchLabel)} />
+      </div>
     {/if}
 
-    <ul class="entries">
-      {#each workflows.confirmed ?? [] as row (row.revisionHash)}
-        {@const stateHint = workflowStateHint(row)}
-        <li
-          class="entry card"
-          class:marked-attention={stateHint !== null && row.state?.kind !== "not-executable"}
-          class:marked-blocked={row.state?.kind === "not-executable"}
-        >
-          {#if row.name !== null}
-            {@const detailPath = workflowPath(row.name)}
-            <a
-              class="entry-door"
-              href={detailPath}
-              aria-label={row.title}
-              onclick={(event) => { event.preventDefault(); navigate(detailPath); }}
-            >
-              <div class="entry-head">
-                <strong>{row.title}</strong>
-              </div>
-              <p class="entry-line">{row.description ?? wrapDisplayCopy(catalogPageCopy.noDescription)}</p>
-              <p class="entry-facts">{catalogRowFacts().join(" · ")}</p>
-            </a>
-          {:else}
-            <div class="entry-head">
-              <strong>{row.title}</strong>
-            </div>
-            <p class="entry-line">{row.description ?? wrapDisplayCopy(catalogPageCopy.noDescription)}</p>
-            <p class="entry-facts">{catalogRowFacts().join(" · ")}</p>
-          {/if}
-          {#if stateHint !== null}
-            <InfoHint
-              label={wrapDisplayCopy(catalogPageCopy.stateHint)}
-              prose={wrapDisplayCopy(stateHint)}
-              text={wrapDisplayCopy(catalogPageCopy.why)}
-              pinToCard={true}
+    {#if activeGroup === "all" || activeGroup === "workflows"}
+      <section aria-label={wrapDisplayCopy(catalogPageCopy.workflowsTitle)}>
+        <ul class="tile-grid">
+          {#each matchingWorkflows as row (row.revisionHash)}
+            <CatalogTile
+              kind="workflow"
+              title={row.title}
+              ariaLabel={wrapDisplayCopy(row.title)}
+              description={row.description ?? wrapDisplayCopy(catalogPageCopy.noDescription)}
+              provenance={catalogRowFacts()}
+              href={row.name === null ? null : workflowPath(row.name)}
+              status={workflowTileStatus(row)}
+              onOpen={navigate}
             />
-          {/if}
-        </li>
-      {/each}
-    </ul>
-
-  </section>
-
-  <section aria-labelledby="catalog-agents-title">
-    <h2 id="catalog-agents-title">{wrapDisplayCopy(catalogPageCopy.agentsTitle)}</h2>
-    <ReadState read={agents} label="agents" onRetry={() => { void loadAgents(); }} />
-
-    {#if agents.confirmed !== null && agents.confirmed.length === 0}
-      <p class="empty">{wrapDisplayCopy(catalogPageCopy.agentsEmpty)}</p>
+          {/each}
+        </ul>
+      </section>
     {/if}
 
-    <ul class="entries">
-      {#each agents.confirmed ?? [] as row (row.revisionHash)}
-        <li class="entry card marked-blocked">
-          <div class="entry-head">
-            <strong>{row.title}</strong>
-            <span class="entry-provider">{wrapDisplayCopy(row.provider)}</span>
-          </div>
-          <InfoHint
-            label={wrapDisplayCopy(catalogPageCopy.stateHint)}
-            prose={wrapDisplayCopy(catalogPageCopy.agentUnavailableHint)}
-            text={wrapDisplayCopy(catalogPageCopy.why)}
-            pinToCard={true}
-          />
-          <p class="entry-line">{row.description}</p>
-          <p class="entry-facts">{catalogRowFacts().join(" · ")}</p>
-        </li>
-      {/each}
-    </ul>
+    {#if activeGroup === "all" || activeGroup === "agents"}
+      <section aria-label={wrapDisplayCopy(catalogPageCopy.agentsByProvider)}>
+        <ul class="tile-grid">
+          {#each matchingAgents as row (row.revisionHash)}
+            <CatalogTile
+              kind="agent"
+              title={row.title}
+              ariaLabel={wrapDisplayCopy(row.title)}
+              description={row.description}
+              provenance={catalogRowFacts()}
+              provider={wrapDisplayCopy(row.provider)}
+            />
+          {/each}
+        </ul>
+      </section>
+    {/if}
 
-  </section>
-
-  <section aria-labelledby="catalog-skills-title">
-    <h2 id="catalog-skills-title">{wrapDisplayCopy(catalogPageCopy.skillsTitle)}</h2>
-    <p class="empty">{wrapDisplayCopy(catalogPageCopy.skillsNone)}</p>
-  </section>
+    {#if activeGroup === "skills"}
+      <section aria-label={wrapDisplayCopy(catalogPageCopy.skillsTitle)}>
+        <p class="empty"><span aria-hidden="true">✦ </span><span>{wrapDisplayCopy(catalogPageCopy.skillsNone)}</span></p>
+      </section>
+    {/if}
+  {:else if
+    workflows.confirmed !== null &&
+    workflows.request.state === "idle" &&
+    agents.confirmed !== null &&
+    agents.request.state === "idle"}
+    <p class="empty">{wrapDisplayCopy(catalogPageCopy.catalogEmpty)}</p>
+  {/if}
 
   {#if isDropTarget}
     <div class="drop-veil" aria-hidden="true">
-      <p>Drop a workflow, an agent, or a plugin folder — anywhere on this page.</p>
+      <p>{wrapDisplayCopy(catalogPageCopy.catalogEmpty)}</p>
     </div>
   {/if}
 
@@ -331,11 +372,6 @@
 </section>
 
 <style>
-  h2 {
-    margin: 0 0 var(--space-3);
-    font-size: var(--text-lg);
-  }
-
   p {
     margin: 0;
   }
@@ -345,17 +381,6 @@
     align-items: start;
     justify-content: space-between;
     gap: var(--space-4);
-  }
-
-  .catalog-head > div {
-    display: grid;
-    gap: var(--space-1);
-    min-width: 0;
-  }
-
-  .catalog-head p {
-    max-width: var(--reading-width);
-    color: var(--ink-dim);
   }
 
   .visually-hidden {
@@ -395,65 +420,67 @@
   }
 
   .empty {
-    color: var(--ink-dim);
-    font-size: var(--text-sm);
-  }
-
-  /* The provider is what an imported agent belongs to, so it wears the ink of
-     a fact rather than the colour of a state. */
-  .entry-provider {
+    padding: var(--space-3) var(--space-4);
     border: var(--edge) solid var(--line);
-    border-radius: var(--r-pill);
-    padding: 0 var(--space-2);
-    font-size: var(--text-2xs);
+    border-radius: var(--r-lg);
+    background: var(--panel2);
+    color: var(--ink-dim);
+    font-size: var(--text-xs);
   }
 
-  .entries {
-    display: grid;
-    gap: var(--space-3);
-    margin: 0 0 var(--space-4);
-    padding: 0;
-    list-style: none;
-  }
-
-  .entry {
-    display: grid;
-    gap: var(--space-1);
-    justify-items: start;
-    position: relative;
-    border-left: var(--edge-mark) solid transparent;
-  }
-
-  .entry.marked-attention {
-    border-left-color: var(--signal-attention-mark);
-    border-left-style: solid;
-    background: color-mix(in srgb, var(--signal-attention-mark) var(--wash), var(--panel2));
-  }
-
-  .entry.marked-blocked {
-    border-left-color: var(--signal-failure);
-    border-left-style: dashed;
-    background: color-mix(in srgb, var(--signal-failure) var(--wash), var(--panel2));
-  }
-
-  .entry-head {
+  .catalog-filters {
     display: flex;
     flex-wrap: wrap;
-    align-items: baseline;
-    gap: var(--space-2);
+    align-items: center;
+    gap: var(--space-1) var(--space-3);
+    padding-bottom: var(--space-2);
+    border-bottom: var(--edge) solid var(--line);
   }
 
-  .entry-door {
+  .filter-chip {
+    min-height: var(--tap);
+    padding: var(--space-2) 0;
+    border: 0;
+    border-bottom: var(--edge-strong) solid transparent;
+    border-radius: 0;
+    color: var(--ink-dim);
+    background: transparent;
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-heavy);
+    letter-spacing: var(--tracking-label);
+    text-transform: uppercase;
+  }
+
+  .filter-chip.active {
+    border-bottom-color: var(--ink);
+    color: var(--ink);
+    background: transparent;
+  }
+
+  .filter-chip b {
+    margin-left: var(--space-1);
+    color: var(--ink);
+  }
+
+  .catalog-filters input {
+    width: min(var(--catalog-search-width), 100%);
+    min-height: var(--tap);
+    margin-left: auto;
+    border: var(--edge) solid var(--line);
+    border-radius: var(--r);
+    padding: var(--space-2) var(--space-3);
+    color: var(--ink);
+    background: var(--panel2);
+    font-size: var(--text-xs);
+  }
+
+  .tile-grid {
     display: grid;
-    gap: var(--space-1);
-    width: 100%;
-    color: inherit;
-    text-decoration: none;
-  }
-
-  .entry-door:hover strong,
-  .entry-door:focus-visible strong {
-    text-decoration: underline;
+    grid-template-columns: repeat(auto-fill, minmax(var(--card-min), 1fr));
+    gap: var(--space-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
   }
 
   /* At phone width the rail is one row. Its former flex layout gave Settings'
@@ -507,17 +534,10 @@
     }
   }
 
-  .entry strong {
-    font-size: var(--text-sm);
-  }
-
-  .entry-line {
-    font-size: var(--text-xs);
-  }
-
-  .entry-facts {
-    color: var(--ink-dim);
-    font-size: var(--text-2xs);
+  @media (max-width: 48rem) {
+    .catalog-filters input {
+      margin-left: auto;
+    }
   }
 
 </style>

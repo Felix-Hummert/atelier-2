@@ -9,7 +9,7 @@ twin, and an `UNKNOWN` readback -- which only live GitHub can report and this
 fake never does -- confirms nothing and is refused loud.
 
 The prepared intent these tests redeem is the same one an Action prepares,
-reused here through the V1 action scenario, because what `redeem_agent_open_pr`
+reused here through the V1 action scenario, because what `redeem_agent_effect`
 loads is a PREPARED effect intent by its logical key -- how that key was derived
 is the intent-preparation's concern, proved end to end in the integration slice.
 """
@@ -26,15 +26,15 @@ import sqlalchemy as sa
 
 from atelier2.adapters.dbos import agent_effect_grants
 from atelier2.adapters.dbos.advancer import (
-    _effect_shaped_capability_to_open_pr,
-    redeem_agent_open_pr,
+    redeem_agent_effect,
 )
+from atelier2.adapters.dbos.agent_effect_grants import open_pr_capability_for
 from atelier2.adapters.dbos.effect_store import receipt_from_record
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import effect_intents, effect_receipts, runs
 from atelier2.adapters.dbos.transactions import canonical_write_transaction
 from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
-from atelier2.adapters.github.marker import body_carries_request_hash
+from atelier2.contracts.effect_markers import body_carries_request_hash
 from atelier2.contracts.effects import (
     AdapterRevision,
     ConfirmationSource,
@@ -56,6 +56,7 @@ from atelier2.contracts.tool_grants_v3 import (
     read_tool_grant_document,
     redeems_as_platform_effect,
 )
+from atelier2.contracts.workflows_v3 import VersionedReference
 from tests.scenarios.agents import commit_configured_agent
 from tests.scenarios.runs import prepare_graph_action, start_published_v1_run
 from tests.scenarios.runtime import exact_output_runtime
@@ -126,9 +127,9 @@ def _receipts(runtime: DbosRuntime) -> list[EffectReceipt]:
         ]
 
 
-def test_open_pr_is_the_only_effect_shaped_capability() -> None:
-    """The one owner of the exec-versus-effect split answers for both members."""
+def test_the_external_effect_capabilities_share_the_effect_redemption_shape() -> None:
     assert redeems_as_platform_effect(ToolGrantCapability.OPEN_PR) is True
+    assert redeems_as_platform_effect(ToolGrantCapability.PUSH_ATELIER_COMMIT) is True
     assert (
         redeems_as_platform_effect(ToolGrantCapability.RUN_PROJECT_VERIFICATION)
         is False
@@ -136,15 +137,22 @@ def test_open_pr_is_the_only_effect_shaped_capability() -> None:
 
 
 def _grant(capability: ToolGrantCapability) -> DeclaredToolGrant:
+    operation = (
+        VersionedReference(ref="push", revision="a1" * 32)
+        if capability is ToolGrantCapability.PUSH_ATELIER_COMMIT
+        else None
+    )
     return DeclaredToolGrant(
-        PublishedRevisionHash(Sha256Hash.of(b"any-tool-revision").value), capability
+        PublishedRevisionHash(Sha256Hash.of(b"any-tool-revision").value),
+        capability,
+        operation,
     )
 
 
 def test_an_open_pr_grant_is_the_capability_this_preparation_opens() -> None:
     """An `open-pr` grant is the one effect-shaped grant this preparation performs."""
     assert (
-        _effect_shaped_capability_to_open_pr(_grant(ToolGrantCapability.OPEN_PR))
+        open_pr_capability_for(_grant(ToolGrantCapability.OPEN_PR))
         is ToolGrantCapability.OPEN_PR
     )
 
@@ -162,7 +170,13 @@ def test_a_missing_or_exec_shaped_grant_prepares_no_open_pr_effect(
     grant: DeclaredToolGrant | None,
 ) -> None:
     """Only an effect-shaped grant prepares a pull request; the rest prepare nothing."""
-    assert _effect_shaped_capability_to_open_pr(grant) is None
+    assert open_pr_capability_for(grant) is None
+
+
+def test_the_push_grant_is_handled_by_its_sibling_preparation() -> None:
+    assert (
+        open_pr_capability_for(_grant(ToolGrantCapability.PUSH_ATELIER_COMMIT)) is None
+    )
 
 
 def test_an_effect_shaped_capability_that_is_not_open_pr_is_refused_by_name(
@@ -180,7 +194,7 @@ def test_an_effect_shaped_capability_that_is_not_open_pr_is_refused_by_name(
     unredeemed = ToolGrantCapability.RUN_PROJECT_VERIFICATION
 
     with pytest.raises(ToolGrantCapabilityNotRedeemed) as refused:
-        _effect_shaped_capability_to_open_pr(_grant(unredeemed))
+        open_pr_capability_for(_grant(unredeemed))
 
     assert refused.value.capability is unredeemed
 
@@ -203,7 +217,7 @@ def test_a_granted_agent_opens_one_pull_request_through_the_shared_adapter(
     runtime, github, intent = prepared
 
     with canonical_write_transaction(runtime.engine) as connection:
-        redeem_agent_open_pr(
+        redeem_agent_effect(
             connection,
             github.open(),
             intent.binding.logical_key.value,
@@ -229,7 +243,7 @@ def test_a_redemption_after_the_pull_request_exists_finds_it_rather_than_a_twin(
     runtime, github, intent = prepared
 
     with canonical_write_transaction(runtime.engine) as connection:
-        redeem_agent_open_pr(
+        redeem_agent_effect(
             connection,
             github.open(),
             intent.binding.logical_key.value,
@@ -257,7 +271,7 @@ def test_an_unknown_readback_waits_for_reconciliation_and_writes_no_receipt(
     adapter = _ScriptedAdapter(EffectUnknownOutcome(intent.reference))
 
     with canonical_write_transaction(runtime.engine) as connection:
-        state = redeem_agent_open_pr(
+        state = redeem_agent_effect(
             connection,
             adapter,
             intent.binding.logical_key.value,

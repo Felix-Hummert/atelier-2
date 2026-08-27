@@ -32,6 +32,7 @@ from atelier2.adapters.dbos.workflow_ids import (
     node_workflow_id_for,
     reconcile_workflow_id_for,
 )
+from atelier2.contracts.adapter_operations_v3 import AdapterOperationName
 from atelier2.contracts.effects import (
     EFFECT_INTENT_VERSION_ABANDONED,
     EFFECT_INTENT_VERSION_CONFIRMED_INITIAL,
@@ -97,6 +98,7 @@ def intent_from_record(record: Mapping[Any, Any]) -> EffectIntent:
             AdapterRevision(str(record["adapter_revision"])),
             EffectDestination(str(record["destination_identity"])),
             AdapterOperationalIdentity(str(record["adapter_operational_identity"])),
+            AdapterOperationName(str(record["operation_name"])),
         ),
         request,
     )
@@ -444,6 +446,9 @@ def resolve_observation(
     if observed["outcome"] == "UNKNOWN" and authorized_command_id is None:
         return {"outcome": "UNKNOWN"}
     performed = adapter.execute(intent)
+    if isinstance(performed, EffectUnknownOutcome):
+        intent.authorize_adapter_readback(performed)
+        return encode_readback(performed)
     return encode_found(
         performed,
         (
@@ -523,6 +528,7 @@ def _receipt_values(receipt: EffectReceipt) -> dict[str, object]:
         "adapter_revision": binding.adapter_revision.value,
         "destination_identity": binding.destination.value,
         "adapter_operational_identity": binding.adapter_operational_identity.value,
+        "operation_name": binding.operation_name.value,
         "effect_id": receipt.effect_id.value,
         "result": receipt.result.payload,
         "result_hash": receipt.result.payload_hash.value,
@@ -551,9 +557,10 @@ def commit_resolution(
     intent = load_intent(session, logical_key, revision_hash)
     if resolved["outcome"] == "UNKNOWN":
         if command_id is not None:
-            raise DurableEffectConflict(
-                "an authorized reconciliation may not return UNKNOWN"
+            _reopen_reconciliation(
+                session, intent.binding.logical_key, command_id.value
             )
+            return RunState.WAITING_RECONCILIATION
         intent_update = session.execute(
             effect_intents.update()
             .where(

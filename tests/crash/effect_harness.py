@@ -56,7 +56,7 @@ class HarnessEffectAdapter:
             return EffectUnknownOutcome(intent.reference)
         return self._delegate.readback(intent)
 
-    def execute(self, intent: EffectIntent) -> PerformedEffect:
+    def execute(self, intent: EffectIntent) -> PerformedEffect | EffectUnknownOutcome:
         performed = self._delegate.execute(intent)
         if self._after_execute_crash_marker is not None:
             _crash_once(

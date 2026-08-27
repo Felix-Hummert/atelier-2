@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["objects"],
+  "properties": {
+    "objects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_thread", "reference", "digest", "content_utf8"],
+        "properties": {
+          "source_thread": {"type": "string", "minLength": 1},
+          "reference": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "identifier"],
+            "properties": {
+              "kind": {"enum": ["issue_body_revision", "issue_comment", "decision_revision"]},
+              "identifier": {"type": "string", "minLength": 1}
+            }
+          },
+          "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "content_utf8": {"type": "string"}
+        }
+      }
+    }
+  }
+}

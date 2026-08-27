@@ -106,11 +106,45 @@ def receipt(**changes: object) -> ToolRedemptionReceipt:
     return ToolRedemptionReceipt(**(fields | changes))  # type: ignore[arg-type]
 
 
-def test_the_one_published_grant_this_runtime_redeems_is_read_and_resolves() -> None:
+def test_project_verification_grant_is_read_and_resolves() -> None:
     assert read_tool_grant_document(THE_ONE_GRANT) == ToolGrantAccepted(
         ToolGrantCapability.RUN_PROJECT_VERIFICATION
     )
     assert isinstance(resolution_of(THE_ONE_GRANT), ResolvedReference)
+
+
+def test_push_grant_pins_one_exact_adapter_operation_revision() -> None:
+    operation = VersionedReference(ref="push", revision="a1" * 32)
+    document = json.dumps(
+        {
+            "capability": ToolGrantCapability.PUSH_ATELIER_COMMIT.value,
+            "operation": {
+                "ref": operation.ref,
+                "revision": operation.revision,
+            },
+        }
+    ).encode()
+
+    assert read_tool_grant_document(document) == ToolGrantAccepted(
+        ToolGrantCapability.PUSH_ATELIER_COMMIT, operation
+    )
+
+
+@pytest.mark.parametrize(
+    "document",
+    (
+        b'{"capability":"push-atelier-commit"}',
+        b'{"capability":"push-atelier-commit","operation":{"ref":"push"}}',
+        b'{"capability":"open-pr","operation":{"ref":"push","revision":"'
+        + b"a1" * 32
+        + b'"}}',
+    ),
+)
+def test_only_a_push_grant_carries_an_exact_operation_pin(document: bytes) -> None:
+    verdict = read_tool_grant_document(document)
+
+    assert isinstance(verdict, ToolGrantRefused)
+    assert verdict.reason is ToolGrantRefusal.NOT_A_GRANT_OBJECT
 
 
 NOT_A_GRANT_THIS_RUNTIME_REDEEMS: tuple[tuple[str, bytes, ToolGrantRefusal], ...] = (

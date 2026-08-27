@@ -94,6 +94,7 @@ def test_preparing_the_graph_action_writes_exactly_one_exact_intent(
             intent.binding.adapter_revision.value,
             intent.binding.destination.value,
             intent.binding.adapter_operational_identity.value,
+            intent.binding.operation_name.value,
             EffectIntentState.PREPARED.value,
             0,
             None,
