@@ -121,8 +121,14 @@ from atelier2.contracts.workflow_projections import (
     WorkflowRevisionPage,
     WorkflowRevisionProjection,
 )
-from atelier2.contracts.workflows import AgentNodeV2, WorkflowGraphV2, round_of
+from atelier2.contracts.workflows import (
+    ActionNode,
+    AgentNodeV2,
+    WorkflowGraphV2,
+    round_of,
+)
 from atelier2.contracts.workflows_v3 import (
+    ActionNodeV3,
     AgentNodeV3,
     AnyWorkflowDocument,
     WaitNodeV3,
@@ -1377,6 +1383,16 @@ class DbosQueries:
         waiting_runs = tuple(
             run for run in loaded_runs if run.state is RunState.WAITING_RECONCILIATION
         )
+        ended_action_runs = tuple(
+            run
+            for run in loaded_runs
+            if run.state in {RunState.FAILED, RunState.CANCELLED, RunState.COMPLETED}
+            and isinstance(
+                graphs[run.revision_hash].node(run.current_node_id),
+                (ActionNode, ActionNodeV3),
+            )
+        )
+        intent_runs = waiting_runs + ended_action_runs
         logical_keys_by_run = {
             run.run_id: logical_effect_key_for_node(
                 run.run_id,
@@ -1388,10 +1404,10 @@ class DbosQueries:
                     run.current_round_ordinal,
                 ),
             )
-            for run in waiting_runs
+            for run in intent_runs
         }
         intent_records: dict[str, Mapping[Any, Any]] = {}
-        if waiting_runs:
+        if intent_runs:
             for record in connection.execute(
                 _bounded_projection_select(
                     effect_intents,
@@ -1414,7 +1430,10 @@ class DbosQueries:
                 if key in intent_records:
                     raise RunTransitionConflict("durable intent primary key repeated")
                 intent_records[key] = record
-        if set(intent_records) != {key.value for key in logical_keys_by_run.values()}:
+        waiting_key_values = {
+            logical_keys_by_run[run.run_id].value for run in waiting_runs
+        }
+        if waiting_key_values - set(intent_records):
             raise RunTransitionConflict(
                 "WAITING_RECONCILIATION run has no exact durable intent"
             )
@@ -1503,6 +1522,26 @@ class DbosQueries:
                         "waiting reconciliation run has inconsistent intent state"
                     )
                 reconciliation = WaitingReconciliationProjection(intent, pending)
+            elif run.run_id in logical_keys_by_run:
+                logical_key = logical_keys_by_run[run.run_id]
+                intent_record = intent_records.get(logical_key.value)
+                if intent_record is not None:
+                    intent = intent_snapshot_from_record(intent_record)
+                    if (
+                        intent.intent.binding.run_id != run.run_id
+                        or intent.intent.binding.workflow_revision_hash
+                        != run.revision_hash
+                        or intent.intent.binding.logical_key != logical_key
+                    ):
+                        raise RunTransitionConflict(
+                            "ended run intent binding disagrees with its logical key"
+                        )
+                    if intent.state is EffectIntentState.ABANDONED:
+                        if intent_record["reconciliation_owner_command_id"] is not None:
+                            raise RunTransitionConflict(
+                                "abandoned intent has a command owner"
+                            )
+                        reconciliation = WaitingReconciliationProjection(intent, None)
             attempt_projections: tuple[AgentAttemptProjection, ...] = ()
             execution = current_agent_executions.get(run.run_id)
             if execution is not None:
