@@ -26,10 +26,11 @@ import sqlalchemy as sa
 from pydantic import ValidationError
 
 from atelier2.adapters.dbos.agent_catalog import DbosAgentConfigurationCatalog
+from atelier2.adapters.dbos.artifact_store import keep_artifact
 from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
-from atelier2.adapters.dbos.schema import run_events, runs
+from atelier2.adapters.dbos.schema import agent_attempts, run_events, runs
 from atelier2.adapters.dbos.starter import (
     DbosDurableRunStarter,
     DbosWorkflowRevisionPublisher,
@@ -41,6 +42,13 @@ from atelier2.api.projection.runs import node_detail_resource
 from atelier2.api.references import MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS
 from atelier2.api.wire.resources import NodeRefusalOutputResource
 from atelier2.application.answer_wait import AnswerAcceptedPending, answer_wait_result
+from atelier2.contracts.agent_transcripts import (
+    AssistantTurn,
+    AttemptTranscript,
+    ToolCalled,
+    ToolReturned,
+    Usage,
+)
 from atelier2.contracts.agents import (
     MAXIMUM_AGENT_OUTPUT_BYTES_V2,
     AgentBinding,
@@ -48,12 +56,14 @@ from atelier2.contracts.agents import (
     AgentConfigurationRevision,
     AgentConfigurationRevisionFormatVersion,
     AgentExecutionCapability,
+    AgentExecutionResult,
     AgentExecutorRevision,
     AgentRole,
     AuthMode,
     AuthProfileRevision,
     ProviderId,
 )
+from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
     NodeExecutionId,
@@ -92,6 +102,7 @@ from atelier2.ports.workflow_revisions import QueryDurableStateCorrupt
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     agent_scratch_root,
+    answering,
     commit_configured_agent,
     publish_checked_model_registry,
 )
@@ -909,3 +920,129 @@ def test_a_refusal_at_the_byte_cap_with_one_short_credential_still_validates_on_
     # would have rejected.
     resource = node_detail_resource(detail)
     assert isinstance(resource.refusal_output, NodeRefusalOutputResource)
+
+
+STORED_TRANSCRIPT = AttemptTranscript.of(
+    [
+        ToolCalled("Read", '{"file_path":"/etc/hosts"}'),
+        ToolReturned("Read", "127.0.0.1 localhost"),
+        AssistantTurn("The host file names localhost."),
+        Usage(1_200, 48),
+    ]
+)
+
+
+def _transcript_runtime(tmp_path: Path) -> DbosRuntime:
+    """The node-detail runtime, with an executor that actually kept its steps."""
+
+    started = DbosRuntime(
+        DbosRuntimeSettings(
+            tmp_path / "atelier.sqlite",
+            "node-detail-transcript-test",
+            agent_scratch_root=agent_scratch_root(tmp_path),
+        ),
+        LoopbackEffectAdapterFactory(
+            tmp_path / "external.sqlite",
+            AdapterRevision("loopback-v1"),
+            EffectDestination("loopback-test"),
+        ),
+        ExactOutputAgentExecutorFactory(),
+        (
+            RecordingAgentExecutorFactoryV2(
+                "exact",
+                "exact/v1",
+                "exact-op",
+                ANSWER,
+                decoder=answering(AgentExecutionResult(ANSWER, STORED_TRANSCRIPT)),
+            ),
+        ),
+    )
+    started.initialize_storage()
+    return started
+
+
+def _plant_implement_transcript_pointer(
+    runtime: DbosRuntime, artifact_hash: str
+) -> None:
+    """Name a transcript on implement after the fact, past the store's own fence.
+
+    The product writes the pointer in the same statement that ends the attempt.
+    These tests need a named address the writer would never have left behind --
+    missing bytes, or bytes `from_document` refuses -- so the transition trigger
+    and the foreign key have to be dropped to reach that state at all.
+    """
+
+    with runtime.engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        connection.execute(sa.text("DROP TRIGGER agent_attempts_state_transition"))
+        connection.execute(
+            agent_attempts.update()
+            .where(agent_attempts.c.node_id == "implement")
+            .values(transcript_artifact_hash=artifact_hash)
+        )
+        connection.commit()
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+
+
+def test_a_stored_transcript_is_readable_through_node_detail(tmp_path: Path) -> None:
+    runtime = _transcript_runtime(tmp_path)
+    try:
+        publish_and_start(runtime)
+        drive_the_whole_chain(runtime)
+        found = durable_queries(runtime.engine).get_node_detail(RUN, "implement")
+    finally:
+        runtime.close()
+
+    assert isinstance(found, NodeDetailFound), found
+    assert found.detail.transcript == STORED_TRANSCRIPT
+    dumped = node_detail_resource(found.detail).model_dump(mode="json")
+    assert dumped["transcript"]["events"][0] == {
+        "event": "tool-called",
+        "name": "Read",
+        "arguments": '{"file_path":"/etc/hosts"}',
+        "redacted": False,
+    }
+    assert "kind" not in dumped["transcript"]
+    assert "document" not in dumped["transcript"]
+
+
+def test_a_node_with_no_transcript_pointer_omits_the_key(
+    runtime: DbosRuntime,
+) -> None:
+    publish_and_start(runtime)
+    drive_the_whole_chain(runtime)
+
+    found = durable_queries(runtime.engine).get_node_detail(RUN, "implement")
+
+    assert isinstance(found, NodeDetailFound), found
+    assert found.detail.transcript is None
+    assert "transcript" not in node_detail_resource(found.detail).model_dump(
+        mode="json"
+    )
+
+
+def test_a_named_transcript_hash_with_missing_artifact_bytes_is_corruption(
+    runtime: DbosRuntime,
+) -> None:
+    publish_and_start(runtime)
+    drive_the_whole_chain(runtime)
+    _plant_implement_transcript_pointer(runtime, "a" * 64)
+
+    found = durable_queries(runtime.engine).get_node_detail(RUN, "implement")
+
+    assert isinstance(found, QueryDurableStateCorrupt), found
+
+
+def test_a_stored_transcript_document_that_from_document_refuses_is_corruption(
+    runtime: DbosRuntime,
+) -> None:
+    publish_and_start(runtime)
+    drive_the_whole_chain(runtime)
+    invalid = Artifact(b'{"kind":"attempt-transcript/v1","events":[]}')
+    with runtime.engine.begin() as connection:
+        keep_artifact(connection, invalid)
+    _plant_implement_transcript_pointer(runtime, invalid.artifact_hash.value)
+
+    found = durable_queries(runtime.engine).get_node_detail(RUN, "implement")
+
+    assert isinstance(found, QueryDurableStateCorrupt), found
