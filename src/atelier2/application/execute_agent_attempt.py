@@ -23,6 +23,7 @@ from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceLease,
     AgentAttemptWorkspaceOwner,
     AgentExecutionFailure,
+    AgentExecutionPreflightRefusal,
     AgentExecutorV2,
     AgentProcessInvocation,
     AgentProcessRunner,
@@ -82,7 +83,13 @@ def execute_agent_attempt(
     """
 
     store.prepare(execution)
-    command = executor.prepare_process(execution.request)
+    try:
+        command = executor.prepare_process(execution.request)
+    except AgentExecutionPreflightRefusal as refusal:
+        claim = store.claim(execution)
+        if isinstance(claim, AgentAttemptClaimedByThisCall):
+            return store.complete_agent_refusal(execution, refusal.reason)
+        return claim
     try:
         workspaces.preflight()
         if project is not None:
