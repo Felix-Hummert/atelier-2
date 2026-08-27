@@ -66,6 +66,19 @@ export interface CatalogAgentRow {
 }
 
 /**
+ * The workflow tiles and their group-head count are one projection.
+ *
+ * A library lists published revisions, but the Catalog deliberately collapses
+ * admitted siblings into one tile. Exposing the count alongside the rows keeps
+ * the group head from accidentally counting the library's revisions instead
+ * of the tiles a person can see.
+ */
+export interface CatalogWorkflowTiles {
+  rows: CatalogWorkflowRow[];
+  count: number;
+}
+
+/**
  * The facts that stand under an entry's name, in reading order.
  *
  * Provenance is the first of them and today always the same sentence: nothing
@@ -108,6 +121,14 @@ export function catalogWorkflowRows(
       newerRevisionAvailable: index === 0 && isAdmittedName && row.revisions.length > 1
     }));
   });
+}
+
+export function catalogWorkflowTiles(
+  revisions: readonly WorkflowRevisionSummary[],
+  catalogByName: Readonly<Record<string, CatalogNameState>>
+): CatalogWorkflowTiles {
+  const rows = catalogWorkflowRows(revisions, catalogByName);
+  return { rows, count: rows.length };
 }
 
 export function catalogAgentRows(

@@ -647,13 +647,15 @@
   {#if openNodeId !== null}
     {#if failure !== null}
       <ProblemNotice title="This node could not be read" message={failure} />
-    {:else if detail !== null}
+    {:else}
       <NodeDetailPanel
         {detail}
+        nodeId={openNodeId}
+        railState={rail.find((entry) => entry.node_id === openNodeId)?.state}
         onClose={closeNode}
-        readsFrom={readsFrom(detail.node_id)}
-        railAttempt={rail.find((entry) => entry.node_id === detail?.node_id)?.attempt ?? null}
-        resultShownAbove={outcomeText !== null && detail.node_id === run.current_node_id}
+        readsFrom={readsFrom(openNodeId)}
+        railAttempt={rail.find((entry) => entry.node_id === openNodeId)?.attempt ?? null}
+        resultShownAbove={outcomeText !== null && openNodeId === run.current_node_id}
         runEvidence={{
           runId: run.run_id,
           workflowRevisionHash: run.workflow_revision_hash,
@@ -661,8 +663,6 @@
           terminalHash: run.terminal_hash
         }}
       />
-    {:else}
-      <p class="muted">Reading {openNodeId}…</p>
     {/if}
   {/if}
 </section>

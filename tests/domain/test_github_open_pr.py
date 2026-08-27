@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from atelier2.adapters.github.effects import GitHubEffectAdapterFactory
+from atelier2.adapters.github.effects import (
+    GitHubEffectAdapterFactory,
+    GitHubEffectRefused,
+)
 from atelier2.contracts.effect_markers import body_carries_request_hash, marker_line
 from atelier2.contracts.effect_requests import HeadBranch, OpenPullRequest
 from atelier2.contracts.effects import (
@@ -108,3 +111,22 @@ def test_a_second_execute_finds_the_same_pull_request_and_does_not_create_a_twin
     assert read.confirmation_source is ConfirmationSource.ADAPTER_READBACK
     assert factory.recorded_pull_requests()[0].pr_number == 1
     assert len(factory.recorded_pull_requests()) == 1
+
+
+@pytest.mark.parametrize("operation", ["readback", "execute"])
+def test_a_malformed_open_pr_payload_is_refused_before_the_recorded_adapter_writes(
+    factory: GitHubEffectAdapterFactory,
+    operation: str,
+    malformed_open_pr_payload: bytes,
+) -> None:
+    original = effect_intent(factory)
+    intent = EffectIntent(original.binding, CanonicalRequest(malformed_open_pr_payload))
+    adapter = factory.open()
+    try:
+        with pytest.raises(GitHubEffectRefused, match="canonical open-pr request"):
+            getattr(adapter, operation)(intent)
+    finally:
+        adapter.close()
+
+    assert factory.recorded_pull_requests() == ()
+    assert factory.recorded_documentation_pushes() == ()

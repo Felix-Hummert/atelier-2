@@ -192,19 +192,25 @@ the rail's ochre count is the notification count. Catalog, History, and
 Settings complete the rail described by the blessed Mockup v8 and ADR 0019.
 Settings shows the project's source connection as read-only provenance. It is
 the one editing surface only for each provider's exact model registry and the
-three difficulty defaults, in that order. Registry rows name the exact model
+three difficulty defaults, in that order. The startable configuration list is
+the owner of that provider-grouped rendering: a provider whose registry is
+missing, or whose entry is not yet checked, still renders, marked unavailable,
+with the Check action that publishes a missing registry if needed, then asks
+the server to append its dry-run result.
+Registry rows name the exact model
 id, Account, provenance, and current provider check as separate facts; adding
-or removing a row writes immediately, while a not-yet-checked operator row has
-the available Check action that asks the server to append its dry-run result.
-Only checked rows are offered to defaults. Defaults are shown
+or removing a row writes immediately. Only checked, startable registry entries
+are selectable as defaults. Defaults are shown
 as Difficulty 3, 2, and 1; selecting a model or clearing a row is an immediate
 write that replaces only that difficulty. The other two saved rows are carried
 byte-for-byte. A new choice is admitted when its provider, model, and
-configuration are checked in the latest provider registry; a carried row stays
+configuration are a checked, startable registry row; a carried row stays
 admissible if that provider later stops reporting it. The retained model,
 Account, and unavailable state wrap as one visible surface
 until that row is changed or cleared. Neither operation renders a saving or saved caption, and an uncertain
-write retries its identical bytes. Settings does not read or count runs; the
+write retries its identical bytes. Check is one operation; Retry of an
+uncertain publish or validation resumes at that step and continues through
+validation. Settings does not read or count runs; the
 Workbench alone owns that live-work signal. The new-run trail names the project the same way the other
 levels do. It can answer the exact integer requested by a Wait node and resolve an
 unknown Action outcome as either an exact found effect or an accountable,
