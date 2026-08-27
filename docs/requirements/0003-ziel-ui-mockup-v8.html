@@ -1,6 +1,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Workshop target picture v8.15</title>
+<title>Workshop target picture v8.16</title>
 <style>
 /* ── House tokens (from frontend/src/styles.css, so the picture is the same house) ── */
 :root{
@@ -364,6 +364,7 @@ details.raw summary{cursor:pointer;min-height:2rem;display:flex;align-items:cent
 .found .k{color:var(--ink-dim)}
 .found .n{color:var(--ink-dim);font-variant-numeric:tabular-nums}
 .found .hooks{grid-template-columns:1.3rem minmax(0,1fr);color:var(--need)}
+.technical-action{border-top:1px solid var(--line);margin-top:.6rem;padding-top:.6rem}
 
 /* ── History table ── */
 table.hist{width:100%;border-collapse:collapse;font-size:.9rem}
@@ -477,10 +478,10 @@ table.list tr.grp td .mark{margin-right:.2rem}
 </style>
 <main>
 <header class="doc-head">
-  <div class="eyebrow">v8.15 · 27.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
+  <div class="eyebrow">v8.16 · 27.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
   <h1>The workshop holds a piece out to you</h1>
   <p class="thesis">Everything the workshop says to you is a question it holds out — a wait node of some run. Everything you say is an answer to one. The decision with two buttons, the ear with its input line and the "yes" to the conductor are <b>one</b> mechanism in three sizes; so there is exactly Stage, Row, Card, Sheet, plus Graph, and every room is built from these four blocks. Four rooms — Workbench, Catalog, History, Settings — and the run as a view in three tenses. Colour only for what wants something from you.</p>
-  <p class="note"><b>Changelog v8.15</b> · Retry ab einem Knoten: Ursprung, Bestätigung und Nachfolger mit übernommenem Präfix.</p>
+  <p class="note"><b>Changelog v8.16</b> · Retire an entry from its Technical fold: its tile and Start door disappear, History keeps its references, and a duplicate import names the existing revision.</p>
   <div class="tw"><table class="doc">
     <tr><th>Room</th><th>The one question it answers</th><th>What it never does</th></tr>
     <tr><td><b>Workbench</b></td><td>What needs me now, what is moving, what did we say today — and what do I want to say next?</td><td>No chronicle, no library; it never explains itself (no shelf titles); it shows nothing twice; it carries no number that does not lead to an action.</td></tr>
@@ -1467,6 +1468,82 @@ command stopped before an answer</div>
 <dl class="uq">
   <div><dt>"No executor runs Codex here yet" (dashed)</dt><dd>"Can this one run at all?" — a state on the entry, never a refusal at run start (ADR 0018, Refusals).</dd></div>
   <div><dt>"Newer revision · Pull" in the head</dt><dd>"Is this the current file?" — the same pair as on the card and in Settings; Pull is the attributed click.</dd></div>
+</dl>
+
+<section id="v8-16-retire">
+<h3 class="frame-title">Catalog · Retire an entry <small>— remove its current lineage from the shelf, not its history</small></h3>
+<div class="frame" id="v8-16-retire-door">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage">
+    <a class="trail" href="#">← Catalog</a>
+    <div class="head"><h4><span class="glyph">⧉</span>iterate-code</h4><div class="right"><span class="btn primary">Start</span></div></div>
+    <div class="pipe" style="padding-top:.3rem">
+      <div class="node"><div class="dot">·</div><b>planner</b></div><div class="link"></div>
+      <div class="node"><div class="dot">·</div><b>builder</b></div><div class="link"></div>
+      <div class="node"><div class="dot">·</div><b>reviewer</b></div><div class="link"></div>
+      <div class="node"><div class="dot hx"><i>?</i></div><b>merge gate</b><small><i class="person"></i></small></div>
+    </div>
+    <details class="back" open><summary>Technical</summary><dl><dt>revision</dt><dd>3</dd><dt>source</dt><dd>Git · leonardo/atelier-kit · workflows/iterate-code.yaml</dd><dt>format</dt><dd>workflow/v3</dd></dl><div class="technical-action"><span class="btn danger">Retire</span></div></details>
+    <p class="shelf">Same fold, every catalog kind</p>
+    <div class="sheets">
+      <div class="panel"><div class="head" style="margin-bottom:.2rem"><h4 style="font-size:1.05rem"><span class="glyph">◯</span>reviewer</h4><span class="meta"><i class="mark" title="Claude">A</i> Claude</span></div><details class="back" open><summary>Technical</summary><dl><dt>revision</dt><dd>2</dd><dt>format</dt><dd>agent · Claude Markdown</dd></dl><div class="technical-action"><span class="btn danger">Retire</span></div></details></div>
+      <div class="panel"><div class="head" style="margin-bottom:.2rem"><h4 style="font-size:1.05rem"><span class="glyph">✦</span>design-interface</h4></div><details class="back" open><summary>Technical</summary><dl><dt>revision</dt><dd>1</dd><dt>format</dt><dd>skill · Markdown</dd></dl><div class="technical-action"><span class="btn danger">Retire</span></div></details></div>
+    </div>
+  </div>
+</div>
+
+<div class="frame sheeted" id="v8-16-retire-confirmation">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage dimmed">
+    <a class="trail" href="#">← Catalog</a>
+    <div class="head"><h4><span class="glyph">⧉</span>iterate-code</h4><div class="right"><span class="btn primary">Start</span></div></div>
+    <div class="pipe" style="padding-top:.3rem"><div class="node"><div class="dot">·</div><b>planner</b></div><div class="link"></div><div class="node"><div class="dot">·</div><b>builder</b></div><div class="link"></div><div class="node"><div class="dot">·</div><b>reviewer</b></div></div>
+    <details class="back" open><summary>Technical</summary><dl><dt>revision</dt><dd>3</dd><dt>format</dt><dd>workflow/v3</dd></dl><div class="technical-action"><span class="btn danger">Retire</span></div></details>
+  </div>
+  <div class="veil" aria-hidden="true"></div>
+  <section class="sheet" aria-label="Confirm retiring iterate-code">
+    <h5>Retire iterate-code?</h5>
+    <div class="fact"><b>Disappears</b><span>Catalog tile and Start door</span></div>
+    <div class="fact"><b>Stays</b><span>Runs in History keep their reference</span></div>
+    <div class="fact"><b>Again</b><span>Import admits this lineage as a new revision</span></div>
+    <div class="foot"><span class="btn danger">Retire</span><span class="btn quiet">Cancel</span></div>
+  </section>
+</div>
+
+<div class="frame short" id="v8-16-retired-list">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage">
+    <div class="head"><h4>Catalog</h4><div class="right"><span class="btn">Import</span></div></div>
+    <div class="filters"><span class="f on">All</span><span class="f">Workflows <b>2</b></span><span class="f">Agents <b>2</b></span><span class="f">Skills <b>0</b></span><input placeholder="Search…" aria-label="Search the catalog"></div>
+    <div class="cards">
+      <a class="card" href="#"><b><span class="glyph">⧉</span>diff-review</b><small>One diff, one verdict.</small><div class="pills"><span class="pill warn">Newer revision</span><span class="act">Pull</span></div></a>
+      <a class="card" href="#"><b><span class="glyph">⧉</span>digest</b><small>Yesterday's runs, in one page.</small><div class="pills"><span class="pill dash">Not executable</span></div></a>
+      <a class="card" href="#"><b><span class="glyph">◯</span>builder</b><small>Implements a bounded change and pins it with tests.</small><span class="use"><i class="mark" title="Codex">O</i></span></a>
+      <a class="card" href="#"><b><span class="glyph">◯</span>reviewer</b><small>Reads a diff and names what bothers it.</small><span class="use"><i class="mark" title="Claude">A</i></span></a>
+    </div>
+  </div>
+</div>
+
+<div class="frame sheeted" id="v8-16-duplicate-import">
+  <nav class="rail" data-on="catalog"></nav>
+  <div class="stage dimmed">
+    <div class="head"><h4>Catalog</h4><div class="right"><span class="btn">Import</span></div></div>
+    <div class="filters"><span class="f on">All</span><span class="f">Workflows <b>3</b></span><span class="f">Agents <b>2</b></span><span class="f">Skills <b>0</b></span></div>
+    <div class="cards"><span class="card"><b><span class="glyph">⧉</span>iterate-code</b><small>build → review → fix, until green; then a merge gate and a PR.</small></span></div>
+  </div>
+  <section class="sheet" aria-label="Duplicate import recognised">
+    <h5>Import</h5>
+    <div class="found"><div><span class="k">⧉</span><span class="n">1 workflow</span><b>iterate-code</b></div></div>
+    <div class="err">already in the catalog — revision 3</div>
+    <div class="foot"><span class="btn quiet">Close</span></div>
+  </section>
+</div>
+</section>
+<dl class="uq">
+  <div><dt>Retire in Technical</dt><dd>"Where may I remove this?" — the destructive door belongs to the entry's folded technical record on workflows, agents, and skills; tiles stay one door in, never a second action surface.</dd></div>
+  <div><dt>Confirmation</dt><dd>"What changes, and what does not?" — it names the tile and Start door that disappear, the History references that remain, and that importing may admit the lineage again as a new revision. Agent and skill confirmations omit the Start door because neither kind owns one.</dd></div>
+  <div><dt>List after retire</dt><dd>"Did it leave the shelf?" — iterate-code is absent and the workflow count falls from 3 to 2; the History is deliberately not redrawn because it keeps the immutable revision reference.</dd></div>
+  <div><dt>Duplicate recognition</dt><dd>"Why was this not added?" — the recognition sheet says that its existing lineage is already in the catalog and names revision 3; there is no Add button.</dd></div>
 </dl>
 
 <h3 class="frame-title">Skills, empty</h3>
