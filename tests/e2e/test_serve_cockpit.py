@@ -80,7 +80,7 @@ def test_a_caller_supplied_scratch_root_is_never_removed(tmp_path: Path) -> None
     assert caller_root.is_dir()
 
 
-def test_a_harness_created_scratch_root_is_removed_when_start_or_close_fails(
+def test_a_harness_created_scratch_root_is_removed_when_the_runtime_never_started(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     created_root = tmp_path / "start-error-root"
@@ -95,6 +95,12 @@ def test_a_harness_created_scratch_root_is_removed_when_start_or_close_fails(
 
     assert not created_root.exists()
 
+
+def test_a_failed_runtime_close_preserves_the_scratch_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     failing_root = tmp_path / "close-error-root"
     monkeypatch.setattr(
         harness.tempfile,
@@ -107,7 +113,11 @@ def test_a_harness_created_scratch_root_is_removed_when_start_or_close_fails(
             FailingRuntime(scratch_root.path), scratch_root
         )
 
-    assert not failing_root.exists()
+    assert failing_root.is_dir()
+    assert (
+        f"preserving scratch root {failing_root}: runtime shutdown failed"
+        in capsys.readouterr().err
+    )
 
 
 def test_a_harness_created_scratch_root_is_removed_after_test_interruption(
@@ -385,6 +395,74 @@ def test_releasing_fake_provider_holds_unblocks_a_held_decode_before_the_hold_bo
     assert finished.is_set()
 
 
+def test_scratch_root_removal_cannot_precede_an_in_flight_decode_that_outlives_release(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    created_root = tmp_path / "in-flight-root"
+    monkeypatch.setattr(
+        harness.tempfile,
+        "mkdtemp",
+        lambda prefix: str(created_root.mkdir() or created_root),
+    )
+    scratch_root = harness.BrowserScratchRoot.create()
+    runtime = ClosingRuntime(scratch_root.path)
+    holds = harness.FakeProviderHolds()
+    factory = harness.HeldAgentExecutorFactory(
+        "e2e-v3-held", "held/v1", "e2e-held-process", b'"V3 provider bytes"', holds
+    )
+    executor = factory.open()
+    executor.requests.append(SimpleNamespace(run_id=SimpleNamespace(value="held-run")))
+    past_release = threading.Event()
+    stall = threading.Event()
+    decode_body = executor.decoder
+    order: list[str] = []
+
+    def stall_after_release(completion: object) -> object:
+        past_release.set()
+        if not stall.wait(harness.TIMEOUT_SECONDS):
+            raise RuntimeError("stalled decode was not resumed")
+        result = decode_body(completion)
+        order.append("decode-finished")
+        return result
+
+    executor.decoder = stall_after_release
+
+    def run_decode() -> None:
+        executor.decode_process_completion(
+            SimpleNamespace(),
+            harness.AgentProcessCompletion(0, b'"V3 provider bytes"', b""),
+        )
+
+    def drain_then_remove() -> None:
+        harness.drain_inflight_fake_decodes(holds)
+        order.append("idle")
+        harness.close_runtime_and_scratch_root(runtime, scratch_root)
+        order.append("removed")
+
+    decoder_thread = threading.Thread(target=run_decode)
+    closer = threading.Thread(target=drain_then_remove)
+    decoder_thread.start()
+    try:
+        assert executor.holding.wait(harness.TIMEOUT_SECONDS)
+        closer.start()
+        assert past_release.wait(harness.TIMEOUT_SECONDS)
+        assert created_root.is_dir()
+        assert "idle" not in order
+        assert "removed" not in order
+        assert not runtime.closed
+        stall.set()
+        closer.join(timeout=harness.TIMEOUT_SECONDS)
+        decoder_thread.join(timeout=harness.TIMEOUT_SECONDS)
+        assert not closer.is_alive()
+        assert not decoder_thread.is_alive()
+        assert order == ["decode-finished", "idle", "removed"]
+        assert runtime.closed
+        assert not created_root.exists()
+    finally:
+        stall.set()
+        holds.release_all()
+
+
 def test_a_reset_recompose_opens_the_next_runtime_on_a_fresh_scratch_root(
     tmp_path: Path,
 ) -> None:
@@ -432,8 +510,7 @@ def test_a_reset_recompose_opens_the_next_runtime_on_a_fresh_scratch_root(
         return compose()
 
     def drain_inflight() -> None:
-        holds.release_all()
-        blocking.release_in_flight()
+        harness.drain_inflight_fake_decodes(holds, blocking)
 
     app, runtime = compose()
     leftover = _leftover_attempt_directory(first_root)

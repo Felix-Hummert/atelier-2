@@ -9,7 +9,8 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
@@ -166,33 +167,75 @@ def replace_closed_generation_scratch_root(
 def close_runtime_and_scratch_root(
     runtime: RuntimeCloser | None, scratch_root: BrowserScratchRoot
 ) -> None:
-    try:
-        if runtime is not None:
-            runtime.close()
-    finally:
+    if runtime is None:
         scratch_root.close()
+        return
+    try:
+        runtime.close()
+    except BaseException:
+        # A failed shutdown may still have a live generation writing this
+        # workspace; deleting it would drop that work on the floor.
+        print(
+            f"preserving scratch root {scratch_root.path}: runtime shutdown failed",
+            file=sys.stderr,
+        )
+        raise
+    scratch_root.close()
 
 
 class FakeProviderHolds:
-    """Releases in-flight fake provider decodes so a recompose can close DBOS.
+    """Tracks in-flight fake provider decodes across a served generation.
 
-    Delayed and held executors wait on this Event instead of sleeping, so the
-    generation that opened them can end them when it closes rather than racing
-    a still-running decode against a destroyed runtime and a removed scratch
-    root.
+    Delayed, held, and blocking executors wait on a release signal instead of
+    sleeping. Drain sets that signal and then blocks until every tracked
+    decode has returned. DBOS shutdown only waits one second for workflows
+    and then ThreadPoolExecutor.shutdown(wait=False), so closing the runtime
+    or removing the scratch root before those decodes finish still races a
+    live generation.
     """
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._idle = threading.Condition(self._lock)
         self._released = threading.Event()
+        self._inflight = 0
 
     def current(self) -> threading.Event:
         return self._released
 
+    @contextmanager
+    def in_flight(self) -> Iterator[None]:
+        with self._lock:
+            self._inflight += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._inflight -= 1
+                self._idle.notify_all()
+
     def release_all(self) -> None:
         self._released.set()
 
+    def wait_until_idle(self, timeout: float = TIMEOUT_SECONDS) -> None:
+        deadline = time.monotonic() + timeout
+        with self._lock:
+            while self._inflight > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        f"{self._inflight} in-flight fake decode(s) did not finish"
+                    )
+                self._idle.wait(remaining)
+
     def start_generation(self) -> None:
-        self._released = threading.Event()
+        with self._lock:
+            if self._inflight:
+                raise RuntimeError(
+                    "cannot start a generation while "
+                    f"{self._inflight} fake decode(s) are still in flight"
+                )
+            self._released = threading.Event()
 
 
 class UnknownReadbackAdapter:
@@ -246,10 +289,16 @@ class BlockingAgentExecutor(RecordingAgentExecutorV2):
         if self.requests[-1].run_id.value == MODEL_VALIDATION_RUN_ID:
             return super().decode_process_completion(invocation, completion)
         self.owner.observed_executor = self
-        self.observed.set()
-        if not self.release.wait(TIMEOUT_SECONDS):
-            raise RuntimeError("browser did not observe the working attempt")
-        return super().decode_process_completion(invocation, completion)
+        tracking = (
+            self.owner.holds.in_flight()
+            if self.owner.holds is not None
+            else nullcontext()
+        )
+        with tracking:
+            self.observed.set()
+            if not self.release.wait(TIMEOUT_SECONDS):
+                raise RuntimeError("browser did not observe the working attempt")
+            return super().decode_process_completion(invocation, completion)
 
     def close(self) -> None:
         super().close()
@@ -263,6 +312,17 @@ class BlockingAgentExecutor(RecordingAgentExecutorV2):
 
 class BlockingAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
     observed_executor: BlockingAgentExecutor | None = None
+
+    def __init__(
+        self,
+        provider: str,
+        revision: str,
+        operational_identity_value: str,
+        output: bytes,
+        holds: FakeProviderHolds | None = None,
+    ) -> None:
+        super().__init__(provider, revision, operational_identity_value, output)
+        self.holds = holds
 
     def open(self) -> RecordingAgentExecutorV2:
         self.opens += 1
@@ -280,6 +340,16 @@ class BlockingAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
         type(self).observed_executor = None
 
 
+def drain_inflight_fake_decodes(
+    holds: FakeProviderHolds,
+    blocking: BlockingAgentExecutorFactory | None = None,
+) -> None:
+    holds.release_all()
+    if blocking is not None:
+        blocking.release_in_flight()
+    holds.wait_until_idle()
+
+
 class DelayedAgentExecutor(RecordingAgentExecutorV2):
     """Holds a V3 node in `working` long enough for the browser to draw it live."""
 
@@ -289,10 +359,11 @@ class DelayedAgentExecutor(RecordingAgentExecutorV2):
         requests: list[AgentExecutionRequestV2],
         lifecycle: list[str],
         name: str,
-        released: threading.Event,
+        holds: FakeProviderHolds,
     ) -> None:
         super().__init__(output, requests, lifecycle, name)
-        self._released = released
+        self._holds = holds
+        self._released = holds.current()
         self.holding = threading.Event()
 
     def decode_process_completion(
@@ -300,9 +371,10 @@ class DelayedAgentExecutor(RecordingAgentExecutorV2):
     ) -> AgentExecutionResult | AgentExecutionFailure:
         if self.requests[-1].run_id.value == MODEL_VALIDATION_RUN_ID:
             return super().decode_process_completion(invocation, completion)
-        self.holding.set()
-        self._released.wait(DELAYED_ATTEMPT_SECONDS)
-        return super().decode_process_completion(invocation, completion)
+        with self._holds.in_flight():
+            self.holding.set()
+            self._released.wait(DELAYED_ATTEMPT_SECONDS)
+            return super().decode_process_completion(invocation, completion)
 
 
 class DelayedAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
@@ -321,7 +393,7 @@ class DelayedAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
         self.opens += 1
         self.lifecycle.append(f"open:{self.provider}")
         self.opened = DelayedAgentExecutor(
-            self.output, [], self.lifecycle, self.provider, self._holds.current()
+            self.output, [], self.lifecycle, self.provider, self._holds
         )
         return self.opened
 
@@ -341,10 +413,11 @@ class HeldAgentExecutor(RecordingAgentExecutorV2):
         requests: list[AgentExecutionRequestV2],
         lifecycle: list[str],
         name: str,
-        released: threading.Event,
+        holds: FakeProviderHolds,
     ) -> None:
         super().__init__(output, requests, lifecycle, name)
-        self._released = released
+        self._holds = holds
+        self._released = holds.current()
         self.holding = threading.Event()
 
     def decode_process_completion(
@@ -352,9 +425,10 @@ class HeldAgentExecutor(RecordingAgentExecutorV2):
     ) -> AgentExecutionResult | AgentExecutionFailure:
         if self.requests[-1].run_id.value == MODEL_VALIDATION_RUN_ID:
             return super().decode_process_completion(invocation, completion)
-        self.holding.set()
-        self._released.wait(HELD_ATTEMPT_SECONDS)
-        return super().decode_process_completion(invocation, completion)
+        with self._holds.in_flight():
+            self.holding.set()
+            self._released.wait(HELD_ATTEMPT_SECONDS)
+            return super().decode_process_completion(invocation, completion)
 
 
 class HeldAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
@@ -373,7 +447,7 @@ class HeldAgentExecutorFactory(RecordingAgentExecutorFactoryV2):
         self.opens += 1
         self.lifecycle.append(f"open:{self.provider}")
         self.opened = HeldAgentExecutor(
-            self.output, [], self.lifecycle, self.provider, self._holds.current()
+            self.output, [], self.lifecycle, self.provider, self._holds
         )
         return self.opened
 
@@ -731,6 +805,7 @@ def main() -> None:
             + "Grüße 東京 — durable agent output remains readable after completion.\n"
             * 20
         ).encode(),
+        holds,
     )
     # The blocking provider exists so the browser can catch a V2 attempt
     # mid-flight. The immediate one finishes a V3 line without a hold. The
@@ -811,8 +886,7 @@ def main() -> None:
         server.should_exit = True
 
     def drain_inflight() -> None:
-        holds.release_all()
-        factory.release_in_flight()
+        drain_inflight_fake_decodes(holds, factory)
 
     scratch_root = BrowserScratchRoot.create()
 
