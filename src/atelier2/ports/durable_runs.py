@@ -6,6 +6,7 @@ from typing import Protocol
 
 from atelier2.contracts.agents import AgentBindingSet
 from atelier2.contracts.executions import SubmitWaitAnswerRequest, WaitAnswerSnapshot
+from atelier2.contracts.host_configuration import UncastRole
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.orders import (
     ArtifactOrderValue,
@@ -60,6 +61,17 @@ class DurableInvalidAgentBindings:
 
 
 @dataclass(frozen=True)
+class DurableUncastAgentRoles:
+    roles: tuple[UncastRole, ...]
+
+    def __post_init__(self) -> None:
+        if not self.roles or any(
+            not isinstance(role, UncastRole) for role in self.roles
+        ):
+            raise ValueError("an uncast-role refusal must name every uncast role")
+
+
+@dataclass(frozen=True)
 class DurableAgentConfigurationRevisionMissing:
     pass
 
@@ -103,6 +115,7 @@ type DurablePublishedRunResult = (
     | DurableRunIdentityConflict
     | DurableRunFormatNotExecutable
     | DurableInvalidAgentBindings
+    | DurableUncastAgentRoles
     | DurableAgentConfigurationRevisionMissing
     | DurableAgentExecutorBindingUnavailable
     | DurableAgentExecutorCapabilityUnavailable

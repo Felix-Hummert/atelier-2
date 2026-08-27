@@ -2,7 +2,13 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import type { CockpitApi, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
+import type {
+  AgentConfigurationRevisionListItem,
+  CockpitApi,
+  ProjectModelResolution,
+  RunV3,
+  WorkflowRevisionDetail
+} from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { WORK_ITEM_ORDER_SCHEMA_REVISION } from "../../src/lib/orderSchema";
 import { cockpitApiStub } from "../support/cockpitApi";
@@ -12,6 +18,7 @@ const revisionHash = "a".repeat(64);
 const configurationHash = "b".repeat(64);
 const publicReference = "run1.cnVuLW9yZGVy";
 const workflowName = "Cook to order";
+const projectReference = "project1.dGVzdA";
 
 const portionsOrder = {
   name: "portions",
@@ -130,6 +137,53 @@ function api(overrides: Partial<CockpitApi> = {}): CockpitApi {
       }],
       next_after_revision_hash: null
     })),
+    listAuthProfileRevisions: vi.fn(async () => ({
+      items: [{
+        profile_id: "test",
+        revision_number: 1,
+        provider_id: "test",
+        auth_mode: "subscription" as const,
+        auth_profile_revision_hash: "f".repeat(64)
+      }],
+      next_after_revision_hash: null
+    })),
+    getModelRegistry: vi.fn(async () => ({
+      provider_id: "test",
+      revision_number: 1,
+      model_registry_revision_hash: "9".repeat(64),
+      entries: [{
+        model_id: "cook-model",
+        agent_configuration_revision_hash: configurationHash,
+        source: "discovered" as const,
+        provider_check: "checked" as const
+      }]
+    })),
+    listProjects: vi.fn(async () => ({
+      items: [{ public_project_reference: projectReference }]
+    })),
+    resolveProjectModels: vi.fn(async (
+      _project: string,
+      workflowHash: string,
+      overrides: Parameters<CockpitApi["resolveProjectModels"]>[2]
+    ) => {
+      const chosen = overrides.find((override) => override.role === "cook")
+        ?.agent_configuration_revision_hash ?? null;
+      return {
+        project_id: "test",
+        public_project_reference: projectReference,
+        workflow_revision_hash: workflowHash,
+        resolutions: [{
+          role: "cook",
+          agent_configuration_revision_hash: chosen,
+          source: chosen === null ? "uncast" as const : "chosen-now" as const,
+          model_id: chosen === null ? null : "cook-model",
+          declared_difficulty: 2 as const,
+          default_difficulty: null,
+          uncast_reason: chosen === null ? "no-project-default" as const : null,
+          family_differs_from: null
+        }]
+      };
+    }),
     start: vi.fn(async () => ({ status: 201, value: startedRun() })),
     getRun: vi.fn(async () => startedRun()),
     ...overrides
@@ -178,7 +232,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
 
     const start = screen.getByRole("button", { name: "Start run" });
     expect((start as HTMLButtonElement).disabled).toBe(true);
-    await fireEvent.change(screen.getByLabelText("cook"), { target: { value: configurationHash } });
+    await fireEvent.change(screen.getByLabelText("Configuration for cook"), { target: { value: configurationHash } });
     expect((start as HTMLButtonElement).disabled).toBe(true);
     await fireEvent.input(screen.getByLabelText("portions (integer) *"), { target: { value: "7" } });
     expect((start as HTMLButtonElement).disabled).toBe(false);
@@ -189,7 +243,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     await openStart(cockpitApi);
 
     await fireEvent.input(screen.getByLabelText("portions (integer) *"), { target: { value: "7" } });
-    await fireEvent.change(screen.getByLabelText("cook"), { target: { value: configurationHash } });
+    await fireEvent.change(screen.getByLabelText("Configuration for cook"), { target: { value: configurationHash } });
     await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
 
     await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
@@ -227,9 +281,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     ]);
     expect(picker.querySelector('option[value="gh:450"]')?.textContent).toBe("GitHub · gh:450");
     expect(screen.queryByRole("note")).toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: "Interim configuration" }));
-    expect(screen.getByRole("status").textContent).toContain("Settings › Model defaults exist");
-    expect(screen.getByText("Interim source · choose for this run")).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Roles" })).toBeTruthy();
 
     await fireEvent.change(picker, { target: { value: "gh:450" } });
     expect((picker as HTMLSelectElement).selectedOptions[0]?.textContent).toBe("GitHub · gh:450");
@@ -239,9 +291,7 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     expect((screen.getByLabelText("Configuration for cook") as HTMLSelectElement).value).toBe(
       configurationHash
     );
-    await waitFor(() =>
-      expect(screen.getByText("Interim source · chosen for this run, not saved")).toBeTruthy()
-    );
+    await waitFor(() => expect(screen.getByText("Chosen now")).toBeTruthy());
     await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
 
     await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
@@ -335,5 +385,424 @@ describe("the schema-generated fields on the catalog start sheet", () => {
     await fireEvent.keyDown(dialog, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: `Start ${workflowName}` })).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(start));
+  });
+});
+
+function resolvedRole(
+  changes: Partial<ProjectModelResolution["resolutions"][number]> = {}
+): ProjectModelResolution["resolutions"][number] {
+  return {
+    role: "cook",
+    agent_configuration_revision_hash: configurationHash,
+    source: "from-project",
+    model_id: "cook-model",
+    declared_difficulty: 2,
+    default_difficulty: 2,
+    uncast_reason: null,
+    family_differs_from: null,
+    ...changes
+  };
+}
+
+function configuration(
+  hash: string,
+  model: string,
+  startable = true
+): AgentConfigurationRevisionListItem {
+  return {
+    agent_configuration_revision_hash: hash,
+    provider_id: "test",
+    model,
+    auth_mode: "subscription",
+    auth_profile_revision_hash: "f".repeat(64),
+    executor_revision: "immediate/v1",
+    requested_capability: "headless",
+    startable,
+    not_startable_reason: startable ? null : "agent-executor-binding-unavailable"
+  };
+}
+
+function modelApi(
+  resolveProjectModels: CockpitApi["resolveProjectModels"],
+  configurations: readonly AgentConfigurationRevisionListItem[] = [
+    configuration(configurationHash, "cook-model")
+  ],
+  overrides: Partial<CockpitApi> = {}
+): CockpitApi {
+  return api({
+    getWorkflowRevision: vi.fn(async () => detail([])),
+    listAgentConfigurationRevisions: vi.fn(async () => ({
+      items: [...configurations],
+      next_after_revision_hash: null
+    })),
+    getModelRegistry: vi.fn(async () => ({
+      provider_id: "test",
+      revision_number: 1,
+      model_registry_revision_hash: "9".repeat(64),
+      entries: configurations.map((item) => ({
+        model_id: item.model,
+        agent_configuration_revision_hash: item.agent_configuration_revision_hash,
+        source: "discovered" as const,
+        provider_check: "checked" as const
+      }))
+    })),
+    resolveProjectModels,
+    ...overrides
+  });
+}
+
+function projectResolution(
+  workflowHash: string,
+  resolutions: ProjectModelResolution["resolutions"]
+): ProjectModelResolution {
+  return {
+    project_id: "test",
+    public_project_reference: projectReference,
+    workflow_revision_hash: workflowHash,
+    resolutions
+  };
+}
+
+describe("the catalog start sheet's project model resolution", () => {
+  it("refuses a resolution with an extra role instead of starting a changed cast", async () => {
+    const resolveProjectModels = vi.fn(async (
+      _project: string,
+      workflowHash: string
+    ) => projectResolution(workflowHash, [
+      resolvedRole(),
+      resolvedRole({ role: "extra" })
+    ]));
+    const cockpitApi = modelApi(resolveProjectModels);
+    await openStart(cockpitApi);
+
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Model resolution did not name exactly these roles"
+    );
+    expect(cockpitApi.start).not.toHaveBeenCalled();
+  });
+
+  it("shows next-higher provenance and starts defaults only after resolving them again", async () => {
+    const resolveProjectModels = vi.fn(async (
+      _project: string,
+      workflowHash: string
+    ) => projectResolution(workflowHash, [resolvedRole({ default_difficulty: 3 })]));
+    const cockpitApi = modelApi(resolveProjectModels);
+    await openStart(cockpitApi);
+
+    const picker = screen.getByLabelText("Configuration for cook");
+    expect((picker as HTMLSelectElement).value).toBe(configurationHash);
+    expect(within(picker).getByRole("option", {
+      name: "difficulty 2 → cook-model (next higher) · Account test"
+    })).toBeTruthy();
+    expect(screen.queryByText("Next higher difficulty")).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+
+    await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
+    expect(resolveProjectModels).toHaveBeenCalledTimes(2);
+    const mutation = vi.mocked(cockpitApi.start).mock.calls[0]?.[0];
+    const request = JSON.parse(globalThis.atob(mutation?.body_base64 ?? ""));
+    expect(request.agent_bindings).toEqual([]);
+  });
+
+  it("shows a workflow pin, lets this run override it, and sends only that override", async () => {
+    const resolveProjectModels = vi.fn(async (
+      _project: string,
+      workflowHash: string,
+      overrides: Parameters<CockpitApi["resolveProjectModels"]>[2]
+    ) => projectResolution(workflowHash, [resolvedRole({
+      source: overrides.length === 0 ? "pinned-in-workflow" : "chosen-now",
+      default_difficulty: null
+    })]));
+    const cockpitApi = modelApi(resolveProjectModels);
+    await openStart(cockpitApi);
+
+    expect(within(screen.getByLabelText("Configuration for cook")).getByRole("option", {
+      name: "pinned in workflow → cook-model · Account test"
+    })).toBeTruthy();
+    await fireEvent.change(screen.getByLabelText("Configuration for cook"), {
+      target: { value: configurationHash }
+    });
+    await waitFor(() => expect(screen.getByText("Chosen now")).toBeTruthy());
+    await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+
+    await waitFor(() => expect(cockpitApi.start).toHaveBeenCalledTimes(1));
+    const mutation = vi.mocked(cockpitApi.start).mock.calls[0]?.[0];
+    const request = JSON.parse(globalThis.atob(mutation?.body_base64 ?? ""));
+    expect(request.agent_bindings).toEqual([{
+      role: "cook",
+      agent_configuration_revision_hash: configurationHash
+    }]);
+  });
+
+  it("uses the dropdown as the one ochre Choose carrier for a family refusal", async () => {
+    const resolveProjectModels = vi.fn(async (
+      _project: string,
+      workflowHash: string,
+      overrides: Parameters<CockpitApi["resolveProjectModels"]>[2]
+    ) => projectResolution(workflowHash, [overrides.length === 0
+      ? resolvedRole({
+          agent_configuration_revision_hash: null,
+          source: "uncast",
+          model_id: null,
+          default_difficulty: null,
+          uncast_reason: "family-difference-unavailable",
+          family_differs_from: "builder"
+        })
+      : resolvedRole({ source: "chosen-now", default_difficulty: null })]));
+    const cockpitApi = modelApi(resolveProjectModels);
+    await openStart(cockpitApi);
+
+    const picker = screen.getByLabelText("Configuration for cook");
+    expect(picker.classList).toContain("needs-choice");
+    expect(screen.getAllByText("Choose")).toHaveLength(1);
+    expect(screen.queryByText(/family difference/i)).toBeNull();
+    await fireEvent.click(screen.getByRole("button", {
+      name: "Why cook needs a configuration"
+    }));
+    expect(screen.getByRole("status").textContent).toContain("differs in family from builder");
+
+    await fireEvent.change(picker, { target: { value: configurationHash } });
+    await waitFor(() => expect(screen.getByText("Chosen now")).toBeTruthy());
+    expect(resolveProjectModels.mock.calls.at(-1)?.[2]).toEqual([{
+      role: "cook",
+      agent_configuration_revision_hash: configurationHash
+    }]);
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled)
+      .toBe(false);
+  });
+
+  it("returns a refused override to Choose while keeping the typed reason behind Info", async () => {
+    const otherHash = "8".repeat(64);
+    const resolveProjectModels = vi.fn(async (
+      _project: string,
+      workflowHash: string,
+      overrides: Parameters<CockpitApi["resolveProjectModels"]>[2]
+    ) => projectResolution(workflowHash, [overrides.length === 0
+      ? resolvedRole()
+      : resolvedRole({
+          agent_configuration_revision_hash: null,
+          source: "uncast",
+          model_id: null,
+          default_difficulty: null,
+          uncast_reason: "override-not-registered"
+        })]));
+    const cockpitApi = modelApi(resolveProjectModels, [
+      configuration(configurationHash, "cook-model"),
+      configuration(otherHash, "other-model")
+    ]);
+    await openStart(cockpitApi);
+
+    await fireEvent.change(screen.getByLabelText("Configuration for cook"), {
+      target: { value: otherHash }
+    });
+    await waitFor(() => expect(
+      (screen.getByLabelText("Configuration for cook") as HTMLSelectElement).value
+    ).toBe(""));
+    expect(screen.getAllByText("Choose")).toHaveLength(1);
+    await fireEvent.click(screen.getByRole("button", {
+      name: "Why cook needs a configuration"
+    }));
+    expect(screen.getByRole("status").textContent).toContain("not registered");
+    expect(cockpitApi.start).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unavailable resolved configuration selected until a healthy override replaces it", async () => {
+    const healthyHash = "8".repeat(64);
+    const resolveProjectModels = vi.fn(async (
+      _project: string,
+      workflowHash: string,
+      overrides: Parameters<CockpitApi["resolveProjectModels"]>[2]
+    ) => projectResolution(workflowHash, [overrides.length === 0
+      ? resolvedRole()
+      : resolvedRole({
+          agent_configuration_revision_hash: healthyHash,
+          source: "chosen-now",
+          model_id: "healthy-model",
+          default_difficulty: null
+        })]));
+    const cockpitApi = modelApi(resolveProjectModels, [
+      configuration(configurationHash, "cook-model", false),
+      configuration(healthyHash, "healthy-model")
+    ]);
+    await openStart(cockpitApi);
+
+    const picker = screen.getByLabelText("Configuration for cook") as HTMLSelectElement;
+    expect(picker.value).toBe(configurationHash);
+    expect(picker.selectedOptions[0]?.disabled).toBe(true);
+    expect(picker.selectedOptions[0]?.textContent).toBe(
+      "difficulty 2 → cook-model · Account test · ◇ Unavailable"
+    );
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled)
+      .toBe(true);
+
+    await fireEvent.change(picker, { target: { value: healthyHash } });
+    await waitFor(() => expect(screen.getByText("Chosen now")).toBeTruthy());
+    expect(picker.value).toBe(healthyHash);
+    expect((screen.getByRole("button", { name: "Start run" }) as HTMLButtonElement).disabled)
+      .toBe(false);
+  });
+
+  it("drops a vanished project default during the mandatory pre-start resolution", async () => {
+    const resolveProjectModels = vi
+      .fn<CockpitApi["resolveProjectModels"]>()
+      .mockImplementationOnce(async (_project, workflowHash) =>
+        projectResolution(workflowHash, [resolvedRole()]))
+      .mockImplementationOnce(async (_project, workflowHash) =>
+        projectResolution(workflowHash, [resolvedRole({
+          agent_configuration_revision_hash: null,
+          source: "uncast",
+          model_id: null,
+          default_difficulty: null,
+          uncast_reason: "no-project-default"
+        })]));
+    const cockpitApi = modelApi(resolveProjectModels);
+    await openStart(cockpitApi);
+
+    expect((screen.getByLabelText("Configuration for cook") as HTMLSelectElement)
+      .selectedOptions[0]?.textContent).toBe("difficulty 2 → cook-model · Account test");
+    await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+
+    await waitFor(() => expect(
+      (screen.getByLabelText("Configuration for cook") as HTMLSelectElement).value
+    ).toBe(""));
+    expect(screen.getAllByText("Choose")).toHaveLength(1);
+    expect(cockpitApi.start).not.toHaveBeenCalled();
+  });
+
+  it("does not let a late resolution replace a newer manual choice", async () => {
+    const olderHash = "7".repeat(64);
+    const newerHash = "8".repeat(64);
+    let releaseOlder!: (resolution: ProjectModelResolution) => void;
+    const olderResolution = new Promise<ProjectModelResolution>((resolve) => {
+      releaseOlder = resolve;
+    });
+    const resolveProjectModels = vi.fn((
+      _project: string,
+      workflowHash: string,
+      overrides: Parameters<CockpitApi["resolveProjectModels"]>[2]
+    ) => {
+      const selected = overrides[0]?.agent_configuration_revision_hash;
+      if (selected === olderHash) return olderResolution;
+      return Promise.resolve(projectResolution(workflowHash, [resolvedRole({
+        agent_configuration_revision_hash: selected ?? configurationHash,
+        source: selected === undefined ? "from-project" : "chosen-now",
+        model_id: selected === newerHash ? "newer-model" : "cook-model",
+        default_difficulty: selected === undefined ? 2 : null
+      })]));
+    });
+    const cockpitApi = modelApi(resolveProjectModels, [
+      configuration(configurationHash, "cook-model"),
+      configuration(olderHash, "older-model"),
+      configuration(newerHash, "newer-model")
+    ]);
+    await openStart(cockpitApi);
+
+    const picker = screen.getByLabelText("Configuration for cook") as HTMLSelectElement;
+    await fireEvent.change(picker, { target: { value: olderHash } });
+    await fireEvent.change(picker, { target: { value: newerHash } });
+    await waitFor(() => expect(picker.value).toBe(newerHash));
+    releaseOlder(projectResolution(revisionHash, [resolvedRole({
+      agent_configuration_revision_hash: olderHash,
+      source: "chosen-now",
+      model_id: "older-model",
+      default_difficulty: null
+    })]));
+
+    await waitFor(() => expect(resolveProjectModels).toHaveBeenCalledTimes(3));
+    expect(picker.value).toBe(newerHash);
+    expect(picker.selectedOptions[0]?.textContent).toContain("newer-model");
+  });
+
+  it.each([
+    ["workflow-model-not-registered", "not registered"],
+    ["workflow-model-ambiguous", "more than one configuration"]
+  ] as const)("keeps the %s refusal behind the role's Info hint", async (reason, expected) => {
+    const resolveProjectModels = vi.fn(async (
+      _project: string,
+      workflowHash: string
+    ) => projectResolution(workflowHash, [resolvedRole({
+      agent_configuration_revision_hash: null,
+      source: "uncast",
+      model_id: null,
+      default_difficulty: null,
+      uncast_reason: reason
+    })]));
+    await openStart(modelApi(resolveProjectModels));
+
+    expect(screen.getAllByText("Choose")).toHaveLength(1);
+    await fireEvent.click(screen.getByRole("button", {
+      name: "Why cook needs a configuration"
+    }));
+    expect(screen.getByRole("status").textContent).toContain(expected);
+  });
+
+  it.each(["registry", "profile"] as const)(
+    "excludes a configuration whose %s provider does not join the checked tuple",
+    async (mismatch) => {
+      const resolveProjectModels = vi.fn(async (
+        _project: string,
+        workflowHash: string
+      ) => projectResolution(workflowHash, [resolvedRole({
+        agent_configuration_revision_hash: null,
+        source: "uncast",
+        model_id: null,
+        default_difficulty: null,
+        uncast_reason: "no-project-default"
+      })]));
+      const overrides: Partial<CockpitApi> = mismatch === "registry"
+        ? { getModelRegistry: vi.fn(async () => ({
+            provider_id: "other",
+            revision_number: 1,
+            model_registry_revision_hash: "9".repeat(64),
+            entries: [{
+              model_id: "cook-model",
+              agent_configuration_revision_hash: configurationHash,
+              source: "discovered" as const,
+              provider_check: "checked" as const
+            }]
+          })) }
+        : { listAuthProfileRevisions: vi.fn(async () => ({
+            items: [{
+              profile_id: "test",
+              revision_number: 1,
+              provider_id: "other",
+              auth_mode: "subscription" as const,
+              auth_profile_revision_hash: "f".repeat(64)
+            }],
+            next_after_revision_hash: null
+          })) };
+      await openStart(modelApi(resolveProjectModels, undefined, overrides));
+
+      const picker = screen.getByLabelText("Configuration for cook");
+      expect(within(picker).queryByRole("option", { name: /cook-model/ })).toBeNull();
+      expect(screen.getAllByText("Choose")).toHaveLength(1);
+    }
+  );
+
+  it.each([
+    ["changed hash", [{ ...startedRun().agent_bindings[0]!, agent_configuration_revision_hash: "8".repeat(64) }]],
+    ["extra role", [startedRun().agent_bindings[0]!, { ...startedRun().agent_bindings[0]!, role: "extra" }]]
+  ] as const)("refuses a start response with a %s", async (_case, agentBindings) => {
+    const resolveProjectModels = vi.fn(async (
+      _project: string,
+      workflowHash: string
+    ) => projectResolution(workflowHash, [resolvedRole()]));
+    const cockpitApi = modelApi(resolveProjectModels, undefined, {
+      start: vi.fn(async () => ({
+        status: 201,
+        value: { ...startedRun(), agent_bindings: [...agentBindings] }
+      }))
+    });
+    await openStart(cockpitApi);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Start run" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "The start response changed the selected roles."
+    );
+    expect(screen.getByLabelText("Configuration for cook")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Start run" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+    expect(window.location.pathname).toBe(`/atelier/catalog/${encodeURIComponent(workflowName)}`);
   });
 });

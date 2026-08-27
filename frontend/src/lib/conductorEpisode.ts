@@ -64,8 +64,8 @@ export interface ConductorConnection {
  * Whether this deployment has a conductor the composer can hand a message to.
  *
  * Connected means: the catalog resolves the `conductor` name to an executable
- * one-agent revision, the served project's recommended occupancy binds that
- * role (#557 — recasting the conductor is an occupancy edit, never code), and
+ * one-agent revision, the served project's model defaults bind that
+ * role (#557), and
  * the bound configuration is startable here — which is false exactly where
  * the serve did not arm a doors-capable executor. Every read is the public
  * API the cockpit already uses. Only the named not-connected answers return
@@ -75,11 +75,9 @@ export async function resolveConductorConnection(
   cockpitApi: CockpitApi
 ): Promise<ConductorConnection | null> {
   let workflowRevisionHash: string;
-  let lineageId: string;
   try {
     const resolution = await cockpitApi.getRevisionByName(CONDUCTOR_WORKFLOW_NAME);
     workflowRevisionHash = resolution.workflow_revision_hash;
-    lineageId = resolution.lineage_id;
   } catch (error) {
     const code = problemCode(error);
     if (code === "catalog-name-not-found" || code === "catalog-lineage-retired") {
@@ -94,20 +92,15 @@ export async function resolveConductorConnection(
   const projects = await cockpitApi.listProjects();
   const project = projects.items[0];
   if (project === undefined) return null;
-  let boundConfigurationHash: string | undefined;
-  try {
-    const occupancy = await cockpitApi.getProjectOccupancy(
-      project.public_project_reference,
-      lineageId
-    );
-    boundConfigurationHash = occupancy.bindings.find(
-      (binding) => binding.role === episode.role
-    )?.agent_configuration_revision_hash;
-  } catch (error) {
-    if (problemCode(error) === "occupancy-missing") return null;
-    throw error;
-  }
-  if (boundConfigurationHash === undefined) return null;
+  const resolution = await cockpitApi.resolveProjectModels(
+    project.public_project_reference,
+    workflowRevisionHash,
+    []
+  );
+  const boundConfigurationHash = resolution.resolutions.find(
+    (binding) => binding.role === episode.role
+  )?.agent_configuration_revision_hash;
+  if (boundConfigurationHash === undefined || boundConfigurationHash === null) return null;
 
   const reading = await readEveryAgentConfiguration((after) =>
     cockpitApi.listAgentConfigurationRevisions(after)

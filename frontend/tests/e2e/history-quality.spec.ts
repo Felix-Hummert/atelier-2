@@ -59,6 +59,56 @@ async function publishLongWorkflow(page: Page, schemaHash: string): Promise<stri
   return (await published.json()).workflow_revision_hash as string;
 }
 
+async function publishCheckedModelRegistry(
+  page: Page,
+  providerId: string,
+  modelId: string,
+  configurationHash: string
+): Promise<void> {
+  const endpoint = `/atelier/api/v1/model-registries/${encodeURIComponent(providerId)}`;
+  const current = await page.request.get(endpoint);
+  expect([200, 404]).toContain(current.status());
+  const registry = current.status() === 200
+    ? await current.json() as {
+      revision_number: number;
+      entries: Array<{
+        model_id: string;
+        agent_configuration_revision_hash: string;
+        source: string;
+        provider_check: string;
+      }>;
+    }
+    : undefined;
+  const entriesByModelId = new Map(registry?.entries.map((entry) => [entry.model_id, entry]));
+  entriesByModelId.set(modelId, {
+    model_id: modelId,
+    agent_configuration_revision_hash: configurationHash,
+    source: "operator",
+    provider_check: "checked"
+  });
+  const published = await page.request.put(endpoint, {
+    data: {
+      revision_number: registry === undefined ? 1 : registry.revision_number + 1,
+      entries: [...entriesByModelId.values()].map((entry) => ({
+        model_id: entry.model_id,
+        agent_configuration_revision_hash: entry.agent_configuration_revision_hash
+      }))
+    }
+  });
+  expect([200, 201]).toContain(published.status());
+  const registryBody = await published.json() as {
+    entries: Array<{ agent_configuration_revision_hash: string; provider_check: string }>;
+  };
+  if (registryBody.entries.find(
+    (entry) => entry.agent_configuration_revision_hash === configurationHash
+  )?.provider_check !== "checked") {
+    const validation = await page.request.post(`${endpoint}/validations`, {
+      data: { agent_configuration_revision_hash: configurationHash }
+    });
+    expect([200, 201]).toContain(validation.status());
+  }
+}
+
 test("a long workflow name and many joined orders never widen History's row past 390px", async (
   { page },
   testInfo
@@ -84,6 +134,7 @@ test("a long workflow name and many joined orders never widen History's row past
   });
   expect([200, 201]).toContain(configuration.status());
   const agentHash = (await configuration.json()).agent_configuration_revision_hash as string;
+  await publishCheckedModelRegistry(page, "e2e-v3", "history-quality-model", agentHash);
 
   const revisionHash = await publishLongWorkflow(page, schemaHash);
 

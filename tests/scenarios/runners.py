@@ -80,6 +80,7 @@ from atelier2.ports.agent_attempts import (
 )
 from atelier2.ports.agent_executions import AgentExecutorRegistry
 from atelier2.ports.durable_runs import DurableRunCreated, StartPublishedRunRequestV2
+from tests.scenarios.agents import publish_checked_model_registry
 
 
 class SimulatedRunnerCrash(RuntimeError):
@@ -417,6 +418,9 @@ def prepared_free_runner_attempt(
         AgentConfigurationRevisionFormatVersion.V2,
     )
     catalog.publish_agent_configuration_revision(configuration)
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("fake-free"), (configuration,)
+    )
     workflow = WorkflowRevision(_free_runner_workflow_document(job))
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)
     run_id = RunId(run_id_value)

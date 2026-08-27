@@ -289,13 +289,17 @@ configuration records — is never inherited by a served agent. For Claude,
 Grok, and Codex alike, pin and attest still run. A failed deployment remains a
 declared registry entry without a factory, so Serve stays up and the current
 configuration list answers the closed startability pair without a host
-diagnostic. New Run retains a known unavailable Project or Remembered binding,
-marks it `◇ Unavailable`, and permits an explicit healthy draft choice without
-rewriting project occupancy. When an already bound, unstarted run reaches that
-entry, it writes one attempt-less `agent-executor-binding-unavailable` terminal
-refusal before a provider process starts. A missing declaration or capability
-mismatch remains the loud runtime binding conflict, and every attempt that may
-have crossed its launch fence remains #15 recovery work.
+diagnostic. The Catalog detail's start sheet shows a registry entry that is
+unavailable to start as `◇ Unavailable`, retains the resolved choice so the
+project setting remains visible, and blocks start until the operator chooses a
+startable agent. An
+operator may choose an eligible registry configuration as a start override for that run only; the
+workflow pin and project model defaults remain unchanged. When an already
+bound, unstarted run reaches an unavailable entry, it writes one attempt-less
+`agent-executor-binding-unavailable` terminal refusal before a provider process
+starts. A missing declaration or capability mismatch remains the loud runtime
+binding conflict, and every attempt that may have crossed its launch fence
+remains #15 recovery work.
 
 The raw frame a provider writes has its own bound, distinct from the durable
 output bound, because the durable answer travels inside a JSON envelope. The

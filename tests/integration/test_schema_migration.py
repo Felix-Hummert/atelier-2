@@ -47,6 +47,7 @@ from atelier2.adapters.dbos.schema import (
     V36_SCHEMA_HANDOFF,
     V37_SCHEMA_HANDOFF,
     V38_SCHEMA_HANDOFF,
+    V39_SCHEMA_HANDOFF,
     MigrationRequired,
     UnsupportedSchemaVersion,
     _product_schema_fingerprint,
@@ -442,11 +443,17 @@ def test_published_handoffs_pin_every_predecessor_and_the_current_schema() -> No
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[38]
         == "aebd8b6bad8a719864f0c02828db643dd3dcbe7c89198beb6a8c1c4c30100824"
     )
-    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 39
+    assert V39_SCHEMA_HANDOFF.version == 39
     assert (
-        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        V39_SCHEMA_HANDOFF.fingerprint_sha256
         == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[39]
         == "3c0cc05dd977fd61d2c88d78ba7566fdc0146e2d7af27df61aea636a4ac2c4be"
+    )
+    assert PRODUCT_SCHEMA_HANDOFF.version == SCHEMA_VERSION == 40
+    assert (
+        PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
+        == _PRODUCT_SCHEMA_FINGERPRINT_SHA256[40]
+        == "d8d7b89cc0cacd15dfde84bf15f796f0e03d9b571c26be0309ed87a60960071d"
     )
 
 

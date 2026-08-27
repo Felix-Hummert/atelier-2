@@ -3,12 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from atelier2.contracts.catalog_v3 import CatalogLineageId
+from atelier2.contracts.agents import (
+    AgentConfigurationRevision,
+    AuthProfileRevision,
+    ProviderId,
+)
 from atelier2.contracts.host_configuration import (
-    OccupancyRevision,
+    HostModelConfigurationSnapshot,
+    ModelRegistryRevision,
     ProjectId,
+    ProjectModelDefaultsRevision,
     ProjectRootRevision,
     ProjectSourceConnectionRevision,
+    ProviderModelCheck,
 )
 from atelier2.ports.durable_runs import DurableStateCorrupt, DurableWriteUnavailable
 
@@ -19,23 +26,89 @@ class HostConfigurationReadUnavailable:
 
 
 @dataclass(frozen=True)
-class OccupancyRevisionCreated:
-    revision: OccupancyRevision
+class ModelRegistryRevisionCreated:
+    revision: ModelRegistryRevision
 
 
 @dataclass(frozen=True)
-class OccupancyRevisionExisting:
-    revision: OccupancyRevision
+class ModelRegistryRevisionExisting:
+    revision: ModelRegistryRevision
 
 
 @dataclass(frozen=True)
-class OccupancyRevisionConflict:
+class ModelRegistryRevisionConflict:
     pass
 
 
 @dataclass(frozen=True)
-class OccupancyRevisionCollision:
+class ModelRegistryRevisionCollision:
     pass
+
+
+@dataclass(frozen=True)
+class ProjectModelDefaultsRevisionCreated:
+    revision: ProjectModelDefaultsRevision
+
+
+@dataclass(frozen=True)
+class ProjectModelDefaultsRevisionExisting:
+    revision: ProjectModelDefaultsRevision
+
+
+@dataclass(frozen=True)
+class ProjectModelDefaultsRevisionConflict:
+    pass
+
+
+@dataclass(frozen=True)
+class ProjectModelDefaultsRevisionCollision:
+    pass
+
+
+@dataclass(frozen=True)
+class ProjectModelDefaultsRevisionInvalid:
+    """A new default is not checked now and is not a carried saved row."""
+
+
+@dataclass(frozen=True)
+class ProviderModelDiscovery:
+    model_ids: frozenset[str]
+
+
+@dataclass(frozen=True)
+class ProviderModelDiscoveryUnsupported:
+    """This provider exposes no model-list operation, so first use must check."""
+
+
+@dataclass(frozen=True)
+class ProviderModelInspectionUnavailable:
+    detail: str | None = None
+
+
+type ProviderModelDiscoveryResult = (
+    ProviderModelDiscovery
+    | ProviderModelDiscoveryUnsupported
+    | ProviderModelInspectionUnavailable
+)
+type ProviderModelValidationResult = (
+    ProviderModelCheck | ProviderModelInspectionUnavailable
+)
+
+
+class ProviderModelInspector(Protocol):
+    """Server-side discovery and dry-run authority for exact provider ids."""
+
+    def discover_models(
+        self,
+        configuration: AgentConfigurationRevision,
+        auth_profile: AuthProfileRevision,
+    ) -> ProviderModelDiscoveryResult: ...
+
+    def validate_model(
+        self,
+        configuration: AgentConfigurationRevision,
+        auth_profile: AuthProfileRevision,
+    ) -> ProviderModelValidationResult: ...
 
 
 @dataclass(frozen=True)
@@ -57,15 +130,47 @@ type LatestProjectRootResult = (
     ProjectRootRevision | None | HostConfigurationReadUnavailable | DurableStateCorrupt
 )
 
-type LatestOccupancyResult = (
-    OccupancyRevision | None | HostConfigurationReadUnavailable | DurableStateCorrupt
+type LatestModelRegistryResult = (
+    ModelRegistryRevision
+    | None
+    | HostConfigurationReadUnavailable
+    | DurableStateCorrupt
 )
 
-type PublishOccupancyResult = (
-    OccupancyRevisionCreated
-    | OccupancyRevisionExisting
-    | OccupancyRevisionConflict
-    | OccupancyRevisionCollision
+type LatestModelRegistriesResult = (
+    tuple[ModelRegistryRevision, ...]
+    | HostConfigurationReadUnavailable
+    | DurableStateCorrupt
+)
+
+type PublishModelRegistryResult = (
+    ModelRegistryRevisionCreated
+    | ModelRegistryRevisionExisting
+    | ModelRegistryRevisionConflict
+    | ModelRegistryRevisionCollision
+    | DurableWriteUnavailable
+    | DurableStateCorrupt
+)
+
+type LatestProjectModelDefaultsResult = (
+    ProjectModelDefaultsRevision
+    | None
+    | HostConfigurationReadUnavailable
+    | DurableStateCorrupt
+)
+
+type HostModelConfigurationSnapshotResult = (
+    HostModelConfigurationSnapshot
+    | HostConfigurationReadUnavailable
+    | DurableStateCorrupt
+)
+
+type PublishProjectModelDefaultsResult = (
+    ProjectModelDefaultsRevisionCreated
+    | ProjectModelDefaultsRevisionExisting
+    | ProjectModelDefaultsRevisionConflict
+    | ProjectModelDefaultsRevisionCollision
+    | ProjectModelDefaultsRevisionInvalid
     | DurableWriteUnavailable
     | DurableStateCorrupt
 )
@@ -125,13 +230,30 @@ class HostConfigurationChannel(Protocol):
         self, revision: ProjectRootRevision
     ) -> PublishProjectRootResult: ...
 
-    def latest_occupancy_revision(
-        self, project_id: ProjectId, lineage_id: CatalogLineageId
-    ) -> LatestOccupancyResult: ...
+    def latest_model_registry_revision(
+        self, provider_id: ProviderId
+    ) -> LatestModelRegistryResult: ...
 
-    def publish_occupancy_revision(
-        self, revision: OccupancyRevision
-    ) -> PublishOccupancyResult: ...
+    def latest_model_registry_revisions(self) -> LatestModelRegistriesResult: ...
+
+    def publish_model_registry_revision(
+        self, revision: ModelRegistryRevision
+    ) -> PublishModelRegistryResult: ...
+
+    def latest_project_model_defaults_revision(
+        self, project_id: ProjectId
+    ) -> LatestProjectModelDefaultsResult: ...
+
+    def model_configuration_snapshot(
+        self, project_id: ProjectId | None
+    ) -> HostModelConfigurationSnapshotResult: ...
+
+    def publish_project_model_defaults_revision(
+        self, revision: ProjectModelDefaultsRevision
+    ) -> PublishProjectModelDefaultsResult:
+        """Validate exact registry references and append in one transaction."""
+
+        ...
 
 
 class ProjectSourceConnectionChannel(Protocol):

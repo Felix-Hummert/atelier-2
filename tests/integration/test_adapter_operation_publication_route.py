@@ -20,7 +20,7 @@ from atelier2.adapters.dbos.catalog_store import DbosCatalogStore
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.api.openapi import API_PREFIX
+from atelier2.api.openapi import API_PREFIX, MODEL_REGISTRY_PATH
 from atelier2.contracts.adapter_operations_v3 import (
     MAXIMUM_ADAPTER_OPERATION_DOCUMENT_BYTES,
     AdapterOperationName,
@@ -114,7 +114,21 @@ def bind_builder(api: TestClient) -> str:
         },
     )
     assert configuration.status_code == 201, configuration.text
-    return str(configuration.json()["agent_configuration_revision_hash"])
+    configuration_hash = str(configuration.json()["agent_configuration_revision_hash"])
+    registry = api.put(
+        MODEL_REGISTRY_PATH.replace("{provider_id}", "exact"),
+        json={
+            "revision_number": 1,
+            "entries": [
+                {
+                    "model_id": "opus",
+                    "agent_configuration_revision_hash": configuration_hash,
+                }
+            ],
+        },
+    )
+    assert registry.status_code == 201, registry.text
+    return configuration_hash
 
 
 @pytest.mark.proves(

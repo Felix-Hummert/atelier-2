@@ -9,4 +9,4 @@ story = "https://github.com/FlexOr2/atelier-2/issues/435"
 [[sentence]]
 id = "core-surfaces-support-one-complete-keyboard-journey"
 requirement = "REQ-UIQ-05"
-text = "One keyboard-only journey navigates the core Workbench, Catalog, New Run, and V2 Run surfaces; starts the existing singleton V2 run with a remembered published agent; refreshes it exactly twice to terminal evidence; scrolls named event evidence; and returns through the rail to the Workbench with focus on each newly rendered main stage."
+text = "One keyboard-only journey navigates the core Workbench, Catalog, Catalog detail start sheet, and V2 Run surfaces; chooses a published agent for this start; refreshes it exactly twice to terminal evidence; scrolls named event evidence; and returns through the rail to the Workbench with focus on each newly rendered main stage."

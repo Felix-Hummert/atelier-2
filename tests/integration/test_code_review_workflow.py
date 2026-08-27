@@ -61,7 +61,10 @@ from atelier2.ports.published_revisions import (
     PublishedRevisionExisting,
 )
 from atelier2.ports.run_queries import NodeDetailFound
-from tests.scenarios.agents import RecordingAgentExecutorFactoryV2
+from tests.scenarios.agents import (
+    RecordingAgentExecutorFactoryV2,
+    publish_checked_model_registry,
+)
 from tests.scenarios.api import durable_queries
 
 WORKFLOWS_DIRECTORY = Path(__file__).parents[2] / "workflows"
@@ -171,6 +174,9 @@ def publish(runtime: DbosRuntime) -> tuple[WorkflowRevision, AgentBindingSet]:
     assert isinstance(
         catalog.publish_agent_configuration_revision(configuration),
         AgentConfigurationRevisionCreated,
+    )
+    publish_checked_model_registry(
+        runtime.engine, ProviderId("exact"), (configuration,)
     )
     workflow = WorkflowRevision(CODE_REVIEW_DOCUMENT)
     DbosWorkflowRevisionPublisher(runtime.engine).publish(workflow)

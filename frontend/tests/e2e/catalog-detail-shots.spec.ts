@@ -13,6 +13,42 @@ const viewports = [
 const workItemSchemaDocument =
   '{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"body":{"type":"string"},"change_marker":{"maxLength":1024,"minLength":1,"type":"string"},"digest":{"pattern":"^[0-9a-f]{64}$","type":"string"},"kind":{"enum":["issue","change_request"],"type":"string"},"observed_at":{"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$","type":"string"},"reference":{"maxLength":1024,"minLength":1,"type":"string"}},"required":["body","change_marker","digest","kind","observed_at","reference"],"title":"work item","type":"object"}';
 
+async function publishCheckedRegistryEntry(
+  page: Page,
+  providerId: string,
+  modelId: string,
+  configurationHash: string
+): Promise<void> {
+  const current = await page.request.get(`/atelier/api/v1/model-registries/${providerId}`);
+  const currentRegistry = current.status() === 200
+    ? await current.json() as {
+        revision_number: number;
+        entries: Array<{ model_id: string; agent_configuration_revision_hash: string }>;
+      }
+    : null;
+  if (currentRegistry === null) expect(current.status()).toBe(404);
+  const existingEntries = (currentRegistry?.entries ?? [])
+    .filter((entry) => entry.agent_configuration_revision_hash !== configurationHash)
+    .map((entry) => ({
+      model_id: entry.model_id,
+      agent_configuration_revision_hash: entry.agent_configuration_revision_hash
+    }));
+  const registry = await page.request.put(`/atelier/api/v1/model-registries/${providerId}`, {
+    data: {
+      revision_number: (currentRegistry?.revision_number ?? 0) + 1,
+      entries: [...existingEntries, {
+        model_id: modelId,
+        agent_configuration_revision_hash: configurationHash
+      }]
+    }
+  });
+  expect([200, 201]).toContain(registry.status());
+  const checked = await page.request.post(`/atelier/api/v1/model-registries/${providerId}/validations`, {
+    data: { agent_configuration_revision_hash: configurationHash }
+  });
+  expect([200, 201]).toContain(checked.status());
+}
+
 async function publishStartableConfiguration(page: Page): Promise<{
   agentConfigurationRevisionHash: string;
   authProfileRevisionHash: string;
@@ -36,8 +72,16 @@ async function publishStartableConfiguration(page: Page): Promise<{
     }
   });
   expect(configuration.status()).toBe(201);
+  const agentConfigurationRevisionHash =
+    (await configuration.json()).agent_configuration_revision_hash as string;
+  await publishCheckedRegistryEntry(
+    page,
+    "e2e-v3",
+    "start-sheet-model",
+    agentConfigurationRevisionHash
+  );
   return {
-    agentConfigurationRevisionHash: (await configuration.json()).agent_configuration_revision_hash as string,
+    agentConfigurationRevisionHash,
     authProfileRevisionHash
   };
 }
@@ -76,6 +120,12 @@ test("captures the Catalog list, detail, and start sheet at both requested width
     }
   });
   expect(configuration.status()).toBe(201);
+  await publishCheckedRegistryEntry(
+    page,
+    "e2e-v3",
+    "catalog-shot-model",
+    (await configuration.json()).agent_configuration_revision_hash as string
+  );
 
   const revision = await page.request.post("/atelier/api/v1/workflow-revisions", {
     headers: { "content-type": "application/yaml" },
@@ -153,7 +203,7 @@ test("captures the Catalog list, detail, and start sheet at both requested width
   }
 });
 
-test("proves(a-v3-workflow-is-started-from-the-picker): starts an admitted Catalog workflow with its observed work item and an interim role configuration", async ({ page }) => {
+test("proves(a-v3-workflow-is-started-from-the-picker): starts an admitted Catalog workflow with its observed work item and a checked role configuration", async ({ page }) => {
   const workflowName = "start-sheet-work-item-e2e";
   const workItemSchema = await page.request.post("/atelier/api/v1/schema-revisions", {
     headers: { "content-type": "application/json" },
@@ -287,11 +337,12 @@ test("proves(a-v3-workflow-is-started-from-the-picker): starts an admitted Catal
   await workItem.selectOption({ label: "GitHub · gh:450" });
   const roleConfiguration = sheet.getByLabel("Configuration for builder");
   await roleConfiguration.selectOption(configuration.agentConfigurationRevisionHash);
-  await sheet.getByRole("button", { name: "Interim configuration" }).hover();
-  await expect(sheet.getByRole("status")).toContainText("Settings › Model defaults exist");
-  await expect(sheet.locator(".role-source")).toContainText("Interim source · chosen for this run, not saved");
+  await expect(sheet.locator(".role-source")).toHaveText("Chosen now");
 
-  await sheet.getByRole("button", { name: "Start run" }).click();
+  const startRun = sheet.getByRole("button", { name: "Start run" });
+  await expect(startRun).toBeEnabled();
+  await startRun.click();
+  await expect.poll(() => receivedStart).not.toBeNull();
   expect(receivedStart).toEqual(expect.objectContaining({
     workflow_format_version: 3,
     workflow_revision_hash: workflowRevisionHash,

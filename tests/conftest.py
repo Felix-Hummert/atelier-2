@@ -1,8 +1,23 @@
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterator
+
 import pytest
 
 PROOF_MARKER = "proves"
+
+
+@pytest.fixture
+def dbos_logging_isolation() -> Iterator[None]:
+    """Keep DBOS from flushing capture handlers another test has closed."""
+    root = logging.getLogger()
+    inherited = root.handlers[:]
+    root.handlers = []
+    try:
+        yield
+    finally:
+        root.handlers = inherited
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
