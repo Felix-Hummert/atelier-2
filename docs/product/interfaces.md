@@ -79,6 +79,16 @@ revision names its own kind, and material published as an artifact is ordered
 under the address the publication answered. A machine consumer assembles each
 request out of fields the answers before it named, without a translation table
 of its own.
+
+The stdio MCP `start_run` tool accepts artifact and work-item orders only;
+inline orders remain an HTTP-only form until their retirement is a later slice.
+`publish_artifact` accepts at most 1,047,552 Base64 characters, or 785,664
+decoded bytes: the artifact store permits 1,048,576 bytes, but Base64 and the
+JSON-RPC request envelope must fit the 1,048,576-byte MCP line cap (1,024 bytes
+are reserved for that envelope). Publishing material and starting a run are two
+calls. If the start is refused or fails, its already-published immutable
+artifact remains reusable and no run exists.
+
 [ADR 0003](../decisions/0003-http-api.md) owns the API and resume
 contract.
 
