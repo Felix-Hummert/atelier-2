@@ -173,7 +173,7 @@ async function scrollScrollerToEnd(page: Page, kind: OverflowScroller["kind"]): 
   });
 }
 
-test("Settings stays in view on overflowing History before and after scroll at 1280 and 390", async ({
+test("proves(the-rail-keeps-its-settings-door-in-view-on-every-room): Settings stays in view on overflowing History before and after scroll at 1280 and 390", async ({
   page
 }, testInfo) => {
   test.setTimeout(120_000);
