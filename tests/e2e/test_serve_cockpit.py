@@ -7,11 +7,14 @@ import threading
 import time
 from contextlib import closing
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+
+from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 
 SCRIPT_PATH = Path(__file__).with_name("serve_cockpit.py")
 
@@ -278,3 +281,204 @@ def test_a_reset_recompose_restores_the_exact_cold_boot_baseline(
             proof.runtime.close()
         else:
             runtime.close()
+
+
+def _leftover_attempt_directory(scratch_root: Path) -> Path:
+    leftover = scratch_root / ("ab" * 32)
+    leftover.mkdir()
+    return leftover
+
+
+def _compose_with_scratch(settings: object, scratch_root: harness.BrowserScratchRoot):
+    factory = harness.RecordingAgentExecutorFactoryV2(
+        "e2e-v3", "immediate/v1", "e2e-immediate-process", b'"V3 provider bytes"'
+    )
+
+    def build_runtime(
+        runtime_settings: object,
+        effect_factory: object,
+        agent_factory: object,
+        agent_factories_v2: tuple,
+    ) -> object:
+        return harness.DbosRuntime(
+            harness.replace(runtime_settings, agent_scratch_root=scratch_root.path),
+            effect_factory,
+            agent_factory,
+            (*agent_factories_v2, factory),
+        )
+
+    with patch.object(harness.serving, "DbosRuntime", side_effect=build_runtime):
+        return harness.serving.compose_application(settings)
+
+
+def test_a_replaced_generation_scratch_root_drops_leftover_attempt_directories(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    roots = iter((tmp_path / "generation-1", tmp_path / "generation-2"))
+
+    def fake_mkdtemp(prefix: str) -> str:
+        path = next(roots)
+        path.mkdir()
+        return str(path)
+
+    monkeypatch.setattr(harness.tempfile, "mkdtemp", fake_mkdtemp)
+    previous = harness.BrowserScratchRoot.create()
+    leftover = _leftover_attempt_directory(previous.path)
+
+    next_root = harness.replace_closed_generation_scratch_root(previous)
+
+    assert not leftover.exists()
+    assert not previous.path.exists()
+    assert next_root.path.is_dir()
+    assert list(next_root.path.iterdir()) == []
+    next_root.close()
+
+
+def test_reusing_a_scratch_root_that_still_holds_attempt_directories_refuses_the_next_runtime(
+    tmp_path: Path,
+) -> None:
+    """#747 (c): leftover attempt directories after a close are not in the next
+    store. Reusing the scratch root makes the next workspace owner refuse
+    during reconcile -- the fixture-host crash under a later `/__e2e/recompose`.
+    """
+    database = tmp_path / "atelier.sqlite"
+    effects = tmp_path / "effects.sqlite"
+    application_version = "e2e-scratch-reuse"
+    harness.seed_boot_baseline(database, effects, application_version)
+    settings = _served_settings(tmp_path, database, effects, application_version)
+    scratch_root = harness.BrowserScratchRoot.create()
+    _, runtime = _compose_with_scratch(settings, scratch_root)
+    runtime.close()
+    leftover = _leftover_attempt_directory(scratch_root.path)
+
+    with pytest.raises(RunTransitionConflict, match="agent attempt is missing"):
+        _compose_with_scratch(settings, scratch_root)
+
+    leftover.rmdir()
+    scratch_root.close()
+
+
+def test_releasing_fake_provider_holds_unblocks_a_held_decode_before_the_hold_bound() -> (
+    None
+):
+    holds = harness.FakeProviderHolds()
+    factory = harness.HeldAgentExecutorFactory(
+        "e2e-v3-held", "held/v1", "e2e-held-process", b'"V3 provider bytes"', holds
+    )
+    executor = factory.open()
+    executor.requests.append(SimpleNamespace(run_id=SimpleNamespace(value="held-run")))
+    finished = threading.Event()
+
+    def run() -> None:
+        executor.decode_process_completion(
+            SimpleNamespace(),
+            harness.AgentProcessCompletion(0, b'"V3 provider bytes"', b""),
+        )
+        finished.set()
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert executor.holding.wait(harness.TIMEOUT_SECONDS)
+    holds.release_all()
+    thread.join(timeout=harness.TIMEOUT_SECONDS)
+    assert not thread.is_alive()
+    assert finished.is_set()
+
+
+def test_a_reset_recompose_opens_the_next_runtime_on_a_fresh_scratch_root(
+    tmp_path: Path,
+) -> None:
+    """#747 (c): each served generation owns its scratch root. A reset
+    recompose must not reopen DBOS against leftover attempt directories of the
+    generation it just closed.
+    """
+    database = tmp_path / "atelier.sqlite"
+    effects = tmp_path / "effects.sqlite"
+    application_version = "e2e-scratch-rotate"
+    harness.seed_boot_baseline(database, effects, application_version)
+    settings = _served_settings(tmp_path, database, effects, application_version)
+    holds = harness.FakeProviderHolds()
+    blocking = harness.BlockingAgentExecutorFactory(
+        "e2e", "blocking/v1", "e2e-blocking-process", b"reset-scratch-fixture"
+    )
+    v2 = harness.RecordingAgentExecutorFactoryV2(
+        "e2e-v3", "immediate/v1", "e2e-immediate-process", b'"V3 provider bytes"'
+    )
+    scratch = {"root": harness.BrowserScratchRoot.create()}
+    first_root = scratch["root"].path
+
+    def build_runtime(
+        runtime_settings: object,
+        effect_factory: object,
+        agent_factory: object,
+        agent_factories_v2: tuple,
+    ) -> object:
+        return harness.DbosRuntime(
+            harness.replace(runtime_settings, agent_scratch_root=scratch["root"].path),
+            effect_factory,
+            agent_factory,
+            (*agent_factories_v2, blocking, v2),
+        )
+
+    def compose() -> tuple:
+        with patch.object(harness.serving, "DbosRuntime", side_effect=build_runtime):
+            return harness.serving.compose_application(settings)
+
+    def compose_next_generation() -> tuple:
+        holds.start_generation()
+        scratch["root"] = harness.replace_closed_generation_scratch_root(
+            scratch["root"]
+        )
+        return compose()
+
+    def drain_inflight() -> None:
+        holds.release_all()
+        blocking.release_in_flight()
+
+    app, runtime = compose()
+    leftover = _leftover_attempt_directory(first_root)
+    proof: Any = None
+    restart_threads: list[threading.Thread] = []
+    proof_holder: list[Any] = []
+
+    def request_restart(reset: bool) -> None:
+        thread = threading.Thread(
+            target=proof_holder[0].recompose_after_server_stop, args=(reset,)
+        )
+        thread.start()
+        restart_threads.append(thread)
+
+    try:
+        proof = harness.BrowserProofHarness(
+            app,
+            runtime,
+            blocking,
+            compose_next_generation,
+            request_restart,
+            lambda: harness.reset_to_boot_baseline(
+                database, effects, application_version
+            ),
+            drain_inflight,
+        )
+        proof_holder.append(proof)
+
+        with TestClient(proof) as client:
+            restarted = client.post("/__e2e/recompose?reset=true")
+            assert restarted.status_code == 202
+            expected_generation = restarted.text
+            restart_threads[0].join(timeout=harness.TIMEOUT_SECONDS)
+            assert not restart_threads[0].is_alive()
+            observed_generation = client.get("/__e2e/generation")
+            assert observed_generation.text == expected_generation
+
+        assert not leftover.exists()
+        assert not first_root.exists()
+        assert scratch["root"].path.is_dir()
+        assert scratch["root"].path != first_root
+    finally:
+        drain_inflight()
+        if proof is not None:
+            proof.runtime.close()
+        else:
+            runtime.close()
+        scratch["root"].close()
