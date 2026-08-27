@@ -18,6 +18,7 @@ to carry it.
 from __future__ import annotations
 
 import json
+from enum import StrEnum
 
 from atelier2.contracts.node_records_v3 import (
     DeliveredOutput,
@@ -32,10 +33,18 @@ RESULT_HEADING = "--- result of {node}: {name} ---"
 """How the work of an earlier node announces itself, named by the node that did it."""
 
 
+class NodeJobCompositionVersion(StrEnum):
+    """The two rendering rules whose bytes have identified agent attempts."""
+
+    LEGACY = "json-orders/v1"
+    CURRENT = "declared-root-strings/v2"
+
+
 def node_job(
     instruction: str,
     orders: tuple[RunInput, ...] = (),
     results: tuple[DeliveredOutput, ...] = (),
+    composition_version: NodeJobCompositionVersion = NodeJobCompositionVersion.CURRENT,
 ) -> str:
     """The instruction its author wrote, then what this node was given to read.
 
@@ -55,12 +64,14 @@ def node_job(
     the schema its author pinned -- an order at the start, a result before it is
     handed on -- so bytes that were not text could not have reached here.
     """
+    if not isinstance(composition_version, NodeJobCompositionVersion):
+        raise TypeError("node job composition version must be typed")
     if not orders and not results:
         return instruction
     sections = [instruction]
     for order in sorted(orders, key=lambda supplied: supplied.name):
         sections.append(ORDER_HEADING.format(name=order.name))
-        sections.append(_render_order(order))
+        sections.append(_render_order(order, composition_version))
     for result in sorted(results, key=lambda done: (done.node_id, done.output_name)):
         sections.append(
             RESULT_HEADING.format(node=result.node_id, name=result.output_name)
@@ -69,15 +80,20 @@ def node_job(
     return "\n\n".join(sections)
 
 
-def _render_order(order: RunInput) -> str:
-    """Render only declared plain-string orders as text.
+def _render_order(
+    order: RunInput, composition_version: NodeJobCompositionVersion
+) -> str:
+    """Render an order under the version that authored the request hash.
 
-    The bytes and their hash remain the stored order. This changes only the job
-    text an agent reads, after the schema revision that admitted those bytes
-    declared a top-level string.
+    The legacy composition wrote every order's stored JSON bytes. The current
+    composition decodes only declared root strings. Both preserve the stored
+    bytes and their hash; only the text an agent reads differs.
     """
     value = order.value.decode("utf-8")
-    if order.schema_kind is not RunInputSchemaKind.PLAIN_STRING:
+    if (
+        composition_version is NodeJobCompositionVersion.LEGACY
+        or order.schema_kind is not RunInputSchemaKind.PLAIN_STRING
+    ):
         return value
     decoded = json.loads(value)
     if not isinstance(decoded, str):
