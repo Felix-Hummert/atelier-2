@@ -2151,13 +2151,7 @@ test("the Catalog keeps unpublished and unnamable workflows visible", async ({
 
   await page.goto("/atelier/catalog");
   const unpublished = page.getByRole("listitem").filter({ hasText: unlisted });
-  const stateHint = unpublished.getByRole("button", {
-    name: catalogPageCopy.stateHint,
-    exact: true
-  });
-  await expect(stateHint).toBeVisible();
-  await stateHint.click();
-  await expect(unpublished.getByRole("status")).toHaveText(catalogPageCopy.notAdmittedHint);
+  await expect(unpublished.getByText(catalogPageCopy.notAdmitted)).toBeVisible();
   await expect(unpublished.getByRole("button", { name: /Admit/ })).toHaveCount(0);
   await unpublished.getByRole("link", { name: unlisted }).click();
   await expect(page.getByRole("heading", { level: 1, name: unlisted })).toBeVisible();

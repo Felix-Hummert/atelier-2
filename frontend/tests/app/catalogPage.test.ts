@@ -106,14 +106,15 @@ describe("the catalog room", () => {
     openCatalog();
 
     expect(
-      (await screen.findByText(catalogPageCopy.workflowsEmpty)).isConnected
+      (await screen.findByText(catalogPageCopy.catalogEmpty)).isConnected
     ).toBe(true);
-    expect((await screen.findByText(catalogPageCopy.agentsEmpty)).isConnected).toBe(true);
   });
 
-  it("says skills cannot arrive yet instead of showing an empty list", async () => {
-    openCatalog();
+  it("names the source of empty skills only when the Skills group is open", async () => {
+    openCatalog({ ...listing([workflowSummary()]), ...admittedName() });
 
+    await screen.findByText(WORKFLOW_NAME);
+    await fireEvent.click(screen.getByRole("button", { name: /Skills\s*0/ }));
     expect((await screen.findByText(catalogPageCopy.skillsNone)).isConnected).toBe(true);
   });
 
@@ -133,7 +134,7 @@ describe("the catalog room", () => {
     expect(screen.queryByRole("button", { name: /Admit/ })).toBeNull();
   });
 
-  it("carries a newer revision with one solid attention shape and a Why hint, not a state band", async () => {
+  it("carries a newer revision as a compact tile pill", async () => {
     openCatalog({
       ...listing([
         workflowSummary({ workflow_revision_hash: WORKFLOW_HASH }),
@@ -143,18 +144,14 @@ describe("the catalog room", () => {
     });
 
     expect(await screen.findAllByText(WORKFLOW_NAME)).toHaveLength(1);
-    const card = screen.getByText(WORKFLOW_NAME).closest("li");
-    expect(card).not.toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: catalogPageCopy.stateHint }));
-    expect((await screen.findByText(catalogPageCopy.newerRevisionHint)).isConnected).toBe(true);
+    expect((await screen.findByText(catalogPageCopy.newerRevision)).isConnected).toBe(true);
   });
 
   it("does not mark a workflow with no newer revision", async () => {
     openCatalog({ ...listing([workflowSummary()]), ...admittedName() });
 
-    const card = (await screen.findByText(WORKFLOW_NAME)).closest("li");
-    expect(card).not.toBeNull();
-    expect(screen.queryByRole("button", { name: catalogPageCopy.stateHint })).toBeNull();
+    await screen.findByText(WORKFLOW_NAME);
+    expect(screen.queryByText(catalogPageCopy.newerRevision)).toBeNull();
   });
 
   it("opens a named workflow's own detail room from the card door", async () => {
@@ -418,10 +415,10 @@ describe("the catalog room", () => {
       (await screen.findByText(catalogPageCopy.unnamedWorkflow)).isConnected
     ).toBe(true);
     expect(screen.queryByRole("button", { name: /Admit/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: catalogPageCopy.stateHint })).toBeNull();
+    expect(screen.queryByText(catalogPageCopy.newerRevision)).toBeNull();
   });
 
-  it("proves(a-revision-no-run-can-start-says-so-before-the-operator-tries) proves(a-revision-no-run-can-start-says-so-where-it-was-published): carries a blocked workflow with a distinct shape and names why on ask", async () => {
+  it("proves(a-revision-no-run-can-start-says-so-before-the-operator-tries) proves(a-revision-no-run-can-start-says-so-where-it-was-published): carries a blocked workflow with an honest tile pill", async () => {
     openCatalog({
       ...listing([
         workflowSummary({
@@ -432,12 +429,11 @@ describe("the catalog room", () => {
       ...unlistedName()
     });
 
-    const card = (await screen.findByText(WORKFLOW_NAME)).closest("li");
-    expect(card).not.toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: catalogPageCopy.stateHint }));
-    expect((await screen.findByText(
+    await screen.findByText(WORKFLOW_NAME);
+    expect((await screen.findByText(catalogPageCopy.notExecutable)).isConnected).toBe(true);
+    expect(screen.getByTitle(
       "This workflow declares no output. Add one outputs: entry on the agent node and publish again."
-    )).isConnected).toBe(true);
+    )).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Admit/ })).toBeNull();
   });
 
@@ -467,7 +463,7 @@ describe("the catalog room", () => {
     expect((await screen.findByText(SECOND_WORKFLOW_NAME)).isConnected).toBe(true);
   });
 
-  it("carries a published agent with the dashed blocked shape and says why on ask", async () => {
+  it("carries a published agent as a provider tile without an unavailable detail door", async () => {
     openCatalog({
       listAgentDefinitionRevisions: vi.fn(async () => ({
         items: [agentItem()],
@@ -476,11 +472,7 @@ describe("the catalog room", () => {
     });
 
     expect((await screen.findByText("scribe")).isConnected).toBe(true);
-    const card = screen.getByText("scribe").closest("li");
-    expect(card).not.toBeNull();
-    await fireEvent.click(screen.getByRole("button", { name: catalogPageCopy.stateHint }));
-    expect((await screen.findByText(catalogPageCopy.agentUnavailableHint)).isConnected).toBe(true);
-    expect(screen.getByText(catalogPageCopy.agentUnavailableHint).closest("code")).toBeNull();
+    expect(screen.queryByRole("link", { name: "scribe" })).toBeNull();
   });
 
   it("marks which provider an imported agent belongs to", async () => {
@@ -491,9 +483,7 @@ describe("the catalog room", () => {
       }))
     });
 
-    expect(
-      (await screen.findByText(catalogPageCopy.agentProviderClaude)).isConnected
-    ).toBe(true);
+    expect((await screen.findByLabelText(catalogPageCopy.agentProviderClaude)).isConnected).toBe(true);
   });
 
   it("names a document the library cannot recognize without publishing it", async () => {
@@ -525,7 +515,7 @@ describe("the catalog room", () => {
     await waitFor(() => {
       expect(screen.getByText(catalogPageCopy.workflowsUnavailable).isConnected).toBe(true);
     });
-    expect(screen.queryByText(catalogPageCopy.workflowsEmpty)).toBeNull();
+    expect(screen.queryByText(catalogPageCopy.catalogEmpty)).toBeNull();
   });
 
   it("says the agent list is unavailable rather than showing it as empty", async () => {
@@ -538,7 +528,7 @@ describe("the catalog room", () => {
     await waitFor(() => {
       expect(screen.getByText(catalogPageCopy.agentsUnavailable).isConnected).toBe(true);
     });
-    expect(screen.queryByText(catalogPageCopy.agentsEmpty)).toBeNull();
+    expect(screen.queryByText(catalogPageCopy.catalogEmpty)).toBeNull();
   });
 
   it("names no local failure while the whole workshop reads unreachable, and reads itself again once the connection returns (#700)", async () => {
@@ -560,8 +550,7 @@ describe("the catalog room", () => {
     listAgentDefinitionRevisions.mockResolvedValue({ items: [], next_after_revision_hash: null });
     reportConnectionRestored();
 
-    expect((await screen.findByText(catalogPageCopy.workflowsEmpty)).isConnected).toBe(true);
-    expect(screen.getByText(catalogPageCopy.agentsEmpty).isConnected).toBe(true);
+    expect((await screen.findByText(catalogPageCopy.catalogEmpty)).isConnected).toBe(true);
     expect(screen.queryByText(catalogPageCopy.workflowsUnavailable)).toBeNull();
     expect(screen.queryByText(catalogPageCopy.agentsUnavailable)).toBeNull();
   });

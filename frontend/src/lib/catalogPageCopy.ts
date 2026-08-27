@@ -13,32 +13,27 @@ import type { CatalogNameState } from "./catalogName";
  */
 export const catalogPageCopy = {
   title: "Catalog",
-  // The room sentence (ADR 0019 §1): the catalog is the library and the one
-  // door that starts a piece by hand -- what the house can do, from where, and
-  // how to get more. There is no second room that starts a run.
-  lead: "What the workshop has — every published workflow, agent, and skill, each with its provenance.",
   import: "Import",
   filePicker: "Catalog file picker",
   oneWorkflow: "1 workflow",
   oneAgent: "1 agent",
 
-  workflowsTitle: "Available workflows",
-  workflowsEmpty: "Drop a workflow, an agent, or a plugin folder — anywhere on this page.",
+  all: "All",
+  workflowsTitle: "Workflows",
+  agentsTitle: "Agents",
+  agentsByProvider: "Agents by provider",
+  skillsTitle: "Skills",
+  catalogGroups: "Catalog groups",
+  search: "Search…",
+  searchLabel: "Search the catalog",
+  catalogEmpty: "Drop a workflow, an agent, or a plugin folder — anywhere on this page.",
   workflowsUnavailable: "Workflows unavailable",
   workflowsIncomplete: "Workflows incomplete",
 
-  // An imported agent is provider-bound and passed through whole; the atelier
-  // translates nothing. Neutrality lives in a workflow's role and its casting,
-  // never in the file, so the heading says which axis this list is sorted on.
-  agentsTitle: "Available agents (by provider)",
-  agentsEmpty: "No agent published yet.",
   agentsUnavailable: "Agents unavailable",
   agentsIncomplete: "Agents incomplete",
 
-  skillsTitle: "Available skills",
-  // Honest, not apologetic: there is no publishing door for a skill in this
-  // build, and #660's Git link is the one that will bring them.
-  skillsNone: "Skills arrive with the Git link this atelier does not hold yet.",
+  skillsNone: "A plugin folder brings skills.",
 
   provenanceManual: "Manual import",
   // The provider an imported agent belongs to. The import door takes exactly
@@ -53,9 +48,9 @@ export const catalogPageCopy = {
 
   newerRevisionHint: "A newer published revision is available.",
   notAdmittedHint: "This published workflow is not in the catalog yet.",
-  agentUnavailableHint: "This published definition has no executor yet.",
-  stateHint: "Why this card is marked",
-  why: "Why",
+  newerRevision: "Newer revision",
+  notAdmitted: "Not in catalog",
+  notExecutable: "Not executable",
 
   // The catalog detail owns the only manual start door (ADR 0019 §1).
   start: "Start",
