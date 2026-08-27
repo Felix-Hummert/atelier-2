@@ -196,12 +196,14 @@ three difficulty defaults, in that order. Registry rows name the exact model
 id, Account, provenance, and current provider check as separate facts; adding
 or removing a row writes immediately, while a not-yet-checked operator row has
 the available Check action that asks the server to append its dry-run result.
-Only checked rows are offered to defaults. Defaults are shown
+Startable Models are offered to defaults; the check happens on first use, and
+unknown-at-provider cannot be selected. Defaults are shown
 as Difficulty 3, 2, and 1; selecting a model or clearing a row is an immediate
 write that replaces only that difficulty. The other two saved rows are carried
 byte-for-byte. A new choice is admitted when its provider, model, and
-configuration are checked in the latest provider registry; a carried row stays
-admissible if that provider later stops reporting it. The retained model,
+configuration are a startable registry row — not-yet-checked rows are checked
+on that write; a carried row stays admissible if that provider later stops
+reporting it. The retained model,
 Account, and unavailable state wrap as one visible surface
 until that row is changed or cleared. Neither operation renders a saving or saved caption, and an uncertain
 write retries its identical bytes. Settings does not read or count runs; the

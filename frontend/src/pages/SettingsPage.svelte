@@ -53,6 +53,15 @@
         configurationHash: string;
       }
     | {
+        kind: "choose";
+        projectReference: string;
+        providerId: string;
+        configurationHash: string;
+        difficulty: Difficulty;
+        revision_number: number;
+        untouched: ProjectModelDefaultsRevision["defaults"];
+      }
+    | {
         kind: "defaults";
         projectReference: string;
         write: ExactProjectModelDefaultsRevisionWrite;
@@ -236,6 +245,22 @@
     };
   }
 
+  async function applyValidation(
+    providerId: string,
+    configurationHash: string
+  ): Promise<"checked" | "unknown" | "missing" | "uncertain"> {
+    try {
+      const result = await cockpitApi.validateModelRegistryEntry(providerId, configurationHash);
+      updateRegistry(result.value);
+      const found = entryFor(configurationHash);
+      if (found?.entry.provider_check === "checked") return "checked";
+      if (found?.entry.provider_check === "unknown-at-provider") return "unknown";
+      return "missing";
+    } catch {
+      return "uncertain";
+    }
+  }
+
   async function validateModel(
     providerId: string,
     configurationHash: string,
@@ -244,11 +269,12 @@
     if (writing || (failedWrite !== null && !retrying)) return;
     writing = true;
     try {
-      const result = await cockpitApi.validateModelRegistryEntry(providerId, configurationHash);
-      updateRegistry(result.value);
-      failedWrite = null;
-    } catch {
-      if (!retrying) failedWrite = { kind: "validation", providerId, configurationHash };
+      const outcome = await applyValidation(providerId, configurationHash);
+      if (outcome === "uncertain") {
+        if (!retrying) failedWrite = { kind: "validation", providerId, configurationHash };
+      } else {
+        failedWrite = null;
+      }
     } finally {
       writing = false;
     }
@@ -263,6 +289,19 @@
     );
   }
 
+  async function putDefaults(
+    projectReference: string,
+    write: ExactProjectModelDefaultsRevisionWrite
+  ): Promise<void> {
+    try {
+      const result = await cockpitApi.putProjectModelDefaults(projectReference, write);
+      updateDefaults(result.value);
+      failedWrite = null;
+    } catch {
+      failedWrite = { kind: "defaults", projectReference, write };
+    }
+  }
+
   async function sendDefaultsWrite(
     projectReference: string,
     write: ExactProjectModelDefaultsRevisionWrite,
@@ -271,33 +310,101 @@
     if (writing || (failedWrite !== null && !retrying)) return;
     writing = true;
     try {
-      const result = await cockpitApi.putProjectModelDefaults(projectReference, write);
-      updateDefaults(result.value);
-      failedWrite = null;
-    } catch {
-      if (!retrying) failedWrite = { kind: "defaults", projectReference, write };
+      await putDefaults(projectReference, write);
     } finally {
       writing = false;
     }
   }
 
-  async function choose(difficulty: Difficulty, configurationHash: string): Promise<void> {
-    const snapshot = settings.confirmed;
-    if (snapshot === null) return;
-    const untouched = snapshot.defaults?.defaults.filter(
-      (item) => item.difficulty !== difficulty
-    ) ?? [];
-    const found = configurationHash === "" ? null : entryFor(configurationHash);
-    const replacement = found === null ? [] : [{
+  function defaultReplacement(
+    difficulty: Difficulty,
+    found: NonNullable<ReturnType<typeof entryFor>>
+  ) {
+    return {
       difficulty,
       model_registry_revision_hash: found.registry.model_registry_revision_hash,
       provider_id: found.registry.provider_id,
       model_id: found.entry.model_id,
       agent_configuration_revision_hash: found.entry.agent_configuration_revision_hash
-    }];
-    const defaults = [...untouched, ...replacement];
-    const input = { revision_number: (snapshot.defaults?.revision_number ?? 0) + 1, defaults };
-    await sendDefaultsWrite(snapshot.projectReference, { input, body: JSON.stringify(input) });
+    };
+  }
+
+  async function choose(difficulty: Difficulty, configurationHash: string): Promise<void> {
+    if (writing || failedWrite !== null) return;
+    const snapshot = settings.confirmed;
+    if (snapshot === null) return;
+    const untouched = snapshot.defaults?.defaults.filter(
+      (item) => item.difficulty !== difficulty
+    ) ?? [];
+    const revision_number = (snapshot.defaults?.revision_number ?? 0) + 1;
+    writing = true;
+    try {
+      if (configurationHash === "") {
+        const input = { revision_number, defaults: untouched };
+        await putDefaults(snapshot.projectReference, { input, body: JSON.stringify(input) });
+        return;
+      }
+      const found = entryFor(configurationHash);
+      if (found === null || found.entry.provider_check === "unknown-at-provider") return;
+      const configuration = snapshot.configurations.find(
+        (candidate) => candidate.agent_configuration_revision_hash === configurationHash
+      );
+      if (configuration === undefined || !configuration.startable) return;
+      let admitted = found;
+      if (found.entry.provider_check === "not-checked") {
+        const outcome = await applyValidation(found.registry.provider_id, configurationHash);
+        if (outcome === "uncertain") {
+          failedWrite = {
+            kind: "choose",
+            projectReference: snapshot.projectReference,
+            providerId: found.registry.provider_id,
+            configurationHash,
+            difficulty,
+            revision_number,
+            untouched
+          };
+          return;
+        }
+        if (outcome !== "checked") return;
+        const checked = entryFor(configurationHash);
+        if (checked === null || checked.entry.provider_check !== "checked") return;
+        admitted = checked;
+      }
+      const input = {
+        revision_number,
+        defaults: [...untouched, defaultReplacement(difficulty, admitted)]
+      };
+      await putDefaults(snapshot.projectReference, { input, body: JSON.stringify(input) });
+    } finally {
+      writing = false;
+    }
+  }
+
+  async function retryChoose(pending: Extract<FailedWrite, { kind: "choose" }>): Promise<void> {
+    writing = true;
+    try {
+      const outcome = await applyValidation(pending.providerId, pending.configurationHash);
+      if (outcome === "uncertain") {
+        failedWrite = pending;
+        return;
+      }
+      if (outcome !== "checked") {
+        failedWrite = null;
+        return;
+      }
+      const found = entryFor(pending.configurationHash);
+      if (found === null || found.entry.provider_check !== "checked") {
+        failedWrite = null;
+        return;
+      }
+      const input = {
+        revision_number: pending.revision_number,
+        defaults: [...pending.untouched, defaultReplacement(pending.difficulty, found)]
+      };
+      await putDefaults(pending.projectReference, { input, body: JSON.stringify(input) });
+    } finally {
+      writing = false;
+    }
   }
 
   async function retryWrite(): Promise<void> {
@@ -306,18 +413,21 @@
     if (retry.kind === "registry") await sendRegistryWrite(retry.providerId, retry.write, true);
     else if (retry.kind === "validation") {
       await validateModel(retry.providerId, retry.configurationHash, true);
-    } else await sendDefaultsWrite(retry.projectReference, retry.write, true);
+    } else if (retry.kind === "choose") await retryChoose(retry);
+    else await sendDefaultsWrite(retry.projectReference, retry.write, true);
   }
 
   $: registeredChoices = (settings.confirmed?.registries ?? []).flatMap((registry) =>
-    registry.entries.filter((entry) => entry.provider_check === "checked").map((entry) => {
+    registry.entries.flatMap((entry) => {
+      if (entry.provider_check === "unknown-at-provider") return [];
       const configuration = settings.confirmed?.configurations.find(
         (candidate) => candidate.agent_configuration_revision_hash === entry.agent_configuration_revision_hash
       );
-      return {
+      if (configuration === undefined || !configuration.startable) return [];
+      return [{
         value: entry.agent_configuration_revision_hash,
-        label: `${entry.model_id} · Account ${configuration === undefined ? "Unknown account" : accountFor(configuration)}`
-      };
+        label: `${entry.model_id} · Account ${accountFor(configuration)}`
+      }];
     })
   );
 
@@ -339,9 +449,6 @@
   );
   $: registryEntries = (settings.confirmed?.registries ?? []).flatMap(
     (registry) => registry.entries
-  );
-  $: checkableEntries = registryEntries.filter(
-    (entry) => entry.provider_check === "not-checked"
   );
 </script>
 
@@ -421,7 +528,7 @@
     <section class="settings-block" aria-labelledby="defaults-title">
       <h2 id="defaults-title">{wrapDisplayCopy(settingsPageCopy.defaultsTitle)}</h2>
       {#if registeredChoices.length === 0}
-        <div class="empty-state" role="status"><span aria-hidden="true">◇</span><strong>{registryEntries.length === 0 ? settingsPageCopy.defaultsEmptyRegistry : checkableEntries.length > 0 ? settingsPageCopy.defaultsNoCheckedModels : settingsPageCopy.defaultsUnavailableModels}</strong></div>
+        <div class="empty-state" role="status"><span aria-hidden="true">◇</span><strong>{registryEntries.length === 0 ? settingsPageCopy.defaultsEmptyRegistry : settingsPageCopy.defaultsUnavailableModels}</strong></div>
       {/if}
       <div class="table-wrap">
         <table class="defaults-table">
