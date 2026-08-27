@@ -63,6 +63,7 @@ from atelier2.contracts.runs import (
 )
 from atelier2.ports.effects import EffectAdapter
 from tests.scenarios.agents import commit_configured_agent
+from tests.scenarios.effect_requests import open_pull_request_request_for_output
 from tests.scenarios.runs import (
     prepare_and_launch_graph_action,
     start_published_v1_run,
@@ -79,6 +80,7 @@ nodes:
   - {id: action, type: action, next: waiting}
   - {id: agent, type: agent, job: job-17, output: exact-request, next: action}
 """
+ACTION_REQUEST = open_pull_request_request_for_output(b"exact-request")
 
 
 class UnknownReadbackAdapter:
@@ -296,7 +298,7 @@ def test_unknown_commits_waiting_state_and_required_event_together(
             )
         ).all() == [
             ("AGENT_COMPLETED", b"exact-request"),
-            ("ACTION_RECONCILIATION_REQUIRED", b"exact-request"),
+            ("ACTION_RECONCILIATION_REQUIRED", ACTION_REQUEST),
         ]
 
 

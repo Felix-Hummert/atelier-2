@@ -23,6 +23,7 @@ from atelier2.contracts.effects import LogicalEffectKey
 from atelier2.contracts.executions import NodeExecutionId, logical_effect_key_for
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import RunId, WorkflowRevision
+from tests.scenarios.effect_requests import open_pull_request_request_for_output
 
 CRASHED = 86
 ADAPTER_EXECUTE_AFTER_COMMIT = "adapter/execute-after-commit"
@@ -36,6 +37,8 @@ nodes:
   - {id: action, type: action, next: waiting}
   - {id: agent, type: agent, job: job-17, output: exact-request, next: action}
 """
+ACTION_REQUEST = open_pull_request_request_for_output(b"exact-request")
+ACTION_REQUEST_HASH = Sha256Hash.of(ACTION_REQUEST).value
 
 
 def child(
@@ -135,11 +138,11 @@ def c1_expected_event_rows() -> tuple[tuple[object, ...], ...]:
             "action",
             "232c4bdad45e4e3d32c97faecb995eb00c8c0fd2991bbe55db17e1249fcd36dc",
             "ACTION_COMPLETED",
-            b"exact-request",
-            "a2d48169c5bd43b1584309b4404d0529496157f0028dba857d0debb8f8683129",
+            ACTION_REQUEST,
+            ACTION_REQUEST_HASH,
             "atelier2-node-effect-d13fbdc0e3e70d6a337abdcf79af98d6b8869e2a99f208cef0c2880af752add0",
-            "a2d48169c5bd43b1584309b4404d0529496157f0028dba857d0debb8f8683129",
-            "1fcd6966b58b2c243caa42f9033d335f69f31108dc96687598d2a9ccb3256c2f",
+            ACTION_REQUEST_HASH,
+            "281695f23ecb82a06e0c2317f32e57200561befe7f12f41f51cecce068f32ad9",
         ),
         (
             "observe-0",
@@ -179,11 +182,11 @@ def c2_expected_event_rows() -> tuple[tuple[object, ...], ...]:
             "action",
             "276577eb257c3f0428ce654bf9dda8332f8c98b0974e337342b420fcaa804a9c",
             "ACTION_COMPLETED",
-            b"exact-request",
-            "a2d48169c5bd43b1584309b4404d0529496157f0028dba857d0debb8f8683129",
+            ACTION_REQUEST,
+            ACTION_REQUEST_HASH,
             "atelier2-node-effect-933abca9d7dc932d83d2b159829a9e0cdad05fa0da9ae4b729669f1a2cd3beda",
-            "a2d48169c5bd43b1584309b4404d0529496157f0028dba857d0debb8f8683129",
-            "bef221daaa1544b2fa9b8ca74e85bfa1eb1dcf77bc9fce82ed1470ed364b9caf",
+            ACTION_REQUEST_HASH,
+            "117dc9b9328bacab25f5ca09d263ed394cbc7d065c0957e9f80b63cc39e78df0",
         ),
         (
             "c2-after-external-commit",
@@ -247,8 +250,8 @@ def assert_effect_once(
 ) -> None:
     logical_key = logical_key_for(run_id)
     revision_hash = WorkflowRevision(DOCUMENT).revision_hash.value
-    request = b"exact-request"
-    request_hash = Sha256Hash.of(request).value
+    request = ACTION_REQUEST
+    request_hash = ACTION_REQUEST_HASH
     expected_effect_id = hashlib.sha256(logical_key.encode()).hexdigest()
     operational_identity = str((root / "external.sqlite").resolve())
     expected_intent_version = 3 if reconcile_command_id is not None else 1
@@ -347,8 +350,8 @@ def assert_pre_confirmation_state(
 ) -> None:
     logical_key = logical_key_for(run_id)
     revision_hash = WorkflowRevision(DOCUMENT).revision_hash.value
-    request = b"exact-request"
-    request_hash = Sha256Hash.of(request).value
+    request = ACTION_REQUEST
+    request_hash = ACTION_REQUEST_HASH
     expected_effect_id = hashlib.sha256(logical_key.encode()).hexdigest()
     assert row(
         root,
