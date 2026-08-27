@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { THE_ONE_PROJECT } from "../../src/lib/project";
+import { runPageCopy } from "../../src/lib/runPageCopy";
 
 /**
  * The mockup-comparison screenshots of every surface, at both widths and in
@@ -288,7 +289,7 @@ test("captures every surface at both widths", async ({ page }) => {
   await shoot(page, "catalog");
 
   await page.goto(`/atelier/runs/${reference}`);
-  await expect(page.getByLabel("Where this run stands")).toContainText("Waiting for you");
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText("Waiting for you");
   await shoot(page, "run-waiting");
 
   await page.getByRole("button", { name: /build/ }).click();
@@ -299,13 +300,13 @@ test("captures every surface at both widths", async ({ page }) => {
 
   await page.goto(`/atelier/runs/${reference}`);
   await page.getByLabel("Your answer").fill("merge it");
-  await page.getByRole("button", { name: "Answer" }).click();
+  await page.getByRole("button", { name: runPageCopy.answerSubmit }).click();
   await expect(async () => {
     const read = await page.request.get(`/atelier/api/v1/runs/${reference}`);
     expect((await read.json()).state).toBe("COMPLETED");
   }).toPass({ timeout: 20_000 });
   await page.goto(`/atelier/runs/${reference}`);
-  await expect(page.getByLabel("Where this run stands")).toContainText("Done");
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText("Done");
   await shoot(page, "run-answered");
 
   // A run that its own contract stopped: the agent answers prose where the
@@ -320,7 +321,7 @@ test("captures every surface at both widths", async ({ page }) => {
   const failedReference = await startRun(page, "demo/failed-contract", failing, agentHash);
   await runReaches(page, failedReference, "FAILED");
   await page.goto(`/atelier/runs/${failedReference}`);
-  await expect(page.getByLabel("Where this run stands")).toContainText("Failed");
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText("Failed");
   await shoot(page, "run-failed");
 
   // A run that is still working: the delayed executor holds each node long

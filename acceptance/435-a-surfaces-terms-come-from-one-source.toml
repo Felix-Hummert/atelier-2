@@ -1,0 +1,7 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/435"
+
+[[sentence]]
+id = "a-surfaces-terms-come-from-one-source"
+requirement = "REQ-UIQ-03"
+text = "Terms rendered by a room's template or passed to a display sink come from that surface's copy owner."

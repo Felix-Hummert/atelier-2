@@ -8,13 +8,21 @@
   } from "../api/client";
   import { applyInteractionOverlay, isStilled } from "../lib/interactionOverlay";
   import {
+    byteCountCopy,
+    fingerprintLabel,
+    infoLabel,
+    runPageCopy,
+    sealsTheseBytes
+  } from "../lib/runPageCopy";
+  import { nodeAriaName, stateLabels } from "../lib/stateMarkCopy";
+  import {
     projectNodeRail,
     type AgentOutputProjection,
     type NodeProjection
   } from "../lib/runProjection";
   import InfoHint from "./InfoHint.svelte";
   import ProofAnchor from "./ProofAnchor.svelte";
-  import StateMark, { stateLabels } from "./StateMark.svelte";
+  import StateMark from "./StateMark.svelte";
 
   export let run: Run;
   export let graph: ExecutableWorkflowGraph;
@@ -70,17 +78,17 @@
       }
       return {
         kind: "context",
-        label: "Output",
+        label: runPageCopy.output,
         bytes: new globalThis.TextEncoder().encode(event.output).byteLength,
         hash: event.payload_hash,
         exact: event.output
       };
     }
     if (event.event === "ACTION_RECONCILIATION_REQUIRED") {
-      return encodedContext("Request", event.request_base64, event.request_hash);
+      return encodedContext(runPageCopy.request, event.request_base64, event.request_hash);
     }
     if (event.event === "ACTION_RECONCILIATION_RESOLVED" || event.event === "ACTION_COMPLETED") {
-      return encodedContext("Result", event.receipt.result_base64, event.receipt.result_hash);
+      return encodedContext(runPageCopy.tabResult, event.receipt.result_base64, event.receipt.result_hash);
     }
     if (event.event === "WAIT_ANSWERED") {
       // A version 3 wait admits whatever its declared schema admits, so its
@@ -88,10 +96,10 @@
       // answer with the decimal text their node's `answer_type` names, and that
       // text is what a reader should see rather than an encoding of it.
       return "answer_base64" in event
-        ? encodedContext("Answer", event.answer_base64, event.answer_hash)
+        ? encodedContext(runPageCopy.answerSubmit, event.answer_base64, event.answer_hash)
         : {
             kind: "context",
-            label: "Answer",
+            label: runPageCopy.answerSubmit,
             bytes: new globalThis.TextEncoder().encode(event.answer).byteLength,
             hash: event.answer_hash,
             exact: event.answer
@@ -101,7 +109,7 @@
       const exact = String(event.result);
       return {
         kind: "context",
-        label: "Result",
+        label: runPageCopy.tabResult,
         bytes: new globalThis.TextEncoder().encode(exact).byteLength,
         hash: event.result_hash,
         exact
@@ -122,7 +130,7 @@
 </script>
 
 <section class="node-rail" aria-labelledby="node-rail-title">
-  <h2 id="node-rail-title">Workflow</h2>
+  <h2 id="node-rail-title">{runPageCopy.workflow}</h2>
   <ol>
     {#each rail as projection (projection.node.node_id)}
       {@const value = context(projection)}
@@ -132,7 +140,7 @@
           class="node-card node-{projection.state}"
           class:live-work={projection.state === "working"}
           data-live={projection.state === "working" ? "true" : undefined}
-          aria-label={`${projection.node.node_id} — ${stateLabels[projection.state]}`}
+          aria-label={nodeAriaName(projection.node.node_id, projection.state)}
         >
           <header class="node-header">
             <span class="node-kind">{projection.node.type}</span>
@@ -143,16 +151,16 @@
           </header>
           <h3>{projection.node.node_id}</h3>
           {#if projection.node.type === "agent"}
-            <p class="work-item"><span>Work item</span><strong>{projection.node.job}</strong></p>
+            <p class="work-item"><span>{runPageCopy.workItem}</span><strong>{projection.node.job}</strong></p>
           {/if}
           {#if agent !== null}
             <p class="agent-binding">
               <strong>{agent.role}</strong>
-              {#if agent.binding === null}<span>Binding missing</span>{:else}<span>{agent.binding.provider_id} · {agent.binding.model}</span><span>{agent.binding.auth_mode === "api_key" ? "API key" : "Subscription"} · {agent.binding.executor_revision}</span>{/if}
+              {#if agent.binding === null}<span>{runPageCopy.bindingMissing}</span>{:else}<span>{agent.binding.provider_id} · {agent.binding.model}</span><span>{agent.binding.auth_mode === "api_key" ? runPageCopy.apiKey : runPageCopy.subscription} · {agent.binding.executor_revision}</span>{/if}
             </p>
             {#if agent.attempt !== null}
               <p class="latest-event">
-                <span>Attempt {agent.attempt.ordinal}</span>
+                <span>{runPageCopy.attemptHeading} {agent.attempt.ordinal}</span>
                 <strong>{attemptLabel(agent.attempt)}</strong>
               </p>
             {/if}
@@ -160,44 +168,44 @@
           {#if value !== null}
             {#if value.kind === "context"}
               <div class="context-row">
-                <span><strong>{value.label}</strong><small>{value.bytes} bytes</small></span>
+                <span><strong>{value.label}</strong><small>{byteCountCopy(value.bytes)}</small></span>
                 <ProofAnchor
-                  label={`${value.label} fingerprint`}
-                  seals={`exactly these ${value.label.toLowerCase()} bytes`}
+                  label={fingerprintLabel(value.label)}
+                  seals={sealsTheseBytes(value.label)}
                   value={value.hash}
                 />
-                <InfoHint label={`${value.label} info`} exact={value.exact} />
+                <InfoHint label={infoLabel(value.label)} exact={value.exact} />
               </div>
             {:else}
-              <section class="verified-output" aria-label="Verified output">
+              <section class="verified-output" aria-label={runPageCopy.verifiedOutput}>
                 <div class="context-row">
-                  <span><strong>Output</strong><small>{value.output.byte_count} bytes</small></span>
-                  <strong>✓ Verified</strong>
+                  <span><strong>{runPageCopy.output}</strong><small>{byteCountCopy(value.output.byte_count)}</small></span>
+                  <strong>{runPageCopy.verified}</strong>
                 </div>
                 <dl class="request-summary">
-                  <div><dt>Format</dt><dd>{value.output.kind === "utf8" ? "UTF-8" : value.output.kind === "binary" ? "Binary" : "Empty"}</dd></div>
+                  <div><dt>{runPageCopy.format}</dt><dd>{value.output.kind === "utf8" ? runPageCopy.utf8 : value.output.kind === "binary" ? runPageCopy.binary : runPageCopy.empty}</dd></div>
                   <div>
-                    <dt>Fingerprint</dt>
+                    <dt>{runPageCopy.fingerprint}</dt>
                     <dd>
                       <ProofAnchor
-                        label="Output fingerprint"
-                        seals="exactly these output bytes"
+                        label={runPageCopy.outputFingerprint}
+                        seals={runPageCopy.sealsOutput}
                         value={value.hash}
                       />
                     </dd>
                   </div>
                 </dl>
                 {#if value.output.kind === "binary"}
-                  <details><summary class="button">Details</summary><code class="exact-answer">{value.output.value}</code></details>
+                  <details><summary class="button">{runPageCopy.details}</summary><code class="exact-answer">{value.output.value}</code></details>
                 {:else}
-                  <output class="exact-answer">{value.output.kind === "empty" ? "Empty" : value.output.value}</output>
+                  <output class="exact-answer">{value.output.kind === "empty" ? runPageCopy.empty : value.output.value}</output>
                 {/if}
               </section>
             {/if}
           {/if}
           <p class="latest-event">
-            <span>Latest event</span>
-            <strong>{projection.last_event === null ? "None" : eventLabel(projection.last_event)}</strong>
+            <span>{runPageCopy.latestEvent}</span>
+            <strong>{projection.last_event === null ? runPageCopy.none : eventLabel(projection.last_event)}</strong>
           </p>
         </article>
       </li>

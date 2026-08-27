@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { runPageCopy } from "../../src/lib/runPageCopy";
+import { nodeAriaName } from "../../src/lib/stateMarkCopy";
 
 /**
  * #666 Log tab against the blessed picture frame `#v8-14-run-log`.
@@ -241,7 +242,7 @@ test("the Log tab shows the stored transcript, redacts the canary, and photograp
     timeout: 30_000
   });
 
-  await page.getByRole("button", { name: "reviewer — Failed" }).click();
+  await page.getByRole("button", { name: nodeAriaName("reviewer", "failed") }).click();
   const panel = page.getByRole("complementary");
   await expect(panel.getByRole("heading", { name: "reviewer" })).toBeVisible();
 

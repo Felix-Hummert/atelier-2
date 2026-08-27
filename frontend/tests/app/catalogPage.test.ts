@@ -17,6 +17,7 @@ import {
   restartNoticeCopy
 } from "../../src/lib/connectionState";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { retryLabel } from "../../src/lib/readStateCopy";
 import { cockpitApiStub } from "../support/cockpitApi";
 
 const WORKFLOW_HASH = "b".repeat(64);
@@ -218,7 +219,7 @@ describe("the catalog room", () => {
     await fireEvent.click(screen.getByRole("link", { name: WORKFLOW_NAME }));
 
     expect(screen.queryByRole("group", { name: workflowDetailCopy.workflowRevision })).toBeNull();
-    const technicalSummary = await screen.findByText("Technical", { selector: "summary" });
+    const technicalSummary = await screen.findByText(workflowDetailCopy.technical, { selector: "summary" });
     const technical = technicalSummary.closest("details");
     expect(technical?.open).toBe(false);
 
@@ -334,7 +335,7 @@ describe("the catalog room", () => {
     reportConnectionRestored();
 
     expect((await screen.findByText(catalogPageCopy.workflowsUnavailable)).isConnected).toBe(true);
-    expect(screen.getByRole("button", { name: "Retry workflows" }).isConnected).toBe(true);
+    expect(screen.getByRole("button", { name: retryLabel(catalogPageCopy.workflowsLabel) }).isConnected).toBe(true);
     expect(screen.getByRole("link", { name: WORKFLOW_NAME }).isConnected).toBe(true);
     expect(screen.queryByText(catalogPageCopy.catalogEmpty)).toBeNull();
 
@@ -353,7 +354,7 @@ describe("the catalog room", () => {
     reportConnectionRestored();
 
     expect((await screen.findByText(catalogPageCopy.workflowsUnavailable)).isConnected).toBe(true);
-    expect(screen.getByRole("button", { name: "Retry workflows" }).isConnected).toBe(true);
+    expect(screen.getByRole("button", { name: retryLabel(catalogPageCopy.workflowsLabel) }).isConnected).toBe(true);
     expect(screen.queryByText(catalogPageCopy.catalogEmpty)).toBeNull();
   });
 
@@ -439,10 +440,10 @@ describe("the catalog room", () => {
 
     await fireEvent.click(await screen.findByRole("button", { name: catalogPageCopy.start }));
 
-    expect((await screen.findByRole("heading", { name: `Start ${WORKFLOW_NAME}` })).isConnected).toBe(
+    expect((await screen.findByRole("heading", { name: workflowStartCopy.startTitle(WORKFLOW_NAME) })).isConnected).toBe(
       true
     );
-    expect(await screen.findByLabelText("Configuration for builder")).toBeTruthy();
+    expect(await screen.findByLabelText(workflowStartCopy.configurationFor("builder"))).toBeTruthy();
     const startRun = screen.getByRole("button", { name: workflowStartCopy.startRun }) as HTMLButtonElement;
     expect(startRun.disabled).toBe(true);
     expect(startRun.title).toBe(workflowStartCopy.startNeedsConfiguration("builder"));

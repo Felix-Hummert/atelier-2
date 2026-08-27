@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Problem } from "../api/client";
   import { humanProblemDetail } from "../lib/humanRefusal";
+  import { problemNoticeCopy } from "../lib/problemNoticeCopy";
 
   /**
    * A problem in two layers (operator ruling 23.08.).
@@ -12,8 +13,8 @@
    * nothing to someone who has not read this repository, and standing there it
    * crowds out the sentence that would.
    */
-  export let title = "Request failed";
-  export let message = "The request could not be completed.";
+  export let title: string = problemNoticeCopy.title;
+  export let message: string = problemNoticeCopy.message;
   export let problem: Problem | null = null;
 </script>
 
@@ -24,9 +25,9 @@
     <span>{problem !== null ? humanProblemDetail(problem) : message}</span>
     {#if problem !== null}
       <details class="notice-technical">
-        <summary>Technical detail</summary>
+        <summary>{problemNoticeCopy.technicalDetail}</summary>
         <code>{problem.type}</code>
-        <code>HTTP {problem.status}</code>
+        <code>{problemNoticeCopy.http} {problem.status}</code>
       </details>
     {/if}
   </span>

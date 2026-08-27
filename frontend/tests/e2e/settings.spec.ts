@@ -1,5 +1,13 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { readStateCopy, retryLabel } from "../../src/lib/readStateCopy";
+import {
+  accountChoice,
+  difficultyLabel,
+  retainedAccountChoice,
+  settingsPageCopy
+} from "../../src/lib/settingsPageCopy";
+
 const projectReference = "project1.dGVzdA";
 const configurationHash = "a".repeat(64);
 const profileHash = "b".repeat(64);
@@ -246,11 +254,11 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await page.setViewportSize(viewport);
     await page.goto("/atelier/settings");
     for (const difficulty of [3, 2, 1]) {
-      await expect(page.getByRole("combobox", { name: `Difficulty ${difficulty}` })).toBeVisible();
+      await expect(page.getByRole("combobox", { name: difficultyLabel(difficulty) })).toBeVisible();
     }
-    const selected = page.getByRole("combobox", { name: "Difficulty 3" });
+    const selected = page.getByRole("combobox", { name: difficultyLabel(3) });
     const retained = page.getByText(
-      "claude-opus-4-1 · Account Max account — Unavailable",
+      retainedAccountChoice("claude-opus-4-1", "Max account"),
       { exact: true }
     );
     await expect(retained).toBeVisible();
@@ -262,7 +270,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
       }))).toEqual({
         right: expect.any(Number),
         whiteSpace: "normal",
-        text: "claude-opus-4-1 · Account Max account — Unavailable"
+        text: retainedAccountChoice("claude-opus-4-1", "Max account")
       });
       expect(await retained.evaluate((element) => element.getBoundingClientRect().right)).toBeLessThanOrEqual(390);
     }
@@ -278,9 +286,9 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
 
     await page.setViewportSize(viewport);
     await page.goto("/atelier/settings");
-    await page.getByRole("combobox", { name: "Difficulty 3" }).selectOption("");
+    await page.getByRole("combobox", { name: difficultyLabel(3) }).selectOption("");
     await expect(page.getByText("Change not saved")).toBeVisible();
-    await page.getByRole("button", { name: "Retry" }).click();
+    await page.getByRole("button", { name: settingsPageCopy.retry }).click();
     await expect.poll(() => writes.defaultBodies.length).toBe(2);
     expect(writes.defaultBodies[1]).toBe(writes.defaultBodies[0]);
   });
@@ -295,10 +303,10 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await expect(page.getByRole("heading", { name: "Sources" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Model defaults" })).toBeVisible();
-    await expect(page.getByText("added by you")).toBeVisible();
+    await expect(page.getByText(settingsPageCopy.addedByYouChecked)).toBeVisible();
     await expect(page.getByText("✓ checked")).toBeVisible();
-    await expect(page.getByRole("combobox", { name: "Difficulty 3" }).locator("option:checked"))
-      .toHaveText("claude-opus-4-1 · Account Max account");
+    await expect(page.getByRole("combobox", { name: difficultyLabel(3) }).locator("option:checked"))
+      .toHaveText(accountChoice("claude-opus-4-1", "Max account"));
     await expect(page.getByText(/Saving|Saved/)).toHaveCount(0);
     await expect(page.getByText("Work in this project")).toHaveCount(0);
     if (viewport.width === 1280) {
@@ -309,26 +317,26 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
       fullPage: true
     });
 
-    await page.getByRole("combobox", { name: "Difficulty 3" }).selectOption("");
+    await page.getByRole("combobox", { name: difficultyLabel(3) }).selectOption("");
     await expect.poll(() => writes.defaultBodies.length).toBe(1);
     expect(JSON.parse(writes.defaultBodies[0] ?? "")).toEqual({
       revision_number: 2,
       defaults: []
     });
 
-    await page.getByRole("button", { name: "Remove" }).click();
+    await page.getByRole("button", { name: settingsPageCopy.remove }).click();
     await expect(page.getByText("Change not saved")).toBeVisible();
-    await expect(page.getByRole("combobox", { name: "Difficulty 3" })).toBeDisabled();
-    await page.getByRole("combobox", { name: "Difficulty 3" }).evaluate((element) => {
+    await expect(page.getByRole("combobox", { name: difficultyLabel(3) })).toBeDisabled();
+    await page.getByRole("combobox", { name: difficultyLabel(3) }).evaluate((element) => {
       const select = element as HTMLSelectElement;
       select.value = "";
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await expect.poll(() => writes.defaultBodies.length).toBe(1);
-    await page.getByRole("button", { name: "Retry" }).click();
+    await page.getByRole("button", { name: settingsPageCopy.retry }).click();
     await expect.poll(() => writes.registryBodies.length).toBe(2);
     expect(writes.registryBodies[1]).toBe(writes.registryBodies[0]);
-    await expect(page.getByRole("combobox", { name: "Add a model" })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: settingsPageCopy.addModel })).toBeVisible();
   });
 }
 
@@ -357,7 +365,7 @@ test("Settings tells the truth while reads load, fail, and recover at desktop an
     reply = "delayed";
     delayedRead = delayedReadGate();
     const navigation = page.goto(`/atelier/settings?state=loading-${viewport.width}`);
-    await expect(page.getByText("Looking…")).toBeVisible();
+    await expect(page.getByText(readStateCopy.looking)).toBeVisible();
     delayedRead.release();
     await navigation;
     await expect(page.getByRole("heading", { name: "Model defaults" })).toBeVisible();
@@ -376,10 +384,10 @@ test("Settings tells the truth while reads load, fail, and recover at desktop an
     });
 
     reply = "available";
-    await page.getByRole("button", { name: "Retry settings" }).click();
+    await page.getByRole("button", { name: retryLabel(settingsPageCopy.label) }).click();
     await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
-    await expect(page.getByRole("combobox", { name: "Difficulty 3" }).locator("option:checked"))
-      .toHaveText("claude-opus-4-1 · Account Max account");
+    await expect(page.getByRole("combobox", { name: difficultyLabel(3) }).locator("option:checked"))
+      .toHaveText(accountChoice("claude-opus-4-1", "Max account"));
   }
 });
 
@@ -410,16 +418,16 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
   await expect(page.getByText(second.modelId, { exact: true })).toBeVisible();
 
   for (const difficulty of [3, 2, 1]) {
-    const select = page.getByRole("combobox", { name: `Difficulty ${difficulty}` });
+    const select = page.getByRole("combobox", { name: difficultyLabel(difficulty) });
     await expect(select.locator(`option[value="${first.agentConfigurationRevisionHash}"]`)).toHaveCount(1);
     await expect(select.locator(`option[value="${second.agentConfigurationRevisionHash}"]`)).toHaveCount(1);
   }
 
-  await page.getByRole("combobox", { name: "Difficulty 3" }).selectOption(
+  await page.getByRole("combobox", { name: difficultyLabel(3) }).selectOption(
     first.agentConfigurationRevisionHash
   );
   await expect.poll(() => putBodies.length).toBe(1);
-  await expect(page.getByRole("combobox", { name: "Difficulty 3" })).toBeEnabled();
+  await expect(page.getByRole("combobox", { name: difficultyLabel(3) })).toBeEnabled();
   await expect(page.getByText("Change not saved")).toHaveCount(0);
   const body = JSON.parse(putBodies[0] ?? "") as {
     revision_number: number;
@@ -456,7 +464,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     model_id: first.modelId,
     agent_configuration_revision_hash: first.agentConfigurationRevisionHash
   }]));
-  await expect(page.getByRole("combobox", { name: "Difficulty 3" }).locator("option:checked"))
+  await expect(page.getByRole("combobox", { name: difficultyLabel(3) }).locator("option:checked"))
     .toHaveText(new RegExp(first.modelId));
 
   const saved = await page.request.get(

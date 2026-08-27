@@ -19,6 +19,10 @@ import type { NodeState } from "./runProjection";
  * run's identity nor the pending decision lives inside the node panel's tabs.
  */
 
+const looking = "Looking…";
+const retry = "Retry";
+const discard = "Discard";
+
 export const runPageCopy = {
   prompt: "Prompt",
   output: "Output",
@@ -44,12 +48,16 @@ export const runPageCopy = {
   outputEmptyEnded: "Nothing written.",
   waitAnswerNotReadable:
     "You answered this gate. The answer itself is not yet kept readable after completion.",
+  savedAnswerUnreadable: "The saved exact answer could not be read.",
+  answerUnconfirmed: "The answer could not be confirmed.",
+  exactRetryUnconfirmed: "The exact retry could not be confirmed.",
+  enterAnswer: "Enter an answer.",
   whoEmpty: "No receipt yet.",
   whoEmptyEnded: "No receipt.",
   processLogInLease: "Process log stays in the lease.",
   needsYou: "Needs you",
   questionMissing: "This step is waiting for you, but it carries no question.",
-  questionLooking: "Looking…",
+  questionLooking: looking,
   answerLabel: "Your answer",
   answerSubmit: "Answer",
   answerYes: "Yes",
@@ -105,6 +113,104 @@ export const runPageCopy = {
   sealsConfiguration: "the agents and inputs this run started under",
   sealsTerminal: "the finished result, so a later reader can prove it was not altered",
   sealsEvent: "this durable event",
+  runUnavailable: "Run unavailable",
+  runUnloadable: "The durable run could not be loaded.",
+  differentDurableRun: "The API returned a different durable run.",
+  workflowRevisionMismatch: "The workflow revision did not match the durable run.",
+  eventStreamUnstartable: "The durable event stream could not start.",
+  eventUnverified: "The durable event could not be verified.",
+  eventCouldNotReconcileAnswer: "The durable event could not reconcile the saved exact answer.",
+  savedRequestWrongOperation: "The saved request identity belongs to another operation.",
+  savedAnswerWrongNode: "The saved exact answer does not belong to this waiting node.",
+  multipleReconciliationsSaved: "More than one exact reconciliation is saved for this node.",
+  savedDecisionWrongReconciliation: "The saved exact decision does not belong to this reconciliation.",
+  pendingCommandDiffersFromDecision: "The pending durable command differs from the saved exact decision.",
+  exactRequestWrongKind: "The exact request has the wrong kind.",
+  reconciliationResponseUnproven: "The reconciliation response did not prove the exact request.",
+  pendingDecisionTreatedComplete: "A pending decision was incorrectly treated as durable completion.",
+  boundWorkflowUnavailable: "The bound workflow revision is unavailable.",
+  acceptedRequestChangedKind: "The accepted request changed kind.",
+  acceptedDecisionUnbound: "The accepted decision did not remain bound to its reconciliation.",
+  acceptedCommandDiffers: "The accepted durable command differs from the exact request.",
+  answerResponseUnproven: "The answer response did not prove the exact request.",
+  pendingAnswerTreatedComplete: "A pending answer was incorrectly treated as durable completion.",
+  answerResponseWrongFormat: "The answer response was not this run's format.",
+  refreshing: "Refreshing",
+  retry,
+  discard,
+  eventInvalid: "Event invalid",
+  state: "State",
+  events: "Events",
+  noDurableEvents: "No durable events yet.",
+  looking,
+  workflowUnavailable: "Workflow unavailable",
+  whereThisRunStands: "Where this run stands",
+  waitQuestionUnreadable: "The wait question could not be read",
+  graphUnreadable: "The graph could not be read",
+  workflowGraphUnreadable: "The workflow graph could not be read.",
+  documentMismatch: "The document the workshop returned is not the one this run followed.",
+  olderDocumentFormat: "This run follows an older document format this page cannot draw.",
+  nodeUnreadable: "This node could not be read",
+  waitNode: "Wait node",
+  answerNeeded: "Answer needed",
+  integerAnswer: "Integer answer",
+  canonicalInteger: "Use one canonical integer.",
+  closeNodeDetail: "Close node detail",
+  stoppedHere: "Stopped here:",
+  waitingForWork: "Waiting for the work before it. Nothing has been refused.",
+  workflow: "Workflow",
+  workItem: "Work item",
+  bindingMissing: "Binding missing",
+  apiKey: "API key",
+  subscription: "Subscription",
+  attemptHeading: "Attempt",
+  bytes: "bytes",
+  verifiedOutput: "Verified output",
+  verified: "✓ Verified",
+  format: "Format",
+  utf8: "UTF-8",
+  binary: "Binary",
+  empty: "Empty",
+  fingerprint: "Fingerprint",
+  outputFingerprint: "Output fingerprint",
+  details: "Details",
+  latestEvent: "Latest event",
+  none: "None",
+  request: "Request",
+  reconciliation: {
+    title: "Reconciliation",
+    sending: "Sending decision",
+    pending: "Decision pending",
+    uncertain: "Decision uncertain",
+    actor: "Actor",
+    evidence: "Evidence",
+    command: "Command",
+    effectId: "Effect ID",
+    result: "Result",
+    decision: "Decision",
+    authoritativeAbsence: "Authoritative absence",
+    decisionNeeded: "Decision needed",
+    effect: "Effect",
+    hash: "Hash",
+    version: "Version",
+    requestInfo: "Request info",
+    found: "Found",
+    absent: "Absent",
+    exactResult: "Exact result (base64)",
+    resolve: "Resolve",
+    review: "Review",
+    executeQuestion: "Execute this exact effect?",
+    executeOnce: (productName: string) => `${productName} will execute the exact request once.`,
+    cancel: "Cancel",
+    execute: "Execute",
+    nameActor: "Name the accountable actor.",
+    recordEvidence: "Record the evidence inspected.",
+    nameEffectId: "Name the exact effect ID.",
+    canonicalResult: "Use canonical standard base64 for the exact result.",
+    invalidResult: "Invalid result",
+    emptyResult: "Empty result",
+    unconfirmed: "The decision could not be confirmed."
+  },
   cancel: {
     /** The label above the control, in state hue only where it asks something. */
     eyebrow: "Stop this run",
@@ -125,8 +231,9 @@ export const runPageCopy = {
     acceptedNote: "The run will end once the agent lets go.",
     /** A network failure or unconfirmed reply keeps the exact command for these. */
     uncertain: "Cancel uncertain",
-    retry: "Retry",
-    discard: "Discard"
+    unconfirmed: "The cancel could not be confirmed.",
+    retry,
+    discard
   }
 } as const;
 
@@ -220,4 +327,20 @@ export function transcriptDroppedCopy(droppedEvents: number): string {
   return droppedEvents === 1
     ? "1 event dropped from this transcript."
     : `${droppedEvents} events dropped from this transcript.`;
+}
+
+export function byteCountCopy(bytes: number): string {
+  return `${bytes} ${runPageCopy.bytes}`;
+}
+
+export function fingerprintLabel(label: string): string {
+  return `${label} fingerprint`;
+}
+
+export function infoLabel(label: string): string {
+  return `${label} info`;
+}
+
+export function sealsTheseBytes(label: string): string {
+  return `exactly these ${label.toLowerCase()} bytes`;
 }

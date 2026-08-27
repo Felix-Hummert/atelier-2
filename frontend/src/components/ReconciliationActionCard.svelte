@@ -9,6 +9,7 @@
     type ReconciliationMutation
   } from "../lib/mutationJournal";
   import { PRODUCT_NAME } from "../lib/productName";
+  import { byteCountCopy, runPageCopy } from "../lib/runPageCopy";
   import InfoHint from "./InfoHint.svelte";
 
   type WaitingReconciliation = Extract<Run["waiting"], { type: "WAITING_RECONCILIATION" }>;
@@ -109,19 +110,19 @@
   }
 
   function validate(found: boolean): string | null {
-    if (actor.trim().length === 0) return "Name the accountable actor.";
-    if (evidence.trim().length === 0) return "Record the evidence inspected.";
-    if (found && effectId.trim().length === 0) return "Name the exact effect ID.";
+    if (actor.trim().length === 0) return runPageCopy.reconciliation.nameActor;
+    if (evidence.trim().length === 0) return runPageCopy.reconciliation.recordEvidence;
+    if (found && effectId.trim().length === 0) return runPageCopy.reconciliation.nameEffectId;
     if (found && decodeCanonicalBase64(resultBase64) === null) {
-      return "Use canonical standard base64 for the exact result.";
+      return runPageCopy.reconciliation.canonicalResult;
     }
     return null;
   }
 
   function visibleResult(encoded: string): string {
     const bytes = decodeCanonicalBase64(encoded);
-    if (bytes === null) return "Invalid result";
-    if (bytes.byteLength === 0) return "Empty result";
+    if (bytes === null) return runPageCopy.reconciliation.invalidResult;
+    if (bytes.byteLength === 0) return runPageCopy.reconciliation.emptyResult;
     try {
       return new globalThis.TextDecoder("utf-8", { fatal: true }).decode(bytes);
     } catch {
@@ -136,7 +137,7 @@
   aria-labelledby="reconciliation-action-title"
 >
   <div class="human-action-header">
-    <p class="eyebrow">Reconciliation</p>
+    <p class="eyebrow">{runPageCopy.reconciliation.title}</p>
     <span
       class="human-action-shape"
       class:human-action-shape-working={visibleCommand !== null || busy}
@@ -147,7 +148,7 @@
 
   {#if visibleCommand !== null || busy}
     <h2 id="reconciliation-action-title" tabindex="-1" bind:this={statusHeading}>
-      {busy ? "Sending decision" : accepted || waiting.pending_command !== null ? "Decision pending" : "Decision uncertain"}
+      {busy ? runPageCopy.reconciliation.sending : accepted || waiting.pending_command !== null ? runPageCopy.reconciliation.pending : runPageCopy.reconciliation.uncertain}
     </h2>
     {#if failureMessage !== null}
       <div class="wait-alert" role="alert" aria-label={decisionStatusCopy.sendUncertain}>
@@ -157,58 +158,58 @@
     {/if}
     {#if visibleCommand !== null}
       <dl class="decision-summary">
-        <div><dt>Actor</dt><dd>{visibleCommand.actor}</dd></div>
-        <div><dt>Evidence</dt><dd>{visibleCommand.evidence}</dd></div>
-        <div><dt>Command</dt><dd><code>{visibleCommand.command_id}</code></dd></div>
+        <div><dt>{runPageCopy.reconciliation.actor}</dt><dd>{visibleCommand.actor}</dd></div>
+        <div><dt>{runPageCopy.reconciliation.evidence}</dt><dd>{visibleCommand.evidence}</dd></div>
+        <div><dt>{runPageCopy.reconciliation.command}</dt><dd><code>{visibleCommand.command_id}</code></dd></div>
         {#if visibleCommand.determination.type === "operator_found"}
-          <div><dt>Effect ID</dt><dd>{visibleCommand.determination.effect_id}</dd></div>
-          <div><dt>Result</dt><dd class:empty-value={pendingResult === "Empty result"}>{pendingResult}</dd></div>
+          <div><dt>{runPageCopy.reconciliation.effectId}</dt><dd>{visibleCommand.determination.effect_id}</dd></div>
+          <div><dt>{runPageCopy.reconciliation.result}</dt><dd class:empty-value={pendingResult === runPageCopy.reconciliation.emptyResult}>{pendingResult}</dd></div>
         {:else}
-          <div><dt>Decision</dt><dd>Authoritative absence</dd></div>
+          <div><dt>{runPageCopy.reconciliation.decision}</dt><dd>{runPageCopy.reconciliation.authoritativeAbsence}</dd></div>
         {/if}
       </dl>
     {/if}
     {#if visibleCommand !== null && pending !== null && !accepted && waiting.pending_command === null && !busy}
       <div class="actions">
-        <button type="button" onclick={onRetry} bind:this={retryButton}>Retry</button>
-        <button class="quiet" type="button" onclick={onDiscard}>Discard</button>
+        <button type="button" onclick={onRetry} bind:this={retryButton}>{runPageCopy.retry}</button>
+        <button class="quiet" type="button" onclick={onDiscard}>{runPageCopy.discard}</button>
       </div>
     {/if}
   {:else}
-    <h2 id="reconciliation-action-title">Decision needed</h2>
+    <h2 id="reconciliation-action-title">{runPageCopy.reconciliation.decisionNeeded}</h2>
     <dl class="request-summary">
-      <div><dt>Effect</dt><dd>{waiting.logical_effect_key}</dd></div>
-      <div><dt>Hash</dt><dd><code>{waiting.request_hash}</code></dd></div>
-      <div><dt>Version</dt><dd>{waiting.intent_state_version}</dd></div>
+      <div><dt>{runPageCopy.reconciliation.effect}</dt><dd>{waiting.logical_effect_key}</dd></div>
+      <div><dt>{runPageCopy.reconciliation.hash}</dt><dd><code>{waiting.request_hash}</code></dd></div>
+      <div><dt>{runPageCopy.reconciliation.version}</dt><dd>{waiting.intent_state_version}</dd></div>
       <div>
-        <dt>Request</dt>
+        <dt>{runPageCopy.request}</dt>
         <dd>
-          <span>{decodeCanonicalBase64(waiting.request_base64)?.byteLength ?? 0} bytes</span>
-          <InfoHint label="Request info" exact={waiting.request_base64} />
+          <span>{byteCountCopy(decodeCanonicalBase64(waiting.request_base64)?.byteLength ?? 0)}</span>
+          <InfoHint label={runPageCopy.reconciliation.requestInfo} exact={waiting.request_base64} />
         </dd>
       </div>
     </dl>
     <form class="reconciliation-form" onsubmit={submitFound} novalidate>
-      <label for="reconcile-actor">Actor</label>
+      <label for="reconcile-actor">{runPageCopy.reconciliation.actor}</label>
       <input id="reconcile-actor" type="text" autocomplete="name" bind:value={actor} bind:this={actorInput} />
-      <label for="reconcile-evidence">Evidence</label>
+      <label for="reconcile-evidence">{runPageCopy.reconciliation.evidence}</label>
       <textarea id="reconcile-evidence" rows="3" bind:value={evidence}></textarea>
       <fieldset class="determination-picker">
-        <legend>Decision</legend>
-        <label><input type="radio" name="reconciliation-determination" bind:group={determination} value="found" /> Found</label>
-        <label><input type="radio" name="reconciliation-determination" bind:group={determination} value="absent" /> Absent</label>
+        <legend>{runPageCopy.reconciliation.decision}</legend>
+        <label><input type="radio" name="reconciliation-determination" bind:group={determination} value="found" /> {runPageCopy.reconciliation.found}</label>
+        <label><input type="radio" name="reconciliation-determination" bind:group={determination} value="absent" /> {runPageCopy.reconciliation.absent}</label>
       </fieldset>
       {#if determination === "found"}
-        <label for="reconcile-effect">Effect ID</label>
+        <label for="reconcile-effect">{runPageCopy.reconciliation.effectId}</label>
         <input id="reconcile-effect" type="text" autocomplete="off" bind:value={effectId} />
-        <label for="reconcile-result">Exact result (base64)</label>
+        <label for="reconcile-result">{runPageCopy.reconciliation.exactResult}</label>
         <textarea id="reconcile-result" rows="3" spellcheck="false" bind:value={resultBase64}></textarea>
       {/if}
       {#if validationMessage !== null}
         <p class="field-error" role="alert">{validationMessage}</p>
       {/if}
       {#if determination === "found"}
-        <button class="primary" type="submit" disabled={busy}>Resolve</button>
+        <button class="primary" type="submit" disabled={busy}>{runPageCopy.reconciliation.resolve}</button>
       {:else}
         <button
           class="primary"
@@ -216,7 +217,7 @@
           disabled={busy}
           bind:this={reviewButton}
           onclick={() => { void reviewAbsence(); }}
-        >Review</button>
+        >{runPageCopy.reconciliation.review}</button>
       {/if}
     </form>
   {/if}
@@ -230,21 +231,21 @@
     oncancel={handleDialogCancel}
     onkeydown={containDialogFocus}
   >
-    <h2 id="absence-title">Execute this exact effect?</h2>
-    <p>{PRODUCT_NAME} will execute the exact request once.</p>
+    <h2 id="absence-title">{runPageCopy.reconciliation.executeQuestion}</h2>
+    <p>{runPageCopy.reconciliation.executeOnce(PRODUCT_NAME)}</p>
     <div class="dialog-actions">
       <button
         class="quiet"
         type="button"
         bind:this={cancelButton}
         onclick={() => { void closeAbsenceDialog(); }}
-      >Cancel</button>
+      >{runPageCopy.reconciliation.cancel}</button>
       <button
         class="primary"
         type="button"
         bind:this={executeButton}
         onclick={() => { void executeAbsence(); }}
-      >Execute</button>
+      >{runPageCopy.reconciliation.execute}</button>
     </div>
   </dialog>
 {/if}
