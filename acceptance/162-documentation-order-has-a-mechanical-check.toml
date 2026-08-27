@@ -19,3 +19,7 @@ text = "For each source-bound active requirement revision, a newly observed thre
 [[sentence]]
 id = "a-curator-candidate-is-bound-to-exact-stale-view-and-owner-artifacts"
 text = "A headless curator receives typed stale-report, current-document, owner-source, and context artifacts and may return only a closed schema-valid candidate carrying stale document paths, expected current digests, UTF-8 replacement content, cited owner objects, and unresolved questions; it does not claim prose faithfulness."
+
+[[sentence]]
+id = "an-independent-trace-review-is-bound-to-the-curator-candidate-and-owner-evidence"
+text = "A trace reviewer from a provider family different from the curator receives the curator candidate, original owner-source evidence, and required context and may return only a closed structured verdict bound to that candidate digest, with per-document traced or untraced judgements citing owner objects; it does not write the repository."

@@ -59,3 +59,39 @@ nodes:
         schema:
           ref: documentation_curation_candidate
           revision: "31c3cded8ce57783c84bedbc7f9383a987fa7abaacfc38297fd04e087509cc6a"
+  - id: trace-review
+    type: agent
+    role: trace-reviewer
+    mode: headless
+    kind: review
+    family_differs_from: curator
+    depends_on: [curator]
+    instruction: >-
+      Independently trace the exact curator candidate carried under "candidate"
+      against the original owner objects carried under "owner_sources", using
+      the contract carried under "context". Those three typed inputs are your
+      only evidence; you cannot read files, run anything, or use tools. Return
+      the exact candidate's SHA-256 digest and
+      one traced or untraced judgement for every stale document, citing the
+      owner object the curator cited. Record a finding with its document and
+      cited owner object for every trace defect. Approve only when every
+      judgement is traced and no finding blocks it; revise only with at least
+      one finding; cannot-judge must carry a reason. Do not return candidate
+      content, change candidate bytes, create a requirement, change an owner,
+      or write anything to the repository.
+    inputs:
+      - name: candidate
+        from:
+          node: curator
+          output: candidate
+      - name: owner_sources
+        from:
+          graph_input: owner_sources
+      - name: context
+        from:
+          graph_input: context
+    outputs:
+      - name: result
+        schema:
+          ref: documentation_trace_review_result
+          revision: "79cace671525a3c9b2b0bd6965c59dda8cd1fc5dc28a406be37f81d231b85ba4"
