@@ -163,16 +163,22 @@ test("the catalog room is composed, not squeezed, at 390 pixels", async ({ page 
 
   const navigation = page.getByRole("navigation", { name: "Workshop" });
   await expect(navigation).toBeVisible();
-  const roomBoxes = await Promise.all([
-    navigation.getByRole("link", { name: "Workbench" }).boundingBox(),
-    navigation.getByRole("link", { name: "Catalog" }).boundingBox(),
-    navigation.getByRole("link", { name: "History" }).boundingBox(),
-    navigation.getByRole("link", { name: /Settings/ }).boundingBox()
-  ]);
-  expect(roomBoxes.every((box) => box !== null)).toBe(true);
-  const roomRows = roomBoxes.flatMap((box) => box === null ? [] : [box.y]);
-  expect(Math.max(...roomRows) - Math.min(...roomRows)).toBeLessThanOrEqual(1);
-  const importBox = await page.getByRole("button", { name: catalogPageCopy.import }).boundingBox();
-  expect(importBox).not.toBeNull();
-  expect((importBox?.x ?? 0) + (importBox?.width ?? 0)).toBeLessThanOrEqual(390);
+  await expect(navigation.getByRole("link")).toHaveCount(4);
+  await expect(page.getByRole("button", { name: catalogPageCopy.import })).toBeInViewport();
+
+  // The phone rail puts every destination in its grid's first row. Prove that
+  // layout contract, rather than measuring text-dependent pixel offsets.
+  const railLayout = await navigation.evaluate((element) => ({
+    display: getComputedStyle(element).display,
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth
+  }));
+  expect(railLayout.display).toBe("grid");
+  expect(railLayout.scrollWidth).toBeLessThanOrEqual(railLayout.clientWidth);
+  expect(
+    await navigation.getByRole("link").evaluateAll((links) =>
+      links.map((link) => getComputedStyle(link).gridRowStart)
+    )
+  ).toEqual(["1", "1", "1", "1"]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
