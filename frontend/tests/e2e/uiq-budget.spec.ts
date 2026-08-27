@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
+import { catalogPageCopy } from "../../src/lib/catalogPageCopy";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { standingWords } from "../../src/lib/runState";
@@ -9,10 +10,13 @@ import { WORKSHOP_DESTINATION } from "../../src/lib/workshop";
 
 /**
  * Click and glance budgets from mockup v8 §07. Each number is a door count on
- * the named frame, not an invented allowance. Catalog and the Run view stay
- * out of this slice (#698 D2 / #666). Queue-admit is named in §07 and has no
- * Workbench door yet — not asserted here. Settings' connect-a-source path is
- * a named deferral to #567 until that door exists, never a silent pass.
+ * the named frame, not an invented allowance. This slice covers Workbench,
+ * History, and Catalog's find-by-search, open-tile, reach-Start and
+ * import-via-button tasks. reach-Start is Catalog + card until Start is in
+ * view, not §07's 4-click start-by-hand / Start-run remainder. The Run view
+ * waits on #666. Queue-admit is named in §07 and has no Workbench door yet —
+ * not asserted here. Settings' connect-a-source path is a named deferral to
+ * #567 until that door exists, never a silent pass.
  *
  * Contract only: user-click count to the goal, and the named goal elements in
  * the viewport without scrolling at the picture's 390 and 1280 widths.
@@ -40,6 +44,22 @@ const CONNECT_A_SOURCE_CLICKS = 3;
 const CONNECT_A_SOURCE_GLANCES = 2;
 const CONNECT_A_SOURCE_DOOR = "Connect a source";
 
+/** Frame "List" (§04). Search compact on the right: "I know the name." Fill is not a click; the goal glance is the found tile. From another room: Catalog. */
+const FIND_BY_SEARCH_CLICKS = 1;
+const FIND_BY_SEARCH_GLANCES = 1;
+
+/** Frame "List" (§04). "the whole card is the click; no hash, no start on the card." From another room: Catalog + the card. */
+const OPEN_TILE_CLICKS = 2;
+const OPEN_TILE_GLANCES = 2;
+
+/** Frame "Workflow detail — still" (§04). Start top right. Catalog + card until Start is in view, not §07's Start-run remainder. */
+const REACH_START_CLICKS = 2;
+const REACH_START_GLANCES = 1;
+
+/** Frame "Import — the sheet after the drop" (§04). §07 via Import: button · file · Add = 3 from Catalog; from another room Catalog +1. */
+const IMPORT_VIA_BUTTON_CLICKS = 4;
+const IMPORT_VIA_BUTTON_GLANCES = 2;
+
 const VIEWPORTS = [
   { width: 1280, height: 900 },
   { width: 390, height: 844 }
@@ -50,6 +70,10 @@ const API = "/atelier/api/v1";
 type ClickBudget = {
   count: number;
   click(locator: Locator): Promise<void>;
+  pickFile(
+    locator: Locator,
+    file: { name: string; mimeType: string; buffer: Buffer }
+  ): Promise<void>;
 };
 
 function clickBudget(): ClickBudget {
@@ -61,6 +85,10 @@ function clickBudget(): ClickBudget {
     async click(locator) {
       count += 1;
       await locator.click();
+    },
+    async pickFile(locator, file) {
+      count += 1;
+      await locator.setInputFiles(file);
     }
   };
 }
@@ -372,10 +400,34 @@ function rail(page: Page) {
   return page.getByRole("navigation", { name: "Workshop" });
 }
 
-test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench and History core tasks stay inside mockup v8 click and glance budgets at 390 and 1280", async ({
+function catalogTile(page: Page, name: string): Locator {
+  return page
+    .getByRole("listitem")
+    .filter({ hasText: name })
+    .getByRole("link", { name, exact: true });
+}
+
+function catalogImportDocument(schemaHash: string, name: string): string {
+  return [
+    "format_version: 3",
+    `name: ${name}`,
+    "nodes:",
+    "  - id: ask",
+    "    type: wait",
+    "    prompt: Is the import door open?",
+    "    outputs:",
+    "      - name: answer",
+    "        schema:",
+    "          ref: answer-schema",
+    `          revision: ${schemaHash}`,
+    ""
+  ].join("\n");
+}
+
+test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench, History and Catalog core tasks stay inside mockup v8 click and glance budgets at 390 and 1280", async ({
   page
 }, testInfo) => {
-  test.setTimeout(180_000);
+  test.setTimeout(300_000);
   const suffix = testInfo.repeatEachIndex;
   const runningName = `uiq-running-${suffix}`;
   const finishedName = `uiq-finished-${suffix}`;
@@ -386,6 +438,7 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench and Hist
   await startFinishedRun(page, finishedName, `uiq/finished-${suffix}`);
   await startHeldRun(page, runningName, `uiq/running-${suffix}`);
   const waitRevision = await publishWaitWorkflow(page, waitingName, DECISION_QUESTION);
+  const catalogSchemaHash = await publishSchema(page, "true");
 
   for (const viewport of VIEWPORTS) {
     await page.setViewportSize(viewport);
@@ -455,6 +508,89 @@ test("proves(core-tasks-meet-named-click-and-glance-budgets): Workbench and Hist
     historyGlances += 1;
     expect(historyGlances).toBe(OPEN_FINISHED_RUN_FROM_HISTORY_GLANCES);
     expect(historyPath.count).toBeLessThanOrEqual(OPEN_FINISHED_RUN_FROM_HISTORY_CLICKS);
+  }
+
+  for (const viewport of VIEWPORTS) {
+    await page.setViewportSize(viewport);
+    const catalogName = `uiq-catalog-${suffix}-${viewport.width}`;
+    const catalogLink = rail(page).getByRole("link", {
+      name: WORKSHOP_DESTINATION.catalog.label
+    });
+
+    await openWorkbench(page);
+    const importPath = clickBudget();
+    await importPath.click(catalogLink);
+    await expect(page.getByRole("heading", { name: catalogPageCopy.title })).toBeVisible();
+    const importButton = page.getByRole("button", { name: catalogPageCopy.import });
+    await expect(importButton).toBeVisible();
+    await importPath.click(importButton);
+    await expect(page.getByRole("dialog", { name: catalogPageCopy.import })).toHaveCount(0);
+    await importPath.pickFile(page.getByLabel(catalogPageCopy.filePicker), {
+      name: `${catalogName}.yaml`,
+      mimeType: "application/octet-stream",
+      buffer: Buffer.from(catalogImportDocument(catalogSchemaHash, catalogName))
+    });
+    const importSheet = page.getByRole("dialog", { name: catalogPageCopy.import });
+    const addToCatalog = page.getByRole("button", { name: catalogPageCopy.addToCatalog });
+    await expect(importSheet).toBeVisible({ timeout: 20_000 });
+    const importGlances = [importSheet, addToCatalog];
+    for (const glance of importGlances) {
+      await expect(glance, `import-via-button glance at ${viewport.width}`).toBeInViewport();
+    }
+    expect(importGlances.length).toBe(IMPORT_VIA_BUTTON_GLANCES);
+    await importPath.click(addToCatalog);
+    await expect(importSheet).toHaveCount(0, { timeout: 20_000 });
+    await expect(catalogTile(page, catalogName)).toBeVisible({ timeout: 20_000 });
+    expect(importPath.count, `import-via-button clicks at ${viewport.width}`).toBeLessThanOrEqual(
+      IMPORT_VIA_BUTTON_CLICKS
+    );
+
+    await openWorkbench(page);
+    const findPath = clickBudget();
+    await findPath.click(catalogLink);
+    await expect(page.getByRole("heading", { name: catalogPageCopy.title })).toBeVisible();
+    const search = page.getByLabel(catalogPageCopy.searchLabel);
+    const foundTile = catalogTile(page, catalogName);
+    await expect(search).toBeVisible();
+    await search.fill(catalogName);
+    await expect(foundTile).toBeVisible();
+    const findGlances = [foundTile];
+    for (const glance of findGlances) {
+      await expect(glance, `find-by-search glance at ${viewport.width}`).toBeInViewport();
+    }
+    expect(findGlances.length).toBe(FIND_BY_SEARCH_GLANCES);
+    expect(findPath.count, `find-by-search clicks at ${viewport.width}`).toBeLessThanOrEqual(
+      FIND_BY_SEARCH_CLICKS
+    );
+
+    await openWorkbench(page);
+    const openPath = clickBudget();
+    await openPath.click(catalogLink);
+    await expect(page.getByRole("heading", { name: catalogPageCopy.title })).toBeVisible();
+    const tile = catalogTile(page, catalogName);
+    await expect(tile).toBeVisible();
+    await expect(tile, `open-tile card glance at ${viewport.width}`).toBeInViewport();
+    let openGlances = 1;
+    await openPath.click(tile);
+    const detailHeading = page.getByRole("heading", { name: catalogName, exact: true });
+    await expect(detailHeading).toBeVisible();
+    await expect(detailHeading, `open-tile glance at ${viewport.width}`).toBeInViewport();
+    openGlances += 1;
+    expect(openGlances).toBe(OPEN_TILE_GLANCES);
+    expect(openPath.count, `open-tile clicks at ${viewport.width}`).toBeLessThanOrEqual(
+      OPEN_TILE_CLICKS
+    );
+
+    const start = page.getByRole("button", { name: catalogPageCopy.start, exact: true });
+    await expect(start).toBeEnabled();
+    const startGlances = [start];
+    for (const glance of startGlances) {
+      await expect(glance, `reach-Start glance at ${viewport.width}`).toBeInViewport();
+    }
+    expect(startGlances.length).toBe(REACH_START_GLANCES);
+    expect(openPath.count, `reach-Start clicks at ${viewport.width}`).toBeLessThanOrEqual(
+      REACH_START_CLICKS
+    );
   }
 });
 
