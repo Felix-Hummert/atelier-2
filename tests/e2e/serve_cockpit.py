@@ -187,11 +187,14 @@ class FakeProviderHolds:
     """Tracks in-flight fake provider decodes across a served generation.
 
     Delayed, held, and blocking executors wait on a release signal instead of
-    sleeping. Drain sets that signal and then blocks until every tracked
-    decode has returned. DBOS shutdown only waits one second for workflows
-    and then ThreadPoolExecutor.shutdown(wait=False), so closing the runtime
-    or removing the scratch root before those decodes finish still races a
-    live generation.
+    sleeping. Drain sets that signal, seals admission under the same lock that
+    tracks in-flight count, then blocks until every already-admitted decode has
+    returned. A decode that arrives after the seal is rejected, so
+    `wait_until_idle` cannot observe zero and still race a later admission.
+    DBOS shutdown only waits one second for workflows and then
+    ThreadPoolExecutor.shutdown(wait=False), so closing the runtime or
+    removing the scratch root before those decodes finish still races a live
+    generation.
     """
 
     def __init__(self) -> None:
@@ -199,6 +202,7 @@ class FakeProviderHolds:
         self._idle = threading.Condition(self._lock)
         self._released = threading.Event()
         self._inflight = 0
+        self._sealed = False
 
     def current(self) -> threading.Event:
         return self._released
@@ -206,6 +210,10 @@ class FakeProviderHolds:
     @contextmanager
     def in_flight(self) -> Iterator[None]:
         with self._lock:
+            if self._sealed:
+                raise RuntimeError(
+                    "cannot admit a fake decode after this generation was sealed"
+                )
             self._inflight += 1
         try:
             yield
@@ -220,6 +228,7 @@ class FakeProviderHolds:
     def wait_until_idle(self, timeout: float = TIMEOUT_SECONDS) -> None:
         deadline = time.monotonic() + timeout
         with self._lock:
+            self._sealed = True
             while self._inflight > 0:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -235,6 +244,7 @@ class FakeProviderHolds:
                     "cannot start a generation while "
                     f"{self._inflight} fake decode(s) are still in flight"
                 )
+            self._sealed = False
             self._released = threading.Event()
 
 

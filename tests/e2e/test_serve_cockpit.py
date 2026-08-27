@@ -463,6 +463,37 @@ def test_scratch_root_removal_cannot_precede_an_in_flight_decode_that_outlives_r
         holds.release_all()
 
 
+def test_a_decode_that_starts_after_drain_observes_idle_is_rejected_before_scratch_root_removal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    created_root = tmp_path / "late-admit-root"
+    monkeypatch.setattr(
+        harness.tempfile,
+        "mkdtemp",
+        lambda prefix: str(created_root.mkdir() or created_root),
+    )
+    scratch_root = harness.BrowserScratchRoot.create()
+    runtime = ClosingRuntime(scratch_root.path)
+    holds = harness.FakeProviderHolds()
+    factory = harness.HeldAgentExecutorFactory(
+        "e2e-v3-held", "held/v1", "e2e-held-process", b'"V3 provider bytes"', holds
+    )
+    executor = factory.open()
+    executor.requests.append(SimpleNamespace(run_id=SimpleNamespace(value="late-run")))
+
+    harness.drain_inflight_fake_decodes(holds)
+
+    with pytest.raises(RuntimeError, match="generation was sealed"):
+        executor.decode_process_completion(
+            SimpleNamespace(),
+            harness.AgentProcessCompletion(0, b'"V3 provider bytes"', b""),
+        )
+
+    harness.close_runtime_and_scratch_root(runtime, scratch_root)
+    assert runtime.closed
+    assert not created_root.exists()
+
+
 def test_a_reset_recompose_opens_the_next_runtime_on_a_fresh_scratch_root(
     tmp_path: Path,
 ) -> None:
