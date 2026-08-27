@@ -49,6 +49,7 @@ const servedDocument = JSON.parse(
           {
             enum?: string[];
             const?: string;
+            $ref?: string;
             anyOf?: Array<{ enum?: string[] }>;
             maxItems?: number;
           }
@@ -172,6 +173,9 @@ describe("the served vocabulary", () => {
   it("mirrors the attention feed's per-run corruption frame", () => {
     const served = servedDocument.components.schemas.RunProjectionCorruptResource;
     expect(served?.properties?.event?.const).toBe("RUN_PROJECTION_CORRUPT");
+    expect(served?.properties?.problem).toEqual({
+      $ref: "#/components/schemas/ProblemDurableStateCorrupt"
+    });
     const frame = decodeStreamFrame({
       event: "RUN_PROJECTION_CORRUPT",
       public_run_reference: "run1.cnVu",

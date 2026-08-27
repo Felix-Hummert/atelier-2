@@ -12,6 +12,7 @@ from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute, RouteContext, iter_route_contexts
 from fastapi.testclient import TestClient
 from openapi_spec_validator import OpenAPIV31SpecValidator, validate
+from pydantic import ValidationError
 
 from atelier2.api import openapi as openapi_module
 from atelier2.api.app import create_app
@@ -35,13 +36,20 @@ from atelier2.api.openapi import (
     RUN_CANCELLATION_PATH,
     RUN_FORK_PATH,
 )
+from atelier2.api.problems import problem_resource
 from atelier2.api.references import (
     MAXIMUM_PUBLIC_PROJECT_REFERENCE_CHARACTERS,
     MAXIMUM_RUN_ORDERS,
     PUBLIC_PROJECT_REFERENCE_PATTERN,
+    encode_public_run_reference,
 )
 from atelier2.api.wire import events as wire_events
+from atelier2.api.wire.resources import (
+    DurableStateCorruptProblemResource,
+    RunProjectionCorruptResource,
+)
 from atelier2.contracts.run_projections import PublicAgentAttemptState
+from atelier2.contracts.runs import RunId
 from tests.scenarios.api import api_limits, api_ports, event_poll_backoff
 
 FROZEN_DOCUMENT_PATH = Path(__file__).with_name("openapi_frozen.json")
@@ -449,7 +457,7 @@ def test_openapi_sse_extension_names_exact_wire_fields_and_closed_events() -> No
     corrupt_frame = schema["components"]["schemas"]["RunProjectionCorruptResource"]
     assert corrupt_frame["properties"]["event"]["const"] == "RUN_PROJECTION_CORRUPT"
     assert corrupt_frame["properties"]["problem"] == {
-        "oneOf": [{"$ref": "#/components/schemas/ProblemDurableStateCorrupt"}]
+        "$ref": "#/components/schemas/ProblemDurableStateCorrupt"
     }
     assert "ProblemResource" not in schema["components"]["schemas"]
     event_union = schema["components"]["schemas"]["RunEventResource"]
@@ -902,3 +910,20 @@ def test_openapi_pins_the_run_order_bounds() -> None:
     assert "value_base64" not in order["properties"]
     assert "preview" not in order["properties"]
     assert run_v3["properties"]["orders"]["maxItems"] == MAXIMUM_RUN_ORDERS
+
+
+def test_run_projection_corrupt_resource_refuses_a_foreign_problem_type() -> None:
+    accepted = RunProjectionCorruptResource(
+        public_run_reference=encode_public_run_reference(RunId("run")),
+        problem=DurableStateCorruptProblemResource.model_validate(
+            problem_resource("durable-state-corrupt").model_dump(exclude_none=True)
+        ),
+    )
+    assert accepted.problem.type.endswith(":durable-state-corrupt")
+    with pytest.raises(ValidationError):
+        RunProjectionCorruptResource.model_validate(
+            {
+                "public_run_reference": encode_public_run_reference(RunId("run")),
+                "problem": problem_resource("internal-error").model_dump(),
+            }
+        )

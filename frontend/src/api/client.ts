@@ -2501,11 +2501,16 @@ const streamFailureSchema = z
   .object({ event: z.literal("STREAM_FAILED"), problem: problemSchema })
   .strict();
 
+const durableStateCorruptProblemSchema = problemVariant(
+  "durable-state-corrupt",
+  problemDefinitions["durable-state-corrupt"],
+);
+
 const runProjectionCorruptSchema = z
   .object({
     event: z.literal("RUN_PROJECTION_CORRUPT"),
     public_run_reference: publicRunReference,
-    problem: problemSchema,
+    problem: durableStateCorruptProblemSchema,
   })
   .strict();
 

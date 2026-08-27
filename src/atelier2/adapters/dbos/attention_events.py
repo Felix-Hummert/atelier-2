@@ -26,6 +26,7 @@ from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.run_events import (
     AttentionCursorUnknown,
     AttentionEvent,
+    AttentionEventCorrupt,
     AttentionEventPage,
     ReadAttentionEventPageResult,
 )
@@ -119,9 +120,14 @@ def load_attention_event_page(
                     RecordedAt(str(record["recorded_at"])),
                 )
             )
-        except (RunTransitionConflict, TypeError, ValueError):
-            # One unprojectable row must not refuse the rest of the page.
-            continue
+        except RunTransitionConflict:
+            events.append(
+                AttentionEventCorrupt(
+                    RunId(str(record["run_id"])),
+                    int(record["event_sequence"]),
+                    RecordedAt(str(record["recorded_at"])),
+                )
+            )
     return AttentionEventPage(tuple(events))
 
 

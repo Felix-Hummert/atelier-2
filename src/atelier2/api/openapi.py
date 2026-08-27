@@ -927,8 +927,8 @@ def _stream_failure_component() -> dict[str, Any]:
 def _run_projection_corrupt_component() -> dict[str, Any]:
     """The attention-feed frame that names one unprojectable run.
 
-    The generated model would carry the open problem shape. This feed emits
-    only durable-state-corrupt here, so the published component promises that.
+    The wire model carries the durable-state-corrupt problem. The published
+    component uses the REST problem name so one schema serves both doors.
     """
 
     generated = RunProjectionCorruptResource.model_json_schema(
@@ -936,12 +936,8 @@ def _run_projection_corrupt_component() -> dict[str, Any]:
     )
     generated.pop("$defs", None)
     generated["properties"]["problem"] = {
-        "oneOf": [
-            {
-                "$ref": "#/components/schemas/"
-                + _problem_component_name("durable-state-corrupt")
-            }
-        ]
+        "$ref": "#/components/schemas/"
+        + _problem_component_name("durable-state-corrupt")
     }
     return generated
 

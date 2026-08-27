@@ -1574,6 +1574,15 @@ class ProblemResource(ApiModel):
         return dumped
 
 
+class DurableStateCorruptProblemResource(ApiModel):
+    """The durable-state-corrupt problem named on one unprojectable attention run."""
+
+    type: Literal["urn:atelier2:problem:v1:durable-state-corrupt"]
+    title: Literal["Durable state is corrupt"]
+    status: Literal[500]
+    detail: str
+
+
 class StreamFailureResource(ApiModel):
     """The terminal event-stream frame: this stream ended because it failed.
 
@@ -1595,4 +1604,4 @@ class RunProjectionCorruptResource(ApiModel):
 
     event: Literal["RUN_PROJECTION_CORRUPT"] = "RUN_PROJECTION_CORRUPT"
     public_run_reference: str = Field(pattern=PUBLIC_RUN_REFERENCE_PATTERN)
-    problem: ProblemResource
+    problem: DurableStateCorruptProblemResource
