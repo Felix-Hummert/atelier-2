@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import closing
 from enum import IntEnum, StrEnum
 
@@ -62,8 +62,12 @@ from atelier2.contracts.node_records_v3 import (
 )
 from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
+    MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS,
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
+    QueueAutomationDisposition,
+    QueueDecisionAuthority,
     QueueItemState,
+    QueueProjectionRevision,
 )
 from atelier2.contracts.revisions_v3 import RevisionKind
 from atelier2.contracts.runs import RunState
@@ -414,6 +418,10 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "catalog_lineages.kind": _values(RevisionKind),
     "catalog_lineage_retirements.state": _values(CatalogRetirementState),
     "queue_items.state": _values(QueueItemState),
+    "queue_items.decision_authority": _values(QueueDecisionAuthority),
+    "queue_proposal_revisions.automation_disposition": _values(
+        QueueAutomationDisposition
+    ),
     "host_project_source_connection_revisions.auth_method": _values(
         SourceConnectionAuthMethod
     ),
@@ -430,6 +438,7 @@ UNDECLARED_VOCABULARIES: frozenset[str] = frozenset(
         "agent_attempts.replacement",
         "agent_attempts.runner_evidence_acceptance_phase",
         "agent_attempts.state",
+        "queue_items.decision_authority",
         "run_events.attempt_ordinal",
         "run_events.replacement",
     }
@@ -459,6 +468,11 @@ UNOWNED_VOCABULARIES: Mapping[str, str] = {
         "ends the attempt instead, not another member of a vocabulary"
     ),
 }
+
+OWNED_SCALAR_DOMAINS: Mapping[str, Callable[[int], object]] = {
+    "queue_items.state_version": QueueProjectionRevision,
+}
+"""Non-vocabulary CHECK operands validated by their production value contract."""
 
 DECLARED_VOCABULARIES = _declared_vocabularies(SCHEMA_CONDITIONS)
 COMPARED_LITERALS = _compared_literals(SCHEMA_CONDITIONS)
@@ -568,6 +582,7 @@ OWNED_HASH_COLUMNS: frozenset[str] = frozenset(
         "node_receipts_v3.receipt_hash",
         "queue_items.item_id",
         "queue_items.workflow_lineage_id",
+        "queue_launch_bindings.workflow_revision_hash",
     }
 )
 
@@ -629,6 +644,10 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "queue_items.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
     "queue_items.tracker_item_reference": MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
     "queue_items.admission_rationale": MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
+    "queue_project_policy_revisions.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "queue_project_policy_revisions.automation_label": (
+        MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS
+    ),
 }
 
 
@@ -659,7 +678,16 @@ def test_the_columns_named_undeclared_are_exactly_the_ones_without_their_own_che
 def test_every_vocabulary_the_schema_spells_has_an_owner_or_a_named_exemption() -> None:
     assert set(DECLARED_VOCABULARIES) | set(COMPARED_LITERALS) == set(
         OWNED_VOCABULARIES
-    ) | set(UNOWNED_VOCABULARIES)
+    ) | set(OWNED_SCALAR_DOMAINS) | set(UNOWNED_VOCABULARIES)
+
+
+@pytest.mark.parametrize("column", sorted(OWNED_SCALAR_DOMAINS))
+def test_every_compared_scalar_literal_is_admitted_by_its_contract(
+    column: str,
+) -> None:
+    for literal in COMPARED_LITERALS[column]:
+        assert type(literal) is int
+        OWNED_SCALAR_DOMAINS[column](literal)
 
 
 def test_a_kind_dropped_from_its_own_check_is_drift_though_another_check_names_it() -> (

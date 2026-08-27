@@ -34,8 +34,12 @@ from atelier2.contracts.host_configuration import (
     SourceConnectionAuthMethod,
 )
 from atelier2.contracts.queue_projection import (
+    MAXIMUM_QUEUE_ACTIVE_RUNS,
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
+    MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS,
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
+    QueueAutomationDisposition,
+    QueueDecisionAuthority,
 )
 from atelier2.contracts.runs import FIRST_ROUND_ORDINAL
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
@@ -59,10 +63,9 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: this head persists the closed effect operation on each durable
-# intent and receipt so recovery selects the exact adapter that owns it (#642 P3).
-# Change only this constant to restack.
-_HOP_PREDECESSOR_VERSION = 42
+# Movable hop: Phase D separates proposal from admission and reserves one exact
+# launch before run creation, so a restart cannot mint a second run (#79 D1).
+_HOP_PREDECESSOR_VERSION = 43
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -99,6 +102,7 @@ _VERSION_FORTY = 40
 _VERSION_FORTY_ONE = 41
 _VERSION_FORTY_TWO = 42
 _VERSION_FORTY_THREE = 43
+_VERSION_FORTY_FOUR = 44
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -245,6 +249,10 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # references, and confirmed-effect replay fences. Effect receipts admit one
 # additional confirmation source only when all four columns identify an existing
 # source receipt from an earlier run.
+# V42 persists the closed effect operation on intents and receipts. V43 gives
+# schema-refused attempts their immutable evidence record. V44 gives the queue
+# append-only policies, proposals, exact-revision dependency edges, and launch
+# reservations while preserving the admission-only V43 rows as legacy review.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -285,6 +293,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     41: "7c4bc13ceb1db7533bfdf9697c1e6b262032a516275b488eac73af9969446b68",
     42: "d2f874edd0dbbecb677b284db8e41cd3a681fae99703d126764bc90fa0cf7865",
     43: "f7d299ab865b87ca47a399d4897f8c7b273085c4d206fac9eb882d47198b9782",
+    44: "b8a176e76092a24fa0c8ac1caafdd69e57f4ff404ecb5560a1dd426d32a3ee9b",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -421,6 +430,10 @@ V41_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V42_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_FORTY_TWO,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FORTY_TWO],
+)
+V43_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_FORTY_THREE,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FORTY_THREE],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -2115,7 +2128,17 @@ queue_items = sa.Table(
         nullable=True,
     ),
     sa.Column("admission_rationale", sa.Text, nullable=True),
+    sa.Column("current_proposal_revision", sa.Integer, nullable=True),
+    sa.Column("decision_authority", sa.Text, nullable=True),
     sa.UniqueConstraint("project_id", "tracker_item_reference"),
+    sa.UniqueConstraint("item_id", "project_id"),
+    sa.ForeignKeyConstraint(
+        ("item_id", "current_proposal_revision"),
+        (
+            "queue_proposal_revisions.item_id",
+            "queue_proposal_revisions.proposal_revision",
+        ),
+    ),
     sa.CheckConstraint("length(item_id) = 64 AND item_id NOT GLOB '*[^0-9a-f]*'"),
     sa.CheckConstraint(
         f"length(project_id) BETWEEN 1 AND {MAXIMUM_PROJECT_ID_CHARACTERS}"
@@ -2124,7 +2147,7 @@ queue_items = sa.Table(
         "length(tracker_item_reference) BETWEEN 1 AND "
         f"{MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS}"
     ),
-    sa.CheckConstraint("state IN ('OBSERVED', 'ADMITTED')"),
+    sa.CheckConstraint("state IN ('OBSERVED', 'PROPOSED', 'ADMITTED')"),
     sa.CheckConstraint("state_version >= 0"),
     sa.CheckConstraint(
         "(state = 'ADMITTED' "
@@ -2133,10 +2156,128 @@ queue_items = sa.Table(
         "AND workflow_lineage_id NOT GLOB '*[^0-9a-f]*' "
         "AND admission_rationale IS NOT NULL "
         f"AND length(admission_rationale) BETWEEN 1 AND "
-        f"{MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS}) "
-        "OR (state = 'OBSERVED' "
+        f"{MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS} "
+        "AND ((current_proposal_revision IS NULL AND decision_authority IS NULL) "
+        "OR (current_proposal_revision IS NOT NULL "
+        "AND current_proposal_revision >= 1 "
+        "AND state_version = current_proposal_revision + 1 "
+        "AND decision_authority IS NOT NULL "
+        f"AND decision_authority IN ('{QueueDecisionAuthority.OPERATOR.value}', "
+        f"'{QueueDecisionAuthority.AUTOMATION_RULE.value}')))) "
+        "OR (state = 'PROPOSED' "
+        "AND current_proposal_revision IS NOT NULL "
+        "AND current_proposal_revision >= 1 "
+        "AND state_version = current_proposal_revision "
         "AND workflow_lineage_id IS NULL "
-        "AND admission_rationale IS NULL)"
+        "AND admission_rationale IS NULL "
+        "AND decision_authority IS NULL) "
+        "OR (state = 'OBSERVED' "
+        "AND state_version = 0 "
+        "AND workflow_lineage_id IS NULL "
+        "AND admission_rationale IS NULL "
+        "AND current_proposal_revision IS NULL "
+        "AND decision_authority IS NULL)"
+    ),
+)
+queue_project_policy_revisions = sa.Table(
+    "queue_project_policy_revisions",
+    metadata,
+    sa.Column("project_id", sa.Text, nullable=False),
+    sa.Column("revision_number", sa.Integer, nullable=False),
+    sa.Column("maximum_active_runs", sa.Integer, nullable=False),
+    sa.Column("automation_label", sa.Text, nullable=True),
+    sa.PrimaryKeyConstraint("project_id", "revision_number"),
+    sa.CheckConstraint(
+        f"length(project_id) BETWEEN 1 AND {MAXIMUM_PROJECT_ID_CHARACTERS}"
+    ),
+    sa.CheckConstraint("revision_number >= 1"),
+    sa.CheckConstraint(
+        f"maximum_active_runs BETWEEN 1 AND {MAXIMUM_QUEUE_ACTIVE_RUNS}"
+    ),
+    sa.CheckConstraint(
+        "automation_label IS NULL OR length(automation_label) BETWEEN 1 AND "
+        f"{MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS}"
+    ),
+)
+queue_proposal_revisions = sa.Table(
+    "queue_proposal_revisions",
+    metadata,
+    sa.Column("item_id", sa.Text, nullable=False),
+    sa.Column("proposal_revision", sa.Integer, nullable=False),
+    sa.Column("project_id", sa.Text, nullable=False),
+    sa.Column("priority_rank", sa.Integer, nullable=False),
+    sa.Column("workflow_lineage_id", sa.Text, nullable=False),
+    sa.Column("automation_disposition", sa.Text, nullable=False),
+    sa.Column("policy_revision", sa.Integer, nullable=True),
+    sa.PrimaryKeyConstraint("item_id", "proposal_revision"),
+    sa.UniqueConstraint("item_id", "proposal_revision", "project_id"),
+    sa.ForeignKeyConstraint(
+        ("item_id", "project_id"),
+        ("queue_items.item_id", "queue_items.project_id"),
+    ),
+    sa.ForeignKeyConstraint(
+        ("project_id", "policy_revision"),
+        (
+            "queue_project_policy_revisions.project_id",
+            "queue_project_policy_revisions.revision_number",
+        ),
+    ),
+    sa.ForeignKeyConstraint(("workflow_lineage_id",), ("catalog_lineages.lineage_id",)),
+    sa.CheckConstraint("proposal_revision >= 1"),
+    sa.CheckConstraint("priority_rank >= 1"),
+    sa.CheckConstraint(
+        "automation_disposition IN "
+        f"('{QueueAutomationDisposition.HUMAN_REQUIRED.value}', "
+        f"'{QueueAutomationDisposition.AUTOMATION_AUTHORIZED.value}')"
+    ),
+    sa.CheckConstraint("policy_revision IS NULL OR policy_revision >= 1"),
+)
+queue_dependency_edges = sa.Table(
+    "queue_dependency_edges",
+    metadata,
+    sa.Column("item_id", sa.Text, nullable=False),
+    sa.Column("proposal_revision", sa.Integer, nullable=False),
+    sa.Column("project_id", sa.Text, nullable=False),
+    sa.Column("prerequisite_item_id", sa.Text, nullable=False),
+    sa.PrimaryKeyConstraint("item_id", "proposal_revision", "prerequisite_item_id"),
+    sa.ForeignKeyConstraint(
+        ("item_id", "proposal_revision", "project_id"),
+        (
+            "queue_proposal_revisions.item_id",
+            "queue_proposal_revisions.proposal_revision",
+            "queue_proposal_revisions.project_id",
+        ),
+    ),
+    sa.ForeignKeyConstraint(
+        ("prerequisite_item_id", "project_id"),
+        ("queue_items.item_id", "queue_items.project_id"),
+    ),
+    sa.CheckConstraint("item_id <> prerequisite_item_id"),
+)
+queue_launch_bindings = sa.Table(
+    "queue_launch_bindings",
+    metadata,
+    sa.Column("item_id", sa.Text, primary_key=True),
+    sa.Column("proposal_revision", sa.Integer, nullable=False),
+    sa.Column("project_id", sa.Text, nullable=False),
+    sa.Column("run_id", sa.Text, nullable=False, unique=True),
+    sa.Column("workflow_revision_hash", sa.Text, nullable=False),
+    sa.ForeignKeyConstraint(
+        ("item_id", "proposal_revision", "project_id"),
+        (
+            "queue_proposal_revisions.item_id",
+            "queue_proposal_revisions.proposal_revision",
+            "queue_proposal_revisions.project_id",
+        ),
+    ),
+    sa.ForeignKeyConstraint(
+        ("workflow_revision_hash",), ("workflow_revisions.revision_hash",)
+    ),
+    sa.CheckConstraint("proposal_revision >= 1"),
+    sa.CheckConstraint("length(run_id) > 0"),
+    sa.CheckConstraint(
+        "length(workflow_revision_hash) = 64 "
+        "AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'"
     ),
 )
 webhook_delivery_cursor = sa.Table(
@@ -3051,6 +3192,105 @@ _PRODUCT_TRIGGERS = {
           SELECT RAISE(ABORT, 'queue items are immutable');
         END
     """,
+    "queue_items_no_nonobserved_insert": """
+        CREATE TRIGGER queue_items_no_nonobserved_insert
+        BEFORE INSERT ON queue_items
+        WHEN NEW.state <> 'OBSERVED' OR NEW.state_version <> 0
+          OR NEW.workflow_lineage_id IS NOT NULL
+          OR NEW.admission_rationale IS NOT NULL
+          OR NEW.current_proposal_revision IS NOT NULL
+          OR NEW.decision_authority IS NOT NULL
+        BEGIN
+          SELECT RAISE(ABORT, 'queue items begin observed without a decision');
+        END
+    """,
+    "queue_items_state_transition": """
+        CREATE TRIGGER queue_items_state_transition
+        BEFORE UPDATE ON queue_items
+        WHEN NOT (
+          (OLD.state = 'OBSERVED'
+           AND NEW.state = 'PROPOSED'
+           AND NEW.state_version = OLD.state_version + 1
+           AND NEW.current_proposal_revision = NEW.state_version
+           AND NEW.workflow_lineage_id IS NULL
+           AND NEW.admission_rationale IS NULL
+           AND NEW.decision_authority IS NULL
+           AND EXISTS (
+             SELECT 1 FROM queue_proposal_revisions AS proposal
+             WHERE proposal.item_id = OLD.item_id
+               AND proposal.proposal_revision = NEW.current_proposal_revision
+           ))
+          OR
+          (OLD.state = 'PROPOSED'
+           AND NEW.state = 'ADMITTED'
+           AND NEW.state_version = OLD.state_version + 1
+           AND NEW.current_proposal_revision = OLD.current_proposal_revision
+           AND NEW.workflow_lineage_id = (
+             SELECT proposal.workflow_lineage_id
+             FROM queue_proposal_revisions AS proposal
+             WHERE proposal.item_id = OLD.item_id
+               AND proposal.proposal_revision = OLD.current_proposal_revision
+           )
+           AND NEW.admission_rationale IS NOT NULL
+           AND NEW.decision_authority IN ('OPERATOR', 'AUTOMATION_RULE')
+           AND (NEW.decision_authority = 'OPERATOR' OR EXISTS (
+             SELECT 1 FROM queue_proposal_revisions AS proposal
+             WHERE proposal.item_id = OLD.item_id
+               AND proposal.proposal_revision = OLD.current_proposal_revision
+               AND proposal.automation_disposition = 'AUTOMATION_AUTHORIZED'
+           )))
+        ) BEGIN
+          SELECT RAISE(ABORT, 'invalid queue item transition');
+        END
+    """,
+    "queue_project_policy_revisions_no_update": """
+        CREATE TRIGGER queue_project_policy_revisions_no_update
+        BEFORE UPDATE ON queue_project_policy_revisions BEGIN
+          SELECT RAISE(ABORT, 'queue policy revisions are immutable');
+        END
+    """,
+    "queue_project_policy_revisions_no_delete": """
+        CREATE TRIGGER queue_project_policy_revisions_no_delete
+        BEFORE DELETE ON queue_project_policy_revisions BEGIN
+          SELECT RAISE(ABORT, 'queue policy revisions are immutable');
+        END
+    """,
+    "queue_proposal_revisions_no_update": """
+        CREATE TRIGGER queue_proposal_revisions_no_update
+        BEFORE UPDATE ON queue_proposal_revisions BEGIN
+          SELECT RAISE(ABORT, 'queue proposal revisions are immutable');
+        END
+    """,
+    "queue_proposal_revisions_no_delete": """
+        CREATE TRIGGER queue_proposal_revisions_no_delete
+        BEFORE DELETE ON queue_proposal_revisions BEGIN
+          SELECT RAISE(ABORT, 'queue proposal revisions are immutable');
+        END
+    """,
+    "queue_dependency_edges_no_update": """
+        CREATE TRIGGER queue_dependency_edges_no_update
+        BEFORE UPDATE ON queue_dependency_edges BEGIN
+          SELECT RAISE(ABORT, 'queue dependency edges are immutable');
+        END
+    """,
+    "queue_dependency_edges_no_delete": """
+        CREATE TRIGGER queue_dependency_edges_no_delete
+        BEFORE DELETE ON queue_dependency_edges BEGIN
+          SELECT RAISE(ABORT, 'queue dependency edges are immutable');
+        END
+    """,
+    "queue_launch_bindings_no_update": """
+        CREATE TRIGGER queue_launch_bindings_no_update
+        BEFORE UPDATE ON queue_launch_bindings BEGIN
+          SELECT RAISE(ABORT, 'queue launch bindings are immutable');
+        END
+    """,
+    "queue_launch_bindings_no_delete": """
+        CREATE TRIGGER queue_launch_bindings_no_delete
+        BEFORE DELETE ON queue_launch_bindings BEGIN
+          SELECT RAISE(ABORT, 'queue launch bindings are immutable');
+        END
+    """,
     "webhook_delivery_cursor_identity_no_update": """
         CREATE TRIGGER webhook_delivery_cursor_identity_no_update
         BEFORE UPDATE OF cursor_id
@@ -3246,7 +3486,14 @@ def _table_names_for_version(version: int) -> frozenset[str]:
         run_fork_effect_fences.name,
     }
     attempt_receipt_tables = {agent_attempt_receipts_v3.name}
-    before_forks = PRODUCT_TABLE_NAMES - fork_tables - attempt_receipt_tables
+    phase_d_queue_tables = {
+        queue_project_policy_revisions.name,
+        queue_proposal_revisions.name,
+        queue_dependency_edges.name,
+        queue_launch_bindings.name,
+    }
+    before_phase_d = PRODUCT_TABLE_NAMES - phase_d_queue_tables
+    before_forks = before_phase_d - fork_tables - attempt_receipt_tables
     before_model_configuration = (before_forks - model_configuration) | occupancy
     predecessor_tables = (
         before_model_configuration
@@ -3255,10 +3502,12 @@ def _table_names_for_version(version: int) -> frozenset[str]:
     ) | {_V27_ACCESS_TABLE_NAME}
     if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
+    if version == _VERSION_FORTY_THREE:
+        return before_phase_d
     if version == _VERSION_FORTY_TWO:
-        return PRODUCT_TABLE_NAMES - attempt_receipt_tables
+        return before_phase_d - attempt_receipt_tables
     if version == _VERSION_FORTY_ONE:
-        return PRODUCT_TABLE_NAMES - attempt_receipt_tables
+        return before_phase_d - attempt_receipt_tables
     if version == _VERSION_FORTY:
         return before_forks
     # V33 to V39 hold the same tables: the hops between
@@ -3586,7 +3835,7 @@ def _table_indexes_at(version: int, table: sa.Table) -> tuple[str, ...]:
     published versions record none; a version a later hop moved an index of is a
     record, for the reason `published_schema_shapes` gives.
     """
-    if version in {SCHEMA_VERSION, _VERSION_FORTY_TWO}:
+    if version == SCHEMA_VERSION:
         return tuple(_declared_indexes(table).values())
     recorded = PUBLISHED_TABLE_INDEXES.get((version, table.name))
     return tuple(_declared_indexes(table).values()) if recorded is None else recorded
@@ -3598,15 +3847,15 @@ def _table_shape_at(version: int, table: sa.Table) -> str:
     The current version is the declaration; every earlier one is a record, and
     `published_schema_shapes` says why it may not be derived.
     """
-    if version in {SCHEMA_VERSION, _VERSION_FORTY_TWO}:
+    if version == SCHEMA_VERSION:
         return str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
     frozen_shape = PUBLISHED_TABLE_SHAPES.get((version, table.name))
-    if frozen_shape is None:
-        raise StoreMigrationRefused(
-            f"no published shape of {table.name} at schema version {version} is "
-            "recorded, so this hop cannot rebuild it"
-        )
-    return frozen_shape
+    if frozen_shape is not None:
+        return frozen_shape
+    raise StoreMigrationRefused(
+        f"no published shape of {table.name} at schema version {version} is "
+        "recorded, so this hop cannot rebuild it"
+    )
 
 
 def _column_names(connection: sqlite3.Connection, table_name: str) -> tuple[str, ...]:
@@ -5253,6 +5502,65 @@ def _apply_v42_to_v43(connection: sqlite3.Connection) -> None:
     apply(connection)
 
 
+_V43_QUEUE_ITEMS = "queue_items_before_phase_d"
+_PHASE_D_QUEUE_TABLES = (
+    queue_project_policy_revisions,
+    queue_proposal_revisions,
+    queue_dependency_edges,
+    queue_launch_bindings,
+)
+_PHASE_D_QUEUE_IMMUTABILITY_TRIGGERS = (
+    "queue_project_policy_revisions_no_update",
+    "queue_project_policy_revisions_no_delete",
+    "queue_proposal_revisions_no_update",
+    "queue_proposal_revisions_no_delete",
+    "queue_dependency_edges_no_update",
+    "queue_dependency_edges_no_delete",
+    "queue_launch_bindings_no_update",
+    "queue_launch_bindings_no_delete",
+)
+
+
+def _apply_v43_to_v44(connection: sqlite3.Connection) -> None:
+    """Separate proposal, admission, and one exact launch without inventing either.
+
+    The four new histories begin empty. The queue row gains nullable decision
+    pointers, so every V43 row crosses byte-for-byte in its existing columns;
+    in particular, an admitted row receives no proposal, authority, dependency,
+    policy, or launch binding and is therefore read as LEGACY_REVIEW_REQUIRED.
+    """
+
+    for table in _PHASE_D_QUEUE_TABLES:
+        existing = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table.name,),
+        ).fetchone()
+        if existing is not None:
+            raise StoreMigrationRefused(
+                f"schema version 43 already has {table.name}; "
+                "this command will not alter it"
+            )
+        connection.execute(
+            str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
+        )
+    for trigger_name in _PHASE_D_QUEUE_IMMUTABILITY_TRIGGERS:
+        connection.execute(_PRODUCT_TRIGGERS[trigger_name])
+    _rebuild_product_table(
+        connection,
+        queue_items,
+        _V43_QUEUE_ITEMS,
+        (
+            "queue_items_identity_no_update",
+            "queue_items_no_delete",
+        ),
+        _VERSION_FORTY_THREE,
+        _VERSION_FORTY_FOUR,
+    )
+    connection.execute(_PRODUCT_TRIGGERS["queue_items_no_nonobserved_insert"])
+    connection.execute(_PRODUCT_TRIGGERS["queue_items_state_transition"])
+    _raise_declared_version(connection, _VERSION_FORTY_THREE, _VERSION_FORTY_FOUR)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -5411,6 +5719,11 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _VERSION_FORTY_THREE,
         _apply_v42_to_v43,
     ),
+    _SchemaMigrationStep(
+        _VERSION_FORTY_THREE,
+        _VERSION_FORTY_FOUR,
+        _apply_v43_to_v44,
+    ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {
     step.source_version: step for step in _SCHEMA_MIGRATION_STEPS
@@ -5424,6 +5737,60 @@ def _fingerprint_for_version(connection: sqlite3.Connection, version: int) -> st
             connection, _table_names_for_version(version), version=version
         )
     )
+
+
+def _validate_v44_queue_rows(connection: sqlite3.Connection) -> None:
+    """Refuse queue rows that SQL NULL could otherwise disguise as valid."""
+
+    invalid = connection.execute(
+        """
+        SELECT item.item_id
+        FROM queue_items AS item
+        LEFT JOIN queue_proposal_revisions AS proposal
+          ON proposal.item_id = item.item_id
+         AND proposal.proposal_revision = item.current_proposal_revision
+        WHERE NOT (
+          (item.state = 'OBSERVED'
+           AND item.state_version = 0
+           AND item.workflow_lineage_id IS NULL
+           AND item.admission_rationale IS NULL
+           AND item.current_proposal_revision IS NULL
+           AND item.decision_authority IS NULL)
+          OR
+          (item.state = 'PROPOSED'
+           AND item.current_proposal_revision IS NOT NULL
+           AND item.current_proposal_revision >= 1
+           AND item.state_version = item.current_proposal_revision
+           AND item.workflow_lineage_id IS NULL
+           AND item.admission_rationale IS NULL
+           AND item.decision_authority IS NULL
+           AND proposal.item_id IS NOT NULL)
+          OR
+          (item.state = 'ADMITTED'
+           AND item.workflow_lineage_id IS NOT NULL
+           AND item.admission_rationale IS NOT NULL
+           AND item.current_proposal_revision IS NULL
+           AND item.decision_authority IS NULL)
+          OR
+          (item.state = 'ADMITTED'
+           AND item.workflow_lineage_id IS NOT NULL
+           AND item.admission_rationale IS NOT NULL
+           AND item.current_proposal_revision IS NOT NULL
+           AND item.current_proposal_revision >= 1
+           AND item.state_version = item.current_proposal_revision + 1
+           AND item.decision_authority IS NOT NULL
+           AND item.decision_authority IN ('OPERATOR', 'AUTOMATION_RULE')
+           AND proposal.item_id IS NOT NULL
+           AND proposal.workflow_lineage_id = item.workflow_lineage_id)
+        )
+        LIMIT 1
+        """
+    ).fetchone()
+    if invalid is not None:
+        raise StoreMigrationRefused(
+            f"queue item {invalid[0]} is a partial or inconsistent V44 decision; "
+            "this command will not alter it"
+        )
 
 
 def _inspect_store_readonly(database_path: Path) -> tuple[int, str | None]:
@@ -5440,6 +5807,8 @@ def _inspect_store_readonly(database_path: Path) -> tuple[int, str | None]:
             version = _read_declared_schema_version(connection)
             if version == SCHEMA_VERSION or version in _SCHEMA_MIGRATION_BY_SOURCE:
                 try:
+                    if version == _VERSION_FORTY_FOUR:
+                        _validate_v44_queue_rows(connection)
                     return version, _fingerprint_for_version(connection, version)
                 except UnsupportedSchemaVersion as error:
                     raise StoreMigrationRefused(str(error)) from error
@@ -5569,6 +5938,7 @@ def migrate_store(database_path: Path) -> StoreMigrationReport:
                     f"the migrated store violates foreign keys in {tables}; "
                     "this command will not alter it"
                 )
+            _validate_v44_queue_rows(connection)
             connection.commit()
         except BaseException:
             connection.rollback()

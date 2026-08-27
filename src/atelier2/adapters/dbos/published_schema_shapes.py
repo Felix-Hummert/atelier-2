@@ -478,10 +478,135 @@ CREATE TABLE effect_receipts (
 """The receipt table V41 published with immutable fork provenance."""
 
 
+_QUEUE_ITEMS_BEFORE_PHASE_D = """
+CREATE TABLE queue_items (
+	item_id TEXT NOT NULL,
+	project_id TEXT NOT NULL,
+	tracker_item_reference TEXT NOT NULL,
+	state TEXT NOT NULL,
+	state_version INTEGER NOT NULL,
+	workflow_lineage_id TEXT,
+	admission_rationale TEXT,
+	PRIMARY KEY (item_id),
+	UNIQUE (project_id, tracker_item_reference),
+	CHECK (length(item_id) = 64 AND item_id NOT GLOB '*[^0-9a-f]*'),
+	CHECK (length(project_id) BETWEEN 1 AND 1024),
+	CHECK (length(tracker_item_reference) BETWEEN 1 AND 1024),
+	CHECK (state IN ('OBSERVED', 'ADMITTED')),
+	CHECK (state_version >= 0),
+	CHECK ((state = 'ADMITTED' AND workflow_lineage_id IS NOT NULL AND length(workflow_lineage_id) = 64 AND workflow_lineage_id NOT GLOB '*[^0-9a-f]*' AND admission_rationale IS NOT NULL AND length(admission_rationale) BETWEEN 1 AND 4096) OR (state = 'OBSERVED' AND workflow_lineage_id IS NULL AND admission_rationale IS NULL)),
+	FOREIGN KEY(workflow_lineage_id) REFERENCES catalog_lineages (lineage_id)
+)
+
+"""
+"""The admission-only queue row V29 through V43 published before Phase D."""
+
+
+_EFFECT_INTENTS_WITH_OPERATION = """
+CREATE TABLE effect_intents (
+	logical_key TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	canonical_request BLOB NOT NULL,
+	request_hash TEXT NOT NULL,
+	workflow_revision_hash TEXT NOT NULL,
+	adapter_revision TEXT NOT NULL,
+	destination_identity TEXT NOT NULL,
+	adapter_operational_identity TEXT NOT NULL,
+	operation_name TEXT NOT NULL,
+	state TEXT NOT NULL,
+	state_version INTEGER NOT NULL,
+	reconciliation_owner_command_id TEXT,
+	PRIMARY KEY (logical_key),
+	UNIQUE (logical_key, run_id, workflow_revision_hash),
+	FOREIGN KEY(run_id, workflow_revision_hash) REFERENCES runs (run_id, revision_hash),
+	CHECK (length(logical_key) > 0),
+	CHECK (length(run_id) > 0),
+	CHECK (length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'),
+	CHECK (length(workflow_revision_hash) = 64 AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'),
+	CHECK (length(adapter_revision) > 0),
+	CHECK (length(destination_identity) > 0),
+	CHECK (length(adapter_operational_identity) > 0),
+	CHECK (operation_name IN ('open-pr', 'push-atelier-commit')),
+	CHECK (state IN ('PREPARED', 'WAITING_RECONCILIATION', 'RECONCILING', 'CONFIRMED', 'ABANDONED')),
+	CHECK (state_version >= 0),
+	CHECK ((state = 'RECONCILING' AND reconciliation_owner_command_id IS NOT NULL AND length(reconciliation_owner_command_id) > 0) OR (state <> 'RECONCILING' AND reconciliation_owner_command_id IS NULL)),
+	FOREIGN KEY(run_id) REFERENCES runs (run_id),
+	FOREIGN KEY(workflow_revision_hash) REFERENCES workflow_revisions (revision_hash),
+	FOREIGN KEY(reconciliation_owner_command_id) REFERENCES reconcile_commands (command_id) ON DELETE RESTRICT
+)
+
+"""
+"""The effect intent table V42 published with a closed operation name."""
+
+
+_EFFECT_RECEIPTS_WITH_OPERATION = """
+CREATE TABLE effect_receipts (
+	logical_key TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	canonical_request BLOB NOT NULL,
+	request_hash TEXT NOT NULL,
+	workflow_revision_hash TEXT NOT NULL,
+	adapter_revision TEXT NOT NULL,
+	destination_identity TEXT NOT NULL,
+	adapter_operational_identity TEXT NOT NULL,
+	operation_name TEXT NOT NULL,
+	effect_id TEXT NOT NULL,
+	result BLOB NOT NULL,
+	result_hash TEXT NOT NULL,
+	confirmation_source TEXT NOT NULL,
+	reconcile_command_id TEXT,
+	fork_source_logical_key TEXT,
+	fork_source_run_id TEXT,
+	fork_source_workflow_revision_hash TEXT,
+	fork_source_result_hash TEXT,
+	PRIMARY KEY (logical_key),
+	UNIQUE (logical_key, run_id, workflow_revision_hash, result_hash),
+	FOREIGN KEY(logical_key, run_id, workflow_revision_hash) REFERENCES effect_intents (logical_key, run_id, workflow_revision_hash),
+	FOREIGN KEY(fork_source_logical_key, fork_source_run_id, fork_source_workflow_revision_hash, fork_source_result_hash) REFERENCES effect_receipts (logical_key, run_id, workflow_revision_hash, result_hash),
+	CHECK (length(logical_key) > 0),
+	CHECK (length(run_id) > 0),
+	CHECK (length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'),
+	CHECK (length(workflow_revision_hash) = 64 AND workflow_revision_hash NOT GLOB '*[^0-9a-f]*'),
+	CHECK (length(adapter_revision) > 0),
+	CHECK (length(destination_identity) > 0),
+	CHECK (length(adapter_operational_identity) > 0),
+	CHECK (operation_name IN ('open-pr', 'push-atelier-commit')),
+	CHECK (length(effect_id) > 0),
+	CHECK (length(result_hash) = 64 AND result_hash NOT GLOB '*[^0-9a-f]*'),
+	CHECK (confirmation_source IN ('ADAPTER_READBACK', 'ADAPTER_EXECUTION', 'OPERATOR_FOUND', 'OPERATOR_AUTHORIZED_EXECUTION', 'FORK_REFERENCE')),
+	CHECK ((confirmation_source IN ('ADAPTER_READBACK', 'ADAPTER_EXECUTION') AND reconcile_command_id IS NULL) OR (confirmation_source IN ('OPERATOR_FOUND', 'OPERATOR_AUTHORIZED_EXECUTION') AND reconcile_command_id IS NOT NULL AND length(reconcile_command_id) > 0) OR (confirmation_source = 'FORK_REFERENCE' AND reconcile_command_id IS NULL)),
+	CHECK ((confirmation_source = 'FORK_REFERENCE' AND fork_source_logical_key IS NOT NULL AND fork_source_run_id IS NOT NULL AND fork_source_workflow_revision_hash IS NOT NULL AND fork_source_result_hash IS NOT NULL AND fork_source_result_hash = result_hash) OR (confirmation_source <> 'FORK_REFERENCE' AND fork_source_logical_key IS NULL AND fork_source_run_id IS NULL AND fork_source_workflow_revision_hash IS NULL AND fork_source_result_hash IS NULL)),
+	FOREIGN KEY(logical_key) REFERENCES effect_intents (logical_key),
+	FOREIGN KEY(run_id) REFERENCES runs (run_id),
+	FOREIGN KEY(workflow_revision_hash) REFERENCES workflow_revisions (revision_hash),
+	FOREIGN KEY(reconcile_command_id) REFERENCES reconcile_commands (command_id)
+)
+
+"""
+"""The effect receipt table V42 published with a closed operation name."""
+
+
 PUBLISHED_TABLE_SHAPES: Mapping[tuple[int, str], str] = {
     (40, "effect_receipts"): _EFFECT_RECEIPTS_BEFORE_FORK_REFERENCE,
     (41, "effect_intents"): _EFFECT_INTENTS_WITH_ABANDONMENT,
     (41, "effect_receipts"): _EFFECT_RECEIPTS_WITH_FORK_REFERENCE,
+    (42, "effect_intents"): _EFFECT_INTENTS_WITH_OPERATION,
+    (42, "effect_receipts"): _EFFECT_RECEIPTS_WITH_OPERATION,
+    (29, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (30, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (31, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (32, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (33, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (34, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (35, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (36, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (37, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (38, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (39, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (40, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (41, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (42, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
+    (43, "queue_items"): _QUEUE_ITEMS_BEFORE_PHASE_D,
     (26, "host_occupancy_revisions"): _HOST_OCCUPANCY_REVISIONS,
     (26, "host_occupancy_bindings"): _HOST_OCCUPANCY_BINDINGS,
     (39, "host_occupancy_revisions"): _HOST_OCCUPANCY_REVISIONS,

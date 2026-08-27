@@ -62,8 +62,14 @@ from atelier2.contracts.host_configuration import (
     SourceConnectionAuthMethod,
 )
 from atelier2.contracts.queue_projection import (
+    MAXIMUM_QUEUE_ACTIVE_RUNS,
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
+    MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS,
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
+    QueueAutomationDisposition,
+    QueueBlockerKind,
+    QueueDecisionAuthority,
+    QueueItemState,
 )
 from atelier2.contracts.run_forks import MAXIMUM_RUN_FORK_SUCCESSORS
 from atelier2.contracts.run_projections import NodeState, PublicAgentAttemptState
@@ -785,55 +791,79 @@ class CatalogAdmissionResource(ApiModel):
     revision_number: int = Field(ge=1)
 
 
-class AdmittedQueueItemResource(ApiModel):
-    """One admitted queue item: its identity, its workflow binding, and why.
+class QueuePriorityRankResource(ApiModel):
+    rank: int = Field(ge=1, le=MAX_SIGNED_INT64)
 
-    Every field is present because an admitted item always carries them: the
-    read door only ever answers with ADMITTED rows, and the write door only
-    answers a success with the admission it recorded. There is no `state` field
-    because the name already says the only state this resource represents.
-    """
 
-    project_id: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_ID_CHARACTERS)
-    tracker_item_reference: str = Field(
-        min_length=1, max_length=MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
-    )
-    item_id: str = Field(pattern=SHA256_HASH_PATTERN)
+class QueueProposalResource(ApiModel):
     revision: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    priority: QueuePriorityRankResource
     workflow_lineage_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    prerequisite_item_ids: tuple[str, ...]
+    automation_disposition: QueueAutomationDisposition
+    policy_revision: int | None = Field(default=None, ge=1, le=MAX_SIGNED_INT64)
+
+
+class QueueAdmissionResource(ApiModel):
+    proposal_revision: int | None = Field(default=None, ge=1, le=MAX_SIGNED_INT64)
+    authority: QueueDecisionAuthority | None
     rationale: str = Field(
         min_length=1, max_length=MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS
     )
 
 
-class QueueItemPageResource(ApiModel):
-    """One page of admitted queue items, resumable by the cursor it ends on."""
+class QueueLaunchBindingResource(ApiModel):
+    proposal_revision: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    run_id: str = Field(min_length=1)
+    workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
 
-    items: tuple[AdmittedQueueItemResource, ...]
-    next_after: str | None = Field(pattern=SHA256_HASH_PATTERN)
 
-
-class ObservedQueueItemResource(ApiModel):
-    """One observed queue item, awaiting the operator's admission decision.
-
-    It carries no binding or rationale because an observed item has neither
-    yet; `revision` is what the admission door's `expected_revision` must
-    repeat, so the operator reads it from this list rather than guessing.
-    """
+class QueueItemResource(ApiModel):
+    """One exhaustive durable queue row; tracker display enrichment is explicit."""
 
     project_id: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_ID_CHARACTERS)
     tracker_item_reference: str = Field(
         min_length=1, max_length=MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
     )
     item_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    state: QueueItemState
     revision: int = Field(ge=0, le=MAX_SIGNED_INT64)
+    proposal: QueueProposalResource | None
+    admission: QueueAdmissionResource | None
+    launch_binding: QueueLaunchBindingResource | None
+    blockers: tuple[QueueBlockerKind, ...]
+    tracker_enrichment: Literal["ENRICHMENT_UNAVAILABLE"]
+    title: None = None
 
 
-class ObservedQueueItemPageResource(ApiModel):
-    """One page of observed queue items, resumable by the cursor it ends on."""
-
-    items: tuple[ObservedQueueItemResource, ...]
+class QueueItemPageResource(ApiModel):
+    items: tuple[QueueItemResource, ...]
     next_after: str | None = Field(pattern=SHA256_HASH_PATTERN)
+
+
+class QueueProjectPolicyResource(ApiModel):
+    project_id: str = Field(min_length=1, max_length=MAXIMUM_PROJECT_ID_CHARACTERS)
+    revision_number: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    maximum_active_runs: int = Field(ge=1, le=MAXIMUM_QUEUE_ACTIVE_RUNS)
+    automation_label: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS,
+    )
+
+
+class QueueProposalDecisionResource(ApiModel):
+    item_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    state: Literal[QueueItemState.PROPOSED]
+    revision: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    proposal: QueueProposalResource
+
+
+class QueueAdmissionDecisionResource(ApiModel):
+    item_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    state: Literal[QueueItemState.ADMITTED]
+    revision: int = Field(ge=1, le=MAX_SIGNED_INT64)
+    admission: QueueAdmissionResource
 
 
 class ProjectSourceImportResource(ApiModel):

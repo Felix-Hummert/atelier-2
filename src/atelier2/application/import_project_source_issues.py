@@ -1,4 +1,4 @@
-"""Import the connected tracker's open items as OBSERVED queue rows, and read them.
+"""Import the connected tracker's open items as OBSERVED queue rows.
 
 **Why this exists.** Since Slice 1 the queue could hold OBSERVED rows and the
 admission door could advance them, but nothing in production ever created one:
@@ -27,11 +27,7 @@ from atelier2.application.refusals import (
     WriteUnavailable,
 )
 from atelier2.contracts.host_configuration import ProjectId
-from atelier2.contracts.queue_projection import (
-    QueueItemId,
-    QueueItemSnapshot,
-    WorkItemReference,
-)
+from atelier2.contracts.queue_projection import WorkItemReference
 from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.durable_runs import DurableWriteUnavailable
 from atelier2.ports.issue_observation import (
@@ -40,12 +36,7 @@ from atelier2.ports.issue_observation import (
     TrackerPayloadMalformed,
     TrackerSourceUnavailable,
 )
-from atelier2.ports.queue_projection import (
-    ObservedQueueItemsPage,
-    QueueItemsObserved,
-    QueueProjection,
-    QueueReadUnavailable,
-)
+from atelier2.ports.queue_projection import QueueItemsObserved, QueueObserver
 
 
 @dataclass(frozen=True)
@@ -69,7 +60,7 @@ type ImportProjectSourceIssuesOutcome = (
 def import_project_source_issues(
     project: ProjectId | None,
     source: TrackerItemSource | None,
-    queue: QueueProjection,
+    queue: QueueObserver,
 ) -> ImportProjectSourceIssuesOutcome:
     """Observe the tracker's open items into the queue, idempotently.
 
@@ -96,35 +87,6 @@ def import_project_source_issues(
             return ProjectSourceIssuesImported(total, newly_observed)
         case DurableWriteUnavailable():
             return WriteUnavailable()
-        case PortDurableStateCorrupt():
-            return DurableStateCorrupt()
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
-@dataclass(frozen=True)
-class ObservedQueueItemsListed:
-    """One page of items still awaiting the operator's admission decision."""
-
-    items: tuple[QueueItemSnapshot, ...]
-    next_after: QueueItemId | None
-
-
-type ListObservedQueueItemsOutcome = (
-    ObservedQueueItemsListed | ReadUnavailable | DurableStateCorrupt
-)
-
-
-def list_observed_queue_items(
-    after: QueueItemId | None, limit: int, queue: QueueProjection
-) -> ListObservedQueueItemsOutcome:
-    """Read one page of observed items, in this layer's own vocabulary."""
-
-    match queue.list_observed_items(after, limit):
-        case ObservedQueueItemsPage(items, next_after):
-            return ObservedQueueItemsListed(items, next_after)
-        case QueueReadUnavailable():
-            return ReadUnavailable()
         case PortDurableStateCorrupt():
             return DurableStateCorrupt()
         case _ as unreachable:

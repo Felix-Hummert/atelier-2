@@ -62,6 +62,7 @@ from atelier2.contracts.host_configuration import (
 )
 from atelier2.contracts.queue_projection import (
     MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS,
+    MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS,
     MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS,
 )
 from atelier2.contracts.run_forks import MAXIMUM_RUN_FORK_SUCCESSORS
@@ -219,23 +220,28 @@ OWNED_WIRE_BOUNDS: Mapping[str, int] = {
     "InvalidFieldResource.reason": MAXIMUM_INVALID_FIELD_REASON_CHARACTERS,
     "UncastRoleResource.role": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "UncastRoleResource.family_differs_from": MAXIMUM_AGENT_FIELD_CHARACTERS,
-    "AdmitQueueItemRequestResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
-    "AdmitQueueItemRequestResource.tracker_item_reference": (
+    "ConfirmQueueProposalRequestResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "ConfirmQueueProposalRequestResource.tracker_item_reference": (
         MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
     ),
-    "AdmitQueueItemRequestResource.rationale": (
+    "ConfirmQueueProposalRequestResource.rationale": (
         MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS
     ),
-    "AdmittedQueueItemResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
-    "AdmittedQueueItemResource.tracker_item_reference": (
+    "PutQueueProposalRequestResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "PutQueueProposalRequestResource.tracker_item_reference": (
         MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
     ),
-    "AdmittedQueueItemResource.rationale": (
-        MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS
+    "PutQueueProjectPolicyRequestResource.automation_label": (
+        MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS
     ),
-    "ObservedQueueItemResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
-    "ObservedQueueItemResource.tracker_item_reference": (
+    "QueueAdmissionResource.rationale": (MAXIMUM_QUEUE_ADMISSION_RATIONALE_CHARACTERS),
+    "QueueItemResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "QueueItemResource.tracker_item_reference": (
         MAXIMUM_TRACKER_ITEM_REFERENCE_CHARACTERS
+    ),
+    "QueueProjectPolicyResource.project_id": MAXIMUM_PROJECT_ID_CHARACTERS,
+    "QueueProjectPolicyResource.automation_label": (
+        MAXIMUM_QUEUE_AUTOMATION_LABEL_CHARACTERS
     ),
     "NodeRefusalOutputResource.value_base64": MAXIMUM_REFUSED_OUTPUT_BASE64_CHARACTERS,
     "AssistantTurnEventResource.text": MAXIMUM_TRANSCRIPT_STEP_CHARACTERS,

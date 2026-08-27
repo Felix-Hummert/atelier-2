@@ -651,6 +651,65 @@ export const observedQueueItemPageSchema = z
   .object({ items: z.array(observedQueueItemSchema), next_after: sha256.nullable() })
   .strict();
 
+const queueProposalSchema = z
+  .object({
+    revision: positiveSafeInteger,
+    priority: z.object({ rank: positiveSafeInteger }).strict(),
+    workflow_lineage_id: sha256,
+    prerequisite_item_ids: z.array(sha256),
+    automation_disposition: z.enum(["HUMAN_REQUIRED", "AUTOMATION_AUTHORIZED"]),
+    policy_revision: positiveSafeInteger.nullable()
+  })
+  .strict();
+
+const queueAdmissionSchema = z
+  .object({
+    proposal_revision: positiveSafeInteger.nullable(),
+    authority: z.enum(["OPERATOR", "AUTOMATION_RULE"]).nullable(),
+    rationale: z.string().min(1)
+  })
+  .strict();
+
+const queueLaunchBindingSchema = z
+  .object({
+    proposal_revision: positiveSafeInteger,
+    run_id: z.string().min(1),
+    workflow_revision_hash: sha256
+  })
+  .strict();
+
+const queueItemSchema = z
+  .object({
+    project_id: z.string().min(1),
+    tracker_item_reference: z.string().min(1),
+    item_id: sha256,
+    state: z.enum(["OBSERVED", "PROPOSED", "ADMITTED"]),
+    revision: nonnegativeSafeInteger,
+    proposal: queueProposalSchema.nullable(),
+    admission: queueAdmissionSchema.nullable(),
+    launch_binding: queueLaunchBindingSchema.nullable(),
+    blockers: z.array(
+      z.enum([
+        "PRIORITY_UNSET",
+        "HUMAN_REQUIRED",
+        "PREREQUISITE_OPEN",
+        "PREREQUISITE_FAILED",
+        "CAP_REACHED",
+        "BINDING_UNRESOLVED",
+        "REQUIRED_ORDER_UNAVAILABLE",
+        "START_REFUSED",
+        "LEGACY_REVIEW_REQUIRED"
+      ])
+    ),
+    tracker_enrichment: z.literal("ENRICHMENT_UNAVAILABLE"),
+    title: z.null()
+  })
+  .strict();
+
+const queueItemPageSchema = z
+  .object({ items: z.array(queueItemSchema), next_after: sha256.nullable() })
+  .strict();
+
 /**
  * One published agent definition as its author named it, and no more.
  *
@@ -2099,6 +2158,30 @@ export const problemDefinitions = {
     status: 409,
     title: "Queue item is already admitted",
   },
+  "queue-admission-authority-refused": {
+    status: 409,
+    title: "Queue admission authority refused",
+  },
+  "queue-admission-proposal-required": {
+    status: 409,
+    title: "Queue admission requires a proposal",
+  },
+  "queue-policy-revision-conflict": {
+    status: 409,
+    title: "Queue policy revision conflict",
+  },
+  "queue-proposal-revision-conflict": {
+    status: 409,
+    title: "Queue proposal revision conflict",
+  },
+  "queue-proposal-already-decided": {
+    status: 409,
+    title: "Queue proposal already decided",
+  },
+  "queue-proposal-refused": {
+    status: 422,
+    title: "Queue proposal refused",
+  },
   "route-not-found": { status: 404, title: "Route not found" },
   "method-not-allowed": { status: 405, title: "Method not allowed" },
   "temporarily-unavailable": { status: 503, title: "Temporarily unavailable" },
@@ -2611,6 +2694,30 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant(
     "queue-admission-already-decided",
     problemDefinitions["queue-admission-already-decided"],
+  ),
+  problemVariant(
+    "queue-admission-authority-refused",
+    problemDefinitions["queue-admission-authority-refused"],
+  ),
+  problemVariant(
+    "queue-admission-proposal-required",
+    problemDefinitions["queue-admission-proposal-required"],
+  ),
+  problemVariant(
+    "queue-policy-revision-conflict",
+    problemDefinitions["queue-policy-revision-conflict"],
+  ),
+  problemVariant(
+    "queue-proposal-revision-conflict",
+    problemDefinitions["queue-proposal-revision-conflict"],
+  ),
+  problemVariant(
+    "queue-proposal-already-decided",
+    problemDefinitions["queue-proposal-already-decided"],
+  ),
+  problemVariant(
+    "queue-proposal-refused",
+    problemDefinitions["queue-proposal-refused"],
   ),
   problemVariant("route-not-found", problemDefinitions["route-not-found"]),
   problemVariant(
@@ -3132,12 +3239,22 @@ export function createCockpitApi(
       requestJson(
         fetcher,
         after === undefined
-          ? "/atelier/api/v1/observed-queue-items?limit=50"
-          : `/atelier/api/v1/observed-queue-items?limit=50&after=${encodeURIComponent(after)}`,
+          ? "/atelier/api/v1/queue-items?limit=50"
+          : `/atelier/api/v1/queue-items?limit=50&after=${encodeURIComponent(after)}`,
         {},
         [200],
-        observedQueueItemPageSchema
-      ),
+        queueItemPageSchema
+      ).then((page) => ({
+        items: page.items
+          .filter((item) => item.state === "OBSERVED")
+          .map((item) => ({
+            project_id: item.project_id,
+            tracker_item_reference: item.tracker_item_reference,
+            item_id: item.item_id,
+            revision: item.revision
+          })),
+        next_after: page.next_after
+      })),
     listAgentDefinitionRevisions: (after?: string) =>
       requestJson(
         fetcher,

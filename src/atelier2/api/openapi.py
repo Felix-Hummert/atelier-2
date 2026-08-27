@@ -104,8 +104,9 @@ MODEL_REGISTRY_VALIDATIONS_PATH = MODEL_REGISTRY_PATH + "/validations"
 PROJECT_MODEL_DEFAULTS_PATH = PROJECT_PATH + "/model-defaults"
 PROJECT_MODEL_RESOLUTION_PATH = PROJECT_PATH + "/model-resolution"
 QUEUE_ADMISSIONS_PATH = API_PREFIX + "/queue-admissions"
+QUEUE_PROPOSALS_PATH = API_PREFIX + "/queue-proposals"
 QUEUE_ITEMS_PATH = API_PREFIX + "/queue-items"
-OBSERVED_QUEUE_ITEMS_PATH = API_PREFIX + "/observed-queue-items"
+PROJECT_QUEUE_POLICY_PATH = PROJECT_PATH + "/queue-policy"
 PROJECT_SOURCE_IMPORT_PATH = API_PREFIX + "/project-sources/import"
 LIBRARY_RECOGNITIONS_PATH = API_PREFIX + "/library/recognitions"
 LIBRARY_ADDITIONS_PATH = API_PREFIX + "/library/additions"
@@ -587,6 +588,27 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "unsupported-media-type",
         "queue-admission-revision-conflict",
         "queue-admission-already-decided",
+        "queue-admission-authority-refused",
+        "queue-admission-proposal-required",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (QUEUE_PROPOSALS_PATH, "put"): (
+        "invalid-request",
+        "unsupported-media-type",
+        "queue-proposal-revision-conflict",
+        "queue-proposal-already-decided",
+        "queue-proposal-refused",
+        "temporarily-unavailable",
+        "durable-state-corrupt",
+        "internal-error",
+    ),
+    (PROJECT_QUEUE_POLICY_PATH, "put"): (
+        "invalid-public-project-reference",
+        "invalid-request",
+        "unsupported-media-type",
+        "queue-policy-revision-conflict",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",
@@ -601,12 +623,6 @@ OPERATION_PROBLEMS: dict[tuple[str, str], tuple[str, ...]] = {
         "project-source-not-connected",
         "project-source-unavailable",
         "project-source-payload-malformed",
-        "temporarily-unavailable",
-        "durable-state-corrupt",
-        "internal-error",
-    ),
-    (OBSERVED_QUEUE_ITEMS_PATH, "get"): (
-        "invalid-request",
         "temporarily-unavailable",
         "durable-state-corrupt",
         "internal-error",

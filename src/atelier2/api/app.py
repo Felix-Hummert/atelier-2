@@ -41,8 +41,8 @@ from atelier2.application.admit_catalog_member import (
 )
 from atelier2.application.admit_library_addition import admit_library_addition
 from atelier2.application.admit_queue_item import (
-    admit_queue_item,
-    list_admitted_queue_items,
+    confirm_queue_proposal,
+    list_queue_items,
 )
 from atelier2.application.answer_wait import answer_wait_result
 from atelier2.application.cancel_agent_attempt import cancel_agent_attempt
@@ -53,7 +53,6 @@ from atelier2.application.classify_definition_document import (
 from atelier2.application.fork_run import fork_run
 from atelier2.application.import_project_source_issues import (
     import_project_source_issues,
-    list_observed_queue_items,
 )
 from atelier2.application.model_configuration import (
     get_model_registry,
@@ -62,6 +61,10 @@ from atelier2.application.model_configuration import (
     publish_model_registry,
     publish_project_model_defaults,
     validate_model_registry_entry,
+)
+from atelier2.application.plan_queue_item import (
+    plan_queue_item,
+    put_queue_project_policy,
 )
 from atelier2.application.prepare_run_events import prepare_run_events
 from atelier2.application.project_connections import (
@@ -422,17 +425,20 @@ def bound_use_cases(
                 )
             )
         ),
-        admit_queue_item=lambda command: admit_queue_item(
+        confirm_queue_proposal=lambda command: confirm_queue_proposal(
             command, ports.queue_projection
         ),
-        list_admitted_queue_items=lambda after, limit: list_admitted_queue_items(
+        plan_queue_item=lambda command: plan_queue_item(
+            command, ports.queue_projection
+        ),
+        put_queue_project_policy=lambda policy, expected_revision: (
+            put_queue_project_policy(policy, expected_revision, ports.queue_projection)
+        ),
+        list_queue_items=lambda after, limit: list_queue_items(
             after, limit, ports.queue_projection
         ),
         import_project_source_issues=lambda: import_project_source_issues(
             served_project_id, ports.tracker_item_source, ports.queue_projection
-        ),
-        list_observed_queue_items=lambda after, limit: list_observed_queue_items(
-            after, limit, ports.queue_projection
         ),
     )
 

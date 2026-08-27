@@ -1092,16 +1092,44 @@ describe("the published agent-configuration listing", () => {
 });
 
 describe("the observed queue a start-sheet work-item picker reads", () => {
-  const item = {
+  const observedItem = {
     project_id: "atelier",
     tracker_item_reference: "gh:450",
     item_id: digest,
-    revision: 0
+    state: "OBSERVED",
+    revision: 0,
+    proposal: null,
+    admission: null,
+    launch_binding: null,
+    blockers: [],
+    tracker_enrichment: "ENRICHMENT_UNAVAILABLE",
+    title: null
+  };
+  const proposedItem = {
+    ...observedItem,
+    tracker_item_reference: "gh:451",
+    item_id: "b".repeat(64),
+    state: "PROPOSED",
+    revision: 1,
+    proposal: {
+      revision: 1,
+      priority: { rank: 1 },
+      workflow_lineage_id: digest,
+      prerequisite_item_ids: [],
+      automation_disposition: "HUMAN_REQUIRED",
+      policy_revision: 1
+    }
+  };
+  const mappedObservedItem = {
+    project_id: observedItem.project_id,
+    tracker_item_reference: observedItem.tracker_item_reference,
+    item_id: observedItem.item_id,
+    revision: observedItem.revision
   };
 
   it("asks the served observed queue page and decodes its items and cursor", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify({ items: [item], next_after: null }), {
+      new Response(JSON.stringify({ items: [observedItem, proposedItem], next_after: null }), {
         status: 200,
         headers: { "content-type": "application/json" }
       })
@@ -1109,15 +1137,13 @@ describe("the observed queue a start-sheet work-item picker reads", () => {
 
     const page = await createCockpitApi(fetcher).listObservedQueueItems();
 
-    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
-      "/atelier/api/v1/observed-queue-items?limit=50"
-    );
-    expect(page).toEqual({ items: [item], next_after: null });
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe("/atelier/api/v1/queue-items?limit=50");
+    expect(page).toEqual({ items: [mappedObservedItem], next_after: null });
   });
 
   it("resumes the observed queue page at the after cursor", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify({ items: [item], next_after: digest }), {
+      new Response(JSON.stringify({ items: [observedItem], next_after: digest }), {
         status: 200,
         headers: { "content-type": "application/json" }
       })
@@ -1126,16 +1152,16 @@ describe("the observed queue a start-sheet work-item picker reads", () => {
     const page = await createCockpitApi(fetcher).listObservedQueueItems(digest);
 
     expect(String(fetcher.mock.calls[0]?.[0])).toBe(
-      `/atelier/api/v1/observed-queue-items?limit=50&after=${digest}`
+      `/atelier/api/v1/queue-items?limit=50&after=${digest}`
     );
-    expect(page).toEqual({ items: [item], next_after: digest });
+    expect(page).toEqual({ items: [mappedObservedItem], next_after: digest });
   });
 
   it("refuses an observed item that carries a title the queue does not own", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
-          items: [{ ...item, title: "Preview door" }],
+          items: [{ ...observedItem, title: "Preview door" }],
           next_after: null
         }),
         { status: 200, headers: { "content-type": "application/json" } }
