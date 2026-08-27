@@ -1,10 +1,11 @@
 schema_version = 1
 story = "https://github.com/FlexOr2/atelier-2/issues/435"
 
-# REQ-UIQ-02 for Workbench, History, and Catalog's find-by-search, open-tile,
-# reach-Start and import-via-button tasks. Catalog is in this slice.
+# REQ-UIQ-02 for Workbench, History, Catalog, and the Run view. Catalog's
+# tasks are find-by-search, open-tile, reach-Start and import-via-button;
+# the Run view's are read-standing and open-node-Log.
 # reach-Start is Catalog + card until Start is in view, not §07's 4-click
-# start-by-hand / Start-run remainder. The Run view still waits on #666.
+# start-by-hand / Start-run remainder.
 # Queue-admit is named in mockup v8 §07 and has no Workbench door yet — not
 # asserted here. Settings' connect-a-source path named in §06/§07 is deferred
 # to #567.
@@ -12,4 +13,4 @@ story = "https://github.com/FlexOr2/atelier-2/issues/435"
 [[sentence]]
 id = "core-tasks-meet-named-click-and-glance-budgets"
 requirement = "REQ-UIQ-02"
-text = "The Workbench send-a-message, answer-a-decision and find-the-running-run tasks, History's open-finished-run task, and Catalog's find-by-search, open-tile, reach-Start and import-via-button tasks named in mockup v8 §04/§07 reach their goal within that picture's click and glance budgets, with the goal elements in view without scrolling at 390px and 1280px; reach-Start is Catalog + card until Start is in view, not the §07 Start-run remainder; Settings' connect-a-source path named in §06/§07 is deferred to #567; the Run view waits on #666; queue-admit is named in §07 and has no Workbench door yet."
+text = "The Workbench send-a-message, answer-a-decision and find-the-running-run tasks, History's open-finished-run task, Catalog's find-by-search, open-tile, reach-Start and import-via-button tasks, and the Run view's read-standing and open-node-Log tasks named in mockup v8 §04/§07 and frame #v8-14-run-log reach their goal within that picture's click and glance budgets, with the goal elements in view without scrolling at 390px and 1280px; reach-Start is Catalog + card until Start is in view, not the §07 Start-run remainder; Settings' connect-a-source path named in §06/§07 is deferred to #567; queue-admit is named in §07 and has no Workbench door yet."
