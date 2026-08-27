@@ -18,6 +18,7 @@ from atelier2.ports.agent_attempts import (
     AgentAttemptFailed,
     AgentAttemptStore,
     AgentAttemptSucceeded,
+    PostLaunchAgentRefusalCompleter,
 )
 from atelier2.ports.agent_executions import (
     AgentAttemptWorkspaceLease,
@@ -109,32 +110,43 @@ def execute_agent_attempt(
         completion = supervisor.launch_and_wait(execution, invocation)
         result = executor.decode_process_completion(invocation, completion)
         if isinstance(result, AgentExecutionFailure):
-            if result.code is not AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY:
+            if result.code is AgentAttemptFailureCode.PROCESS_EXITED_UNSUCCESSFULLY:
+                _LOG.warning(
+                    "Agent attempt %s on node %s of run %s failed.",
+                    execution.attempt_id.value,
+                    execution.request.node_id,
+                    execution.request.run_id.value,
+                    extra={
+                        "event": "agent_attempt_failed",
+                        "run_id": execution.request.run_id.value,
+                        "node_id": execution.request.node_id,
+                        "attempt_id": execution.attempt_id.value,
+                    },
+                )
+                # The completion, not the executor's verdict, carries how the child
+                # ended: an executor answers whether it could use the process, and
+                # only supervision saw the exit code and the standard error that
+                # says why. Composing the durable naming here keeps that one reading
+                # of one process, rather than asking every provider to repeat it.
+                # What the process itself wrote is the other half, and only the
+                # executor can read it, so it travels on the failure it returned.
+                outcome = store.complete_known_failure(
+                    execution,
+                    ProcessExitSignature(
+                        completion.return_code, completion.standard_error
+                    ),
+                    result.transcript,
+                )
+            elif result.code is AgentAttemptFailureCode.AGENT_REFUSED:
+                if not isinstance(store, PostLaunchAgentRefusalCompleter):
+                    raise ValueError(
+                        "store cannot complete a post-launch agent refusal"
+                    )
+                outcome = store.complete_post_launch_agent_refusal(
+                    execution, result.transcript
+                )
+            else:
                 raise ValueError("executor returned an unsupported known failure")
-            _LOG.warning(
-                "Agent attempt %s on node %s of run %s failed.",
-                execution.attempt_id.value,
-                execution.request.node_id,
-                execution.request.run_id.value,
-                extra={
-                    "event": "agent_attempt_failed",
-                    "run_id": execution.request.run_id.value,
-                    "node_id": execution.request.node_id,
-                    "attempt_id": execution.attempt_id.value,
-                },
-            )
-            # The completion, not the executor's verdict, carries how the child
-            # ended: an executor answers whether it could use the process, and
-            # only supervision saw the exit code and the standard error that
-            # says why. Composing the durable naming here keeps that one reading
-            # of one process, rather than asking every provider to repeat it.
-            # What the process itself wrote is the other half, and only the
-            # executor can read it, so it travels on the failure it returned.
-            outcome = store.complete_known_failure(
-                execution,
-                ProcessExitSignature(completion.return_code, completion.standard_error),
-                result.transcript,
-            )
         else:
             try:
                 redemption = _redeemed(execution, lease, project)

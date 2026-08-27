@@ -2337,6 +2337,21 @@ class DbosAgentAttemptStore:
             None,
         )
 
+    def complete_post_launch_agent_refusal(
+        self,
+        execution: AgentAttemptExecution,
+        transcript: AttemptTranscript | None,
+    ) -> AgentAttemptFailed:
+        """End an armed attempt whose provider refused after it was launched."""
+
+        return self._judged_armed_failure(
+            execution,
+            AgentAttemptFailureCode.AGENT_REFUSED,
+            NodeReceiptReason.AGENT_REFUSED,
+            None,
+            transcript,
+        )
+
     def complete_project_verification_failure(
         self,
         execution: AgentAttemptExecution,
@@ -2403,7 +2418,7 @@ class DbosAgentAttemptStore:
         execution: AgentAttemptExecution,
         failure: AgentAttemptFailureCode,
         token: NodeReceiptReason,
-        verdict: str,
+        verdict: str | None,
         transcript: AttemptTranscript | None,
         redemption: ToolRedemptionReceipt | None = None,
     ) -> AgentAttemptFailed:
@@ -2414,7 +2429,9 @@ class DbosAgentAttemptStore:
         end is one rule: the armed current attempt of a started run, and nothing
         else. Two copies of that rule would be two chances for it to drift.
         """
-        if not verdict:
+        if verdict is None and token is not NodeReceiptReason.AGENT_REFUSED:
+            raise ValueError(f"an ending named {token.value} says why it happened")
+        if verdict == "":
             raise ValueError(f"an ending named {token.value} says why it happened")
         request = execution.request
         with canonical_write_transaction(self._engine) as connection:
