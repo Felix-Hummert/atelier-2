@@ -1,6 +1,8 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+
+import { FRONTEND_SRC, svelteSourcesIn } from "../support/workshopSources";
 
 /**
  * REQ-UI-14: structure is separated from skin, and a component consumes tokens
@@ -10,7 +12,6 @@ import { describe, expect, it } from "vitest";
  * re-skin would.
  */
 
-const sourceRoot = resolve(import.meta.dirname, "../../src");
 const stylesheet = "styles.css";
 
 /** Where the skin is declared: the one place a literal belongs. */
@@ -49,12 +50,7 @@ function literalsIn(block: string, file: string): string[] {
 }
 
 function styledSources(): string[] {
-  const svelte = ["pages", "components"].flatMap((directory) =>
-    readdirSync(resolve(sourceRoot, directory))
-      .filter((name) => name.endsWith(".svelte"))
-      .map((name) => `${directory}/${name}`)
-  );
-  return [stylesheet, "App.svelte", ...svelte];
+  return [stylesheet, "App.svelte", ...svelteSourcesIn("pages", "components")];
 }
 
 function tokenBlock(source: string, opener: string): string {
@@ -76,7 +72,7 @@ function colourTokens(block: string): string[] {
 
 describe("the skin lives in one place", () => {
   it.each(styledSources())("%s draws itself from tokens alone", (relativePath) => {
-    const source = readFileSync(resolve(sourceRoot, relativePath), "utf8");
+    const source = readFileSync(resolve(FRONTEND_SRC, relativePath), "utf8");
     const literals = styleBlocks(source, relativePath).flatMap((block) =>
       literalsIn(block, relativePath)
     );
@@ -84,7 +80,7 @@ describe("the skin lives in one place", () => {
   });
 
   it("answers every light colour with a dark one of its own", () => {
-    const source = readFileSync(resolve(sourceRoot, stylesheet), "utf8");
+    const source = readFileSync(resolve(FRONTEND_SRC, stylesheet), "utf8");
     const light = colourTokens(tokenBlock(source, ":root {"));
     const dark = declaredTokens(tokenBlock(source, "@media (prefers-color-scheme: dark)"));
     expect(light.length).toBeGreaterThan(0);
