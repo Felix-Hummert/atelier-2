@@ -6,16 +6,19 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
-from scripts.requirement_contract import approval_bytes
+from scripts.documentation_freshness import DocumentSourceWatermark, UnboundDocument
+from scripts.requirement_contract import approval_bytes, read_document_source_watermarks
 
 PROJECT_ROOT = Path(__file__).parents[2]
 GATE = Path("scripts/check_documentation_order.py")
 CONTRACT = Path("scripts/requirement_contract.py")
+FRESHNESS = Path("scripts/documentation_freshness.py")
 REQUIREMENTS = Path("docs/requirements")
 REGISTRY = REQUIREMENTS / "revisions.toml"
 DOCUMENTATION = REQUIREMENTS / "README.md"
@@ -26,7 +29,7 @@ BOUND_END = "<!-- documentation-order-gate-bound:end -->"
 
 def copied_project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
-    for relative in (GATE, CONTRACT):
+    for relative in (GATE, CONTRACT, FRESHNESS):
         destination = project / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(PROJECT_ROOT / relative, destination)
@@ -96,6 +99,71 @@ def commit_project(project: Path) -> str:
 
 def digest(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def bound_0004_watermark() -> DocumentSourceWatermark:
+    watermark = next(
+        item
+        for item in read_document_source_watermarks(PROJECT_ROOT)
+        if item.document.name.startswith("0004-")
+    )
+    assert isinstance(watermark, DocumentSourceWatermark)
+    return watermark
+
+
+def source_binding() -> str:
+    watermark = bound_0004_watermark()
+    return (
+        "[[source_binding]]\n"
+        f'document = "{watermark.document.name[:4]}"\n'
+        f'content_sha256 = "{watermark.document_digest}"\n'
+        f'source_thread = "{watermark.source_thread.identifier}"\n'
+        f'watermark_kind = "{watermark.last_observed_source_object.kind.value}"\n'
+        f'watermark = "{watermark.last_observed_source_object.identifier}"\n'
+    )
+
+
+def source_binding_with_digest(content_digest: str) -> str:
+    watermark = bound_0004_watermark()
+    return source_binding().replace(
+        f'content_sha256 = "{watermark.document_digest}"',
+        f'content_sha256 = "{content_digest}"',
+    )
+
+
+def source_binding_with_watermark(source_watermark: str) -> str:
+    watermark = bound_0004_watermark()
+    return source_binding().replace(
+        f'watermark = "{watermark.last_observed_source_object.identifier}"',
+        f'watermark = "{source_watermark}"',
+    )
+
+
+def source_binding_with_changed_watermark() -> str:
+    watermark = bound_0004_watermark()
+    original = watermark.last_observed_source_object.identifier
+    return source_binding_with_watermark("0" + original[1:])
+
+
+def source_binding_for_unbound_document_with_watermark(source_watermark: str) -> str:
+    document = next(
+        item
+        for item in read_document_source_watermarks(PROJECT_ROOT)
+        if item.document.name.startswith("0001-")
+    )
+    assert isinstance(document, UnboundDocument)
+    return (
+        source_binding()
+        .replace('document = "0004"', 'document = "0001"')
+        .replace(
+            f'content_sha256 = "{bound_0004_watermark().document_digest}"',
+            f'content_sha256 = "{document.document_digest}"',
+        )
+        .replace(
+            f'watermark = "{bound_0004_watermark().last_observed_source_object.identifier}"',
+            f'watermark = "{source_watermark}"',
+        )
+    )
 
 
 def legacy_table(document: str, path: Path, content_digest: str) -> str:
@@ -340,6 +408,82 @@ def test_an_unresolvable_exact_base_revision_fails_closed(tmp_path: Path) -> Non
 
     assert result.returncode != 0
     assert "absent or unresolvable" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("change", "document"),
+    [
+        (
+            lambda content: content.replace(
+                source_binding(),
+                source_binding_with_digest("0" * 64),
+            ),
+            "0004",
+        ),
+        (lambda content: content + "\n" + source_binding(), "0004"),
+        (
+            lambda content: (
+                content
+                + "\n"
+                + source_binding_for_unbound_document_with_watermark(
+                    "unregistered-revision"
+                )
+            ),
+            "0001",
+        ),
+        (
+            lambda content: content.replace(
+                'watermark_kind = "issue_body_revision"',
+                'watermark_kind = "unrecognized_kind"',
+            ),
+            "0004",
+        ),
+    ],
+    ids=(
+        "wrong-document-digest",
+        "duplicate-binding",
+        "unregistered-revision",
+        "unsupported-watermark-kind",
+    ),
+)
+def test_source_bindings_fail_by_document_when_they_are_not_exact(
+    tmp_path: Path,
+    change: Callable[[str], str],
+    document: str,
+) -> None:
+    project = copied_project(tmp_path)
+    registry = project / REGISTRY
+    registry.write_text(change(registry.read_text(encoding="utf-8")), encoding="utf-8")
+
+    result = run_gate(project)
+
+    assert result.returncode != 0
+    assert f"source binding {document}" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda content: content.replace(
+            source_binding(), source_binding_with_changed_watermark()
+        ),
+        lambda content: content.replace("\n" + source_binding(), "\n"),
+    ],
+    ids=("changed", "deleted"),
+)
+def test_existing_source_bindings_are_append_only_against_the_base(
+    tmp_path: Path, change: Callable[[str], str]
+) -> None:
+    project = copied_project(tmp_path)
+    base_revision = commit_project(project)
+    registry = project / REGISTRY
+    registry.write_text(change(registry.read_text(encoding="utf-8")), encoding="utf-8")
+
+    result = run_gate(project, base_revision=base_revision)
+
+    assert result.returncode != 0
+    assert "source binding 0004" in result.stderr
+    assert "changed or deleted" in result.stderr
 
 
 @pytest.mark.proves("the-documentation-order-gate-states-the-bound-of-what-it-proves")
