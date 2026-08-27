@@ -21,14 +21,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import sqlalchemy as sa
 import uvicorn
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from fastapi import FastAPI
+from starlette.types import ASGIApp, Lifespan, Message, Receive, Scope, Send
 
 from atelier2.adapters.dbos import workflow as dbos_workflow
 from atelier2.adapters.dbos.runtime import DbosRuntime, DbosRuntimeSettings
 from atelier2.adapters.dbos.schema import runs
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
-from atelier2.api.context import ApiContext
+from atelier2.api.context import ApiContext, ApiPorts
+from atelier2.api.limits import ApiLimits
+from atelier2.api.stream import EventPollBackoff
 from atelier2.application.model_configuration import (
     ModelRegistryPublished,
     ModelRegistryUnchanged,
@@ -72,8 +75,15 @@ from atelier2.contracts.effects import (
     PerformedEffect,
 )
 from atelier2.contracts.host_configuration import ProjectId
+from atelier2.contracts.queue_projection import TrackerItemReference, WorkItemReference
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
 from atelier2.contracts.runs import RunId, RunState, WorkflowRevision
+from atelier2.contracts.when import RecordedAt
+from atelier2.contracts.work_items import (
+    ObservedWorkItemRevision,
+    WorkItemChangeMarker,
+    WorkItemKind,
+)
 from atelier2.host import serving
 from atelier2.host.conductor_workflow import (
     CONDUCTOR_BRIEF_SCHEMA,
@@ -89,6 +99,12 @@ from atelier2.ports.agent_executions import (
     AgentProcessInvocation,
 )
 from atelier2.ports.effects import EffectAdapter, EffectAdapterFactory
+from atelier2.ports.issue_observation import (
+    OpenTrackerItemsObserved,
+    TrackerItemUnknown,
+    WorkItemRevisionObserved,
+)
+from atelier2.ports.queue_projection import QueueItemsObserved
 from tests.scenarios.agents import (
     RecordingAgentExecutorFactoryV2,
     RecordingAgentExecutorV2,
@@ -105,6 +121,32 @@ nodes:
 """
 RUN_IDS = ("found-run", "absent-run")
 TIMEOUT_SECONDS = 10.0
+E2E_OBSERVED_WORK_ITEM_BODY = "e2e observed work item gh:450 — Grüße 東京"
+_E2E_TRACKER_ITEM = TrackerItemReference("gh:450")
+_E2E_WORK_ITEM = WorkItemReference(ProjectId("e2e-workshop"), _E2E_TRACKER_ITEM)
+_E2E_OBSERVED_REVISION = ObservedWorkItemRevision(
+    _E2E_TRACKER_ITEM,
+    WorkItemKind.ISSUE,
+    E2E_OBSERVED_WORK_ITEM_BODY.encode("utf-8"),
+    WorkItemChangeMarker("e2e-etag-gh-450"),
+    RecordedAt("2026-08-26T09:15:00Z"),
+)
+
+
+class FixtureTracker:
+    """Local tracker the browser proof reads; never a live GitHub adapter."""
+
+    def open_items(self) -> OpenTrackerItemsObserved:
+        return OpenTrackerItemsObserved((_E2E_TRACKER_ITEM,))
+
+    def snapshot(
+        self, reference: TrackerItemReference
+    ) -> WorkItemRevisionObserved | TrackerItemUnknown:
+        if reference != _E2E_TRACKER_ITEM:
+            return TrackerItemUnknown(reference)
+        return WorkItemRevisionObserved(_E2E_OBSERVED_REVISION)
+
+
 # Deadlock brake for generation drain. Fake decode waits are short; git capture
 # of the pinned project under CI CPU pressure is not (issue #747 c2).
 GENERATION_DRAIN_SECONDS = 60.0
@@ -1062,8 +1104,44 @@ def main() -> None:
         project_root=Path(__file__).resolve().parents[2],
     )
 
+    original_create_app = serving.create_app
+
+    def create_app_with_fixture_tracker(
+        *,
+        source_commit: str,
+        source_tree: str,
+        ports: ApiPorts,
+        limits: ApiLimits,
+        event_poll_backoff: EventPollBackoff,
+        frontend_dist: Path | None = None,
+        served_project_id: ProjectId | None = None,
+        lifespan: Lifespan[FastAPI] | None = None,
+    ) -> FastAPI:
+        seeded = replace(ports, tracker_item_source=FixtureTracker())
+        app = original_create_app(
+            source_commit=source_commit,
+            source_tree=source_tree,
+            ports=seeded,
+            limits=limits,
+            event_poll_backoff=event_poll_backoff,
+            frontend_dist=frontend_dist,
+            served_project_id=served_project_id,
+            lifespan=lifespan,
+        )
+        observed = seeded.queue_projection.observe((_E2E_WORK_ITEM,))
+        if not isinstance(observed, QueueItemsObserved):
+            raise TypeError(
+                f"e2e work-item fixture did not land on the queue: {observed!r}"
+            )
+        return app
+
     def compose() -> tuple[ASGIApp, DbosRuntime]:
-        with patch.object(serving, "DbosRuntime", side_effect=runtime):
+        with (
+            patch.object(serving, "DbosRuntime", side_effect=runtime),
+            patch.object(
+                serving, "create_app", side_effect=create_app_with_fixture_tracker
+            ),
+        ):
             return serving.compose_application(settings)
 
     restart_requested = threading.Event()
