@@ -1,13 +1,22 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { catalogPageCopy, workflowStartCopy } from "../../src/lib/catalogPageCopy";
+import { backLinkCopy } from "../../src/lib/backLinkCopy";
+import {
+  catalogPageCopy,
+  startConfigurationLabel,
+  workflowStartCopy
+} from "../../src/lib/catalogPageCopy";
 import { shortFingerprint } from "../../src/lib/fingerprint";
 import { PRODUCT_NAME } from "../../src/lib/productName";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
+import { retryLabel } from "../../src/lib/readStateCopy";
 import { settingsPageCopy } from "../../src/lib/settingsPageCopy";
 import { runPageCopy } from "../../src/lib/runPageCopy";
 import { standingWords } from "../../src/lib/runState";
+import { workbenchQuestions } from "../../src/lib/workbenchQuestions";
+import { nodeAriaName, stateLabels } from "../../src/lib/stateMarkCopy";
+import { workflowGraphCopy } from "../../src/lib/workflowGraphCopy";
 
 const foundReference = "run1.Zm91bmQtcnVu";
 const absentReference = "run1.YWJzZW50LXJ1bg";
@@ -324,9 +333,9 @@ test("proves(core-surfaces-support-one-complete-keyboard-journey): chooses a che
   const opener = page.getByRole("button", { name: "Start" });
   await opener.focus();
   await page.keyboard.press("Enter");
-  const sheet = page.getByRole("dialog", { name: `Start ${workflowName}` });
+  const sheet = page.getByRole("dialog", { name: workflowStartCopy.startTitle(workflowName) });
   await expect(sheet).toBeVisible();
-  const picker = sheet.getByLabel("Configuration for builder");
+  const picker = sheet.getByLabel(workflowStartCopy.configurationFor("builder"));
   await expect(picker).toHaveValue("");
   await picker.selectOption(configurationHash);
   await expect(sheet.getByText("Chosen now", { exact: true })).toBeVisible();
@@ -428,7 +437,7 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
   await page.goto("/atelier");
   await expect(page.getByText("Workbench runs unavailable")).toBeVisible();
   await expect(page.getByText(/Failed to fetch/)).toHaveCount(0);
-  const retry = page.getByRole("button", { name: "Retry workbench runs" });
+  const retry = page.getByRole("button", { name: retryLabel(workbenchQuestions.reloadWorkbenchRuns.readLabel) });
   await expect(retry).toHaveCount(1);
   const roomUrl = page.url();
 
@@ -460,7 +469,7 @@ test("proves(the-studio-preserves-confirmed-truth-and-retries-only-its-failed-re
 
   readsFail = false;
   observed.length = 0;
-  await page.getByRole("button", { name: "Retry workbench runs" }).click();
+  await page.getByRole("button", { name: retryLabel(workbenchQuestions.reloadWorkbenchRuns.readLabel) }).click();
   const room = page.locator(".workbench");
   await expect(page.getByText("Workbench runs unavailable")).toHaveCount(0);
   await expect(room).toBeVisible();
@@ -541,8 +550,8 @@ test("Start sheet presents a current role configuration without retaining a draf
   await page.goto(`/atelier/catalog/${name}`);
   const opener = page.getByRole("button", { name: "Start" });
   await opener.click();
-  const sheet = page.getByRole("dialog", { name: `Start ${name}` });
-  const picker = sheet.getByLabel("Configuration for builder");
+  const sheet = page.getByRole("dialog", { name: workflowStartCopy.startTitle(name) });
+  const picker = sheet.getByLabel(workflowStartCopy.configurationFor("builder"));
   await picker.selectOption(configurationHash);
   await expect(sheet.locator(".role-source")).toHaveText("Chosen now");
   await page.keyboard.press("Escape");
@@ -617,7 +626,7 @@ test("Catalog start sheet refuses scalar and array order schemas before starting
 
   await page.goto(`/atelier/catalog/${workflowName}`);
   await page.getByRole("button", { name: "Start" }).click();
-  const sheet = page.getByRole("dialog", { name: `Start ${workflowName}` });
+  const sheet = page.getByRole("dialog", { name: workflowStartCopy.startTitle(workflowName) });
   await expect(sheet).toBeVisible();
   await expect(sheet.getByRole("group", { name: "Order scalar_order" }).getByRole("alert")).toHaveText(
     "This order must be an object to start here."
@@ -640,7 +649,7 @@ test("walks the whole workshop: the workbench into the run, and one named way ba
   await expect(page.getByRole("heading", { name: "Unnamed workflow" })).toBeVisible();
   // One way back, to the rail destination this page belongs to, and it never
   // repeats the page's own title beside it (operator ruling 23.08.).
-  const trail = page.getByRole("navigation", { name: "Where you are" });
+  const trail = page.getByRole("navigation", { name: backLinkCopy.whereYouAre });
   await expect(trail.getByRole("link")).toHaveCount(1);
   await expect(trail.getByRole("link", { name: "Workbench" })).toBeVisible();
   await expect(trail).not.toContainText("Unnamed workflow");
@@ -660,7 +669,7 @@ test("mobile Found and Absent reconcile exact durable runs", async ({ browser })
   const page = await mobile.newPage();
 
   await page.goto(`/atelier/runs/${foundReference}`);
-  await expect(page.getByRole("heading", { name: "Decision needed" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: runPageCopy.reconciliation.decisionNeeded })).toBeVisible();
   await expect(page.getByText("WAITING RECONCILIATION", { exact: false })).toBeVisible();
   await assertMobileSurface(page);
   await page.screenshot({
@@ -696,10 +705,10 @@ test("mobile Found and Absent reconcile exact durable runs", async ({ browser })
   await expect(resolve).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("heading", { name: /Decision/ })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Answer needed" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: runPageCopy.answerNeeded })).toBeVisible();
 
   await page.goto(`/atelier/runs/${absentReference}`);
-  await expect(page.getByRole("heading", { name: "Decision needed" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: runPageCopy.reconciliation.decisionNeeded })).toBeVisible();
   const absentActor = page.getByLabel("Actor");
   const absentEvidence = page.getByLabel("Evidence", { exact: true });
   const absentChoice = page.getByRole("radio", { name: "Absent" });
@@ -742,9 +751,9 @@ test("mobile Found and Absent reconcile exact durable runs", async ({ browser })
   await page.keyboard.press("Enter");
   await expect(page.getByRole("heading", { name: /Sending decision|Decision pending/ })).toBeFocused();
   await expect(page.getByRole("heading", { name: /Decision/ })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Answer needed" })).toBeVisible();
-  await page.getByLabel("Integer answer").fill("5");
-  await page.getByRole("button", { name: "Answer" }).click();
+  await expect(page.getByRole("heading", { name: runPageCopy.answerNeeded })).toBeVisible();
+  await page.getByLabel(runPageCopy.integerAnswer).fill("5");
+  await page.getByRole("button", { name: runPageCopy.answerSubmit }).click();
   await expect(page.getByText("completed", { exact: true })).toBeVisible();
   await assertNoSeriousAccessibilityFindings(page);
   await mobile.close();
@@ -897,11 +906,11 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
   await page.goto(`/atelier/runs/${reference}`);
 
   await expect(page.getByRole("heading", { level: 1, name: "Two agents in a line" })).toBeVisible();
-  const graph = page.getByRole("region", { name: "Workflow" });
-  await expect(graph.getByRole("button", { name: "implement — Done" })).toBeVisible();
-  await expect(graph.getByRole("button", { name: "review — Done" })).toBeVisible();
-  await expect(page.getByLabel("Where this run stands")).toContainText("Done");
-  await expect(page.getByLabel("Where this run stands")).not.toContainText("Snapshot");
+  const graph = page.getByRole("region", { name: workflowGraphCopy.label });
+  await expect(graph.getByRole("button", { name: nodeAriaName("implement", "succeeded") })).toBeVisible();
+  await expect(graph.getByRole("button", { name: nodeAriaName("review", "succeeded") })).toBeVisible();
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText("Done");
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).not.toContainText("Snapshot");
   // Not one fingerprint and not the run id stands on the main surface; they
   // live in the node's Evidence tab (operator ruling 23.08.).
   await expect(page.getByText("v3/seen-in-the-browser")).toHaveCount(0);
@@ -909,7 +918,7 @@ test("opens a V3 run at its own address and shows the line it drove", async ({ p
   await expect(page.getByText(terminal)).toHaveCount(0);
   await expect(page.getByRole("button", { name: runPageCopy.readAgain })).toHaveCount(0);
 
-  await graph.getByRole("button", { name: "implement — Done" }).click();
+  await graph.getByRole("button", { name: nodeAriaName("implement", "succeeded") }).click();
   await page.getByRole("tab", { name: runPageCopy.tabEvidence }).click();
   await expect(page.getByRole("group", { name: "Run id" })).toContainText(
     "v3/seen-in-the-browser"
@@ -1033,9 +1042,9 @@ test("starts an admitted V3 workflow from its Catalog detail sheet", async ({ pa
 
   await page.goto(`/atelier/catalog/${workflowName}`);
   await page.getByRole("button", { name: "Start" }).click();
-  const sheet = page.getByRole("dialog", { name: `Start ${workflowName}` });
+  const sheet = page.getByRole("dialog", { name: workflowStartCopy.startTitle(workflowName) });
   await expect(sheet).toBeVisible();
-  await sheet.getByLabel("Configuration for builder").selectOption(configurationHash);
+  await sheet.getByLabel(workflowStartCopy.configurationFor("builder")).selectOption(configurationHash);
   const startRun = sheet.getByRole("button", { name: "Start run" });
   await expect(startRun).toBeEnabled();
   await startRun.click();
@@ -1081,13 +1090,13 @@ test("Catalog start sheet names current startability for checked configurations"
   ]);
   await page.goto(`/atelier/catalog/${name}`);
   await page.getByRole("button", { name: "Start" }).click();
-  const picker = page.getByRole("dialog", { name: `Start ${name}` }).getByLabel("Configuration for builder");
+  const picker = page.getByRole("dialog", { name: workflowStartCopy.startTitle(name) }).getByLabel(workflowStartCopy.configurationFor("builder"));
   await expect(picker.getByRole("option", {
-    name: "e2e · available · Account operator-2",
+    name: startConfigurationLabel("e2e", "available", "operator-2"),
     exact: true
   })).toHaveCount(1);
   await expect(picker.getByRole("option", {
-    name: "e2e · unavailable · Account operator-1",
+    name: startConfigurationLabel("e2e", "unavailable", "operator-1"),
     exact: true
   })).toHaveAttribute("disabled", "");
   await picker.selectOption(availableHash);
@@ -1104,7 +1113,7 @@ test("Catalog work-item start sheet sends a missing source to Settings", async (
   await page.route("**/atelier/api/v1/agent-configuration-revisions?*", async (route) => await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [], next_after_revision_hash: null }) }));
   await routeStartSheetModelContract(page, []);
   await page.goto(`/atelier/catalog/${name}`); await page.getByRole("button", { name: "Start" }).click();
-  const sheet = page.getByRole("dialog", { name: `Start ${name}` });
+  const sheet = page.getByRole("dialog", { name: workflowStartCopy.startTitle(name) });
   await expect(sheet).toContainText(workflowStartCopy.noSource);
   await sheet.getByRole("button", { name: workflowStartCopy.connectSource }).click();
   await expect(page).toHaveURL(/\/atelier\/settings$/);
@@ -1124,7 +1133,7 @@ test("Catalog detail draws a published V3 workflow before it starts", async ({ p
   expect((await page.request.post("/atelier/api/v1/workflow-lineages", { data: { workflow_revision_hash: (await workflow.json()).workflow_revision_hash, actor: "e2e", activated_at: "2026-08-26T00:00:00Z" } })).status()).toBe(201);
   await page.goto(`/atelier/catalog/${name}`);
   await expect(page.getByRole("heading", { name })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Workflow" }).getByRole("button", { name: "build" })).toBeVisible();
+  await expect(page.getByRole("region", { name: workflowGraphCopy.label }).getByRole("button", { name: "build" })).toBeVisible();
 });
 test("watches a V3 chain move, node by node, without a reload", async ({ page }) => {
   const api = "/atelier/api/v1";
@@ -1201,15 +1210,15 @@ test("watches a V3 chain move, node by node, without a reload", async ({ page })
 
   // The graph is the one picture of where the run stands: each node turns
   // Done on it as its event arrives, and nothing repeats that as a second list.
-  const chain = page.getByRole("region", { name: "Workflow" });
-  await expect(chain.getByRole("button", { name: "implement — Done" })).toBeVisible({
+  const chain = page.getByRole("region", { name: workflowGraphCopy.label });
+  await expect(chain.getByRole("button", { name: nodeAriaName("implement", "succeeded") })).toBeVisible({
     timeout: 20_000
   });
-  await expect(chain.getByRole("button", { name: "review — Done" })).toBeVisible({
+  await expect(chain.getByRole("button", { name: nodeAriaName("review", "succeeded") })).toBeVisible({
     timeout: 20_000
   });
   await expect(page.getByRole("list", { name: "What finished" })).toHaveCount(0);
-  await expect(page.getByLabel("Where this run stands")).toContainText(standingWords.done);
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText(standingWords.done);
 
   await page.screenshot({ path: "test-results/v3-run-live.png", fullPage: true });
 });
@@ -1283,11 +1292,11 @@ test("draws a running V3 chain as a graph while a node is still working", async 
 
   await page.goto(`/atelier/runs/${reference}`);
 
-  const graph = page.getByRole("region", { name: "Workflow" });
+  const graph = page.getByRole("region", { name: workflowGraphCopy.label });
   await expect(graph).toBeVisible();
   await expect(graph.getByRole("button", { name: /implement/ })).toBeVisible();
   await expect(graph.getByRole("button", { name: /review/ })).toBeVisible();
-  const working = graph.getByRole("button", { name: /Working$/ });
+  const working = graph.getByRole("button", { name: new RegExp(`${stateLabels.working}$`) });
   await expect(working).toBeVisible({ timeout: 10_000 });
   await expect(working).toHaveAttribute("data-live", "true");
   await expect(page.getByRole("progressbar")).toHaveCount(0);
@@ -1304,7 +1313,7 @@ test("draws a running V3 chain as a graph while a node is still working", async 
   await assertNoSeriousAccessibilityFindings(page);
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(graph.getByRole("button", { name: /Working$/ })).toBeVisible();
+  await expect(graph.getByRole("button", { name: new RegExp(`${stateLabels.working}$`) })).toBeVisible();
   await assertMobileSurface(page);
   await page.screenshot({ path: "test-results/v3-graph-running-390x844.png", fullPage: true });
 });
@@ -1423,7 +1432,7 @@ test("proves(the-cockpit-cancels-a-real-run-by-keyboard): cancels a running V3 r
 
   // The real backend ends the run under its own cancel: the standing becomes
   // Cancelled, and the run never re-offers a fresh cancel over a stopped run.
-  await expect(page.getByLabel("Where this run stands")).toContainText(
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText(
     standingWords.cancelled,
     { timeout: 20_000 }
   );
@@ -1431,7 +1440,7 @@ test("proves(the-cockpit-cancels-a-real-run-by-keyboard): cancels a running V3 r
 
   // The same stopped truth reads on a narrow phone width, carried by word.
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByLabel("Where this run stands")).toContainText(
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText(
     standingWords.cancelled
   );
   await assertNoSeriousAccessibilityFindings(page);
@@ -1615,12 +1624,12 @@ test("a node whose answer its own contract refuses never reports success", async
   await page.goto(`/atelier/runs/${reference}`);
   await expect(page.getByRole("heading", { level: 1, name: workflowName })).toBeVisible();
   await expect(page.getByText(runId)).toHaveCount(0);
-  await expect(page.getByLabel("Where this run stands")).toContainText("Failed");
-  await expect(page.getByLabel("Where this run stands")).not.toContainText("Done");
-  await expect(page.getByRole("button", { name: "implement — Failed" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Working/ })).toHaveCount(0);
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText("Failed");
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).not.toContainText("Done");
+  await expect(page.getByRole("button", { name: nodeAriaName("implement", "failed") })).toBeVisible();
+  await expect(page.getByRole("button", { name: new RegExp(stateLabels.working) })).toHaveCount(0);
 
-  await page.getByRole("button", { name: "implement — Failed" }).click();
+  await page.getByRole("button", { name: nodeAriaName("implement", "failed") }).click();
   // A node that stopped opens on Result, where the refusal that stopped it
   // stands. Nothing was written, and the panel says so rather than dressing
   // the silence as a value.
@@ -1785,7 +1794,7 @@ test("opening a Catalog detail draws its nodes before a run exists", async ({
   expect(admitted.status()).toBe(201);
 
   await page.goto(`/atelier/catalog/${workflowName}`);
-  const graph = page.getByRole("region", { name: "Workflow" });
+  const graph = page.getByRole("region", { name: workflowGraphCopy.label });
   await expect(graph.getByRole("button", { name: "implement" })).toBeVisible();
   await expect(graph.getByRole("button", { name: "review" })).toBeVisible();
   await graph.getByRole("button", { name: "implement" }).click();
@@ -1869,14 +1878,14 @@ test("a declared order is a material field on start, and the typed value travels
 
   await page.goto(`/atelier/catalog/${workflowName}`);
   await page.getByRole("button", { name: "Start" }).click();
-  const sheet = page.getByRole("dialog", { name: `Start ${workflowName}` });
+  const sheet = page.getByRole("dialog", { name: workflowStartCopy.startTitle(workflowName) });
   const order = sheet.getByRole("group", { name: "Order portions" });
   const material = order.getByRole("spinbutton", { name: "portions (integer) *", exact: true });
   await expect(material).toBeVisible();
   await expect(material).toHaveValue("");
   await expect(sheet.getByRole("button", { name: "Start run" })).toBeDisabled();
   await material.fill("7");
-  await sheet.getByLabel("Configuration for cook").selectOption(configurationHash);
+  await sheet.getByLabel(workflowStartCopy.configurationFor("cook")).selectOption(configurationHash);
 
   const started: { orders: Array<{ name: string; value: string }> | null } = {
     orders: null
@@ -2291,7 +2300,7 @@ test("a waiting V3 run is answerable on its own run page", async ({ page }) => {
 
   await page.goto(`/atelier/runs/${reference}`);
   await expect(page.getByRole("heading", { level: 2, name: question })).toHaveCount(0);
-  await expect(page.getByLabel("Where this run stands")).toContainText(standingWords.done);
+  await expect(page.getByLabel(runPageCopy.whereThisRunStands)).toContainText(standingWords.done);
   await expect(page.getByText(/not yet/)).toHaveCount(0);
   // The run head's exact facts line (#553): started/ended/duration, in place
   // of the "Exact time" reveal link it replaces.

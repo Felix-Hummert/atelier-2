@@ -169,7 +169,7 @@
 <section class="surface" aria-labelledby="workflow-detail-title">
   <BackLink label={catalog.label} path={catalog.path} {navigate} />
 
-  <ReadState read={detail} label="workflow detail" onRetry={() => { void load(); }} />
+  <ReadState read={detail} label={workflowDetailCopy.detailLabel} onRetry={() => { void load(); }} />
   {#if failureMessage !== null}<p class="failure" role="alert">{failureMessage}</p>{/if}
 
   {#if detail.confirmed?.kind === "not-found"}
@@ -233,7 +233,7 @@
     {/if}
 
     <details class="detail-technical">
-      <summary>Technical</summary>
+      <summary>{workflowDetailCopy.technical}</summary>
       <div class="detail-provenance">
         <ProofAnchor
           label={workflowDetailCopy.workflowRevision}

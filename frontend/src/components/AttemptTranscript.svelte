@@ -9,7 +9,7 @@
   import type { NodeState } from "../lib/runProjection";
   import { whenFacts } from "../lib/runProjection";
   import { parseUtc } from "../lib/when";
-  import { stateLabels } from "./StateMark.svelte";
+  import { stateLabels } from "../lib/stateMarkCopy";
 
   /**
    * The wire already substituted this marker for credential-shaped text.

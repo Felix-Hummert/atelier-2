@@ -1,5 +1,6 @@
 <script lang="ts">
   import { shortFingerprint } from "../lib/fingerprint";
+  import { copyLabel, proofAnchorCopy, sealsSentence as proofSealsSentence } from "../lib/proofAnchorCopy";
 
   /**
    * A fact that proves something, written where it can be read.
@@ -27,9 +28,7 @@
    */
   export let sealsPrefix = true;
 
-  $: sealsSentence = sealsPrefix
-    ? `Seals ${seals}.`
-    : `${seals.charAt(0).toUpperCase()}${seals.slice(1)}.`;
+  $: sealsSentence = proofSealsSentence(seals, sealsPrefix);
 
   let copied = false;
 
@@ -52,8 +51,8 @@
   <span class="proof-label">{label}</span>
   <span class="proof-line">
     <code class="proof-value">{shortFingerprint(value)}</code>
-    <button class="reveal-affordance" type="button" aria-label={`Copy ${label}`} onclick={() => { void copy(); }}>
-      {copied ? "Copied" : "Copy"}
+    <button class="reveal-affordance" type="button" aria-label={copyLabel(label)} onclick={() => { void copy(); }}>
+      {copied ? proofAnchorCopy.copied : proofAnchorCopy.copy}
     </button>
   </span>
   <span class="proof-seals">{sealsSentence}</span>

@@ -12,8 +12,11 @@ import RunCancelCard from "../../src/components/RunCancelCard.svelte";
 import { prepareCancel } from "../../src/lib/cancelRunDelivery";
 import { shortFingerprint } from "../../src/lib/fingerprint";
 import { cancelMutationId, MutationJournal } from "../../src/lib/mutationJournal";
+import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import { runHeaderCopy } from "../../src/lib/runPages";
 import { cancelReasonSentence, runPageCopy } from "../../src/lib/runPageCopy";
+import { nodeAriaName, stateLabels } from "../../src/lib/stateMarkCopy";
+import { workflowGraphCopy } from "../../src/lib/workflowGraphCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import { cancellableBlock, notCancellableBlock } from "../support/runV3";
 import { eventCursor, publicReference, revisionHash as digest } from "../support/workflowV1";
@@ -115,10 +118,10 @@ describe("a version 3 run in the cockpit", () => {
     expect(
       (await screen.findByRole("heading", { level: 1, name: "Two agents in a line" })).isConnected
     ).toBe(true);
-    const graph = await screen.findByRole("region", { name: "Workflow" });
-    expect(within(graph).getByRole("button", { name: "implement — Done" }).isConnected).toBe(true);
-    expect(within(graph).getByRole("button", { name: "review — Working" }).isConnected).toBe(true);
-    expect(screen.getByLabelText("Where this run stands").textContent).toContain("Running");
+    const graph = await screen.findByRole("region", { name: workflowGraphCopy.label });
+    expect(within(graph).getByRole("button", { name: nodeAriaName("implement", "succeeded") }).isConnected).toBe(true);
+    expect(within(graph).getByRole("button", { name: nodeAriaName("review", "working") }).isConnected).toBe(true);
+    expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).toContain("Running");
     // The main surface carries no fingerprints and no "not yet" placeholder:
     // every proof lives one click away, in the node's Evidence tab (operator
     // ruling 23.08.).
@@ -138,7 +141,7 @@ describe("a version 3 run in the cockpit", () => {
 
     await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
 
-    const standing = screen.getByLabelText("Where this run stands");
+    const standing = screen.getByLabelText(runPageCopy.whereThisRunStands);
     expect(standing.textContent).toContain("Running");
     expect(standing.textContent).toMatch(/for \d/);
     expect(standing.textContent).toMatch(/started \d/);
@@ -172,7 +175,7 @@ describe("a version 3 run in the cockpit", () => {
 
       await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
 
-      const standing = screen.getByLabelText("Where this run stands");
+      const standing = screen.getByLabelText(runPageCopy.whereThisRunStands);
       expect(standing.textContent).toContain("Done");
       // Two hours passed between the run ending and now -- not the twelve
       // seconds the run itself took to complete.
@@ -196,9 +199,9 @@ describe("a version 3 run in the cockpit", () => {
       JSON.stringify(await completedEvent("implement", "the draft", 1))
     );
 
-    const graph = await screen.findByRole("region", { name: "Workflow" });
+    const graph = await screen.findByRole("region", { name: workflowGraphCopy.label });
     await waitFor(() =>
-      expect(within(graph).getByRole("button", { name: "implement — Done" }).isConnected).toBe(true)
+      expect(within(graph).getByRole("button", { name: nodeAriaName("implement", "succeeded") }).isConnected).toBe(true)
     );
     // The graph is the one truth about where the run stands; the finished
     // node's output is not pasted beside it.
@@ -227,16 +230,16 @@ describe("a version 3 run in the cockpit", () => {
     feed.handlers?.opened();
     feed.handlers?.event(JSON.stringify(await completedEvent("implement", "the draft", 1)));
 
-    const graph = await screen.findByRole("region", { name: "Workflow" });
+    const graph = await screen.findByRole("region", { name: workflowGraphCopy.label });
     await waitFor(() =>
-      expect(within(graph).getByRole("button", { name: "implement — Done" }).isConnected).toBe(true)
+      expect(within(graph).getByRole("button", { name: nodeAriaName("implement", "succeeded") }).isConnected).toBe(true)
     );
     expect(feed.close).not.toHaveBeenCalled();
 
     feed.handlers?.event(JSON.stringify(await completedEvent("review", "looks good", 2)));
 
     await waitFor(() => expect(feed.close).toHaveBeenCalled());
-    expect(screen.getByLabelText("Where this run stands").textContent).toContain("Done");
+    expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).toContain("Done");
   });
 
   it("keeps the terminal fingerprint out of the main surface and inside the node's evidence", async () => {
@@ -250,7 +253,7 @@ describe("a version 3 run in the cockpit", () => {
     });
     await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
 
-    expect(screen.getByLabelText("Where this run stands").textContent).toContain("Done");
+    expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).toContain("Done");
     expect(screen.queryByRole("group", { name: runPageCopy.terminalHash })).toBeNull();
 
     await openNodeTab(/implement/, runPageCopy.tabEvidence);
@@ -268,7 +271,7 @@ describe("a version 3 run in the cockpit", () => {
     });
 
     await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
-    await screen.findByRole("region", { name: "Workflow" });
+    await screen.findByRole("region", { name: workflowGraphCopy.label });
     expect(cockpitApi.getWorkflowRevision).toHaveBeenCalledWith(digest);
     expect(feed.open).toHaveBeenCalledTimes(1);
   });
@@ -285,9 +288,9 @@ describe("a version 3 run in the cockpit", () => {
 
     // A V3 graph always declares a name once read; while it is still arriving
     // the title says that honestly instead of falling back to the raw run id.
-    await screen.findByRole("heading", { level: 1, name: "Looking…" });
-    expect(screen.getByRole("status").textContent).toBe("Looking…");
-    expect(screen.queryByRole("region", { name: "Workflow" })).toBeNull();
+    await screen.findByRole("heading", { level: 1, name: runPageCopy.looking });
+    expect(screen.getByRole("status").textContent).toBe(runPageCopy.looking);
+    expect(screen.queryByRole("region", { name: workflowGraphCopy.label })).toBeNull();
   });
 
   it("names a graph that could not be read instead of inventing a line from the rail", async () => {
@@ -302,15 +305,15 @@ describe("a version 3 run in the cockpit", () => {
       }
     });
 
-    expect((await screen.findByText("The graph could not be read")).isConnected).toBe(true);
+    expect((await screen.findByText(runPageCopy.graphUnreadable)).isConnected).toBe(true);
     expect(screen.getByText("store asleep").isConnected).toBe(true);
-    expect(screen.queryByRole("region", { name: "Workflow" })).toBeNull();
+    expect(screen.queryByRole("region", { name: workflowGraphCopy.label })).toBeNull();
     expect(screen.getByRole("button", { name: /implement/ }).isConnected).toBe(true);
     expect(screen.getByRole("button", { name: /review/ }).isConnected).toBe(true);
     // A graph that could not be read still has no name to show; the title
     // names that state rather than falling back to the raw run id.
     expect(
-      screen.getByRole("heading", { level: 1, name: "Workflow unavailable" }).isConnected
+      screen.getByRole("heading", { level: 1, name: runPageCopy.workflowUnavailable }).isConnected
     ).toBe(true);
   });
 
@@ -320,7 +323,7 @@ describe("a version 3 run in the cockpit", () => {
     });
     await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
 
-    const back = screen.getByRole("navigation", { name: "Where you are" });
+    const back = screen.getByRole("navigation", { name: backLinkCopy.whereYouAre });
     expect(within(back).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
       "←Workbench"
     ]);
@@ -341,10 +344,10 @@ describe("a started run shows the working node live", () => {
     });
 
     await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
-    const graph = await screen.findByRole("region", { name: "Workflow" });
-    const working = within(graph).getByRole("button", { name: "review — Working" });
+    const graph = await screen.findByRole("region", { name: workflowGraphCopy.label });
+    const working = within(graph).getByRole("button", { name: nodeAriaName("review", "working") });
     expect(working.getAttribute("data-live")).toBe("true");
-    expect(within(graph).getByRole("button", { name: "implement — Done" }).getAttribute("data-live")).toBeNull();
+    expect(within(graph).getByRole("button", { name: nodeAriaName("implement", "succeeded") }).getAttribute("data-live")).toBeNull();
     expect(screen.queryByRole("progressbar")).toBeNull();
     // Connecting is ordinary loading, not a problem worth a line of its own.
     expect(screen.queryByText(runPageCopy.streamStale)).toBeNull();
@@ -352,7 +355,7 @@ describe("a started run shows the working node live", () => {
     feed.handlers?.opened();
     feed.handlers?.event(JSON.stringify(await completedEvent("implement", "the draft", 1)));
 
-    await openNodeTab("review — Working", runPageCopy.tabLog);
+    await openNodeTab(nodeAriaName("review", "working"), runPageCopy.tabLog);
     expect(screen.getByText(runPageCopy.processLogInLease).isConnected).toBe(true);
     expect(screen.getByText(runPageCopy.logAbsent).isConnected).toBe(true);
   });
@@ -404,7 +407,7 @@ describe("a started run shows the working node live", () => {
     feed.handlers?.opened();
     feed.handlers?.event("not-json");
 
-    expect((await screen.findByText("Event invalid")).isConnected).toBe(true);
+    expect((await screen.findByText(runPageCopy.eventInvalid)).isConnected).toBe(true);
     expect(screen.getByText(runPageCopy.streamStale).isConnected).toBe(true);
   });
 
@@ -427,7 +430,7 @@ describe("a started run shows the working node live", () => {
     });
     await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
     expect(document.querySelector("[data-live='true']")).toBeNull();
-    expect(screen.getByLabelText("Where this run stands").textContent).toContain("Done");
+    expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).toContain("Done");
   });
 });
 
@@ -552,12 +555,12 @@ describe("a version 3 run that stops for a person", () => {
       props: { cockpitApi: waitingApi(), mutationJournal: new MutationJournal(sessionStorage) }
     });
 
-    const graph = await screen.findByRole("region", { name: "Workflow" });
-    expect(within(graph).getByRole("button", { name: "approve — Needs you" }).isConnected).toBe(
+    const graph = await screen.findByRole("region", { name: workflowGraphCopy.label });
+    expect(within(graph).getByRole("button", { name: nodeAriaName("approve", "needs_you") }).isConnected).toBe(
       true
     );
-    expect(within(graph).getByRole("button", { name: "implement — Done" }).isConnected).toBe(true);
-    expect(screen.getByLabelText("Where this run stands").textContent).toContain(
+    expect(within(graph).getByRole("button", { name: nodeAriaName("implement", "succeeded") }).isConnected).toBe(true);
+    expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).toContain(
       "Waiting for you"
     );
   });
@@ -581,16 +584,16 @@ describe("a version 3 run that stops for a person", () => {
     const cockpitApi = waitingApi({ getRun, openRunEvents: feed.open });
 
     render(App, { props: { cockpitApi, mutationJournal: journal } });
-    await screen.findByRole("button", { name: "approve — Needs you" });
+    await screen.findByRole("button", { name: nodeAriaName("approve", "needs_you") });
     feed.handlers?.opened();
     feed.handlers?.event(JSON.stringify(await waitAnsweredEvent(1)));
 
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "approve — Done" }).isConnected).toBe(true)
+      expect(screen.getByRole("button", { name: nodeAriaName("approve", "succeeded") }).isConnected).toBe(true)
     );
-    expect(screen.getByLabelText("Where this run stands").textContent).toContain("Done");
+    expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).toContain("Done");
     expect(await journal.entries()).toEqual([]);
-    expect(screen.queryByText("Run unavailable")).toBeNull();
+    expect(screen.queryByText(runPageCopy.runUnavailable)).toBeNull();
   });
 
   it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): leads with the question and the earlier result it is about", async () => {
@@ -814,7 +817,7 @@ describe("a version 3 run that stops for a person", () => {
       props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
     });
 
-    expect(await screen.findByText("The wait question could not be read")).toBeTruthy();
+    expect(await screen.findByText(runPageCopy.waitQuestionUnreadable)).toBeTruthy();
     expect(screen.queryByText(runPageCopy.questionMissing)).toBeNull();
     expect(screen.queryByText(runPageCopy.questionLooking)).toBeNull();
   });
@@ -914,7 +917,7 @@ describe("cancelling a version 3 run from the cockpit", () => {
       await screen.findByText(/finished before this cancel reached it/)
     ).toBeTruthy();
     // The run moved on, so its standing must not read as cancelled.
-    expect(screen.getByLabelText("Where this run stands").textContent).not.toContain("Cancelled");
+    expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).not.toContain("Cancelled");
     expect(screen.queryByText(cancel.accepted)).toBeNull();
     expect(screen.queryByRole("button", { name: cancel.retry })).toBeNull();
     expect((await journal.entries()).filter((entry) => entry.kind === "cancel")).toHaveLength(0);
@@ -1185,12 +1188,12 @@ describe("a failed node on the run page", () => {
     });
     await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
 
-    expect(screen.getByLabelText("Where this run stands").textContent).toContain("Failed");
-    expect(screen.getByRole("button", { name: "implement — Failed" }).isConnected).toBe(true);
-    expect(screen.queryByRole("button", { name: /Working/ })).toBeNull();
+    expect(screen.getByLabelText(runPageCopy.whereThisRunStands).textContent).toContain("Failed");
+    expect(screen.getByRole("button", { name: nodeAriaName("implement", "failed") }).isConnected).toBe(true);
+    expect(screen.queryByRole("button", { name: new RegExp(stateLabels.working) })).toBeNull();
 
     // A node that stopped opens on the reason it stopped, not on the first tab.
-    await fireEvent.click(screen.getByRole("button", { name: "implement — Failed" }));
+    await fireEvent.click(screen.getByRole("button", { name: nodeAriaName("implement", "failed") }));
     expect((await screen.findByRole("tab", { name: runPageCopy.tabResult })).getAttribute("aria-selected")).toBe("true");
     await screen.findByText("Nothing written.");
 
@@ -1234,9 +1237,9 @@ describe("a failed node on the run page", () => {
     expect(alert.textContent).toContain(reason);
     expect(alert.textContent).toContain("implement");
     // The graph stays quiet: it carries state, never a paragraph of prose.
-    const graph = screen.getByRole("region", { name: "Workflow" });
+    const graph = screen.getByRole("region", { name: workflowGraphCopy.label });
     expect(
-      within(graph).getByRole("button", { name: "implement — Failed" }).textContent
+      within(graph).getByRole("button", { name: nodeAriaName("implement", "failed") }).textContent
     ).not.toContain(reason);
   });
 });
@@ -1455,7 +1458,7 @@ describe("the click into a node", () => {
     await openNodeTab(/review/, runPageCopy.tabResult);
 
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("Stopped here");
+    expect(alert.textContent).toContain(runPageCopy.stoppedHere);
     expect(alert.textContent).toContain("instance-not-json");
     expect(alert.textContent).toContain("implement");
   });
@@ -1496,8 +1499,8 @@ describe("the click into a node", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: /implement/ }));
 
-    await screen.findByText("This node could not be read");
-    expect(screen.queryByRole("alert")?.textContent ?? "").not.toContain("Stopped here");
+    await screen.findByText(runPageCopy.nodeUnreadable);
+    expect(screen.queryByRole("alert")?.textContent ?? "").not.toContain(runPageCopy.stoppedHere);
   });
 
   it("proves(a-run-page-speaks-prompt-and-output): carries the node's whole history in named tabs", async () => {
@@ -1549,7 +1552,7 @@ describe("the click into a node", () => {
       }
     });
 
-    await fireEvent.click(await screen.findByRole("button", { name: "review — Needs you" }));
+    await fireEvent.click(await screen.findByRole("button", { name: nodeAriaName("review", "needs_you") }));
 
     expect(
       screen.getByRole("tab", { name: runPageCopy.tabPrompt }).getAttribute("aria-selected")
@@ -1568,13 +1571,13 @@ describe("the click into a node", () => {
       }
     });
 
-    await openNodeTab("review — Working", runPageCopy.tabInput);
+    await openNodeTab(nodeAriaName("review", "working"), runPageCopy.tabInput);
     const reads = await screen.findByRole("tabpanel");
     expect(within(reads).getByText(runPageCopy.inputReads).isConnected).toBe(true);
     expect(within(reads).getByText("implement").isConnected).toBe(true);
 
-    await fireEvent.click(screen.getByRole("button", { name: "review — Working" }));
-    await openNodeTab("implement — Done", runPageCopy.tabInput);
+    await fireEvent.click(screen.getByRole("button", { name: nodeAriaName("review", "working") }));
+    await openNodeTab(nodeAriaName("implement", "succeeded"), runPageCopy.tabInput);
     expect(
       within(screen.getByRole("tabpanel")).getByText(runPageCopy.inputNone).isConnected
     ).toBe(true);
@@ -1619,7 +1622,7 @@ describe("the click into a node", () => {
         mutationJournal: new MutationJournal(sessionStorage)
       }
     });
-    await openNodeTab("review — Working", runPageCopy.tabEvidence);
+    await openNodeTab(nodeAriaName("review", "working"), runPageCopy.tabEvidence);
 
     const who = await screen.findByRole("region", { name: "Who" });
     expect(within(who).getByText("No receipt yet.").isConnected).toBe(true);
@@ -1673,9 +1676,9 @@ describe("the run page speaking the target words", () => {
     feed.handlers?.opened();
     feed.handlers?.event(JSON.stringify(await completedEvent("implement", "schreiben", 1)));
 
-    const graph = await screen.findByRole("region", { name: "Workflow" });
+    const graph = await screen.findByRole("region", { name: workflowGraphCopy.label });
     await waitFor(() =>
-      expect(within(graph).getByRole("button", { name: "implement — Done" }).isConnected).toBe(true)
+      expect(within(graph).getByRole("button", { name: nodeAriaName("implement", "succeeded") }).isConnected).toBe(true)
     );
     expect(document.body.textContent).not.toContain("schreiben");
     expect(screen.queryByText("As it happened")).toBeNull();

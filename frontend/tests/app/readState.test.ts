@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/sv
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import ReadState from "../../src/components/ReadState.svelte";
+import { readStateCopy, retryLabel } from "../../src/lib/readStateCopy";
 import { reportConnectionLost, reportConnectionRestored } from "../../src/lib/connectionState";
 import {
   beginRead,
@@ -34,13 +35,13 @@ describe("recoverable read state", () => {
     reportConnectionLost();
     await waitFor(() => {
       expect(screen.queryByRole("alert")).toBeNull();
-      expect(screen.queryByRole("button", { name: "Retry saved workflows" })).toBeNull();
+      expect(screen.queryByRole("button", { name: retryLabel("saved workflows") })).toBeNull();
     });
 
     reportConnectionRestored();
     await waitFor(() => {
       expect(screen.getByText("Saved workflows unavailable").isConnected).toBe(true);
-      expect(screen.getByRole("button", { name: "Retry saved workflows" }).isConnected).toBe(true);
+      expect(screen.getByRole("button", { name: retryLabel("saved workflows") }).isConnected).toBe(true);
     });
   });
 
@@ -54,7 +55,7 @@ describe("recoverable read state", () => {
     );
     render(ReadState, { props: { read: failed, label: "saved workflows", onRetry: retry } });
 
-    const button = screen.getByRole("button", { name: "Retry saved workflows" });
+    const button = screen.getByRole("button", { name: retryLabel("saved workflows") });
     expect(screen.getAllByRole("button")).toHaveLength(1);
     expect(screen.getByRole("alert").textContent).toContain("Saved workflows unavailable");
     expect(screen.getByRole("alert").textContent).not.toContain("Failed to fetch");
@@ -74,10 +75,10 @@ describe("recoverable read state", () => {
       props: { read: failed, label: "saved workflows", onRetry: vi.fn() }
     });
     expect(document.activeElement).not.toBe(
-      screen.getByRole("button", { name: "Retry saved workflows" })
+      screen.getByRole("button", { name: retryLabel("saved workflows") })
     );
 
-    await fireEvent.click(screen.getByRole("button", { name: "Retry saved workflows" }));
+    await fireEvent.click(screen.getByRole("button", { name: retryLabel("saved workflows") }));
     const secondAttempt = beginRead(failed);
     await view.rerender({ read: secondAttempt.read, label: "saved workflows", onRetry: vi.fn() });
     expect(screen.queryByRole("button")).toBeNull();
@@ -90,7 +91,7 @@ describe("recoverable read state", () => {
     await view.rerender({ read: retriedAgain, label: "saved workflows", onRetry: vi.fn() });
 
     expect(document.activeElement).toBe(
-      screen.getByRole("button", { name: "Retry saved workflows" })
+      screen.getByRole("button", { name: retryLabel("saved workflows") })
     );
   });
 
@@ -99,14 +100,14 @@ describe("recoverable read state", () => {
     const looking = first.read;
     render(ReadState, { props: { read: looking, label: "saved workflows", onRetry: vi.fn() } });
     expect(screen.queryByRole("button")).toBeNull();
-    expect(screen.getByRole("status").textContent).toContain("Looking…");
+    expect(screen.getByRole("status").textContent).toContain(readStateCopy.looking);
     cleanup();
 
     const confirmed = confirmRead(looking, first.generation, "truth");
     const refreshing = beginRead(confirmed).read;
     render(ReadState, { props: { read: refreshing, label: "saved workflows", onRetry: vi.fn() } });
     expect(screen.queryByRole("button")).toBeNull();
-    expect(screen.getByRole("status").textContent).toContain("Refreshing…");
+    expect(screen.getByRole("status").textContent).toContain(readStateCopy.refreshing);
     cleanup();
 
     const idleConfirmed: RetainedRead<string, ReadStateFailure> = {

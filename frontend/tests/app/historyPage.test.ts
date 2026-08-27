@@ -106,7 +106,7 @@ describe("History shows only what has finished", () => {
   it("says nothing finished yet, and teaches where a finished run comes from", async () => {
     openHistory({});
 
-    expect((await screen.findByText("No finished runs yet")).isConnected).toBe(true);
+    expect((await screen.findByText(historyPageCopy.emptyTitle)).isConnected).toBe(true);
     const page = screen.getByRole("region", { name: "History" });
     expect(within(page).queryByRole("link", { name: /run/i })).toBeNull();
     // An empty surface is never a dead end: it names the next step and leads
@@ -118,8 +118,8 @@ describe("History shows only what has finished", () => {
   it("says it is still looking instead of showing an empty table before the read confirms", async () => {
     openHistory({}, { listRuns: vi.fn(() => new Promise<never>(() => undefined)) });
 
-    expect((await screen.findByText("Looking…")).isConnected).toBe(true);
-    expect(screen.queryByText("No finished runs yet")).toBeNull();
+    expect((await screen.findByText(historyPageCopy.looking)).isConnected).toBe(true);
+    expect(screen.queryByText(historyPageCopy.emptyTitle)).toBeNull();
   });
 
   it("shows the silent 7 day period chip and no Start, permanent Refresh or Queue affordance", async () => {
@@ -135,7 +135,7 @@ describe("History shows only what has finished", () => {
     // One freshness model: a loaded page carries no permanent Refresh control
     // (mockup v5 §05 shows none) -- Retry appears only on a genuine read failure.
     expect(screen.queryByRole("button", { name: /Refresh/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: historyPageCopy.retry })).toBeNull();
   });
 
   it("offers Retry only after a genuine read failure, never permanently", async () => {
@@ -144,14 +144,14 @@ describe("History shows only what has finished", () => {
 
     expect((await screen.findByText("History unavailable")).isConnected).toBe(true);
     expect(screen.queryByText(/private transport detail/)).toBeNull();
-    const retry = screen.getByRole("button", { name: "Retry" });
+    const retry = screen.getByRole("button", { name: historyPageCopy.retry });
 
     listRuns.mockResolvedValue({ items: [], next_after: null });
     await fireEvent.click(retry);
 
-    expect((await screen.findByText("No finished runs yet")).isConnected).toBe(true);
+    expect((await screen.findByText(historyPageCopy.emptyTitle)).isConnected).toBe(true);
     expect(screen.queryByText("History unavailable")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: historyPageCopy.retry })).toBeNull();
   });
 
   it("names no local failure while the whole workshop reads unreachable, and reads itself again once the connection returns (#700)", async () => {
@@ -166,12 +166,12 @@ describe("History shows only what has finished", () => {
     // The shell's one line above already names the outage; this page adds
     // no second, page-local echo of the same fact.
     expect(screen.queryByText("History unavailable")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: historyPageCopy.retry })).toBeNull();
 
     listRuns.mockResolvedValue({ items: [], next_after: null });
     reportConnectionRestored();
 
-    expect((await screen.findByText("No finished runs yet")).isConnected).toBe(true);
+    expect((await screen.findByText(historyPageCopy.emptyTitle)).isConnected).toBe(true);
     expect(screen.queryByText("History unavailable")).toBeNull();
   });
 
@@ -275,7 +275,7 @@ describe("History shows only what has finished", () => {
       getWorkflowRevision: vi.fn(async () => v3Revision())
     });
 
-    await screen.findByText("No finished runs yet");
+    await screen.findByText(historyPageCopy.emptyTitle);
     expect(screen.queryByText("ancient")).toBeNull();
   });
 });

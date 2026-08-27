@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AnyRun, CockpitApi } from "../../src/api/client";
 import { railCopy } from "../../src/lib/railCopy";
+import { retryLabel } from "../../src/lib/readStateCopy";
 import { workbenchPageCopy } from "../../src/lib/workbenchPageCopy";
 import {
   describeWorkbenchControl,
@@ -510,7 +511,7 @@ describe("the workbench is the room the workshop opens on", () => {
     testingLibrary.cleanup();
     openRoom([], { listRuns: vi.fn().mockRejectedValue(new Error("wire detail")) });
     await screen.findByRole("button", {
-      name: `Retry ${workbenchQuestions.reloadWorkbenchRuns.readLabel}`
+      name: retryLabel(workbenchQuestions.reloadWorkbenchRuns.readLabel)
     });
     expectWorkbenchControlsAnswerNamedQuestions([
       workbenchQuestions.reloadWorkbenchRuns.id,

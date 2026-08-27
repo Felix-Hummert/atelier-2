@@ -287,7 +287,7 @@ describe("the Workbench pins open decisions (#580)", () => {
     await within(answeredDecision).findByRole("heading", {
       name: "Answer uncertain"
     });
-    await within(answeredDecision).findByRole("button", { name: "Retry" });
+    await within(answeredDecision).findByRole("button", { name: runPageCopy.retry });
 
     await fireEvent.click(
       within(otherDecision).getByRole("button", {
@@ -303,7 +303,7 @@ describe("the Workbench pins open decisions (#580)", () => {
         name: "Answer uncertain"
       }).isConnected
     ).toBe(true);
-    expect(within(answeredDecision).getByRole("button", { name: "Retry" }).isConnected).toBe(true);
+    expect(within(answeredDecision).getByRole("button", { name: runPageCopy.retry }).isConnected).toBe(true);
     expect(
       within(answeredDecision).queryByRole("button", {
         name: new RegExp(workbenchPageCopy.answerDecision)

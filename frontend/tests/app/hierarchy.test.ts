@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App.svelte";
 import type { CockpitApi } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
 import { publicReference, startedRun, workflowRevision } from "../support/workflowV1";
@@ -54,7 +55,7 @@ describe("every page carries one way back and does not repeat its own title", ()
     open(RUN_PATH);
     await screen.findByRole("heading", { name: "Unnamed workflow" });
 
-    const back = screen.getByRole("navigation", { name: "Where you are" });
+    const back = screen.getByRole("navigation", { name: backLinkCopy.whereYouAre });
     expect(within(back).getAllByRole("link").map((step) => step.textContent?.trim())).toEqual([
       "←Workbench"
     ]);
@@ -73,7 +74,7 @@ describe("every page carries one way back and does not repeat its own title", ()
     open("/atelier/settings");
     await screen.findByRole("heading", { name: THE_ONE_PROJECT });
 
-    expect(screen.queryByRole("navigation", { name: "Where you are" })).toBeNull();
+    expect(screen.queryByRole("navigation", { name: backLinkCopy.whereYouAre })).toBeNull();
   });
 
 });
