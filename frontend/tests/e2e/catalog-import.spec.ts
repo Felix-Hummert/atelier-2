@@ -107,8 +107,20 @@ test("proves(the-operator-imports-a-workflow-and-an-agent-and-starts-what-was-im
   // concrete kinds carry their catalog counts.
   const filterChips = catalogGroups.locator(".filter-chip");
   await expect(filterChips.nth(0)).toHaveText(catalogPageCopy.all);
-  await expect(filterChips.nth(1)).toHaveText(new RegExp(`^${catalogPageCopy.workflowsTitle}\\d+$`));
-  await expect(filterChips.nth(2)).toHaveText(new RegExp(`^${catalogPageCopy.agentsTitle}\\d+$`));
+  const workflowTileCount = await page
+    .getByRole("region", { name: catalogPageCopy.workflowsTitle })
+    .getByRole("listitem")
+    .count();
+  const agentTileCount = await page
+    .getByRole("region", { name: catalogPageCopy.agentsByProvider })
+    .getByRole("listitem")
+    .count();
+  await expect(filterChips.nth(1)).toHaveText(
+    `${catalogPageCopy.workflowsTitle}${workflowTileCount}`
+  );
+  await expect(filterChips.nth(2)).toHaveText(
+    `${catalogPageCopy.agentsTitle}${agentTileCount}`
+  );
   await expect(filterChips.nth(3)).toHaveText(new RegExp(`^${catalogPageCopy.skillsTitle}0$`));
   await catalogGroups.getByRole("button", { name: /^Agents/ }).click();
   await expect(entry(page, agentName)).toBeVisible();

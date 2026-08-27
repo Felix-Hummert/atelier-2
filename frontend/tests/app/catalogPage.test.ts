@@ -217,12 +217,64 @@ describe("the catalog room", () => {
     await screen.findByText(WORKFLOW_NAME);
     await fireEvent.click(screen.getByRole("link", { name: WORKFLOW_NAME }));
 
+    expect(screen.queryByRole("group", { name: workflowDetailCopy.workflowRevision })).toBeNull();
+    const technicalSummary = await screen.findByText("Technical", { selector: "summary" });
+    const technical = technicalSummary.closest("details");
+    expect(technical?.open).toBe(false);
+
+    await fireEvent.click(technicalSummary);
+
     const revision = await screen.findByRole("group", { name: workflowDetailCopy.workflowRevision });
+    expect(technical?.open).toBe(true);
     expect(revision.textContent).toContain(shortFingerprint(WORKFLOW_HASH));
     expect(revision.textContent).toContain(workflowDetailCopy.sealsWorkflowRevision);
     expect((await screen.findByRole("heading", { name: workflowDetailCopy.orders })).isConnected).toBe(true);
     expect(screen.getByText(/portions-schema/).isConnected).toBe(true);
     expect(screen.getByText(/portions · integer · required/).isConnected).toBe(true);
+  });
+
+  it("counts the workflow tiles after collapsing a real-shaped library listing", async () => {
+    const secondHash = "1".repeat(64);
+    const thirdHash = "2".repeat(64);
+    const fourthHash = "3".repeat(64);
+    const firstName = "catalog-first";
+    const secondName = "catalog-second";
+    const thirdName = "catalog-third";
+    openCatalog({
+      ...listing([
+        workflowSummary({ name: firstName, workflow_revision_hash: WORKFLOW_HASH }),
+        workflowSummary({ name: firstName, workflow_revision_hash: SIBLING_HASH }),
+        workflowSummary({ name: secondName, workflow_revision_hash: secondHash }),
+        workflowSummary({ name: thirdName, workflow_revision_hash: thirdHash }),
+        workflowSummary({ name: thirdName, workflow_revision_hash: fourthHash })
+      ]),
+      getRevisionByName: vi.fn(async (name) => {
+        if (name === firstName || name === thirdName) {
+          return {
+            display_name: name,
+            lineage_id: LINEAGE_ID,
+            workflow_revision_hash: name === firstName ? WORKFLOW_HASH : thirdHash,
+            revision_number: 1
+          };
+        }
+        throw new CockpitRequestError("no such name", {
+          type: "urn:atelier2:problem:v1:catalog-name-not-found",
+          title: "Catalog name not found",
+          status: 404,
+          detail: "no such name"
+        } as Problem);
+      }),
+      listAgentDefinitionRevisions: vi.fn(async () => ({
+        items: [agentItem(), agentItem({ agent_definition_revision_hash: "4".repeat(64), name: "reviewer" })],
+        next_after_revision_hash: null
+      }))
+    });
+
+    await screen.findByRole("link", { name: firstName });
+    expect(screen.getByRole("button", { name: /Workflows\s*3/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Agents\s*2/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Skills\s*0/ })).toBeTruthy();
+    expect(screen.getAllByRole("link", { name: /catalog-(first|second|third)/ })).toHaveLength(3);
   });
 
   it("opens the selected workflow's start sheet instead of leaving the catalog detail", async () => {
