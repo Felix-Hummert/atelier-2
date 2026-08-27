@@ -22,6 +22,7 @@ from atelier2.adapters.dbos.starter import (
 )
 from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
+from atelier2.adapters.yaml_workflows import parse_executable_workflow_document
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -46,6 +47,11 @@ from atelier2.contracts.schemas_v3 import (
     SchemaAccepted,
     read_instance_document,
     read_schema_document,
+)
+from atelier2.contracts.workflows_v3 import (
+    AgentNodeV3,
+    GraphInputSource,
+    WorkflowGraphV3,
 )
 from atelier2.ports.agent_configurations import (
     AgentConfigurationRevisionCreated,
@@ -80,8 +86,10 @@ RESULT_SCHEMA = PublishedRevision(
 )
 DIFF_TEXT = "diff --git a/app.py b/app.py\n+print('reviewed')\n"
 QUESTIONS_TEXT = "Does this change preserve the review contract?"
+CONTEXT_TEXT = "The review contract is the only authority."
 DIFF = json.dumps(DIFF_TEXT).encode()
 QUESTIONS = json.dumps(QUESTIONS_TEXT).encode()
+CONTEXT = json.dumps(CONTEXT_TEXT).encode()
 REVIEW = {
     "findings": [
         {
@@ -230,6 +238,55 @@ def wait_for_completion(runtime: DbosRuntime, run_id: RunId) -> None:
     raise AssertionError("code review run did not complete")
 
 
+def _context_contract_cases() -> dict[str, tuple[object, object]]:
+    graph = parse_executable_workflow_document(CODE_REVIEW_DOCUMENT)
+    assert isinstance(graph, WorkflowGraphV3)
+    context_input = next(
+        entry for entry in graph.graph_inputs if entry.name == "context"
+    )
+    review = graph.node("review")
+    assert isinstance(review, AgentNodeV3)
+    context_read = next(entry for entry in review.inputs if entry.name == "context")
+    assert context_read.source is not None
+    assert isinstance(context_read.source, GraphInputSource)
+    return {
+        "graph input schema ref": (
+            context_input.schema_reference.ref,
+            "nonempty_string",
+        ),
+        "graph input schema revision": (
+            context_input.schema_reference.revision,
+            TEXT_SCHEMA.revision_hash.value,
+        ),
+        "review node input source": (
+            context_read.source.graph_input,
+            "context",
+        ),
+        "instruction names the context contract": (
+            "context" in review.instruction,
+            True,
+        ),
+        "instruction states the none rule": (
+            "none" in review.instruction,
+            True,
+        ),
+    }
+
+
+CONTEXT_CONTRACT_CASES = _context_contract_cases()
+
+
+@pytest.mark.parametrize(
+    ("actual", "expected"),
+    CONTEXT_CONTRACT_CASES.values(),
+    ids=CONTEXT_CONTRACT_CASES.keys(),
+)
+def test_the_code_review_context_order_is_wired_and_judged(
+    actual: object, expected: object
+) -> None:
+    assert actual == expected
+
+
 def test_a_code_review_round_trips_an_artifact_and_inline_question_to_an_object_result(
     runtime: DbosRuntime, provider: RecordingAgentExecutorFactoryV2
 ) -> None:
@@ -249,6 +306,7 @@ def test_a_code_review_round_trips_an_artifact_and_inline_question_to_an_object_
             orders=(
                 artifact_order(runtime),
                 AuthoredOrder("review_questions", InlineOrderValue(QUESTIONS)),
+                AuthoredOrder("context", InlineOrderValue(CONTEXT)),
             ),
         )
     )
@@ -261,6 +319,7 @@ def test_a_code_review_round_trips_an_artifact_and_inline_question_to_an_object_
     handed = provider.opened.requests[0].job_bytes
     assert DIFF_TEXT.encode() in handed
     assert QUESTIONS_TEXT.encode() in handed
+    assert CONTEXT_TEXT.encode() in handed
     detail = durable_queries(runtime.engine).get_node_detail(run_id, "review")
     assert isinstance(detail, NodeDetailFound), detail
     assert detail.detail.state is NodeState.SUCCEEDED
@@ -308,6 +367,7 @@ def test_a_code_review_object_the_schema_refuses_never_becomes_a_success(
             orders=(
                 artifact_order(runtime),
                 AuthoredOrder("review_questions", InlineOrderValue(QUESTIONS)),
+                AuthoredOrder("context", InlineOrderValue(CONTEXT)),
             ),
         )
     )

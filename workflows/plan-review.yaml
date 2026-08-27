@@ -13,6 +13,10 @@ graph_inputs:
     schema:
       ref: nonempty_string
       revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
+  - name: context
+    schema:
+      ref: nonempty_string
+      revision: "efee11cebb880d0df169aab4de57cc50901261b5e17328a62faa26f442173f95"
 nodes:
   - id: review
     type: agent
@@ -20,12 +24,15 @@ nodes:
     mode: headless
     instruction: >-
       Review the item body carried under "item_body" against the owner
-      documents carried under "owner_documents". You cannot read files, run
-      anything, or use tools in this headless call; these artifacts are your
-      only evidence. Pass a plan only when its risks, steps, files, and tests
-      are sufficient to implement the item without contradicting its owners;
-      otherwise revise it. Revise only with at least one risk; cannot-judge must
-      carry a reason.
+      documents carried under "owner_documents". Judge the item against the
+      contract carried under "context"; when the context contradicts the item
+      body, say which one wins and why. Context is required; the head passes
+      the explicit word "none" when it is truly absent.
+      You cannot read files, run anything, or use tools in this headless call;
+      these artifacts and the context are your only evidence. Pass a plan only
+      when its risks, steps, files, and tests are sufficient to implement the
+      item without contradicting its owners; otherwise revise it. Revise only
+      with at least one risk; cannot-judge must carry a reason.
     inputs:
       - name: item_body
         from:
@@ -33,6 +40,9 @@ nodes:
       - name: owner_documents
         from:
           graph_input: owner_documents
+      - name: context
+        from:
+          graph_input: context
     outputs:
       - name: result
         schema:
