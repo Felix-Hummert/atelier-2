@@ -2,10 +2,10 @@
 
 A connection revision carries its source address as an opaque value (ADR 0010
 decision 1), and this module is that address's one decode owner for the
-`github` source kind: `owner/name@base-branch`, in GitHub's own words for a
-repository plus the branch pull requests target. Serving hands the whole
-revision over and receives the effect registry or open-issue observation
-source; no repository fact travels back above this package.
+`github` source kind: branchless `owner/name` identity plus an adapter-owned
+base ref. A V44 `owner/name@base-branch` address remains readable. Serving
+hands the whole revision over and receives the effect registry or open-issue
+observation source; no repository fact travels back above this package.
 
 The revision's credential directory stays a reference here exactly as it is in
 the record (ADR 0009 §6): the token it names is read when the composed surface
@@ -36,6 +36,7 @@ from atelier2.contracts.host_configuration import (
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
+    SourceReference,
 )
 from atelier2.ports.effects import (
     EffectAdapterRegistration,
@@ -106,7 +107,7 @@ def _connected_repository(
             f"source kind {connection.source_kind.value!r} has no live "
             f"composition; only {GITHUB_SOURCE_KIND.value!r} composes here"
         )
-    return _repository(connection.source_address)
+    return _repository(connection.source_address, connection.source_ref)
 
 
 def _token_credential(
@@ -119,12 +120,22 @@ def _token_credential(
             assert_never(unreachable)
 
 
-def _repository(address: SourceAddress) -> GitHubRepository:
+def _repository(
+    address: SourceAddress, source_ref: SourceReference | None
+) -> GitHubRepository:
     repository_part, at, base_branch = address.value.partition("@")
     owner, slash, name = repository_part.partition("/")
-    if not at or not slash or not owner or not name or not base_branch or "/" in name:
+    if at:
+        if source_ref is not None:
+            raise GitHubConnectionUncomposable(
+                "a github source cannot carry its base ref in both address and detail"
+            )
+        resolved_ref = base_branch
+    else:
+        resolved_ref = "" if source_ref is None else source_ref.value
+    if not slash or not owner or not name or not resolved_ref or "/" in name:
         raise GitHubConnectionUncomposable(
-            "a github source address reads owner/name@base-branch, "
+            "a github source reads owner/name with one base ref, "
             f"not {address.value!r}; reconnect the project with that address"
         )
-    return GitHubRepository(owner, name, base_branch)
+    return GitHubRepository(owner, name, resolved_ref)

@@ -22,6 +22,7 @@ from atelier2.adapters.dbos.host_configuration import (
     append_project_root,
 )
 from atelier2.adapters.dbos.schema import host_project_source_connection_revisions
+from atelier2.adapters.github.composition import live_github_issue_source
 from atelier2.application.project_connections import (
     ConnectionProjectUnknown,
     ConnectProjectSourceResult,
@@ -33,6 +34,9 @@ from atelier2.application.project_connections import (
     connect_project_source,
     get_project_source_connection,
 )
+from atelier2.application.project_connections import (
+    ProjectSourceConnectionConflict as ApplicationProjectSourceConnectionConflict,
+)
 from atelier2.application.refusals import DurableStateCorrupt
 from atelier2.contracts.host_configuration import (
     ConnectionActor,
@@ -43,8 +47,10 @@ from atelier2.contracts.host_configuration import (
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
+    SourceReference,
 )
 from atelier2.host import main
+from atelier2.ports.durable_runs import DurableStateCorrupt as PortDurableStateCorrupt
 from atelier2.ports.host_configuration import (
     ProjectSourceConnectionRevisionConflict,
     ProjectSourceConnectionRevisionCreated,
@@ -142,7 +148,8 @@ def test_reconnecting_the_same_source_appends_nothing(
         )
 
 
-def test_reconnecting_a_different_source_appends_the_next_revision(
+@pytest.mark.proves("a-project-source-identity-never-includes-a-branch")
+def test_connecting_a_different_active_source_refuses_to_retarget_it(
     connected_workshop: tuple[Engine, Path],
 ) -> None:
     engine, credential_directory = connected_workshop
@@ -150,11 +157,10 @@ def test_reconnecting_a_different_source_appends_the_next_revision(
 
     moved = _connect(engine, credential_directory, source_address="acme/studio-mirror")
 
-    assert isinstance(moved, ProjectSourceConnectionPublished)
-    assert moved.revision.revision_number == 2
+    assert moved == ApplicationProjectSourceConnectionConflict()
     read = get_project_source_connection("studio", DbosHostConfigurationChannel(engine))
     assert isinstance(read, ProjectSourceConnectionRead)
-    assert read.revision.source_address == SourceAddress("acme/studio-mirror")
+    assert read.revision.source_address == SourceAddress("acme/studio")
 
 
 def test_connecting_a_project_without_a_root_is_refused(
@@ -203,6 +209,9 @@ def test_a_different_connection_at_the_same_key_conflicts(
         credential_directory,
         SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
         ConnectionActor("felix"),
+        ProjectSourceConnectionLifecycle.CONNECTED,
+        None,
+        None,
     )
 
     assert (
@@ -227,6 +236,9 @@ def test_latest_connection_and_cli_identity_follow_the_active_source(
         credential_directory,
         SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
         ConnectionActor("felix"),
+        ProjectSourceConnectionLifecycle.CONNECTED,
+        None,
+        None,
     )
     first_disconnected = ProjectSourceConnectionRevision(
         ProjectId("studio"),
@@ -238,6 +250,8 @@ def test_latest_connection_and_cli_identity_follow_the_active_source(
         first_connected.auth_method,
         first_connected.connected_by,
         ProjectSourceConnectionLifecycle.DISCONNECTED,
+        None,
+        None,
     )
     second_connected = ProjectSourceConnectionRevision(
         ProjectId("studio"),
@@ -248,6 +262,9 @@ def test_latest_connection_and_cli_identity_follow_the_active_source(
         credential_directory,
         SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
         ConnectionActor("felix"),
+        ProjectSourceConnectionLifecycle.CONNECTED,
+        None,
+        None,
     )
     assert channel.publish_project_source_connection_revision(
         first_connected
@@ -260,7 +277,7 @@ def test_latest_connection_and_cli_identity_follow_the_active_source(
     ) == ProjectSourceConnectionRevisionCreated(second_connected)
 
     read = get_project_source_connection("studio", channel)
-    assert read == ProjectSourceConnectionRead(second_connected)
+    assert read == ProjectSourceConnectionRead(second_connected, "acme/studio")
 
     result = _connect(engine, credential_directory)
 
@@ -282,6 +299,9 @@ def test_reading_more_than_one_active_source_is_typed_durable_corruption(
             credential_directory,
             SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
             ConnectionActor("felix"),
+            ProjectSourceConnectionLifecycle.CONNECTED,
+            None,
+            None,
         )
         for source_id, source_address in (
             (
@@ -305,6 +325,7 @@ def test_reading_more_than_one_active_source_is_typed_durable_corruption(
                     "source_kind": revision.source_kind.value,
                     "revision_number": revision.revision_number,
                     "source_address": revision.source_address.value,
+                    "source_ref": None,
                     "credential_directory": str(revision.credential_directory),
                     "auth_method": revision.auth_method.value,
                     "connected_by": revision.connected_by.value,
@@ -318,6 +339,30 @@ def test_reading_more_than_one_active_source_is_typed_durable_corruption(
     assert (
         get_project_source_connection("studio", DbosHostConfigurationChannel(engine))
         == DurableStateCorrupt()
+    )
+    assert (
+        DbosHostConfigurationChannel(engine).publish_project_source_connection_revision(
+            revisions[0]
+        )
+        == PortDurableStateCorrupt()
+    )
+
+
+def test_a_missing_v45_connection_column_is_durable_corruption(
+    connected_workshop: tuple[Engine, Path],
+) -> None:
+    engine, _ = connected_workshop
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE host_project_source_connection_revisions "
+            "RENAME COLUMN source_ref TO missing_source_ref"
+        )
+
+    channel = DbosHostConfigurationChannel(engine)
+
+    assert (
+        channel.latest_project_source_connection_revisions(ProjectId("studio"))
+        == PortDurableStateCorrupt()
     )
 
 
@@ -383,17 +428,20 @@ def _connect_command(
     credential_directory: Path,
     *,
     project_id: str = "studio",
+    source_kind: str = "github",
+    source_address: str = "acme/studio",
+    source_ref: str | None = "main",
 ) -> list[str]:
-    return [
+    command = [
         "connect",
         "--database",
         str(tmp_path / "atelier.sqlite"),
         "--project-id",
         project_id,
         "--source-kind",
-        "github",
+        source_kind,
         "--source-address",
-        "acme/studio",
+        source_address,
         "--credential-directory",
         str(credential_directory),
         "--auth-method",
@@ -401,6 +449,9 @@ def _connect_command(
         "--actor",
         "felix",
     ]
+    if source_ref is not None:
+        command.extend(("--source-ref", source_ref))
+    return command
 
 
 def test_the_connect_command_writes_the_revision_the_channel_reads_back(
@@ -417,6 +468,159 @@ def test_the_connect_command_writes_the_revision_the_channel_reads_back(
     assert main(_connect_command(tmp_path, credential_directory)) == 0
     assert "unchanged" in capsys.readouterr().out
 
+    reopened = opened_channel(tmp_path)
+    try:
+        read = get_project_source_connection(
+            "studio", DbosHostConfigurationChannel(reopened)
+        )
+        assert isinstance(read, ProjectSourceConnectionRead)
+        assert read.revision.revision_number == 1
+        assert read.revision.source_address == SourceAddress("acme/studio")
+        assert read.revision.source_ref == SourceReference("main")
+    finally:
+        reopened.dispose()
+
+
+@pytest.mark.parametrize(
+    ("source_address", "source_ref", "expected_refusal"),
+    [
+        pytest.param(
+            "acme/studio",
+            None,
+            "requires a nonempty --source-ref",
+            id="missing-source-ref",
+        ),
+        pytest.param(
+            "acme/studio",
+            "",
+            "requires a nonempty --source-ref",
+            id="empty-source-ref",
+        ),
+        pytest.param(
+            "acme/studio@main",
+            "main",
+            "requires branchless owner/name",
+            id="branch-in-source-address",
+        ),
+    ],
+)
+def test_the_connect_command_refuses_invalid_current_github_identity_shapes(
+    connected_workshop: tuple[Engine, Path],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    source_address: str,
+    source_ref: str | None,
+    expected_refusal: str,
+) -> None:
+    engine, credential_directory = connected_workshop
+    engine.dispose()
+
+    exit_code = main(
+        _connect_command(
+            tmp_path,
+            credential_directory,
+            source_address=source_address,
+            source_ref=source_ref,
+        )
+    )
+
+    assert exit_code == 1
+    assert expected_refusal in capsys.readouterr().err
+    reopened = opened_channel(tmp_path)
+    try:
+        assert _connection_revision_count(reopened) == 0
+    finally:
+        reopened.dispose()
+
+
+def test_the_connect_command_keeps_a_generic_source_ref_optional(
+    connected_workshop: tuple[Engine, Path],
+    tmp_path: Path,
+) -> None:
+    engine, credential_directory = connected_workshop
+    engine.dispose()
+
+    assert (
+        main(
+            _connect_command(
+                tmp_path,
+                credential_directory,
+                source_kind="generic-tracker",
+                source_ref=None,
+            )
+        )
+        == 0
+    )
+
+    reopened = opened_channel(tmp_path)
+    try:
+        read = get_project_source_connection(
+            "studio", DbosHostConfigurationChannel(reopened)
+        )
+        assert isinstance(read, ProjectSourceConnectionRead)
+        assert read.revision.source_kind == SourceKind("generic-tracker")
+        assert read.revision.source_ref is None
+    finally:
+        reopened.dispose()
+
+
+@pytest.mark.proves("a-project-source-identity-never-includes-a-branch")
+def test_the_connect_command_keeps_a_github_ref_out_of_identity_and_composes_it(
+    connected_workshop: tuple[Engine, Path],
+    tmp_path: Path,
+) -> None:
+    engine, credential_directory = connected_workshop
+    engine.dispose()
+
+    assert (
+        main(
+            _connect_command(
+                tmp_path,
+                credential_directory,
+                source_ref="main",
+            )
+        )
+        == 0
+    )
+
+    reopened = opened_channel(tmp_path)
+    try:
+        read = get_project_source_connection(
+            "studio", DbosHostConfigurationChannel(reopened)
+        )
+        assert isinstance(read, ProjectSourceConnectionRead)
+        assert read.revision.source_address == SourceAddress("acme/studio")
+        assert read.revision.source_ref == SourceReference("main")
+        composed = live_github_issue_source(read.revision)
+        assert composed.repository.owner == "acme"
+        assert composed.repository.name == "studio"
+        assert composed.repository.base_branch == "main"
+    finally:
+        reopened.dispose()
+
+
+@pytest.mark.proves("a-project-source-identity-never-includes-a-branch")
+def test_the_connect_command_cannot_retarget_an_active_source(
+    connected_workshop: tuple[Engine, Path],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine, credential_directory = connected_workshop
+    engine.dispose()
+
+    assert main(_connect_command(tmp_path, credential_directory)) == 0
+    capsys.readouterr()
+
+    exit_code = main(
+        _connect_command(
+            tmp_path,
+            credential_directory,
+            source_address="acme/other",
+        )
+    )
+
+    assert exit_code == 1
+    assert "collides with one already recorded" in capsys.readouterr().err
     reopened = opened_channel(tmp_path)
     try:
         read = get_project_source_connection(

@@ -1068,39 +1068,42 @@ def _queue_schema_and_rows(
     return objects, rows
 
 
+@pytest.mark.proves("v44-project-source-history-migrates-as-one-replayable-hop")
 def test_v45_preserves_legacy_source_history_without_touching_queue_objects(
-    tmp_path: Path,
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database = tmp_path / "atelier.sqlite"
     _create_populated_v44_source_store(database)
     with sqlite3.connect(database) as connection:
         queue_before = _queue_schema_and_rows(connection)
 
-    report = migrate_store(database)
+    assert main(["migrate", "--database", str(database)]) == 0
 
-    assert (report.source_version, report.target_version) == (44, 45)
+    assert "step 44 -> 45" in capsys.readouterr().out
     with sqlite3.connect(database) as connection:
         rows = tuple(
             connection.execute(
                 "SELECT revision_hash, source_id, revision_number, source_address, "
-                "credential_directory, lifecycle, connected_at "
+                "source_ref, credential_directory, lifecycle, connected_at "
                 "FROM host_project_source_connection_revisions "
                 "ORDER BY revision_number"
             )
         )
         assert tuple(row[1:] for row in rows) == (
             (
-                "025f997d-9802-a3de-317d-4786f3828f24",
+                "305615fd-f3be-c40f-22d4-7e8d53428878",
                 1,
                 "acme/studio@main",
+                None,
                 "/legacy/credential-one",
                 "CONNECTED",
                 None,
             ),
             (
-                "025f997d-9802-a3de-317d-4786f3828f24",
+                "305615fd-f3be-c40f-22d4-7e8d53428878",
                 2,
                 "acme/studio@trunk",
+                None,
                 "/legacy/credential-two",
                 "CONNECTED",
                 None,
@@ -1140,7 +1143,138 @@ def test_v45_preserves_legacy_source_history_without_touching_queue_objects(
     finally:
         engine.dispose()
 
+    before_replay = _logical_dump(database)
+    assert main(["migrate", "--database", str(database)]) == 0
+    assert "already current" in capsys.readouterr().out
+    assert _logical_dump(database) == before_replay
 
+
+@pytest.mark.proves("v44-project-source-history-migrates-as-one-replayable-hop")
+def test_v44_connection_shape_is_frozen_apart_from_the_live_v45_declaration() -> None:
+    frozen = PUBLISHED_TABLE_SHAPES[(44, host_project_source_connection_revisions.name)]
+
+    assert (
+        schema_module._table_shape_at(44, host_project_source_connection_revisions)
+        == frozen
+    )
+    assert "source_id" not in frozen
+    assert "source_ref" not in frozen
+    assert "source_ref" in schema_module._table_shape_at(
+        SCHEMA_VERSION, host_project_source_connection_revisions
+    )
+
+
+@pytest.mark.proves("v44-project-source-history-migrates-as-one-replayable-hop")
+def test_v45_preserves_kind_histories_and_marks_only_the_noncurrent_head(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    _create_populated_v44_source_store(database)
+    opaque_credential_reference = "~/opaque/../credential"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO host_project_source_connection_revisions "
+            "(revision_hash, project_id, source_kind, revision_number, "
+            "source_address, credential_directory, auth_method, connected_by) "
+            "VALUES (?, 'studio', 'gitlab', 1, 'opaque:project@ref', ?, "
+            "'personal-access-token', 'legacy-operator')",
+            (
+                schema_module._v44_project_source_connection_revision_hash(
+                    ProjectId("studio"),
+                    1,
+                    SourceKind("gitlab"),
+                    SourceAddress("opaque:project@ref"),
+                    opaque_credential_reference,
+                    SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
+                    ConnectionActor("legacy-operator"),
+                ),
+                opaque_credential_reference,
+            ),
+        )
+        connection.commit()
+
+    migrate_store(database)
+
+    with sqlite3.connect(database) as connection:
+        rows = tuple(
+            connection.execute(
+                "SELECT source_id, source_kind, revision_number, source_address, "
+                "source_ref, credential_directory, lifecycle, connected_at "
+                "FROM host_project_source_connection_revisions "
+                "ORDER BY source_kind, revision_number"
+            )
+        )
+    assert rows == (
+        (
+            "305615fd-f3be-c40f-22d4-7e8d53428878",
+            "github",
+            1,
+            "acme/studio@main",
+            None,
+            "/legacy/credential-one",
+            "CONNECTED",
+            None,
+        ),
+        (
+            "305615fd-f3be-c40f-22d4-7e8d53428878",
+            "github",
+            2,
+            "acme/studio@trunk",
+            None,
+            "/legacy/credential-two",
+            "CONNECTED",
+            None,
+        ),
+        (
+            "75c2fcf6-d0f3-ae58-9936-c93792d856ea",
+            "gitlab",
+            1,
+            "opaque:project@ref",
+            None,
+            opaque_credential_reference,
+            "DISCONNECTED",
+            None,
+        ),
+    )
+
+
+@pytest.mark.proves("v44-project-source-history-migrates-as-one-replayable-hop")
+def test_v45_refuses_tied_legacy_kind_heads_without_mutation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database = tmp_path / "atelier.sqlite"
+    _create_populated_v44_source_store(database)
+    with sqlite3.connect(database) as connection:
+        credential_reference = "/legacy/gitlab-credential"
+        connection.execute(
+            "INSERT INTO host_project_source_connection_revisions "
+            "(revision_hash, project_id, source_kind, revision_number, "
+            "source_address, credential_directory, auth_method, connected_by) "
+            "VALUES (?, 'studio', 'gitlab', 2, 'group/project', ?, "
+            "'personal-access-token', 'legacy-operator')",
+            (
+                schema_module._v44_project_source_connection_revision_hash(
+                    ProjectId("studio"),
+                    2,
+                    SourceKind("gitlab"),
+                    SourceAddress("group/project"),
+                    credential_reference,
+                    SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
+                    ConnectionActor("legacy-operator"),
+                ),
+                credential_reference,
+            ),
+        )
+        connection.commit()
+    before = _logical_dump(database)
+
+    assert main(["migrate", "--database", str(database)]) == 1
+
+    assert "histories tied" in capsys.readouterr().err
+    assert _logical_dump(database) == before
+
+
+@pytest.mark.proves("v44-project-source-history-migrates-as-one-replayable-hop")
 def test_v45_failure_after_version_cas_restores_exact_v44_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

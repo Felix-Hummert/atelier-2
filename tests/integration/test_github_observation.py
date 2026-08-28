@@ -23,11 +23,13 @@ from atelier2.adapters.github.observation import LiveGitHubIssueSource
 from atelier2.contracts.host_configuration import (
     ConnectionActor,
     ProjectId,
+    ProjectSourceConnectionLifecycle,
     ProjectSourceConnectionRevision,
     ProjectSourceId,
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
+    SourceReference,
 )
 from atelier2.contracts.queue_projection import TrackerItemReference
 from atelier2.contracts.when import RecordedAt
@@ -123,10 +125,13 @@ def connection_revision(
         ProjectSourceId("11111111-1111-1111-1111-111111111111"),
         1,
         SourceKind(source_kind),
-        SourceAddress(f"{OWNER}/{REPO}@main"),
+        SourceAddress(f"{OWNER}/{REPO}"),
         credential_directory,
         SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
         ConnectionActor("felix"),
+        ProjectSourceConnectionLifecycle.CONNECTED,
+        None,
+        SourceReference("main"),
     )
 
 

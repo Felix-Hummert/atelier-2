@@ -67,6 +67,7 @@ from atelier2.contracts.host_configuration import (
     ProjectId,
     ProjectRootMissing,
     ProjectUnknown,
+    SourceReference,
 )
 from atelier2.host.address import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_SERVICE_URL
 from atelier2.host.mcp_command import execute_mcp
@@ -106,11 +107,12 @@ Connect a configured project to its external source.
 This command is offline, like migrate: it does not serve and does not create
 a store. It appends one immutable connection revision on the host
 configuration channel, binding the project to a source kind, an opaque
-source address the connected platform adapter interprets, a
-credential-directory reference, the chosen auth method, and the connecting
-actor. The credential value itself never enters the record; the host
-resolves it from the named directory at composition. Repeating the exact
-same connect changes nothing.
+source address the connected platform adapter interprets, an optional
+adapter-owned source ref that is not connection identity, a credential-directory
+reference, the chosen auth method, and the connecting actor. GitHub requires a
+branchless owner/name address and a separate nonempty source ref. The credential
+value itself never enters the record; the host resolves it from the named
+directory at composition. Repeating the exact same connect changes nothing.
 """
 
 MIGRATE_DESCRIPTION = """\
@@ -397,6 +399,22 @@ def _connect(parsed: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    if parsed.source_kind == "github":
+        try:
+            SourceReference(parsed.source_ref)
+        except (TypeError, ValueError):
+            print(
+                "a github connection requires a nonempty --source-ref",
+                file=sys.stderr,
+            )
+            return 1
+        if "@" in parsed.source_address:
+            print(
+                "a github connection requires branchless owner/name in "
+                "--source-address; put the branch in --source-ref",
+                file=sys.stderr,
+            )
+            return 1
     engine = create_canonical_engine(parsed.database)
     try:
         try:
@@ -414,6 +432,7 @@ def _connect(parsed: argparse.Namespace) -> int:
             parsed.actor,
             channel,
             channel,
+            source_ref=parsed.source_ref,
         )
     finally:
         engine.dispose()
@@ -903,7 +922,17 @@ def _argument_parser() -> argparse.ArgumentParser:
     connect_parser.add_argument(
         "--source-address",
         required=True,
-        help="the source's address inside its platform, in that platform's words",
+        help=(
+            "the source's address inside its platform; GitHub requires "
+            "branchless owner/name"
+        ),
+    )
+    connect_parser.add_argument(
+        "--source-ref",
+        help=(
+            "an adapter-owned operating detail, required for GitHub's base "
+            "branch and never part of source identity"
+        ),
     )
     connect_parser.add_argument(
         "--credential-directory",

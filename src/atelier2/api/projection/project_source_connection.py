@@ -16,12 +16,13 @@ from atelier2.contracts.host_configuration import ProjectSourceConnectionRevisio
 
 def project_source_connection_revision_resource(
     revision: ProjectSourceConnectionRevision,
+    public_address: str,
 ) -> ProjectSourceConnectionRevisionResource:
     return ProjectSourceConnectionRevisionResource(
         public_project_reference=encode_public_project_reference(revision.project_id),
         revision_number=revision.revision_number,
         source_kind=revision.source_kind.value,
-        source_address=revision.source_address.value,
+        source_address=public_address,
         auth_method=revision.auth_method,
         project_source_connection_revision_hash=revision.revision_hash.value,
     )

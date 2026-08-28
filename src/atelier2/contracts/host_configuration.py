@@ -46,6 +46,7 @@ MAXIMUM_SOURCE_KIND_CHARACTERS = 64
 # The source address is opaque here, so its bound mirrors the tracker item
 # reference's: room for any platform's own identifier, no room for a document.
 MAXIMUM_SOURCE_ADDRESS_CHARACTERS = 1_024
+MAXIMUM_SOURCE_REFERENCE_CHARACTERS = 1_024
 # A managed connection receives one provider token through the bounded HTTP
 # door before depositing it outside durable configuration.
 MAXIMUM_SOURCE_TOKEN_CHARACTERS = 4_096
@@ -489,6 +490,20 @@ class SourceAddress:
 
 
 @dataclass(frozen=True)
+class SourceReference:
+    """Adapter-owned detail used to operate on a source, never its identity."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        _bounded_text(
+            self.value,
+            MAXIMUM_SOURCE_REFERENCE_CHARACTERS,
+            "a source reference",
+        )
+
+
+@dataclass(frozen=True)
 class ConnectionActor:
     """The operator accountable for one connect act (ADR 0010 decision 2)."""
 
@@ -532,10 +547,9 @@ class ProjectSourceConnectionRevision:
     credential_directory: Path
     auth_method: SourceConnectionAuthMethod
     connected_by: ConnectionActor
-    lifecycle: ProjectSourceConnectionLifecycle = (
-        ProjectSourceConnectionLifecycle.CONNECTED
-    )
-    connected_at: RecordedAt | None = None
+    lifecycle: ProjectSourceConnectionLifecycle
+    connected_at: RecordedAt | None
+    source_ref: SourceReference | None
     revision_hash: HostProjectSourceConnectionRevisionHash = field(init=False)
 
     def __post_init__(self) -> None:
@@ -567,7 +581,11 @@ class ProjectSourceConnectionRevision:
             self.connected_at, RecordedAt
         ):
             raise TypeError("connected at must use its typed contract")
-        stored = str(self.credential_directory.expanduser().resolve())
+        if self.source_ref is not None and not isinstance(
+            self.source_ref, SourceReference
+        ):
+            raise TypeError("source reference must use its typed contract")
+        stored = str(self.credential_directory)
         if not 1 <= len(stored) <= MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS:
             raise ValueError(
                 "credential directory must contain "
@@ -592,6 +610,9 @@ class ProjectSourceConnectionRevision:
                     b""
                     if self.connected_at is None
                     else self.connected_at.value.encode("ascii"),
+                    b""
+                    if self.source_ref is None
+                    else self.source_ref.value.encode("utf-8"),
                 )
             ),
         )

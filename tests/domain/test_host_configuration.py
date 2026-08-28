@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ from atelier2.contracts.host_configuration import (
     ProjectModelDefault,
     ProjectModelDefaultsRevision,
     ProjectRootRevision,
+    ProjectSourceConnectionRevision,
     ProjectUnknown,
     ProviderModelCheck,
 )
@@ -75,6 +77,16 @@ def test_the_same_project_root_revision_is_the_same_hash(tmp_path: Path) -> None
 
     assert first.revision_hash == second.revision_hash
     assert first.root_path == root.resolve()
+
+
+def test_every_project_source_revision_must_explicitly_name_its_lifecycle_and_time() -> (
+    None
+):
+    parameters = inspect.signature(ProjectSourceConnectionRevision).parameters
+
+    assert parameters["lifecycle"].default is inspect.Parameter.empty
+    assert parameters["connected_at"].default is inspect.Parameter.empty
+    assert parameters["source_ref"].default is inspect.Parameter.empty
 
 
 def test_a_later_revision_or_another_project_is_a_different_hash(

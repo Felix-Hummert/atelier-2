@@ -35,6 +35,7 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.host_configuration import (
     ConnectionActor,
     ProjectId,
+    ProjectSourceConnectionLifecycle,
     ProjectSourceConnectionRevision,
     ProjectSourceId,
     SourceAddress,
@@ -107,6 +108,9 @@ def issue_source(
             credential_directory,
             SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
             ConnectionActor("felix"),
+            ProjectSourceConnectionLifecycle.CONNECTED,
+            None,
+            None,
         )
     )
     return replace(composed, transport=httpx.MockTransport(listing.handle))

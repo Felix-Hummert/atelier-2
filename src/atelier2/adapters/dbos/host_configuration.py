@@ -55,6 +55,7 @@ from atelier2.contracts.host_configuration import (
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
+    SourceReference,
 )
 from atelier2.contracts.when import RecordedAt
 from atelier2.contracts.workflows_v3 import RoleDifficulty
@@ -81,6 +82,9 @@ from atelier2.ports.host_configuration import (
     ProjectSourceConnectionRevisionConflict,
     ProjectSourceConnectionRevisionCreated,
     ProjectSourceConnectionRevisionExisting,
+    ProjectSourceCredentialDirectoryReferenced,
+    ProjectSourceCredentialDirectoryReferenceResult,
+    ProjectSourceCredentialDirectoryUnreferenced,
     PublishModelRegistryResult,
     PublishProjectModelDefaultsResult,
     PublishProjectRootResult,
@@ -95,6 +99,24 @@ from atelier2.ports.host_configuration import (
 from atelier2.ports.host_configuration import (
     ProjectRootRevisionConflict as PortProjectRootRevisionConflict,
 )
+
+_PROJECT_SOURCE_SHAPE_NAMES = (
+    "host_project_source_connection_revisions",
+    "source_id",
+    "lifecycle",
+    "connected_at",
+    "source_ref",
+)
+
+
+def _project_source_shape_is_missing(error: OperationalError) -> bool:
+    detail = str(error).lower()
+    missing_shape = (
+        "no such column" in detail
+        or "has no column named" in detail
+        or "no such table" in detail
+    )
+    return missing_shape and any(name in detail for name in _PROJECT_SOURCE_SHAPE_NAMES)
 
 
 def project_root_revision_from_record(record: Mapping[Any, Any]) -> ProjectRootRevision:
@@ -639,6 +661,11 @@ def project_source_connection_revision_from_record(
             if record["connected_at"] is None
             else RecordedAt(str(record["connected_at"]))
         ),
+        (
+            None
+            if record["source_ref"] is None
+            else SourceReference(str(record["source_ref"]))
+        ),
     )
     if revision.revision_hash.value != record["revision_hash"]:
         raise ProjectSourceConnectionBytesDisagree(
@@ -672,7 +699,17 @@ def latest_project_source_connection_revision(
     try:
         with engine.connect() as connection:
             return _latest_project_source_connection_revision(connection, project_id)
-    except (OperationalError, PoolTimeoutError, DatabaseError) as error:
+    except OperationalError as error:
+        if _project_source_shape_is_missing(error):
+            raise ProjectSourceConnectionBytesDisagree(
+                "project-source connection bytes disagree: the V45 table shape "
+                "is incomplete"
+            ) from error
+        raise HostConfigurationUnreadable(
+            f"{HOST_CONFIGURATION_UNREADABLE}: the project-source connection "
+            "channel could not be read"
+        ) from error
+    except (PoolTimeoutError, DatabaseError) as error:
         raise HostConfigurationUnreadable(
             f"{HOST_CONFIGURATION_UNREADABLE}: the project-source connection "
             "channel could not be read"
@@ -735,32 +772,52 @@ def _latest_project_source_connection_revision_by_source(
     )
 
 
+def _project_source_credential_directory_reference(
+    connection: Connection,
+    project_id: ProjectId,
+    credential_directory: Path,
+) -> ProjectSourceCredentialDirectoryReferenceResult:
+    records = (
+        connection.execute(
+            sa.select(host_project_source_connection_revisions).where(
+                host_project_source_connection_revisions.c.project_id
+                == project_id.value,
+                host_project_source_connection_revisions.c.credential_directory
+                == str(credential_directory),
+            )
+        )
+        .mappings()
+        .all()
+    )
+    for record in records:
+        project_source_connection_revision_from_record(record)
+    return (
+        ProjectSourceCredentialDirectoryUnreferenced()
+        if not records
+        else ProjectSourceCredentialDirectoryReferenced()
+    )
+
+
 def _write_project_source_connection_revision(
     connection: Connection, revision: ProjectSourceConnectionRevision
 ) -> ProjectSourceConnectionRevisionCreated | ProjectSourceConnectionRevisionExisting:
     if revision.lifecycle is ProjectSourceConnectionLifecycle.CONNECTED:
-        other = host_project_source_connection_revisions.alias("other_source")
-        later = host_project_source_connection_revisions.alias("later_other_revision")
-        active_other_source = connection.execute(
-            sa.select(other.c.source_id)
-            .where(
-                other.c.project_id == revision.project_id.value,
-                other.c.source_id != revision.source_id.value,
-                other.c.lifecycle == ProjectSourceConnectionLifecycle.CONNECTED.value,
-                ~sa.exists(
-                    sa.select(later.c.revision_hash).where(
-                        later.c.project_id == other.c.project_id,
-                        later.c.source_id == other.c.source_id,
-                        later.c.revision_number > other.c.revision_number,
-                    )
-                ),
+        active_sources = tuple(
+            stored
+            for stored in _latest_project_source_connection_revisions(
+                connection, revision.project_id
             )
-            .limit(1)
-        ).scalar_one_or_none()
-        if active_other_source is not None:
+            if stored.lifecycle is ProjectSourceConnectionLifecycle.CONNECTED
+        )
+        if len(active_sources) > 1:
+            raise ProjectSourceConnectionBytesDisagree(
+                "project-source connection bytes disagree: a project has more "
+                "than one active source"
+            )
+        if active_sources and active_sources[0].source_id != revision.source_id:
             raise ProjectSourceConnectionConflict(
                 "project-source-connection-conflict: project already has an "
-                f"active source {active_other_source!r}"
+                f"active source {active_sources[0].source_id.value!r}"
             )
     keyed = (
         connection.execute(
@@ -811,6 +868,9 @@ def _write_project_source_connection_revision(
             source_kind=revision.source_kind.value,
             revision_number=revision.revision_number,
             source_address=revision.source_address.value,
+            source_ref=(
+                None if revision.source_ref is None else revision.source_ref.value
+            ),
             credential_directory=str(revision.credential_directory),
             auth_method=revision.auth_method.value,
             connected_by=revision.connected_by.value,
@@ -973,7 +1033,11 @@ class DbosHostConfigurationChannel:
                 )
         except ProjectSourceConnectionBytesDisagree:
             return DurableStateCorrupt()
-        except (OperationalError, PoolTimeoutError):
+        except OperationalError as error:
+            if _project_source_shape_is_missing(error):
+                return DurableStateCorrupt()
+            return HostConfigurationReadUnavailable()
+        except PoolTimeoutError:
             return HostConfigurationReadUnavailable()
         except (ProjectUnknown, ValueError, TypeError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()
@@ -988,7 +1052,30 @@ class DbosHostConfigurationChannel:
                 )
         except ProjectSourceConnectionBytesDisagree:
             return DurableStateCorrupt()
-        except (OperationalError, PoolTimeoutError):
+        except OperationalError as error:
+            if _project_source_shape_is_missing(error):
+                return DurableStateCorrupt()
+            return HostConfigurationReadUnavailable()
+        except PoolTimeoutError:
+            return HostConfigurationReadUnavailable()
+        except (ProjectUnknown, ValueError, TypeError, RuntimeError, DatabaseError):
+            return DurableStateCorrupt()
+
+    def project_source_credential_directory_reference(
+        self, project_id: ProjectId, credential_directory: Path
+    ) -> ProjectSourceCredentialDirectoryReferenceResult:
+        try:
+            with self._engine.connect() as connection:
+                return _project_source_credential_directory_reference(
+                    connection, project_id, credential_directory
+                )
+        except ProjectSourceConnectionBytesDisagree:
+            return DurableStateCorrupt()
+        except OperationalError as error:
+            if _project_source_shape_is_missing(error):
+                return DurableStateCorrupt()
+            return HostConfigurationReadUnavailable()
+        except PoolTimeoutError:
             return HostConfigurationReadUnavailable()
         except (ProjectUnknown, ValueError, TypeError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()
@@ -1005,7 +1092,11 @@ class DbosHostConfigurationChannel:
             return ProjectSourceConnectionRevisionCollision()
         except ProjectSourceConnectionBytesDisagree:
             return DurableStateCorrupt()
-        except (OperationalError, PoolTimeoutError):
+        except OperationalError as error:
+            if _project_source_shape_is_missing(error):
+                return DurableStateCorrupt()
+            return DurableWriteUnavailable()
+        except PoolTimeoutError:
             return DurableWriteUnavailable()
         except (ProjectUnknown, ValueError, TypeError, RuntimeError, DatabaseError):
             return DurableStateCorrupt()

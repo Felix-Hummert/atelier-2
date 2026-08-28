@@ -334,6 +334,7 @@ def bound_use_cases(
                 served_project_id,
                 ports.host_configuration_channel,
                 ports.project_source_connection_channel,
+                ports.project_source_connector,
             )
         ),
         list_project_sources=lambda project_id: list_served_project_sources(

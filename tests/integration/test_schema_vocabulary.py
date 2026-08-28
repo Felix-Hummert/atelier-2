@@ -52,6 +52,7 @@ from atelier2.contracts.host_configuration import (
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
     MAXIMUM_SOURCE_KIND_CHARACTERS,
+    MAXIMUM_SOURCE_REFERENCE_CHARACTERS,
     ModelRegistryEntrySource,
     ProjectSourceConnectionLifecycle,
     ProviderModelCheck,
@@ -621,6 +622,9 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     ),
     "host_project_source_connection_revisions.source_address": (
         MAXIMUM_SOURCE_ADDRESS_CHARACTERS
+    ),
+    "host_project_source_connection_revisions.source_ref": (
+        MAXIMUM_SOURCE_REFERENCE_CHARACTERS
     ),
     "host_project_source_connection_revisions.credential_directory": (
         MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS

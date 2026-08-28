@@ -21,7 +21,6 @@ from atelier2.api.projection.project_source_connection import (
     project_source_connection_revision_resource,
     project_source_resource,
 )
-from atelier2.api.references import encode_public_source_reference
 from atelier2.api.wire.requests import (
     ConnectProjectSourceRequestResource,
     RotateProjectSourceTokenRequestResource,
@@ -71,8 +70,8 @@ async def get_project_source_connection_route(
         lambda: context.use_cases.get_project_source_connection(project_id),
     )
     match result:
-        case ProjectSourceConnectionRead(revision):
-            return project_source_connection_revision_resource(revision)
+        case ProjectSourceConnectionRead(revision, public_address):
+            return project_source_connection_revision_resource(revision, public_address)
         case ServedProjectUnknown():
             raise ApiProblem("project-unknown")
         case PlatformConnectionUnknown():
@@ -93,14 +92,14 @@ def _source_problem(result: object) -> None:
             raise ApiProblem("project-source-unknown")
         case ProjectSourceDisconnected():
             raise ApiProblem("project-source-disconnected")
-        case ProjectSourceInvalid(reason):
-            raise ApiProblem("project-source-invalid", reason)
-        case ProjectSourceTokenRefused(reason):
-            raise ApiProblem("project-source-token-refused", reason)
-        case ProjectSourceUnavailable(detail) | WriteUnavailable(detail):
-            raise ApiProblem("project-source-unavailable", detail)
-        case ReadUnavailable(detail):
-            raise ApiProblem("temporarily-unavailable", detail)
+        case ProjectSourceInvalid():
+            raise ApiProblem("project-source-invalid")
+        case ProjectSourceTokenRefused():
+            raise ApiProblem("project-source-token-refused")
+        case ProjectSourceUnavailable() | WriteUnavailable():
+            raise ApiProblem("project-source-unavailable")
+        case ReadUnavailable():
+            raise ApiProblem("temporarily-unavailable")
         case DurableStateCorrupt():
             raise ApiProblem("durable-state-corrupt")
         case _:
@@ -152,12 +151,8 @@ async def connect_project_source_route(
     match result:
         case ManagedProjectSourcePublished(source=source):
             return project_source_resource(source)
-        case ProjectSourceAlreadyConnected(source_id):
-            reference = encode_public_source_reference(source_id)
-            raise ApiProblem(
-                "project-source-already-connected",
-                f"Source {reference} is already connected to this project.",
-            )
+        case ProjectSourceAlreadyConnected():
+            raise ApiProblem("project-source-already-connected")
         case _:
             _source_problem(result)
             raise ApiProblem("internal-error")

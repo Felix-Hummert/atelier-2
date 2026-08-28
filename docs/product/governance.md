@@ -126,29 +126,48 @@ The channel also holds project-source connection revisions
 ([ADR 0010](../decisions/0010-github-platform-adapter.md) decision 2). Each
 revision carries a stable source id, `CONNECTED` or `DISCONNECTED` lifecycle,
 the connection instant, source kind, the adapter-owned opaque address, and a
-credential-directory reference; it never carries the credential value. Schema
-V45 rebuilds this family under its immutability triggers, preserves all legacy
-history and credential references, gives each legacy project's history one
-deterministic source id, and leaves its unknowable connection instant null.
-`atelier2 connect` remains the compatible offline operator door. The bounded
-HTTP collection adds `GET` and `POST
+nullable adapter-owned source-ref detail plus a credential-directory reference;
+neither detail is connection identity, and the revision never carries the
+credential value. Schema V45 rebuilds this family in one transaction under its
+immutability triggers. It preserves every V44 address and credential-directory
+string exactly, assigns one deterministic source id per `(project_id,
+source_kind)` history, and sets `connected_at` and `source_ref` to null. For
+each project, the kind whose history has the unique project-wide maximum
+revision remains current: the latest row of every other kind becomes
+`DISCONNECTED`, meaning only that it was not current under V44's singular
+reader and not that a DELETE was witnessed; every other preserved row is
+`CONNECTED`. Tied project-wide maxima refuse before mutation. Replaying the
+completed hop yields the same rows.
+
+`atelier2 connect` remains the compatible offline operator door and cannot
+retarget an active source. The bounded HTTP collection adds `GET` and `POST
 /atelier/api/v1/projects/{public_project_reference}/sources`; `DELETE
 /atelier/api/v1/projects/{public_project_reference}/sources/{public_source_reference}`
 is idempotent disconnect, and `PUT` on that member's `/token` suffix validates
 and rotates the stored credential reference without changing source identity or
-connection instant. Reads expose only the public source reference, kind,
-provider-owned `owner/name` address, `issues` scope, connection instant,
-revision and auth method. The singular `GET
+connection instant. Connecting the same provider address keeps one source id;
+a different address cannot take over while that source is active. Connect and
+rotation reconcile the durable write before removing a credential deposit: a
+validation refusal leaves the previous revision and credential reference
+unchanged, and an unreadable write outcome retains any deposit a durable row
+may name. Public problems give a fixed next step; corrupt state stops mutation
+for inspection. A token entered at either HTTP door is never returned in a
+response or error and never enters a log or event. Reads expose only the public
+source reference, kind, provider-owned `owner/name` address, `issues` scope,
+nullable legacy connection instant, revision and auth method. The singular `GET
 /atelier/api/v1/projects/{public_project_reference}/source-connection` remains
-as a residual until its frontend reader moves. This first door deliberately
-allows zero or one active source per project; multi-source queue identity stays
-with the later queue phase.
+as a residual until its frontend reader moves, but reads only the active
+`CONNECTED` revision: after disconnect it answers not-connected. No public
+projection carries the source ref. This first door deliberately allows zero or
+one active source per project; multi-source queue identity stays with the later
+queue phase.
 
 Serve composes from the record: a served project whose latest connected
 revision names a GitHub source gets the live `open-pr` adapter, and the github
-adapter package alone decodes the opaque address
-(`owner/name@base-branch`) into its repository facts -- no GitHub identifier
-returns to host or serving (ADR 0010 decision 1). The temporary `--github-*`
+adapter package alone composes the branchless `owner/name` address and
+source-ref detail into its repository facts. It also reads preserved V44
+`owner/name@base-branch` addresses whose source ref is null; neither branch
+form returns to host or serving (ADR 0010 decision 1). The temporary `--github-*`
 serve flags are gone; argparse refuses them as unrecognized arguments. All
 three live-GitHub guards stand on the record-composed path: a non-loopback bind
 refuses to start, admission refuses an agent-authored `open-pr` grant, and a

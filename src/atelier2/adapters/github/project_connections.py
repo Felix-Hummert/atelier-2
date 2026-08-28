@@ -16,13 +16,14 @@ from atelier2.adapters.github.live_effects import (
     GitHubCredentialUnresolvable,
     GitHubTokenCredential,
 )
-from atelier2.contracts.host_configuration import SourceAddress
+from atelier2.contracts.host_configuration import SourceAddress, SourceReference
 from atelier2.contracts.secret_redaction import redact_credentials
 from atelier2.ports.project_connections import (
     ParsedProjectSourceAddress,
     ParseProjectSourceAddressResult,
     ProjectSourceAddressInvalid,
     ProjectSourceAuthenticationRefused,
+    ProjectSourceCredentialUnresolvable,
     ProjectSourceValidationUnavailable,
     ValidatedProjectSource,
     ValidateProjectSourceResult,
@@ -85,7 +86,7 @@ class GitHubProjectSourceConnector:
         try:
             token = GitHubTokenCredential(credential_directory).resolve()
         except GitHubCredentialUnresolvable:
-            return ProjectSourceAuthenticationRefused("the token could not be read")
+            return ProjectSourceCredentialUnresolvable()
         client: githubkit.GitHub[githubkit.TokenAuthStrategy] = githubkit.GitHub(
             token,
             transport=self.transport,
@@ -127,7 +128,8 @@ class GitHubProjectSourceConnector:
             )
         return ValidatedProjectSource(
             GITHUB_SOURCE_KIND,
-            SourceAddress(f"{parsed.public_address}@{default_branch}"),
+            SourceAddress(parsed.public_address),
+            SourceReference(default_branch),
             parsed.public_address,
         )
 
@@ -143,6 +145,8 @@ class GitHubProjectSourceConnector:
     def public_address(self, source_address: SourceAddress) -> str:
         repository, separator, branch = source_address.value.partition("@")
         owner, slash, name = repository.partition("/")
-        if not separator or not branch or not slash or not owner or not name:
+        if not slash or not owner or not name or "/" in name:
+            raise ValueError("stored GitHub source address is malformed")
+        if separator and not branch:
             raise ValueError("stored GitHub source address is malformed")
         return repository

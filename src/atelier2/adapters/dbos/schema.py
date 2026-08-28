@@ -32,6 +32,7 @@ from atelier2.contracts.host_configuration import (
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
     MAXIMUM_SOURCE_KIND_CHARACTERS,
+    MAXIMUM_SOURCE_REFERENCE_CHARACTERS,
     ConnectionActor,
     ProjectId,
     ProjectSourceConnectionLifecycle,
@@ -306,7 +307,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     42: "d2f874edd0dbbecb677b284db8e41cd3a681fae99703d126764bc90fa0cf7865",
     43: "f7d299ab865b87ca47a399d4897f8c7b273085c4d206fac9eb882d47198b9782",
     44: "b8a176e76092a24fa0c8ac1caafdd69e57f4ff404ecb5560a1dd426d32a3ee9b",
-    45: "d6a13244a2843f1313c3c7682676e854b5cac29ebeddf9eb01f0b58653df8223",
+    45: "39d0811369f0b7a4b248448042623ecde0d290e95d191d75c32a9faf538fffa5",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -2323,6 +2324,7 @@ host_project_source_connection_revisions = sa.Table(
     sa.Column("source_kind", sa.Text, nullable=False),
     sa.Column("revision_number", sa.Integer, nullable=False),
     sa.Column("source_address", sa.Text, nullable=False),
+    sa.Column("source_ref", sa.Text, nullable=True),
     sa.Column("credential_directory", sa.Text, nullable=False),
     sa.Column("auth_method", sa.Text, nullable=False),
     sa.Column("connected_by", sa.Text, nullable=False),
@@ -2356,6 +2358,10 @@ host_project_source_connection_revisions = sa.Table(
     sa.CheckConstraint(f"revision_number BETWEEN 1 AND {MAXIMUM_SIGNED_INT64}"),
     sa.CheckConstraint(
         f"length(source_address) BETWEEN 1 AND {MAXIMUM_SOURCE_ADDRESS_CHARACTERS}"
+    ),
+    sa.CheckConstraint(
+        "source_ref IS NULL OR length(source_ref) BETWEEN 1 AND "
+        f"{MAXIMUM_SOURCE_REFERENCE_CHARACTERS}"
     ),
     sa.CheckConstraint(
         "length(credential_directory) BETWEEN 1 AND "
@@ -3885,8 +3891,6 @@ def _table_shape_at(version: int, table: sa.Table) -> str:
     frozen_shape = PUBLISHED_TABLE_SHAPES.get((version, table.name))
     if frozen_shape is not None:
         return frozen_shape
-    if version == _VERSION_FORTY_FOUR:
-        return str(CreateTable(table).compile(dialect=sqlite_dialect.dialect()))
     raise StoreMigrationRefused(
         f"no published shape of {table.name} at schema version {version} is "
         "recorded, so this hop cannot rebuild it"
@@ -5599,9 +5603,13 @@ def _apply_v43_to_v44(connection: sqlite3.Connection) -> None:
 _V44_PROJECT_SOURCE_CONNECTIONS = "project_source_connections_before_identity"
 
 
-def _legacy_project_source_id(project_id: str) -> ProjectSourceId:
+def _legacy_project_source_id(project_id: str, source_kind: str) -> ProjectSourceId:
     digest = hashlib.sha256(
-        frame("legacy-project-source-id/v1", project_id.encode("utf-8"))
+        frame(
+            "legacy-project-source-id/v1",
+            project_id.encode("utf-8"),
+            source_kind.encode("utf-8"),
+        )
     ).hexdigest()
     value = digest[:32]
     return ProjectSourceId(
@@ -5614,13 +5622,12 @@ def _v44_project_source_connection_revision_hash(
     revision_number: int,
     source_kind: SourceKind,
     source_address: SourceAddress,
-    credential_directory: Path,
+    credential_directory: str | Path,
     auth_method: SourceConnectionAuthMethod,
     connected_by: ConnectionActor,
 ) -> str:
     """Rebuild the hash exactly as the published V44 contract framed it."""
 
-    stored_credential_directory = str(credential_directory.expanduser().resolve())
     return hashlib.sha256(
         frame(
             "host-project-source-connection-revision/v1",
@@ -5628,7 +5635,7 @@ def _v44_project_source_connection_revision_hash(
             revision_number.to_bytes(8, byteorder="big"),
             source_kind.value.encode("utf-8"),
             source_address.value.encode("utf-8"),
-            stored_credential_directory.encode("utf-8"),
+            str(credential_directory).encode("utf-8"),
             auth_method.value.encode("ascii"),
             connected_by.value.encode("utf-8"),
         )
@@ -5654,13 +5661,41 @@ def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
     records = tuple(
         dict(zip(column_names, values, strict=True)) for values in cursor.fetchall()
     )
+    current_source_kind_by_project: dict[str, str] = {}
+    latest_revision_by_history: dict[tuple[str, str], int] = {}
+    for project_id in sorted({str(record["project_id"]) for record in records}):
+        latest_by_kind: dict[str, int] = {}
+        for record in records:
+            if record["project_id"] == project_id:
+                source_kind = str(record["source_kind"])
+                latest_by_kind[source_kind] = max(
+                    latest_by_kind.get(source_kind, 0),
+                    int(record["revision_number"]),
+                )
+        latest_revision_by_history.update(
+            ((project_id, source_kind), revision_number)
+            for source_kind, revision_number in latest_by_kind.items()
+        )
+        project_maximum = max(latest_by_kind.values())
+        current_kinds = tuple(
+            source_kind
+            for source_kind, revision_number in latest_by_kind.items()
+            if revision_number == project_maximum
+        )
+        if len(current_kinds) != 1:
+            raise StoreMigrationRefused(
+                "schema version 44 has project-source histories tied at the "
+                f"latest revision for project {project_id!r}; this command will "
+                "not alter it"
+            )
+        current_source_kind_by_project[project_id] = current_kinds[0]
     for record in records:
         expected_hash = _v44_project_source_connection_revision_hash(
             ProjectId(str(record["project_id"])),
             int(record["revision_number"]),
             SourceKind(str(record["source_kind"])),
             SourceAddress(str(record["source_address"])),
-            Path(str(record["credential_directory"])),
+            str(record["credential_directory"]),
             SourceConnectionAuthMethod(str(record["auth_method"])),
             ConnectionActor(str(record["connected_by"])),
         )
@@ -5691,23 +5726,34 @@ def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
         )
     )
     for record in records:
+        project_id = str(record["project_id"])
+        source_kind = str(record["source_kind"])
+        source_latest_revision = latest_revision_by_history[(project_id, source_kind)]
+        lifecycle = (
+            ProjectSourceConnectionLifecycle.DISCONNECTED
+            if source_kind != current_source_kind_by_project[project_id]
+            and int(record["revision_number"]) == source_latest_revision
+            else ProjectSourceConnectionLifecycle.CONNECTED
+        )
         revision = ProjectSourceConnectionRevision(
-            ProjectId(str(record["project_id"])),
-            _legacy_project_source_id(str(record["project_id"])),
+            ProjectId(project_id),
+            _legacy_project_source_id(project_id, source_kind),
             int(record["revision_number"]),
-            SourceKind(str(record["source_kind"])),
+            SourceKind(source_kind),
             SourceAddress(str(record["source_address"])),
             Path(str(record["credential_directory"])),
             SourceConnectionAuthMethod(str(record["auth_method"])),
             ConnectionActor(str(record["connected_by"])),
-            ProjectSourceConnectionLifecycle.CONNECTED,
+            lifecycle,
+            None,
             None,
         )
         connection.execute(
             "INSERT INTO host_project_source_connection_revisions "
             "(revision_hash, project_id, source_id, source_kind, revision_number, "
-            "source_address, credential_directory, auth_method, connected_by, "
-            "lifecycle, connected_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "source_address, source_ref, credential_directory, auth_method, "
+            "connected_by, lifecycle, connected_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 revision.revision_hash.value,
                 revision.project_id.value,
@@ -5715,6 +5761,7 @@ def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
                 revision.source_kind.value,
                 revision.revision_number,
                 revision.source_address.value,
+                None,
                 str(revision.credential_directory),
                 revision.auth_method.value,
                 revision.connected_by.value,

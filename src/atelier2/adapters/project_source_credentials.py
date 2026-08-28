@@ -38,11 +38,13 @@ class FilesystemCredentialDeposit(ManagedCredentialDeposit):
 
     @property
     def credential_directory(self) -> Path:
-        return self._staged_directory
+        return self._published_directory if self._published else self._staged_directory
 
     def publish(self) -> Path:
         if self._published:
             return self._published_directory
+        if self._published_directory.exists():
+            raise FileExistsError("managed credential destination already exists")
         os.replace(self._staged_directory, self._published_directory)
         self._published = True
         _fsync_directory(self._managed_root)
@@ -56,7 +58,10 @@ class FilesystemCredentialDeposit(ManagedCredentialDeposit):
             target.relative_to(self._managed_root)
         except ValueError as error:
             raise RuntimeError("managed credential deposit escaped its root") from error
-        shutil.rmtree(target)
+        try:
+            shutil.rmtree(target)
+        except FileNotFoundError:
+            return
         _fsync_directory(self._managed_root)
 
 

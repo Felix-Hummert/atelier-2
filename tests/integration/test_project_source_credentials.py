@@ -45,6 +45,7 @@ def test_token_is_restrictively_staged_beside_its_atomic_destination(
 
     published_directory = staged.publish()
 
+    assert staged.credential_directory == published_directory
     assert published_directory.parent == managed_root.resolve()
     assert published_directory.name == f"{SOURCE.value}-deposit1"
     assert not staged_directory.exists()
@@ -67,6 +68,7 @@ def test_discard_removes_only_the_managed_deposit_and_never_a_cli_sibling(
     assert isinstance(staged, FilesystemCredentialDeposit)
 
     staged.discard()
+    staged.discard()
 
     assert not staged.credential_directory.exists()
     assert cli_token.read_text(encoding="utf-8") == "cli-owned-token"
@@ -75,9 +77,32 @@ def test_discard_removes_only_the_managed_deposit_and_never_a_cli_sibling(
     assert isinstance(published, FilesystemCredentialDeposit)
     published_directory = published.publish()
     published.discard()
+    published.discard()
 
     assert not published_directory.exists()
     assert cli_token.read_text(encoding="utf-8") == "cli-owned-token"
+
+
+def test_publish_refuses_to_replace_an_existing_immutable_deposit(
+    tmp_path: Path,
+) -> None:
+    managed_root = tmp_path / "managed"
+    store = FilesystemProjectSourceCredentialStore(
+        managed_root, deposit_name=lambda: "held"
+    )
+    first = store.stage(SOURCE, "first-token")
+    assert isinstance(first, FilesystemCredentialDeposit)
+    published = first.publish()
+    second = store.stage(SOURCE, "second-token")
+    assert isinstance(second, FilesystemCredentialDeposit)
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        second.publish()
+
+    assert (published / GITHUB_TOKEN_CREDENTIAL_ENTRY).read_text(
+        encoding="utf-8"
+    ) == "first-token"
+    assert second.credential_directory.exists()
 
 
 def test_invalid_or_empty_deposits_are_refused_without_writing(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from atelier2.contracts.host_configuration import (
     ProjectSourceId,
     SourceAddress,
     SourceKind,
+    SourceReference,
 )
 
 
@@ -33,12 +34,18 @@ type ParseProjectSourceAddressResult = (
 class ValidatedProjectSource:
     source_kind: SourceKind
     source_address: SourceAddress
+    source_ref: SourceReference | None
     public_address: str
 
 
 @dataclass(frozen=True)
 class ProjectSourceAuthenticationRefused:
     reason: str
+
+
+@dataclass(frozen=True)
+class ProjectSourceCredentialUnresolvable:
+    pass
 
 
 @dataclass(frozen=True)
@@ -49,6 +56,7 @@ class ProjectSourceValidationUnavailable:
 type ValidateProjectSourceResult = (
     ValidatedProjectSource
     | ProjectSourceAuthenticationRefused
+    | ProjectSourceCredentialUnresolvable
     | ProjectSourceAddressInvalid
     | ProjectSourceValidationUnavailable
 )

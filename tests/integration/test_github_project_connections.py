@@ -9,11 +9,12 @@ import httpx
 from atelier2.adapters.github.composition import GITHUB_SOURCE_KIND
 from atelier2.adapters.github.live_effects import GITHUB_TOKEN_CREDENTIAL_ENTRY
 from atelier2.adapters.github.project_connections import GitHubProjectSourceConnector
-from atelier2.contracts.host_configuration import SourceAddress
+from atelier2.contracts.host_configuration import SourceAddress, SourceReference
 from atelier2.ports.project_connections import (
     ParsedProjectSourceAddress,
     ProjectSourceAddressInvalid,
     ProjectSourceAuthenticationRefused,
+    ProjectSourceCredentialUnresolvable,
     ProjectSourceValidationUnavailable,
     ValidatedProjectSource,
 )
@@ -38,7 +39,7 @@ def test_address_parser_owns_github_forms_and_public_projection() -> None:
     assert isinstance(
         connector.parse_address("gitlab.com/acme/studio"), ProjectSourceAddressInvalid
     )
-    assert connector.public_address(SourceAddress("acme/studio@main")) == "acme/studio"
+    assert connector.public_address(SourceAddress("acme/studio")) == "acme/studio"
     assert connector.parse_stored_address(SourceAddress("acme/studio@main")) == (
         ParsedProjectSourceAddress(GITHUB_SOURCE_KIND, "acme/studio")
     )
@@ -61,7 +62,8 @@ def test_validation_reads_the_credential_reference_and_keeps_branch_opaque(
 
     assert result == ValidatedProjectSource(
         parsed.source_kind,
-        SourceAddress("acme/studio@trunk"),
+        SourceAddress("acme/studio"),
+        SourceReference("trunk"),
         "acme/studio",
     )
     assert [request.url.path for request in requests] == ["/repos/acme/studio"]
@@ -136,3 +138,15 @@ def test_network_failure_is_separate_from_authentication_refusal(
     assert result == ProjectSourceValidationUnavailable(
         "GitHub could not be reached while validating the source"
     )
+
+
+def test_an_unresolvable_credential_reference_is_not_an_auth_refusal(
+    tmp_path: Path,
+) -> None:
+    connector = GitHubProjectSourceConnector()
+    parsed = connector.parse_address("github.com/acme/studio")
+    assert isinstance(parsed, ParsedProjectSourceAddress)
+
+    result = connector.validate(parsed, tmp_path / "missing-credentials")
+
+    assert result == ProjectSourceCredentialUnresolvable()
