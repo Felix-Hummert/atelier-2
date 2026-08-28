@@ -51,6 +51,7 @@ from atelier2.contracts.executions import (
     RunEventAgentAttemptBinding,
     RunEventCancellationBinding,
     RunEventKind,
+    WaitAnswerActor,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.run_bindings import RunV2, RunV3
@@ -185,8 +186,21 @@ def durable_event(
         receipt_result_hash=Sha256Hash.of(payload) if carries_receipt else None,
         attempt_binding=attempt_binding,
         round_ordinal=round_ordinal,
+        wait_answer_actor=(
+            WaitAnswerActor.OPERATOR if kind is RunEventKind.WAITING_INPUT else None
+        ),
     )
-    return PersistedRunEvent(event, None, workflow_format_version)
+    return PersistedRunEvent(
+        event,
+        None,
+        workflow_format_version,
+        wait_answer_actor=(
+            WaitAnswerActor.OPERATOR
+            if workflow_format_version is WorkflowFormatVersion.V3
+            and kind is RunEventKind.WAIT_ANSWERED
+            else None
+        ),
+    )
 
 
 def v2_agent_event(kind: RunEventKind, sequence: int = 1) -> PersistedRunEvent:

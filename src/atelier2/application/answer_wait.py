@@ -11,7 +11,7 @@ from atelier2.contracts.executions import (
 )
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.durable_runs import (
-    DurableAnswerBytesConflict,
+    DurableAnswerActorMismatch,
     DurableAnswerCreated,
     DurableAnswerExisting,
     DurableAnswerNodeMissing,
@@ -39,6 +39,16 @@ class AnswerExistingPending:
 
 
 @dataclass(frozen=True)
+class AnswerExistingApplied:
+    snapshot: WaitAnswerSnapshot
+
+
+@dataclass(frozen=True)
+class AnswerActorMismatch:
+    expected_actor: WaitAnswerActor
+
+
+@dataclass(frozen=True)
 class RunMissing:
     pass
 
@@ -63,21 +73,17 @@ class AnswerStale:
     pass
 
 
-@dataclass(frozen=True)
-class AnswerBytesConflict:
-    pass
-
-
 type AnswerWaitResult = (
     UnanswerableWait
     | AnswerAcceptedPending
     | AnswerExistingPending
+    | AnswerExistingApplied
+    | AnswerActorMismatch
     | RunMissing
     | NodeMissing
     | AnswerRevisionConflict
     | AnswerStateConflict
     | AnswerStale
-    | AnswerBytesConflict
     | WriteUnavailable
     | DurableStateCorrupt
 )
@@ -100,7 +106,7 @@ def answer_wait_result(
     revision_hash: WorkflowRevisionHash,
     node_id: str,
     expected_node_execution_id: NodeExecutionId,
-    actor: WaitAnswerActor | str,
+    actor: WaitAnswerActor,
     answer_bytes: bytes,
     answerer: TransactionalWaitAnswerer,
 ) -> AnswerWaitResult:
@@ -120,11 +126,6 @@ def answer_wait_result(
     same `UnanswerableWait` either way, so what a caller is told did not move
     when the decision did.
     """
-    if not isinstance(actor, WaitAnswerActor):
-        try:
-            actor = WaitAnswerActor(actor)
-        except ValueError:
-            return DurableStateCorrupt()
     try:
         request = SubmitWaitAnswerRequest(
             run_id,
@@ -143,7 +144,9 @@ def answer_wait_result(
         case DurableAnswerExisting(snapshot):
             if snapshot.state is WaitAnswerState.PENDING:
                 return AnswerExistingPending(snapshot)
-            return DurableStateCorrupt()
+            return AnswerExistingApplied(snapshot)
+        case DurableAnswerActorMismatch(expected_actor):
+            return AnswerActorMismatch(expected_actor)
         case DurableAnswerRunMissing():
             return RunMissing()
         case DurableAnswerNodeMissing():
@@ -154,8 +157,6 @@ def answer_wait_result(
             return AnswerStateConflict()
         case DurableAnswerStale():
             return AnswerStale()
-        case DurableAnswerBytesConflict():
-            return AnswerBytesConflict()
         case DurableAnswerNotAdmitted():
             return UnanswerableWait()
         case DurableWriteUnavailable():

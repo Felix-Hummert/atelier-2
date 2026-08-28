@@ -467,9 +467,11 @@ def test_answer_wait_schema_is_derived_from_the_http_request_resource() -> None:
     schema = answer["inputSchema"]
 
     assert {"actor", "expected_node_execution_id"} <= set(schema["required"])
-    assert schema["properties"]["actor"]["type"] == "string"
-    assert schema["properties"]["actor"]["minLength"] == 1
-    assert schema["properties"]["actor"]["maxLength"] == 1_024
+    assert schema["properties"]["actor"] == {
+        "const": "operator",
+        "title": "Actor",
+        "type": "string",
+    }
     assert schema["properties"]["expected_node_execution_id"]["pattern"] == (
         "^[0-9a-f]{64}$"
     )

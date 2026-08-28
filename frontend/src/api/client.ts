@@ -1707,7 +1707,7 @@ const runEventV3Schema = z
         event: z.literal("WAIT_ANSWERED"),
         answer_base64: standardBase64,
         answer_hash: sha256,
-        actor: z.literal("operator").nullable(),
+        actor: z.enum(["operator", "legacy-unattributed"]),
       })
       .strict(),
     z
@@ -2117,7 +2117,6 @@ export const problemDefinitions = {
     title: "Answer revision conflict",
   },
   "answer-state-conflict": { status: 409, title: "Answer state conflict" },
-  "answer-bytes-conflict": { status: 409, title: "Answer bytes conflict" },
   "reconciliation-target-missing": {
     status: 409,
     title: "Reconciliation target missing",
@@ -2669,10 +2668,6 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant(
     "answer-state-conflict",
     problemDefinitions["answer-state-conflict"],
-  ),
-  problemVariant(
-    "answer-bytes-conflict",
-    problemDefinitions["answer-bytes-conflict"],
   ),
   problemVariant(
     "reconciliation-target-missing",

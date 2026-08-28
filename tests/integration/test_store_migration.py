@@ -478,7 +478,7 @@ def _restore_v43_queue_predecessor(connection: sqlite3.Connection) -> None:
 def _restore_v44_connection_predecessor(connection: sqlite3.Connection) -> None:
     """Restore the project-source table shape published by V44."""
 
-    _restore_v45_wait_answer_predecessor(connection)
+    _restore_v45_answer_attribution_predecessors(connection)
     schema_module._rebuild_product_table(
         connection,
         schema_module.host_project_source_connection_revisions,
@@ -492,8 +492,19 @@ def _restore_v44_connection_predecessor(connection: sqlite3.Connection) -> None:
     )
 
 
-def _restore_v45_wait_answer_predecessor(connection: sqlite3.Connection) -> None:
-    """Restore the exact answer table and triggers published through V45."""
+def _restore_v45_answer_attribution_predecessors(
+    connection: sqlite3.Connection,
+) -> None:
+    """Restore the exact event and answer tables published through V45."""
+
+    schema_module._rebuild_product_table(
+        connection,
+        schema_module.run_events,
+        "run_events_v46",
+        schema_module._RUN_EVENTS_TRIGGERS,
+        46,
+        45,
+    )
 
     schema_module._rebuild_product_table(
         connection,
@@ -3986,7 +3997,7 @@ def test_v45_wait_answers_gain_no_invented_actor_through_the_real_migrate_entry(
         runtime.close()
 
     with sqlite3.connect(database_path) as connection:
-        _restore_v45_wait_answer_predecessor(connection)
+        _restore_v45_answer_attribution_predecessors(connection)
         connection.execute(
             "UPDATE atelier_schema_versions SET version = ?",
             (V45_SCHEMA_HANDOFF.version,),
@@ -4012,10 +4023,16 @@ def test_v45_wait_answers_gain_no_invented_actor_through_the_real_migrate_entry(
             "state_version FROM wait_answers ORDER BY node_execution_id"
         ).fetchall()
         actors = connection.execute(
-            "SELECT actor FROM wait_answers ORDER BY node_execution_id"
+            "SELECT actor, actor_attribution_kind FROM wait_answers "
+            "ORDER BY node_execution_id"
+        ).fetchall()
+        waiting_actors = connection.execute(
+            "SELECT wait_answer_actor FROM run_events "
+            "WHERE event_kind = 'WAITING_INPUT'"
         ).fetchall()
         assert migrated == predecessor
-        assert actors == [(None,)]
+        assert actors == [(None, "LEGACY_UNATTRIBUTED")]
+        assert waiting_actors == [(WaitAnswerActor.OPERATOR.value,)]
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             connection.execute("UPDATE wait_answers SET actor = 'operator'")
 
@@ -4043,12 +4060,20 @@ def test_v45_wait_answers_gain_no_invented_actor_through_the_real_migrate_entry(
             frame for frame in event_frames if frame.get("event") == "WAIT_ANSWERED"
         ]
         assert len(answered) == 1
-        assert answered[0]["actor"] is None
+        assert answered[0]["actor"] == "legacy-unattributed"
         with recovered.engine.connect() as connection:
             migrated_answer = connection.execute(
-                sa.select(wait_answers.c.actor, wait_answers.c.state)
+                sa.select(
+                    wait_answers.c.actor,
+                    wait_answers.c.actor_attribution_kind,
+                    wait_answers.c.state,
+                )
             ).one()
-        assert migrated_answer == (None, WaitAnswerState.APPLIED.value)
+        assert migrated_answer == (
+            None,
+            "LEGACY_UNATTRIBUTED",
+            WaitAnswerState.APPLIED.value,
+        )
     finally:
         recovered.close()
 
@@ -4067,7 +4092,7 @@ def test_v46_failure_after_version_cas_restores_the_exact_v45_store(
     initialize_schema(engine)
     engine.dispose()
     with sqlite3.connect(database_path) as connection:
-        _restore_v45_wait_answer_predecessor(connection)
+        _restore_v45_answer_attribution_predecessors(connection)
         connection.execute("UPDATE atelier_schema_versions SET version = 45")
         connection.commit()
         _require_product_shape(connection, 45)
@@ -4304,11 +4329,14 @@ def _paused_run_event_log(revision_hash: WorkflowRevisionHash) -> tuple[RunEvent
             NodeExecutionId.for_node(_PAUSED_RUN, revision_hash, _ANSWER_NODE_ID),
             RunEventKind.WAITING_INPUT,
             b"",
+            wait_answer_actor=WaitAnswerActor.OPERATOR,
         ),
     )
 
 
-_EVENT_COLUMNS = tuple(column.name for column in run_events.columns)
+_EVENT_COLUMNS = tuple(
+    column.name for column in run_events.columns if column.name != "wait_answer_actor"
+)
 """Every column the event table has, in its own order.
 
 Read from the table rather than listed here, so a column a later hop adds is
@@ -4663,6 +4691,7 @@ def _pause_at_sequence(
         RunEventKind.WAITING_INPUT,
         b"",
         round_ordinal=round_ordinal,
+        wait_answer_actor=WaitAnswerActor.OPERATOR,
     )
 
 

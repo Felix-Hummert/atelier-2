@@ -329,7 +329,7 @@ class WaitAnsweredEventResourceV3(RunEventBaseResourceV3):
     """
 
     event: Literal["WAIT_ANSWERED"]
-    actor: Literal["operator"] | None
+    actor: Literal["operator", "legacy-unattributed"]
     answer_base64: str
     answer_hash: str = Field(pattern=SHA256_HASH_PATTERN)
 

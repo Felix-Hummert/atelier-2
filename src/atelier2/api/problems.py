@@ -598,11 +598,6 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Answer execution is stale",
         "Reload the run and answer only its current waiting execution.",
     ),
-    "answer-bytes-conflict": ProblemDefinition(
-        409,
-        "Answer bytes conflict",
-        "Retry the exact original answer bytes or use another command.",
-    ),
     "reconciliation-target-missing": ProblemDefinition(
         409,
         "Reconciliation target missing",

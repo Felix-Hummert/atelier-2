@@ -58,7 +58,8 @@ from atelier2.api.wire.resources import (
 )
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
-    AnswerBytesConflict,
+    AnswerActorMismatch,
+    AnswerExistingApplied,
     AnswerExistingPending,
     AnswerRevisionConflict,
     AnswerStale,
@@ -159,7 +160,7 @@ from atelier2.contracts.effects import (
     ReconcileActor,
     ReconcileCommandId,
 )
-from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.executions import NodeExecutionId, WaitAnswerActor
 from atelier2.contracts.orders import (
     ArtifactOrderValue,
     InlineOrderValue,
@@ -578,6 +579,7 @@ async def cancel_agent_attempt_route(
     API_PREFIX + "/runs/{public_ref}/answers",
     response_model=AnyRunResource,
     status_code=HTTPStatus.ACCEPTED,
+    responses={HTTPStatus.OK: {"model": AnyRunResource}},
 )
 async def answer_run_route(
     public_ref: str,
@@ -586,7 +588,7 @@ async def answer_run_route(
     _media: None = Depends(require_json_media_dependency),
 ) -> JSONResponse:
     run_id = decode_public_reference(public_ref, context.limits)
-    require_fields(context.limits, body.node_id, body.actor)
+    require_fields(context.limits, body.node_id)
     revision_hash = parse_revision_hash(body.workflow_revision_hash)
     answer_bytes = decode_base64(body.answer_base64, context.limits)
     result = await run_control_query(
@@ -596,7 +598,7 @@ async def answer_run_route(
             revision_hash,
             body.node_id,
             NodeExecutionId(body.expected_node_execution_id),
-            body.actor,
+            WaitAnswerActor(body.actor),
             answer_bytes,
         ),
     )
@@ -605,6 +607,18 @@ async def answer_run_route(
             raise ApiProblem("invalid-request")
         case AnswerAcceptedPending() | AnswerExistingPending():
             status = HTTPStatus.ACCEPTED
+        case AnswerExistingApplied():
+            status = HTTPStatus.OK
+        case AnswerActorMismatch(expected_actor):
+            raise ApiProblem(
+                "invalid-request",
+                invalid_fields=(
+                    InvalidFieldResource(
+                        path="body/actor",
+                        reason=f"waiting execution expects {expected_actor.value!r}",
+                    ),
+                ),
+            )
         case RunMissing():
             raise ApiProblem("run-not-found")
         case NodeMissing():
@@ -615,8 +629,6 @@ async def answer_run_route(
             raise ApiProblem("answer-state-conflict")
         case AnswerStale():
             raise ApiProblem("answer-execution-stale")
-        case AnswerBytesConflict():
-            raise ApiProblem("answer-bytes-conflict")
         case WriteUnavailable(detail):
             raise ApiProblem("temporarily-unavailable", detail)
         case DurableStateCorrupt():

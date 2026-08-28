@@ -48,6 +48,7 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.projection.runs import run_resource
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
+    AnswerExistingApplied,
     UnanswerableWait,
     answer_wait_result,
 )
@@ -57,7 +58,6 @@ from atelier2.application.cancel_run import (
     CancelRunResult,
     cancel_run_result,
 )
-from atelier2.application.refusals import DurableStateCorrupt
 from atelier2.contracts.agents import (
     AgentBinding,
     AgentBindingSet,
@@ -801,15 +801,10 @@ def test_an_answer_the_waits_own_schema_refuses_leaves_the_run_waiting(
 
 
 @pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
-def test_an_answer_to_a_v3_turn_that_has_already_been_answered_is_corrupt(
+def test_an_answer_to_a_v3_turn_that_has_already_been_answered_is_idempotent(
     runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
 ) -> None:
-    """A doubled answer to the current execution is durable corruption.
-
-    A proven earlier execution remains stale. This request names the same
-    execution whose APPLIED row and WAIT_ANSWERED event already exist, so it is
-    a second arrival at the current execution and must not look retryable.
-    """
+    """The same actor and bytes for an applied execution report that answer."""
     started, _ = runtime
     workflow = start_and_launch(started, WAIT_AS_THE_SINK)
     wait_for_state(started, RunState.WAITING_INPUT)
@@ -826,7 +821,7 @@ def test_an_answer_to_a_v3_turn_that_has_already_been_answered_is_corrupt(
         DbosWaitAnswerer(started.engine, started.settings.application_version),
     )
 
-    assert isinstance(late, DurableStateCorrupt), late
+    assert isinstance(late, AnswerExistingApplied), late
 
 
 CANCEL_KEY = "operator-stops-the-wait-1"

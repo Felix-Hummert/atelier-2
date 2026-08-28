@@ -4,8 +4,9 @@ story = "https://github.com/FlexOr2/atelier-2/issues/658"
 # This is Hop 46's durable claim, not the chat door or the broader conversation
 # experience: one run turns the same declared Wait three times, and every turn
 # keeps its own attributed receipt after the store is reopened. An answer sent
-# with the execution fence of an earlier turn is refused before it can write.
+# with the execution fence of an earlier turn reports that exact turn already
+# answered; changing that durable answer is corruption and cannot write.
 
 [[sentence]]
-id = "one-run-keeps-three-attributed-turns-and-refuses-a-stale-round"
-text = "One durable run accepts three execution-specific operator answers across three turns and a store reload, retains three ordered attributed WAIT_ANSWERED receipts, and refuses an answer fenced to an already answered round without writing into the current round."
+id = "one-run-keeps-three-attributed-turns-and-classifies-repeats"
+text = "One durable run accepts three execution-specific operator answers across three turns and a store reload, retains three ordered attributed WAIT_ANSWERED receipts, reports an identical repeat as already answered, and treats a different answer for that round as corruption without writing into the current round."

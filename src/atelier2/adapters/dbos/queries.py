@@ -101,7 +101,7 @@ from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEvent,
     RunEventKind,
-    WaitAnswerActor,
+    WaitAnswerAttribution,
     WaitAnswerState,
     logical_effect_key_for_node,
 )
@@ -2282,7 +2282,7 @@ class DbosQueries:
         projection_limit: DurableProjectionLimit,
     ) -> PersistedRunEvent:
         event = event_from_record(record)
-        wait_answer_actor: WaitAnswerActor | None = None
+        wait_answer_actor: WaitAnswerAttribution | None = None
         if (
             workflow_format_version is WorkflowFormatVersion.V3
             and event.event_kind is RunEventKind.WAIT_ANSWERED

@@ -80,6 +80,7 @@ from atelier2.contracts.executions import (
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import (
     RunId,
+    RunState,
     WorkflowRevision,
     WorkflowRevisionHash,
 )
@@ -1147,12 +1148,12 @@ def test_http_wait_answer_retries_preserve_exact_bytes_and_status(
         "node_id": "wait",
         "answer_type": "integer",
     }
-    assert conflict.status_code == 409
-    assert conflict.json()["type"].endswith(":answer-bytes-conflict")
+    assert conflict.status_code == 500
+    assert conflict.json()["type"].endswith(":durable-state-corrupt")
     assert _durable_snapshot(runtime) == before_conflict
 
 
-def test_http_wait_answer_refuses_an_unsupported_actor_as_corrupt(
+def test_http_wait_answer_refuses_an_unsupported_actor_as_an_invalid_request(
     runtime: DbosRuntime,
 ) -> None:
     revision = WorkflowRevision(DOCUMENT)
@@ -1176,8 +1177,14 @@ def test_http_wait_answer_refuses_an_unsupported_actor_as_corrupt(
         },
     )
 
-    assert response.status_code == 500
-    assert response.json()["type"].endswith(":durable-state-corrupt")
+    assert response.status_code == 422
+    assert response.json()["type"].endswith(":invalid-request")
+    assert response.json()["invalid_fields"] == [
+        {
+            "path": "body/actor",
+            "reason": "Input should be 'operator'",
+        }
+    ]
     assert _durable_snapshot(runtime) == before
 
 
@@ -1208,7 +1215,7 @@ def test_http_wait_answer_refuses_a_fabricated_execution_as_corrupt(
     assert _durable_snapshot(runtime) == before
 
 
-def test_http_second_answer_to_the_applied_current_execution_is_corrupt(
+def test_http_same_answer_to_the_applied_current_execution_is_already_answered(
     runtime: DbosRuntime,
 ) -> None:
     client = _client(runtime)
@@ -1259,9 +1266,22 @@ def test_http_second_answer_to_the_applied_current_execution_is_corrupt(
 
     second = client.post(path, json=body)
 
-    assert second.status_code == 500
-    assert second.json()["type"].endswith(":durable-state-corrupt")
+    assert second.status_code == 200
+    assert second.json()["state"] == RunState.COMPLETED.value
     assert _durable_snapshot(runtime) == before_second
+
+    with runtime.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER wait_answers_no_delete")
+        connection.execute(
+            wait_answers.delete().where(
+                wait_answers.c.node_execution_id == body["expected_node_execution_id"]
+            )
+        )
+
+    missing_answer = client.post(path, json=body)
+
+    assert missing_answer.status_code == 500
+    assert missing_answer.json()["type"].endswith(":durable-state-corrupt")
 
 
 @pytest.mark.parametrize(
@@ -1269,6 +1289,9 @@ def test_http_second_answer_to_the_applied_current_execution_is_corrupt(
     (
         "missing-head",
         "contradictory-head",
+        "missing-expected-actor",
+        "waiting-head-at-nonwait-node",
+        "answer-binding-disagrees",
         "applied-answer-at-waiting-head",
         "duplicate-answers",
     ),
@@ -1305,6 +1328,41 @@ def test_http_wait_answer_reports_a_corrupt_current_wait_as_definitive_500(
                 )
                 .values(node_execution_id="f" * 64)
             )
+        elif corruption == "missing-expected-actor":
+            connection.exec_driver_sql("DROP TRIGGER run_events_no_update")
+            connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
+            connection.execute(
+                run_events.update()
+                .where(
+                    run_events.c.run_id == run_id.value,
+                    run_events.c.event_sequence == waiting.last_event_sequence,
+                )
+                .values(wait_answer_actor=None)
+            )
+            connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
+        elif corruption == "waiting-head-at-nonwait-node":
+            connection.execute(
+                runs.update()
+                .where(runs.c.run_id == run_id.value)
+                .values(current_node_id="agent")
+            )
+        elif corruption == "answer-binding-disagrees":
+            connection.execute(
+                wait_answers.insert().values(
+                    run_id=run_id.value,
+                    revision_hash=revision.revision_hash.value,
+                    node_id="agent",
+                    node_execution_id=execution_id.value,
+                    round_ordinal=waiting.current_round_ordinal,
+                    actor=WaitAnswerActor.OPERATOR.value,
+                    actor_attribution_kind="RECORDED",
+                    answer_bytes=b"17",
+                    answer_hash=Sha256Hash.of(b"17").value,
+                    answer_workflow_id=answer_workflow_id_for(execution_id),
+                    state="PENDING",
+                    state_version=0,
+                )
+            )
         elif corruption == "applied-answer-at-waiting-head":
             connection.execute(
                 wait_answers.insert().values(
@@ -1314,6 +1372,7 @@ def test_http_wait_answer_reports_a_corrupt_current_wait_as_definitive_500(
                     node_execution_id=execution_id.value,
                     round_ordinal=waiting.current_round_ordinal,
                     actor=WaitAnswerActor.OPERATOR.value,
+                    actor_attribution_kind="RECORDED",
                     answer_bytes=b"17",
                     answer_hash=Sha256Hash.of(b"17").value,
                     answer_workflow_id=answer_workflow_id_for(execution_id),
@@ -1321,7 +1380,7 @@ def test_http_wait_answer_reports_a_corrupt_current_wait_as_definitive_500(
                     state_version=1,
                 )
             )
-        else:
+        elif corruption == "duplicate-answers":
             for trigger in (
                 "wait_answers_payload_no_update",
                 "wait_answers_state_transition",
@@ -1343,6 +1402,7 @@ def test_http_wait_answer_reports_a_corrupt_current_wait_as_definitive_500(
                 "node_execution_id": execution_id.value,
                 "round_ordinal": waiting.current_round_ordinal,
                 "actor": WaitAnswerActor.OPERATOR.value,
+                "actor_attribution_kind": "RECORDED",
                 "answer_bytes": b"17",
                 "answer_hash": Sha256Hash.of(b"17").value,
                 "answer_workflow_id": answer_workflow_id_for(execution_id),
@@ -1350,6 +1410,8 @@ def test_http_wait_answer_reports_a_corrupt_current_wait_as_definitive_500(
                 "state_version": 0,
             }
             connection.execute(wait_answers.insert(), (duplicate, duplicate))
+        else:
+            raise AssertionError(f"unknown corruption fixture: {corruption}")
     if corruption == "duplicate-answers":
         with (
             runtime.engine.connect() as connection,

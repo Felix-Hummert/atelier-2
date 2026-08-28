@@ -26,7 +26,12 @@ from atelier2.adapters.dbos.schema import (
     runs,
     workflow_revisions,
 )
-from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEvent,
+    RunEventKind,
+    WaitAnswerActor,
+)
 from atelier2.contracts.run_events import PersistedRunEvent
 from atelier2.contracts.runs import (
     FIRST_ROUND_ORDINAL,
@@ -74,6 +79,7 @@ def _waiting_input(run_id: RunId, revision: WorkflowRevision) -> RunEvent:
         NodeExecutionId.for_node(run_id, revision.revision_hash, node_id),
         RunEventKind.WAITING_INPUT,
         b"",
+        wait_answer_actor=WaitAnswerActor.OPERATOR,
     )
 
 
@@ -81,6 +87,7 @@ def _insert_run(
     connection: Connection, run_id: RunId, revision: WorkflowRevision
 ) -> None:
     event = _waiting_input(run_id, revision)
+    assert event.wait_answer_actor is not None
     connection.execute(
         runs.insert().values(
             run_id=run_id.value,
@@ -105,6 +112,7 @@ def _insert_run(
             node_execution_id=event.node_execution_id.value,
             round_ordinal=event.round_ordinal,
             event_kind=event.event_kind.value,
+            wait_answer_actor=event.wait_answer_actor.value,
             payload=event.payload,
             payload_hash=event.payload_hash.value,
             receipt_logical_key=None,
@@ -335,6 +343,7 @@ def test_a_wait_answer_invariant_uses_the_durable_corruption_signal_not_a_confli
         "node_execution_id": event.node_execution_id.value,
         "round_ordinal": event.round_ordinal,
         "event_kind": event.event_kind.value,
+        "wait_answer_actor": None,
         "payload": event.payload,
         "payload_hash": event.payload_hash.value,
         "receipt_logical_key": None,

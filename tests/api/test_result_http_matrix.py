@@ -69,7 +69,7 @@ from atelier2.contracts.workflow_projections import (
 )
 from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
-    DurableAnswerBytesConflict,
+    DurableAnswerActorMismatch,
     DurableAnswerCreated,
     DurableAnswerExisting,
     DurableAnswerNodeMissing,
@@ -635,12 +635,12 @@ PROBLEM_CASES = (
         "durable-projection-unrepresentable",
     ),
     (
-        "wait-existing-applied-is-corrupt",
+        "wait-existing-applied",
         "wait",
         "answerer",
         DurableAnswerExisting(APPLIED_ANSWER),
-        500,
-        "durable-state-corrupt",
+        200,
+        None,
     ),
     (
         "wait-unanswerable",
@@ -691,12 +691,12 @@ PROBLEM_CASES = (
         "answer-execution-stale",
     ),
     (
-        "wait-bytes-conflict",
+        "wait-actor-mismatch",
         "wait",
         "answerer",
-        DurableAnswerBytesConflict(),
-        409,
-        "answer-bytes-conflict",
+        DurableAnswerActorMismatch(WaitAnswerActor.OPERATOR),
+        422,
+        "invalid-request",
     ),
     (
         "wait-unavailable",

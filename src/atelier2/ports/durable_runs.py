@@ -5,7 +5,11 @@ from enum import StrEnum
 from typing import Protocol
 
 from atelier2.contracts.agents import AgentBindingSet
-from atelier2.contracts.executions import SubmitWaitAnswerRequest, WaitAnswerSnapshot
+from atelier2.contracts.executions import (
+    SubmitWaitAnswerRequest,
+    WaitAnswerActor,
+    WaitAnswerSnapshot,
+)
 from atelier2.contracts.host_configuration import UncastRole
 from atelier2.contracts.node_records_v3 import RunInput
 from atelier2.contracts.orders import (
@@ -244,14 +248,14 @@ class DurableAnswerCreated:
 
 @dataclass(frozen=True)
 class DurableAnswerExisting:
-    """The exact PENDING answer a crash retry found before it was applied.
-
-    An adapter returning an APPLIED snapshot through this shape contradicts the
-    answer-door contract. The application treats that impossible result as
-    durable corruption rather than restoring the retired successful retry path.
-    """
+    """The exact answer an idempotent retry found, pending or already applied."""
 
     snapshot: WaitAnswerSnapshot
+
+
+@dataclass(frozen=True)
+class DurableAnswerActorMismatch:
+    expected_actor: WaitAnswerActor
 
 
 @dataclass(frozen=True)
@@ -280,11 +284,6 @@ class DurableAnswerStale:
 
 
 @dataclass(frozen=True)
-class DurableAnswerBytesConflict:
-    pass
-
-
-@dataclass(frozen=True)
 class DurableAnswerNotAdmitted:
     """The waiting node does not accept these bytes as an answer at all.
 
@@ -301,12 +300,12 @@ class DurableAnswerNotAdmitted:
 type DurableAnswerResult = (
     DurableAnswerCreated
     | DurableAnswerExisting
+    | DurableAnswerActorMismatch
     | DurableAnswerRunMissing
     | DurableAnswerNodeMissing
     | DurableAnswerRevisionConflict
     | DurableAnswerStateConflict
     | DurableAnswerStale
-    | DurableAnswerBytesConflict
     | DurableAnswerNotAdmitted
     | DurableWriteUnavailable
     | DurableStateCorrupt

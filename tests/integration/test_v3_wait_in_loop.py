@@ -429,8 +429,8 @@ def durable_events(runtime: DbosRuntime) -> list[tuple[str, int, str]]:
         ]
 
 
-@pytest.mark.proves("one-run-keeps-three-attributed-turns-and-refuses-a-stale-round")
-def test_one_public_run_keeps_three_attributed_turns_and_refuses_a_stale_round(
+@pytest.mark.proves("one-run-keeps-three-attributed-turns-and-classifies-repeats")
+def test_one_public_run_keeps_three_attributed_turns_and_classifies_repeats(
     tmp_path: Path,
     recording: RecordingAgentExecutorFactoryV2,
     dbos_logging_isolation: None,
@@ -476,6 +476,9 @@ def test_one_public_run_keeps_three_attributed_turns_and_refuses_a_stale_round(
             f"/atelier/api/v1/runs/{encode_public_run_reference(RUN)}"
         )
         assert round_two_read.status_code == 200, round_two_read.text
+        assert round_two_read.json()["current_node_execution_id"] == (
+            NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE, 2).value
+        )
         assert (
             next(
                 entry
@@ -484,11 +487,14 @@ def test_one_public_run_keeps_three_attributed_turns_and_refuses_a_stale_round(
             )["state"]
             == "needs_you"
         )
-        before_stale = durable_events(recovered)
-        stale = public_answer(recovered_client, workflow, ANSWER_ROUND_1, 1)
-        assert stale.status_code == 409, stale.text
-        assert stale.json()["type"].endswith(":answer-execution-stale")
-        assert durable_events(recovered) == before_stale
+        before_repeat = durable_events(recovered)
+        repeated = public_answer(recovered_client, workflow, ANSWER_ROUND_1, 1)
+        assert repeated.status_code == 200, repeated.text
+        assert durable_events(recovered) == before_repeat
+        changed = public_answer(recovered_client, workflow, ANSWER_ROUND_2, 1)
+        assert changed.status_code == 500, changed.text
+        assert changed.json()["type"].endswith(":durable-state-corrupt")
+        assert durable_events(recovered) == before_repeat
         with recovered.engine.connect() as connection:
             assert (
                 connection.scalar(
@@ -594,6 +600,35 @@ def test_one_public_run_keeps_three_attributed_turns_and_refuses_a_stale_round(
         ]
 
         with reader.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TRIGGER wait_answers_payload_no_update")
+            connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
+            connection.execute(
+                wait_answers.update()
+                .where(wait_answers.c.round_ordinal == 2)
+                .values(actor=None)
+            )
+            connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
+
+        missing_actor_stream = reader_client.get(
+            f"/atelier/api/v1/runs/{public_reference}/events"
+        )
+        missing_actor_frames = [
+            json.loads(line.removeprefix("data: "))
+            for line in missing_actor_stream.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert missing_actor_stream.status_code == 200
+        assert missing_actor_frames[-1]["event"] == "STREAM_FAILED"
+        assert missing_actor_frames[-1]["problem"]["type"].endswith(
+            ":durable-state-corrupt"
+        )
+
+        with reader.engine.begin() as connection:
+            connection.execute(
+                wait_answers.update()
+                .where(wait_answers.c.round_ordinal == 2)
+                .values(actor=WaitAnswerActor.OPERATOR.value)
+            )
             connection.exec_driver_sql("DROP TRIGGER wait_answers_no_delete")
             connection.execute(
                 wait_answers.delete().where(

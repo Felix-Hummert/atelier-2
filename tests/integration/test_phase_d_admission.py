@@ -880,6 +880,14 @@ def _restore_v43(database_path: Path) -> None:
         connection.execute("BEGIN IMMEDIATE")
         schema_module._rebuild_product_table(
             connection,
+            schema_module.run_events,
+            "run_events_v46",
+            schema_module._RUN_EVENTS_TRIGGERS,
+            46,
+            45,
+        )
+        schema_module._rebuild_product_table(
+            connection,
             schema_module.wait_answers,
             "wait_answers_v46",
             schema_module._WAIT_ANSWERS_TRIGGERS,

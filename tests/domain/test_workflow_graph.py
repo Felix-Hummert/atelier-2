@@ -260,6 +260,11 @@ def test_only_an_agent_completion_may_carry_a_receipt_hash(
                 else None
             ),
             agent_receipt_hash=AgentReceiptHash("c" * 64),
+            wait_answer_actor=(
+                WaitAnswerActor.OPERATOR
+                if event_kind is RunEventKind.WAITING_INPUT
+                else None
+            ),
         )
 
 
@@ -337,6 +342,11 @@ def test_receipt_events_reject_missing_or_different_receipt_bindings(
             b"result",
             receipt_logical_key=receipt_logical_key,
             receipt_result_hash=receipt_result_hash,
+            wait_answer_actor=(
+                WaitAnswerActor.OPERATOR
+                if event_kind is RunEventKind.WAITING_INPUT
+                else None
+            ),
         )
 
 
@@ -382,6 +392,11 @@ def test_nonreceipt_events_reject_receipt_bindings(
             b"result",
             receipt_logical_key=receipt_logical_key,
             receipt_result_hash=receipt_result_hash,
+            wait_answer_actor=(
+                WaitAnswerActor.OPERATOR
+                if event_kind is RunEventKind.WAITING_INPUT
+                else None
+            ),
         )
 
 

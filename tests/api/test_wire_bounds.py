@@ -77,7 +77,6 @@ WIRE_MODULES: tuple[ModuleType, ...] = (requests, resources, events, library)
 # durable side already obeys; the fourth is the wire's own, because no durable
 # owner caps how many roles one run binds.
 OWNED_WIRE_BOUNDS: Mapping[str, int] = {
-    "AnswerWaitRequestResource.actor": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentAttemptCancellationResourceV2.command_id": MAXIMUM_AGENT_FIELD_CHARACTERS,
     "AgentDefinitionRevisionDetailResource.system_prompt": (
         MAXIMUM_AGENT_DEFINITION_DOCUMENT_CHARACTERS

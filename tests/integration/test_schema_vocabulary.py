@@ -45,6 +45,7 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.executions import (
     RunEventKind,
     WaitAnswerActor,
+    WaitAnswerAttributionKind,
     WaitAnswerState,
 )
 from atelier2.contracts.hashing import Sha256Hash
@@ -407,10 +408,12 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "run_events.attempt_ordinal": OWNED_ATTEMPT_ORDINALS,
     "run_events.event_kind": _values(RunEventKind),
     "run_events.replacement": _values(AgentAttemptReplacement),
+    "run_events.wait_answer_actor": _values(WaitAnswerActor),
     "runs.state": _values(RunState),
     "runs.workflow_format_version": _values(WorkflowFormatVersion),
     "wait_answers.state": _values(WaitAnswerState),
     "wait_answers.actor": _values(WaitAnswerActor),
+    "wait_answers.actor_attribution_kind": _values(WaitAnswerAttributionKind),
     "node_receipts_v3.disposition": _values(PersistedReceiptDisposition),
     "published_revisions.kind": _values(RevisionKind),
     # A tool redemption is the exec-shaped record -- a command, an exit code, a
@@ -451,6 +454,9 @@ UNDECLARED_VOCABULARIES: frozenset[str] = frozenset(
         "queue_items.decision_authority",
         "run_events.attempt_ordinal",
         "run_events.replacement",
+        "run_events.wait_answer_actor",
+        "wait_answers.actor",
+        "wait_answers.actor_attribution_kind",
     }
 )
 """Owned columns the schema constrains only inside a state-shape CHECK.

@@ -244,10 +244,13 @@ describe("a chain run seen while it runs", () => {
     expect(answered).not.toHaveProperty("answer");
   });
 
-  it("keeps the migrated V3 answer actor required but honestly nullable", async () => {
-    const migrated = { ...(await chainedWaitAnswered(V3_ANSWER, 1)), actor: null };
+  it("names legacy V3 answers without making current attribution optional", async () => {
+    const migrated = {
+      ...(await chainedWaitAnswered(V3_ANSWER, 1)),
+      actor: "legacy-unattributed"
+    };
     const withoutActor = { ...migrated };
-    delete (withoutActor as { actor?: null }).actor;
+    delete (withoutActor as { actor?: string }).actor;
 
     const accepted = await decodeAndApplyDurableEvent(
       streamProjection("run1.cnVu", "a".repeat(64)),
@@ -259,7 +262,9 @@ describe("a chain run seen while it runs", () => {
     );
 
     expect(accepted.protocol_problem).toBeNull();
-    expect(accepted.events.at(-1)).toMatchObject({ actor: null });
+    expect(accepted.events.at(-1)).toMatchObject({
+      actor: "legacy-unattributed"
+    });
     expect(refused.protocol_problem).not.toBeNull();
   });
 

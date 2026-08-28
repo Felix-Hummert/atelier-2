@@ -22,10 +22,10 @@ from atelier2.adapters.dbos.workflow_ids import (
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
-    AnswerBytesConflict,
+    AnswerExistingApplied,
     AnswerExistingPending,
-    AnswerStale,
     AnswerWaitResult,
+    DurableStateCorrupt,
     UnanswerableWait,
     answer_wait_result,
 )
@@ -462,18 +462,22 @@ def test_answer_submission_is_exact_and_concurrent(
             for result in results
             if isinstance(
                 result,
-                (AnswerAcceptedPending, AnswerExistingPending),
+                (
+                    AnswerAcceptedPending,
+                    AnswerExistingPending,
+                    AnswerExistingApplied,
+                ),
             )
         ]
-        conflicts = [
-            result for result in results if isinstance(result, AnswerBytesConflict)
+        corruptions = [
+            result for result in results if isinstance(result, DurableStateCorrupt)
         ]
         if answers[0] == answers[1]:
             assert len(snapshots) == 2
-            assert len(conflicts) == 0
+            assert len(corruptions) == 0
         else:
             assert len(snapshots) == 1
-            assert len(conflicts) == 1
+            assert len(corruptions) == 1
         accepted_answers = {snapshot.answer.answer_bytes for snapshot in snapshots}
         assert len(accepted_answers) == 1
         assert accepted_answers.issubset(set(answers))
@@ -623,7 +627,7 @@ def test_pending_retry_converges_but_an_applied_execution_is_stale_without_reenq
                 b"6",
                 answerer,
             )
-            == AnswerBytesConflict()
+            == DurableStateCorrupt()
         )
         assert all_durable_rows(tmp_path) == pending_rows
         assert answer_counts(tmp_path) == (1, 1, 0)
@@ -652,7 +656,7 @@ def test_pending_retry_converges_but_an_applied_execution_is_stale_without_reenq
             request.answer_bytes,
             answerer,
         )
-        assert isinstance(retried, AnswerStale)
+        assert isinstance(retried, AnswerExistingApplied)
         assert (
             answer_wait_result(
                 RunId("run-1"),
@@ -663,7 +667,7 @@ def test_pending_retry_converges_but_an_applied_execution_is_stale_without_reenq
                 b"6",
                 answerer,
             )
-            == AnswerStale()
+            == DurableStateCorrupt()
         )
         assert all_durable_rows(tmp_path) == applied_rows
         assert answer_counts(tmp_path) == (1, 1, 1)

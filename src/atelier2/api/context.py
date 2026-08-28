@@ -306,7 +306,7 @@ class ApiUseCases:
             WorkflowRevisionHash,
             str,
             NodeExecutionId,
-            WaitAnswerActor | str,
+            WaitAnswerActor,
             bytes,
         ],
         AnswerWaitResult,

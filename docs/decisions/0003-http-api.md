@@ -84,16 +84,22 @@ It carries an actor and the exact `expected_node_execution_id`; a V3 run serves
 its current execution id from the run, revision, current node and round rather
 than borrowing a cancellation target. The durable store validates the current
 run head and any answer already bound to it under the write transaction before
-inserting anything. A proven prior execution is the definitive `409
-answer-execution-stale`; a fabricated execution, an unsupported actor, or a
-second arrival at an APPLIED current answer is durable corruption. An identical
-PENDING retry is idempotent; those are the answer door's only successes and both
-return `202`. V3 `WAIT_ANSWERED` receipts require the actor field,
-but it is nullable because V45-to-V46 migration preserves legacy answers as
-unknown instead of inventing `operator`; new answers record `operator`. The
-frozen V1 and V2 event families do not change. The cockpit, MCP projection,
-request schema, problem vocabulary, and frozen OpenAPI document migrate in the
-same head under the same pre-release condition.
+inserting anything. The request actor is a closed wire value; an unknown actor
+or malformed body is `422 invalid-request`, before the durable seam. The store
+reads the actor recorded on the exact `WAITING_INPUT` head and a mismatch takes
+that same named refusal. A proven prior waiting execution that was never
+answered remains the definitive `409 answer-execution-stale`. The same answer
+from the same actor is
+idempotent: PENDING returns `202`, while an already APPLIED answer returns `200`.
+A missing or duplicate answer row for an answered execution, contradictory
+bindings, different bytes for one execution, or a WAITING_INPUT run pointing at
+a non-Wait node is `500 durable-state-corrupt`. V3 `WAIT_ANSWERED` receipts
+require a non-null actor attribution. V45-to-V46 migration names its distinct
+historical case `legacy-unattributed` instead of making attribution optional or
+inventing `operator`; new answers record `operator`. The frozen V1 and V2 event
+families do not change. The cockpit, MCP projection, request schema, problem
+vocabulary, and frozen OpenAPI document migrate in the same head under the same
+pre-release condition.
 
 V1, V2, and V3 SSE event resources coexist as exact closed unions. V1 and V2
 workflow, start, and run resources remain their own closed families.
