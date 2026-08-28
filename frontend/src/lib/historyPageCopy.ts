@@ -21,7 +21,7 @@ export const historyPageCopy = {
   emptyTitle: "No finished runs yet",
   emptyDescription: "Runs land here once they finish — start one from the Catalog.",
   emptyNext: "Open the Catalog",
-  /** Mockup v8 §05: "Purpose (the order sentence), workflow small beneath". */
+  /** The purpose column names the workflow. */
   columnName: "Purpose",
   columnWhen: "When",
   /** ADR 0019 §4. Honest dash when no work item hangs on the run. */

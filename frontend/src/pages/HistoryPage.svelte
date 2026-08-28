@@ -218,8 +218,7 @@
   }
 
   function runLinkName(row: HistoryRow): string {
-    const name = row.purpose !== null ? `${row.purpose} ${row.workflowName}` : row.workflowName;
-    return `${name} ${shortPublicRunReference(row.run.public_run_reference)}`;
+    return `${row.workflowName} ${shortPublicRunReference(row.run.public_run_reference)}`;
   }
 
   $: extrasByReference = settledExtrasByReference(extrasLoadByReference);
@@ -302,10 +301,7 @@
               </span>
               <span class="row-name">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnName)}: </span>
-                <span class="row-purpose">{row.purpose ?? row.workflowName}</span>
-                {#if row.purpose !== null}
-                  <small class="row-workflow">{row.workflowName}</small>
-                {/if}
+                <span class="row-purpose">{row.workflowName}</span>
               </span>
               <span class="row-work-item">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnWorkItem)}: </span>
@@ -471,23 +467,10 @@
     pointer-events: none;
   }
 
-  /* The purpose line (mockup v8 §05: "Purpose (the order sentence)"); it can
-     be as terse as one order's own name today (#717's honest first slice), so
-     it stays on one line rather than wrapping. */
+  /* A long workflow name stays on one line rather than wrapping. */
   .row-purpose {
     overflow: hidden;
     font-weight: var(--weight-strong);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  /* "…, workflow small beneath" (mockup v8 §05): the recipe name, dim and
-     smaller, shown only when the purpose line above says something the
-     workflow name does not already say on its own. */
-  .row-workflow {
-    overflow: hidden;
-    font-size: var(--text-xs);
-    color: var(--ink-dim);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -584,10 +567,9 @@
 
   /**
    * Names each row's fragments (When/Purpose/Work item/Result/Duration) for a
-   * screen reader without repeating the header aloud for every row --
-   * sighted eyes already read the column from `.history-head-row`'s
-   * alignment, and duplicating that header once per row would be visual
-   * noise rather than a label.
+   * screen reader. At wide widths sighted eyes read the column from
+   * `.history-head-row`; at the card layout that header is hidden, so these
+   * labels remain the accessible names.
    */
   .visually-hidden {
     position: absolute;
@@ -601,12 +583,16 @@
     border: 0;
   }
 
-  /* The header keeps naming its columns at every width (operator ruling
-     23.08.). Duration drops at this width. Work item drops only when it is
-     the placeholder; a filled cell stays. The row stacks so When, work
-     item and Result each keep a readable line instead of Result collapsing
-     to a glyph (mockup v8 §05 at 390). */
+  /* Cards do not need column headers at this width: hide the header row
+     (operator live acceptance 28.08.). Duration drops. Work item drops
+     only when it is the placeholder; a filled cell stays. The row stacks
+     so When, work item and Result each keep a readable line instead of
+     Result collapsing to a glyph (mockup v8 §05 at 390). */
   @media (max-width: 32rem) {
+    .history-head-row {
+      display: none;
+    }
+
     .history-row {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto auto;

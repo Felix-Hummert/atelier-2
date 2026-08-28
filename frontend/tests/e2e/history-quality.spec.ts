@@ -1,10 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
 /**
- * History's own narrow-width proof (#717 REVISE): a real run with an
- * extravagantly long workflow name and many joined order names must never
- * widen the row past the viewport at 390px -- the Purpose cell clips
- * (`text-overflow: ellipsis`), it does not overflow the frame.
+ * History's own narrow-width proof (#717): a real run with an extravagantly
+ * long workflow name must never widen the row past the viewport at 390px --
+ * the Purpose cell is the workflow name, clips (`text-overflow: ellipsis`),
+ * and does not overflow the frame. Joined order names are not purpose.
  */
 
 async function anyJsonSchema(page: Page): Promise<string> {
@@ -16,8 +16,7 @@ async function anyJsonSchema(page: Page): Promise<string> {
   return (await published.json()).schema_revision_hash as string;
 }
 
-const FIRST_ORDER_NAME = "diff";
-const ORDER_NAMES = [FIRST_ORDER_NAME, "target_file", "base_branch", "release_notes", "reviewer_handle"];
+const ORDER_NAMES = ["diff", "target_file", "base_branch", "release_notes", "reviewer_handle"];
 const LONG_WORKFLOW_NAME =
   "rebuild-the-entire-continuous-integration-pipeline-end-to-end-with-full-coverage";
 
@@ -109,7 +108,7 @@ async function publishCheckedModelRegistry(
   }
 }
 
-test("a long workflow name and many joined orders never widen History's row past 390px", async (
+test("a long workflow name never widens History's row past 390px, and purpose is the workflow not joined orders", async (
   { page },
   testInfo
 ) => {
@@ -157,8 +156,13 @@ test("a long workflow name and many joined orders never widen History's row past
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/atelier/history");
-  const row = await page.getByRole("link", { name: new RegExp(FIRST_ORDER_NAME) });
+  const row = page.locator(".history-row").filter({ hasText: LONG_WORKFLOW_NAME }).first();
   await expect(row).toBeVisible();
+  await expect(row.locator(".row-purpose")).toHaveText(LONG_WORKFLOW_NAME);
+  for (const name of ORDER_NAMES) {
+    await expect(row.locator(".row-purpose")).not.toContainText(name);
+  }
+  await expect(page.locator(".history-head-row")).toBeHidden();
 
   const documentWidth = await page.evaluate(() => document.documentElement.scrollWidth);
   const viewportWidth = await page.evaluate(() => document.documentElement.clientWidth);

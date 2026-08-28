@@ -245,7 +245,14 @@ test("proves(a-history-row-names-when-work-and-result): two finished runs of the
     await page.goto("/atelier/history");
     const rows = historyCards(page, workflowName);
     await expect(rows).toHaveCount(2);
+    const header = page.locator(".history-head-row");
+    if (viewport.width === 1280) {
+      await expect(header).toBeVisible();
+    } else {
+      await expect(header).toBeHidden();
+    }
     for (const row of await rows.all()) {
+      await expect(row.locator(".row-purpose")).toHaveText(workflowName);
       await expect(row.locator(".row-result")).toContainText(historyPageCopy.outcome.text);
       await expect(row.locator(".row-result")).not.toContainText(RAW_PROVIDER_BYTES);
       await expect(row.locator(".row-result")).not.toHaveText(standingWords.done);
@@ -355,6 +362,9 @@ test("a populated History row at 390 names the work item and stays inside the vi
   await page.goto("/atelier/history");
   const row = historyCards(page, workflowName).first();
   await expect(row).toBeVisible();
+  await expect(page.locator(".history-head-row")).toBeHidden();
+  await expect(row.locator(".row-purpose")).toHaveText(workflowName);
+  await expect(row.locator(".row-purpose")).not.toContainText("work_item");
   await expect(row.locator(".row-work-item")).toBeVisible();
   await expect(row.locator(".row-work-item")).toContainText("#450");
   await expect(row.locator(".row-work-item")).not.toContainText("e2e observed work item");
