@@ -173,6 +173,7 @@ async function chainedWaitAnswered(answer: string, sequence: number) {
     ...chainedWaitBase(sequence),
     node_rail: [{ node_id: "approve", state: "succeeded", attempt: null }],
     event: "WAIT_ANSWERED",
+    actor: "operator",
     answer_base64: btoa(answer),
     answer_hash: await sha256Of(answer)
   };
@@ -241,6 +242,30 @@ describe("a chain run seen while it runs", () => {
     // the browser base64 rather than as the decimal text the older formats send.
     expect(answered).toMatchObject({ answer_base64: btoa(V3_ANSWER) });
     expect(answered).not.toHaveProperty("answer");
+  });
+
+  it("names legacy V3 answers without making current attribution optional", async () => {
+    const migrated = {
+      ...(await chainedWaitAnswered(V3_ANSWER, 1)),
+      actor: "legacy-unattributed"
+    };
+    const withoutActor = { ...migrated };
+    delete (withoutActor as { actor?: string }).actor;
+
+    const accepted = await decodeAndApplyDurableEvent(
+      streamProjection("run1.cnVu", "a".repeat(64)),
+      JSON.stringify(migrated)
+    );
+    const refused = await decodeAndApplyDurableEvent(
+      streamProjection("run1.cnVu", "a".repeat(64)),
+      JSON.stringify(withoutActor)
+    );
+
+    expect(accepted.protocol_problem).toBeNull();
+    expect(accepted.events.at(-1)).toMatchObject({
+      actor: "legacy-unattributed"
+    });
+    expect(refused.protocol_problem).not.toBeNull();
   });
 
   it.each([

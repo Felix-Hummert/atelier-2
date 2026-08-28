@@ -51,6 +51,7 @@ from atelier2.contracts.executions import (
     RunEventAgentAttemptBinding,
     RunEventCancellationBinding,
     RunEventKind,
+    WaitAnswerActor,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.run_bindings import RunV2, RunV3
@@ -76,7 +77,14 @@ from atelier2.contracts.workflows import (
     WorkflowGraph,
     WorkflowGraphV2,
 )
-from atelier2.contracts.workflows_v3 import AgentNodeV3, WorkflowGraphV3
+from atelier2.contracts.workflows_v3 import (
+    AgentNodeV3,
+    LoopDeclaration,
+    NodeOutput,
+    VersionedReference,
+    WaitNodeV3,
+    WorkflowGraphV3,
+)
 
 RUN_ID = RunId("node-rail")
 REVISION_HASH = WorkflowRevisionHash("a" * 64)
@@ -141,6 +149,7 @@ def durable_event(
     *,
     workflow_format_version: WorkflowFormatVersion = WorkflowFormatVersion.V1,
     attempt_ordinal: int | None = None,
+    round_ordinal: int = 1,
 ) -> PersistedRunEvent:
     payload = b"1"
     carries_receipt = kind in RECEIPT_KINDS
@@ -168,7 +177,7 @@ def durable_event(
         REVISION_HASH,
         sequence,
         node_id,
-        NodeExecutionId.for_node(RUN_ID, REVISION_HASH, node_id),
+        NodeExecutionId.for_node(RUN_ID, REVISION_HASH, node_id, round_ordinal),
         kind,
         payload,
         receipt_logical_key=(
@@ -176,8 +185,22 @@ def durable_event(
         ),
         receipt_result_hash=Sha256Hash.of(payload) if carries_receipt else None,
         attempt_binding=attempt_binding,
+        round_ordinal=round_ordinal,
+        wait_answer_actor=(
+            WaitAnswerActor.OPERATOR if kind is RunEventKind.WAITING_INPUT else None
+        ),
     )
-    return PersistedRunEvent(event, None, workflow_format_version)
+    return PersistedRunEvent(
+        event,
+        None,
+        workflow_format_version,
+        wait_answer_actor=(
+            WaitAnswerActor.OPERATOR
+            if workflow_format_version is WorkflowFormatVersion.V3
+            and kind is RunEventKind.WAIT_ANSWERED
+            else None
+        ),
+    )
 
 
 def v2_agent_event(kind: RunEventKind, sequence: int = 1) -> PersistedRunEvent:
@@ -528,10 +551,50 @@ def v3_graph() -> WorkflowGraphV3:
     )
 
 
+def v3_wait_loop_graph() -> WorkflowGraphV3:
+    """wait -> implement -> wait: the smallest reachable round transition."""
+    return WorkflowGraphV3(
+        format_version=3,
+        name="A person and an agent take another round",
+        nodes=(
+            WaitNodeV3(
+                id="wait",
+                type="wait",
+                prompt="What should this round do?",
+                outputs=(
+                    NodeOutput(
+                        name="answer",
+                        schema=VersionedReference(
+                            ref="answer-schema", revision="d" * 64
+                        ),
+                    ),
+                ),
+            ),
+            AgentNodeV3(
+                id="implement",
+                type="agent",
+                role="builder",
+                mode="headless",
+                instruction="Do what the person asked this round.",
+                depends_on=("wait",),
+            ),
+        ),
+        loops=(
+            LoopDeclaration(
+                id="conversation",
+                body=("wait", "implement"),
+                maximum_rounds=2,
+            ),
+        ),
+    )
+
+
 def v3_projection(
     current_node_id: str,
     last_event_sequence: int,
     attempts: tuple[AgentAttemptProjection, ...] = (),
+    current_round_ordinal: int = 1,
+    graph: WorkflowGraphV3 | None = None,
 ) -> RunProjection:
     return RunProjection(
         RunV3(
@@ -544,8 +607,9 @@ def v3_projection(
             0,
             last_event_sequence,
             RunConfigurationRevisionHash("c" * 64),
+            current_round_ordinal=current_round_ordinal,
         ),
-        v3_graph(),
+        v3_graph() if graph is None else graph,
         None,
         attempts,
     )
@@ -618,6 +682,82 @@ def test_a_v3_line_shows_the_node_that_finished_and_the_one_now_running() -> Non
         ("implement", NodeState.SUCCEEDED),
         ("review", NodeState.WORKING),
     )
+
+
+def test_an_overtaking_event_fences_the_whole_rail_to_its_one_round() -> None:
+    projection = v3_projection(
+        "implement",
+        2,
+        current_round_ordinal=1,
+        graph=v3_wait_loop_graph(),
+    )
+    events = (
+        durable_event(
+            1,
+            "wait",
+            RunEventKind.WAITING_INPUT,
+            workflow_format_version=WorkflowFormatVersion.V3,
+            round_ordinal=1,
+        ),
+        durable_event(
+            2,
+            "wait",
+            RunEventKind.WAIT_ANSWERED,
+            workflow_format_version=WorkflowFormatVersion.V3,
+            round_ordinal=1,
+        ),
+        durable_event(
+            3,
+            "implement",
+            RunEventKind.AGENT_COMPLETED,
+            workflow_format_version=WorkflowFormatVersion.V3,
+            attempt_ordinal=1,
+            round_ordinal=1,
+        ),
+    )
+
+    rail = project_node_rail(projection, events)
+
+    assert [(entry.node_id, entry.state) for entry in rail] == [
+        ("wait", NodeState.WORKING),
+        ("implement", NodeState.SUCCEEDED),
+    ]
+    assert rail[0].last_event is None
+    predecessor = rail[1].last_event
+    assert predecessor is not None
+    assert predecessor is events[-1]
+    assert predecessor.event.node_execution_id == NodeExecutionId.for_node(
+        RUN_ID, REVISION_HASH, "implement", 1
+    )
+
+
+def test_a_leading_event_for_no_graph_node_fails_loud() -> None:
+    projection = v3_projection("implement", 0)
+    unknown = durable_event(
+        1,
+        "removed-node",
+        RunEventKind.AGENT_COMPLETED,
+        workflow_format_version=WorkflowFormatVersion.V3,
+        attempt_ordinal=1,
+    )
+
+    with pytest.raises(NodeRailUnprojectable, match="leading event node"):
+        project_node_rail(projection, (unknown,))
+
+
+def test_a_leading_node_with_the_wrong_execution_identity_fails_loud() -> None:
+    projection = v3_projection("implement", 0)
+    corrupted = durable_event(
+        1,
+        "implement",
+        RunEventKind.AGENT_COMPLETED,
+        workflow_format_version=WorkflowFormatVersion.V3,
+        attempt_ordinal=1,
+    )
+    object.__setattr__(corrupted.event, "node_execution_id", NodeExecutionId("f" * 64))
+
+    with pytest.raises(NodeRailUnprojectable, match="exact execution evidence"):
+        project_node_rail(projection, (corrupted,))
 
 
 @pytest.mark.parametrize(

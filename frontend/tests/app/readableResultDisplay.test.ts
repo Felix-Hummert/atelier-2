@@ -45,7 +45,8 @@ function v3Run(overrides: Partial<RunV3> = {}): RunV3 {
     latest_event_cursor: null,
     started_at: "2026-08-25T15:00:00Z",
     ended_at: "2026-08-25T15:00:12Z",
-    ...overrides
+    ...overrides,
+    current_node_execution_id: overrides.current_node_execution_id ?? digest
   };
 }
 

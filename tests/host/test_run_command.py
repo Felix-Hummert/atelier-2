@@ -578,6 +578,7 @@ def chained_run_resource(
         state_version=2,
         state=state,
         current_node_id=CHAIN_SECOND_NODE_ID,
+        current_node_execution_id=NODE_EXECUTION_ID,
         node_rail=node_rail(
             NodeState.SUCCEEDED if state == "COMPLETED" else NodeState.WORKING
         ),

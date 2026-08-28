@@ -73,7 +73,11 @@ from atelier2.contracts.agents import (
     ResolvedAgentBinding,
 )
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.executions import AgentAttemptExecution, NodeExecutionId
+from atelier2.contracts.executions import (
+    AgentAttemptExecution,
+    NodeExecutionId,
+    WaitAnswerActor,
+)
 from atelier2.contracts.revisions_v3 import (
     PublishedRevision,
     PublishedRevisionHash,
@@ -344,6 +348,8 @@ def answer(runtime: DbosRuntime, workflow: WorkflowRevision, value: bytes) -> ob
         RUN,
         workflow.revision_hash,
         WAIT_NODE,
+        NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE),
+        WaitAnswerActor.OPERATOR,
         value,
         DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
     )

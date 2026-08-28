@@ -1141,6 +1141,7 @@ export const runV3Schema = z
     state_version: nonnegativeSafeInteger,
     state: z.enum(RUN_STATES_V3),
     current_node_id: z.string().min(1),
+    current_node_execution_id: sha256,
     node_rail: z.array(nodeRailEntrySchema).min(1),
     cancellation: runCancellabilitySchema,
     terminal_hash: sha256.nullable(),
@@ -1730,6 +1731,7 @@ const runEventV3Schema = z
         event: z.literal("WAIT_ANSWERED"),
         answer_base64: standardBase64,
         answer_hash: sha256,
+        actor: z.enum(["operator", "legacy-unattributed"]),
       })
       .strict(),
     z
@@ -2139,7 +2141,6 @@ export const problemDefinitions = {
     title: "Answer revision conflict",
   },
   "answer-state-conflict": { status: 409, title: "Answer state conflict" },
-  "answer-bytes-conflict": { status: 409, title: "Answer bytes conflict" },
   "reconciliation-target-missing": {
     status: 409,
     title: "Reconciliation target missing",
@@ -2238,6 +2239,7 @@ export const problemDefinitions = {
     title: "Durable projection cannot be represented",
   },
   "durable-state-corrupt": { status: 500, title: "Durable state is corrupt" },
+  "answer-execution-stale": { status: 409, title: "Answer execution is stale" },
   "internal-error": { status: 500, title: "Internal error" },
 } as const;
 
@@ -2692,10 +2694,6 @@ export const problemSchema = z.discriminatedUnion("type", [
     problemDefinitions["answer-state-conflict"],
   ),
   problemVariant(
-    "answer-bytes-conflict",
-    problemDefinitions["answer-bytes-conflict"],
-  ),
-  problemVariant(
     "reconciliation-target-missing",
     problemDefinitions["reconciliation-target-missing"],
   ),
@@ -2807,6 +2805,10 @@ export const problemSchema = z.discriminatedUnion("type", [
   problemVariant(
     "durable-state-corrupt",
     problemDefinitions["durable-state-corrupt"],
+  ),
+  problemVariant(
+    "answer-execution-stale",
+    problemDefinitions["answer-execution-stale"],
   ),
   problemVariant("internal-error", problemDefinitions["internal-error"]),
 ]);
@@ -3551,7 +3553,7 @@ export function createCockpitApi(
           headers: { "content-type": "application/json" },
           body: exactBody(mutation.body_base64),
         },
-        [200, 202],
+        [202],
         anyRunSchema,
       );
       if (
@@ -3833,7 +3835,7 @@ async function requestJsonResult<T>(
       throw new CockpitRequestError(
         problem.detail,
         problem,
-        problem.status < 500,
+        problem.status < 500 || problem.type.endsWith(":durable-state-corrupt"),
       );
     } catch (error) {
       if (error instanceof CockpitRequestError) throw error;

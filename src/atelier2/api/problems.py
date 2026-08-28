@@ -593,10 +593,10 @@ PROBLEM_DEFINITIONS: dict[str, ProblemDefinition] = {
         "Answer state conflict",
         "Answer only the run's current waiting input node.",
     ),
-    "answer-bytes-conflict": ProblemDefinition(
+    "answer-execution-stale": ProblemDefinition(
         409,
-        "Answer bytes conflict",
-        "Retry the exact original answer bytes or use another command.",
+        "Answer execution is stale",
+        "Reload the run and answer only its current waiting execution.",
     ),
     "reconciliation-target-missing": ProblemDefinition(
         409,

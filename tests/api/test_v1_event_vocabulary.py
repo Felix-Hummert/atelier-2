@@ -27,6 +27,7 @@ from atelier2.contracts.executions import (
     RunEvent,
     RunEventCancellationBinding,
     RunEventKind,
+    WaitAnswerActor,
 )
 from atelier2.contracts.run_events import (
     PersistedRunEvent,
@@ -99,6 +100,9 @@ def v1_projection(kind: RunEventKind) -> PersistedRunEvent:
             )
             if cancelling
             else None
+        ),
+        wait_answer_actor=(
+            WaitAnswerActor.OPERATOR if kind is RunEventKind.WAITING_INPUT else None
         ),
     )
     return PersistedRunEvent(event, receipt, WorkflowFormatVersion.V1)

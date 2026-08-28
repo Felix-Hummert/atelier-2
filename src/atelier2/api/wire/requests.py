@@ -304,6 +304,8 @@ AnyStartRunRequestResource = (
 class AnswerWaitRequestResource(ApiModel):
     workflow_revision_hash: str = Field(pattern=REVISION_HASH_PATTERN)
     node_id: str = Field(min_length=1)
+    expected_node_execution_id: str = Field(pattern=SHA256_HASH_PATTERN)
+    actor: Literal["operator"]
     answer_base64: str = Field(min_length=1)
 
 

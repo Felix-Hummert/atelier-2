@@ -27,6 +27,7 @@ from atelier2.contracts.executions import (
     RunEvent,
     RunEventAgentAttemptBinding,
     RunEventKind,
+    WaitAnswerActor,
 )
 from atelier2.contracts.run_cancellations import RunCancelCommandId
 from atelier2.contracts.run_events import PersistedRunEvent
@@ -59,8 +60,18 @@ def v3_projection(kind: RunEventKind, payload: bytes) -> PersistedRunEvent:
         kind,
         payload,
         attempt_binding=attempt_binding,
+        wait_answer_actor=(
+            WaitAnswerActor.OPERATOR if kind is RunEventKind.WAITING_INPUT else None
+        ),
     )
-    return PersistedRunEvent(event, None, WorkflowFormatVersion.V3)
+    return PersistedRunEvent(
+        event,
+        None,
+        WorkflowFormatVersion.V3,
+        wait_answer_actor=(
+            WaitAnswerActor.OPERATOR if kind is RunEventKind.WAIT_ANSWERED else None
+        ),
+    )
 
 
 def unavailable_v3_projection() -> PersistedRunEvent:
@@ -205,6 +216,7 @@ def test_format_3_wait_answered_carries_the_exact_bytes_a_person_sent() -> None:
     dumped = resource.model_dump(mode="json")
     assert dumped["workflow_format_version"] == 3
     assert dumped["event"] == "WAIT_ANSWERED"
+    assert dumped["actor"] == WaitAnswerActor.OPERATOR.value
     assert dumped["answer_base64"] == encode_canonical_base64(answer)
     assert dumped["answer_hash"] == projection.event.payload_hash.value
     assert "answer" not in dumped
