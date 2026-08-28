@@ -10,3 +10,8 @@ text = "Settings names an unavailable joint read without exposing transport triv
 id = "settings-reads-every-model-configuration-page-or-says-it-could-not"
 requirement = "REQ-UIQ-10"
 text = "Settings reads every page of model configurations before presenting Models and Model defaults as complete, and names the joint read unavailable when any page cannot be confirmed."
+
+[[sentence]]
+id = "settings-adds-a-model-by-id-and-shows-its-check-state"
+requirement = "REQ-UI-20"
+text = "In Settings the operator adds a model by typing its id against an existing account, sees one row for that id with its check state, and can remove it; adding the same id a second time does not create a second row."

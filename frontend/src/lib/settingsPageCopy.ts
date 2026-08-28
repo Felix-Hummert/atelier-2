@@ -27,6 +27,11 @@ export const settingsPageCopy = {
   registry: "Registry",
   unknownAccount: "Unknown account",
   addModel: "Add a model",
+  checking: "Checking",
+  correctTheId: "Correct the id",
+  alreadyPresent: "schon vorhanden",
+  add: "Add",
+  cancel: "Cancel",
   check: "Check",
   remove: "Remove",
   notCheckedYet: "◇ not checked yet",
@@ -50,4 +55,12 @@ export function retainedAccountChoice(modelId: string, account: string): string 
 
 export function difficultyLabel(difficulty: number): string {
   return `${settingsPageCopy.difficulty} ${difficulty}`;
+}
+
+export function noSuchModel(providerId: string): string {
+  return `No such model at ${providerId}.`;
+}
+
+export function providerAccount(providerId: string, profileId: string): string {
+  return `${providerId} · ${profileId}`;
 }

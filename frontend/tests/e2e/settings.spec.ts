@@ -4,6 +4,7 @@ import { readStateCopy, retryLabel } from "../../src/lib/readStateCopy";
 import {
   accountChoice,
   difficultyLabel,
+  noSuchModel,
   retainedAccountChoice,
   settingsPageCopy
 } from "../../src/lib/settingsPageCopy";
@@ -336,7 +337,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await page.getByRole("button", { name: settingsPageCopy.retry }).click();
     await expect.poll(() => writes.registryBodies.length).toBe(2);
     expect(writes.registryBodies[1]).toBe(writes.registryBodies[0]);
-    await expect(page.getByRole("combobox", { name: settingsPageCopy.addModel })).toBeVisible();
+    await expect(page.getByRole("button", { name: settingsPageCopy.addModel })).toBeVisible();
   });
 }
 
@@ -488,3 +489,81 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
   }]));
 });
 }
+
+function modelsRow(page: Page, modelId: string) {
+  const models = page.locator(".settings-block").filter({
+    has: page.getByRole("heading", { name: settingsPageCopy.modelsTitle })
+  });
+  return models.getByRole("row").filter({ hasText: modelId }).or(
+    models.locator("tr").filter({ hasText: modelId })
+  );
+}
+
+test("proves(settings-adds-a-model-by-id-and-shows-its-check-state): Settings adds a model by id and shows its check state at 1280 and 390", async ({ page }) => {
+  test.setTimeout(180_000);
+  const stamp = Date.now();
+  const fixture = await publishStartableProvider(page, "e2e-v3", "immediate/v1", `add-${stamp}`);
+
+  for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+    const newId = `added-model-${stamp}-${viewport.width}`;
+    await page.setViewportSize(viewport);
+    await page.goto("/atelier/settings");
+    await expect(page.getByRole("heading", { name: settingsPageCopy.modelsTitle })).toBeVisible();
+    await expect(page.getByText(fixture.modelId, { exact: true })).toBeVisible();
+
+    const addDoor = page.getByRole("button", { name: settingsPageCopy.addModel, exact: true });
+    await addDoor.click();
+    const dialog = page.getByRole("dialog", { name: settingsPageCopy.addModel });
+    await expect(dialog).toBeVisible();
+
+    const box = await dialog.boundingBox();
+    expect(box).not.toBeNull();
+    if (box === null) throw new Error("add-model sheet has no box");
+    if (viewport.width === 1280) {
+      expect(Math.abs(viewport.width - (box.x + box.width))).toBeLessThanOrEqual(24);
+    } else {
+      expect(Math.abs(viewport.height - (box.y + box.height))).toBeLessThanOrEqual(24);
+    }
+
+    await expect(dialog.getByRole("combobox", { name: settingsPageCopy.provider })).toContainText(
+      fixture.providerId
+    );
+    await dialog.getByRole("textbox", { name: settingsPageCopy.model }).fill(newId);
+    const add = dialog.getByRole("button", { name: settingsPageCopy.add, exact: true });
+    await expect(add).toBeEnabled();
+    await add.click();
+    await expect(dialog).toHaveCount(0);
+
+    await expect(page.getByText(newId, { exact: true })).toHaveCount(1);
+    const row = modelsRow(page, newId);
+    const checkState = row.getByText(settingsPageCopy.checking, { exact: true })
+      .or(row.getByText(settingsPageCopy.addedByYouChecked, { exact: true }))
+      .or(row.getByText(noSuchModel(fixture.providerId), { exact: true }));
+    await expect(checkState).toBeVisible();
+    await page.screenshot({
+      path: `test-results/settings-${viewport.width}-add-model.png`,
+      fullPage: true
+    });
+
+    await expect(row.getByText(settingsPageCopy.checking, { exact: true })).toHaveCount(0, {
+      timeout: 30_000
+    });
+    await expect(
+      row.getByText(settingsPageCopy.addedByYouChecked, { exact: true })
+        .or(row.getByText(noSuchModel(fixture.providerId), { exact: true }))
+    ).toBeVisible();
+
+    await addDoor.click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("textbox", { name: settingsPageCopy.model }).fill(newId);
+    await expect(add).toBeEnabled();
+    await add.click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByText(newId, { exact: true })).toHaveCount(1);
+    await expect(page.getByText(settingsPageCopy.alreadyPresent)).toBeVisible();
+
+    await row.getByRole("button", { name: settingsPageCopy.remove }).click();
+    await expect(page.getByText(newId, { exact: true })).toHaveCount(0);
+    await expect(page.getByText(fixture.modelId, { exact: true })).toBeVisible();
+  }
+});

@@ -3,6 +3,8 @@
   import { SvelteSet } from "svelte/reactivity";
 
   import {
+    type AgentConfigurationInput,
+    type AgentConfigurationRevision,
     type AgentConfigurationRevisionListItem,
     type AuthProfileRevision,
     type CockpitApi,
@@ -12,7 +14,14 @@
     type ProjectModelDefaultsRevision,
     type ProjectSourceConnectionRevision
   } from "../api/client";
+  import AddModelSheet from "../components/AddModelSheet.svelte";
   import ReadState from "../components/ReadState.svelte";
+  import {
+    offeredAccounts,
+    planAddModel,
+    rowPresentation,
+    trimmedModelId
+  } from "../lib/addModel";
   import { problemCode } from "../lib/catalogName";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { THE_ONE_PROJECT } from "../lib/project";
@@ -27,6 +36,7 @@
   import {
     accountChoice,
     difficultyLabel,
+    noSuchModel,
     retainedAccountChoice,
     settingsPageCopy
   } from "../lib/settingsPageCopy";
@@ -64,17 +74,30 @@
         configurationHash: string;
       }
     | {
+        kind: "configuration";
+        input: AgentConfigurationInput;
+      }
+    | {
         kind: "defaults";
         projectReference: string;
         write: ExactProjectModelDefaultsRevisionWrite;
       };
 
+  type SheetPrefill = { authProfileRevisionHash: string; modelId: string };
+
   let settings: RetainedRead<SettingsSnapshot, SettingsFailure> = retainedRead();
   let selections: Partial<Record<Difficulty, string>> = {};
   let writing = false;
   let failedWrite: FailedWrite | null = null;
+  let sheetOpen = false;
+  let sheetPrefill: SheetPrefill | null = null;
+  let checkingHashes = new SvelteSet<string>();
+  let duplicateNotice: { providerId: string; modelId: string } | null = null;
 
   $: mutationsFrozen = writing || failedWrite !== null;
+  $: accountOptions = settings.confirmed === null
+    ? []
+    : offeredAccounts(settings.confirmed.profiles, settings.confirmed.configurations);
 
   onMount(() => { void load(); });
 
@@ -170,15 +193,6 @@
     )?.profile_id ?? settingsPageCopy.unknownAccount;
   }
 
-  function registryEntryDetails(entry: ModelRegistryRevision["entries"][number]): string {
-    if (entry.provider_check === "unknown-at-provider") return settingsPageCopy.unknownAtProvider;
-    if (entry.source === "operator" && entry.provider_check === "checked") {
-      return settingsPageCopy.addedByYouChecked;
-    }
-    if (entry.source === "operator") return settingsPageCopy.addedByYouNotChecked;
-    return "";
-  }
-
   function updateRegistry(result: ModelRegistryRevision): void {
     const snapshot = settings.confirmed;
     if (snapshot === null) return;
@@ -192,6 +206,40 @@
         ].sort((left, right) => left.provider_id.localeCompare(right.provider_id))
       }
     };
+  }
+
+  function appendConfiguration(
+    revision: AgentConfigurationRevision,
+    pin: AgentConfigurationRevisionListItem
+  ): void {
+    const snapshot = settings.confirmed;
+    if (snapshot === null) return;
+    if (snapshot.configurations.some(
+      (item) => item.agent_configuration_revision_hash === revision.agent_configuration_revision_hash
+    )) return;
+    settings = {
+      ...settings,
+      confirmed: {
+        ...snapshot,
+        configurations: [
+          ...snapshot.configurations,
+          {
+            ...revision,
+            startable: pin.startable,
+            not_startable_reason: pin.not_startable_reason
+          }
+        ]
+      }
+    };
+  }
+
+  function closeSheet(): void {
+    sheetOpen = false;
+  }
+
+  function openAddSheet(prefill: SheetPrefill | null): void {
+    sheetPrefill = prefill;
+    sheetOpen = true;
   }
 
   async function publishRegistry(
@@ -223,14 +271,11 @@
     }
   }
 
-  async function addModel(configuration: AgentConfigurationRevisionListItem): Promise<void> {
-    await sendRegistryWrite(configuration.provider_id, additionWrite(configuration));
-  }
-
   async function removeModel(
     registry: ModelRegistryRevision,
     entry: ModelRegistryRevision["entries"][number]
   ): Promise<void> {
+    unmarkChecking(entry.agent_configuration_revision_hash);
     const input = {
       revision_number: registry.revision_number + 1,
       entries: registry.entries
@@ -262,19 +307,15 @@
     return { input, body: JSON.stringify(input) };
   }
 
-  async function applyValidation(
+  async function fetchValidation(
     providerId: string,
     configurationHash: string
-  ): Promise<"checked" | "unknown" | "missing" | "uncertain"> {
+  ): Promise<{ kind: "ok"; registry: ModelRegistryRevision } | { kind: "uncertain" }> {
     try {
       const result = await cockpitApi.validateModelRegistryEntry(providerId, configurationHash);
-      updateRegistry(result.value);
-      const found = entryFor(configurationHash);
-      if (found?.entry.provider_check === "checked") return "checked";
-      if (found?.entry.provider_check === "unknown-at-provider") return "unknown";
-      return "missing";
+      return { kind: "ok", registry: result.value };
     } catch {
-      return "uncertain";
+      return { kind: "uncertain" };
     }
   }
 
@@ -293,6 +334,14 @@
             candidate.agent_configuration_revision_hash === configurationHash
             && candidate.provider_id === providerId
         );
+        const missingStartableRegistry = registryFor(providerId) === null
+          && (settings.confirmed?.configurations.some(
+            (candidate) => candidate.provider_id === providerId && candidate.startable
+          ) ?? false);
+        if (exactPublish === null && !missingStartableRegistry) {
+          failedWrite = null;
+          return;
+        }
         if (configuration === undefined) return;
         const write = exactPublish ?? additionWrite(configuration);
         const published = await publishRegistry(providerId, write);
@@ -306,15 +355,121 @@
         failedWrite = null;
         return;
       }
-      const outcome = await applyValidation(providerId, configurationHash);
-      if (outcome === "uncertain") {
+      const outcome = await fetchValidation(providerId, configurationHash);
+      if (outcome.kind === "uncertain") {
         failedWrite = { kind: "validation", providerId, configurationHash };
       } else {
+        updateRegistry(outcome.registry);
         failedWrite = null;
       }
     } finally {
       writing = false;
     }
+  }
+
+  function markChecking(configurationHash: string): void {
+    const next = new SvelteSet(checkingHashes);
+    next.add(configurationHash);
+    checkingHashes = next;
+  }
+
+  function unmarkChecking(configurationHash: string): void {
+    if (!checkingHashes.has(configurationHash)) return;
+    const next = new SvelteSet(checkingHashes);
+    next.delete(configurationHash);
+    checkingHashes = next;
+  }
+
+  async function checkPublished(
+    providerId: string,
+    configurationHash: string
+  ): Promise<void> {
+    markChecking(configurationHash);
+    try {
+      const outcome = await fetchValidation(providerId, configurationHash);
+      if (!checkingHashes.has(configurationHash)) return;
+      if (outcome.kind === "ok") updateRegistry(outcome.registry);
+      else failedWrite = { kind: "validation", providerId, configurationHash };
+    } finally {
+      unmarkChecking(configurationHash);
+    }
+  }
+
+  async function publishCreatedModel(
+    profile: AuthProfileRevision,
+    input: AgentConfigurationInput,
+    registryWrite: (newHash: string) => ExactModelRegistryRevisionWrite,
+    pin: AgentConfigurationRevisionListItem
+  ): Promise<void> {
+    writing = true;
+    let publishedHash: string | null = null;
+    try {
+      const published = await cockpitApi.publishAgentConfiguration(input);
+      const revision = published.value;
+      appendConfiguration(revision, pin);
+      const write = registryWrite(revision.agent_configuration_revision_hash);
+      const publishedRegistry = await publishRegistry(profile.provider_id, write);
+      if (publishedRegistry === "uncertain") {
+        failedWrite = {
+          kind: "check-publish",
+          providerId: profile.provider_id,
+          write,
+          configurationHash: revision.agent_configuration_revision_hash
+        };
+        return;
+      }
+      failedWrite = null;
+      closeSheet();
+      publishedHash = revision.agent_configuration_revision_hash;
+    } catch {
+      failedWrite = { kind: "configuration", input };
+      return;
+    } finally {
+      writing = false;
+    }
+    if (publishedHash === null) return;
+    await checkPublished(profile.provider_id, publishedHash);
+  }
+
+  async function submitAdd(profile: AuthProfileRevision, modelId: string): Promise<void> {
+    const snapshot = settings.confirmed;
+    if (snapshot === null) return;
+    const plan = planAddModel({
+      modelId: trimmedModelId(modelId),
+      profile,
+      configurations: snapshot.configurations,
+      registries: snapshot.registries
+    });
+    if (plan.kind === "invalid-id" || plan.kind === "no-pin") return;
+    if (plan.kind === "duplicate") {
+      duplicateNotice = { providerId: profile.provider_id, modelId: plan.entry.model_id };
+      closeSheet();
+      return;
+    }
+    if (writing || failedWrite !== null) return;
+    duplicateNotice = null;
+    await publishCreatedModel(profile, plan.input, plan.registryWrite, plan.pin);
+  }
+
+  async function retryConfiguration(input: AgentConfigurationInput): Promise<void> {
+    const snapshot = settings.confirmed;
+    if (snapshot === null || writing) return;
+    const profile = snapshot.profiles.find(
+      (candidate) => candidate.auth_profile_revision_hash === input.auth_profile_revision_hash
+    );
+    if (profile === undefined) return;
+    const plan = planAddModel({
+      modelId: input.model,
+      profile,
+      configurations: snapshot.configurations,
+      registries: snapshot.registries
+    });
+    if (plan.kind !== "create") {
+      failedWrite = null;
+      closeSheet();
+      return;
+    }
+    await publishCreatedModel(profile, input, plan.registryWrite, plan.pin);
   }
 
   function updateDefaults(result: ProjectModelDefaultsRevision): void {
@@ -386,6 +541,8 @@
       await validateModel(retry.providerId, retry.configurationHash, true, retry.write);
     } else if (retry.kind === "validation") {
       await validateModel(retry.providerId, retry.configurationHash, true);
+    } else if (retry.kind === "configuration") {
+      await retryConfiguration(retry.input);
     } else await sendDefaultsWrite(retry.projectReference, retry.write, true);
   }
 
@@ -419,11 +576,6 @@
     };
   }
 
-  $: availableConfigurations = (settings.confirmed?.configurations ?? []).filter(
-    (configuration) =>
-      entryFor(configuration.agent_configuration_revision_hash) === null
-      && !(configuration.startable && registryFor(configuration.provider_id) === null)
-  );
   $: missingRegistryStartable = (settings.confirmed?.configurations ?? []).filter(
     (configuration) => configuration.startable && registryFor(configuration.provider_id) === null
   );
@@ -440,6 +592,35 @@
       .map((registry) => registry.provider_id),
     ...missingRegistryStartable.map((configuration) => configuration.provider_id)
   ])].sort();
+  $: checkingList = [...checkingHashes];
+  $: modelGroups = modelProviders.map((providerId) => {
+    const registry = registryFor(providerId);
+    if (registry === null) {
+      return {
+        providerId,
+        registry: null,
+        rows: [],
+        missing: missingRegistryStartable.filter(
+          (configuration) => configuration.provider_id === providerId
+        )
+      };
+    }
+    return {
+      providerId,
+      registry,
+      missing: [],
+      rows: registry.entries.map((entry) => {
+        const configuration = settings.confirmed?.configurations.find(
+          (candidate) => candidate.agent_configuration_revision_hash === entry.agent_configuration_revision_hash
+        );
+        return {
+          entry,
+          configuration,
+          presentation: rowPresentation(entry, checkingList.includes(entry.agent_configuration_revision_hash))
+        };
+      })
+    };
+  });
 </script>
 
 <section class="settings-page" aria-labelledby="settings-title">
@@ -464,68 +645,71 @@
 
     <section class="settings-block" aria-labelledby="models-title">
       <h2 id="models-title">{wrapDisplayCopy(settingsPageCopy.modelsTitle)}</h2>
-      {#if listedModelCount === 0}
-        <div class="empty-state" role="status"><span aria-hidden="true">◇</span><strong>{settingsPageCopy.modelsEmpty}</strong></div>
-      {:else}
+      {#snippet addModelButton()}
+        <button class="quiet compact add-model" type="button" disabled={mutationsFrozen} onclick={() => { openAddSheet(null); }}>
+          {settingsPageCopy.addModel}
+        </button>
+      {/snippet}
+      {#if listedModelCount > 0}
         <div class="table-wrap">
           <table>
             <thead><tr><th>{settingsPageCopy.model}</th><th>{settingsPageCopy.account}</th><th><span class="sr-only">{settingsPageCopy.registry}</span></th></tr></thead>
             <tbody>
-              {#each modelProviders as providerId (providerId)}
-                {@const registry = registryFor(providerId)}
-                <tr class="provider-row"><td colspan="3">{providerId}</td></tr>
+              {#each modelGroups as group (group.providerId)}
+                {@const registry = group.registry}
+                <tr class="provider-row"><td colspan="3">{group.providerId}</td></tr>
                 {#if registry !== null}
-                  {#each registry.entries as entry (entry.agent_configuration_revision_hash)}
-                    {@const configuration = settings.confirmed.configurations.find((candidate) => candidate.agent_configuration_revision_hash === entry.agent_configuration_revision_hash)}
+                  {#each group.rows as row (`${row.entry.agent_configuration_revision_hash}:${row.presentation}`)}
+                    {@const entry = row.entry}
+                    {@const configuration = row.configuration}
+                    {@const presentation = row.presentation}
                     <tr>
                       <td data-label={settingsPageCopy.model}><code>{entry.model_id}</code></td>
                       <td data-label={settingsPageCopy.account}>{configuration === undefined ? settingsPageCopy.unknownAccount : accountFor(configuration)}</td>
-                      <td data-label={settingsPageCopy.registry}>
-                        {#if registryEntryDetails(entry) !== ""}<span class:unchecked={entry.provider_check !== "checked"}>{registryEntryDetails(entry)}</span>{/if}
-                        {#if entry.provider_check === "not-checked"}
-                          <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void validateModel(registry.provider_id, entry.agent_configuration_revision_hash); }}>{settingsPageCopy.check}</button>
-                        {/if}
-                        <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void removeModel(registry, entry); }}>{settingsPageCopy.remove}</button>
+                      <td class="model-actions-cell" data-label={settingsPageCopy.registry}>
+                        <div class="model-actions">
+                          {#if presentation === "checking"}
+                            <span class="checking">{settingsPageCopy.checking}</span>
+                          {:else if presentation === "unknown"}
+                            <span class="error">{noSuchModel(registry.provider_id)}</span>
+                            <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { openAddSheet({ authProfileRevisionHash: configuration?.auth_profile_revision_hash ?? "", modelId: entry.model_id }); }}>{settingsPageCopy.correctTheId}</button>
+                          {:else if presentation === "added-checked"}
+                            <span>{settingsPageCopy.addedByYouChecked}</span>
+                          {:else if presentation === "added-not-checked"}
+                            <span class="unchecked">{settingsPageCopy.addedByYouNotChecked}</span>
+                          {/if}
+                          {#if duplicateNotice !== null && duplicateNotice.providerId === registry.provider_id && duplicateNotice.modelId === entry.model_id}
+                            <span>{settingsPageCopy.alreadyPresent}</span>
+                          {/if}
+                          {#if presentation !== "checking" && entry.provider_check === "not-checked"}
+                            <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void validateModel(registry.provider_id, entry.agent_configuration_revision_hash); }}>{settingsPageCopy.check}</button>
+                          {/if}
+                          <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void removeModel(registry, entry); }}>{settingsPageCopy.remove}</button>
+                        </div>
                       </td>
                     </tr>
                   {/each}
                 {:else}
-                  {#each missingRegistryStartable.filter((configuration) => configuration.provider_id === providerId) as configuration (configuration.agent_configuration_revision_hash)}
+                  {#each group.missing as configuration (configuration.agent_configuration_revision_hash)}
                     <tr>
                       <td data-label={settingsPageCopy.model}><code>{configuration.model}</code></td>
                       <td data-label={settingsPageCopy.account}>{accountFor(configuration)}</td>
-                      <td data-label={settingsPageCopy.registry}>
-                        <span class="unchecked">{settingsPageCopy.notCheckedYet}</span>
-                        <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void validateModel(configuration.provider_id, configuration.agent_configuration_revision_hash); }}>{settingsPageCopy.check}</button>
+                      <td class="model-actions-cell" data-label={settingsPageCopy.registry}>
+                        <div class="model-actions">
+                          <span class="unchecked">{settingsPageCopy.notCheckedYet}</span>
+                          <button class="quiet compact" type="button" disabled={mutationsFrozen} onclick={() => { void validateModel(configuration.provider_id, configuration.agent_configuration_revision_hash); }}>{settingsPageCopy.check}</button>
+                        </div>
                       </td>
                     </tr>
                   {/each}
                 {/if}
               {/each}
+              <tr class="add-model-row"><td colspan="3">{@render addModelButton()}</td></tr>
             </tbody>
           </table>
         </div>
-      {/if}
-      {#if availableConfigurations.length > 0}
-        <label class="add-model">
-          <span class="sr-only">{settingsPageCopy.addModel}</span>
-          <select
-            aria-label={settingsPageCopy.addModel}
-            value=""
-            disabled={mutationsFrozen}
-            onchange={(event) => {
-              const configuration = availableConfigurations.find(
-                (candidate) => candidate.agent_configuration_revision_hash === event.currentTarget.value
-              );
-              if (configuration !== undefined) void addModel(configuration);
-            }}
-          >
-            <option value="" disabled>{settingsPageCopy.addModel}</option>
-            {#each availableConfigurations as configuration (configuration.agent_configuration_revision_hash)}
-              <option value={configuration.agent_configuration_revision_hash}>{accountChoice(configuration.model, accountFor(configuration))}</option>
-            {/each}
-          </select>
-        </label>
+      {:else}
+        {@render addModelButton()}
       {/if}
     </section>
 
@@ -576,6 +760,16 @@
         <button class="quiet compact" type="button" disabled={writing} onclick={() => { void retryWrite(); }}>{settingsPageCopy.retry}</button>
       </div>
     {/if}
+
+    {#if sheetOpen}
+      <AddModelSheet
+        options={accountOptions}
+        prefill={sheetPrefill}
+        submitting={mutationsFrozen}
+        onSubmit={(args) => { void submitAdd(args.profile, args.modelId); }}
+        onClose={() => { sheetOpen = false; }}
+      />
+    {/if}
   {/if}
 </section>
 
@@ -595,8 +789,13 @@
   th { color: var(--ink-dim); font-size: var(--text-2xs); letter-spacing: var(--tracking-label); text-transform: uppercase; }
   td:last-child, th:last-child { text-align: right; }
   .provider-row td { background: var(--panel2); color: var(--ink-dim); font-size: var(--text-2xs); font-weight: var(--weight-heavy); letter-spacing: var(--tracking-label); text-align: left; text-transform: uppercase; }
-  .unchecked { color: var(--signal-attention); }
   .add-model { display: block; width: fit-content; }
+  .add-model-row td { text-align: left; }
+  .model-actions-cell { white-space: normal; }
+  .model-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: flex-end; align-items: center; }
+  .unchecked { color: var(--signal-attention); }
+  .checking { color: var(--signal-live); }
+  .error { color: var(--signal-failure); }
   .difficulty-mark { font-size: var(--text-lg); font-weight: var(--weight-heavy); }
   .defaults-table { min-width: 0; }
   .defaults-table td:last-child { text-align: left; }
@@ -618,6 +817,7 @@
     td:last-child { text-align: left; }
     .provider-row { display: table-row; border: 0; border-radius: 0; padding: 0; background: transparent; }
     .provider-row td { display: table-cell; padding: var(--space-2); }
+    .add-model-row td::before { content: none; display: none; }
     .defaults-table tr { grid-template-columns: minmax(var(--tap), auto) minmax(0, 1fr); }
     .defaults-table td:first-child { grid-column: auto; }
     .defaults-table select { width: 100%; max-width: 100%; font-size: var(--text-sm); }
