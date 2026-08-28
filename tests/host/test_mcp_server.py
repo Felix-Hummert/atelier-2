@@ -82,6 +82,7 @@ ARTIFACT_HASH = "a" * 64
 WORK_ITEM_REFERENCE = "gh:712"
 PUBLIC_RUN_REFERENCE = "run1.dGVzdA"
 WORKFLOW_NAME = "review-bounded-diff"
+WAIT_EXECUTION_ID = "e" * 64
 
 RUNS_PATH = API_PREFIX + "/runs"
 RUN_PATH = f"{RUNS_PATH}/{PUBLIC_RUN_REFERENCE}"
@@ -304,6 +305,7 @@ def started_run() -> RunResourceV3:
         state_version=1,
         state="STARTED",
         current_node_id="implement",
+        current_node_execution_id="f" * 64,
         node_rail=(
             NodeRailResource(
                 node_id="implement", state=NodeState.WORKING, attempt=None
@@ -316,6 +318,35 @@ def started_run() -> RunResourceV3:
         ),
         terminal_hash=None,
         latest_event_cursor=None,
+    )
+
+
+def waiting_run() -> RunResourceV3:
+    return RunResourceV3(
+        workflow_format_version=3,
+        run_id="named-run",
+        public_run_reference=PUBLIC_RUN_REFERENCE,
+        workflow_revision_hash=REVISION_HASH,
+        agent_binding_set_hash=BINDING_SET_HASH,
+        run_configuration_revision_hash=CONFIGURATION_HASH,
+        agent_bindings=(),
+        orders=(),
+        state_version=2,
+        state="WAITING_INPUT",
+        current_node_id="waiting",
+        current_node_execution_id=WAIT_EXECUTION_ID,
+        node_rail=(
+            NodeRailResource(
+                node_id="waiting", state=NodeState.NEEDS_YOU, attempt=None
+            ),
+        ),
+        cancellation=RunCancellabilityResource(
+            cancellable=True,
+            reason=None,
+            target_node_execution_id=WAIT_EXECUTION_ID,
+        ),
+        terminal_hash=None,
+        latest_event_cursor="event1.dGVzdA.2",
     )
 
 
@@ -427,6 +458,25 @@ def test_start_run_schema_references_its_artifact_and_work_item_mcp_subset() -> 
     assert bindings["items"] == StartRunAgentBindingResourceV2.model_json_schema()
 
 
+def test_answer_wait_schema_is_derived_from_the_http_request_resource() -> None:
+    answer = next(
+        definition
+        for definition in tool_definitions()
+        if definition["name"] == McpToolName.ANSWER_WAIT.value
+    )
+    schema = answer["inputSchema"]
+
+    assert {"actor", "expected_node_execution_id"} <= set(schema["required"])
+    assert schema["properties"]["actor"] == {
+        "const": "operator",
+        "title": "Actor",
+        "type": "string",
+    }
+    assert schema["properties"]["expected_node_execution_id"]["pattern"] == (
+        "^[0-9a-f]{64}$"
+    )
+
+
 def test_publish_artifact_schema_declares_its_named_mcp_payload_limit() -> None:
     publish = next(
         definition
@@ -495,6 +545,8 @@ def test_an_unanswerable_wait_is_the_same_problem_on_both_paths(
         {
             "workflow_revision_hash": REVISION_HASH,
             "node_id": "waiting",
+            "expected_node_execution_id": REVISION_HASH,
+            "actor": "operator",
             "answer_base64": "Ng==",
         }
     ).encode()
@@ -505,6 +557,8 @@ def test_an_unanswerable_wait_is_the_same_problem_on_both_paths(
             "public_run_reference": PUBLIC_RUN_REFERENCE,
             "workflow_revision_hash": REVISION_HASH,
             "node_id": "waiting",
+            "expected_node_execution_id": REVISION_HASH,
+            "actor": "operator",
             "answer_base64": "Ng==",
         },
     )
@@ -513,6 +567,124 @@ def test_an_unanswerable_wait_is_the_same_problem_on_both_paths(
     assert http_status == HTTPStatus.UNPROCESSABLE_ENTITY
     assert payload == http_body
     assert payload["type"].endswith("invalid-request")
+
+
+@pytest.mark.proves("mcp-tools-are-the-published-http-doors")
+def test_run_status_names_the_exact_wait_that_answer_wait_writes_back() -> None:
+    waiting = waiting_run()
+    answered = started_run()
+    with ScriptedService(
+        {
+            ("GET", RUN_PATH): [Answer(waiting.model_dump_json().encode())],
+            ("POST", ANSWERS_PATH): [
+                Answer(answered.model_dump_json().encode(), status=HTTPStatus.ACCEPTED)
+            ],
+        }
+    ) as service:
+        client = StdioMcpSession(service.url)
+        try:
+            status, status_is_error = client.call_tool(
+                McpToolName.RUN_STATUS.value,
+                {"public_run_reference": PUBLIC_RUN_REFERENCE},
+            )
+            wait = status["answerable_wait"]
+            answered_payload, answer_is_error = client.call_tool(
+                McpToolName.ANSWER_WAIT.value,
+                {
+                    "public_run_reference": PUBLIC_RUN_REFERENCE,
+                    "workflow_revision_hash": status["workflow_revision_hash"],
+                    "node_id": status["current_node_id"],
+                    **wait,
+                    "answer_base64": "Ng==",
+                },
+            )
+        finally:
+            client.close()
+
+    assert not status_is_error
+    assert wait == {
+        "actor": "operator",
+        "expected_node_execution_id": WAIT_EXECUTION_ID,
+    }
+    assert not answer_is_error
+    assert answered_payload == answered.model_dump(mode="json")
+    assert service.calls == [
+        Call("GET", RUN_PATH, b""),
+        Call(
+            "POST",
+            ANSWERS_PATH,
+            json.dumps(
+                {
+                    "workflow_revision_hash": REVISION_HASH,
+                    "node_id": "waiting",
+                    "expected_node_execution_id": WAIT_EXECUTION_ID,
+                    "actor": "operator",
+                    "answer_base64": "Ng==",
+                }
+            ).encode(),
+            JSON_MEDIA_TYPE,
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "waiting",
+    (
+        waiting_run().model_copy(
+            update={
+                "cancellation": RunCancellabilityResource(
+                    cancellable=False,
+                    reason="between-nodes",
+                    target_node_execution_id=None,
+                )
+            }
+        ),
+        waiting_run().model_copy(update={"current_node_execution_id": "a" * 64}),
+    ),
+    ids=("missing-cancellation-fence", "mismatched-fences"),
+)
+def test_run_status_refuses_a_waiting_run_without_one_exact_execution_fence(
+    waiting: RunResourceV3,
+) -> None:
+    with ScriptedService(
+        {("GET", RUN_PATH): [Answer(waiting.model_dump_json().encode())]}
+    ) as service:
+        client = StdioMcpSession(service.url)
+        try:
+            payload, is_error = client.call_tool(
+                McpToolName.RUN_STATUS.value,
+                {"public_run_reference": PUBLIC_RUN_REFERENCE},
+            )
+        finally:
+            client.close()
+
+    assert is_error
+    assert payload == {
+        "error": "the service answered a waiting run whose execution fences disagree"
+    }
+
+
+def test_run_status_refuses_a_waiting_v3_response_missing_its_current_execution() -> (
+    None
+):
+    response = waiting_run().model_dump(mode="json")
+    del response["current_node_execution_id"]
+    with ScriptedService(
+        {("GET", RUN_PATH): [Answer(json.dumps(response).encode())]}
+    ) as service:
+        client = StdioMcpSession(service.url)
+        try:
+            payload, is_error = client.call_tool(
+                McpToolName.RUN_STATUS.value,
+                {"public_run_reference": PUBLIC_RUN_REFERENCE},
+            )
+        finally:
+            client.close()
+
+    assert is_error
+    assert payload["error"].startswith(
+        "the service answered something this command cannot read as a run"
+    )
 
 
 @pytest.mark.proves("mcp-and-http-never-diverge")

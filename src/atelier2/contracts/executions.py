@@ -141,6 +141,28 @@ class WaitAnswerState(StrEnum):
     APPLIED = "APPLIED"
 
 
+class WaitAnswerActor(StrEnum):
+    """Who supplied one durable answer, in the current closed vocabulary."""
+
+    OPERATOR = "operator"
+
+
+class LegacyWaitAnswerAttribution(StrEnum):
+    """A predecessor answer whose actor was never durably recorded."""
+
+    UNATTRIBUTED = "legacy-unattributed"
+
+
+class WaitAnswerAttributionKind(StrEnum):
+    """How an answer row can truthfully account for its actor."""
+
+    RECORDED = "RECORDED"
+    LEGACY_UNATTRIBUTED = "LEGACY_UNATTRIBUTED"
+
+
+type WaitAnswerAttribution = WaitAnswerActor | LegacyWaitAnswerAttribution
+
+
 @dataclass(frozen=True)
 class RunEventAgentAttemptBinding:
     attempt_id: AgentAttemptId
@@ -215,6 +237,7 @@ class RunEvent:
     attempt_binding: RunEventAttemptBinding | None = None
     agent_receipt_hash: Sha256Hash | None = None
     round_ordinal: int = FIRST_ROUND_ORDINAL
+    wait_answer_actor: WaitAnswerActor | None = None
     event_hash: Sha256Hash = field(init=False)
 
     def __post_init__(self) -> None:
@@ -232,6 +255,13 @@ class RunEvent:
         )
         if self.node_execution_id != expected_execution:
             raise ValueError("event execution identity differs from its node binding")
+        actor_required = self.event_kind is RunEventKind.WAITING_INPUT
+        if actor_required != (self.wait_answer_actor is not None):
+            raise ValueError("waiting event and expected answer actor disagree")
+        if self.wait_answer_actor is not None and not isinstance(
+            self.wait_answer_actor, WaitAnswerActor
+        ):
+            raise TypeError("waiting event answer actor must be typed")
         payload_hash = Sha256Hash.of(self.payload)
         object.__setattr__(self, "payload_hash", payload_hash)
         receipt_event = self.event_kind in {
@@ -414,6 +444,7 @@ class WaitAnswer:
     revision_hash: WorkflowRevisionHash
     node_id: str
     node_execution_id: NodeExecutionId
+    actor: WaitAnswerAttribution
     answer_bytes: bytes
     round_ordinal: int = FIRST_ROUND_ORDINAL
     answer_hash: Sha256Hash = field(init=False)
@@ -421,6 +452,8 @@ class WaitAnswer:
     def __post_init__(self) -> None:
         if self.node_id == "":
             raise ValueError("answer node id must be nonempty")
+        if not isinstance(self.actor, WaitAnswerActor | LegacyWaitAnswerAttribution):
+            raise TypeError("answer attribution must use its closed type")
         if self.node_execution_id != NodeExecutionId.for_node(
             self.run_id, self.revision_hash, self.node_id, self.round_ordinal
         ):
@@ -440,11 +473,17 @@ class SubmitWaitAnswerRequest:
     run_id: RunId
     revision_hash: WorkflowRevisionHash
     node_id: str
+    expected_node_execution_id: NodeExecutionId
+    actor: WaitAnswerActor
     answer_bytes: bytes
 
     def __post_init__(self) -> None:
         if self.node_id == "":
             raise ValueError("answer node id must be nonempty")
+        if not isinstance(self.expected_node_execution_id, NodeExecutionId):
+            raise TypeError("answer execution fence must be typed")
+        if not isinstance(self.actor, WaitAnswerActor):
+            raise TypeError("answer actor must be typed")
 
 
 def logical_effect_key_for(execution_id: NodeExecutionId) -> LogicalEffectKey:

@@ -384,11 +384,13 @@
       waitAccepted = false;
       return;
     }
+    const nodeExecutionId = run.current_node_execution_id;
     const lookup = await loadPendingWaitAnswer(
       mutationJournal,
       run.public_run_reference,
       run.workflow_revision_hash,
-      run.current_node_id
+      run.current_node_id,
+      nodeExecutionId
     );
     if (lookup.kind === "corrupt") {
       waitFailureMessage = lookup.message;
@@ -411,6 +413,7 @@
       return;
     }
     if (run.state !== "WAITING_INPUT") return;
+    const nodeExecutionId = run.current_node_execution_id;
     waitBusy = true;
     try {
       const mutation = await prepareWaitAnswer(
@@ -418,6 +421,7 @@
         run.public_run_reference,
         run.workflow_revision_hash,
         run.current_node_id,
+        nodeExecutionId,
         typed
       );
       pendingWait = mutation;

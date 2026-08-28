@@ -604,6 +604,8 @@ def test_base64_and_decoded_payload_limits_reject_before_answer_write() -> None:
     body = {
         "workflow_revision_hash": "0" * 64,
         "node_id": "wait",
+        "expected_node_execution_id": "1" * 64,
+        "actor": "operator",
         "answer_base64": encode_canonical_base64(b"12"),
     }
 
@@ -632,6 +634,8 @@ def test_the_deployed_body_policy_admits_the_largest_answer_envelope() -> None:
         {
             "workflow_revision_hash": "0" * 64,
             "node_id": "n" * limits.maximum_field_characters,
+            "expected_node_execution_id": "1" * 64,
+            "actor": "operator",
             "answer_base64": encode_canonical_base64(
                 b"1" + b"0" * (MAXIMUM_AGENT_OUTPUT_BYTES_V2 - 1)
             ),

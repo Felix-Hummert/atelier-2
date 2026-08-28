@@ -3,19 +3,22 @@ from typing import assert_never
 
 from atelier2.application.refusals import DurableStateCorrupt, WriteUnavailable
 from atelier2.contracts.executions import (
+    NodeExecutionId,
     SubmitWaitAnswerRequest,
+    WaitAnswerActor,
     WaitAnswerSnapshot,
     WaitAnswerState,
 )
 from atelier2.contracts.runs import RunId, WorkflowRevisionHash
 from atelier2.ports.durable_runs import (
-    DurableAnswerBytesConflict,
+    DurableAnswerActorMismatch,
     DurableAnswerCreated,
     DurableAnswerExisting,
     DurableAnswerNodeMissing,
     DurableAnswerNotAdmitted,
     DurableAnswerRevisionConflict,
     DurableAnswerRunMissing,
+    DurableAnswerStale,
     DurableAnswerStateConflict,
     DurableWriteUnavailable,
     TransactionalWaitAnswerer,
@@ -41,6 +44,11 @@ class AnswerExistingApplied:
 
 
 @dataclass(frozen=True)
+class AnswerActorMismatch:
+    expected_actor: WaitAnswerActor
+
+
+@dataclass(frozen=True)
 class RunMissing:
     pass
 
@@ -61,7 +69,7 @@ class AnswerStateConflict:
 
 
 @dataclass(frozen=True)
-class AnswerBytesConflict:
+class AnswerStale:
     pass
 
 
@@ -70,11 +78,12 @@ type AnswerWaitResult = (
     | AnswerAcceptedPending
     | AnswerExistingPending
     | AnswerExistingApplied
+    | AnswerActorMismatch
     | RunMissing
     | NodeMissing
     | AnswerRevisionConflict
     | AnswerStateConflict
-    | AnswerBytesConflict
+    | AnswerStale
     | WriteUnavailable
     | DurableStateCorrupt
 )
@@ -96,6 +105,8 @@ def answer_wait_result(
     run_id: RunId,
     revision_hash: WorkflowRevisionHash,
     node_id: str,
+    expected_node_execution_id: NodeExecutionId,
+    actor: WaitAnswerActor,
     answer_bytes: bytes,
     answerer: TransactionalWaitAnswerer,
 ) -> AnswerWaitResult:
@@ -116,7 +127,14 @@ def answer_wait_result(
     when the decision did.
     """
     try:
-        request = SubmitWaitAnswerRequest(run_id, revision_hash, node_id, answer_bytes)
+        request = SubmitWaitAnswerRequest(
+            run_id,
+            revision_hash,
+            node_id,
+            expected_node_execution_id,
+            actor,
+            answer_bytes,
+        )
     except (TypeError, ValueError):
         return UnanswerableWait()
     result = answerer.submit_result(request)
@@ -127,6 +145,8 @@ def answer_wait_result(
             if snapshot.state is WaitAnswerState.PENDING:
                 return AnswerExistingPending(snapshot)
             return AnswerExistingApplied(snapshot)
+        case DurableAnswerActorMismatch(expected_actor):
+            return AnswerActorMismatch(expected_actor)
         case DurableAnswerRunMissing():
             return RunMissing()
         case DurableAnswerNodeMissing():
@@ -135,8 +155,8 @@ def answer_wait_result(
             return AnswerRevisionConflict()
         case DurableAnswerStateConflict():
             return AnswerStateConflict()
-        case DurableAnswerBytesConflict():
-            return AnswerBytesConflict()
+        case DurableAnswerStale():
+            return AnswerStale()
         case DurableAnswerNotAdmitted():
             return UnanswerableWait()
         case DurableWriteUnavailable():

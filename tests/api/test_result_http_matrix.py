@@ -41,6 +41,7 @@ from atelier2.contracts.executions import (
     NodeExecutionId,
     SubmitWaitAnswerRequest,
     WaitAnswer,
+    WaitAnswerActor,
     WaitAnswerSnapshot,
     WaitAnswerState,
 )
@@ -68,7 +69,7 @@ from atelier2.contracts.workflow_projections import (
 )
 from atelier2.ports.durable_runs import (
     AnyStartPublishedRunRequest,
-    DurableAnswerBytesConflict,
+    DurableAnswerActorMismatch,
     DurableAnswerCreated,
     DurableAnswerExisting,
     DurableAnswerNodeMissing,
@@ -76,6 +77,7 @@ from atelier2.ports.durable_runs import (
     DurableAnswerResult,
     DurableAnswerRevisionConflict,
     DurableAnswerRunMissing,
+    DurableAnswerStale,
     DurableAnswerStateConflict,
     DurablePublishedRunResult,
     DurableRunCreated,
@@ -160,6 +162,7 @@ ANSWER = WaitAnswer(
     REVISION.revision_hash,
     "wait",
     NodeExecutionId.for_node(RUN.run_id, REVISION.revision_hash, "wait"),
+    WaitAnswerActor.OPERATOR,
     b"3",
 )
 PENDING_ANSWER = WaitAnswerSnapshot(ANSWER, WaitAnswerState.PENDING, 0)
@@ -309,13 +312,6 @@ SUCCESS_CASES = (
         "answerer",
         DurableAnswerExisting(PENDING_ANSWER),
         202,
-    ),
-    (
-        "wait-existing-applied",
-        "wait",
-        "answerer",
-        DurableAnswerExisting(APPLIED_ANSWER),
-        200,
     ),
     (
         "reconcile-created-pending",
@@ -639,6 +635,14 @@ PROBLEM_CASES = (
         "durable-projection-unrepresentable",
     ),
     (
+        "wait-existing-applied",
+        "wait",
+        "answerer",
+        DurableAnswerExisting(APPLIED_ANSWER),
+        200,
+        None,
+    ),
+    (
         "wait-unanswerable",
         "wait",
         "answerer",
@@ -679,12 +683,20 @@ PROBLEM_CASES = (
         "answer-state-conflict",
     ),
     (
-        "wait-bytes-conflict",
+        "wait-execution-stale",
         "wait",
         "answerer",
-        DurableAnswerBytesConflict(),
+        DurableAnswerStale(),
         409,
-        "answer-bytes-conflict",
+        "answer-execution-stale",
+    ),
+    (
+        "wait-actor-mismatch",
+        "wait",
+        "answerer",
+        DurableAnswerActorMismatch(WaitAnswerActor.OPERATOR),
+        422,
+        "invalid-request",
     ),
     (
         "wait-unavailable",
@@ -1178,6 +1190,8 @@ def _request(client: TestClient, case: RouteResultCase):
             json={
                 "workflow_revision_hash": REVISION.revision_hash.value,
                 "node_id": "wait",
+                "expected_node_execution_id": ANSWER.node_execution_id.value,
+                "actor": "operator",
                 "answer_base64": "Mw==",
             },
         )
@@ -1347,6 +1361,8 @@ class UnreachedAnswer:
             {
                 "workflow_revision_hash": REVISION.revision_hash.value,
                 "node_id": "wait",
+                "expected_node_execution_id": ANSWER.node_execution_id.value,
+                "actor": "operator",
                 "answer_base64": "not base64!!",
             },
             None,
@@ -1362,6 +1378,8 @@ class UnreachedAnswer:
             {
                 "workflow_revision_hash": REVISION.revision_hash.value,
                 "node_id": "wait",
+                "expected_node_execution_id": ANSWER.node_execution_id.value,
+                "actor": "operator",
                 "answer_base64": "Mw==",
             },
             {"content-type": "text/plain"},
@@ -1375,6 +1393,8 @@ class UnreachedAnswer:
             {
                 "workflow_revision_hash": "not-a-hash",
                 "node_id": "wait",
+                "expected_node_execution_id": ANSWER.node_execution_id.value,
+                "actor": "operator",
                 "answer_base64": "not base64!!",
             },
             None,

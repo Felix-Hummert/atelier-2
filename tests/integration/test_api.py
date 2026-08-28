@@ -16,10 +16,16 @@ from sqlalchemy.orm import Session
 from atelier2.adapters.dbos import run_transitions as run_transitions_module
 from atelier2.adapters.dbos import starter as starter_module
 from atelier2.adapters.dbos.effect_store import commit_resolution, encode_found
-from atelier2.adapters.dbos.queries import DbosQueries
+from atelier2.adapters.dbos.queries import DbosQueries, WaitAnswerProjectionCorrupt
 from atelier2.adapters.dbos.reconciler import DbosEffectReconcileCommander
-from atelier2.adapters.dbos.run_store import DbosWaitAnswerer
+from atelier2.adapters.dbos.run_store import (
+    DbosWaitAnswerer,
+    WaitAnswerStateCorrupt,
+    commit_wait_answered,
+    load_wait_answer,
+)
 from atelier2.adapters.dbos.run_transitions import (
+    RunTransitionConflict,
     commit_reconciliation_required,
     commit_waiting_input,
 )
@@ -65,12 +71,22 @@ from atelier2.contracts.effects import (
     ReconcileCommand,
     ReconcileCommandId,
 )
-from atelier2.contracts.executions import NodeExecutionId, SubmitWaitAnswerRequest
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEventKind,
+    SubmitWaitAnswerRequest,
+    WaitAnswerActor,
+    WaitAnswerAttributionKind,
+    WaitAnswerState,
+)
+from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.runs import (
     RunId,
+    RunState,
     WorkflowRevision,
     WorkflowRevisionHash,
 )
+from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.durable_runs import (
     DurableAnswerCreated,
     DurableAnswerExisting,
@@ -108,7 +124,7 @@ from tests.scenarios.runs import (
     start_published_v1_run,
 )
 from tests.scenarios.runtime import exact_output_runtime
-from tests.scenarios.workflows import V3_DOCUMENT
+from tests.scenarios.workflows import ANY_JSON_SCHEMA, V3_DOCUMENT, declared_output
 
 DOCUMENT = b"""format_version: 1
 start: agent
@@ -117,6 +133,13 @@ nodes:
   - {id: wait, type: wait, answer_type: integer, next: final}
   - {id: agent, type: agent, job: test, output: payload, next: wait}
 """
+WAIT_SINK_DOCUMENT = b"""format_version: 3
+name: One answer ends this run
+nodes:
+  - id: wait
+    type: wait
+    prompt: What is the answer?
+""" + declared_output(ANY_JSON_SCHEMA, "answer")
 ACTION_DOCUMENT = b"""format_version: 1
 start: agent
 nodes:
@@ -255,6 +278,12 @@ def test_every_typed_writer_maps_connection_contention_to_unavailable(
                 intent.binding.run_id,
                 intent.binding.workflow_revision_hash,
                 "wait",
+                NodeExecutionId.for_node(
+                    intent.binding.run_id,
+                    intent.binding.workflow_revision_hash,
+                    "wait",
+                ),
+                WaitAnswerActor.OPERATOR,
                 b"17",
             )
         ),
@@ -413,7 +442,12 @@ def test_concurrent_wait_answer_enqueues_only_the_created_answer(
         )
     answerer = DbosWaitAnswerer(runtime.engine, runtime.settings.application_version)
     request = SubmitWaitAnswerRequest(
-        RunId("wait-run"), revision.revision_hash, "wait", b"17"
+        RunId("wait-run"),
+        revision.revision_hash,
+        "wait",
+        NodeExecutionId.for_node(RunId("wait-run"), revision.revision_hash, "wait"),
+        WaitAnswerActor.OPERATOR,
+        b"17",
     )
     barrier = Barrier(4)
 
@@ -489,25 +523,37 @@ def test_concurrent_http_retries_create_one_revision_run_answer_and_workflow(
             revision.revision_hash,
             "agent",
         )
-        commit_waiting_input(connection, answer_run_id, revision.revision_hash, "wait")
+        waiting = commit_waiting_input(
+            connection, answer_run_id, revision.revision_hash, "wait"
+        )
     answer_path = (
         f"/atelier/api/v1/runs/{encode_public_run_reference(answer_run_id)}/answers"
     )
     answer_body = {
         "workflow_revision_hash": revision.revision_hash.value,
         "node_id": "wait",
+        "expected_node_execution_id": waiting.event.node_execution_id.value,
+        "actor": "operator",
         "answer_base64": encode_canonical_base64(b"17"),
     }
     answer_barrier = Barrier(parallelism)
 
-    def answer(_: int) -> int:
+    def answer(_: int) -> tuple[int, str | None]:
         answer_barrier.wait(timeout=5)
-        return _client(runtime).post(answer_path, json=answer_body).status_code
+        response = _client(runtime).post(answer_path, json=answer_body)
+        problem_type = (
+            response.json().get("type") if response.status_code == 409 else None
+        )
+        return response.status_code, problem_type
 
     with ThreadPoolExecutor(max_workers=parallelism) as pool:
-        answer_statuses = list(pool.map(answer, range(parallelism)))
+        answer_results = list(pool.map(answer, range(parallelism)))
 
-    assert set(answer_statuses) <= {200, 202}
+    assert {status for status, _ in answer_results} <= {202, 409}
+    assert all(
+        problem_type is None or problem_type.endswith(":answer-execution-stale")
+        for _, problem_type in answer_results
+    )
     with runtime.engine.connect() as connection:
         assert (
             connection.scalar(
@@ -1076,12 +1122,16 @@ def test_http_wait_answer_retries_preserve_exact_bytes_and_status(
     start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
     with canonical_write_transaction(runtime.engine) as connection:
         commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
-        commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
+        waiting = commit_waiting_input(
+            connection, run_id, revision.revision_hash, "wait"
+        )
     client = _client(runtime)
     path = f"/atelier/api/v1/runs/{encode_public_run_reference(run_id)}/answers"
     body = {
         "workflow_revision_hash": revision.revision_hash.value,
         "node_id": "wait",
+        "expected_node_execution_id": waiting.event.node_execution_id.value,
+        "actor": "operator",
         "answer_base64": encode_canonical_base64(b"17"),
     }
 
@@ -1101,9 +1151,418 @@ def test_http_wait_answer_retries_preserve_exact_bytes_and_status(
         "node_id": "wait",
         "answer_type": "integer",
     }
-    assert conflict.status_code == 409
-    assert conflict.json()["type"].endswith(":answer-bytes-conflict")
+    assert conflict.status_code == 500
+    assert conflict.json()["type"].endswith(":durable-state-corrupt")
     assert _durable_snapshot(runtime) == before_conflict
+
+
+def test_http_wait_answer_refuses_an_unsupported_actor_as_an_invalid_request(
+    runtime: DbosRuntime,
+) -> None:
+    revision = WorkflowRevision(DOCUMENT)
+    run_id = RunId("unsupported-answer-actor")
+    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
+    with canonical_write_transaction(runtime.engine) as connection:
+        commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
+        waiting = commit_waiting_input(
+            connection, run_id, revision.revision_hash, "wait"
+        )
+    before = _durable_snapshot(runtime)
+
+    response = _client(runtime).post(
+        f"/atelier/api/v1/runs/{encode_public_run_reference(run_id)}/answers",
+        json={
+            "workflow_revision_hash": revision.revision_hash.value,
+            "node_id": "wait",
+            "expected_node_execution_id": waiting.event.node_execution_id.value,
+            "actor": "stale-operator",
+            "answer_base64": encode_canonical_base64(b"17"),
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["type"].endswith(":invalid-request")
+    assert response.json()["invalid_fields"] == [
+        {
+            "path": "body/actor",
+            "reason": "Input should be 'operator'",
+        }
+    ]
+    assert _durable_snapshot(runtime) == before
+
+
+def test_http_wait_answer_refuses_a_fabricated_execution_as_corrupt(
+    runtime: DbosRuntime,
+) -> None:
+    revision = WorkflowRevision(DOCUMENT)
+    run_id = RunId("fabricated-answer-execution")
+    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
+    with canonical_write_transaction(runtime.engine) as connection:
+        commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
+        commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
+    before = _durable_snapshot(runtime)
+
+    response = _client(runtime).post(
+        f"/atelier/api/v1/runs/{encode_public_run_reference(run_id)}/answers",
+        json={
+            "workflow_revision_hash": revision.revision_hash.value,
+            "node_id": "wait",
+            "expected_node_execution_id": "f" * 64,
+            "actor": "operator",
+            "answer_base64": encode_canonical_base64(b"17"),
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["type"].endswith(":durable-state-corrupt")
+    assert _durable_snapshot(runtime) == before
+
+
+def _applied_v3_wait_answer(
+    runtime: DbosRuntime, run_id: RunId
+) -> SubmitWaitAnswerRequest:
+    client = _client(runtime)
+    published_schema = client.post(
+        "/atelier/api/v1/schema-revisions",
+        content=ANY_JSON_SCHEMA.document,
+        headers={"content-type": "application/json"},
+    )
+    assert published_schema.status_code == 201, published_schema.text
+    published = client.post(
+        "/atelier/api/v1/workflow-revisions",
+        content=WAIT_SINK_DOCUMENT,
+        headers={"content-type": "application/yaml"},
+    )
+    assert published.status_code == 201, published.text
+    revision_hash = WorkflowRevisionHash(published.json()["workflow_revision_hash"])
+    started = client.post(
+        "/atelier/api/v1/runs",
+        json={
+            "workflow_format_version": 3,
+            "run_id": run_id.value,
+            "workflow_revision_hash": revision_hash.value,
+            "agent_bindings": [],
+            "orders": [],
+        },
+    )
+    assert started.status_code == 201, started.text
+    with canonical_write_transaction(runtime.engine) as connection:
+        waiting = commit_waiting_input(connection, run_id, revision_hash, "wait")
+    request = SubmitWaitAnswerRequest(
+        run_id,
+        revision_hash,
+        "wait",
+        waiting.event.node_execution_id,
+        WaitAnswerActor.OPERATOR,
+        b"17",
+    )
+    accepted = client.post(_wait_answer_path(request), json=_wait_answer_body(request))
+    assert accepted.status_code == 202, accepted.text
+    with canonical_write_transaction(runtime.engine) as connection:
+        pending = load_wait_answer(connection, run_id, revision_hash, "wait")
+        commit_wait_answered(connection, pending.answer)
+        applied = load_wait_answer(connection, run_id, revision_hash, "wait")
+    assert applied.state is WaitAnswerState.APPLIED
+    return request
+
+
+def _wait_answer_path(request: SubmitWaitAnswerRequest) -> str:
+    return f"/atelier/api/v1/runs/{encode_public_run_reference(request.run_id)}/answers"
+
+
+def _wait_answer_body(request: SubmitWaitAnswerRequest) -> dict[str, str]:
+    return {
+        "workflow_revision_hash": request.revision_hash.value,
+        "node_id": request.node_id,
+        "expected_node_execution_id": request.expected_node_execution_id.value,
+        "actor": request.actor.value,
+        "answer_base64": encode_canonical_base64(request.answer_bytes),
+    }
+
+
+def _remove_recorded_wait_answer_actor(
+    runtime: DbosRuntime, request: SubmitWaitAnswerRequest
+) -> None:
+    with runtime.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER wait_answers_payload_no_update")
+        connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            wait_answers.update()
+            .where(
+                wait_answers.c.node_execution_id
+                == request.expected_node_execution_id.value
+            )
+            .values(actor=None)
+        )
+        connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
+
+
+def test_http_same_answer_to_the_applied_current_execution_is_already_answered(
+    runtime: DbosRuntime,
+) -> None:
+    client = _client(runtime)
+    request = _applied_v3_wait_answer(runtime, RunId("http-doubled-applied-answer"))
+    before_second = _durable_snapshot(runtime)
+
+    second = client.post(_wait_answer_path(request), json=_wait_answer_body(request))
+
+    assert second.status_code == 200
+    assert second.json()["state"] == RunState.COMPLETED.value
+    assert _durable_snapshot(runtime) == before_second
+
+    with runtime.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER wait_answers_no_delete")
+        connection.execute(
+            wait_answers.delete().where(
+                wait_answers.c.node_execution_id
+                == request.expected_node_execution_id.value
+            )
+        )
+
+    missing_answer = client.post(
+        _wait_answer_path(request), json=_wait_answer_body(request)
+    )
+
+    assert missing_answer.status_code == 500
+    assert missing_answer.json()["type"].endswith(":durable-state-corrupt")
+
+
+def test_a_recorded_wait_answer_without_an_actor_is_durable_corruption(
+    runtime: DbosRuntime,
+) -> None:
+    request = _applied_v3_wait_answer(runtime, RunId("recorded-answer-without-actor"))
+    _remove_recorded_wait_answer_actor(runtime, request)
+
+    with (
+        runtime.engine.connect() as connection,
+        pytest.raises(RunTransitionConflict, match="recorded wait answer has no actor"),
+    ):
+        load_wait_answer(
+            connection,
+            request.run_id,
+            request.revision_hash,
+            request.node_id,
+        )
+
+
+def test_a_v3_wait_answer_projection_refuses_a_recorded_row_without_an_actor(
+    runtime: DbosRuntime,
+) -> None:
+    request = _applied_v3_wait_answer(
+        runtime, RunId("project-recorded-answer-without-actor")
+    )
+    _remove_recorded_wait_answer_actor(runtime, request)
+    with runtime.engine.connect() as connection:
+        event_record = (
+            connection.execute(
+                sa.select(run_events).where(
+                    run_events.c.node_execution_id
+                    == request.expected_node_execution_id.value,
+                    run_events.c.event_kind == RunEventKind.WAIT_ANSWERED.value,
+                )
+            )
+            .mappings()
+            .one()
+        )
+
+    with (
+        runtime.engine.connect() as connection,
+        pytest.raises(
+            WaitAnswerProjectionCorrupt,
+            match="wait answer event has no durable actor",
+        ),
+    ):
+        DbosQueries._event_projection(
+            connection,
+            event_record,
+            WorkflowFormatVersion.V3,
+            durable_projection_limit(api_limits()),
+        )
+
+
+def test_an_applied_legacy_wait_answer_is_not_an_attributed_idempotent_hit(
+    runtime: DbosRuntime,
+) -> None:
+    request = _applied_v3_wait_answer(runtime, RunId("applied-legacy-answer-retry"))
+    with runtime.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER wait_answers_payload_no_update")
+        connection.execute(
+            wait_answers.update()
+            .where(
+                wait_answers.c.node_execution_id
+                == request.expected_node_execution_id.value
+            )
+            .values(
+                actor=None,
+                actor_attribution_kind=(
+                    WaitAnswerAttributionKind.LEGACY_UNATTRIBUTED.value
+                ),
+            )
+        )
+
+    response = _client(runtime).post(
+        _wait_answer_path(request), json=_wait_answer_body(request)
+    )
+
+    assert response.status_code == 500
+    assert response.json()["type"].endswith(":durable-state-corrupt")
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "missing-head",
+        "contradictory-head",
+        "missing-expected-actor",
+        "waiting-head-at-nonwait-node",
+        "answer-binding-disagrees",
+        "applied-answer-at-waiting-head",
+        "duplicate-answers",
+    ),
+)
+def test_http_wait_answer_reports_a_corrupt_current_wait_as_definitive_500(
+    runtime: DbosRuntime,
+    corruption: str,
+) -> None:
+    revision = WorkflowRevision(DOCUMENT)
+    run_id = RunId(f"corrupt-answer-{corruption}")
+    start_published_v1_run(runtime.engine, runtime.settings, run_id, revision)
+    with canonical_write_transaction(runtime.engine) as connection:
+        commit_configured_agent(connection, run_id, revision.revision_hash, "agent")
+        waiting = commit_waiting_input(
+            connection, run_id, revision.revision_hash, "wait"
+        )
+    execution_id = waiting.event.node_execution_id
+    with runtime.engine.begin() as connection:
+        if corruption == "missing-head":
+            connection.exec_driver_sql("DROP TRIGGER run_events_no_delete")
+            connection.execute(
+                run_events.delete().where(
+                    run_events.c.run_id == run_id.value,
+                    run_events.c.event_sequence == waiting.last_event_sequence,
+                )
+            )
+        elif corruption == "contradictory-head":
+            connection.exec_driver_sql("DROP TRIGGER run_events_no_update")
+            connection.execute(
+                run_events.update()
+                .where(
+                    run_events.c.run_id == run_id.value,
+                    run_events.c.event_sequence == waiting.last_event_sequence,
+                )
+                .values(node_execution_id="f" * 64)
+            )
+        elif corruption == "missing-expected-actor":
+            connection.exec_driver_sql("DROP TRIGGER run_events_no_update")
+            connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
+            connection.execute(
+                run_events.update()
+                .where(
+                    run_events.c.run_id == run_id.value,
+                    run_events.c.event_sequence == waiting.last_event_sequence,
+                )
+                .values(wait_answer_actor=None)
+            )
+            connection.exec_driver_sql("PRAGMA ignore_check_constraints=OFF")
+        elif corruption == "waiting-head-at-nonwait-node":
+            connection.execute(
+                runs.update()
+                .where(runs.c.run_id == run_id.value)
+                .values(current_node_id="agent")
+            )
+        elif corruption == "answer-binding-disagrees":
+            connection.execute(
+                wait_answers.insert().values(
+                    run_id=run_id.value,
+                    revision_hash=revision.revision_hash.value,
+                    node_id="agent",
+                    node_execution_id=execution_id.value,
+                    round_ordinal=waiting.current_round_ordinal,
+                    actor=WaitAnswerActor.OPERATOR.value,
+                    actor_attribution_kind="RECORDED",
+                    answer_bytes=b"17",
+                    answer_hash=Sha256Hash.of(b"17").value,
+                    answer_workflow_id=answer_workflow_id_for(execution_id),
+                    state="PENDING",
+                    state_version=0,
+                )
+            )
+        elif corruption == "applied-answer-at-waiting-head":
+            connection.execute(
+                wait_answers.insert().values(
+                    run_id=run_id.value,
+                    revision_hash=revision.revision_hash.value,
+                    node_id="wait",
+                    node_execution_id=execution_id.value,
+                    round_ordinal=waiting.current_round_ordinal,
+                    actor=WaitAnswerActor.OPERATOR.value,
+                    actor_attribution_kind="RECORDED",
+                    answer_bytes=b"17",
+                    answer_hash=Sha256Hash.of(b"17").value,
+                    answer_workflow_id=answer_workflow_id_for(execution_id),
+                    state="APPLIED",
+                    state_version=1,
+                )
+            )
+        elif corruption == "duplicate-answers":
+            for trigger in (
+                "wait_answers_payload_no_update",
+                "wait_answers_state_transition",
+                "wait_answers_no_delete",
+            ):
+                connection.exec_driver_sql(f"DROP TRIGGER {trigger}")
+            connection.exec_driver_sql(
+                "CREATE TABLE duplicate_wait_answers AS "
+                "SELECT * FROM wait_answers WHERE FALSE"
+            )
+            connection.exec_driver_sql("DROP TABLE wait_answers")
+            connection.exec_driver_sql(
+                "ALTER TABLE duplicate_wait_answers RENAME TO wait_answers"
+            )
+            duplicate = {
+                "run_id": run_id.value,
+                "revision_hash": revision.revision_hash.value,
+                "node_id": "wait",
+                "node_execution_id": execution_id.value,
+                "round_ordinal": waiting.current_round_ordinal,
+                "actor": WaitAnswerActor.OPERATOR.value,
+                "actor_attribution_kind": "RECORDED",
+                "answer_bytes": b"17",
+                "answer_hash": Sha256Hash.of(b"17").value,
+                "answer_workflow_id": answer_workflow_id_for(execution_id),
+                "state": "PENDING",
+                "state_version": 0,
+            }
+            connection.execute(wait_answers.insert(), (duplicate, duplicate))
+        else:
+            raise AssertionError(f"unknown corruption fixture: {corruption}")
+    if corruption == "duplicate-answers":
+        with (
+            runtime.engine.connect() as connection,
+            pytest.raises(WaitAnswerStateCorrupt) as raised,
+        ):
+            load_wait_answer(
+                connection,
+                run_id,
+                revision.revision_hash,
+                "wait",
+            )
+        assert not isinstance(raised.value, RunTransitionConflict)
+    before = _durable_snapshot(runtime)
+    response = _client(runtime).post(
+        f"/atelier/api/v1/runs/{encode_public_run_reference(run_id)}/answers",
+        json={
+            "workflow_revision_hash": revision.revision_hash.value,
+            "node_id": "wait",
+            "expected_node_execution_id": execution_id.value,
+            "actor": "operator",
+            "answer_base64": encode_canonical_base64(b"17"),
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["type"].endswith(":durable-state-corrupt")
+    assert _durable_snapshot(runtime) == before
 
 
 @pytest.mark.parametrize("found", [True, False])
@@ -1511,7 +1970,14 @@ def test_wait_answer_parses_workflow_before_begin_immediate(
     result = DbosWaitAnswerer(
         runtime.engine, runtime.settings.application_version
     ).submit_result(
-        SubmitWaitAnswerRequest(run_id, revision.revision_hash, "wait", b"17")
+        SubmitWaitAnswerRequest(
+            run_id,
+            revision.revision_hash,
+            "wait",
+            NodeExecutionId.for_node(run_id, revision.revision_hash, "wait"),
+            WaitAnswerActor.OPERATOR,
+            b"17",
+        )
     )
 
     assert isinstance(result, DurableAnswerCreated)
@@ -1609,7 +2075,14 @@ def test_wait_answer_rechecks_revision_bytes_after_outside_parse_without_mutatio
     result = DbosWaitAnswerer(
         runtime.engine, runtime.settings.application_version
     ).submit_result(
-        SubmitWaitAnswerRequest(run_id, revision.revision_hash, "wait", b"17")
+        SubmitWaitAnswerRequest(
+            run_id,
+            revision.revision_hash,
+            "wait",
+            NodeExecutionId.for_node(run_id, revision.revision_hash, "wait"),
+            WaitAnswerActor.OPERATOR,
+            b"17",
+        )
     )
 
     assert isinstance(result, DurableStateCorrupt)

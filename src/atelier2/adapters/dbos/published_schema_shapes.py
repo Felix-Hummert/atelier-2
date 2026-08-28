@@ -1305,6 +1305,48 @@ CREATE TABLE run_events (
     (15, "tool_redemptions"): _TOOL_REDEMPTIONS_BOUND_TO_THE_AGENT_RECEIPT,
 }
 
+# V34 through V45 published one identical wait-answer table, and V35 through
+# V45 one identical run-event table. V46 adds attribution to both, so the
+# immediate predecessor must remain materializable byte-for-byte; reusing the
+# older frozen records is safe because they are published text, never today's
+# declarations.
+PUBLISHED_TABLE_SHAPES = {
+    **PUBLISHED_TABLE_SHAPES,
+    (45, "wait_answers"): PUBLISHED_TABLE_SHAPES[(34, "wait_answers")],
+    (45, "run_events"): PUBLISHED_TABLE_SHAPES[(35, "run_events")],
+}
+
+_WAIT_ANSWER_TRIGGERS_V34_TO_V45: Mapping[str, str] = {
+    "wait_answers_payload_no_update": """
+        CREATE TRIGGER wait_answers_payload_no_update
+        BEFORE UPDATE OF run_id, revision_hash, node_id, node_execution_id,
+                         round_ordinal, answer_bytes, answer_hash,
+                         answer_workflow_id
+        ON wait_answers BEGIN
+          SELECT RAISE(ABORT, 'wait answer bindings are immutable');
+        END
+    """,
+    "wait_answers_state_transition": """
+        CREATE TRIGGER wait_answers_state_transition
+        BEFORE UPDATE OF state, state_version ON wait_answers
+        WHEN NOT (OLD.state = 'PENDING' AND OLD.state_version = 0
+                  AND NEW.state = 'APPLIED' AND NEW.state_version = 1)
+        BEGIN
+          SELECT RAISE(ABORT, 'invalid wait answer transition');
+        END
+    """,
+    "wait_answers_no_delete": """
+        CREATE TRIGGER wait_answers_no_delete
+        BEFORE DELETE ON wait_answers BEGIN
+          SELECT RAISE(ABORT, 'wait answers are immutable');
+        END
+    """,
+}
+
+PUBLISHED_WAIT_ANSWER_TRIGGERS: Mapping[int, Mapping[str, str]] = {
+    version: _WAIT_ANSWER_TRIGGERS_V34_TO_V45 for version in range(34, 46)
+}
+
 _RUN_EVENTS_INDEXES_BEFORE_THE_REPEATABLE_PAUSE = (
     (
         "CREATE UNIQUE INDEX run_events_attempt_kind_unique ON run_events "

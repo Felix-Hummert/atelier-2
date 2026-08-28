@@ -24,6 +24,7 @@ function origin(overrides: Partial<RunV3> = {}): RunV3 {
     state_version: 1,
     state: "FAILED",
     current_node_id: "review",
+    current_node_execution_id: "e".repeat(64),
     node_rail: [
       { node_id: "implement", state: "succeeded", attempt: null },
       { node_id: "review", state: "failed", attempt: null }

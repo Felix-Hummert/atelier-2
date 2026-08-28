@@ -15,6 +15,7 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 from atelier2.adapters.dbos.published_schema_shapes import (
     PUBLISHED_TABLE_INDEXES,
     PUBLISHED_TABLE_SHAPES,
+    PUBLISHED_WAIT_ANSWER_TRIGGERS,
 )
 from atelier2.adapters.github.composition import migrate_v44_github_source_location
 from atelier2.contracts.agents import (
@@ -24,6 +25,7 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.artifacts import MAXIMUM_ARTIFACT_BYTES
 from atelier2.contracts.catalog_v3 import MAXIMUM_LINEAGE_DISPLAY_NAME_CHARACTERS
+from atelier2.contracts.executions import WaitAnswerAttributionKind
 from atelier2.contracts.hashing import frame
 from atelier2.contracts.host_configuration import (
     MAXIMUM_CONNECTION_ACTOR_CHARACTERS,
@@ -74,9 +76,8 @@ class ProductSchemaHandoff:
     fingerprint_sha256: str
 
 
-# Movable hop: Phase D separates proposal from admission and reserves one exact
-# launch before run creation, so a restart cannot mint a second run (#79 D1).
-_HOP_PREDECESSOR_VERSION = 44
+# Hop 46 attributes wait answers and fences every submission to one execution.
+_HOP_PREDECESSOR_VERSION = 45
 SCHEMA_VERSION = _HOP_PREDECESSOR_VERSION + 1
 _VERSION_NINE = 9
 _VERSION_TEN = 10
@@ -115,6 +116,7 @@ _VERSION_FORTY_TWO = 42
 _VERSION_FORTY_THREE = 43
 _VERSION_FORTY_FOUR = 44
 _VERSION_FORTY_FIVE = 45
+_VERSION_FORTY_SIX = 46
 # Operator ruling 5307892458: no store compatibility until a named maturity.
 # Every published prototype schema remains a predecessor; runtime never migrates it.
 _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
@@ -268,6 +270,10 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # V45 gives a source a durable identity and lifecycle, records the connection
 # instant for new revisions, and preserves every legacy revision with an absent
 # instant and one deterministic source identity per project history.
+# V46 makes both sides of answer attribution explicit. Every WAITING_INPUT head
+# records the closed actor it expects; every new answer records that actor, while
+# predecessor answers carry the named LEGACY_UNATTRIBUTED kind and no invented
+# actor.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -310,6 +316,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     43: "f7d299ab865b87ca47a399d4897f8c7b273085c4d206fac9eb882d47198b9782",
     44: "b8a176e76092a24fa0c8ac1caafdd69e57f4ff404ecb5560a1dd426d32a3ee9b",
     45: "39d0811369f0b7a4b248448042623ecde0d290e95d191d75c32a9faf538fffa5",
+    46: "1428683e38b4cce26b866e02ef1afa974a2c3208e26606f8792d0d48f0b1a43b",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -454,6 +461,10 @@ V43_SCHEMA_HANDOFF = ProductSchemaHandoff(
 V44_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_FORTY_FOUR,
     _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FORTY_FOUR],
+)
+V45_SCHEMA_HANDOFF = ProductSchemaHandoff(
+    _VERSION_FORTY_FIVE,
+    _PRODUCT_SCHEMA_FINGERPRINT_SHA256[_VERSION_FORTY_FIVE],
 )
 PRODUCT_SCHEMA_HANDOFF = ProductSchemaHandoff(
     SCHEMA_VERSION,
@@ -1316,6 +1327,7 @@ run_events = sa.Table(
     sa.Column("node_execution_id", sa.Text, nullable=False),
     sa.Column("round_ordinal", sa.Integer, nullable=False),
     sa.Column("event_kind", sa.Text, nullable=False),
+    sa.Column("wait_answer_actor", sa.Text, nullable=True),
     sa.Column("payload", sa.LargeBinary, nullable=False),
     sa.Column("payload_hash", sa.Text, nullable=False),
     sa.Column("receipt_logical_key", sa.Text, nullable=True),
@@ -1358,6 +1370,10 @@ run_events = sa.Table(
         "'ACTION_RECONCILIATION_REQUIRED', "
         "'ACTION_RECONCILIATION_RESOLVED', 'ACTION_COMPLETED', 'WAITING_INPUT', "
         "'WAIT_ANSWERED', 'WAIT_CANCELLED', 'SUBWORKFLOW_COMPLETED')"
+    ),
+    sa.CheckConstraint(
+        "(event_kind = 'WAITING_INPUT' AND wait_answer_actor IN ('operator')) "
+        "OR (event_kind <> 'WAITING_INPUT' AND wait_answer_actor IS NULL)"
     ),
     sa.CheckConstraint(
         "length(payload_hash) = 64 AND payload_hash NOT GLOB '*[^0-9a-f]*'"
@@ -1474,6 +1490,8 @@ wait_answers = sa.Table(
     sa.Column("node_id", sa.Text, nullable=False),
     sa.Column("node_execution_id", sa.Text, nullable=False),
     sa.Column("round_ordinal", sa.Integer, nullable=False),
+    sa.Column("actor", sa.Text, nullable=True),
+    sa.Column("actor_attribution_kind", sa.Text, nullable=False),
     sa.Column("answer_bytes", sa.LargeBinary, nullable=False),
     sa.Column("answer_hash", sa.Text, nullable=False),
     sa.Column("answer_workflow_id", sa.Text, nullable=False, unique=True),
@@ -1488,6 +1506,10 @@ wait_answers = sa.Table(
     ),
     sa.CheckConstraint("length(node_id) > 0"),
     sa.CheckConstraint(f"round_ordinal >= {FIRST_ROUND_ORDINAL}"),
+    sa.CheckConstraint(
+        "(actor_attribution_kind = 'RECORDED' AND actor IN ('operator')) "
+        "OR (actor_attribution_kind = 'LEGACY_UNATTRIBUTED' AND actor IS NULL)"
+    ),
     sa.CheckConstraint(
         "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
     ),
@@ -2919,7 +2941,8 @@ _PRODUCT_TRIGGERS = {
     "wait_answers_payload_no_update": """
         CREATE TRIGGER wait_answers_payload_no_update
         BEFORE UPDATE OF run_id, revision_hash, node_id, node_execution_id,
-                         round_ordinal, answer_bytes, answer_hash,
+                         round_ordinal, actor, actor_attribution_kind,
+                         answer_bytes, answer_hash,
                          answer_workflow_id
         ON wait_answers BEGIN
           SELECT RAISE(ABORT, 'wait answer bindings are immutable');
@@ -3541,7 +3564,7 @@ def _table_names_for_version(version: int) -> frozenset[str]:
     ) | {_V27_ACCESS_TABLE_NAME}
     if version == SCHEMA_VERSION:
         return PRODUCT_TABLE_NAMES
-    if version == _VERSION_FORTY_FOUR:
+    if version in {_VERSION_FORTY_FIVE, _VERSION_FORTY_FOUR}:
         return PRODUCT_TABLE_NAMES
     if version == _VERSION_FORTY_THREE:
         return before_phase_d
@@ -5093,6 +5116,7 @@ def _apply_v33_to_v34(connection: sqlite3.Connection) -> None:
         _VERSION_THIRTY_THREE,
         _VERSION_THIRTY_FOUR,
         {wait_answers.c.round_ordinal.name: str(FIRST_ROUND_ORDINAL)},
+        trigger_source=PUBLISHED_WAIT_ANSWER_TRIGGERS[_VERSION_THIRTY_FOUR],
     )
     _raise_declared_version(connection, _VERSION_THIRTY_THREE, _VERSION_THIRTY_FOUR)
 
@@ -5804,6 +5828,44 @@ def _apply_v44_to_v45(connection: sqlite3.Connection) -> None:
     _raise_declared_version(connection, _VERSION_FORTY_FOUR, _VERSION_FORTY_FIVE)
 
 
+_PREDECESSOR_WAIT_ANSWERS_WITHOUT_ACTOR = "wait_answers_before_actor"
+_PREDECESSOR_RUN_EVENTS_WITHOUT_WAIT_ACTOR = "run_events_before_wait_actor"
+
+
+def _apply_v45_to_v46(connection: sqlite3.Connection) -> None:
+    """Persist expected actors and name predecessor answers as unattributed."""
+
+    _rebuild_product_table(
+        connection,
+        run_events,
+        _PREDECESSOR_RUN_EVENTS_WITHOUT_WAIT_ACTOR,
+        _RUN_EVENTS_TRIGGERS,
+        _VERSION_FORTY_FIVE,
+        _VERSION_FORTY_SIX,
+        {
+            run_events.c.wait_answer_actor.name: (
+                "CASE WHEN event_kind = 'WAITING_INPUT' THEN 'operator' ELSE NULL END"
+            )
+        },
+    )
+
+    _rebuild_product_table(
+        connection,
+        wait_answers,
+        _PREDECESSOR_WAIT_ANSWERS_WITHOUT_ACTOR,
+        _WAIT_ANSWERS_TRIGGERS,
+        _VERSION_FORTY_FIVE,
+        _VERSION_FORTY_SIX,
+        {
+            wait_answers.c.actor.name: "NULL",
+            wait_answers.c.actor_attribution_kind.name: (
+                f"'{WaitAnswerAttributionKind.LEGACY_UNATTRIBUTED.value}'"
+            ),
+        },
+    )
+    _raise_declared_version(connection, _VERSION_FORTY_FIVE, _VERSION_FORTY_SIX)
+
+
 @dataclass(frozen=True)
 class _SchemaMigrationStep:
     source_version: int
@@ -5971,6 +6033,11 @@ _SCHEMA_MIGRATION_STEPS: tuple[_SchemaMigrationStep, ...] = (
         _VERSION_FORTY_FOUR,
         _VERSION_FORTY_FIVE,
         _apply_v44_to_v45,
+    ),
+    _SchemaMigrationStep(
+        _VERSION_FORTY_FIVE,
+        _VERSION_FORTY_SIX,
+        _apply_v45_to_v46,
     ),
 )
 _SCHEMA_MIGRATION_BY_SOURCE = {

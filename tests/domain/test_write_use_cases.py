@@ -103,7 +103,7 @@ from atelier2.contracts.agents import (
     AgentExecutorOperationalIdentity,
 )
 from atelier2.contracts.budgets_v3 import BudgetRevisionRefusal
-from atelier2.contracts.executions import NodeExecutionId
+from atelier2.contracts.executions import NodeExecutionId, WaitAnswerActor
 from atelier2.contracts.orders import InlineOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
 from atelier2.contracts.run_cancellations import CancelRunRequest
@@ -608,7 +608,15 @@ def test_an_answer_that_makes_no_submission_refuses_before_the_store_is_asked() 
     is an outcome of it — and the store is never asked."""
     answerer = ScriptedAnswerer(DurableAnswerCreated(SNAPSHOT))
 
-    result = answer_wait_result(RUN_ID, REVISION_HASH, "", b"6", answerer)
+    result = answer_wait_result(
+        RUN_ID,
+        REVISION_HASH,
+        "",
+        NodeExecutionId.for_node(RUN_ID, REVISION_HASH, "waiting"),
+        WaitAnswerActor.OPERATOR,
+        b"6",
+        answerer,
+    )
 
     assert isinstance(result, UnanswerableWait)
     assert answerer.submitted == []
@@ -625,7 +633,15 @@ def test_bytes_the_waiting_node_does_not_admit_read_back_as_an_unanswerable_wait
     """
     answerer = ScriptedAnswerer(DurableAnswerNotAdmitted("not what this node admits"))
 
-    result = answer_wait_result(RUN_ID, REVISION_HASH, "waiting", b"06", answerer)
+    result = answer_wait_result(
+        RUN_ID,
+        REVISION_HASH,
+        "waiting",
+        NodeExecutionId.for_node(RUN_ID, REVISION_HASH, "waiting"),
+        WaitAnswerActor.OPERATOR,
+        b"06",
+        answerer,
+    )
 
     assert isinstance(result, UnanswerableWait)
     assert [submitted.answer_bytes for submitted in answerer.submitted] == [b"06"]
@@ -634,7 +650,15 @@ def test_bytes_the_waiting_node_does_not_admit_read_back_as_an_unanswerable_wait
 def test_an_answer_carries_the_authored_values_into_the_submission() -> None:
     answerer = ScriptedAnswerer(DurableAnswerCreated(SNAPSHOT))
 
-    answer_wait_result(RUN_ID, REVISION_HASH, "waiting", b"6", answerer)
+    answer_wait_result(
+        RUN_ID,
+        REVISION_HASH,
+        "waiting",
+        NodeExecutionId.for_node(RUN_ID, REVISION_HASH, "waiting"),
+        WaitAnswerActor.OPERATOR,
+        b"6",
+        answerer,
+    )
 
     submitted = answerer.submitted[0]
     assert (submitted.run_id, submitted.node_id, submitted.answer_bytes) == (

@@ -76,6 +76,7 @@ from atelier2.contracts.executions import (
     AgentExecutionRefusal,
     NodeExecutionId,
     SubmitWaitAnswerRequest,
+    WaitAnswerActor,
 )
 from atelier2.contracts.node_bindings import AgentNodeBindingV2
 from atelier2.contracts.run_bindings import RunBindingConflict, RunV2
@@ -1143,7 +1144,14 @@ nodes:
         answer = DbosWaitAnswerer(
             restarted.engine, restarted.settings.application_version
         ).submit_result(
-            SubmitWaitAnswerRequest(run_id, workflow.revision_hash, "ask", b"5")
+            SubmitWaitAnswerRequest(
+                run_id,
+                workflow.revision_hash,
+                "ask",
+                NodeExecutionId.for_node(run_id, workflow.revision_hash, "ask"),
+                WaitAnswerActor.OPERATOR,
+                b"5",
+            )
         )
         assert isinstance(answer, DurableAnswerCreated)
         _wait_failed(restarted, run_id)

@@ -445,9 +445,15 @@ def bound_use_cases(
             restart_from_node_id,
             cast(DurableRunForker, ports.published_run_starter),
         ),
-        answer_wait=lambda run_id, revision_hash, node_id, answer_bytes: (
+        answer_wait=lambda run_id, revision_hash, node_id, execution_id, actor, answer_bytes: (
             answer_wait_result(
-                run_id, revision_hash, node_id, answer_bytes, ports.wait_answerer
+                run_id,
+                revision_hash,
+                node_id,
+                execution_id,
+                actor,
+                answer_bytes,
+                ports.wait_answerer,
             )
         ),
         cancel_agent_attempt=lambda request: cancel_agent_attempt(

@@ -880,6 +880,23 @@ def _restore_v43(database_path: Path) -> None:
         connection.execute("BEGIN IMMEDIATE")
         schema_module._rebuild_product_table(
             connection,
+            schema_module.run_events,
+            "run_events_v46",
+            schema_module._RUN_EVENTS_TRIGGERS,
+            46,
+            45,
+        )
+        schema_module._rebuild_product_table(
+            connection,
+            schema_module.wait_answers,
+            "wait_answers_v46",
+            schema_module._WAIT_ANSWERS_TRIGGERS,
+            46,
+            45,
+            trigger_source=schema_module.PUBLISHED_WAIT_ANSWER_TRIGGERS[45],
+        )
+        schema_module._rebuild_product_table(
+            connection,
             schema_module.host_project_source_connection_revisions,
             "project_source_connections_v45",
             (
@@ -936,7 +953,7 @@ def test_v43_to_v44_preserves_populated_rows_and_invents_no_queue_decision(
     report = migrate_store(database_path)
 
     assert report.source_version == V43_SCHEMA_HANDOFF.version
-    assert report.target_version == SCHEMA_VERSION == 45
+    assert report.target_version == SCHEMA_VERSION == 46
     assert report.fingerprint_sha256 == PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
     reopened = create_canonical_engine(database_path)
     try:
