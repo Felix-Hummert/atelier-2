@@ -55,20 +55,22 @@
       }
     }
   },
-  "allOf": [
-    {
-      "if": {
-        "required": ["verdict"],
-        "properties": {"verdict": {"const": "revise"}}
-      },
-      "then": {"properties": {"findings": {"minItems": 1}}}
+  "if": {
+    "type": "object",
+    "required": ["verdict"],
+    "properties": {"verdict": {"const": "revise"}}
+  },
+  "then": {
+    "type": "object",
+    "properties": {"findings": {"type": "array", "minItems": 1}}
+  },
+  "else": {
+    "type": "object",
+    "if": {
+      "type": "object",
+      "required": ["verdict"],
+      "properties": {"verdict": {"const": "cannot-judge"}}
     },
-    {
-      "if": {
-        "required": ["verdict"],
-        "properties": {"verdict": {"const": "cannot-judge"}}
-      },
-      "then": {"required": ["reason"]}
-    }
-  ]
+    "then": {"type": "object", "required": ["reason"]}
+  }
 }
