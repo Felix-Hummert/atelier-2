@@ -54,6 +54,7 @@ from atelier2.contracts.executions import (
     RunEventCancellationBinding,
     RunEventKind,
     TransitionSnapshot,
+    WaitAnswerActor,
     terminal_hash_for,
 )
 from atelier2.contracts.hashing import Sha256Hash
@@ -326,6 +327,7 @@ def event_from_record(record: Mapping[Any, Any]) -> RunEvent:
     logical_key = record["receipt_logical_key"]
     result_hash = record["receipt_result_hash"]
     attempt_binding = _event_attempt_binding_from_record(record)
+    raw_wait_answer_actor = record["wait_answer_actor"]
     event = RunEvent(
         RunId(str(record["run_id"])),
         WorkflowRevisionHash(str(record["revision_hash"])),
@@ -341,6 +343,11 @@ def event_from_record(record: Mapping[Any, Any]) -> RunEvent:
         if record["agent_receipt_hash"] is None
         else AgentReceiptHash(str(record["agent_receipt_hash"])),
         int(record["round_ordinal"]),
+        (
+            None
+            if raw_wait_answer_actor is None
+            else WaitAnswerActor(str(raw_wait_answer_actor))
+        ),
     )
     if event.payload_hash.value != record["payload_hash"]:
         raise RunTransitionConflict("durable event payload hash disagrees")
@@ -415,6 +422,7 @@ def _existing_event(
     receipt_result_hash: Sha256Hash | None,
     agent_attempt_id: AgentAttemptId | None = None,
     agent_receipt_hash: AgentReceiptHash | None = None,
+    wait_answer_actor: WaitAnswerActor | None = None,
 ) -> TransitionSnapshot | None:
     # The round takes part in the lookup, not only in the comparison: a looped
     # node writes one event of this kind per round, and a retry means "the same
@@ -449,6 +457,7 @@ def _existing_event(
         or event.receipt_logical_key != receipt_logical_key
         or event.receipt_result_hash != receipt_result_hash
         or event.agent_receipt_hash != agent_receipt_hash
+        or event.wait_answer_actor != wait_answer_actor
     ):
         raise RunTransitionConflict("existing event differs from exact retry")
     current = load_run(session, run_id)
@@ -522,6 +531,9 @@ def _insert_event(session: Any, event: RunEvent, at: RecordedAt | None = None) -
             None if event.agent_receipt_hash is None else event.agent_receipt_hash.value
         ),
         round_ordinal=event.round_ordinal,
+        wait_answer_actor=(
+            None if event.wait_answer_actor is None else event.wait_answer_actor.value
+        ),
     )
     # The driver's own integrity error carries the bound parameters, and the
     # payload among them is a `memoryview` the durable step boundary above
@@ -557,6 +569,7 @@ def _commit_event(
     agent_receipt_hash: AgentReceiptHash | None = None,
     round_ordinal: int = FIRST_ROUND_ORDINAL,
     target_round_ordinal: int = FIRST_ROUND_ORDINAL,
+    wait_answer_actor: WaitAnswerActor | None = None,
 ) -> TransitionSnapshot:
     existing = _existing_event(
         session,
@@ -570,6 +583,7 @@ def _commit_event(
         receipt_result_hash,
         agent_attempt_id,
         agent_receipt_hash,
+        wait_answer_actor,
     )
     if existing is not None:
         return existing
@@ -626,6 +640,7 @@ def _commit_event(
         attempt_binding,
         agent_receipt_hash=agent_receipt_hash,
         round_ordinal=round_ordinal,
+        wait_answer_actor=wait_answer_actor,
     )
     terminal_hash: Sha256Hash | None = None
     if terminal:
@@ -705,6 +720,7 @@ def commit_waiting_input(
         node_id,
         round_ordinal=round_ordinal,
         target_round_ordinal=round_ordinal,
+        wait_answer_actor=WaitAnswerActor.OPERATOR,
     )
 
 

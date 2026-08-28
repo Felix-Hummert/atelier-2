@@ -80,6 +80,7 @@ from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEvent,
     RunEventKind,
+    WaitAnswerActor,
 )
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.revisions_v3 import (
@@ -509,6 +510,8 @@ def test_an_answered_wait_answers_its_job_its_value_and_when(
         RUN,
         workflow.revision_hash,
         "approve",
+        NodeExecutionId.for_node(RUN, workflow.revision_hash, "approve"),
+        WaitAnswerActor.OPERATOR,
         WAIT_ANSWER,
         DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
     )
@@ -624,6 +627,10 @@ def test_every_answer_bearing_node_kind_reads_back_its_own_value(
         V1_ANSWER_CHAIN_RUN,
         revision.revision_hash,
         "waiting",
+        NodeExecutionId.for_node(
+            V1_ANSWER_CHAIN_RUN, revision.revision_hash, "waiting"
+        ),
+        WaitAnswerActor.OPERATOR,
         V1_WAIT_ANSWER,
         DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
     )

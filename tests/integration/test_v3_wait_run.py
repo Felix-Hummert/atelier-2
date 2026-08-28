@@ -48,7 +48,7 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.projection.runs import run_resource
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
-    AnswerStateConflict,
+    AnswerExistingApplied,
     UnanswerableWait,
     answer_wait_result,
 )
@@ -74,6 +74,7 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.executions import (
     NodeExecutionId,
     RunEventKind,
+    WaitAnswerActor,
     WaitAnswerState,
     terminal_hash_for,
 )
@@ -323,6 +324,8 @@ def answer(runtime: DbosRuntime, workflow: WorkflowRevision, value: bytes) -> ob
         RUN,
         workflow.revision_hash,
         WAIT_NODE,
+        NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE),
+        WaitAnswerActor.OPERATOR,
         value,
         DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
     )
@@ -798,15 +801,10 @@ def test_an_answer_the_waits_own_schema_refuses_leaves_the_run_waiting(
 
 
 @pytest.mark.proves("a-v3-line-stops-for-a-person-and-their-answer-carries-it-on")
-def test_an_answer_to_a_v3_run_that_is_not_waiting_is_refused_by_its_state(
+def test_an_answer_to_a_v3_turn_that_has_already_been_answered_is_idempotent(
     runtime: tuple[DbosRuntime, RecordingAgentExecutorFactoryV2],
 ) -> None:
-    """A run that owes nobody a move is refused as the state conflict it is.
-
-    Named apart from the schema refusal on purpose: this answer may be perfectly
-    well formed, and what is wrong is that the run is not standing where the
-    answer says it is.
-    """
+    """The same actor and bytes for an applied execution report that answer."""
     started, _ = runtime
     workflow = start_and_launch(started, WAIT_AS_THE_SINK)
     wait_for_state(started, RunState.WAITING_INPUT)
@@ -816,12 +814,14 @@ def test_an_answer_to_a_v3_run_that_is_not_waiting_is_refused_by_its_state(
     late = answer_wait_result(
         RUN,
         workflow.revision_hash,
-        "implement",
+        WAIT_NODE,
+        NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE),
+        WaitAnswerActor.OPERATOR,
         ANSWER,
         DbosWaitAnswerer(started.engine, started.settings.application_version),
     )
 
-    assert isinstance(late, AnswerStateConflict), late
+    assert isinstance(late, AnswerExistingApplied), late
 
 
 CANCEL_KEY = "operator-stops-the-wait-1"
@@ -957,6 +957,8 @@ def test_a_cancel_arriving_on_an_accepted_answer_refuses_rather_than_drop_it(
             RUN,
             workflow.revision_hash,
             WAIT_NODE,
+            NodeExecutionId.for_node(RUN, workflow.revision_hash, WAIT_NODE),
+            WaitAnswerActor.OPERATOR,
             ANSWER,
             DbosWaitAnswerer(engine, version),
         )

@@ -27,7 +27,12 @@ from atelier2.adapters.http_webhook_transport import (
     SIGNATURE_HEADER,
     HttpWebhookTransport,
 )
-from atelier2.contracts.executions import NodeExecutionId, RunEvent, RunEventKind
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEvent,
+    RunEventKind,
+    WaitAnswerActor,
+)
 from atelier2.contracts.run_events import PersistedRunEvent
 from atelier2.contracts.runs import RunId, WorkflowRevision
 from atelier2.contracts.webhook_delivery import (
@@ -84,6 +89,9 @@ def _attention_event(
         NodeExecutionId.for_node(identity, revision.revision_hash, node_id),
         kind,
         b"",
+        wait_answer_actor=(
+            WaitAnswerActor.OPERATOR if kind is RunEventKind.WAITING_INPUT else None
+        ),
     )
     return AttentionEvent(PersistedRunEvent(event, None), RecordedAt(recorded_at))
 

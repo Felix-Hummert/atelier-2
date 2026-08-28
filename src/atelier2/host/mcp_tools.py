@@ -126,8 +126,8 @@ def tool_definitions() -> tuple[dict[str, Any], ...]:
             "description": (
                 "Read one run through GET /runs/{public_ref}. The body is the "
                 "API resource: state, terminal hash when the run has ended, and "
-                "the rail. Instants are not on this resource until #355 lands; "
-                "this tool does not invent them. The service's typed problem is "
+                "the rail. `answerable_wait` is this adapter's exact actor and "
+                "execution fence for an open wait, or null. The service's typed problem is "
                 "returned unchanged when the run is missing."
             ),
             "inputSchema": _object_schema(

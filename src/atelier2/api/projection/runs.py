@@ -314,6 +314,12 @@ def _run_resource_v3(projection: RunProjection, run: RunV3) -> RunResourceV3:
             run.state.value,
         ),
         current_node_id=run.current_node_id,
+        current_node_execution_id=NodeExecutionId.for_node(
+            run.run_id,
+            run.revision_hash,
+            run.current_node_id,
+            run.current_round_ordinal,
+        ).value,
         # A run resource says where the snapshot stands, so no event has
         # overtaken it here; the event stream carries its own rail.
         node_rail=node_rail_resources(project_node_rail(projection, ())),

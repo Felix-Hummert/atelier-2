@@ -27,7 +27,6 @@ from atelier2.adapters.dbos.workflow_ids import effect_workflow_id_for
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
-    AnswerExistingApplied,
     AnswerExistingPending,
     answer_wait_result,
 )
@@ -151,12 +150,12 @@ def submit_wait_answer(
         request.run_id,
         request.revision_hash,
         request.node_id,
+        request.expected_node_execution_id,
+        request.actor,
         request.answer_bytes,
         DbosWaitAnswerer(engine, application_version),
     )
-    assert isinstance(
-        result, (AnswerAcceptedPending, AnswerExistingPending, AnswerExistingApplied)
-    ), result
+    assert isinstance(result, (AnswerAcceptedPending, AnswerExistingPending)), result
     return result.snapshot
 
 

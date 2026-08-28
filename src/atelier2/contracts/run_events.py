@@ -10,7 +10,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from atelier2.contracts.effects import EffectReceipt
-from atelier2.contracts.executions import RunEvent
+from atelier2.contracts.executions import (
+    LegacyWaitAnswerAttribution,
+    RunEvent,
+    RunEventKind,
+    WaitAnswerActor,
+    WaitAnswerAttribution,
+)
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 
 
@@ -20,6 +26,7 @@ class PersistedRunEvent:
     receipt: EffectReceipt | None
     workflow_format_version: WorkflowFormatVersion = WorkflowFormatVersion.V1
     node_receipt_reason: str | None = None
+    wait_answer_actor: WaitAnswerAttribution | None = None
 
     def __post_init__(self) -> None:
         value = self.workflow_format_version
@@ -32,6 +39,17 @@ class PersistedRunEvent:
                 "persisted event workflow format must be V1, V2, or V3"
             ) from None
         object.__setattr__(self, "workflow_format_version", version)
+        actor_required = (
+            version is WorkflowFormatVersion.V3
+            and self.event.event_kind is RunEventKind.WAIT_ANSWERED
+        )
+        if actor_required != (self.wait_answer_actor is not None):
+            raise ValueError("V3 wait answer event and actor attribution disagree")
+        if self.wait_answer_actor is not None and not isinstance(
+            self.wait_answer_actor,
+            WaitAnswerActor | LegacyWaitAnswerAttribution,
+        ):
+            raise TypeError("wait answer event attribution must use its closed type")
 
 
 @dataclass(frozen=True)

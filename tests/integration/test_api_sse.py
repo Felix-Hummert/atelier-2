@@ -55,7 +55,11 @@ from atelier2.contracts.effects import (
     ReconcileCommand,
     ReconcileCommandId,
 )
-from atelier2.contracts.executions import SubmitWaitAnswerRequest
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    SubmitWaitAnswerRequest,
+    WaitAnswerActor,
+)
 from atelier2.contracts.pages import PageLimit
 from atelier2.contracts.run_events import (
     RunEventPage,
@@ -175,7 +179,14 @@ def _complete_history(runtime: DbosRuntime) -> tuple[RunId, WorkflowRevision]:
         commit_waiting_input(connection, run_id, revision.revision_hash, "wait")
     answerer = DbosWaitAnswerer(runtime.engine, runtime.settings.application_version)
     answerer.submit_result(
-        SubmitWaitAnswerRequest(run_id, revision.revision_hash, "wait", b"17")
+        SubmitWaitAnswerRequest(
+            run_id,
+            revision.revision_hash,
+            "wait",
+            NodeExecutionId.for_node(run_id, revision.revision_hash, "wait"),
+            WaitAnswerActor.OPERATOR,
+            b"17",
+        )
     )
     with canonical_write_transaction(runtime.engine) as connection:
         answer = load_wait_answer(connection, run_id, revision.revision_hash, "wait")

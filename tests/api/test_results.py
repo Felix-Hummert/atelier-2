@@ -8,10 +8,11 @@ import pytest
 from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
-    AnswerBytesConflict,
+    AnswerActorMismatch,
     AnswerExistingApplied,
     AnswerExistingPending,
     AnswerRevisionConflict,
+    AnswerStale,
     AnswerStateConflict,
     DurableStateCorrupt,
     NodeMissing,
@@ -55,6 +56,7 @@ from atelier2.contracts.effects import (
 from atelier2.contracts.executions import (
     NodeExecutionId,
     WaitAnswer,
+    WaitAnswerActor,
     WaitAnswerSnapshot,
     WaitAnswerState,
 )
@@ -67,12 +69,13 @@ from atelier2.contracts.workflows import WorkflowGraph
 from atelier2.contracts.workflows_v3 import WorkflowGraphV3
 from atelier2.ports.durable_runs import (
     DurableAgentExecutorCapabilityUnavailable,
-    DurableAnswerBytesConflict,
+    DurableAnswerActorMismatch,
     DurableAnswerCreated,
     DurableAnswerExisting,
     DurableAnswerNodeMissing,
     DurableAnswerRevisionConflict,
     DurableAnswerRunMissing,
+    DurableAnswerStale,
     DurableAnswerStateConflict,
     DurablePublishedRunStarter,
     DurableRunCreated,
@@ -139,9 +142,11 @@ ANSWER_VALUE = WaitAnswer(
     HASH,
     "wait",
     NodeExecutionId.for_node(RunId("run"), HASH, "wait"),
+    WaitAnswerActor.OPERATOR,
     b"3",
 )
 ANSWER = WaitAnswerSnapshot(ANSWER_VALUE, WaitAnswerState.PENDING, 0)
+APPLIED_ANSWER = WaitAnswerSnapshot(ANSWER_VALUE, WaitAnswerState.APPLIED, 1)
 COMMAND = cast(ReconcileCommand, object())
 
 
@@ -354,11 +359,16 @@ def test_start_maps_every_durable_result(
     [
         (DurableAnswerCreated(ANSWER), AnswerAcceptedPending),
         (DurableAnswerExisting(ANSWER), AnswerExistingPending),
+        (DurableAnswerExisting(APPLIED_ANSWER), AnswerExistingApplied),
+        (
+            DurableAnswerActorMismatch(WaitAnswerActor.OPERATOR),
+            AnswerActorMismatch,
+        ),
         (DurableAnswerRunMissing(), RunMissing),
         (DurableAnswerNodeMissing(), NodeMissing),
         (DurableAnswerRevisionConflict(), AnswerRevisionConflict),
         (DurableAnswerStateConflict(), AnswerStateConflict),
-        (DurableAnswerBytesConflict(), AnswerBytesConflict),
+        (DurableAnswerStale(), AnswerStale),
         (DurableWriteUnavailable(), WriteUnavailable),
         (PortDurableStateCorrupt(), DurableStateCorrupt),
     ],
@@ -370,14 +380,13 @@ def test_answer_maps_every_durable_result(
         RunId("run"),
         HASH,
         "waiting",
+        NodeExecutionId.for_node(RunId("run"), HASH, "waiting"),
+        WaitAnswerActor.OPERATOR,
         b"6",
         cast(TransactionalWaitAnswerer, FakePort(port_result)),
     )
 
-    if isinstance(port_result, DurableAnswerExisting):
-        assert isinstance(result, (AnswerExistingPending, AnswerExistingApplied))
-    else:
-        assert isinstance(result, application_type)
+    assert isinstance(result, application_type)
 
 
 @pytest.mark.parametrize(

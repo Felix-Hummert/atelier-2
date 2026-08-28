@@ -34,7 +34,8 @@ function v3Run(changes: Partial<RunV3> = {}): RunV3 {
     latest_event_cursor: null,
     started_at: "2026-08-18T15:00:00Z",
     ended_at: null,
-    ...changes
+    ...changes,
+    current_node_execution_id: changes.current_node_execution_id ?? revisionHash
   };
 }
 

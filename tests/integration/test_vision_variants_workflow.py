@@ -56,7 +56,11 @@ from atelier2.contracts.agents import (
 )
 from atelier2.contracts.artifacts import Artifact
 from atelier2.contracts.effects import AdapterRevision, EffectDestination
-from atelier2.contracts.executions import RunEventKind
+from atelier2.contracts.executions import (
+    NodeExecutionId,
+    RunEventKind,
+    WaitAnswerActor,
+)
 from atelier2.contracts.hashing import Sha256Hash
 from atelier2.contracts.orders import ArtifactOrderValue, InlineOrderValue
 from atelier2.contracts.revisions_v3 import PublishedRevision, RevisionKind
@@ -460,6 +464,8 @@ def answer_operator_reaction(
         run_id,
         workflow.revision_hash,
         "operator_reaction",
+        NodeExecutionId.for_node(run_id, workflow.revision_hash, "operator_reaction"),
+        WaitAnswerActor.OPERATOR,
         value,
         DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
     )
@@ -711,6 +717,8 @@ def test_a_graph_input_wait_keeps_the_question_from_its_pause(
         run_id,
         workflow.revision_hash,
         "answer_with_context",
+        NodeExecutionId.for_node(run_id, workflow.revision_hash, "answer_with_context"),
+        WaitAnswerActor.OPERATOR,
         FRAGMENTS,
         DbosWaitAnswerer(runtime.engine, runtime.settings.application_version),
     )
