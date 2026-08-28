@@ -6,9 +6,11 @@ export const settingsPageCopy = {
   sourcesLabel: "sources",
   sourcesUnavailable: "Sources unavailable",
   sourceKind: "Kind",
+  source: "Source",
   sourceAddress: "Address",
   sourceAuthMethod: "Authentication",
   sourceRevision: "Revision",
+  issues: "issues",
   modelsTitle: "Models",
   modelsLabel: "models",
   modelsUnavailable: "Models unavailable",
@@ -27,6 +29,7 @@ export const settingsPageCopy = {
   unknownAccount: "Unknown account",
   addModel: "Add a model",
   checking: "Checking",
+  running: "Working",
   correctTheId: "Correct the id",
   alreadyPresent: "schon vorhanden",
   add: "Add",
@@ -41,7 +44,33 @@ export const settingsPageCopy = {
   unknownAtProvider: "◇ unknown at provider",
   addedByYouChecked: "added by you · ✓ checked",
   addedByYouNotChecked: "added by you · ◇ not checked yet",
-  unavailableSavedModel: "Unavailable saved model"
+  unavailableSavedModel: "Unavailable saved model",
+  connectASource: "Connect a source",
+  connect: "Connect",
+  disconnect: "Disconnect",
+  keepIt: "Keep it",
+  renewToken: "Token erneuern",
+  where: "Where",
+  token: "Token",
+  items: "Items",
+  library: "Library",
+  neverShownAgain: "Never shown again.",
+  tokenRefused: "This token was refused.",
+  sourceInvalid: "This source could not be connected.",
+  sourceConnectRefused: "This connection was refused.",
+  sourceDisconnectRefused: "This source could not be disconnected.",
+  sourceNotShown: "This source could not be shown.",
+  connectionTimeNotRecorded: "connection time is not recorded",
+  connected: "connected",
+  thisConnection: "this connection",
+  goes: "Goes",
+  stays: "Stays",
+  again: "Again",
+  connectStartsNew: "Connect a source starts a new connection",
+  theModels: "the models",
+  github: "GitHub",
+  gitlab: "GitLab",
+  and: "and"
 } as const;
 
 export function accountChoice(modelId: string, account: string): string {
@@ -62,4 +91,8 @@ export function noSuchModel(providerId: string): string {
 
 export function providerAccount(providerId: string, profileId: string): string {
   return `${providerId} · ${profileId}`;
+}
+
+export function disconnectTitle(address: string): string {
+  return `Disconnect ${address}?`;
 }

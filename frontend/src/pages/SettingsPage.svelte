@@ -12,10 +12,13 @@
     type ExactProjectModelDefaultsRevisionWrite,
     type ModelRegistryRevision,
     type ProjectModelDefaultsRevision,
-    type ProjectSourceConnectionRevision
+    type ProjectSourceResource
   } from "../api/client";
   import AddModelSheet from "../components/AddModelSheet.svelte";
+  import ConnectSourceSheet from "../components/ConnectSourceSheet.svelte";
+  import DisconnectSourceSheet from "../components/DisconnectSourceSheet.svelte";
   import ReadState from "../components/ReadState.svelte";
+  import RenewSourceTokenSheet from "../components/RenewSourceTokenSheet.svelte";
   import {
     defaultsAfterRemovingConfigurationHash,
     offeredAccounts,
@@ -25,6 +28,16 @@
     trimmedModelId,
     type RegistryIntent
   } from "../lib/addModel";
+  import {
+    connectProjectSourceBody,
+    disconnectFacts,
+    presentProjectSource,
+    rotateProjectSourceTokenBody,
+    sourceWriteFailure,
+    type DisconnectFacts,
+    type SourceDoorError,
+    type SourceWriteDoor
+  } from "../lib/projectSources";
   import { problemCode } from "../lib/catalogName";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { THE_ONE_PROJECT } from "../lib/project";
@@ -53,7 +66,7 @@
 
   interface SettingsSnapshot {
     projectReference: string;
-    source: ProjectSourceConnectionRevision | null;
+    sources: ProjectSourceResource[];
     configurations: AgentConfigurationRevisionListItem[];
     profiles: AuthProfileRevision[];
     registries: ModelRegistryRevision[];
@@ -120,11 +133,26 @@
   let sheetPrefill: SheetPrefill | null = null;
   let checkingHashes = new SvelteSet<string>();
   let duplicateNotice: { providerId: string; modelId: string } | null = null;
+  let sourceSheet:
+    | { kind: "connect" }
+    | { kind: "disconnect"; source: ProjectSourceResource; facts: DisconnectFacts }
+    | { kind: "renew"; source: ProjectSourceResource }
+    | null = null;
+  let sourceError: SourceDoorError | null = null;
+  let sourceBusy = false;
+  let duplicateSourceReference: string | null = null;
 
   $: mutationsFrozen = writing || failedWrite !== null;
   $: accountOptions = settings.confirmed === null
     ? []
     : offeredAccounts(settings.confirmed.profiles, settings.confirmed.configurations);
+  $: sourceRows = (settings.confirmed?.sources ?? []).map((source) =>
+    presentProjectSource(
+      source,
+      new Date(),
+      source.public_source_reference === duplicateSourceReference
+    )
+  );
 
   onMount(() => { void load(); });
 
@@ -146,16 +174,17 @@
     const begun = beginRead(settings);
     settings = begun.read;
     failedWrite = null;
+    sourceSheet = null;
+    sourceError = null;
+    sourceBusy = false;
+    duplicateSourceReference = null;
     try {
       const projects = await cockpitApi.listProjects();
       const projectReference = projects.items[0]?.public_project_reference;
       if (projectReference === undefined) throw new Error("served project missing");
 
-      const [source, configurationReading, profiles] = await Promise.all([
-        cockpitApi.getProjectSourceConnection(projectReference).catch((error: unknown) => {
-          if (problemCode(error) === "project-source-not-connected") return null;
-          throw error;
-        }),
+      const [sourceList, configurationReading, profiles] = await Promise.all([
+        cockpitApi.listProjectSources(projectReference),
         readEveryAgentConfiguration((after) => cockpitApi.listAgentConfigurationRevisions(after)),
         readProfiles()
       ]);
@@ -184,7 +213,7 @@
       );
       settings = confirmRead(settings, begun.generation, {
         projectReference,
-        source,
+        sources: sourceList.items,
         configurations: configurationReading.configurations,
         profiles,
         registries,
@@ -267,6 +296,181 @@
   function openAddSheet(prefill: SheetPrefill | null): void {
     sheetPrefill = prefill;
     sheetOpen = true;
+  }
+
+  function replaceSources(sources: ProjectSourceResource[]): void {
+    const snapshot = settings.confirmed;
+    if (snapshot === null) return;
+    settings = { ...settings, confirmed: { ...snapshot, sources } };
+  }
+
+  function sourceFor(publicSourceReference: string): ProjectSourceResource | null {
+    return settings.confirmed?.sources.find(
+      (item) => item.public_source_reference === publicSourceReference
+    ) ?? null;
+  }
+
+  async function recoverDuplicateSource(): Promise<void> {
+    const snapshot = settings.confirmed;
+    const existing = snapshot?.sources[0];
+    if (existing !== undefined) {
+      duplicateSourceReference = existing.public_source_reference;
+      sourceSheet = null;
+      sourceError = null;
+      return;
+    }
+    if (snapshot !== null) {
+      try {
+        const listed = await cockpitApi.listProjectSources(snapshot.projectReference);
+        replaceSources(listed.items);
+        const found = listed.items[0];
+        if (found !== undefined) {
+          duplicateSourceReference = found.public_source_reference;
+          sourceSheet = null;
+          sourceError = null;
+          return;
+        }
+      } catch {
+        /* list failed; fall through to the owned Retry brick */
+      }
+    }
+    sourceError = {
+      sentence: settingsPageCopy.sourceNotShown,
+      nextStep: settingsPageCopy.retry
+    };
+  }
+
+  async function rememberSourceError(error: unknown, door: SourceWriteDoor): Promise<void> {
+    const failure = sourceWriteFailure(error, door);
+    if (failure.kind === "duplicate") {
+      await recoverDuplicateSource();
+      return;
+    }
+    sourceError = { sentence: failure.sentence, nextStep: failure.nextStep };
+  }
+
+  async function retryDuplicateSource(): Promise<void> {
+    if (sourceBusy) return;
+    sourceBusy = true;
+    try {
+      await recoverDuplicateSource();
+    } finally {
+      sourceBusy = false;
+    }
+  }
+
+  function openConnectSheet(): void {
+    if (sourceBusy) return;
+    sourceError = null;
+    sourceSheet = { kind: "connect" };
+  }
+
+  function openDisconnectSheet(source: ProjectSourceResource): void {
+    if (sourceBusy) return;
+    const snapshot = settings.confirmed;
+    if (snapshot === null) return;
+    sourceError = null;
+    sourceSheet = {
+      kind: "disconnect",
+      source,
+      facts: disconnectFacts({
+        address: source.address,
+        projectName: THE_ONE_PROJECT,
+        remainingSources: snapshot.sources.filter(
+          (item) => item.public_source_reference !== source.public_source_reference
+        ),
+        modelsExist: snapshot.registries.some((registry) => registry.entries.length > 0)
+          || snapshot.configurations.some(
+            (configuration) =>
+              configuration.startable
+              && snapshot.registries.every((registry) => registry.provider_id !== configuration.provider_id)
+          )
+      })
+    };
+  }
+
+  function openRenewSheet(source: ProjectSourceResource): void {
+    if (sourceBusy) return;
+    sourceError = null;
+    sourceSheet = { kind: "renew", source };
+  }
+
+  function closeSourceSheet(): void {
+    if (sourceBusy) return;
+    sourceSheet = null;
+    sourceError = null;
+  }
+
+  async function submitConnect(address: string, token: string): Promise<void> {
+    const snapshot = settings.confirmed;
+    if (snapshot === null || sourceBusy) return;
+    sourceBusy = true;
+    sourceError = null;
+    try {
+      const created = await cockpitApi.connectProjectSource(
+        snapshot.projectReference,
+        connectProjectSourceBody(address, token)
+      );
+      const existing = snapshot.sources.some(
+        (item) => item.public_source_reference === created.public_source_reference
+      );
+      replaceSources(
+        existing
+          ? snapshot.sources.map((item) =>
+              item.public_source_reference === created.public_source_reference ? created : item
+            )
+          : [...snapshot.sources, created]
+      );
+      duplicateSourceReference = null;
+      sourceSheet = null;
+    } catch (error) {
+      await rememberSourceError(error, "connect");
+    } finally {
+      sourceBusy = false;
+    }
+  }
+
+  async function submitDisconnect(publicSourceReference: string): Promise<void> {
+    const snapshot = settings.confirmed;
+    if (snapshot === null || sourceBusy) return;
+    sourceBusy = true;
+    sourceError = null;
+    try {
+      await cockpitApi.disconnectProjectSource(snapshot.projectReference, publicSourceReference);
+      replaceSources(
+        snapshot.sources.filter((item) => item.public_source_reference !== publicSourceReference)
+      );
+      if (duplicateSourceReference === publicSourceReference) duplicateSourceReference = null;
+      sourceSheet = null;
+    } catch (error) {
+      await rememberSourceError(error, "disconnect");
+    } finally {
+      sourceBusy = false;
+    }
+  }
+
+  async function submitRenew(publicSourceReference: string, token: string): Promise<void> {
+    const snapshot = settings.confirmed;
+    if (snapshot === null || sourceBusy) return;
+    sourceBusy = true;
+    sourceError = null;
+    try {
+      const rotated = await cockpitApi.rotateProjectSourceToken(
+        snapshot.projectReference,
+        publicSourceReference,
+        rotateProjectSourceTokenBody(token)
+      );
+      replaceSources(
+        snapshot.sources.map((item) =>
+          item.public_source_reference === publicSourceReference ? rotated : item
+        )
+      );
+      sourceSheet = null;
+    } catch (error) {
+      await rememberSourceError(error, "renew");
+    } finally {
+      sourceBusy = false;
+    }
   }
 
   function rememberRegistryFailure(
@@ -849,14 +1053,45 @@
   {#if settings.confirmed !== null}
     <section class="settings-block" aria-labelledby="sources-title">
       <h2 id="sources-title">{wrapDisplayCopy(settingsPageCopy.sourcesTitle)}</h2>
-      {#if settings.confirmed.source !== null}
-        <dl class="source-list">
-          <div><dt>{settingsPageCopy.sourceKind}</dt><dd>{settings.confirmed.source.source_kind}</dd></div>
-          <div><dt>{settingsPageCopy.sourceAddress}</dt><dd>{settings.confirmed.source.source_address}</dd></div>
-          <div><dt>{settingsPageCopy.sourceAuthMethod}</dt><dd>{settings.confirmed.source.auth_method}</dd></div>
-          <div><dt>{settingsPageCopy.sourceRevision}</dt><dd>{settings.confirmed.source.revision_number}</dd></div>
-        </dl>
+      {#if sourceRows.length > 0}
+        <ul class="source-rows">
+          {#each sourceRows as row (row.publicSourceReference)}
+            <li class="source-row">
+              <span class="source-chip">{row.chip}</span>
+              <div class="source-detail">
+                <strong>{row.headline}</strong>
+                <span> · {row.scope} · {row.connected}</span>
+                {#if row.duplicate}
+                  <span class="source-duplicate">{settingsPageCopy.alreadyPresent}</span>
+                {/if}
+              </div>
+              <div class="source-actions">
+                <button
+                  class="source-disconnect"
+                  type="button"
+                  disabled={sourceBusy}
+                  onclick={() => {
+                    const source = sourceFor(row.publicSourceReference);
+                    if (source !== null) openDisconnectSheet(source);
+                  }}
+                >{settingsPageCopy.disconnect}</button>
+                <button
+                  class="source-renew"
+                  type="button"
+                  disabled={sourceBusy}
+                  onclick={() => {
+                    const source = sourceFor(row.publicSourceReference);
+                    if (source !== null) openRenewSheet(source);
+                  }}
+                >{settingsPageCopy.renewToken}</button>
+              </div>
+            </li>
+          {/each}
+        </ul>
       {/if}
+      <button class="quiet compact connect-source" type="button" disabled={sourceBusy} onclick={() => { openConnectSheet(); }}>
+        {settingsPageCopy.connectASource}
+      </button>
     </section>
 
     <section class="settings-block" aria-labelledby="models-title">
@@ -989,6 +1224,38 @@
         onClose={() => { sheetOpen = false; }}
       />
     {/if}
+    {#if sourceSheet?.kind === "connect"}
+      <ConnectSourceSheet
+        submitting={sourceBusy}
+        error={sourceError}
+        onSubmit={(args) => { void submitConnect(args.address, args.token); }}
+        onRetry={() => { void retryDuplicateSource(); }}
+        onClose={() => { closeSourceSheet(); }}
+      />
+    {/if}
+    {#if sourceSheet?.kind === "disconnect"}
+      <DisconnectSourceSheet
+        facts={sourceSheet.facts}
+        submitting={sourceBusy}
+        error={sourceError}
+        onConfirm={() => {
+          if (sourceSheet?.kind !== "disconnect") return;
+          void submitDisconnect(sourceSheet.source.public_source_reference);
+        }}
+        onClose={() => { closeSourceSheet(); }}
+      />
+    {/if}
+    {#if sourceSheet?.kind === "renew"}
+      <RenewSourceTokenSheet
+        submitting={sourceBusy}
+        error={sourceError}
+        onSubmit={(args) => {
+          if (sourceSheet?.kind !== "renew") return;
+          void submitRenew(sourceSheet.source.public_source_reference, args.token);
+        }}
+        onClose={() => { closeSourceSheet(); }}
+      />
+    {/if}
   {/if}
 </section>
 
@@ -997,10 +1264,16 @@
   .settings-page { gap: var(--space-section); }
   h1, h2 { margin: 0; }
   h2 { color: var(--ink-dim); font-size: var(--text-2xs); font-weight: var(--weight-heavy); letter-spacing: var(--tracking-label); text-transform: uppercase; }
-  .source-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); margin: 0; }
-  .source-list div { border: var(--edge) solid var(--line); border-radius: var(--r-lg); padding: var(--space-3); background: var(--panel2); }
-  dt { color: var(--ink-dim); font-size: var(--text-2xs); letter-spacing: var(--tracking-label); text-transform: uppercase; }
-  dd { margin: var(--space-1) 0 0; overflow-wrap: anywhere; }
+  .source-rows { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+  .source-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-3); align-items: center; background: var(--panel2); border: var(--edge) solid var(--line); border-radius: var(--r-lg); padding: var(--space-3); }
+  .source-chip { color: var(--ink-dim); font-size: var(--text-2xs); font-weight: var(--weight-heavy); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+  .source-detail { min-width: 0; color: var(--ink-dim); overflow-wrap: anywhere; }
+  .source-detail strong { color: var(--ink); font-weight: var(--weight-strong); }
+  .source-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; justify-content: flex-end; }
+  .source-disconnect { min-height: var(--tap); border-color: transparent; background: transparent; color: var(--signal-failure); text-decoration: none; font-weight: var(--weight-medium); }
+  .source-renew { min-height: var(--tap); border-color: transparent; background: transparent; color: var(--ink); text-decoration: underline; text-underline-offset: var(--underline-offset); font-weight: var(--weight-strong); }
+  .source-duplicate { margin-left: var(--space-2); }
+  .connect-source { display: block; width: fit-content; }
   .table-wrap { overflow-x: auto; }
   table { border-collapse: collapse; min-width: var(--table-min); width: 100%; }
   th, td { border-bottom: var(--edge) solid var(--line); padding: var(--space-3); text-align: left; white-space: nowrap; }
@@ -1024,7 +1297,8 @@
   .write-failure button { margin-left: auto; }
   .compact { min-height: var(--tap); padding: var(--space-1) var(--space-3); }
   @media (max-width: 520px) {
-    .source-list { grid-template-columns: 1fr; }
+    .source-row { grid-template-columns: auto minmax(0, 1fr); }
+    .source-actions { grid-column: 1 / -1; justify-content: flex-start; }
     table { display: block; min-width: 0; }
     thead { display: none; }
     tbody { display: grid; gap: var(--space-3); }

@@ -10,7 +10,8 @@ import {
   type CockpitApi,
   type ModelRegistryRevision,
   type Problem,
-  type ProjectModelDefaultsRevision
+  type ProjectModelDefaultsRevision,
+  type ProjectSourceResource
 } from "../../src/api/client";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { THE_ONE_PROJECT } from "../../src/lib/project";
@@ -34,6 +35,8 @@ const LIVE_AUTH_PROFILE_REVISIONS =
 const LIVE_PROJECTS = '{"items":[{"public_project_reference":"project1.YXRlbGllcg"}]}';
 const LIVE_SOURCE_CONNECTION =
   '{"public_project_reference":"project1.YXRlbGllcg","revision_number":2,"source_kind":"github","source_address":"FlexOr2/atelier-2@main","auth_method":"personal-access-token","project_source_connection_revision_hash":"a8e3ef4bf17dcb0262d2cc5ad2073133437a189a69d437f4b50c072fab31a7bc"}';
+const LIVE_SOURCES =
+  '{"items":[{"public_source_reference":"source1.MzgwZjI3YTEtNmRlMC01NjNkLTQwYWItYzg1MzBmOWMyNWNj","kind":"github","address":"FlexOr2/atelier-2","scope":"issues","connected_at":null,"revision":2,"auth_method":"personal-access-token"}]}';
 const LIVE_REGISTRY_XAI =
   '{"provider_id":"xai","revision_number":1,"model_registry_revision_hash":"fc2d1c4a3aeaf8233fb0c692168339ac355d911cad9933aaae367ac5c7637e21","entries":[{"model_id":"grok-4.6","agent_configuration_revision_hash":"6ee1d546804f5f18eb6da493905e6eefce27d12a4f6af82b804ee2359b9ba7e0","source":"discovered","provider_check":"checked"}]}';
 const LIVE_REGISTRY_ANTHROPIC =
@@ -51,6 +54,16 @@ const profileHash = "b".repeat(64);
 const registryHash = "c".repeat(64);
 const defaultsHash = "d".repeat(64);
 const projectReference = "project1.dGVzdA";
+const sourceReference = "source1.MzgwZjI3YTEtNmRlMC01NjNkLTQwYWItYzg1MzBmOWMyNWNj";
+const projectSource: ProjectSourceResource = {
+  public_source_reference: sourceReference,
+  kind: "github",
+  address: "FlexOr2/atelier-2",
+  scope: "issues",
+  connected_at: null,
+  revision: 2,
+  auth_method: "personal-access-token"
+};
 
 const configuration: AgentConfigurationRevisionListItem = {
   model: "claude-opus-4-1",
@@ -131,6 +144,12 @@ function liveSettingsFetcher(
     ) {
       return jsonResponse(LIVE_SOURCE_CONNECTION);
     }
+    if (
+      method === "GET"
+      && url.pathname === `/atelier/api/v1/projects/${LIVE_PROJECT_REFERENCE}/sources`
+    ) {
+      return jsonResponse(LIVE_SOURCES);
+    }
     if (method === "GET" && url.pathname === "/atelier/api/v1/agent-configuration-revisions") {
       return jsonResponse(LIVE_AGENT_CONFIGURATION_REVISIONS);
     }
@@ -189,12 +208,21 @@ function modelRegistryRevisionConflict(): CockpitRequestError {
   } as Problem, true);
 }
 
-function projectSourceNotConnected(): CockpitRequestError {
-  return new CockpitRequestError("missing", {
-    type: "urn:atelier2:problem:v1:project-source-not-connected",
-    title: "Project source not connected",
+function projectSourceTokenRefused(): CockpitRequestError {
+  return new CockpitRequestError("refused", {
+    type: "urn:atelier2:problem:v1:project-source-token-refused",
+    title: "Project source token refused",
+    status: 422,
+    detail: "The provider refused this token."
+  } as Problem, true);
+}
+
+function projectSourceAlreadyConnected(): CockpitRequestError {
+  return new CockpitRequestError("duplicate", {
+    type: "urn:atelier2:problem:v1:project-source-already-connected",
+    title: "Project source already connected",
     status: 409,
-    detail: "Connect a source for this project."
+    detail: "A source is already connected."
   } as Problem, true);
 }
 
@@ -246,6 +274,7 @@ function openSettings(overrides: Partial<CockpitApi> = {}) {
           auth_method: "personal-access-token" as const,
           project_source_connection_revision_hash: "e".repeat(64)
         })),
+        listProjectSources: vi.fn(async () => ({ items: [projectSource] })),
         listAgentConfigurationRevisions: vi.fn(async () => ({
           items: [configuration],
           next_after_revision_hash: null
@@ -739,7 +768,7 @@ describe("Settings owns project sources, models, and defaults", () => {
 
   it("renders the empty settings form without emptiness sentences", async () => {
     openSettings({
-      getProjectSourceConnection: vi.fn(async () => { throw projectSourceNotConnected(); }),
+      listProjectSources: vi.fn(async () => ({ items: [] })),
       listAgentConfigurationRevisions: vi.fn(async () => ({
         items: [],
         next_after_revision_hash: null
@@ -752,6 +781,7 @@ describe("Settings owns project sources, models, and defaults", () => {
     });
 
     expect(await screen.findByRole("heading", { name: settingsPageCopy.sourcesTitle })).toBeTruthy();
+    expect(screen.getByRole("button", { name: settingsPageCopy.connectASource })).toBeTruthy();
     expect(screen.getByRole("heading", { name: settingsPageCopy.modelsTitle })).toBeTruthy();
     expect(screen.getByRole("heading", { name: settingsPageCopy.defaultsTitle })).toBeTruthy();
     expect(screen.getByRole("button", { name: settingsPageCopy.addModel })).toBeTruthy();
@@ -760,6 +790,238 @@ describe("Settings owns project sources, models, and defaults", () => {
     expect(screen.getByRole("combobox", { name: difficultyLabel(1) })).toBeTruthy();
     expect(screen.queryByText("No source connected")).toBeNull();
     expect(screen.queryByText("No models are registered")).toBeNull();
+    expect(screen.queryByText(settingsPageCopy.modelsEmpty)).toBeNull();
+  });
+
+  it("shows a source row without a branch or an auth column", async () => {
+    openSettings();
+
+    expect(await screen.findByText(`${settingsPageCopy.github} · ${projectSource.address}`)).toBeTruthy();
+    expect(screen.getByText(settingsPageCopy.items)).toBeTruthy();
+    expect(screen.getByText(settingsPageCopy.connectionTimeNotRecorded, { exact: false })).toBeTruthy();
+    const sources = screen.getByRole("heading", { name: settingsPageCopy.sourcesTitle }).closest("section");
+    expect(sources?.textContent).toContain(settingsPageCopy.issues);
+    expect(sources?.textContent).not.toContain("@");
+    expect(sources?.textContent).not.toContain("personal-access-token");
+    expect(screen.queryByText(settingsPageCopy.sourceAuthMethod)).toBeNull();
+    expect(screen.getByRole("button", { name: settingsPageCopy.disconnect })).toBeTruthy();
+    expect(screen.getByRole("button", { name: settingsPageCopy.renewToken })).toBeTruthy();
+  });
+
+  it("connects a source through the sheet and shows the row", async () => {
+    const created = { ...projectSource, address: "github.com/FlexOr2/docs", revision: 1 };
+    const connectProjectSource = vi.fn(async (_reference: string, request: { address: string; token: string }) => {
+      expect(request).toEqual({ address: "github.com/FlexOr2/docs", token: "write-only-token" });
+      return created;
+    });
+    openSettings({
+      listProjectSources: vi.fn(async () => ({ items: [] })),
+      connectProjectSource
+    });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.connectASource }));
+    const dialog = await screen.findByRole("dialog", { name: settingsPageCopy.connectASource });
+    await fireEvent.input(within(dialog).getByRole("textbox", { name: settingsPageCopy.where }), {
+      target: { value: "github.com/FlexOr2/docs" }
+    });
+    await fireEvent.input(within(dialog).getByLabelText(settingsPageCopy.token), {
+      target: { value: "write-only-token" }
+    });
+    const connect = within(dialog).getByRole("button", { name: settingsPageCopy.connect });
+    await waitFor(() => expect((connect as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(connect);
+
+    await waitFor(() => expect(connectProjectSource).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(`${settingsPageCopy.github} · github.com/FlexOr2/docs`)).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: settingsPageCopy.connectASource })).toBeNull();
+  });
+
+  it("keeps Connect disabled for Library", async () => {
+    openSettings({ listProjectSources: vi.fn(async () => ({ items: [] })) });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.connectASource }));
+    const dialog = await screen.findByRole("dialog", { name: settingsPageCopy.connectASource });
+    await fireEvent.click(within(dialog).getByRole("button", { name: settingsPageCopy.library }));
+    await fireEvent.input(within(dialog).getByRole("textbox", { name: settingsPageCopy.where }), {
+      target: { value: "github.com/FlexOr2/docs" }
+    });
+    await fireEvent.input(within(dialog).getByLabelText(settingsPageCopy.token), {
+      target: { value: "write-only-token" }
+    });
+    expect((within(dialog).getByRole("button", { name: settingsPageCopy.connect }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("asks once more before disconnecting and then removes the row", async () => {
+    const disconnectProjectSource = vi.fn(async () => undefined);
+    openSettings({ disconnectProjectSource });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.disconnect }));
+    const dialog = await screen.findByRole("dialog", { name: `Disconnect ${projectSource.address}?` });
+    expect(within(dialog).getByText(settingsPageCopy.thisConnection)).toBeTruthy();
+    expect(dialog.textContent).toContain(THE_ONE_PROJECT);
+    expect(dialog.textContent).toContain(settingsPageCopy.theModels);
+    expect(within(dialog).getByText(settingsPageCopy.connectStartsNew)).toBeTruthy();
+    await fireEvent.click(within(dialog).getByRole("button", { name: settingsPageCopy.disconnect }));
+
+    await waitFor(() => expect(disconnectProjectSource).toHaveBeenCalledWith(projectReference, sourceReference));
+    expect(screen.queryByText(`${settingsPageCopy.github} · ${projectSource.address}`)).toBeNull();
+    expect(screen.getByRole("button", { name: settingsPageCopy.connectASource })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: settingsPageCopy.modelsTitle })).toBeTruthy();
+  });
+
+  it("renews the token without losing the row identity or connection time", async () => {
+    const rotateProjectSourceToken = vi.fn(async () => ({ ...projectSource, revision: 3 }));
+    openSettings({ rotateProjectSourceToken });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.renewToken }));
+    const dialog = await screen.findByRole("dialog", { name: settingsPageCopy.renewToken });
+    await fireEvent.input(within(dialog).getByLabelText(settingsPageCopy.token), {
+      target: { value: "next-token" }
+    });
+    await fireEvent.click(within(dialog).getByRole("button", { name: settingsPageCopy.renewToken }));
+
+    await waitFor(() => expect(rotateProjectSourceToken).toHaveBeenCalledWith(
+      projectReference,
+      sourceReference,
+      { token: "next-token" }
+    ));
+    expect(await screen.findByText(`${settingsPageCopy.github} · ${projectSource.address}`)).toBeTruthy();
+    expect(screen.getByText(settingsPageCopy.connectionTimeNotRecorded, { exact: false })).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: settingsPageCopy.renewToken })).toBeNull();
+  });
+
+  it("shows a refused token as a brick error with one next step and keeps the field secret", async () => {
+    const connectProjectSource = vi.fn(async () => { throw projectSourceTokenRefused(); });
+    openSettings({
+      listProjectSources: vi.fn(async () => ({ items: [] })),
+      connectProjectSource
+    });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.connectASource }));
+    const dialog = await screen.findByRole("dialog", { name: settingsPageCopy.connectASource });
+    await fireEvent.input(within(dialog).getByRole("textbox", { name: settingsPageCopy.where }), {
+      target: { value: "github.com/FlexOr2/docs" }
+    });
+    await fireEvent.input(within(dialog).getByLabelText(settingsPageCopy.token), {
+      target: { value: "write-only-token" }
+    });
+    await fireEvent.click(within(dialog).getByRole("button", { name: settingsPageCopy.connect }));
+
+    expect(await within(dialog).findByText(settingsPageCopy.tokenRefused)).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: settingsPageCopy.renewToken })).toBeTruthy();
+    expect((within(dialog).getByLabelText(settingsPageCopy.token) as HTMLInputElement).type).toBe("password");
+    expect(dialog.textContent).not.toContain("write-only-token");
+  });
+
+  it("shows the live word while a connect is running", async () => {
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const connectProjectSource = vi.fn(async () => {
+      await held;
+      return projectSource;
+    });
+    openSettings({
+      listProjectSources: vi.fn(async () => ({ items: [] })),
+      connectProjectSource
+    });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.connectASource }));
+    const dialog = await screen.findByRole("dialog", { name: settingsPageCopy.connectASource });
+    await fireEvent.input(within(dialog).getByRole("textbox", { name: settingsPageCopy.where }), {
+      target: { value: "FlexOr2/atelier-2" }
+    });
+    await fireEvent.input(within(dialog).getByLabelText(settingsPageCopy.token), {
+      target: { value: "write-only-token" }
+    });
+    await fireEvent.click(within(dialog).getByRole("button", { name: settingsPageCopy.connect }));
+
+    expect(await within(dialog).findByText(settingsPageCopy.running)).toBeTruthy();
+    expect(dialog.getAttribute("aria-busy")).toBe("true");
+    expect((within(dialog).getByRole("button", { name: settingsPageCopy.connect }) as HTMLButtonElement).disabled).toBe(true);
+    release?.();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: settingsPageCopy.connectASource })).toBeNull());
+  });
+
+  it("wears already present on the existing row instead of adding a second", async () => {
+    const connectProjectSource = vi.fn(async () => { throw projectSourceAlreadyConnected(); });
+    openSettings({ connectProjectSource });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.connectASource }));
+    const dialog = await screen.findByRole("dialog", { name: settingsPageCopy.connectASource });
+    await fireEvent.input(within(dialog).getByRole("textbox", { name: settingsPageCopy.where }), {
+      target: { value: "FlexOr2/atelier-2" }
+    });
+    await fireEvent.input(within(dialog).getByLabelText(settingsPageCopy.token), {
+      target: { value: "write-only-token" }
+    });
+    await fireEvent.click(within(dialog).getByRole("button", { name: settingsPageCopy.connect }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: settingsPageCopy.connectASource })).toBeNull());
+    expect(screen.getByText(settingsPageCopy.alreadyPresent)).toBeTruthy();
+    expect(screen.getAllByText(`${settingsPageCopy.github} · ${projectSource.address}`)).toHaveLength(1);
+  });
+
+  it("shows a disconnect failure as a brick error with Retry", async () => {
+    const disconnectProjectSource = vi.fn(async () => { throw new Error("transport"); });
+    openSettings({ disconnectProjectSource });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.disconnect }));
+    const dialog = await screen.findByRole("dialog", { name: `Disconnect ${projectSource.address}?` });
+    await fireEvent.click(within(dialog).getByRole("button", { name: settingsPageCopy.disconnect }));
+
+    expect(await within(dialog).findByText(settingsPageCopy.sourceDisconnectRefused)).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: settingsPageCopy.retry })).toBeTruthy();
+  });
+
+  it("re-reads sources when connect is already present and the page is empty", async () => {
+    const connectProjectSource = vi.fn(async () => { throw projectSourceAlreadyConnected(); });
+    const listProjectSources = vi.fn()
+      .mockResolvedValueOnce({ items: [] })
+      .mockResolvedValueOnce({ items: [projectSource] });
+    openSettings({ listProjectSources, connectProjectSource });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.connectASource }));
+    const dialog = await screen.findByRole("dialog", { name: settingsPageCopy.connectASource });
+    await fireEvent.input(within(dialog).getByRole("textbox", { name: settingsPageCopy.where }), {
+      target: { value: "FlexOr2/atelier-2" }
+    });
+    await fireEvent.input(within(dialog).getByLabelText(settingsPageCopy.token), {
+      target: { value: "write-only-token" }
+    });
+    await fireEvent.click(within(dialog).getByRole("button", { name: settingsPageCopy.connect }));
+
+    expect(await screen.findByText(settingsPageCopy.alreadyPresent)).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: settingsPageCopy.connectASource })).toBeNull();
+    expect(screen.getAllByText(`${settingsPageCopy.github} · ${projectSource.address}`)).toHaveLength(1);
+    expect(listProjectSources).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps Connect open with Retry when a duplicate re-read is still empty", async () => {
+    const connectProjectSource = vi.fn(async () => { throw projectSourceAlreadyConnected(); });
+    const listProjectSources = vi.fn(async () => ({ items: [] }));
+    openSettings({ listProjectSources, connectProjectSource });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.connectASource }));
+    const dialog = await screen.findByRole("dialog", { name: settingsPageCopy.connectASource });
+    await fireEvent.input(within(dialog).getByRole("textbox", { name: settingsPageCopy.where }), {
+      target: { value: "FlexOr2/atelier-2" }
+    });
+    await fireEvent.input(within(dialog).getByLabelText(settingsPageCopy.token), {
+      target: { value: "write-only-token" }
+    });
+    await fireEvent.click(within(dialog).getByRole("button", { name: settingsPageCopy.connect }));
+
+    expect(await within(dialog).findByText(settingsPageCopy.sourceNotShown)).toBeTruthy();
+    const retry = within(dialog).getByRole("button", { name: settingsPageCopy.retry });
+    expect(retry).toBeTruthy();
+    expect(screen.queryByText(settingsPageCopy.alreadyPresent)).toBeNull();
+    expect(listProjectSources).toHaveBeenCalledTimes(2);
+
+    await waitFor(() => expect((retry as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(retry);
+    await waitFor(() => expect(listProjectSources).toHaveBeenCalledTimes(3));
+    expect(within(dialog).getByText(settingsPageCopy.sourceNotShown)).toBeTruthy();
+    expect(screen.queryByText(settingsPageCopy.alreadyPresent)).toBeNull();
   });
 
   it("retries the exact failed defaults write", async () => {
