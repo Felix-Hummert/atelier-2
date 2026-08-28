@@ -20,6 +20,7 @@ import {
   accountChoice,
   difficultyLabel,
   noSuchModel,
+  providerAccount,
   retainedAccountChoice,
   settingsPageCopy
 } from "../../src/lib/settingsPageCopy";
@@ -177,6 +178,59 @@ function modelRegistryMissing(): CockpitRequestError {
     status: 404,
     detail: "Publish a model-registry revision for this provider."
   } as Problem, true);
+}
+
+function modelRegistryRevisionConflict(): CockpitRequestError {
+  return new CockpitRequestError("conflict", {
+    type: "urn:atelier2:problem:v1:model-registry-revision-conflict",
+    title: "Model registry revision conflict",
+    status: 409,
+    detail: "The stored revision number does not match."
+  } as Problem, true);
+}
+
+function projectSourceNotConnected(): CockpitRequestError {
+  return new CockpitRequestError("missing", {
+    type: "urn:atelier2:problem:v1:project-source-not-connected",
+    title: "Project source not connected",
+    status: 409,
+    detail: "Connect a source for this project."
+  } as Problem, true);
+}
+
+function echoDefaultsPut() {
+  return vi.fn(async (
+    _reference: string,
+    write: { input: { defaults: ProjectModelDefaultsRevision["defaults"]; revision_number: number }; body: string }
+  ) => ({
+    status: 200,
+    value: { ...defaults(write.input.defaults), revision_number: write.input.revision_number }
+  }));
+}
+
+function echoRegistryPut() {
+  return vi.fn(async (
+    _providerId: string,
+    write: {
+      input: {
+        revision_number: number;
+        entries: Array<{ model_id: string; agent_configuration_revision_hash: string }>;
+      };
+      body: string;
+    }
+  ) => ({
+    status: 200,
+    value: {
+      provider_id: "anthropic",
+      revision_number: write.input.revision_number,
+      model_registry_revision_hash: registryHash,
+      entries: write.input.entries.map((entry) => ({
+        ...entry,
+        source: "operator" as const,
+        provider_check: "checked" as const
+      }))
+    }
+  }));
 }
 
 function openSettings(overrides: Partial<CockpitApi> = {}) {
@@ -485,7 +539,7 @@ describe("Settings owns project sources, models, and defaults", () => {
       validateModelRegistryEntry
     });
 
-    expect(await screen.findByText("anthropic")).toBeTruthy();
+    expect(await screen.findByText(providerAccount("anthropic", profile.profile_id))).toBeTruthy();
     expect(screen.getByText(configuration.model)).toBeTruthy();
     expect(screen.getByRole("button", { name: settingsPageCopy.check })).toBeTruthy();
     expect(screen.getByText(settingsPageCopy.defaultsNoCheckedModels)).toBeTruthy();
@@ -621,8 +675,8 @@ describe("Settings owns project sources, models, and defaults", () => {
       }
     });
 
-    expect((await screen.findByText("anthropic")).isConnected).toBe(true);
-    expect(screen.getByText("xai")).toBeTruthy();
+    expect((await screen.findByText(providerAccount("anthropic", "operator-anthropic-subscription"))).isConnected).toBe(true);
+    expect(screen.getByText(providerAccount("xai", "grok-felix"))).toBeTruthy();
     expect(screen.getByText("claude-opus-4-6")).toBeTruthy();
     expect(screen.getByText("operator-anthropic-subscription")).toBeTruthy();
     expect(screen.getByText("grok-4.6")).toBeTruthy();
@@ -678,8 +732,34 @@ describe("Settings owns project sources, models, and defaults", () => {
     expect(await screen.findByRole("button", { name: settingsPageCopy.addModel })).toBeTruthy();
     expect(screen.getByRole("button", { name: settingsPageCopy.addModel }).closest("table")).toBeNull();
     expect(screen.queryByText(settingsPageCopy.modelsEmpty)).toBeNull();
-    expect(screen.getByText(settingsPageCopy.defaultsEmptyRegistry)).toBeTruthy();
+    expect(screen.queryByText("No models are registered")).toBeNull();
+    expect(screen.queryByText("No source connected")).toBeNull();
     expect(screen.queryByRole("combobox", { name: settingsPageCopy.addModel })).toBeNull();
+  });
+
+  it("renders the empty settings form without emptiness sentences", async () => {
+    openSettings({
+      getProjectSourceConnection: vi.fn(async () => { throw projectSourceNotConnected(); }),
+      listAgentConfigurationRevisions: vi.fn(async () => ({
+        items: [],
+        next_after_revision_hash: null
+      })),
+      listAuthProfileRevisions: vi.fn(async () => ({
+        items: [],
+        next_after_revision_hash: null
+      })),
+      getProjectModelDefaults: vi.fn(async () => defaults([]))
+    });
+
+    expect(await screen.findByRole("heading", { name: settingsPageCopy.sourcesTitle })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: settingsPageCopy.modelsTitle })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: settingsPageCopy.defaultsTitle })).toBeTruthy();
+    expect(screen.getByRole("button", { name: settingsPageCopy.addModel })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: difficultyLabel(3) })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: difficultyLabel(2) })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: difficultyLabel(1) })).toBeTruthy();
+    expect(screen.queryByText("No source connected")).toBeNull();
+    expect(screen.queryByText("No models are registered")).toBeNull();
   });
 
   it("retries the exact failed defaults write", async () => {
@@ -702,6 +782,8 @@ describe("Settings owns project sources, models, and defaults", () => {
   });
 
   it("retries the identical uncertain registry write", async () => {
+    const getModelRegistry = vi.fn(async () => registry([registeredEntry]));
+    const putProjectModelDefaults = echoDefaultsPut();
     const putModelRegistry = vi
       .fn()
       .mockRejectedValueOnce(new Error("uncertain"))
@@ -709,13 +791,227 @@ describe("Settings owns project sources, models, and defaults", () => {
         status: 200,
         value: { ...registry(write.input.entries), revision_number: write.input.revision_number }
       }));
-    openSettings({ putModelRegistry });
+    openSettings({ getModelRegistry, putModelRegistry, putProjectModelDefaults });
 
     await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.remove }));
     await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.retry }));
 
     await waitFor(() => expect(putModelRegistry).toHaveBeenCalledTimes(2));
     expect(putModelRegistry.mock.calls[1]).toEqual(putModelRegistry.mock.calls[0]);
+    expect(getModelRegistry).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears saved defaults that name a removed model before dropping the registry entry", async () => {
+    const putProjectModelDefaults = echoDefaultsPut();
+    const putModelRegistry = echoRegistryPut();
+    openSettings({ putProjectModelDefaults, putModelRegistry });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.remove }));
+
+    await waitFor(() => {
+      expect(putProjectModelDefaults).toHaveBeenCalledTimes(1);
+      expect(putModelRegistry).toHaveBeenCalledTimes(1);
+    });
+    expect(putProjectModelDefaults.mock.invocationCallOrder[0]).toBeLessThan(
+      putModelRegistry.mock.invocationCallOrder[0] ?? 0
+    );
+    const defaultsWrite = putProjectModelDefaults.mock.calls[0]?.[1];
+    if (defaultsWrite === undefined) throw new Error("expected a defaults write");
+    expect(defaultsWrite.body).toBe(JSON.stringify(defaultsWrite.input));
+    expect(defaultsWrite.input.defaults.some(
+      (item) => item.difficulty === 3 && item.agent_configuration_revision_hash === configurationHash
+    )).toBe(false);
+    const registryWrite = putModelRegistry.mock.calls[0]?.[1];
+    if (registryWrite === undefined) throw new Error("expected a registry write");
+    expect(registryWrite.input.entries.map(
+      (entry) => entry.agent_configuration_revision_hash
+    )).not.toContain(configurationHash);
+    expect(within(screen.getByRole("combobox", { name: difficultyLabel(3) })).queryByRole(
+      "option",
+      { name: new RegExp(configuration.model) }
+    )).toBeNull();
+  });
+
+  it("does not list an added model when the configuration POST fails", async () => {
+    const input = {
+      model: addedModelId,
+      auth_profile_revision_hash: profileHash,
+      executor_revision: configuration.executor_revision,
+      requested_capability: configuration.requested_capability
+    };
+    const publishAgentConfiguration = vi.fn().mockRejectedValue(new Error("uncertain"));
+    const putModelRegistry = vi.fn();
+    openSettings({
+      getModelRegistry: vi.fn(async () => { throw modelRegistryMissing(); }),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      publishAgentConfiguration,
+      putModelRegistry
+    });
+
+    await submitAddSheet(addedModelId);
+
+    expect(await screen.findByText(settingsPageCopy.writeFailed)).toBeTruthy();
+    expect(screen.queryByText(addedModelId)).toBeNull();
+    expect(publishAgentConfiguration).toHaveBeenCalledTimes(1);
+    expect(publishAgentConfiguration).toHaveBeenCalledWith(input);
+    expect(putModelRegistry).not.toHaveBeenCalled();
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.retry }));
+
+    await waitFor(() => expect(publishAgentConfiguration).toHaveBeenCalledTimes(2));
+    expect(publishAgentConfiguration.mock.calls[1]?.[0]).toEqual(input);
+    expect(putModelRegistry).not.toHaveBeenCalled();
+    expect(screen.queryByText(addedModelId)).toBeNull();
+  });
+
+  it("does not list an added model when the registry PUT fails", async () => {
+    const publishAgentConfiguration = vi.fn(async () => ({
+      status: 201 as const,
+      value: publishedConfiguration()
+    }));
+    const putModelRegistry = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("uncertain"))
+      .mockImplementation(async (_providerId, write) => ({
+        status: 200,
+        value: {
+          ...registry(write.input.entries.map((entry: { model_id: string; agent_configuration_revision_hash: string }) => operatorEntry(
+            entry.model_id,
+            entry.agent_configuration_revision_hash,
+            "not-checked"
+          ))),
+          revision_number: write.input.revision_number
+        }
+      }));
+    const validateModelRegistryEntry = vi.fn(async () => ({
+      status: 201,
+      value: registry([operatorEntry(addedModelId, addedConfigurationHash, "checked")])
+    }));
+    openSettings({
+      getModelRegistry: vi.fn(async () => { throw modelRegistryMissing(); }),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      publishAgentConfiguration,
+      putModelRegistry,
+      validateModelRegistryEntry
+    });
+
+    await submitAddSheet(addedModelId);
+
+    expect(await screen.findByText(settingsPageCopy.writeFailed)).toBeTruthy();
+    expect(screen.queryByText(addedModelId)).toBeNull();
+    expect(publishAgentConfiguration).toHaveBeenCalledTimes(1);
+    expect(putModelRegistry).toHaveBeenCalledTimes(1);
+    expect(validateModelRegistryEntry).not.toHaveBeenCalled();
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.retry }));
+
+    await waitFor(() => expect(putModelRegistry).toHaveBeenCalledTimes(2));
+    expect(publishAgentConfiguration).toHaveBeenCalledTimes(1);
+    const [, write] = putModelRegistry.mock.calls[1] ?? [];
+    expect(write.input.entries).toEqual([{
+      model_id: addedModelId,
+      agent_configuration_revision_hash: addedConfigurationHash
+    }]);
+    expect(await screen.findByText(addedModelId)).toBeTruthy();
+    expect(validateModelRegistryEntry).toHaveBeenCalledWith("anthropic", addedConfigurationHash);
+  });
+
+  it("does not present a checked add when validation fails", async () => {
+    const publishAgentConfiguration = vi.fn(async () => ({
+      status: 201 as const,
+      value: publishedConfiguration()
+    }));
+    const putModelRegistry = vi.fn(async (_providerId, write) => ({
+      status: 200,
+      value: {
+        ...registry(write.input.entries.map((entry: { model_id: string; agent_configuration_revision_hash: string }) => operatorEntry(
+          entry.model_id,
+          entry.agent_configuration_revision_hash,
+          "not-checked"
+        ))),
+        revision_number: write.input.revision_number
+      }
+    }));
+    const validateModelRegistryEntry = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("uncertain"))
+      .mockResolvedValueOnce({
+        status: 201,
+        value: registry([operatorEntry(addedModelId, addedConfigurationHash, "checked")])
+      });
+    openSettings({
+      getModelRegistry: vi.fn(async () => registry([])),
+      getProjectModelDefaults: vi.fn(async () => defaults([])),
+      publishAgentConfiguration,
+      putModelRegistry,
+      validateModelRegistryEntry
+    });
+
+    await submitAddSheet(addedModelId);
+
+    expect(await screen.findByText(settingsPageCopy.writeFailed)).toBeTruthy();
+    expect(screen.queryByText(settingsPageCopy.addedByYouChecked)).toBeNull();
+    expect(publishAgentConfiguration).toHaveBeenCalledTimes(1);
+    expect(putModelRegistry).toHaveBeenCalledTimes(1);
+    expect(validateModelRegistryEntry).toHaveBeenCalledTimes(1);
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.retry }));
+
+    await waitFor(() => expect(validateModelRegistryEntry).toHaveBeenCalledTimes(2));
+    expect(publishAgentConfiguration).toHaveBeenCalledTimes(1);
+    expect(putModelRegistry).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText(settingsPageCopy.addedByYouChecked)).toBeTruthy();
+  });
+
+  it("rebases a conflicting registry remove onto the current revision without a second click", async () => {
+    const siblingHash = "2".repeat(64);
+    const sibling = {
+      model_id: "sibling-model",
+      agent_configuration_revision_hash: siblingHash,
+      source: "discovered" as const,
+      provider_check: "checked" as const
+    };
+    const currentAfterConflict = {
+      provider_id: "anthropic",
+      revision_number: 2,
+      model_registry_revision_hash: "f".repeat(64),
+      entries: [registeredEntry, sibling]
+    };
+    const getModelRegistry = vi
+      .fn()
+      .mockResolvedValueOnce(registry([registeredEntry]))
+      .mockResolvedValueOnce(currentAfterConflict);
+    const putProjectModelDefaults = echoDefaultsPut();
+    const putModelRegistry = vi
+      .fn()
+      .mockRejectedValueOnce(modelRegistryRevisionConflict())
+      .mockImplementation(async (_providerId, write) => ({
+        status: 200,
+        value: {
+          provider_id: "anthropic",
+          revision_number: write.input.revision_number,
+          model_registry_revision_hash: "e".repeat(64),
+          entries: write.input.entries.map((entry: { model_id: string; agent_configuration_revision_hash: string }) => ({
+            ...entry,
+            source: "discovered" as const,
+            provider_check: "checked" as const
+          }))
+        }
+      }));
+    openSettings({ getModelRegistry, putModelRegistry, putProjectModelDefaults });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.remove }));
+
+    await waitFor(() => expect(putModelRegistry).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("button", { name: settingsPageCopy.retry })).toBeNull();
+    const [, write] = putModelRegistry.mock.calls[1] ?? [];
+    expect(write.input.revision_number).toBe(3);
+    expect(write.input.entries).toEqual([{
+      model_id: sibling.model_id,
+      agent_configuration_revision_hash: siblingHash
+    }]);
+    expect(await screen.findByText("sibling-model")).toBeTruthy();
+    expect(screen.queryByText(configuration.model)).toBeNull();
   });
 
   it("shows honest empty and failed states", async () => {

@@ -3,13 +3,16 @@ import { describe, expect, it } from "vitest";
 import type {
   AgentConfigurationRevisionListItem,
   AuthProfileRevision,
-  ModelRegistryRevision
+  ModelRegistryRevision,
+  ProjectModelDefaultsRevision
 } from "../../src/api/client";
 import {
   MODEL_ID,
+  defaultsAfterRemovingConfigurationHash,
   offeredAccounts,
   pickExecutorPin,
   planAddModel,
+  rebasedRegistryWrite,
   rowPresentation,
   trimmedModelId
 } from "../../src/lib/addModel";
@@ -331,5 +334,124 @@ describe("how a registry row presents", () => {
     expect(
       rowPresentation({ source: "discovered", provider_check: "not-checked" }, false)
     ).toBe("none");
+  });
+});
+
+function projectDefaults(
+  items: ProjectModelDefaultsRevision["defaults"],
+  revisionNumber = 1
+): ProjectModelDefaultsRevision {
+  return {
+    project_id: "atelier",
+    public_project_reference: "project1.dGVzdA",
+    revision_number: revisionNumber,
+    project_model_defaults_revision_hash: REGISTRY_HASH,
+    defaults: items
+  };
+}
+
+function defaultItem(
+  difficulty: 1 | 2 | 3,
+  configurationHash: string,
+  modelId = "claude-opus-4-6"
+): ProjectModelDefaultsRevision["defaults"][number] {
+  return {
+    difficulty,
+    model_registry_revision_hash: REGISTRY_HASH,
+    provider_id: "anthropic",
+    model_id: modelId,
+    agent_configuration_revision_hash: configurationHash
+  };
+}
+
+describe("defaults after removing a configuration hash", () => {
+  it("drops every default that names the hash and keeps siblings", () => {
+    const sibling = defaultItem(1, NEW_HASH, "other-model");
+    const current = projectDefaults(
+      [defaultItem(3, PIN_HASH), defaultItem(2, PIN_HASH), sibling],
+      4
+    );
+    const write = defaultsAfterRemovingConfigurationHash(current, PIN_HASH);
+    const input = { revision_number: 5, defaults: [sibling] };
+    expect(write?.input).toEqual(input);
+    expect(write?.body).toBe(JSON.stringify(input));
+  });
+
+  it("returns null when no saved default names the hash", () => {
+    expect(defaultsAfterRemovingConfigurationHash(null, PIN_HASH)).toBeNull();
+    expect(
+      defaultsAfterRemovingConfigurationHash(projectDefaults([defaultItem(3, NEW_HASH)]), PIN_HASH)
+    ).toBeNull();
+  });
+});
+
+describe("rebasing a registry write onto the current revision", () => {
+  it("adds the intended model beside current siblings at the next revision", () => {
+    const sibling = entry({
+      model_id: "sibling-model",
+      agent_configuration_revision_hash: SMALLER_HASH
+    });
+    const current = registry({ revision_number: 2, entries: [sibling] });
+    const rebased = rebasedRegistryWrite(current, {
+      kind: "add",
+      modelId: "grok-4.6",
+      configurationHash: NEW_HASH
+    });
+    expect(rebased.kind).toBe("write");
+    if (rebased.kind !== "write") return;
+    const input = {
+      revision_number: 3,
+      entries: [
+        {
+          model_id: "sibling-model",
+          agent_configuration_revision_hash: SMALLER_HASH
+        },
+        {
+          model_id: "grok-4.6",
+          agent_configuration_revision_hash: NEW_HASH
+        }
+      ]
+    };
+    expect(rebased.write.input).toEqual(input);
+    expect(rebased.write.body).toBe(JSON.stringify(input));
+  });
+
+  it("removes the intended hash and keeps siblings", () => {
+    const sibling = entry({
+      model_id: "sibling-model",
+      agent_configuration_revision_hash: SMALLER_HASH
+    });
+    const current = registry({ revision_number: 2, entries: [entry(), sibling] });
+    const rebased = rebasedRegistryWrite(current, {
+      kind: "remove",
+      configurationHash: PIN_HASH
+    });
+    expect(rebased.kind).toBe("write");
+    if (rebased.kind !== "write") return;
+    expect(rebased.write.input).toEqual({
+      revision_number: 3,
+      entries: [
+        {
+          model_id: "sibling-model",
+          agent_configuration_revision_hash: SMALLER_HASH
+        }
+      ]
+    });
+  });
+
+  it("treats an already added or already removed intent as current truth", () => {
+    expect(
+      rebasedRegistryWrite(registry(), {
+        kind: "add",
+        modelId: "claude-opus-4-6",
+        configurationHash: PIN_HASH
+      })
+    ).toEqual({ kind: "already-true" });
+    expect(
+      rebasedRegistryWrite(registry({ entries: [] }), {
+        kind: "remove",
+        configurationHash: PIN_HASH
+      })
+    ).toEqual({ kind: "already-true" });
   });
 });

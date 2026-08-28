@@ -3,7 +3,9 @@ import type {
   AgentConfigurationRevisionListItem,
   AuthProfileRevision,
   ExactModelRegistryRevisionWrite,
-  ModelRegistryRevision
+  ExactProjectModelDefaultsRevisionWrite,
+  ModelRegistryRevision,
+  ProjectModelDefaultsRevision
 } from "../api/client";
 
 export const MODEL_ID = /^\S+$/;
@@ -113,11 +115,7 @@ export function planAddModel(args: {
           agent_configuration_revision_hash: newHash
         }
       ];
-      const writeInput = {
-        revision_number: (registry?.revision_number ?? 0) + 1,
-        entries
-      };
-      return { input: writeInput, body: JSON.stringify(writeInput) };
+      return exactRegistryWrite((registry?.revision_number ?? 0) + 1, entries);
     }
   };
 }
@@ -142,4 +140,65 @@ export function rowPresentation(
     return "added-not-checked";
   }
   return "none";
+}
+
+function exactRegistryWrite(
+  revisionNumber: number,
+  entries: ExactModelRegistryRevisionWrite["input"]["entries"]
+): ExactModelRegistryRevisionWrite {
+  const input = { revision_number: revisionNumber, entries };
+  return { input, body: JSON.stringify(input) };
+}
+
+export function defaultsAfterRemovingConfigurationHash(
+  current: ProjectModelDefaultsRevision | null,
+  configurationHash: string
+): ExactProjectModelDefaultsRevisionWrite | null {
+  if (current === null) return null;
+  const remaining = current.defaults.filter(
+    (item) => item.agent_configuration_revision_hash !== configurationHash
+  );
+  if (remaining.length === current.defaults.length) return null;
+  const input = { revision_number: current.revision_number + 1, defaults: remaining };
+  return { input, body: JSON.stringify(input) };
+}
+
+export type RegistryIntent =
+  | { kind: "add"; modelId: string; configurationHash: string }
+  | { kind: "remove"; configurationHash: string };
+
+export type RebasedRegistryWrite =
+  | { kind: "already-true" }
+  | { kind: "write"; write: ExactModelRegistryRevisionWrite };
+
+export function rebasedRegistryWrite(
+  current: ModelRegistryRevision,
+  intent: RegistryIntent
+): RebasedRegistryWrite {
+  const alreadyPresent = current.entries.some((entry) => {
+    if (intent.kind === "add") {
+      return (
+        entry.model_id === intent.modelId
+        && entry.agent_configuration_revision_hash === intent.configurationHash
+      );
+    }
+    return entry.agent_configuration_revision_hash === intent.configurationHash;
+  });
+  if (intent.kind === "add" && alreadyPresent) return { kind: "already-true" };
+  if (intent.kind === "remove" && !alreadyPresent) return { kind: "already-true" };
+
+  const kept = current.entries.map((entry) => ({
+    model_id: entry.model_id,
+    agent_configuration_revision_hash: entry.agent_configuration_revision_hash
+  }));
+  const entries = intent.kind === "remove"
+    ? kept.filter((entry) => entry.agent_configuration_revision_hash !== intent.configurationHash)
+    : [
+        ...kept,
+        {
+          model_id: intent.modelId,
+          agent_configuration_revision_hash: intent.configurationHash
+        }
+      ];
+  return { kind: "write", write: exactRegistryWrite(current.revision_number + 1, entries) };
 }

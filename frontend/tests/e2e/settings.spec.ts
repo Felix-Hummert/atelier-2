@@ -5,6 +5,7 @@ import {
   accountChoice,
   difficultyLabel,
   noSuchModel,
+  providerAccount,
   retainedAccountChoice,
   settingsPageCopy
 } from "../../src/lib/settingsPageCopy";
@@ -61,6 +62,7 @@ async function publishStartableProvider(
   stamp: string
 ): Promise<{
   providerId: string;
+  profileId: string;
   modelId: string;
   agentConfigurationRevisionHash: string;
   modelRegistryRevisionHash: string;
@@ -95,6 +97,7 @@ async function publishStartableProvider(
   );
   return {
     providerId,
+    profileId,
     modelId,
     agentConfigurationRevisionHash,
     modelRegistryRevisionHash
@@ -413,8 +416,14 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
 
   await page.setViewportSize(viewport);
   await page.goto("/atelier/settings");
-  await expect(page.getByText(first.providerId, { exact: true })).toBeVisible();
-  await expect(page.getByText(second.providerId, { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(providerAccount(first.providerId, first.profileId), { exact: true })
+      .or(page.getByText(first.providerId, { exact: true }))
+  ).toBeVisible();
+  await expect(
+    page.getByText(providerAccount(second.providerId, second.profileId), { exact: true })
+      .or(page.getByText(second.providerId, { exact: true }))
+  ).toBeVisible();
   await expect(page.getByText(first.modelId, { exact: true })).toBeVisible();
   await expect(page.getByText(second.modelId, { exact: true })).toBeVisible();
 

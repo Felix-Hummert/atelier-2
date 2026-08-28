@@ -17,10 +17,13 @@
   import AddModelSheet from "../components/AddModelSheet.svelte";
   import ReadState from "../components/ReadState.svelte";
   import {
+    defaultsAfterRemovingConfigurationHash,
     offeredAccounts,
     planAddModel,
+    rebasedRegistryWrite,
     rowPresentation,
-    trimmedModelId
+    trimmedModelId,
+    type RegistryIntent
   } from "../lib/addModel";
   import { problemCode } from "../lib/catalogName";
   import { wrapDisplayCopy } from "../lib/displayCopy";
@@ -37,6 +40,7 @@
     accountChoice,
     difficultyLabel,
     noSuchModel,
+    providerAccount,
     retainedAccountChoice,
     settingsPageCopy
   } from "../lib/settingsPageCopy";
@@ -56,17 +60,35 @@
     defaults: ProjectModelDefaultsRevision | null;
   }
 
+  type PublishedAdd = {
+    revision: AgentConfigurationRevision;
+    pin: AgentConfigurationRevisionListItem;
+  };
+
   type FailedWrite =
     | {
-      kind: "registry";
-      providerId: string;
-      write: ExactModelRegistryRevisionWrite;
+        kind: "registry";
+        providerId: string;
+        write: ExactModelRegistryRevisionWrite;
+        intent: RegistryIntent;
+        rebase: boolean;
+      }
+    | {
+        kind: "remove";
+        projectReference: string;
+        defaultsWrite: ExactProjectModelDefaultsRevisionWrite;
+        providerId: string;
+        registryWrite: ExactModelRegistryRevisionWrite;
+        intent: RegistryIntent;
       }
     | {
         kind: "check-publish";
         providerId: string;
         write: ExactModelRegistryRevisionWrite;
         configurationHash: string;
+        intent: RegistryIntent;
+        rebase: boolean;
+        published: PublishedAdd | null;
       }
     | {
         kind: "validation";
@@ -82,6 +104,11 @@
         projectReference: string;
         write: ExactProjectModelDefaultsRevisionWrite;
       };
+
+  type RegistryPublish =
+    | { kind: "ok" }
+    | { kind: "uncertain"; write: ExactModelRegistryRevisionWrite }
+    | { kind: "conflict" };
 
   type SheetPrefill = { authProfileRevisionHash: string; modelId: string };
 
@@ -242,30 +269,79 @@
     sheetOpen = true;
   }
 
+  function rememberRegistryFailure(
+    providerId: string,
+    write: ExactModelRegistryRevisionWrite,
+    intent: RegistryIntent,
+    outcome: Exclude<RegistryPublish, { kind: "ok" }>
+  ): void {
+    failedWrite = {
+      kind: "registry",
+      providerId,
+      write: outcome.kind === "uncertain" ? outcome.write : write,
+      intent,
+      rebase: outcome.kind === "conflict"
+    };
+  }
+
+  async function rebaseRegistry(
+    providerId: string,
+    intent: RegistryIntent
+  ): Promise<RegistryPublish> {
+    try {
+      const current = await cockpitApi.getModelRegistry(providerId);
+      const rebased = rebasedRegistryWrite(current, intent);
+      if (rebased.kind === "already-true") {
+        updateRegistry(current);
+        return { kind: "ok" };
+      }
+      try {
+        const result = await cockpitApi.putModelRegistry(providerId, rebased.write);
+        updateRegistry(result.value);
+        return { kind: "ok" };
+      } catch (error) {
+        if (problemCode(error) === "model-registry-revision-conflict") {
+          return { kind: "conflict" };
+        }
+        return { kind: "uncertain", write: rebased.write };
+      }
+    } catch {
+      return { kind: "conflict" };
+    }
+  }
+
   async function publishRegistry(
     providerId: string,
-    write: ExactModelRegistryRevisionWrite
-  ): Promise<"ok" | "uncertain"> {
+    write: ExactModelRegistryRevisionWrite,
+    intent: RegistryIntent,
+    rebaseFirst = false
+  ): Promise<RegistryPublish> {
+    if (rebaseFirst) return rebaseRegistry(providerId, intent);
     try {
       const result = await cockpitApi.putModelRegistry(providerId, write);
       updateRegistry(result.value);
-      return "ok";
-    } catch {
-      return "uncertain";
+      return { kind: "ok" };
+    } catch (error) {
+      if (problemCode(error) === "model-registry-revision-conflict") {
+        return rebaseRegistry(providerId, intent);
+      }
+      return { kind: "uncertain", write };
     }
   }
 
   async function sendRegistryWrite(
     providerId: string,
     write: ExactModelRegistryRevisionWrite,
-    retrying = false
+    intent: RegistryIntent,
+    retrying = false,
+    rebaseFirst = false
   ): Promise<void> {
     if (writing || (failedWrite !== null && !retrying)) return;
     writing = true;
     try {
-      const outcome = await publishRegistry(providerId, write);
-      if (outcome === "ok") failedWrite = null;
-      else if (!retrying) failedWrite = { kind: "registry", providerId, write };
+      const outcome = await publishRegistry(providerId, write, intent, rebaseFirst);
+      if (outcome.kind === "ok") failedWrite = null;
+      else rememberRegistryFailure(providerId, write, intent, outcome);
     } finally {
       writing = false;
     }
@@ -275,7 +351,14 @@
     registry: ModelRegistryRevision,
     entry: ModelRegistryRevision["entries"][number]
   ): Promise<void> {
+    if (writing || failedWrite !== null) return;
+    const snapshot = settings.confirmed;
+    if (snapshot === null) return;
     unmarkChecking(entry.agent_configuration_revision_hash);
+    const intent: RegistryIntent = {
+      kind: "remove",
+      configurationHash: entry.agent_configuration_revision_hash
+    };
     const input = {
       revision_number: registry.revision_number + 1,
       entries: registry.entries
@@ -284,7 +367,38 @@
         )
         .map(registryEntryInput)
     };
-    await sendRegistryWrite(registry.provider_id, { input, body: JSON.stringify(input) });
+    const registryWrite = { input, body: JSON.stringify(input) };
+    const defaultsWrite = defaultsAfterRemovingConfigurationHash(
+      snapshot.defaults,
+      entry.agent_configuration_revision_hash
+    );
+    writing = true;
+    try {
+      if (defaultsWrite !== null) {
+        try {
+          const result = await cockpitApi.putProjectModelDefaults(
+            snapshot.projectReference,
+            defaultsWrite
+          );
+          updateDefaults(result.value);
+        } catch {
+          failedWrite = {
+            kind: "remove",
+            projectReference: snapshot.projectReference,
+            defaultsWrite,
+            providerId: registry.provider_id,
+            registryWrite,
+            intent
+          };
+          return;
+        }
+      }
+      const outcome = await publishRegistry(registry.provider_id, registryWrite, intent);
+      if (outcome.kind === "ok") failedWrite = null;
+      else rememberRegistryFailure(registry.provider_id, registryWrite, intent, outcome);
+    } finally {
+      writing = false;
+    }
   }
 
   function registryEntryInput(entry: ModelRegistryRevision["entries"][number]) {
@@ -323,7 +437,12 @@
     providerId: string,
     configurationHash: string,
     retrying = false,
-    exactPublish: ExactModelRegistryRevisionWrite | null = null
+    publish: {
+      write: ExactModelRegistryRevisionWrite;
+      intent: RegistryIntent;
+      rebaseFirst?: boolean;
+      published?: PublishedAdd | null;
+    } | null = null
   ): Promise<void> {
     if (writing || (failedWrite !== null && !retrying)) return;
     writing = true;
@@ -338,16 +457,45 @@
           && (settings.confirmed?.configurations.some(
             (candidate) => candidate.provider_id === providerId && candidate.startable
           ) ?? false);
-        if (exactPublish === null && !missingStartableRegistry) {
+        if (publish === null && !missingStartableRegistry) {
           failedWrite = null;
           return;
         }
-        if (configuration === undefined) return;
-        const write = exactPublish ?? additionWrite(configuration);
-        const published = await publishRegistry(providerId, write);
-        if (published === "uncertain") {
-          failedWrite = { kind: "check-publish", providerId, write, configurationHash };
+        let write: ExactModelRegistryRevisionWrite;
+        let intent: RegistryIntent;
+        if (publish !== null) {
+          write = publish.write;
+          intent = publish.intent;
+        } else {
+          if (configuration === undefined) return;
+          write = additionWrite(configuration);
+          intent = {
+            kind: "add",
+            modelId: configuration.model,
+            configurationHash
+          };
+        }
+        const published = await publishRegistry(
+          providerId,
+          write,
+          intent,
+          publish?.rebaseFirst ?? false
+        );
+        if (published.kind !== "ok") {
+          failedWrite = {
+            kind: "check-publish",
+            providerId,
+            write: published.kind === "uncertain" ? published.write : write,
+            configurationHash,
+            intent,
+            rebase: published.kind === "conflict",
+            published: publish?.published ?? null
+          };
           return;
+        }
+        if (publish?.published !== undefined && publish.published !== null) {
+          appendConfiguration(publish.published.revision, publish.published.pin);
+          closeSheet();
         }
       }
       const found = entryFor(configurationHash);
@@ -406,21 +554,30 @@
     try {
       const published = await cockpitApi.publishAgentConfiguration(input);
       const revision = published.value;
-      appendConfiguration(revision, pin);
-      const write = registryWrite(revision.agent_configuration_revision_hash);
-      const publishedRegistry = await publishRegistry(profile.provider_id, write);
-      if (publishedRegistry === "uncertain") {
+      const configurationHash = revision.agent_configuration_revision_hash;
+      const write = registryWrite(configurationHash);
+      const intent: RegistryIntent = {
+        kind: "add",
+        modelId: input.model,
+        configurationHash
+      };
+      const publishedRegistry = await publishRegistry(profile.provider_id, write, intent);
+      if (publishedRegistry.kind !== "ok") {
         failedWrite = {
           kind: "check-publish",
           providerId: profile.provider_id,
-          write,
-          configurationHash: revision.agent_configuration_revision_hash
+          write: publishedRegistry.kind === "uncertain" ? publishedRegistry.write : write,
+          configurationHash,
+          intent,
+          rebase: publishedRegistry.kind === "conflict",
+          published: { revision, pin }
         };
         return;
       }
+      appendConfiguration(revision, pin);
       failedWrite = null;
       closeSheet();
-      publishedHash = revision.agent_configuration_revision_hash;
+      publishedHash = configurationHash;
     } catch {
       failedWrite = { kind: "configuration", input };
       return;
@@ -533,12 +690,53 @@
     await sendDefaultsWrite(snapshot.projectReference, { input, body: JSON.stringify(input) });
   }
 
+  async function retryRemove(
+    retry: Extract<FailedWrite, { kind: "remove" }>
+  ): Promise<void> {
+    if (writing) return;
+    writing = true;
+    try {
+      try {
+        const result = await cockpitApi.putProjectModelDefaults(
+          retry.projectReference,
+          retry.defaultsWrite
+        );
+        updateDefaults(result.value);
+      } catch {
+        return;
+      }
+      const outcome = await publishRegistry(
+        retry.providerId,
+        retry.registryWrite,
+        retry.intent
+      );
+      if (outcome.kind === "ok") failedWrite = null;
+      else rememberRegistryFailure(retry.providerId, retry.registryWrite, retry.intent, outcome);
+    } finally {
+      writing = false;
+    }
+  }
+
   async function retryWrite(): Promise<void> {
     const retry = failedWrite;
     if (retry === null) return;
-    if (retry.kind === "registry") await sendRegistryWrite(retry.providerId, retry.write, true);
-    else if (retry.kind === "check-publish") {
-      await validateModel(retry.providerId, retry.configurationHash, true, retry.write);
+    if (retry.kind === "registry") {
+      await sendRegistryWrite(
+        retry.providerId,
+        retry.write,
+        retry.intent,
+        true,
+        retry.rebase
+      );
+    } else if (retry.kind === "remove") {
+      await retryRemove(retry);
+    } else if (retry.kind === "check-publish") {
+      await validateModel(retry.providerId, retry.configurationHash, true, {
+        write: retry.write,
+        intent: retry.intent,
+        rebaseFirst: retry.rebase,
+        published: retry.published
+      });
     } else if (retry.kind === "validation") {
       await validateModel(retry.providerId, retry.configurationHash, true);
     } else if (retry.kind === "configuration") {
@@ -593,32 +791,52 @@
     ...missingRegistryStartable.map((configuration) => configuration.provider_id)
   ])].sort();
   $: checkingList = [...checkingHashes];
+  function groupCaption(
+    providerId: string,
+    accounts: readonly string[]
+  ): string {
+    const unique = [...new Set(accounts)];
+    const account = unique[0];
+    return unique.length === 1 && account !== undefined
+      ? providerAccount(providerId, account)
+      : providerId;
+  }
+
   $: modelGroups = modelProviders.map((providerId) => {
     const registry = registryFor(providerId);
     if (registry === null) {
+      const missing = missingRegistryStartable.filter(
+        (configuration) => configuration.provider_id === providerId
+      );
       return {
         providerId,
         registry: null,
         rows: [],
-        missing: missingRegistryStartable.filter(
-          (configuration) => configuration.provider_id === providerId
-        )
+        missing,
+        caption: groupCaption(providerId, missing.map((configuration) => accountFor(configuration)))
       };
     }
+    const rows = registry.entries.map((entry) => {
+      const configuration = settings.confirmed?.configurations.find(
+        (candidate) => candidate.agent_configuration_revision_hash === entry.agent_configuration_revision_hash
+      );
+      return {
+        entry,
+        configuration,
+        presentation: rowPresentation(entry, checkingList.includes(entry.agent_configuration_revision_hash))
+      };
+    });
     return {
       providerId,
       registry,
       missing: [],
-      rows: registry.entries.map((entry) => {
-        const configuration = settings.confirmed?.configurations.find(
-          (candidate) => candidate.agent_configuration_revision_hash === entry.agent_configuration_revision_hash
-        );
-        return {
-          entry,
-          configuration,
-          presentation: rowPresentation(entry, checkingList.includes(entry.agent_configuration_revision_hash))
-        };
-      })
+      rows,
+      caption: groupCaption(
+        providerId,
+        rows.map((row) =>
+          row.configuration === undefined ? settingsPageCopy.unknownAccount : accountFor(row.configuration)
+        )
+      )
     };
   });
 </script>
@@ -631,9 +849,7 @@
   {#if settings.confirmed !== null}
     <section class="settings-block" aria-labelledby="sources-title">
       <h2 id="sources-title">{wrapDisplayCopy(settingsPageCopy.sourcesTitle)}</h2>
-      {#if settings.confirmed.source === null}
-        <p class="muted">{wrapDisplayCopy(settingsPageCopy.sourcesEmpty)}</p>
-      {:else}
+      {#if settings.confirmed.source !== null}
         <dl class="source-list">
           <div><dt>{settingsPageCopy.sourceKind}</dt><dd>{settings.confirmed.source.source_kind}</dd></div>
           <div><dt>{settingsPageCopy.sourceAddress}</dt><dd>{settings.confirmed.source.source_address}</dd></div>
@@ -657,7 +873,7 @@
             <tbody>
               {#each modelGroups as group (group.providerId)}
                 {@const registry = group.registry}
-                <tr class="provider-row"><td colspan="3">{group.providerId}</td></tr>
+                <tr class="provider-row"><td colspan="3">{group.caption}</td></tr>
                 {#if registry !== null}
                   {#each group.rows as row (`${row.entry.agent_configuration_revision_hash}:${row.presentation}`)}
                     {@const entry = row.entry}
@@ -715,8 +931,8 @@
 
     <section class="settings-block" aria-labelledby="defaults-title">
       <h2 id="defaults-title">{wrapDisplayCopy(settingsPageCopy.defaultsTitle)}</h2>
-      {#if registeredChoices.length === 0}
-        <div class="empty-state" role="status"><span aria-hidden="true">◇</span><strong>{listedModelCount === 0 ? settingsPageCopy.defaultsEmptyRegistry : checkableEntries.length > 0 || missingRegistryStartable.length > 0 ? settingsPageCopy.defaultsNoCheckedModels : settingsPageCopy.defaultsUnavailableModels}</strong></div>
+      {#if registeredChoices.length === 0 && listedModelCount > 0}
+        <div class="empty-state" role="status"><span aria-hidden="true">◇</span><strong>{checkableEntries.length > 0 || missingRegistryStartable.length > 0 ? settingsPageCopy.defaultsNoCheckedModels : settingsPageCopy.defaultsUnavailableModels}</strong></div>
       {/if}
       <div class="table-wrap">
         <table class="defaults-table">
@@ -757,6 +973,9 @@
     {#if failedWrite !== null}
       <div class="write-failure" role="alert">
         <span aria-hidden="true">◇</span><strong>{settingsPageCopy.writeFailed}</strong>
+        {#if (failedWrite.kind === "registry" || failedWrite.kind === "check-publish") && failedWrite.rebase}
+          <span>{settingsPageCopy.registryChanged}</span>
+        {/if}
         <button class="quiet compact" type="button" disabled={writing} onclick={() => { void retryWrite(); }}>{settingsPageCopy.retry}</button>
       </div>
     {/if}
@@ -778,7 +997,6 @@
   .settings-page { gap: var(--space-section); }
   h1, h2 { margin: 0; }
   h2 { color: var(--ink-dim); font-size: var(--text-2xs); font-weight: var(--weight-heavy); letter-spacing: var(--tracking-label); text-transform: uppercase; }
-  .muted { color: var(--ink-dim); }
   .source-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); margin: 0; }
   .source-list div { border: var(--edge) solid var(--line); border-radius: var(--r-lg); padding: var(--space-3); background: var(--panel2); }
   dt { color: var(--ink-dim); font-size: var(--text-2xs); letter-spacing: var(--tracking-label); text-transform: uppercase; }
