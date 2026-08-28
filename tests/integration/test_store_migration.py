@@ -16,6 +16,7 @@ drifts.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from collections.abc import Callable, Mapping
@@ -138,6 +139,7 @@ from atelier2.adapters.dbos.schema import (
     workflow_revisions,
 )
 from atelier2.adapters.dbos.workflow_ids import answer_workflow_id_for
+from atelier2.api.references import encode_public_run_reference
 
 host_occupancy_revisions = sa.table("host_occupancy_revisions")
 host_occupancy_bindings = sa.table("host_occupancy_bindings")
@@ -223,8 +225,10 @@ from atelier2.contracts.tool_grants_v3 import (
     ToolRedemptionReceipt,
 )
 from atelier2.host import main
+from atelier2.ports.run_queries import RunFound
 from tests.integration.test_agent_attempts import attempt_request, attempt_runtime
 from tests.integration.test_runner_terminal_evidence_store import _bound
+from tests.integration.test_v3_wait_in_loop import public_client
 from tests.integration.test_v3_wait_run import (
     ANSWER,
     RUN,
@@ -236,6 +240,7 @@ from tests.integration.test_v3_wait_run import (
     wait_runtime_over,
 )
 from tests.scenarios.agents import agent_attempt_execution
+from tests.scenarios.api import durable_queries
 
 ARCHIVED_RUN_ID = "live/erster-lauf-nach-der-nacht"
 ARCHIVED_NODE_ID = "cook"
@@ -3957,7 +3962,7 @@ def _downgrade_a_driven_store_to_v33(database_path: Path) -> None:
         _require_product_shape(connection, V33_SCHEMA_HANDOFF.version)
 
 
-def test_v45_wait_answers_gain_the_operator_actor_through_the_real_migrate_entry(
+def test_v45_wait_answers_gain_no_invented_actor_through_the_real_migrate_entry(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     database_path = tmp_path / "atelier.sqlite"
@@ -4010,9 +4015,42 @@ def test_v45_wait_answers_gain_the_operator_actor_through_the_real_migrate_entry
             "SELECT actor FROM wait_answers ORDER BY node_execution_id"
         ).fetchall()
         assert migrated == predecessor
-        assert actors == [(WaitAnswerActor.OPERATOR.value,)]
+        assert actors == [(None,)]
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             connection.execute("UPDATE wait_answers SET actor = 'operator'")
+
+    recovered = wait_runtime_over(tmp_path, recording)
+    try:
+        recovered.launch()
+        wait_for_state(recovered, RunState.COMPLETED)
+        found = durable_queries(recovered.engine).get_run(RUN)
+        assert isinstance(found, RunFound), found
+        assert found.projection.run.state is RunState.COMPLETED
+
+        client = public_client(recovered)
+        public_reference = encode_public_run_reference(RUN)
+        run_response = client.get(f"/atelier/api/v1/runs/{public_reference}")
+        assert run_response.status_code == 200, run_response.text
+        assert run_response.json()["state"] == RunState.COMPLETED.value
+        event_response = client.get(f"/atelier/api/v1/runs/{public_reference}/events")
+        assert event_response.status_code == 200, event_response.text
+        event_frames = [
+            json.loads(line.removeprefix("data: "))
+            for line in event_response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        answered = [
+            frame for frame in event_frames if frame.get("event") == "WAIT_ANSWERED"
+        ]
+        assert len(answered) == 1
+        assert answered[0]["actor"] is None
+        with recovered.engine.connect() as connection:
+            migrated_answer = connection.execute(
+                sa.select(wait_answers.c.actor, wait_answers.c.state)
+            ).one()
+        assert migrated_answer == (None, WaitAnswerState.APPLIED.value)
+    finally:
+        recovered.close()
 
     replay = migrate_store(database_path)
     assert (replay.source_version, replay.target_version) == (

@@ -355,11 +355,14 @@ def run_status(service_url: str, arguments: Mapping[str, Any]) -> dict[str, Any]
 def _answerable_wait(run: AnyRunResource) -> dict[str, str] | None:
     """The exact fence MCP can write back to the answer door, or no open wait."""
 
-    execution_id: str | None = None
-    if isinstance(run, RunResourceV3) and run.state == "WAITING_INPUT":
-        execution_id = run.cancellation.target_node_execution_id
-    if execution_id is None:
+    if not isinstance(run, RunResourceV3) or run.state != "WAITING_INPUT":
         return None
+    execution_id = run.current_node_execution_id
+    cancellation_target = run.cancellation.target_node_execution_id
+    if cancellation_target is None or cancellation_target != execution_id:
+        raise UnreadableServiceAnswer(
+            "the service answered a waiting run whose execution fences disagree"
+        )
     return {
         "actor": WaitAnswerActor.OPERATOR.value,
         "expected_node_execution_id": execution_id,

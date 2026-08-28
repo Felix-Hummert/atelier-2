@@ -17,7 +17,7 @@ from sqlalchemy.engine import Connection, Engine
 
 from atelier2.adapters.dbos.attention_events import load_attention_event_page
 from atelier2.adapters.dbos.instants import record_event_instant
-from atelier2.adapters.dbos.queries import DbosQueries
+from atelier2.adapters.dbos.queries import DbosQueries, WaitAnswerProjectionCorrupt
 from atelier2.adapters.dbos.run_transitions import RunTransitionConflict
 from atelier2.adapters.dbos.runtime import create_canonical_engine
 from atelier2.adapters.dbos.schema import (
@@ -310,3 +310,54 @@ def test_an_untyped_event_projection_error_is_not_a_skipped_row(engine: Engine) 
             project_event,
             (),
         )
+
+
+def test_a_wait_answer_invariant_uses_the_durable_corruption_signal_not_a_conflict(
+    engine: Engine,
+) -> None:
+    revision = WorkflowRevision(WAIT_DOCUMENT)
+    event = RunEvent(
+        CORRUPT_RUN,
+        revision.revision_hash,
+        2,
+        "pause",
+        NodeExecutionId.for_node(
+            CORRUPT_RUN, revision.revision_hash, "pause", FIRST_ROUND_ORDINAL
+        ),
+        RunEventKind.WAIT_ANSWERED,
+        b"17",
+    )
+    record = {
+        "run_id": event.run_id.value,
+        "revision_hash": event.revision_hash.value,
+        "event_sequence": event.event_sequence,
+        "node_id": event.node_id,
+        "node_execution_id": event.node_execution_id.value,
+        "round_ordinal": event.round_ordinal,
+        "event_kind": event.event_kind.value,
+        "payload": event.payload,
+        "payload_hash": event.payload_hash.value,
+        "receipt_logical_key": None,
+        "receipt_result_hash": None,
+        "event_hash": event.event_hash.value,
+        "agent_attempt_id": None,
+        "attempt_ordinal": None,
+        "cancellation_command_id": None,
+        "replacement": None,
+        "cancellation_disposition": None,
+        "replacement_attempt_id": None,
+        "agent_receipt_hash": None,
+    }
+
+    with (
+        engine.connect() as connection,
+        pytest.raises(WaitAnswerProjectionCorrupt) as raised,
+    ):
+        DbosQueries._event_projection(
+            connection,
+            record,
+            WorkflowFormatVersion.V3,
+            permissive_projection_limit(),
+        )
+
+    assert not isinstance(raised.value, RunTransitionConflict)

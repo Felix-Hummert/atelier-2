@@ -47,7 +47,7 @@ from atelier2.contracts.run_events import (
     PersistedRunEvent,
     RunEventPage,
 )
-from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.runs import RunId
 from atelier2.contracts.workflow_formats import WorkflowFormatVersion
 from atelier2.ports.run_events import (
     EventHistoryCorrupt,
@@ -71,7 +71,6 @@ from tests.scenarios.api import (
 
 READY_NONTERMINAL_HEAD = StreamReady(1, False, 0)
 RUN_ID = RunId("failing-stream")
-REVISION_HASH = WorkflowRevisionHash("0" * 64)
 EVENT_TARGET = EVENT_PATH.replace("{public_ref}", encode_public_run_reference(RUN_ID))
 
 
@@ -125,13 +124,14 @@ def persisted_event(
         RunEventKind.ACTION_RECONCILIATION_RESOLVED,
         RunEventKind.ACTION_COMPLETED,
     }
+    revision_hash = stream_run_projection(RUN_ID.value).run.revision_hash
     return PersistedRunEvent(
         RunEvent(
             RUN_ID,
-            REVISION_HASH,
+            revision_hash,
             sequence,
             "agent",
-            NodeExecutionId.for_node(RUN_ID, REVISION_HASH, "agent"),
+            NodeExecutionId.for_node(RUN_ID, revision_hash, "agent"),
             kind,
             payload,
             receipt_logical_key=(
@@ -146,13 +146,14 @@ def persisted_event(
 def persisted_v1_cancellation() -> PersistedRunEvent:
     """A V1 projection carrying a kind only a V2 run can produce."""
 
+    revision_hash = stream_run_projection(RUN_ID.value).run.revision_hash
     return PersistedRunEvent(
         RunEvent(
             RUN_ID,
-            REVISION_HASH,
+            revision_hash,
             1,
             "agent",
-            NodeExecutionId.for_node(RUN_ID, REVISION_HASH, "agent"),
+            NodeExecutionId.for_node(RUN_ID, revision_hash, "agent"),
             RunEventKind.AGENT_CANCELLED,
             b"",
             attempt_binding=RunEventCancellationBinding(
@@ -171,13 +172,14 @@ def persisted_v1_cancellation() -> PersistedRunEvent:
 def persisted_v3_failure_with_overlong_receipt_reason(
     run_id: RunId = RUN_ID, node_id: str = "agent"
 ) -> PersistedRunEvent:
+    revision_hash = stream_run_projection(run_id.value).run.revision_hash
     return PersistedRunEvent(
         RunEvent(
             run_id,
-            REVISION_HASH,
+            revision_hash,
             1,
             node_id,
-            NodeExecutionId.for_node(run_id, REVISION_HASH, node_id),
+            NodeExecutionId.for_node(run_id, revision_hash, node_id),
             RunEventKind.AGENT_FAILED,
             b"OUTPUT_SCHEMA_REFUSED",
             attempt_binding=RunEventAgentAttemptBinding(AgentAttemptId("a" * 64), 1),

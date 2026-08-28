@@ -420,7 +420,7 @@ class WaitAnswer:
     revision_hash: WorkflowRevisionHash
     node_id: str
     node_execution_id: NodeExecutionId
-    actor: WaitAnswerActor
+    actor: WaitAnswerActor | None
     answer_bytes: bytes
     round_ordinal: int = FIRST_ROUND_ORDINAL
     answer_hash: Sha256Hash = field(init=False)
@@ -428,7 +428,7 @@ class WaitAnswer:
     def __post_init__(self) -> None:
         if self.node_id == "":
             raise ValueError("answer node id must be nonempty")
-        if not isinstance(self.actor, WaitAnswerActor):
+        if self.actor is not None and not isinstance(self.actor, WaitAnswerActor):
             raise TypeError("answer actor must be typed")
         if self.node_execution_id != NodeExecutionId.for_node(
             self.run_id, self.revision_hash, self.node_id, self.round_ordinal

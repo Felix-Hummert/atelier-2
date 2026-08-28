@@ -39,11 +39,6 @@ class AnswerExistingPending:
 
 
 @dataclass(frozen=True)
-class AnswerExistingApplied:
-    snapshot: WaitAnswerSnapshot
-
-
-@dataclass(frozen=True)
 class RunMissing:
     pass
 
@@ -77,7 +72,6 @@ type AnswerWaitResult = (
     UnanswerableWait
     | AnswerAcceptedPending
     | AnswerExistingPending
-    | AnswerExistingApplied
     | RunMissing
     | NodeMissing
     | AnswerRevisionConflict
@@ -106,7 +100,7 @@ def answer_wait_result(
     revision_hash: WorkflowRevisionHash,
     node_id: str,
     expected_node_execution_id: NodeExecutionId,
-    actor: WaitAnswerActor,
+    actor: WaitAnswerActor | str,
     answer_bytes: bytes,
     answerer: TransactionalWaitAnswerer,
 ) -> AnswerWaitResult:
@@ -126,6 +120,11 @@ def answer_wait_result(
     same `UnanswerableWait` either way, so what a caller is told did not move
     when the decision did.
     """
+    if not isinstance(actor, WaitAnswerActor):
+        try:
+            actor = WaitAnswerActor(actor)
+        except ValueError:
+            return DurableStateCorrupt()
     try:
         request = SubmitWaitAnswerRequest(
             run_id,
@@ -144,7 +143,7 @@ def answer_wait_result(
         case DurableAnswerExisting(snapshot):
             if snapshot.state is WaitAnswerState.PENDING:
                 return AnswerExistingPending(snapshot)
-            return AnswerExistingApplied(snapshot)
+            return DurableStateCorrupt()
         case DurableAnswerRunMissing():
             return RunMissing()
         case DurableAnswerNodeMissing():

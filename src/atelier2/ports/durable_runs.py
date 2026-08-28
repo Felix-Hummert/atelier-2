@@ -244,6 +244,13 @@ class DurableAnswerCreated:
 
 @dataclass(frozen=True)
 class DurableAnswerExisting:
+    """The exact PENDING answer a crash retry found before it was applied.
+
+    An adapter returning an APPLIED snapshot through this shape contradicts the
+    answer-door contract. The application treats that impossible result as
+    durable corruption rather than restoring the retired successful retry path.
+    """
+
     snapshot: WaitAnswerSnapshot
 
 

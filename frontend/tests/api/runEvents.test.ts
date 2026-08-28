@@ -244,6 +244,25 @@ describe("a chain run seen while it runs", () => {
     expect(answered).not.toHaveProperty("answer");
   });
 
+  it("keeps the migrated V3 answer actor required but honestly nullable", async () => {
+    const migrated = { ...(await chainedWaitAnswered(V3_ANSWER, 1)), actor: null };
+    const withoutActor = { ...migrated };
+    delete (withoutActor as { actor?: null }).actor;
+
+    const accepted = await decodeAndApplyDurableEvent(
+      streamProjection("run1.cnVu", "a".repeat(64)),
+      JSON.stringify(migrated)
+    );
+    const refused = await decodeAndApplyDurableEvent(
+      streamProjection("run1.cnVu", "a".repeat(64)),
+      JSON.stringify(withoutActor)
+    );
+
+    expect(accepted.protocol_problem).toBeNull();
+    expect(accepted.events.at(-1)).toMatchObject({ actor: null });
+    expect(refused.protocol_problem).not.toBeNull();
+  });
+
   it.each([
     [
       "an answer in the decimal shape only an older format's node can promise",

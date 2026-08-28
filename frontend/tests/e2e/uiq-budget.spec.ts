@@ -169,6 +169,12 @@ async function retireReconciliationFixtures(page: Page): Promise<void> {
       states.push(run.state);
       if (run.state === "WAITING_INPUT") {
         expect(run.waiting.type).toBe("WAITING_INPUT");
+        const fence = await page.request.get(
+          `/__e2e/current-wait-execution?public_run_reference=${encodeURIComponent(run.public_run_reference)}`
+        );
+        expect(fence.status()).toBe(200);
+        const { expected_node_execution_id: expectedNodeExecutionId } =
+          (await fence.json()) as { expected_node_execution_id: string };
         const answered = await page.request.post(
           `${API}/runs/${run.public_run_reference}/answers`,
           {
@@ -176,11 +182,13 @@ async function retireReconciliationFixtures(page: Page): Promise<void> {
             data: {
               workflow_revision_hash: run.workflow_revision_hash,
               node_id: run.waiting.node_id,
+              expected_node_execution_id: expectedNodeExecutionId,
+              actor: "operator",
               answer_base64: "MQ=="
             }
           }
         );
-        expect([200, 202]).toContain(answered.status());
+        expect(answered.status()).toBe(202);
       }
     }
     expect(states).toEqual(["COMPLETED", "COMPLETED"]);

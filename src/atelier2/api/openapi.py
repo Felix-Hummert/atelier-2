@@ -1256,7 +1256,7 @@ def _install_versioned_run_unions(schema: dict[str, Any]) -> None:
         (API_PREFIX + "/runs/{public_ref}", "get", ("200",)),
         (CANCELLATION_PATH, "post", ("200", "202")),
         (RUN_CANCELLATION_PATH, "post", ("200", "202")),
-        (API_PREFIX + "/runs/{public_ref}/answers", "post", ("200", "202")),
+        (API_PREFIX + "/runs/{public_ref}/answers", "post", ("202",)),
         (
             API_PREFIX + "/runs/{public_ref}/reconciliations",
             "post",

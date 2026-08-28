@@ -23,7 +23,6 @@ from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
     AnswerBytesConflict,
-    AnswerExistingApplied,
     AnswerExistingPending,
     AnswerStale,
     AnswerWaitResult,
@@ -463,7 +462,7 @@ def test_answer_submission_is_exact_and_concurrent(
             for result in results
             if isinstance(
                 result,
-                (AnswerAcceptedPending, AnswerExistingPending, AnswerExistingApplied),
+                (AnswerAcceptedPending, AnswerExistingPending),
             )
         ]
         conflicts = [

@@ -201,6 +201,11 @@ from atelier2.ports.workflow_revisions import (
     WorkflowRevisionMissing,
 )
 
+
+class WaitAnswerProjectionCorrupt(RuntimeError):
+    """A WAIT_ANSWERED event contradicts its one durable answer record."""
+
+
 _LENGTH_LABEL_PREFIX = "_atelier_length_"
 _MAXIMUM_UTF8_BYTES_PER_CHARACTER = 4
 _RUN_PROJECTION_COLUMNS: tuple[sa.Column[Any], ...] = (
@@ -2291,10 +2296,15 @@ class DbosQueries:
                 ).mappings()
             )
             if len(answer_records) != 1:
-                raise RunTransitionConflict(
+                raise WaitAnswerProjectionCorrupt(
                     "wait answer event has no unique durable answer"
                 )
-            answer_snapshot = wait_answer_snapshot_from_record(answer_records[0])
+            try:
+                answer_snapshot = wait_answer_snapshot_from_record(answer_records[0])
+            except (RunTransitionConflict, TypeError, ValueError) as error:
+                raise WaitAnswerProjectionCorrupt(
+                    "wait answer event has an unreadable durable answer"
+                ) from error
             answer = answer_snapshot.answer
             if (
                 answer_snapshot.state is not WaitAnswerState.APPLIED
@@ -2307,7 +2317,7 @@ class DbosQueries:
                 or answer.answer_bytes != event.payload
                 or answer.answer_hash != event.payload_hash
             ):
-                raise RunTransitionConflict(
+                raise WaitAnswerProjectionCorrupt(
                     "wait answer event and durable answer disagree"
                 )
             wait_answer_actor = answer.actor

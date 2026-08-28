@@ -314,13 +314,6 @@ SUCCESS_CASES = (
         202,
     ),
     (
-        "wait-existing-applied",
-        "wait",
-        "answerer",
-        DurableAnswerExisting(APPLIED_ANSWER),
-        200,
-    ),
-    (
         "reconcile-created-pending",
         "reconcile",
         "commander",
@@ -640,6 +633,14 @@ PROBLEM_CASES = (
         ProjectionTooLarge(),
         500,
         "durable-projection-unrepresentable",
+    ),
+    (
+        "wait-existing-applied-is-corrupt",
+        "wait",
+        "answerer",
+        DurableAnswerExisting(APPLIED_ANSWER),
+        500,
+        "durable-state-corrupt",
     ),
     (
         "wait-unanswerable",

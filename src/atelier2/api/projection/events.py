@@ -467,11 +467,13 @@ def _run_event_resource_v3(
     if event.event_kind is RunEventKind.WAITING_INPUT:
         return WaitingInputEventResourceV3(event=event.event_kind.value, **common)
     if event.event_kind is RunEventKind.WAIT_ANSWERED:
-        if projection.wait_answer_actor is None:
-            raise ValueError("V3 wait answer has no durable actor")
         return WaitAnsweredEventResourceV3(
             event=event.event_kind.value,
-            actor=projection.wait_answer_actor.value,
+            actor=(
+                None
+                if projection.wait_answer_actor is None
+                else projection.wait_answer_actor.value
+            ),
             answer_base64=encode_canonical_base64(event.payload),
             answer_hash=event.payload_hash.value,
             **common,

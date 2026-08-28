@@ -184,7 +184,10 @@ orders a run was started with, the immutable proof of every redeemed tool
 grant, the receipt hash an agent completion binds, immutable content-addressed
 artifacts an order may name instead of carrying their bytes, the round a
 declared loop was turning when each run, event and agent receipt was written,
-the operator actor and exact node execution fenced into every Wait answer,
+the exact node execution and a nullable immutable actor fenced into every Wait
+answer -- V46 preserves a legacy actor as unknown while new answers record the
+operator, and the public current execution is derived by the server from the
+run, revision, current node and round --
 the host configuration channel's project-root, project-source, provider model
 registry, and project model-default revisions, and the queue projection's
 admission row per work item. V40 retired lineage occupancy instead of carrying

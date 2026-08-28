@@ -954,6 +954,7 @@ describe("answering a wait over the existing door", () => {
       state_version: 2,
       state: "COMPLETED",
       current_node_id: "ask",
+      current_node_execution_id: digest,
       node_rail: [{ node_id: "ask", state: "succeeded", attempt: null }],
       cancellation: notCancellableBlock("already-ended"),
       terminal_hash: digest,
@@ -961,7 +962,7 @@ describe("answering a wait over the existing door", () => {
     };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify(run), {
-        status: 200,
+        status: 202,
         headers: { "content-type": "application/json" }
       })
     );
@@ -970,7 +971,7 @@ describe("answering a wait over the existing door", () => {
     const answered = await createCockpitApi(fetcher).answer(mutation);
 
     expect(String(fetcher.mock.calls[0]?.[0])).toBe("/atelier/api/v1/runs/run1.cnVu/answers");
-    expect(answered).toEqual({ status: 200, value: run });
+    expect(answered).toEqual({ status: 202, value: run });
   });
 
   it.each([
@@ -1017,6 +1018,7 @@ describe("cancelling a run over its cancel door", () => {
       state_version: 3,
       state: "STARTED",
       current_node_id: "review",
+      current_node_execution_id: digest,
       node_rail: [{ node_id: "review", state: "working", attempt: null }],
       cancellation: notCancellableBlock("already-cancelling"),
       terminal_hash: null,
@@ -1390,6 +1392,7 @@ describe("the run listing the studio opens on", () => {
     state_version: 1,
     state: "STARTED",
     current_node_id: "implement",
+    current_node_execution_id: digest,
     node_rail: [{ node_id: "implement", state: "working", attempt: null }],
     cancellation: cancellableBlock(),
     terminal_hash: null,

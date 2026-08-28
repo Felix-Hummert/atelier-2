@@ -10,7 +10,7 @@ translated now and its cases stand below with the rest, so the mark joins them.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -619,6 +619,23 @@ def test_an_answer_that_makes_no_submission_refuses_before_the_store_is_asked() 
     )
 
     assert isinstance(result, UnanswerableWait)
+    assert answerer.submitted == []
+
+
+def test_an_unsupported_answer_actor_is_corruption_before_the_store_is_asked() -> None:
+    answerer = ScriptedAnswerer(DurableAnswerCreated(SNAPSHOT))
+
+    result = answer_wait_result(
+        RUN_ID,
+        REVISION_HASH,
+        "waiting",
+        NodeExecutionId.for_node(RUN_ID, REVISION_HASH, "waiting"),
+        cast(WaitAnswerActor, "stale-operator"),
+        b"6",
+        answerer,
+    )
+
+    assert isinstance(result, DurableStateCorrupt)
     assert answerer.submitted == []
 
 

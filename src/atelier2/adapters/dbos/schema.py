@@ -269,9 +269,9 @@ _OFFLINE_CUTOVER_VERSIONS = frozenset(range(1, SCHEMA_VERSION))
 # V45 gives a source a durable identity and lifecycle, records the connection
 # instant for new revisions, and preserves every legacy revision with an absent
 # instant and one deterministic source identity per project history.
-# V46 attributes every wait answer to the operator and makes that attribution
-# immutable. Existing rows are attributed to the only actor the predecessor's
-# public door had, without changing their answer bytes, hashes, keys, or state.
+# V46 gives new wait answers an immutable actor while preserving predecessor
+# rows with no invented attribution. A legacy answer therefore carries NULL;
+# every answer written through the V46 door carries the closed operator value.
 # The hop number is movable: `_HOP_PREDECESSOR_VERSION` is the one
 # constant to restack.
 _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
@@ -314,7 +314,7 @@ _PRODUCT_SCHEMA_FINGERPRINT_SHA256 = {
     43: "f7d299ab865b87ca47a399d4897f8c7b273085c4d206fac9eb882d47198b9782",
     44: "b8a176e76092a24fa0c8ac1caafdd69e57f4ff404ecb5560a1dd426d32a3ee9b",
     45: "39d0811369f0b7a4b248448042623ecde0d290e95d191d75c32a9faf538fffa5",
-    46: "5d033f9dfda35bfbb50920ab3a3a8e205cb21b1deae3bd17e844f807f8cf5c9d",
+    46: "783fa9aa4fc96b607711bce07a5f93cbd6ebd100eff53473c68753af2a570c8e",
 }
 V9_SCHEMA_HANDOFF = ProductSchemaHandoff(
     _VERSION_NINE,
@@ -1483,7 +1483,7 @@ wait_answers = sa.Table(
     sa.Column("node_id", sa.Text, nullable=False),
     sa.Column("node_execution_id", sa.Text, nullable=False),
     sa.Column("round_ordinal", sa.Integer, nullable=False),
-    sa.Column("actor", sa.Text, nullable=False),
+    sa.Column("actor", sa.Text, nullable=True),
     sa.Column("answer_bytes", sa.LargeBinary, nullable=False),
     sa.Column("answer_hash", sa.Text, nullable=False),
     sa.Column("answer_workflow_id", sa.Text, nullable=False, unique=True),
@@ -1498,6 +1498,8 @@ wait_answers = sa.Table(
     ),
     sa.CheckConstraint("length(node_id) > 0"),
     sa.CheckConstraint(f"round_ordinal >= {FIRST_ROUND_ORDINAL}"),
+    # SQLite admits NULL when a CHECK evaluates to UNKNOWN, so this closed
+    # vocabulary permits exactly the legacy NULL or a newly written operator.
     sa.CheckConstraint("actor IN ('operator')"),
     sa.CheckConstraint(
         "length(node_execution_id) = 64 AND node_execution_id NOT GLOB '*[^0-9a-f]*'"
@@ -5820,7 +5822,7 @@ _PREDECESSOR_WAIT_ANSWERS_WITHOUT_ACTOR = "wait_answers_before_actor"
 
 
 def _apply_v45_to_v46(connection: sqlite3.Connection) -> None:
-    """Attribute every existing answer to the predecessor door's only actor."""
+    """Add immutable attribution without inventing it for predecessor rows."""
 
     _rebuild_product_table(
         connection,
@@ -5829,7 +5831,7 @@ def _apply_v45_to_v46(connection: sqlite3.Connection) -> None:
         _WAIT_ANSWERS_TRIGGERS,
         _VERSION_FORTY_FIVE,
         _VERSION_FORTY_SIX,
-        {wait_answers.c.actor.name: "'operator'"},
+        {wait_answers.c.actor.name: "NULL"},
     )
     _raise_declared_version(connection, _VERSION_FORTY_FIVE, _VERSION_FORTY_SIX)
 

@@ -338,7 +338,7 @@ EXPECTED_SUCCESS_STATUSES = {
     (API_PREFIX + "/runs/{public_ref}", "get"): {"200"},
     (RUN_FORK_PATH, "post"): {"200", "201"},
     (RECEIPT_PATH, "get"): {"200"},
-    (API_PREFIX + "/runs/{public_ref}/answers", "post"): {"200", "202"},
+    (API_PREFIX + "/runs/{public_ref}/answers", "post"): {"202"},
     (API_PREFIX + "/runs/{public_ref}/reconciliations", "post"): {"200", "202"},
     (CANCELLATION_PATH, "post"): {"200", "202"},
     (RUN_CANCELLATION_PATH, "post"): {"200", "202"},

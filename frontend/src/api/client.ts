@@ -1117,6 +1117,7 @@ export const runV3Schema = z
     state_version: nonnegativeSafeInteger,
     state: z.enum(RUN_STATES_V3),
     current_node_id: z.string().min(1),
+    current_node_execution_id: sha256,
     node_rail: z.array(nodeRailEntrySchema).min(1),
     cancellation: runCancellabilitySchema,
     terminal_hash: sha256.nullable(),
@@ -1706,7 +1707,7 @@ const runEventV3Schema = z
         event: z.literal("WAIT_ANSWERED"),
         answer_base64: standardBase64,
         answer_hash: sha256,
-        actor: z.literal("operator"),
+        actor: z.literal("operator").nullable(),
       })
       .strict(),
     z
@@ -3461,7 +3462,7 @@ export function createCockpitApi(
           headers: { "content-type": "application/json" },
           body: exactBody(mutation.body_base64),
         },
-        [200, 202],
+        [202],
         anyRunSchema,
       );
       if (

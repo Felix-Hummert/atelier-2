@@ -301,7 +301,14 @@ class ApiUseCases:
     ]
     fork_run: Callable[[RunId, str, str], ForkRunResult]
     answer_wait: Callable[
-        [RunId, WorkflowRevisionHash, str, NodeExecutionId, WaitAnswerActor, bytes],
+        [
+            RunId,
+            WorkflowRevisionHash,
+            str,
+            NodeExecutionId,
+            WaitAnswerActor | str,
+            bytes,
+        ],
         AnswerWaitResult,
     ]
     reconcile_run: Callable[[ReconcileRunRequest], ReconcileRunResult]

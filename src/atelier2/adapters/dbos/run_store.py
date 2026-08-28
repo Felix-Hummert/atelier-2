@@ -1099,12 +1099,13 @@ def why_a_wait_node_does_not_admit_an_answer(
 
 
 def wait_answer_snapshot_from_record(record: Mapping[Any, Any]) -> WaitAnswerSnapshot:
+    actor_value = record["actor"]
     answer = WaitAnswer(
         RunId(str(record["run_id"])),
         WorkflowRevisionHash(str(record["revision_hash"])),
         str(record["node_id"]),
         NodeExecutionId(str(record["node_execution_id"])),
-        WaitAnswerActor(str(record["actor"])),
+        None if actor_value is None else WaitAnswerActor(str(actor_value)),
         bytes(record["answer_bytes"]),
         int(record["round_ordinal"]),
     )
@@ -1117,6 +1118,10 @@ def wait_answer_snapshot_from_record(record: Mapping[Any, Any]) -> WaitAnswerSna
     return WaitAnswerSnapshot(
         answer, WaitAnswerState(str(record["state"])), int(record["state_version"])
     )
+
+
+class WaitAnswerStateCorrupt(RuntimeError):
+    """Durable wait-answer rows contradict their one-execution identity."""
 
 
 def _wait_answer_record(
@@ -1136,7 +1141,7 @@ def _wait_answer_record(
         ).mappings()
     )
     if len(records) > 1:
-        raise RunTransitionConflict("wait execution has duplicate durable answers")
+        raise WaitAnswerStateCorrupt("wait execution has duplicate durable answers")
     return records[0] if records else None
 
 
@@ -1162,6 +1167,8 @@ class DbosWaitAnswerer:
         self._application_version = application_version
 
     def submit_result(self, request: SubmitWaitAnswerRequest) -> DurableAnswerResult:
+        if request.actor is not WaitAnswerActor.OPERATOR:
+            return DurableStateCorrupt()
         try:
             with self._engine.connect() as read_connection:
                 document = read_connection.scalar(
@@ -1279,26 +1286,58 @@ class DbosWaitAnswerer:
                         connection.rollback()
                         return DurableStateCorrupt()
                     if request.expected_node_execution_id != current_execution_id:
+                        expected_records = tuple(
+                            connection.execute(
+                                sa.select(run_events).where(
+                                    run_events.c.node_execution_id
+                                    == request.expected_node_execution_id.value
+                                )
+                            ).mappings()
+                        )
+                        if not expected_records:
+                            connection.rollback()
+                            return DurableStateCorrupt()
+                        expected_events = tuple(
+                            event_from_record(record) for record in expected_records
+                        )
+                        if any(
+                            event.run_id != request.run_id
+                            or event.revision_hash != request.revision_hash
+                            or event.node_id != request.node_id
+                            or event.node_execution_id
+                            != NodeExecutionId.for_node(
+                                event.run_id,
+                                event.revision_hash,
+                                event.node_id,
+                                event.round_ordinal,
+                            )
+                            for event in expected_events
+                        ):
+                            connection.rollback()
+                            return DurableStateCorrupt()
                         connection.rollback()
                         return DurableAnswerStale()
                     if existing_snapshot is not None and (
                         existing_snapshot.state is WaitAnswerState.APPLIED
                     ):
                         connection.rollback()
-                        return DurableAnswerStale()
+                        return DurableStateCorrupt()
                     if run.state is not RunState.WAITING_INPUT or not isinstance(
                         current_node, ANY_WAIT_NODE_KINDS
                     ):
                         connection.rollback()
                         return DurableAnswerStateConflict()
+                    if request.node_id != run.current_node_id:
+                        connection.rollback()
+                        return DurableStateCorrupt()
                     try:
                         node = graph.node(request.node_id)
                     except KeyError:
                         connection.rollback()
                         return DurableAnswerNodeMissing()
-                    if request.node_id != run.current_node_id or node != current_node:
+                    if node != current_node:
                         connection.rollback()
-                        return DurableAnswerStateConflict()
+                        return DurableStateCorrupt()
                     round_ordinal = run.current_round_ordinal
                     execution_id = current_execution_id
                     answer = WaitAnswer(
@@ -1320,7 +1359,7 @@ class DbosWaitAnswerer:
                             node_id=answer.node_id,
                             node_execution_id=answer.node_execution_id.value,
                             round_ordinal=answer.round_ordinal,
-                            actor=answer.actor.value,
+                            actor=request.actor.value,
                             answer_bytes=answer.answer_bytes,
                             answer_hash=answer.answer_hash.value,
                             answer_workflow_id=answer_workflow_id,
@@ -1340,12 +1379,24 @@ class DbosWaitAnswerer:
                         if snapshot.answer.answer_bytes != request.answer_bytes:
                             connection.rollback()
                             return DurableAnswerBytesConflict()
-                        if snapshot.answer != answer:
+                        stored_answer = snapshot.answer
+                        if (
+                            stored_answer.run_id != answer.run_id
+                            or stored_answer.revision_hash != answer.revision_hash
+                            or stored_answer.node_id != answer.node_id
+                            or stored_answer.node_execution_id
+                            != answer.node_execution_id
+                            or stored_answer.round_ordinal != answer.round_ordinal
+                            or stored_answer.answer_bytes != answer.answer_bytes
+                            or stored_answer.answer_hash != answer.answer_hash
+                            or stored_answer.actor
+                            not in (None, WaitAnswerActor.OPERATOR)
+                        ):
                             connection.rollback()
                             return DurableStateCorrupt()
                         if snapshot.state is not WaitAnswerState.PENDING:
                             connection.rollback()
-                            return DurableAnswerStateConflict()
+                            return DurableStateCorrupt()
                         connection.commit()
                         return DurableAnswerExisting(snapshot)
                     unanswerable = why_a_wait_node_does_not_admit_an_answer(

@@ -31,6 +31,7 @@ from atelier2.adapters.exact_output_agent import ExactOutputAgentExecutorFactory
 from atelier2.adapters.loopback import LoopbackEffectAdapterFactory
 from atelier2.api.context import ApiContext, ApiPorts
 from atelier2.api.limits import ApiLimits
+from atelier2.api.references import decode_public_run_reference
 from atelier2.api.stream import EventPollBackoff
 from atelier2.application.model_configuration import (
     ModelRegistryPublished,
@@ -54,6 +55,8 @@ from atelier2.application.publish_workflow_revision import (
     PublicationCreated,
     PublicationExisting,
 )
+from atelier2.application.read_run_events import RunEventsRead
+from atelier2.application.read_runs import RunRead
 from atelier2.contracts.agents import (
     AgentExecutionCapability,
     AgentExecutionRequestV2,
@@ -74,6 +77,7 @@ from atelier2.contracts.effects import (
     EffectUnknownOutcome,
     PerformedEffect,
 )
+from atelier2.contracts.executions import RunEventKind
 from atelier2.contracts.host_configuration import ProjectId
 from atelier2.contracts.queue_projection import TrackerItemReference, WorkItemReference
 from atelier2.contracts.revisions_v3 import PublishedRevisionHash, RevisionKind
@@ -729,6 +733,33 @@ class BrowserProofHarness:
             return
         if (
             scope["type"] == "http"
+            and scope.get("method") == "GET"
+            and path == "/__e2e/current-wait-execution"
+        ):
+            references = parse_qs(scope.get("query_string", b"").decode()).get(
+                "public_run_reference", []
+            )
+            body = (
+                None
+                if len(references) != 1
+                else await asyncio.to_thread(self.current_wait_execution, references[0])
+            )
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200 if body is not None else 409,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b"{}" if body is None else body,
+                }
+            )
+            return
+        if (
+            scope["type"] == "http"
             and scope.get("method") == "POST"
             and path == "/__e2e/release-blocking-attempt"
         ):
@@ -802,6 +833,38 @@ class BrowserProofHarness:
             await send(message)
 
         await self.app(scope, receive, proof_send)
+
+    def current_wait_execution(self, public_run_reference: str) -> bytes | None:
+        if not isinstance(self.app, FastAPI):
+            raise TypeError("the e2e wait fence requires the composed FastAPI app")
+        context: ApiContext = self.app.state.api_context
+        try:
+            run_id = decode_public_run_reference(public_run_reference)
+        except ValueError:
+            return None
+        result = context.use_cases.get_run(run_id)
+        if not isinstance(result, RunRead):
+            return None
+        run = result.projection.run
+        if run.state is not RunState.WAITING_INPUT or run.last_event_sequence < 1:
+            return None
+        head = context.use_cases.read_run_events(
+            run.run_id, run.last_event_sequence - 1, 1
+        )
+        if not isinstance(head, RunEventsRead) or len(head.events) != 1:
+            return None
+        event = head.events[0].event
+        if (
+            event.event_kind is not RunEventKind.WAITING_INPUT
+            or event.event_sequence != run.last_event_sequence
+            or event.revision_hash != run.revision_hash
+            or event.node_id != run.current_node_id
+            or event.round_ordinal != run.current_round_ordinal
+        ):
+            return None
+        return json.dumps(
+            {"expected_node_execution_id": event.node_execution_id.value}
+        ).encode()
 
     def release_blocking_attempt(self) -> bool:
         deadline = time.monotonic() + TIMEOUT_SECONDS

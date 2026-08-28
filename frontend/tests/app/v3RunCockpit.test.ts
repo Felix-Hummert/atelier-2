@@ -81,7 +81,8 @@ function v3Run(overrides: Partial<RunV3> = {}): RunV3 {
     latest_event_cursor: null,
     started_at: "2026-08-18T15:00:00Z",
     ended_at: null,
-    ...overrides
+    ...overrides,
+    current_node_execution_id: overrides.current_node_execution_id ?? digest
   };
 }
 
@@ -618,7 +619,7 @@ describe("a version 3 run that stops for a person", () => {
     const journal = new MutationJournal(sessionStorage);
     const answerCall = vi.fn(async (mutation: { body_base64: string }) => {
       void mutation;
-      return { status: 200, value: answeredRun() };
+      return { status: 202, value: answeredRun() };
     });
 
     render(App, {
@@ -639,7 +640,7 @@ describe("a version 3 run that stops for a person", () => {
     expect(body).toEqual({
       workflow_revision_hash: digest,
       node_id: "approve",
-      expected_node_execution_id: "d".repeat(64),
+      expected_node_execution_id: waitingRun().current_node_execution_id,
       actor: "operator",
       answer_base64: btoa(answer)
     });
@@ -648,7 +649,7 @@ describe("a version 3 run that stops for a person", () => {
   it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): passes an answer already written as JSON through untouched", async () => {
     const answerCall = vi.fn(async (mutation: { body_base64: string }) => {
       void mutation;
-      return { status: 200, value: answeredRun() };
+      return { status: 202, value: answeredRun() };
     });
 
     render(App, {
@@ -689,10 +690,10 @@ describe("a version 3 run that stops for a person", () => {
   }
 
   it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): a boolean schema renders two decision buttons, sends the exact click, and confirms it", async () => {
-    let resolveAnswer: (result: { status: 200; value: RunV3 }) => void = () => {};
+    let resolveAnswer: (result: { status: 202; value: RunV3 }) => void = () => {};
     const answerCall = vi.fn(
       (mutation: { body_base64: string }) =>
-        new Promise<{ status: 200; value: RunV3 }>((resolve) => {
+        new Promise<{ status: 202; value: RunV3 }>((resolve) => {
           void mutation;
           resolveAnswer = resolve;
         })
@@ -716,14 +717,14 @@ describe("a version 3 run that stops for a person", () => {
     const body = JSON.parse(globalThis.atob(answerCall.mock.calls[0]?.[0]?.body_base64 ?? ""));
     expect(body.answer_base64).toBe(btoa("true"));
     await screen.findByText(`${runPageCopy.answeredPrefix} ${runPageCopy.answerYes}`);
-    resolveAnswer({ status: 200, value: answeredRun() });
+    resolveAnswer({ status: 202, value: answeredRun() });
   });
 
   it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): an enum schema renders one button per value and sends its exact JSON", async () => {
-    let resolveAnswer: (result: { status: 200; value: RunV3 }) => void = () => {};
+    let resolveAnswer: (result: { status: 202; value: RunV3 }) => void = () => {};
     const answerCall = vi.fn(
       (mutation: { body_base64: string }) =>
-        new Promise<{ status: 200; value: RunV3 }>((resolve) => {
+        new Promise<{ status: 202; value: RunV3 }>((resolve) => {
           void mutation;
           resolveAnswer = resolve;
         })
@@ -749,7 +750,7 @@ describe("a version 3 run that stops for a person", () => {
     const body = JSON.parse(globalThis.atob(answerCall.mock.calls[0]?.[0]?.body_base64 ?? ""));
     expect(body.answer_base64).toBe(btoa('"revise"'));
     await screen.findByText(`${runPageCopy.answeredPrefix} revise`);
-    resolveAnswer({ status: 200, value: answeredRun() });
+    resolveAnswer({ status: 202, value: answeredRun() });
   });
 
   it("proves(a-waiting-v3-run-is-answerable-on-its-run-page): keeps the free-form textarea for a schema this build has not classified", async () => {

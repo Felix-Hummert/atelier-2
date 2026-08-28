@@ -313,11 +313,7 @@
       waitAccepted = false;
       return;
     }
-    const nodeExecutionId = run.cancellation.target_node_execution_id;
-    if (nodeExecutionId === null) {
-      waitFailureMessage = "The waiting turn does not name its exact execution.";
-      return;
-    }
+    const nodeExecutionId = run.current_node_execution_id;
     const lookup = await loadPendingWaitAnswer(
       mutationJournal,
       run.public_run_reference,
@@ -346,11 +342,7 @@
       return;
     }
     if (run.state !== "WAITING_INPUT") return;
-    const nodeExecutionId = run.cancellation.target_node_execution_id;
-    if (nodeExecutionId === null) {
-      waitFailureMessage = "The waiting turn does not name its exact execution.";
-      return;
-    }
+    const nodeExecutionId = run.current_node_execution_id;
     waitBusy = true;
     try {
       const mutation = await prepareWaitAnswer(

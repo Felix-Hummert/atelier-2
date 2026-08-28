@@ -9,7 +9,6 @@ from atelier2.adapters.yaml_workflows import parse_workflow_document
 from atelier2.application.answer_wait import (
     AnswerAcceptedPending,
     AnswerBytesConflict,
-    AnswerExistingApplied,
     AnswerExistingPending,
     AnswerRevisionConflict,
     AnswerStale,
@@ -146,6 +145,7 @@ ANSWER_VALUE = WaitAnswer(
     b"3",
 )
 ANSWER = WaitAnswerSnapshot(ANSWER_VALUE, WaitAnswerState.PENDING, 0)
+APPLIED_ANSWER = WaitAnswerSnapshot(ANSWER_VALUE, WaitAnswerState.APPLIED, 1)
 COMMAND = cast(ReconcileCommand, object())
 
 
@@ -358,6 +358,7 @@ def test_start_maps_every_durable_result(
     [
         (DurableAnswerCreated(ANSWER), AnswerAcceptedPending),
         (DurableAnswerExisting(ANSWER), AnswerExistingPending),
+        (DurableAnswerExisting(APPLIED_ANSWER), DurableStateCorrupt),
         (DurableAnswerRunMissing(), RunMissing),
         (DurableAnswerNodeMissing(), NodeMissing),
         (DurableAnswerRevisionConflict(), AnswerRevisionConflict),
@@ -381,10 +382,7 @@ def test_answer_maps_every_durable_result(
         cast(TransactionalWaitAnswerer, FakePort(port_result)),
     )
 
-    if isinstance(port_result, DurableAnswerExisting):
-        assert isinstance(result, (AnswerExistingPending, AnswerExistingApplied))
-    else:
-        assert isinstance(result, application_type)
+    assert isinstance(result, application_type)
 
 
 @pytest.mark.parametrize(

@@ -80,16 +80,20 @@ under the same condition: no external consumer exists, and the cockpit, the
 command, the MCP door and the frozen document migrate together.
 
 The Wait-answer request is the third explicit breaking pre-release migration.
-It requires the closed actor `operator` and the exact
-`expected_node_execution_id` served for the current pause. The durable store
-first validates the current run head and any answer already bound to it under
-the write transaction, then checks the caller's fence before inserting anything.
-An older or already answered turn is a definitive `409 answer-execution-stale`,
-while missing or contradictory durable truth is corruption rather than a retry
-signal. V3 `WAIT_ANSWERED` receipts expose the recorded actor; the frozen
-V1 and V2 event families do not change. The cockpit, MCP projection, request
-schema, problem vocabulary, and frozen OpenAPI document migrate in the same
-head under the same pre-release condition.
+It carries an actor and the exact `expected_node_execution_id`; a V3 run serves
+its current execution id from the run, revision, current node and round rather
+than borrowing a cancellation target. The durable store validates the current
+run head and any answer already bound to it under the write transaction before
+inserting anything. A proven prior execution is the definitive `409
+answer-execution-stale`; a fabricated execution, an unsupported actor, or a
+second arrival at an APPLIED current answer is durable corruption. An identical
+PENDING retry is idempotent; those are the answer door's only successes and both
+return `202`. V3 `WAIT_ANSWERED` receipts require the actor field,
+but it is nullable because V45-to-V46 migration preserves legacy answers as
+unknown instead of inventing `operator`; new answers record `operator`. The
+frozen V1 and V2 event families do not change. The cockpit, MCP projection,
+request schema, problem vocabulary, and frozen OpenAPI document migrate in the
+same head under the same pre-release condition.
 
 V1, V2, and V3 SSE event resources coexist as exact closed unions. V1 and V2
 workflow, start, and run resources remain their own closed families.

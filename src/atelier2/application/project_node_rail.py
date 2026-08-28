@@ -141,6 +141,7 @@ class _RailDerivation:
     current_index: int
     events: tuple[PersistedRunEvent, ...]
     leading_event: PersistedRunEvent | None
+    base_round_ordinal: int
     """The newest event, when it has overtaken the snapshot; otherwise nothing."""
 
     @classmethod
@@ -166,8 +167,25 @@ class _RailDerivation:
             newest is not None
             and newest.event.event_sequence > projection.run.last_event_sequence
         )
+        leading_event = newest if leads else None
+        if leading_event is not None and all(
+            node.id != leading_event.event.node_id for node in nodes
+        ):
+            raise NodeRailUnprojectable(
+                "the leading event node is absent from its workflow revision"
+            )
+        base_round_ordinal = (
+            leading_event.event.round_ordinal
+            if leading_event is not None
+            else projection.run.current_round_ordinal
+        )
         return cls(
-            projection, nodes, current_index, recorded, newest if leads else None
+            projection,
+            nodes,
+            current_index,
+            recorded,
+            leading_event,
+            base_round_ordinal,
         )
 
     def entry(self, index: int) -> NodeRailEntry:
@@ -181,7 +199,7 @@ class _RailDerivation:
             None,
         )
         node_execution_id = self._execution_of(node.id)
-        last_event = self._last_event_of(node_execution_id)
+        last_event = self._last_event_of(node.id, node_execution_id)
         leading_event = self.leading_event
         state = (
             self._event_driven_state(node, last_event, leading_event)
@@ -195,21 +213,24 @@ class _RailDerivation:
         )
 
     def _last_event_of(
-        self, node_execution_id: NodeExecutionId
+        self, node_id: str, node_execution_id: NodeExecutionId
     ) -> PersistedRunEvent | None:
         for persisted in reversed(self.events):
             if persisted.event.node_execution_id == node_execution_id:
                 return persisted
+        if (
+            self.leading_event is not None
+            and self.leading_event.event.node_id == node_id
+        ):
+            raise NodeRailUnprojectable(
+                "the leading event has no exact execution evidence"
+            )
         return None
 
     def _execution_of(self, node_id: str) -> NodeExecutionId:
-        round_ordinal = self.projection.run.current_round_ordinal
+        round_ordinal = self.base_round_ordinal
         leading = self.leading_event
-        if leading is not None and leading.event.node_id == node_id:
-            round_ordinal = leading.event.round_ordinal
-        elif (
-            leading is not None and leading.event.event_kind in _SUCCESSFUL_ENDING_KINDS
-        ):
+        if leading is not None and leading.event.event_kind in _SUCCESSFUL_ENDING_KINDS:
             successor = self._successor_of(leading)
             if successor is not None and successor.node_id == node_id:
                 round_ordinal = successor.round_ordinal

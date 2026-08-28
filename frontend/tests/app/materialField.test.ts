@@ -113,6 +113,7 @@ function startedRun(): RunV3 {
     state_version: 1,
     state: "STARTED",
     current_node_id: "cook",
+    current_node_execution_id: revisionHash,
     node_rail: [{ node_id: "cook", state: "working", attempt: null }],
     cancellation: cancellableBlock(),
     terminal_hash: null,

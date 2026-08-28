@@ -21,7 +21,7 @@ from atelier2.contracts.run_events import (
     PersistedRunEvent,
     RunEventPage,
 )
-from atelier2.contracts.runs import RunId, WorkflowRevisionHash
+from atelier2.contracts.runs import RunId
 from atelier2.contracts.workflow_projections import (
     WorkflowRevisionPage,
 )
@@ -43,7 +43,6 @@ from tests.scenarios.api import (
 )
 
 RUN_ID = RunId("bounded-stream")
-REVISION_HASH = WorkflowRevisionHash("0" * 64)
 
 
 class _UnusedAttentionQueries:
@@ -63,13 +62,14 @@ def persisted_event(
     sequence: int, kind: RunEventKind, payload: bytes
 ) -> PersistedRunEvent:
     node_id = "final" if kind is RunEventKind.SUBWORKFLOW_COMPLETED else "agent"
+    revision_hash = stream_run_projection(RUN_ID.value).run.revision_hash
     return PersistedRunEvent(
         RunEvent(
             RUN_ID,
-            REVISION_HASH,
+            revision_hash,
             sequence,
             node_id,
-            NodeExecutionId.for_node(RUN_ID, REVISION_HASH, node_id),
+            NodeExecutionId.for_node(RUN_ID, revision_hash, node_id),
             kind,
             payload,
             receipt_logical_key=(

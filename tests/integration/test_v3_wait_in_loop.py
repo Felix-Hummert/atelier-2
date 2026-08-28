@@ -592,6 +592,29 @@ def test_one_public_run_keeps_three_attributed_turns_and_refuses_a_stale_round(
             )
             for round_ordinal in (1, 2, 3)
         ]
+
+        with reader.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TRIGGER wait_answers_no_delete")
+            connection.execute(
+                wait_answers.delete().where(
+                    wait_answers.c.node_execution_id
+                    == NodeExecutionId.for_node(
+                        RUN, workflow.revision_hash, WAIT_NODE, 2
+                    ).value
+                )
+            )
+
+        corrupt_stream = reader_client.get(
+            f"/atelier/api/v1/runs/{public_reference}/events"
+        )
+        corrupt_frames = [
+            json.loads(line.removeprefix("data: "))
+            for line in corrupt_stream.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert corrupt_stream.status_code == 200
+        assert corrupt_frames[-1]["event"] == "STREAM_FAILED"
+        assert corrupt_frames[-1]["problem"]["type"].endswith(":durable-state-corrupt")
     finally:
         reader.close()
 

@@ -48,7 +48,8 @@ function waitingRun(overrides: Partial<RunV3> = {}): RunV3 {
     latest_event_cursor: null,
     started_at: "2026-08-18T15:00:00Z",
     ended_at: null,
-    ...overrides
+    ...overrides,
+    current_node_execution_id: overrides.current_node_execution_id ?? revisionHash
   };
 }
 
@@ -132,11 +133,12 @@ afterEach(() => cleanup());
 
 describe("the Workbench pins open decisions (#580)", () => {
   it("proves(the-workbench-pins-an-open-decision-until-it-is-answered): holds the decision through continued chatting and a walk away and back, then retires it once answered on the shared audited path", async () => {
+    const waiting = waitingRun();
     const answer = vi.fn(async (mutation: { body_base64: string }) => {
       void mutation;
-      return { status: 200 as const, value: answeredRun() };
+      return { status: 202 as const, value: answeredRun() };
     });
-    openWorkbench([waitingRun()], { answer });
+    openWorkbench([waiting], { answer });
 
     const needsYou = await screen.findByRole("region", { name: question });
     expect((await within(needsYou).findByRole("heading", { name: question })).isConnected).toBe(true);
@@ -173,7 +175,7 @@ describe("the Workbench pins open decisions (#580)", () => {
     expect(body).toEqual({
       workflow_revision_hash: revisionHash,
       node_id: "approve",
-      expected_node_execution_id: "d".repeat(64),
+      expected_node_execution_id: waiting.current_node_execution_id,
       actor: "operator",
       answer_base64: btoa("true")
     });

@@ -78,7 +78,7 @@
     run.public_run_reference,
     run.workflow_revision_hash,
     run.current_node_id,
-    run.cancellation.target_node_execution_id
+    run.current_node_execution_id
   );
 
   async function loadForNode(
@@ -174,10 +174,7 @@
     waitFailureMessage = null;
     waitBusy = true;
     try {
-      const nodeExecutionId = run.cancellation.target_node_execution_id;
-      if (nodeExecutionId === null) {
-        throw new Error("The waiting turn does not name its exact execution.");
-      }
+      const nodeExecutionId = run.current_node_execution_id;
       const mutation = await prepareWaitAnswer(
         mutationJournal,
         run.public_run_reference,
