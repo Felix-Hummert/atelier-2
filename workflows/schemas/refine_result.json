@@ -71,38 +71,38 @@
   "allOf": [
     {
       "oneOf": [
-        {"properties": {"expectations": {"contains": {"properties": {"lens": {"const": "create_change_remove"}}, "required": ["lens"]}}}},
-        {"properties": {"lenses_without_lines": {"contains": {"const": "create_change_remove"}}}}
+        {"type": "object", "properties": {"expectations": {"type": "array", "contains": {"type": "object", "properties": {"lens": {"const": "create_change_remove"}}, "required": ["lens"]}}}},
+        {"type": "object", "properties": {"lenses_without_lines": {"type": "array", "contains": {"const": "create_change_remove"}}}}
       ]
     },
     {
       "oneOf": [
-        {"properties": {"expectations": {"contains": {"properties": {"lens": {"const": "identity"}}, "required": ["lens"]}}}},
-        {"properties": {"lenses_without_lines": {"contains": {"const": "identity"}}}}
+        {"type": "object", "properties": {"expectations": {"type": "array", "contains": {"type": "object", "properties": {"lens": {"const": "identity"}}, "required": ["lens"]}}}},
+        {"type": "object", "properties": {"lenses_without_lines": {"type": "array", "contains": {"const": "identity"}}}}
       ]
     },
     {
       "oneOf": [
-        {"properties": {"expectations": {"contains": {"properties": {"lens": {"const": "states"}}, "required": ["lens"]}}}},
-        {"properties": {"lenses_without_lines": {"contains": {"const": "states"}}}}
+        {"type": "object", "properties": {"expectations": {"type": "array", "contains": {"type": "object", "properties": {"lens": {"const": "states"}}, "required": ["lens"]}}}},
+        {"type": "object", "properties": {"lenses_without_lines": {"type": "array", "contains": {"const": "states"}}}}
       ]
     },
     {
       "oneOf": [
-        {"properties": {"expectations": {"contains": {"properties": {"lens": {"const": "secrets_and_rights"}}, "required": ["lens"]}}}},
-        {"properties": {"lenses_without_lines": {"contains": {"const": "secrets_and_rights"}}}}
+        {"type": "object", "properties": {"expectations": {"type": "array", "contains": {"type": "object", "properties": {"lens": {"const": "secrets_and_rights"}}, "required": ["lens"]}}}},
+        {"type": "object", "properties": {"lenses_without_lines": {"type": "array", "contains": {"const": "secrets_and_rights"}}}}
       ]
     },
     {
       "oneOf": [
-        {"properties": {"expectations": {"contains": {"properties": {"lens": {"const": "undo"}}, "required": ["lens"]}}}},
-        {"properties": {"lenses_without_lines": {"contains": {"const": "undo"}}}}
+        {"type": "object", "properties": {"expectations": {"type": "array", "contains": {"type": "object", "properties": {"lens": {"const": "undo"}}, "required": ["lens"]}}}},
+        {"type": "object", "properties": {"lenses_without_lines": {"type": "array", "contains": {"const": "undo"}}}}
       ]
     },
     {
       "oneOf": [
-        {"properties": {"expectations": {"contains": {"properties": {"lens": {"const": "scale"}}, "required": ["lens"]}}}},
-        {"properties": {"lenses_without_lines": {"contains": {"const": "scale"}}}}
+        {"type": "object", "properties": {"expectations": {"type": "array", "contains": {"type": "object", "properties": {"lens": {"const": "scale"}}, "required": ["lens"]}}}},
+        {"type": "object", "properties": {"lenses_without_lines": {"type": "array", "contains": {"const": "scale"}}}}
       ]
     }
   ]

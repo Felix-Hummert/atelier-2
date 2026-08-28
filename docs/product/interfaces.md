@@ -198,6 +198,10 @@ published, and says so. The Workbench is the one workshop surface for
 work that needs a person or is moving. Its stage is the notification surface;
 the rail's ochre count is the notification count. Catalog, History, and
 Settings complete the rail described by the blessed Mockup v8 and ADR 0019.
+History's finished-run row names when it ran, the work item or an em dash,
+a derived half-sentence of what came of the run, and a short public run
+reference so two otherwise identical finished runs stay distinguishable —
+not only whether it ended, and never the raw result bytes.
 Settings shows the project's source connection as read-only provenance. It is
 the one editing surface only for each provider's exact model registry and the
 three difficulty defaults, in that order. The startable configuration list is

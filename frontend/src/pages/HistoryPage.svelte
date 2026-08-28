@@ -1,15 +1,25 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import type { AnyRun, CockpitApi } from "../api/client";
+  import type { AnyRun, CockpitApi, NodeDetail } from "../api/client";
   import { connectionState, onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
+  import { decodeUtf8Base64 } from "../lib/exactBytes";
+  import { shortPublicRunReference } from "../lib/fingerprint";
   import {
     HISTORY_PERIOD_DAYS,
     hasTimestamplessRows,
+    historyResultNodeId,
+    historyWhenLabel,
+    historyWorkItemLabel,
     projectHistoryRows,
-    withinHistoryPeriod
+    withinHistoryPeriod,
+    type HistoryRow,
+    type HistoryRowExtras,
+    type HistoryWhenDay,
+    type HistoryWorkItem
   } from "../lib/historyRows";
+  import { historyOutcome } from "../lib/historyOutcome";
   import { historyPageCopy, periodChipLabel } from "../lib/historyPageCopy";
   import {
     beginRead,
@@ -22,6 +32,11 @@
   import { standingWords } from "../lib/runState";
   import { workflowNamesOf } from "../lib/runList";
   import { readEveryRun } from "../lib/runPages";
+  import {
+    trackerItemHref,
+    workItemReferenceFromJob,
+    type TrackerSourceConnection
+  } from "../lib/trackerItem";
   import { ageLabel, exactLocal } from "../lib/when";
   import { WORKSHOP_DESTINATION } from "../lib/workshop";
 
@@ -39,9 +54,16 @@
     | { kind: "unavailable"; title: string }
     | { kind: "incomplete"; title: string };
 
+  type ExtrasLoad =
+    | { status: "loading" }
+    | { status: "settled"; extras: HistoryRowExtras };
+
   let history: RetainedRead<HistorySnapshot, HistoryReadFailure> =
     retainedRead<HistorySnapshot, HistoryReadFailure>();
   const now = new Date();
+  let extrasLoadByReference: Map<string, ExtrasLoad> = new Map();
+  let extrasToken = 0;
+  let sourceConnection: TrackerSourceConnection | null = null;
 
   onMount(() => {
     void load();
@@ -54,6 +76,7 @@
     const begun = beginRead(history);
     history = begun.read;
     try {
+      const sourcePromise = loadSource();
       const [completed, failed] = await Promise.all([
         readEveryRun((after) => cockpitApi.listRuns(after, "COMPLETED")),
         readEveryRun((after) => cockpitApi.listRuns(after, "FAILED"))
@@ -69,13 +92,122 @@
       const workflowNames = await workflowNamesOf(runs, (hash) =>
         cockpitApi.getWorkflowRevision(hash)
       );
+      sourceConnection = await sourcePromise;
+      if (history.generation !== begun.generation) return;
       history = confirmRead(history, begun.generation, { runs, workflowNames });
+      if (history.generation !== begun.generation) return;
+      const visible = projectHistoryRows(runs, workflowNames).filter((row) =>
+        withinHistoryPeriod(row, now)
+      );
+      void settleExtras(visible);
     } catch {
       history = failRead(history, begun.generation, {
         kind: "unavailable",
         title: historyPageCopy.listUnavailable
       });
     }
+  }
+
+  async function loadSource(): Promise<TrackerSourceConnection | null> {
+    try {
+      const projects = await cockpitApi.listProjects();
+      const reference = projects.items[0]?.public_project_reference;
+      if (reference === undefined) return null;
+      const connection = await cockpitApi.getProjectSourceConnection(reference);
+      return {
+        source_kind: connection.source_kind,
+        source_address: connection.source_address
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async function settleExtras(rows: HistoryRow[]): Promise<void> {
+    const token = ++extrasToken;
+    extrasLoadByReference = new Map(
+      rows.map((row) => [row.run.public_run_reference, { status: "loading" as const }])
+    );
+    const settledEntries = await Promise.all(
+      rows.map(async (row) => {
+        const extras = await extrasForRow(row);
+        return [row.run.public_run_reference, extras] as const;
+      })
+    );
+    if (token !== extrasToken) return;
+    extrasLoadByReference = new Map(
+      settledEntries.map(([reference, extras]) => [
+        reference,
+        { status: "settled" as const, extras }
+      ])
+    );
+  }
+
+  async function extrasForRow(row: HistoryRow): Promise<HistoryRowExtras> {
+    try {
+      const detail = await cockpitApi.getNodeDetail(
+        row.run.public_run_reference,
+        historyResultNodeId(row.run)
+      );
+      return {
+        workItem: workItemFromDetail(detail),
+        resultSentence: resultSentenceFromDetail(row.workflowName, row.result.kind, detail)
+      };
+    } catch {
+      return { workItem: null, resultSentence: null };
+    }
+  }
+
+  function workItemFromDetail(detail: NodeDetail | null | undefined): HistoryWorkItem | null {
+    if (detail == null || detail.job_base64 == null || detail.job_base64.length === 0) {
+      return null;
+    }
+    const job = decodeUtf8Base64(detail.job_base64);
+    if (job == null) return null;
+    const reference = workItemReferenceFromJob(job);
+    if (reference === null) return null;
+    return {
+      reference,
+      title: null,
+      href: trackerItemHref(reference, sourceConnection)
+    };
+  }
+
+  function resultSentenceFromDetail(
+    workflowName: string,
+    kind: HistoryRow["result"]["kind"],
+    detail: NodeDetail | null | undefined
+  ): string | null {
+    if (detail == null) return null;
+    const encoded =
+      kind === "failed" ? detail.refusal_output?.value_base64 : detail.answer?.value_base64;
+    if (encoded == null || encoded.length === 0) return null;
+    const decoded = decodeUtf8Base64(encoded);
+    if (decoded == null || decoded.length === 0) return null;
+    return historyOutcome(workflowName, decoded);
+  }
+
+  function settledExtrasByReference(
+    loads: ReadonlyMap<string, ExtrasLoad>
+  ): ReadonlyMap<string, HistoryRowExtras> {
+    return new Map(
+      [...loads].flatMap(([reference, load]) =>
+        load.status === "settled" ? [[reference, load.extras] as const] : []
+      )
+    );
+  }
+
+  function whenDayText(day: HistoryWhenDay): string {
+    if (day.kind === "today") return wrapDisplayCopy(historyPageCopy.today);
+    if (day.kind === "yesterday") return wrapDisplayCopy(historyPageCopy.yesterday);
+    return day.weekday;
+  }
+
+  function failedResultCopy(nodeId: string, sentence: string | null, settled: boolean): string {
+    const standing = wrapDisplayCopy(standingWords.failed);
+    if (!settled) return standing;
+    if (sentence !== null) return `${standing} — ${wrapDisplayCopy(sentence)}`;
+    return `${standing} · ${nodeId}`;
   }
 
   function open(publicReference: string) {
@@ -85,11 +217,17 @@
     };
   }
 
+  function runLinkName(row: HistoryRow): string {
+    return `${row.workflowName} ${shortPublicRunReference(row.run.public_run_reference)}`;
+  }
+
+  $: extrasByReference = settledExtrasByReference(extrasLoadByReference);
   $: rows = history.confirmed === null
     ? []
-    : projectHistoryRows(history.confirmed.runs, history.confirmed.workflowNames);
+    : projectHistoryRows(history.confirmed.runs, history.confirmed.workflowNames, extrasByReference);
   $: visibleRows = rows.filter((row) => withinHistoryPeriod(row, now));
   $: showTimestamplessHint = hasTimestamplessRows(visibleRows);
+  $: hasWorkItem = visibleRows.some((row) => row.workItem !== null);
 </script>
 
 <section class="history-page surface" aria-labelledby="history-title">
@@ -123,7 +261,11 @@
         >{wrapDisplayCopy(historyPageCopy.emptyNext)}</a>
       </div>
     {:else}
-      <div class="history-head-row" aria-hidden="true">
+      <div
+        class="history-head-row"
+        class:history-head-no-work-item={!hasWorkItem}
+        aria-hidden="true"
+      >
         <span class="col-when">{wrapDisplayCopy(historyPageCopy.columnWhen)}</span>
         <span class="col-name">{wrapDisplayCopy(historyPageCopy.columnName)}</span>
         <span class="col-work-item">{wrapDisplayCopy(historyPageCopy.columnWorkItem)}</span>
@@ -132,17 +274,26 @@
       </div>
       <ul class="history-rows">
         {#each visibleRows as row (row.run.public_run_reference)}
+          {@const extras = extrasLoadByReference.get(row.run.public_run_reference)}
           <li>
-            <a
+            <div
               class="history-row history-row-{row.result.kind}"
-              href={runPath(row.run.public_run_reference)}
-              onclick={open(row.run.public_run_reference)}
+              class:history-row-no-work-item={row.workItem === null}
             >
+              <a
+                class="history-row-open"
+                href={runPath(row.run.public_run_reference)}
+                onclick={open(row.run.public_run_reference)}
+                title={row.activityAt === null ? undefined : exactLocal(row.activityAt)}
+              >
+                <span class="visually-hidden">{runLinkName(row)}</span>
+              </a>
               <span class="row-when">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnWhen)}: </span>
                 {#if row.activityAt !== null}
+                  {@const when = historyWhenLabel(row.activityAt, now)}
                   <time datetime={row.activityAt} title={exactLocal(row.activityAt)}>
-                    {ageLabel(row.activityAt, now, "ago")}
+                    {whenDayText(when.day)} {when.clock}
                   </time>
                 {:else}
                   {wrapDisplayCopy(historyPageCopy.notRecorded)}
@@ -150,23 +301,34 @@
               </span>
               <span class="row-name">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnName)}: </span>
-                <span class="row-purpose">{row.purpose ?? row.workflowName}</span>
-                {#if row.purpose !== null}
-                  <small class="row-workflow">{row.workflowName}</small>
-                {/if}
+                <span class="row-purpose">{row.workflowName}</span>
               </span>
               <span class="row-work-item">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnWorkItem)}: </span>
-                <!-- Every run reads the honest placeholder until PR #766 projects a
-                     real work item onto a run; nothing here derives one. -->
-                {wrapDisplayCopy(historyPageCopy.workItemPlaceholder)}
+                {#if row.workItem !== null}
+                  {#if row.workItem.href !== null}
+                    <a
+                      class="row-work-item-link"
+                      href={row.workItem.href}
+                      onclick={(event) => event.stopPropagation()}
+                    >{historyWorkItemLabel(row.workItem)}</a>
+                  {:else}
+                    {historyWorkItemLabel(row.workItem)}
+                  {/if}
+                {:else}
+                  {wrapDisplayCopy(historyPageCopy.workItemPlaceholder)}
+                {/if}
               </span>
               <span class="row-result">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnResult)}: </span>
                 {#if row.result.kind === "failed"}
-                  {wrapDisplayCopy(standingWords.failed)} · {row.result.nodeId}
-                {:else}
-                  {wrapDisplayCopy(standingWords.done)}
+                  {failedResultCopy(row.result.nodeId, row.result.sentence, extras?.status === "settled")}
+                {:else if extras?.status === "settled"}
+                  {#if row.result.sentence !== null}
+                    {wrapDisplayCopy(row.result.sentence)}
+                  {:else}
+                    {wrapDisplayCopy(historyPageCopy.notRecorded)}
+                  {/if}
                 {/if}
               </span>
               <span class="row-duration">
@@ -177,7 +339,8 @@
                   {wrapDisplayCopy(historyPageCopy.notRecorded)}
                 {/if}
               </span>
-            </a>
+              <span class="row-run" aria-hidden="true">{shortPublicRunReference(row.run.public_run_reference)}</span>
+            </div>
           </li>
         {/each}
       </ul>
@@ -236,14 +399,15 @@
     width: var(--name-column);
   }
 
-  .col-when {
+  .col-when,
+  .row-when {
     flex: none;
-    width: var(--when-column);
+    width: var(--history-when-column);
   }
 
   .col-work-item {
     flex: none;
-    width: var(--work-item-column);
+    width: var(--history-work-item-column);
   }
 
   .col-result {
@@ -270,6 +434,7 @@
   }
 
   .history-row {
+    position: relative;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -281,21 +446,28 @@
     border-radius: var(--r-lg);
     background: var(--panel2);
     color: inherit;
-    text-decoration: none;
     box-shadow: var(--shadow);
   }
 
+  .history-row-open {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    border-radius: inherit;
+  }
+
   .row-name {
+    position: relative;
+    z-index: 0;
     display: flex;
     flex: none;
     flex-direction: column;
     width: var(--name-column);
     min-width: 0;
+    pointer-events: none;
   }
 
-  /* The purpose line (mockup v8 §05: "Purpose (the order sentence)"); it can
-     be as terse as one order's own name today (#717's honest first slice), so
-     it stays on one line rather than wrapping. */
+  /* A long workflow name stays on one line rather than wrapping. */
   .row-purpose {
     overflow: hidden;
     font-weight: var(--weight-strong);
@@ -303,37 +475,30 @@
     white-space: nowrap;
   }
 
-  /* "…, workflow small beneath" (mockup v8 §05): the recipe name, dim and
-     smaller, shown only when the purpose line above says something the
-     workflow name does not already say on its own. */
-  .row-workflow {
-    overflow: hidden;
-    font-size: var(--text-xs);
-    color: var(--ink-dim);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  /* Relative reading, exact local time on hover/title -- the same age/exact
-     split every other timestamp on this surface already draws (`when.ts`). */
+  /* Calendar-clock fragments, exact local time on hover/title. */
   .row-when {
-    flex: none;
-    width: var(--when-column);
+    position: relative;
+    z-index: 0;
     color: var(--ink-dim);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    white-space: nowrap;
   }
 
-  /* Never an ellipsis (REQ-UI-13): a failed row's node id can run long, so the
+  /* Never an ellipsis (REQ-UI-13): a result sentence can run long, so the
      cell wraps and is clamped to two lines instead of being cut mid-word; the
-     run page shows the id in full. */
+     run page shows the sentence in full. */
   .row-result {
     display: -webkit-box;
+    position: relative;
+    z-index: 0;
     flex: 1;
     min-width: 0;
     overflow: hidden;
     color: var(--ink-dim);
     font-size: var(--text-sm);
+    pointer-events: none;
     overflow-wrap: anywhere;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
@@ -345,21 +510,53 @@
   }
 
   .row-work-item {
+    position: relative;
+    z-index: 2;
     flex: none;
-    width: var(--work-item-column);
+    width: var(--history-work-item-column);
     overflow: hidden;
     color: var(--ink-dim);
     font-size: var(--text-xs);
+    pointer-events: none;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
+  .row-work-item-link {
+    pointer-events: auto;
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .row-work-item-link:hover,
+  .row-work-item-link:focus-visible {
+    text-decoration: underline;
+  }
+
   .row-duration {
+    position: relative;
+    z-index: 0;
     flex: none;
     width: var(--duration-column);
     color: var(--ink-dim);
     font-size: var(--text-xs);
+    pointer-events: none;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Dim trailing token: the run's public reference, shortened the way the
+     run view shortens hashes. Not a new column — the row already leads to
+     its run. */
+  .row-run {
+    position: relative;
+    z-index: 0;
+    flex: none;
+    overflow: hidden;
+    color: var(--ink-faint);
+    font-size: var(--text-2xs);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    white-space: nowrap;
   }
 
   .timestampless-hint {
@@ -370,10 +567,9 @@
 
   /**
    * Names each row's fragments (When/Purpose/Work item/Result/Duration) for a
-   * screen reader without repeating the header aloud for every row --
-   * sighted eyes already read the column from `.history-head-row`'s
-   * alignment, and duplicating that header once per row would be visual
-   * noise rather than a label.
+   * screen reader. At wide widths sighted eyes read the column from
+   * `.history-head-row`; at the card layout that header is hidden, so these
+   * labels remain the accessible names.
    */
   .visually-hidden {
     position: absolute;
@@ -387,19 +583,25 @@
     border: 0;
   }
 
-  /* The header keeps naming its columns at every width (operator ruling
-     23.08.): a promise a narrow screen hides while the data still sits in
-     columns is a geometry the header no longer honestly describes. Duration
-     is the one column dropped at this width, so Result -- the fact that must
-     never truncate -- gets the room instead (issue #717). Work item drops
-     with it, but only because it is empty: mockup v8 §05's own narrow layout
-     hides an unfilled work item cell the same way. Once PR #766 lets a row
-     carry a real one, this rule needs the mockup's own answer for a filled
-     cell (a second line spanning the row), not silent disappearance -- named
-     here as that PR's own gap, not solved by guessing at it now. */
+  /* Cards do not need column headers at this width: hide the header row
+     (operator live acceptance 28.08.). Duration drops. Work item drops
+     only when it is the placeholder; a filled cell stays. The row stacks
+     so When, work item and Result each keep a readable line instead of
+     Result collapsing to a glyph (mockup v8 §05 at 390). */
   @media (max-width: 32rem) {
+    .history-head-row {
+      display: none;
+    }
+
+    .history-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      align-items: start;
+    }
+
     .row-name {
-      flex: 1 1 auto;
+      grid-column: 1;
+      grid-row: 1;
       width: auto;
       min-width: 0;
     }
@@ -408,10 +610,37 @@
       width: var(--name-column-narrow);
     }
 
+    .row-when {
+      grid-column: 2;
+      grid-row: 1;
+      width: auto;
+      text-align: right;
+    }
+
+    .row-run {
+      grid-column: 3;
+      grid-row: 1;
+    }
+
+    .row-work-item {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      width: auto;
+    }
+
+    .row-result {
+      grid-column: 1 / -1;
+      grid-row: 3;
+      flex: none;
+    }
+
     .row-duration,
-    .col-duration,
-    .row-work-item,
-    .col-work-item {
+    .col-duration {
+      display: none;
+    }
+
+    .history-row-no-work-item .row-work-item,
+    .history-head-no-work-item .col-work-item {
       display: none;
     }
   }

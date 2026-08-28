@@ -58,4 +58,4 @@ nodes:
       - name: result
         schema:
           ref: refine_result
-          revision: "78f077ab2f012073fb63047f1a5f8af1f66fb8dc0cb3e220237b82fe49d112e1"
+          revision: "efa110e1a6424bdb0eb3b3129c0dfab5f16622919829c70b20a9c3242ec6ea60"

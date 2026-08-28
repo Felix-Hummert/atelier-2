@@ -4,6 +4,10 @@ import type { RunV1, RunV3 } from "../../src/api/client";
 import {
   HISTORY_PERIOD_DAYS,
   hasTimestamplessRows,
+  historyResultNodeId,
+  historyWhenLabel,
+  historyWorkItemLabel,
+  presentHistoryRow,
   projectHistoryRows,
   withinHistoryPeriod
 } from "../../src/lib/historyRows";
@@ -76,40 +80,78 @@ describe("projecting History's finished-run rows", () => {
     expect(unresolved[0]?.workflowName).toBe("named-run");
   });
 
-  it("names a V3 run's purpose from its own orders, joined, without reading a node or parsing a job", () => {
-    const [row] = projectHistoryRows(
-      [v3Run({ orders: [{ name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) }] })],
-      null
-    );
-
-    expect(row?.purpose).toBe("diff");
-
-    const [multiOrderRow] = projectHistoryRows(
+  it("never treats joined order names as purpose; a V3 run with orders still names only the resolved workflow or run-id fallback", () => {
+    const [named] = projectHistoryRows(
       [
         v3Run({
           orders: [
+            { name: "context", bytes: 12, schema_revision_hash: "d".repeat(64) },
             { name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) },
-            { name: "target_file", bytes: 6, schema_revision_hash: "d".repeat(64) }
+            { name: "review_questions", bytes: 6, schema_revision_hash: "d".repeat(64) }
           ]
         })
       ],
+      new Map([[revisionHash, "code-review"]])
+    );
+    expect(named?.workflowName).toBe("code-review");
+
+    const [unresolved] = projectHistoryRows(
+      [
+        v3Run({
+          run_id: "named-run",
+          orders: [{ name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) }]
+        })
+      ],
+      new Map()
+    );
+    expect(unresolved?.workflowName).toBe("named-run");
+  });
+
+  it.each([
+    [
+      "nonempty extras.workItem",
+      {
+        workItem: { reference: "gh:510", title: null, href: null },
+        resultSentence: null as string | null
+      },
+      { reference: "gh:510", title: null, href: null }
+    ],
+    ["empty extras.workItem reference", { workItem: { reference: "", title: null, href: null }, resultSentence: null }, null],
+    ["no extras", undefined, null]
+  ] as const)("workItem is %s", (_name, extras, expected) => {
+    const row =
+      extras === undefined
+        ? presentHistoryRow(v3Run(), null)
+        : presentHistoryRow(v3Run(), null, extras);
+    expect(row.workItem).toEqual(expected);
+  });
+
+  it("labels a work item as the adapter grammar, plus title only when extras supplied one", () => {
+    expect(historyWorkItemLabel({ reference: "gh:567", title: null, href: null })).toBe("#567");
+    expect(
+      historyWorkItemLabel({
+        reference: "gh:567",
+        title: "Verbinden/Lösen/Token-Türen",
+        href: "https://github.com/FlexOr2/atelier-2/issues/567"
+      })
+    ).toBe("#567 Verbinden/Lösen/Token-Türen");
+  });
+
+  it("never derives workItem from order names", () => {
+    const row = presentHistoryRow(
+      v3Run({ orders: [{ name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) }] }),
       null
     );
-    expect(multiOrderRow?.purpose).toBe("diff, target_file");
+    expect(row.workItem).toBeNull();
   });
 
-  it("names no purpose for a run started with no orders, or a V1 run that carries none at all", () => {
-    const [v3NoOrders] = projectHistoryRows([v3Run({ orders: [] })], null);
-    expect(v3NoOrders?.purpose).toBeNull();
-
-    const [v1Row] = projectHistoryRows([completedRun()], null);
-    expect(v1Row?.purpose).toBeNull();
-  });
-
-  it("reads Completed for a completed run and the failed node for a failed one", () => {
+  it("reads a completed result with a null sentence until extras supply one", () => {
     const [completed] = projectHistoryRows([v3Run()], null);
-    expect(completed?.result).toEqual({ kind: "completed" });
+    expect(completed?.result).toEqual({ kind: "completed", sentence: null });
+    expect(historyResultNodeId(v3Run())).toBe("final");
+  });
 
+  it("reads a failed result with its node id, and keeps extras.sentence in full", () => {
     const failed = v3Run({
       state: "FAILED",
       node_rail: [
@@ -117,8 +159,20 @@ describe("projecting History's finished-run rows", () => {
         { node_id: "review", state: "failed", attempt: null }
       ]
     });
-    const [failedRow] = projectHistoryRows([failed], null);
-    expect(failedRow?.result).toEqual({ kind: "failed", nodeId: "review" });
+    const long = "x".repeat(5_000);
+    const withSentence = presentHistoryRow(failed, null, {
+      workItem: null,
+      resultSentence: long
+    });
+    expect(withSentence.result).toEqual({ kind: "failed", nodeId: "review", sentence: long });
+    expect(withSentence.result.kind === "failed" && withSentence.result.sentence?.length).toBe(5_000);
+
+    const withoutSentence = presentHistoryRow(failed, null, {
+      workItem: null,
+      resultSentence: null
+    });
+    expect(withoutSentence.result).toEqual({ kind: "failed", nodeId: "review", sentence: null });
+    expect(historyResultNodeId(failed)).toBe("review");
   });
 
   it("reads the current node as the failed one for a V1 run, which carries no rail", () => {
@@ -127,7 +181,9 @@ describe("projecting History's finished-run rows", () => {
     expect(row?.result.kind).toBe("failed");
     if (row?.result.kind === "failed") {
       expect(row.result.nodeId).toBe(v1Failed().current_node.node_id);
+      expect(row.result.sentence).toBeNull();
     }
+    expect(historyResultNodeId(v1Failed())).toBe(v1Failed().current_node.node_id);
   });
 
   it("gives a duration span only for a real V3 pair, never guessed for V1 or a partial V3 row", () => {
@@ -142,6 +198,32 @@ describe("projecting History's finished-run rows", () => {
     expect(wholeRow?.span).toEqual({
       startedAt: "2026-08-18T15:00:00Z",
       endedAt: "2026-08-18T15:38:00Z"
+    });
+  });
+
+  it("tells two same-workflow finished runs apart by their local clock", () => {
+    const now = new Date("2026-08-18T16:00:00Z");
+    const earlier = historyWhenLabel("2026-08-18T15:38:00Z", now);
+    const later = historyWhenLabel("2026-08-18T15:38:01Z", now);
+    expect(earlier.clock).not.toBe(later.clock);
+  });
+});
+
+describe("historyWhenLabel names local calendar-clock fragments", () => {
+  const now = new Date(2026, 7, 25, 18, 0, 0);
+
+  it.each([
+    ["today", new Date(2026, 7, 25, 9, 5, 7), { kind: "today" as const }, "09:05:07"],
+    ["yesterday", new Date(2026, 7, 24, 23, 59, 1), { kind: "yesterday" as const }, "23:59:01"]
+  ])("reads %s from the local calendar day", (_name, at, day, clock) => {
+    expect(historyWhenLabel(at.toISOString(), now)).toEqual({ day, clock });
+  });
+
+  it("reads any other local day as that locale's short weekday", () => {
+    const at = new Date(2026, 7, 20, 8, 0, 1);
+    expect(historyWhenLabel(at.toISOString(), now)).toEqual({
+      day: { kind: "weekday", weekday: at.toLocaleDateString(undefined, { weekday: "short" }) },
+      clock: "08:00:01"
     });
   });
 });

@@ -47,4 +47,4 @@ nodes:
       - name: result
         schema:
           ref: plan_review_result
-          revision: "3d158d6fde7dcda7178f489237f573ec4a1bee7c5e7d900f55f8cecbca407097"
+          revision: "24047faf4bda64a285d13abd3ae40229aee9258bf8bd488ce63863d542c877f6"
