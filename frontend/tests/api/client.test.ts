@@ -1093,6 +1093,7 @@ describe("forking a finished run from a node", () => {
       state_version: 1,
       state: "STARTED",
       current_node_id: "review",
+      current_node_execution_id: "e".repeat(64),
       node_rail: [
         {
           node_id: "implement",
