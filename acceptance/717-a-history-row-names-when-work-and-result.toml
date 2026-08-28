@@ -1,0 +1,7 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/717"
+
+[[sentence]]
+id = "a-history-row-names-when-work-and-result"
+requirement = "REQ-UI-13"
+text = "A History row for a finished run names when it ran, the work it was about or an em dash, and what came of it rather than only whether it ended."

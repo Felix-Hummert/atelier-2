@@ -134,6 +134,13 @@
   line-height: var(--leading-body);
 }
 
+/* History's When/Work-item columns are this surface's, not the shared
+   --when-column / --work-item-column. */
+.history-page {
+  --history-when-column: 11.5rem;
+  --history-work-item-column: 8rem;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
