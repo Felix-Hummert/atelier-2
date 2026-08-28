@@ -10,6 +10,7 @@ import {
 } from "../../src/lib/connectionState";
 import { MutationJournal } from "../../src/lib/mutationJournal";
 import { wrapDisplayCopy } from "../../src/lib/displayCopy";
+import { shortPublicRunReference } from "../../src/lib/fingerprint";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { historyOutcome } from "../../src/lib/historyOutcome";
 import { historyWhenLabel } from "../../src/lib/historyRows";
@@ -275,6 +276,9 @@ describe("History shows only what has finished", () => {
     expect(row.querySelector("time")?.textContent).toContain(historyPageCopy.today);
     expect(row.querySelector("time")?.textContent).toContain(expectedWhen.clock);
     expect(row.textContent).not.toContain("just now");
+    expect(row.querySelector(".row-run")?.textContent).toContain(
+      shortPublicRunReference(publicReference)
+    );
     expect(row.textContent).not.toContain(standingWords.done);
     expect(row.textContent).not.toContain("PR merged");
     expect(row.textContent).not.toContain("job bytes must never become the result");
@@ -533,6 +537,64 @@ describe("History shows only what has finished", () => {
     });
     const firstRow = historyCardByRun("run1.YQ");
     const secondRow = historyCardByRun("run1.Yg");
+    expect(firstRow.textContent).not.toBe(secondRow.textContent);
+  });
+
+  it("renders two runs identical in time, work item and outcome as different rows", async () => {
+    const ended = minutesAgo(5);
+    const started = minutesAgo(10);
+    const first = v3Run({
+      public_run_reference: "run1.YQ",
+      run_id: "alpha",
+      started_at: started,
+      ended_at: ended
+    });
+    const second = v3Run({
+      public_run_reference: "run1.Yg",
+      run_id: "beta",
+      started_at: started,
+      ended_at: ended
+    });
+    const getNodeDetail = vi.fn(async (reference: string) =>
+      nodeDetail({
+        public_run_reference: reference,
+        job_base64: btoa(jobWithWorkItem("gh:567")),
+        answer: {
+          value_base64: btoa(codeReviewAnswer("approve", [])),
+          value_hash: "f".repeat(64)
+        }
+      })
+    );
+    openHistory({ completed: [first, second] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("code-review")),
+      getNodeDetail
+    });
+
+    await waitFor(() => {
+      expect(historyCardByRun("run1.YQ").querySelector(".row-result")?.textContent).toContain(
+        historyPageCopy.outcome.approved
+      );
+      expect(historyCardByRun("run1.Yg").querySelector(".row-result")?.textContent).toContain(
+        historyPageCopy.outcome.approved
+      );
+    });
+    const firstRow = historyCardByRun("run1.YQ");
+    const secondRow = historyCardByRun("run1.Yg");
+    expect(firstRow.querySelector(".row-when")?.textContent).toBe(
+      secondRow.querySelector(".row-when")?.textContent
+    );
+    expect(firstRow.querySelector(".row-work-item")?.textContent).toBe(
+      secondRow.querySelector(".row-work-item")?.textContent
+    );
+    expect(firstRow.querySelector(".row-result")?.textContent).toBe(
+      secondRow.querySelector(".row-result")?.textContent
+    );
+    expect(firstRow.querySelector(".row-run")?.textContent).toContain(
+      shortPublicRunReference("run1.YQ")
+    );
+    expect(secondRow.querySelector(".row-run")?.textContent).toContain(
+      shortPublicRunReference("run1.Yg")
+    );
     expect(firstRow.textContent).not.toBe(secondRow.textContent);
   });
 

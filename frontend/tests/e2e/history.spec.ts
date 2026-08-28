@@ -1,5 +1,6 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
+import { shortPublicRunReference } from "../../src/lib/fingerprint";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
 import { historyWhenLabel } from "../../src/lib/historyRows";
 import { WORK_ITEM_ORDER_SCHEMA_REVISION } from "../../src/lib/orderSchema";
@@ -17,6 +18,49 @@ const WORK_ITEM_SCHEMA_DOCUMENT =
 
 function historyCards(page: Page, workflowName: string) {
   return page.locator(".history-row").filter({ hasText: workflowName });
+}
+
+/** Characters actually painted in the element's box, skipping visually-hidden copy. */
+async function renderedText(locator: Locator): Promise<string> {
+  return locator.evaluate((element) => {
+    const root = element.getBoundingClientRect();
+    const range = document.createRange();
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let visible = "";
+    let node = walker.nextNode();
+    while (node !== null) {
+      let ancestor = node.parentElement;
+      let skip = false;
+      while (ancestor !== null && element.contains(ancestor)) {
+        if (ancestor.classList.contains("visually-hidden")) {
+          skip = true;
+          break;
+        }
+        ancestor = ancestor.parentElement;
+      }
+      if (!skip) {
+        const text = node.textContent ?? "";
+        for (let index = 0; index < text.length; index += 1) {
+          range.setStart(node, index);
+          range.setEnd(node, index + 1);
+          for (const rect of range.getClientRects()) {
+            if (rect.width < 0.5 || rect.height < 0.5) continue;
+            const intersects =
+              rect.left < root.right - 0.5 &&
+              rect.right > root.left + 0.5 &&
+              rect.top < root.bottom - 0.5 &&
+              rect.bottom > root.top + 0.5;
+            if (intersects) {
+              visible += text[index] ?? "";
+              break;
+            }
+          }
+        }
+      }
+      node = walker.nextNode();
+    }
+    return visible.replace(/\s+/g, " ").trim();
+  });
 }
 
 async function anyJsonSchema(page: Page): Promise<string> {
@@ -194,7 +238,7 @@ test("proves(a-history-row-names-when-work-and-result): two finished runs of the
   await expect(async () => {
     expect(historyWhenLabel(new Date().toISOString(), new Date()).clock).not.toBe(firstClock);
   }).toPass({ timeout: 2_500 });
-  await startCompletedRun(page, `history-717/second-${token}`, revisionHash, agentHash);
+  const second = await startCompletedRun(page, `history-717/second-${token}`, revisionHash, agentHash);
 
   for (const viewport of VIEWPORTS) {
     await page.setViewportSize(viewport);
@@ -213,6 +257,17 @@ test("proves(a-history-row-names-when-work-and-result): two finished runs of the
     const firstText = await rows.nth(0).innerText();
     const secondText = await rows.nth(1).innerText();
     expect(firstText).not.toBe(secondText);
+    const tokens = [
+      (await rows.nth(0).locator(".row-run").textContent())?.trim(),
+      (await rows.nth(1).locator(".row-run").textContent())?.trim()
+    ];
+    expect(tokens[0]).not.toBe(tokens[1]);
+    expect(new Set(tokens)).toEqual(
+      new Set([
+        shortPublicRunReference(first.reference),
+        shortPublicRunReference(second.reference)
+      ])
+    );
 
     if (viewport.width === 390) {
       const documentWidth = await page.evaluate(() => document.documentElement.scrollWidth);
@@ -305,6 +360,13 @@ test("a populated History row at 390 names the work item and stays inside the vi
   await expect(row.locator(".row-work-item")).not.toContainText("e2e observed work item");
   await expect(row.locator(".row-result")).toContainText(historyPageCopy.outcome.text);
   await expect(row.locator(".row-result")).not.toContainText(RAW_PROVIDER_BYTES);
+  const whenRendered = await renderedText(row.locator(".row-when"));
+  const workItemRendered = await renderedText(row.locator(".row-work-item"));
+  const resultRendered = await renderedText(row.locator(".row-result"));
+  expect(whenRendered.length).toBeGreaterThan(1);
+  expect(workItemRendered).toContain("#450");
+  expect(resultRendered).toContain(historyPageCopy.outcome.text);
+  expect(resultRendered.length).toBeGreaterThan(1);
   const documentWidth = await page.evaluate(() => document.documentElement.scrollWidth);
   const viewportWidth = await page.evaluate(() => document.documentElement.clientWidth);
   expect(documentWidth).toBeLessThanOrEqual(viewportWidth);

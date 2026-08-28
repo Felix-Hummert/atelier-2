@@ -5,6 +5,7 @@
   import { connectionState, onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
   import { decodeUtf8Base64 } from "../lib/exactBytes";
+  import { shortPublicRunReference } from "../lib/fingerprint";
   import {
     HISTORY_PERIOD_DAYS,
     hasTimestamplessRows,
@@ -217,7 +218,8 @@
   }
 
   function runLinkName(row: HistoryRow): string {
-    return row.purpose !== null ? `${row.purpose} ${row.workflowName}` : row.workflowName;
+    const name = row.purpose !== null ? `${row.purpose} ${row.workflowName}` : row.workflowName;
+    return `${name} ${shortPublicRunReference(row.run.public_run_reference)}`;
   }
 
   $: extrasByReference = settledExtrasByReference(extrasLoadByReference);
@@ -341,6 +343,7 @@
                   {wrapDisplayCopy(historyPageCopy.notRecorded)}
                 {/if}
               </span>
+              <span class="row-run" aria-hidden="true">{shortPublicRunReference(row.run.public_run_reference)}</span>
             </div>
           </li>
         {/each}
@@ -558,6 +561,21 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* Dim trailing token: the run's public reference, shortened the way the
+     run view shortens hashes. Not a new column — the row already leads to
+     its run. */
+  .row-run {
+    position: relative;
+    z-index: 0;
+    flex: none;
+    overflow: hidden;
+    color: var(--ink-faint);
+    font-size: var(--text-2xs);
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+
   .timestampless-hint {
     margin: 0;
     color: var(--ink-dim);
@@ -584,18 +602,50 @@
   }
 
   /* The header keeps naming its columns at every width (operator ruling
-     23.08.). Duration drops at this width so Result -- the fact that must
-     never truncate -- gets the room. Work item drops only when it is the
-     placeholder; a filled cell stays. */
+     23.08.). Duration drops at this width. Work item drops only when it is
+     the placeholder; a filled cell stays. The row stacks so When, work
+     item and Result each keep a readable line instead of Result collapsing
+     to a glyph (mockup v8 §05 at 390). */
   @media (max-width: 32rem) {
+    .history-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      align-items: start;
+    }
+
     .row-name {
-      flex: 1 1 auto;
+      grid-column: 1;
+      grid-row: 1;
       width: auto;
       min-width: 0;
     }
 
     .col-name {
       width: var(--name-column-narrow);
+    }
+
+    .row-when {
+      grid-column: 2;
+      grid-row: 1;
+      width: auto;
+      text-align: right;
+    }
+
+    .row-run {
+      grid-column: 3;
+      grid-row: 1;
+    }
+
+    .row-work-item {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      width: auto;
+    }
+
+    .row-result {
+      grid-column: 1 / -1;
+      grid-row: 3;
+      flex: none;
     }
 
     .row-duration,
