@@ -27,6 +27,8 @@ import {
   projectModelResolutionSchema,
   projectListSchema,
   projectResourceSchema,
+  projectSourceListSchema,
+  projectSourceResourceSchema,
   nodeDetailSchema,
   nodeRailEntrySchema,
   toolCalledEventSchema,
@@ -374,6 +376,63 @@ describe("the served vocabulary", () => {
         items: [{ public_project_reference: "project1.dGVhbS9yZWQ" }]
       })
     ).toEqual({ items: [{ public_project_reference: "project1.dGVhbS9yZWQ" }] });
+  });
+
+  it("decodes exactly the project-source collection the server serves", () => {
+    const resource = servedDocument.components.schemas.ProjectSourceResource;
+    const collection = servedDocument.components.schemas.ProjectSourceListResource as {
+      properties?: { items?: { maxItems?: number } };
+    };
+    const publicReference = servedDocument.components.schemas.PublicSourceReference as {
+      maxLength: number;
+      pattern: string;
+    };
+    const longestReference = `source1.${"A".repeat(
+      publicReference.maxLength - "source1.".length
+    )}`;
+    const sample = {
+      public_source_reference: "source1.MzgwZjI3YTEtNmRlMC01NjNkLTQwYWItYzg1MzBmOWMyNWNj",
+      kind: "github",
+      address: "FlexOr2/atelier-2",
+      revision: 2,
+      auth_method: "personal-access-token"
+    };
+
+    expect(Object.keys(projectSourceResourceSchema.shape).sort()).toEqual(
+      Object.keys(resource?.properties ?? {}).sort()
+    );
+    expect(Object.keys(projectSourceListSchema.shape).sort()).toEqual(
+      Object.keys(collection.properties ?? {}).sort()
+    );
+    expect(collection.properties?.items?.maxItems).toBe(1);
+    expect(new RegExp(publicReference.pattern).test(longestReference)).toBe(true);
+    expect(
+      projectSourceResourceSchema.safeParse({
+        ...sample,
+        public_source_reference: longestReference,
+        connected_at: null
+      }).success
+    ).toBe(true);
+    expect(
+      projectSourceResourceSchema.safeParse({
+        ...sample,
+        public_source_reference: `${longestReference}A`
+      }).success
+    ).toBe(false);
+    expect(projectSourceResourceSchema.parse(sample)).toEqual({
+      ...sample,
+      scope: "issues",
+      connected_at: null
+    });
+    expect(
+      projectSourceListSchema.parse({ items: [{ ...sample, scope: "issues", connected_at: null }] })
+    ).toEqual({ items: [{ ...sample, scope: "issues", connected_at: null }] });
+    expect(
+      projectSourceListSchema.safeParse({ items: [sample, sample] }).success
+    ).toBe(true);
+    expect(
+      projectSourceResourceSchema.safeParse({ ...sample, extra: true }).success
+    ).toBe(false);
   });
 
   it("decodes exactly the model configuration resources the server serves", () => {

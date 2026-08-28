@@ -24,3 +24,8 @@ text = "Disconnect appends one disconnected revision and repeated DELETE returns
 [[sentence]]
 id = "legacy-connection-unknowns-stay-null-and-private"
 text = "A preserved legacy current row may expose a null connection instant, while migration relocates its embedded GitHub branch into a private source-ref detail that remains absent from every public projection."
+
+[[sentence]]
+id = "settings-source-doors-follow-the-blessed-picture"
+requirement = "REQ-UI-25"
+text = "In Settings the operator connects a source through the pictured sheet, sees one project row without a branch or an auth column, disconnects only after a confirmation that names what stays, renews the token without losing the row, and a refused token shows an error with one next step."

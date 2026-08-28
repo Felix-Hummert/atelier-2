@@ -1,9 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { readStateCopy, retryLabel } from "../../src/lib/readStateCopy";
+import { THE_ONE_PROJECT } from "../../src/lib/project";
 import {
   accountChoice,
   difficultyLabel,
+  disconnectTitle,
   noSuchModel,
   providerAccount,
   retainedAccountChoice,
@@ -142,6 +144,24 @@ async function routeSettings(
       project_source_connection_revision_hash: "e".repeat(64)
     }
   }));
+  await page.route("**/atelier/api/v1/projects/*/sources", (route) => {
+    if (route.request().method() !== "GET") {
+      return route.fallback();
+    }
+    return route.fulfill({
+      json: {
+        items: [{
+          public_source_reference: "source1.MzgwZjI3YTEtNmRlMC01NjNkLTQwYWItYzg1MzBmOWMyNWNj",
+          kind: "github",
+          address: "FlexOr2/atelier-2",
+          scope: "issues",
+          connected_at: null,
+          revision: 2,
+          auth_method: "personal-access-token"
+        }]
+      }
+    });
+  });
   await page.route("**/atelier/api/v1/agent-configuration-revisions*", (route) => route.fulfill({
     json: {
       items: [{
@@ -574,5 +594,202 @@ test("proves(settings-adds-a-model-by-id-and-shows-its-check-state): Settings ad
     await row.getByRole("button", { name: settingsPageCopy.remove }).click();
     await expect(page.getByText(newId, { exact: true })).toHaveCount(0);
     await expect(page.getByText(fixture.modelId, { exact: true })).toBeVisible();
+  }
+});
+
+
+const picturedAddress = "FlexOr2/atelier-2";
+const picturedSource = {
+  public_source_reference: "source1.MzgwZjI3YTEtNmRlMC01NjNkLTQwYWItYzg1MzBmOWMyNWNj",
+  kind: "github",
+  address: picturedAddress,
+  scope: "issues",
+  connected_at: null,
+  revision: 2,
+  auth_method: "personal-access-token"
+};
+
+async function routePicturedSourceDoors(
+  page: Page,
+  successfulWrite?: { promise: Promise<void>; release: () => void }
+): Promise<void> {
+  await routeSettings(page);
+  let items: Array<typeof picturedSource> = [];
+  await page.route("**/atelier/api/v1/projects/*/sources", async (route) => {
+    const method = route.request().method();
+    if (method === "GET") {
+      await route.fulfill({ json: { items } });
+      return;
+    }
+    if (method === "POST") {
+      const body = JSON.parse(route.request().postData() ?? "") as {
+        address?: string;
+        token?: string;
+        kind?: string;
+      };
+      expect(Object.keys(body).sort()).toEqual(["address", "token"]);
+      expect(body.kind).toBeUndefined();
+      expect(typeof body.token).toBe("string");
+      expect(body.token?.length).toBeGreaterThan(0);
+      if (body.token === "refused-token") {
+        await route.fulfill({
+          status: 422,
+          contentType: "application/problem+json",
+          json: {
+            type: "urn:atelier2:problem:v1:project-source-token-refused",
+            title: "Project source token refused",
+            status: 422,
+            detail: "The provider refused this token."
+          }
+        });
+        return;
+      }
+      if (successfulWrite !== undefined) {
+        await successfulWrite.promise;
+      }
+      items = [{ ...picturedSource, address: body.address ?? picturedAddress, revision: 1 }];
+      await route.fulfill({ status: 201, json: items[0] });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route("**/atelier/api/v1/projects/*/sources/*/token", async (route) => {
+    if (route.request().method() !== "PUT") {
+      await route.fallback();
+      return;
+    }
+    const body = JSON.parse(route.request().postData() ?? "") as { token?: string };
+    expect(Object.keys(body)).toEqual(["token"]);
+    expect(typeof body.token).toBe("string");
+    if (body.token === "refused-token") {
+      await route.fulfill({
+        status: 422,
+        contentType: "application/problem+json",
+        json: {
+          type: "urn:atelier2:problem:v1:project-source-token-refused",
+          title: "Project source token refused",
+          status: 422,
+          detail: "The provider refused this token."
+        }
+      });
+      return;
+    }
+    const current = items[0] ?? picturedSource;
+    await route.fulfill({ json: current });
+  });
+  await page.route("**/atelier/api/v1/projects/*/sources/*", async (route) => {
+    if (route.request().method() !== "DELETE") {
+      await route.fallback();
+      return;
+    }
+    items = [];
+    await route.fulfill({ status: 204, body: "" });
+  });
+}
+
+test("proves(settings-source-doors-follow-the-blessed-picture): Settings connects, shows one source row, disconnects after naming what stays, renews the token, and shows a refused-token error", async ({ page }) => {
+  test.setTimeout(120_000);
+
+  for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+    const successfulWrite = delayedReadGate();
+    await routePicturedSourceDoors(page, successfulWrite);
+    await page.setViewportSize(viewport);
+    await page.goto("/atelier/settings");
+    await expect(page.getByRole("heading", { name: settingsPageCopy.sourcesTitle })).toBeVisible();
+    await expect(page.getByRole("button", { name: settingsPageCopy.connectASource })).toBeVisible();
+    await page.screenshot({
+      path: `test-results/settings-${viewport.width}-source-doors-empty.png`,
+      fullPage: true
+    });
+
+    await page.getByRole("button", { name: settingsPageCopy.connectASource }).click();
+    const connectDialog = page.getByRole("dialog", { name: settingsPageCopy.connectASource });
+    await expect(connectDialog).toBeVisible();
+    const box = await connectDialog.boundingBox();
+    expect(box).not.toBeNull();
+    if (box === null) throw new Error("connect-source sheet has no box");
+    if (viewport.width === 1280) {
+      expect(Math.abs(viewport.width - (box.x + box.width))).toBeLessThanOrEqual(24);
+    } else {
+      expect(Math.abs(viewport.height - (box.y + box.height))).toBeLessThanOrEqual(24);
+    }
+    await page.screenshot({
+      path: `test-results/settings-${viewport.width}-source-doors-connect.png`,
+      fullPage: true
+    });
+
+    await connectDialog.getByRole("textbox", { name: settingsPageCopy.where }).fill(picturedAddress);
+    await connectDialog.getByLabel(settingsPageCopy.token).fill("refused-token");
+    await connectDialog.getByRole("button", { name: settingsPageCopy.connect, exact: true }).click();
+    await expect(connectDialog.getByText(settingsPageCopy.tokenRefused)).toBeVisible();
+    await expect(connectDialog.getByRole("button", { name: settingsPageCopy.renewToken })).toBeVisible();
+    await expect(connectDialog.getByLabel(settingsPageCopy.token)).toHaveAttribute("type", "password");
+    await expect(connectDialog).not.toContainText("refused-token");
+
+    await connectDialog.getByLabel(settingsPageCopy.token).fill("good-token");
+    const connectWrite = connectDialog.getByRole("button", { name: settingsPageCopy.connect, exact: true }).click();
+    try {
+      await expect(connectDialog.getByText(settingsPageCopy.running)).toBeVisible();
+    } finally {
+      successfulWrite.release();
+    }
+    await connectWrite;
+    await expect(connectDialog).toHaveCount(0);
+
+    const row = page.locator(".source-row").filter({ hasText: picturedAddress });
+    await expect(row).toBeVisible();
+    await expect(row.getByText(`${settingsPageCopy.github} · ${picturedAddress}`)).toBeVisible();
+    await expect(row).toContainText(settingsPageCopy.issues);
+    await expect(row).toContainText(settingsPageCopy.connectionTimeNotRecorded);
+    await expect(row).not.toContainText("personal-access-token");
+    await expect(row).not.toContainText("@");
+    await expect(page.getByText(settingsPageCopy.sourceAuthMethod)).toHaveCount(0);
+    await page.screenshot({
+      path: `test-results/settings-${viewport.width}-source-doors-row.png`,
+      fullPage: true
+    });
+
+    await row.getByRole("button", { name: settingsPageCopy.renewToken }).click();
+    const renewDialog = page.getByRole("dialog", { name: settingsPageCopy.renewToken });
+    await expect(renewDialog).toBeVisible();
+    await renewDialog.getByLabel(settingsPageCopy.token).fill("next-token");
+    await renewDialog.getByRole("button", { name: settingsPageCopy.renewToken, exact: true }).click();
+    await expect(renewDialog).toHaveCount(0);
+    await expect(row.getByText(`${settingsPageCopy.github} · ${picturedAddress}`)).toBeVisible();
+    await expect(row).toContainText(settingsPageCopy.connectionTimeNotRecorded);
+
+    await row.getByRole("button", { name: settingsPageCopy.renewToken }).click();
+    await expect(renewDialog).toBeVisible();
+    await renewDialog.getByLabel(settingsPageCopy.token).fill("refused-token");
+    await renewDialog.getByRole("button", { name: settingsPageCopy.renewToken, exact: true }).click();
+    await expect(renewDialog.getByText(settingsPageCopy.tokenRefused)).toBeVisible();
+    await expect(renewDialog.getByRole("button", { name: settingsPageCopy.renewToken }).nth(1)).toBeVisible();
+    await expect(renewDialog.getByLabel(settingsPageCopy.token)).toHaveAttribute("type", "password");
+    await renewDialog.getByRole("button", { name: settingsPageCopy.cancel }).click();
+    await expect(renewDialog).toHaveCount(0);
+
+    await row.getByRole("button", { name: settingsPageCopy.disconnect }).click();
+    const disconnectDialog = page.getByRole("dialog", { name: disconnectTitle(picturedAddress) });
+    await expect(disconnectDialog).toBeVisible();
+    await page.screenshot({
+      path: `test-results/settings-${viewport.width}-source-doors-disconnect.png`,
+      fullPage: true
+    });
+    await expect(disconnectDialog).toContainText(settingsPageCopy.thisConnection);
+    await expect(disconnectDialog).toContainText(THE_ONE_PROJECT);
+    await expect(disconnectDialog).toContainText(settingsPageCopy.theModels);
+    await disconnectDialog.getByRole("button", { name: settingsPageCopy.disconnect }).click();
+    await expect(disconnectDialog).toHaveCount(0);
+    await expect(page.locator(".source-row")).toHaveCount(0);
+    const sourcePath = `/atelier/api/v1/projects/${projectReference}/sources/${picturedSource.public_source_reference}`;
+    const repeatedDelete = await page.evaluate(async (path) => {
+      const response = await fetch(path, { method: "DELETE" });
+      return response.status;
+    }, sourcePath);
+    expect(repeatedDelete).toBe(204);
+    await page.reload();
+    await expect(page.getByRole("heading", { name: settingsPageCopy.modelsTitle })).toBeVisible();
+    await expect(page.getByRole("button", { name: settingsPageCopy.connectASource })).toBeVisible();
+    await expect(page.locator(".source-row")).toHaveCount(0);
   }
 });

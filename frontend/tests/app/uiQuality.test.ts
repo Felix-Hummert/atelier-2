@@ -112,6 +112,17 @@ function openProjectPseudoLocale() {
           auth_method: "personal-access-token" as const,
           project_source_connection_revision_hash: "a".repeat(64)
         })),
+        listProjectSources: vi.fn(async () => ({
+          items: [{
+            public_source_reference: "source1.MzgwZjI3YTEtNmRlMC01NjNkLTQwYWItYzg1MzBmOWMyNWNj",
+            kind: "github",
+            address: "FlexOr2/atelier-2",
+            scope: "issues" as const,
+            connected_at: null,
+            revision: 2,
+            auth_method: "personal-access-token" as const
+          }]
+        })),
         getProjectModelDefaults: vi.fn(async () => ({
           project_id: "atelier",
           public_project_reference: "project1.dGVzdA",
