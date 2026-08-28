@@ -1,6 +1,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Workshop target picture v8.17</title>
+<title>Workshop target picture v8.18</title>
 <style>
 /* ── House tokens (from frontend/src/styles.css, so the picture is the same house) ── */
 :root{
@@ -376,6 +376,7 @@ table.hist td.when,table.hist td.took{font-variant-numeric:tabular-nums;white-sp
 table.hist td.name{font-weight:600}
 table.hist td.name small{display:block;font-weight:400;color:var(--ink-dim);font-size:.78rem}
 table.hist td.res{color:var(--ink-dim)} table.hist td.res.fail{color:var(--fail)}
+table.hist td.run{font-family:var(--mono);color:var(--ink-dim);font-size:.72rem;font-variant-numeric:tabular-nums;white-space:nowrap}
 
 /* ── Settings ── */
 .src{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:.8rem;align-items:center;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg);padding:.65rem .9rem;margin-bottom:.45rem;font-size:.9rem}
@@ -439,10 +440,11 @@ table.list tr.grp td .mark{margin-right:.2rem}
   .uq{columns:1}
   table.hist thead,table.hist tr:first-child{display:none}
   table.hist,table.hist tbody{display:block}
-  table.hist tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.15rem .7rem;padding:.55rem 0;border-bottom:1px solid var(--line)}
+  table.hist tr{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:.2rem .7rem;align-items:start;padding:.65rem .9rem;margin:0 0 .45rem;background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-lg)}
   table.hist td{display:block;border:0;padding:0}
-  table.hist td.name{grid-column:1;grid-row:1}
-  table.hist td.when{grid-column:2;grid-row:1;text-align:right;white-space:normal}
+  table.hist td.name{grid-column:1;grid-row:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  table.hist td.when{grid-column:2;grid-row:1;text-align:right;white-space:nowrap}
+  table.hist td.run{grid-column:3;grid-row:1}
   table.hist td:nth-child(3){grid-column:1 / -1;grid-row:2}
   table.hist td.res{grid-column:1 / -1;grid-row:3}
   table.hist td.took,table.hist td.none{display:none}
@@ -486,10 +488,10 @@ table.list tr.grp td .mark{margin-right:.2rem}
 </style>
 <main>
 <header class="doc-head">
-  <div class="eyebrow">v8.17 · 27.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
+  <div class="eyebrow">v8.18 · 28.08.2026 · Workshop target picture · owner record: <a href="../decisions/0019-workshop-target-picture.md">ADR 0019 — Workshop target picture: rooms, blocks, rules</a></div>
   <h1>The workshop holds a piece out to you</h1>
   <p class="thesis">Everything the workshop says to you is a question it holds out — a wait node of some run. Everything you say is an answer to one. The decision with two buttons, the ear with its input line and the "yes" to the conductor are <b>one</b> mechanism in three sizes; so there is exactly Stage, Row, Card, Sheet, plus Graph, and every room is built from these four blocks. Four rooms — Workbench, Catalog, History, Settings — and the run as a view in three tenses. Colour only for what wants something from you.</p>
-  <p class="note"><b>Changelog v8.17</b> · Settings doors and row states: Connect a source takes a token never shown again; Disconnect asks once more and names what stays; Token erneuern keeps the row; Add a model then Checking, checked, or unknown at the provider; a duplicate names the existing row; empty is the form without a sentence.</p>
+  <p class="note"><b>Changelog v8.18</b> · The run view keeps one standing sentence in the head; the result lives in the Result tab, not a second card above the graph. A History row names when it ended, the work item (tracker title, or the bare reference, or an honest dash), a half-sentence from the typed output, the duration, and a dim run identifier; at 390 the rows are cards and the column header is gone.</p>
   <div class="tw"><table class="doc">
     <tr><th>Room</th><th>The one question it answers</th><th>What it never does</th></tr>
     <tr><td><b>Workbench</b></td><td>What needs me now, what is moving, what did we say today — and what do I want to say next?</td><td>No chronicle, no library; it never explains itself (no shelf titles); it shows nothing twice; it carries no number that does not lead to an action.</td></tr>
@@ -912,7 +914,7 @@ table.list tr.grp td .mark{margin-right:.2rem}
   </div>
 </div>
 <dl class="uq">
-  <div><dt>Work item · Focus · From builder</dt><dd>"What did this node get?" — the order fields it saw and the artefact handed over by the node before it; the same pills as on the result.</dd></div>
+  <div><dt>Work item · Focus · From builder</dt><dd>"What did this node get?" — the order fields it saw and the artefact handed over by the node before it, as pills.</dd></div>
   <div><dt>"Difficulty 2 · review · family ≠ builder"</dt><dd>"How hard did the workflow call this step?" — the workflow's words for the role (<code>difficulty: 1 | 2 | 3</code>, <code>kind: build | review</code>, optional <code>family_differs_from: builder</code>, optional a pin to one configuration), nothing of the house added. It stands here and nowhere on the graph: the node shows the role, the panel shows the brief.</dd></div>
   <div><dt>Evidence: "Model requested grok-4.6 · confirmed grok-4.6" · "Chosen at start, for this run"</dt><dd>"Which model was asked for, which one answered, and why this one?" — the receipt holds both exact ids: the one the house requested and the one the provider confirmed (#434). Where the request came from stands only when it deviates from the model default: chosen at start, pinned in workflow.</dd></div>
   <div><dt>Evidence: "requested gpt-5.6-sol · confirmed <span class="differs">gpt-5.5</span>"</dt><dd>"Did I get what I asked for?" — no: the provider fell back to another model, and the confirmed id says so in brick — the difference is the only thing coloured; the tooltip says what it means. The same brick id stands on the back of the run ("gpt-5.6-sol as builder (gpt-5.5 confirmed)"). A run is not failed by it; it wants a look.</dd></div>
@@ -924,7 +926,6 @@ table.list tr.grp td .mark{margin-right:.2rem}
   <div class="stage">
     <a class="trail" href="#">← History</a>
     <div class="head"><h4>Sweep the docs</h4><span class="meta">iterate-code · <span class="word fail">Failed</span> · 44 min · today 11:05</span></div>
-    <div class="result fail"><p>The last attempt stopped while checking the changed files.</p></div>
     <div class="pipe" style="padding-top:.4rem">
       <div class="node"><div class="dot ok">✓</div><b>planner</b></div><div class="link ok"></div>
       <div class="loop"><span class="lbl">↻ 3 of ≤3</span>
@@ -1005,12 +1006,11 @@ command stopped before an answer</div>
 </dl>
 
 <h3 class="frame-title">Done <small>— readable result, raw folded, the back</small></h3>
-<div class="frame">
+<div class="frame" id="v8-18-run-done">
   <nav class="rail" data-on="history"></nav>
   <div class="stage">
     <a class="trail" href="#">← History</a>
     <div class="head"><h4>Fix the wait bug</h4><span class="meta">iterate-code · <span class="item">#510 Wait bug</span> · <span class="word quiet">Done</span> · 38 min · today 14:32</span></div>
-    <div class="result"><p>PR #512 merged, issue #510 closed.</p><div class="art"><span class="pill">patch.diff · 6 files</span><span class="pill">tests.log · 2 added, green</span></div></div>
     <div class="pipe" style="padding-top:.4rem">
       <div class="node"><div class="dot ok">✓</div><b>planner</b></div><div class="link ok"></div>
       <div class="loop"><span class="lbl" title="repeated while the review was not green">↻ 1 round</span>
@@ -1034,7 +1034,7 @@ command stopped before an answer</div>
   </div>
 </div>
 <dl class="uq">
-  <div><dt>Result block above the graph</dt><dd>"What came of it?" — without a click, one serif sentence from the sink node, artefacts as pills.</dd></div>
+  <div><dt>Result tab</dt><dd>"What came of it?" — the open Result tab holds the prose; the head keeps the standing word and the duration, not a second card above the graph.</dd></div>
   <div><dt>Frozen graph</dt><dd>"Which path did it take?" — final colours, nothing breathes; the hexagon says what the person answered.</dd></div>
   <div><dt>Panel "builder": model · node duration</dt><dd>"Who did this, how long?" — only the node's message; where it equals the run's, the panel stays silent.</dd></div>
   <div><dt>Raw folded</dt><dd>"And the exact bytes?" — right there, but only on request.</dd></div>
@@ -1042,12 +1042,11 @@ command stopped before an answer</div>
 </dl>
 
 <h3 class="frame-title">Failed <small>— the honest sentence</small></h3>
-<div class="frame short">
+<div class="frame short" id="v8-18-run-failed">
   <nav class="rail" data-on="workbench"></nav>
   <div class="stage">
     <a class="trail" href="#">← Workbench</a>
     <div class="head"><h4>Sweep the docs</h4><span class="meta">iterate-code · <span class="item">#162 Docs sweep</span> · <span class="word fail">Failed</span> · 44 min · today 11:05</span></div>
-    <div class="result fail"><p class="fail">Not green after 3 rounds — the last review still names two findings.</p><div class="art"><span class="btn sm">Say what should change</span></div></div>
     <div class="pipe" style="padding-top:.4rem">
       <div class="node"><div class="dot ok">✓</div><b>planner</b></div><div class="link ok"></div>
       <div class="loop"><span class="lbl" title="repeated while the review was not green">↻ 3 of ≤3</span>
@@ -1066,8 +1065,7 @@ command stopped before an answer</div>
   </div>
 </div>
 <dl class="uq">
-  <div><dt>Brick sentence</dt><dd>"What went wrong — in my words?" — never a refusal token as a headline; the token lives in Evidence.</dd></div>
-  <div><dt>"Say what should change" — the one move</dt><dd>"What can I do now?" — one button under the brick sentence; it opens the ear with this run as the subject, and the conductor starts again from round 3. No second sentence.</dd></div>
+  <div><dt>Result tab</dt><dd>"What went wrong — in my words?" — the open Result tab holds the findings; never a refusal token as a headline; the token lives in Evidence. The head keeps the standing word and the duration.</dd></div>
   <div><dt>Panel opens on the failed node</dt><dd>"Where exactly?" — without you having to look for it.</dd></div>
 </dl>
 
@@ -1079,7 +1077,6 @@ command stopped before an answer</div>
     <a class="trail" href="#">← Verlauf</a>
     <div class="head"><h4>Die Dokumentation aufräumen</h4><span class="meta">iterate-code · <span class="item">Dokumentation</span> · <span class="word fail">Fehlgeschlagen</span> · 44 Min · heute 11:05</span></div>
     <p class="lineage"><b>Verlauf</b><span class="fork-mark" aria-hidden="true">↳</span> erneut <span aria-hidden="true">→</span> <a href="#">Lauf Dokumentation aufräumen</a></p>
-    <div class="result fail"><p class="fail">Nicht grün nach 3 Runden — die letzte Prüfung nennt noch zwei Befunde.</p></div>
     <div class="pipe" style="padding-top:.4rem">
       <div class="node"><div class="dot ok">✓</div><b>planner</b></div><div class="link ok"></div>
       <div class="loop"><span class="lbl" title="repeated while the review was not green">↻ 3 von ≤3</span>
@@ -1567,27 +1564,29 @@ command stopped before an answer</div>
 
 <!-- ═══════════════════════════ 05 HISTORY ═══════════════════════════ -->
 <h2><span class="no">05</span>History</h2>
-<p class="q">Which run was that? Every line: when · purpose · work item · result in plain words · duration. Click → the same run, frozen.</p>
-<div class="frame">
+<p class="q">Which run was that? Every line: when · workflow purpose · work item · a half-sentence from the typed output · duration · a dim run identifier. At 390 the rows are cards and the column header is gone. Click → the same run, frozen.</p>
+<div class="frame" id="v8-18-history">
   <nav class="rail" data-on="history"></nav>
   <div class="stage">
     <div class="head"><h4>History</h4><div class="right filters plain"><span class="f">Today</span><span class="f on">7 days</span><span class="f">30 days</span><span class="f">Range…</span></div></div>
     <div class="tw"><table class="hist">
       <tr><th>When</th><th>Purpose</th><th>Work item</th><th>Result</th><th class="took">Duration</th></tr>
-      <tr><td class="when">today 14:32</td><td class="name">Fix the wait bug<small>iterate-code</small></td><td><span class="item">#510</span></td><td class="res">PR #512 merged, issue closed</td><td class="took">38 min</td></tr>
-      <tr><td class="when">today 11:05</td><td class="name">Sweep the docs<small>iterate-code</small></td><td><span class="item">#162</span></td><td class="res fail">Failed — not green after 3 rounds; the last review names two findings</td><td class="took">44 min</td></tr>
-      <tr><td class="when">yesterday 23:40</td><td class="name">Yesterday's runs, in one page<small>digest</small></td><td class="none">—</td><td class="res">Digest of 6 runs written</td><td class="took">3 min</td></tr>
-      <tr><td class="when">Sun 16:22</td><td class="name">Greet Felix<small>hello-atelier</small></td><td class="none">—</td><td class="res">Greeted Felix in one sentence</td><td class="took">18 s</td></tr>
+      <tr><td class="when">today 14:32</td><td class="name">code-review</td><td><span class="item">#510 Wait bug</span></td><td class="res">revise · 2 findings, highest high</td><td class="took">38 min</td><td class="run">run1.R3L…kuqw</td></tr>
+      <tr><td class="when">today 11:05</td><td class="name">refine</td><td><span class="item">#162</span></td><td class="res">18 expectations, 6 lenses</td><td class="took">12 min</td><td class="run">run1.K8wT…m2n4</td></tr>
+      <tr><td class="when">Sun 16:22</td><td class="name">documentation-curation</td><td class="none">—</td><td class="res">approved</td><td class="took">18 s</td><td class="run">run1.YQ</td></tr>
+      <tr><td class="when">Sun 16:22</td><td class="name">documentation-curation</td><td class="none">—</td><td class="res">approved</td><td class="took">18 s</td><td class="run">run1.Yg</td></tr>
     </table></div>
   </div>
 </div>
 <dl class="uq">
   <div><dt>Chips "Today · 7 days · 30 days · Range…"</dt><dd>"How far back am I looking?" — the same chip as the catalog's group heads; the default is marked, one click changes it, "Range…" opens a date picker. No dropdown: the choices are four, so they stand in the open.</dd></div>
   <div><dt>When (relative, exact on hover)</dt><dd>"Which one was that — today or Sunday?" — digits aligned.</dd></div>
-  <div><dt>Purpose (the order sentence), workflow small beneath</dt><dd>"What was the run for, by which recipe?" — the same name as on the workbench and in the run head.</dd></div>
-  <div><dt>Work item</dt><dd>"For which item?" — the column that tells two equal workflows apart; "—" where there is none.</dd></div>
-  <div><dt>Result in plain words</dt><dd>"What came of it?" — never the standing word alone; Failed in brick with the sentence.</dd></div>
-  <div><dt>Duration</dt><dd>"How long?" — drops first at 390 so Result is never cut. Not "Took": HEART calls it jargon.</dd></div>
+  <div><dt>Purpose (the workflow name)</dt><dd>"What was the run for?" — the workflow name only; no order sentence, no recipe line beneath.</dd></div>
+  <div><dt>Work item</dt><dd>"For which item?" — the tracker title when enrichment has one (<code>#510 Wait bug</code>), the bare reference when it has none (<code>#162</code>), an honest dash when no work item hangs on the run; never a guessed title.</dd></div>
+  <div><dt>Result</dt><dd>"What came of it?" — a half-sentence from the typed output (<code>revise · 2 findings, highest high</code>, <code>18 expectations, 6 lenses</code>, <code>approved</code>); never the standing word alone, never raw bytes, never finding text.</dd></div>
+  <div><dt>Duration</dt><dd>"How long?" — drops at 390. Not "Took": HEART calls it jargon.</dd></div>
+  <div><dt>Dim run identifier</dt><dd>"Which of two otherwise equal runs?" — shortened 8…4 at the end of the row, no column head; two rows that agree in everything else still differ here.</dd></div>
+  <div><dt>At 390, cards without a header</dt><dd>"How do the lines read on a phone?" — the column header is gone; each row is a card: purpose, when and identifier on the first line, work item full width when present, result on the third; duration drops, and a dash work item drops with it.</dd></div>
   <div><dt>The open conversation is not here</dt><dd>"Where is today's conversation?" — it is a run but not ended; History shows nothing that still runs or waits. Its door is the workbench; it becomes a line here once it ends.</dd></div>
 </dl>
 
