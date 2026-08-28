@@ -68,11 +68,14 @@
       <p class="running" role="status">{settingsPageCopy.running}</p>
     {/if}
     {#if error !== null}
+      {@const nextStep = error.nextStep}
       <p class="error" role="alert">
         <span>{error.sentence}</span>
-        <button class="next-step" type="button" disabled={submitting} onclick={() => { onConfirm(); }}>
-          {wrapDisplayCopy(error.nextStep)}
-        </button>
+        {#if nextStep !== null}
+          <button class="next-step" type="button" disabled={submitting} onclick={() => { onConfirm(); }}>
+            {wrapDisplayCopy(nextStep)}
+          </button>
+        {/if}
       </p>
     {/if}
 

@@ -23,7 +23,8 @@ import {
   noSuchModel,
   providerAccount,
   retainedAccountChoice,
-  settingsPageCopy
+  settingsPageCopy,
+  sourceAlreadyPresent
 } from "../../src/lib/settingsPageCopy";
 import { cockpitApiStub } from "../support/cockpitApi";
 
@@ -62,6 +63,15 @@ const projectSource: ProjectSourceResource = {
   scope: "issues",
   connected_at: null,
   revision: 2,
+  auth_method: "personal-access-token"
+};
+const otherSource: ProjectSourceResource = {
+  public_source_reference: "source1.YWx0ZXJuYXRlLXNvdXJjZS1yZWZlcmVuY2UtYWFhYQ",
+  kind: "github",
+  address: "github.com/other/repo",
+  scope: "issues",
+  connected_at: null,
+  revision: 1,
   auth_method: "personal-access-token"
 };
 
@@ -348,6 +358,7 @@ describe("Settings owns project sources, models, and defaults", () => {
     const models = screen.getByRole("heading", { name: settingsPageCopy.modelsTitle });
     expect(screen.getByRole("button", { name: settingsPageCopy.addModel }).closest("table")).not.toBeNull();
     const modelDefaults = screen.getByRole("heading", { name: settingsPageCopy.defaultsTitle });
+    expect(screen.queryByText(/switch project/i)).toBeNull();
     expect(sources.compareDocumentPosition(models) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(models.compareDocumentPosition(modelDefaults) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(screen.queryByText(/Work in this project/)).toBeNull();
@@ -793,6 +804,14 @@ describe("Settings owns project sources, models, and defaults", () => {
     expect(screen.queryByText(settingsPageCopy.modelsEmpty)).toBeNull();
   });
 
+  it("does not offer a project switch", async () => {
+    openSettings();
+
+    expect((await screen.findByRole("heading", { name: THE_ONE_PROJECT })).isConnected).toBe(true);
+    expect(screen.queryByText(/switch project/i)).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /switch/i })).toBeNull();
+  });
+
   it("shows a source row without a branch or an auth column", async () => {
     openSettings();
 
@@ -957,7 +976,7 @@ describe("Settings owns project sources, models, and defaults", () => {
     await fireEvent.click(within(dialog).getByRole("button", { name: settingsPageCopy.connect }));
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: settingsPageCopy.connectASource })).toBeNull());
-    expect(screen.getByText(settingsPageCopy.alreadyPresent)).toBeTruthy();
+    expect(screen.getByText(sourceAlreadyPresent(projectSource.address))).toBeTruthy();
     expect(screen.getAllByText(`${settingsPageCopy.github} · ${projectSource.address}`)).toHaveLength(1);
   });
 
@@ -990,7 +1009,7 @@ describe("Settings owns project sources, models, and defaults", () => {
     });
     await fireEvent.click(within(dialog).getByRole("button", { name: settingsPageCopy.connect }));
 
-    expect(await screen.findByText(settingsPageCopy.alreadyPresent)).toBeTruthy();
+    expect(await screen.findByText(sourceAlreadyPresent(projectSource.address))).toBeTruthy();
     expect(screen.queryByRole("dialog", { name: settingsPageCopy.connectASource })).toBeNull();
     expect(screen.getAllByText(`${settingsPageCopy.github} · ${projectSource.address}`)).toHaveLength(1);
     expect(listProjectSources).toHaveBeenCalledTimes(2);
@@ -1022,6 +1041,111 @@ describe("Settings owns project sources, models, and defaults", () => {
     await waitFor(() => expect(listProjectSources).toHaveBeenCalledTimes(3));
     expect(within(dialog).getByText(settingsPageCopy.sourceNotShown)).toBeTruthy();
     expect(screen.queryByText(settingsPageCopy.alreadyPresent)).toBeNull();
+  });
+
+  it("names the one-source deferral and keeps one row when the list has two", async () => {
+    openSettings({
+      listProjectSources: vi.fn(async () => ({ items: [projectSource, otherSource] }))
+    });
+
+    expect(await screen.findByText(settingsPageCopy.oneSourceToday)).toBeTruthy();
+    expect(screen.getAllByText(`${settingsPageCopy.github} · ${projectSource.address}`)).toHaveLength(1);
+    expect(screen.queryByText(otherSource.address)).toBeNull();
+    expect(screen.getByRole("heading", { name: settingsPageCopy.modelsTitle })).toBeTruthy();
+    expect(screen.getByText(configuration.model)).toBeTruthy();
+    expect(screen.queryByText(settingsPageCopy.unavailable)).toBeNull();
+    expect(document.querySelectorAll(".source-row")).toHaveLength(1);
+  });
+
+  it("names the one-source deferral when Connect tries a different address", async () => {
+    const connectProjectSource = vi.fn(async () => otherSource);
+    openSettings({ connectProjectSource });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.connectASource }));
+    const dialog = await screen.findByRole("dialog", { name: settingsPageCopy.connectASource });
+    await fireEvent.input(within(dialog).getByRole("textbox", { name: settingsPageCopy.where }), {
+      target: { value: otherSource.address }
+    });
+    await fireEvent.input(within(dialog).getByLabelText(settingsPageCopy.token), {
+      target: { value: "write-only-token" }
+    });
+    await fireEvent.click(within(dialog).getByRole("button", { name: settingsPageCopy.connect }));
+
+    expect(await within(dialog).findByText(settingsPageCopy.oneSourceToday)).toBeTruthy();
+    expect(within(dialog).queryByRole("button", { name: settingsPageCopy.retry })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: settingsPageCopy.renewToken })).toBeNull();
+    expect(screen.queryByText(sourceAlreadyPresent(projectSource.address))).toBeNull();
+    expect(screen.getAllByText(`${settingsPageCopy.github} · ${projectSource.address}`)).toHaveLength(1);
+    expect(document.querySelectorAll(".source-row")).toHaveLength(1);
+    expect(connectProjectSource).not.toHaveBeenCalled();
+  });
+
+  it("refuses a second distinct source from a 201 without adding a row", async () => {
+    const created = { ...otherSource, address: projectSource.address };
+    const connectProjectSource = vi.fn(async () => created);
+    openSettings({ connectProjectSource });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.connectASource }));
+    const dialog = await screen.findByRole("dialog", { name: settingsPageCopy.connectASource });
+    await fireEvent.input(within(dialog).getByRole("textbox", { name: settingsPageCopy.where }), {
+      target: { value: projectSource.address }
+    });
+    await fireEvent.input(within(dialog).getByLabelText(settingsPageCopy.token), {
+      target: { value: "write-only-token" }
+    });
+    await fireEvent.click(within(dialog).getByRole("button", { name: settingsPageCopy.connect }));
+
+    expect(await within(dialog).findByText(settingsPageCopy.oneSourceToday)).toBeTruthy();
+    await waitFor(() => expect(connectProjectSource).toHaveBeenCalledTimes(1));
+    expect(document.querySelectorAll(".source-row")).toHaveLength(1);
+    expect(screen.getAllByText(`${settingsPageCopy.github} · ${projectSource.address}`)).toHaveLength(1);
+  });
+
+  it("re-reads a duplicate by the attempted address, not the first row", async () => {
+    const connectProjectSource = vi.fn(async () => { throw projectSourceAlreadyConnected(); });
+    const listProjectSources = vi.fn()
+      .mockResolvedValueOnce({ items: [] })
+      .mockResolvedValueOnce({ items: [otherSource, projectSource] });
+    openSettings({ listProjectSources, connectProjectSource });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.connectASource }));
+    const dialog = await screen.findByRole("dialog", { name: settingsPageCopy.connectASource });
+    await fireEvent.input(within(dialog).getByRole("textbox", { name: settingsPageCopy.where }), {
+      target: { value: projectSource.address }
+    });
+    await fireEvent.input(within(dialog).getByLabelText(settingsPageCopy.token), {
+      target: { value: "write-only-token" }
+    });
+    await fireEvent.click(within(dialog).getByRole("button", { name: settingsPageCopy.connect }));
+
+    expect(await screen.findByText(sourceAlreadyPresent(projectSource.address))).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: settingsPageCopy.connectASource })).toBeNull();
+    expect(screen.queryByText(sourceAlreadyPresent(otherSource.address))).toBeNull();
+    expect(screen.queryByText(otherSource.address)).toBeNull();
+    expect(document.querySelectorAll(".source-row")).toHaveLength(1);
+  });
+
+  it("does not label a first source whose address is not the attempt", async () => {
+    const connectProjectSource = vi.fn(async () => { throw projectSourceAlreadyConnected(); });
+    const listProjectSources = vi.fn()
+      .mockResolvedValueOnce({ items: [] })
+      .mockResolvedValueOnce({ items: [otherSource] });
+    openSettings({ listProjectSources, connectProjectSource });
+
+    await fireEvent.click(await screen.findByRole("button", { name: settingsPageCopy.connectASource }));
+    const dialog = await screen.findByRole("dialog", { name: settingsPageCopy.connectASource });
+    await fireEvent.input(within(dialog).getByRole("textbox", { name: settingsPageCopy.where }), {
+      target: { value: projectSource.address }
+    });
+    await fireEvent.input(within(dialog).getByLabelText(settingsPageCopy.token), {
+      target: { value: "write-only-token" }
+    });
+    await fireEvent.click(within(dialog).getByRole("button", { name: settingsPageCopy.connect }));
+
+    expect(await within(dialog).findByText(settingsPageCopy.oneSourceToday)).toBeTruthy();
+    expect(screen.queryByText(sourceAlreadyPresent(otherSource.address))).toBeNull();
+    expect(screen.getByText(`${settingsPageCopy.github} · ${otherSource.address}`)).toBeTruthy();
+    expect(document.querySelectorAll(".source-row")).toHaveLength(1);
   });
 
   it("retries the exact failed defaults write", async () => {

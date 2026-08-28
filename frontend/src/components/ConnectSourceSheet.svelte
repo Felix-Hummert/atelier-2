@@ -120,22 +120,25 @@
       <p class="running" role="status">{settingsPageCopy.running}</p>
     {/if}
     {#if error !== null}
+      {@const nextStep = error.nextStep}
       <p class="error" role="alert">
         <span>{error.sentence}</span>
-        <button
-          class="next-step"
-          type="button"
-          disabled={submitting}
-          onclick={() => {
-            if (error.nextStep === settingsPageCopy.retry) {
-              onRetry();
-              return;
-            }
-            tokenInput.focus();
-          }}
-        >
-          {wrapDisplayCopy(error.nextStep)}
-        </button>
+        {#if nextStep !== null}
+          <button
+            class="next-step"
+            type="button"
+            disabled={submitting}
+            onclick={() => {
+              if (nextStep === settingsPageCopy.retry) {
+                onRetry();
+                return;
+              }
+              tokenInput.focus();
+            }}
+          >
+            {wrapDisplayCopy(nextStep)}
+          </button>
+        {/if}
       </p>
     {/if}
 

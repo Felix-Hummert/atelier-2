@@ -429,7 +429,7 @@ describe("the served vocabulary", () => {
     ).toEqual({ items: [{ ...sample, scope: "issues", connected_at: null }] });
     expect(
       projectSourceListSchema.safeParse({ items: [sample, sample] }).success
-    ).toBe(false);
+    ).toBe(true);
     expect(
       projectSourceResourceSchema.safeParse({ ...sample, extra: true }).success
     ).toBe(false);

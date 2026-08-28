@@ -609,7 +609,10 @@ const picturedSource = {
   auth_method: "personal-access-token"
 };
 
-async function routePicturedSourceDoors(page: Page): Promise<void> {
+async function routePicturedSourceDoors(
+  page: Page,
+  successfulWrite?: { promise: Promise<void>; release: () => void }
+): Promise<void> {
   await routeSettings(page);
   let items: Array<typeof picturedSource> = [];
   await page.route("**/atelier/api/v1/projects/*/sources", async (route) => {
@@ -640,6 +643,9 @@ async function routePicturedSourceDoors(page: Page): Promise<void> {
           }
         });
         return;
+      }
+      if (successfulWrite !== undefined) {
+        await successfulWrite.promise;
       }
       items = [{ ...picturedSource, address: body.address ?? picturedAddress, revision: 1 }];
       await route.fulfill({ status: 201, json: items[0] });
@@ -683,10 +689,10 @@ async function routePicturedSourceDoors(page: Page): Promise<void> {
 
 test("proves(settings-source-doors-follow-the-blessed-picture): Settings connects, shows one source row, disconnects after naming what stays, renews the token, and shows a refused-token error", async ({ page }) => {
   test.setTimeout(120_000);
-  await routePicturedSourceDoors(page);
 
   for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
-    await routePicturedSourceDoors(page);
+    const successfulWrite = delayedReadGate();
+    await routePicturedSourceDoors(page, successfulWrite);
     await page.setViewportSize(viewport);
     await page.goto("/atelier/settings");
     await expect(page.getByRole("heading", { name: settingsPageCopy.sourcesTitle })).toBeVisible();
@@ -721,7 +727,13 @@ test("proves(settings-source-doors-follow-the-blessed-picture): Settings connect
     await expect(connectDialog).not.toContainText("refused-token");
 
     await connectDialog.getByLabel(settingsPageCopy.token).fill("good-token");
-    await connectDialog.getByRole("button", { name: settingsPageCopy.connect, exact: true }).click();
+    const connectWrite = connectDialog.getByRole("button", { name: settingsPageCopy.connect, exact: true }).click();
+    try {
+      await expect(connectDialog.getByText(settingsPageCopy.running)).toBeVisible();
+    } finally {
+      successfulWrite.release();
+    }
+    await connectWrite;
     await expect(connectDialog).toHaveCount(0);
 
     const row = page.locator(".source-row").filter({ hasText: picturedAddress });
@@ -769,7 +781,15 @@ test("proves(settings-source-doors-follow-the-blessed-picture): Settings connect
     await disconnectDialog.getByRole("button", { name: settingsPageCopy.disconnect }).click();
     await expect(disconnectDialog).toHaveCount(0);
     await expect(page.locator(".source-row")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: settingsPageCopy.connectASource })).toBeVisible();
+    const sourcePath = `/atelier/api/v1/projects/${projectReference}/sources/${picturedSource.public_source_reference}`;
+    const repeatedDelete = await page.evaluate(async (path) => {
+      const response = await fetch(path, { method: "DELETE" });
+      return response.status;
+    }, sourcePath);
+    expect(repeatedDelete).toBe(204);
+    await page.reload();
     await expect(page.getByRole("heading", { name: settingsPageCopy.modelsTitle })).toBeVisible();
+    await expect(page.getByRole("button", { name: settingsPageCopy.connectASource })).toBeVisible();
+    await expect(page.locator(".source-row")).toHaveCount(0);
   }
 });

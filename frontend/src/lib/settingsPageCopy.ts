@@ -32,6 +32,7 @@ export const settingsPageCopy = {
   running: "Working",
   correctTheId: "Correct the id",
   alreadyPresent: "schon vorhanden",
+  oneSourceToday: "This project holds one source today, several are not built yet.",
   add: "Add",
   cancel: "Cancel",
   check: "Check",
@@ -95,4 +96,8 @@ export function providerAccount(providerId: string, profileId: string): string {
 
 export function disconnectTitle(address: string): string {
   return `Disconnect ${address}?`;
+}
+
+export function sourceAlreadyPresent(address: string): string {
+  return `${address} ${settingsPageCopy.alreadyPresent}`;
 }

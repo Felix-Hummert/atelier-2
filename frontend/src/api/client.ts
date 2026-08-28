@@ -417,7 +417,7 @@ export const projectSourceResourceSchema = z
   .strict();
 
 export const projectSourceListSchema = z
-  .object({ items: z.array(projectSourceResourceSchema).max(1) })
+  .object({ items: z.array(projectSourceResourceSchema) })
   .strict();
 
 /** The wire shape `GET /health` answers -- reused as #700's own recovery

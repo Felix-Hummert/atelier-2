@@ -1619,10 +1619,9 @@ describe("the project source collection Settings writes", () => {
     expect(json).not.toHaveBeenCalled();
   });
 
-  it("refuses extra fields, a second item, and a too-long source reference", async () => {
+  it("refuses extra fields and a too-long source reference", async () => {
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(jsonOk({ items: [{ ...source, credential_directory: "/secret" }] }))
-      .mockResolvedValueOnce(jsonOk({ items: [source, source] }))
       .mockResolvedValueOnce(jsonOk({
         ...source,
         public_source_reference: `source1.${"A".repeat(49)}`
@@ -1632,12 +1631,22 @@ describe("the project source collection Settings writes", () => {
     await expect(client.listProjectSources(projectReference)).rejects.toThrow(
       "durable wire contract"
     );
-    await expect(client.listProjectSources(projectReference)).rejects.toThrow(
-      "durable wire contract"
-    );
     await expect(
       client.connectProjectSource(projectReference, { address: source.address, token })
     ).rejects.toThrow("durable wire contract");
+  });
+
+  it("parses a well-formed list of two source resources", async () => {
+    const second = {
+      ...source,
+      public_source_reference: "source1.YWx0ZXJuYXRlLXNvdXJjZS1yZWZlcmVuY2UtYWFhYQ",
+      address: "github.com/other/repo"
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonOk({ items: [source, second] }));
+
+    const read = await createCockpitApi(fetcher).listProjectSources(projectReference);
+
+    expect(read.items).toEqual([source, second]);
   });
 });
 

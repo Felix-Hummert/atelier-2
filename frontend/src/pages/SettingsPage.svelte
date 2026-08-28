@@ -34,6 +34,7 @@
     presentProjectSource,
     rotateProjectSourceTokenBody,
     sourceWriteFailure,
+    takeActiveSourcesToday,
     type DisconnectFacts,
     type SourceDoorError,
     type SourceWriteDoor
@@ -55,7 +56,8 @@
     noSuchModel,
     providerAccount,
     retainedAccountChoice,
-    settingsPageCopy
+    settingsPageCopy,
+    sourceAlreadyPresent
   } from "../lib/settingsPageCopy";
 
   export let cockpitApi: CockpitApi;
@@ -67,6 +69,7 @@
   interface SettingsSnapshot {
     projectReference: string;
     sources: ProjectSourceResource[];
+    severalNotBuilt: boolean;
     configurations: AgentConfigurationRevisionListItem[];
     profiles: AuthProfileRevision[];
     registries: ModelRegistryRevision[];
@@ -141,6 +144,7 @@
   let sourceError: SourceDoorError | null = null;
   let sourceBusy = false;
   let duplicateSourceReference: string | null = null;
+  let lastConnectAddress: string | null = null;
 
   $: mutationsFrozen = writing || failedWrite !== null;
   $: accountOptions = settings.confirmed === null
@@ -178,6 +182,7 @@
     sourceError = null;
     sourceBusy = false;
     duplicateSourceReference = null;
+    lastConnectAddress = null;
     try {
       const projects = await cockpitApi.listProjects();
       const projectReference = projects.items[0]?.public_project_reference;
@@ -205,6 +210,7 @@
           throw error;
         }
       );
+      const taken = takeActiveSourcesToday(sourceList.items);
       selections = Object.fromEntries(
         (defaults?.defaults ?? []).map((item) => [
           item.difficulty,
@@ -213,7 +219,8 @@
       );
       settings = confirmRead(settings, begun.generation, {
         projectReference,
-        sources: sourceList.items,
+        sources: taken.items,
+        severalNotBuilt: taken.severalNotBuilt,
         configurations: configurationReading.configurations,
         profiles,
         registries,
@@ -298,10 +305,27 @@
     sheetOpen = true;
   }
 
-  function replaceSources(sources: ProjectSourceResource[]): void {
+  function replaceSources(
+    sources: ProjectSourceResource[],
+    severalNotBuilt?: boolean
+  ): void {
     const snapshot = settings.confirmed;
     if (snapshot === null) return;
-    settings = { ...settings, confirmed: { ...snapshot, sources } };
+    settings = {
+      ...settings,
+      confirmed: {
+        ...snapshot,
+        sources,
+        severalNotBuilt: severalNotBuilt ?? snapshot.severalNotBuilt
+      }
+    };
+  }
+
+  function nameOneSourceToday(): void {
+    sourceError = {
+      sentence: settingsPageCopy.oneSourceToday,
+      nextStep: null
+    };
   }
 
   function sourceFor(publicSourceReference: string): ProjectSourceResource | null {
@@ -310,24 +334,34 @@
     ) ?? null;
   }
 
-  async function recoverDuplicateSource(): Promise<void> {
+  async function recoverDuplicateSource(attemptedAddress: string): Promise<void> {
     const snapshot = settings.confirmed;
-    const existing = snapshot?.sources[0];
+    const existing = snapshot?.sources.find((item) => item.address === attemptedAddress);
     if (existing !== undefined) {
       duplicateSourceReference = existing.public_source_reference;
       sourceSheet = null;
       sourceError = null;
       return;
     }
+    if (snapshot !== null && snapshot.sources.length > 0) {
+      nameOneSourceToday();
+      return;
+    }
     if (snapshot !== null) {
       try {
         const listed = await cockpitApi.listProjectSources(snapshot.projectReference);
-        replaceSources(listed.items);
-        const found = listed.items[0];
+        const found = listed.items.find((item) => item.address === attemptedAddress);
         if (found !== undefined) {
+          replaceSources([found], listed.items.length > 1);
           duplicateSourceReference = found.public_source_reference;
           sourceSheet = null;
           sourceError = null;
+          return;
+        }
+        const taken = takeActiveSourcesToday(listed.items);
+        replaceSources(taken.items, taken.severalNotBuilt);
+        if (taken.items.length > 0) {
+          nameOneSourceToday();
           return;
         }
       } catch {
@@ -340,20 +374,24 @@
     };
   }
 
-  async function rememberSourceError(error: unknown, door: SourceWriteDoor): Promise<void> {
+  async function rememberSourceError(
+    error: unknown,
+    door: SourceWriteDoor,
+    attemptedAddress?: string
+  ): Promise<void> {
     const failure = sourceWriteFailure(error, door);
     if (failure.kind === "duplicate") {
-      await recoverDuplicateSource();
+      await recoverDuplicateSource(attemptedAddress ?? lastConnectAddress ?? "");
       return;
     }
     sourceError = { sentence: failure.sentence, nextStep: failure.nextStep };
   }
 
   async function retryDuplicateSource(): Promise<void> {
-    if (sourceBusy) return;
+    if (sourceBusy || lastConnectAddress === null) return;
     sourceBusy = true;
     try {
-      await recoverDuplicateSource();
+      await recoverDuplicateSource(lastConnectAddress);
     } finally {
       sourceBusy = false;
     }
@@ -404,6 +442,12 @@
   async function submitConnect(address: string, token: string): Promise<void> {
     const snapshot = settings.confirmed;
     if (snapshot === null || sourceBusy) return;
+    const attemptedAddress = address.trim();
+    lastConnectAddress = attemptedAddress;
+    if (snapshot.sources.some((item) => item.address !== attemptedAddress)) {
+      nameOneSourceToday();
+      return;
+    }
     sourceBusy = true;
     sourceError = null;
     try {
@@ -411,20 +455,25 @@
         snapshot.projectReference,
         connectProjectSourceBody(address, token)
       );
-      const existing = snapshot.sources.some(
+      const sameIdentity = snapshot.sources.some(
         (item) => item.public_source_reference === created.public_source_reference
       );
+      if (!sameIdentity && snapshot.sources.length > 0) {
+        nameOneSourceToday();
+        return;
+      }
       replaceSources(
-        existing
+        sameIdentity
           ? snapshot.sources.map((item) =>
               item.public_source_reference === created.public_source_reference ? created : item
             )
-          : [...snapshot.sources, created]
+          : [...snapshot.sources, created],
+        false
       );
       duplicateSourceReference = null;
       sourceSheet = null;
     } catch (error) {
-      await rememberSourceError(error, "connect");
+      await rememberSourceError(error, "connect", attemptedAddress);
     } finally {
       sourceBusy = false;
     }
@@ -438,7 +487,8 @@
     try {
       await cockpitApi.disconnectProjectSource(snapshot.projectReference, publicSourceReference);
       replaceSources(
-        snapshot.sources.filter((item) => item.public_source_reference !== publicSourceReference)
+        snapshot.sources.filter((item) => item.public_source_reference !== publicSourceReference),
+        false
       );
       if (duplicateSourceReference === publicSourceReference) duplicateSourceReference = null;
       sourceSheet = null;
@@ -1053,6 +1103,9 @@
   {#if settings.confirmed !== null}
     <section class="settings-block" aria-labelledby="sources-title">
       <h2 id="sources-title">{wrapDisplayCopy(settingsPageCopy.sourcesTitle)}</h2>
+      {#if settings.confirmed.severalNotBuilt}
+        <p class="source-limit" role="status">{settingsPageCopy.oneSourceToday}</p>
+      {/if}
       {#if sourceRows.length > 0}
         <ul class="source-rows">
           {#each sourceRows as row (row.publicSourceReference)}
@@ -1062,7 +1115,7 @@
                 <strong>{row.headline}</strong>
                 <span> · {row.scope} · {row.connected}</span>
                 {#if row.duplicate}
-                  <span class="source-duplicate">{settingsPageCopy.alreadyPresent}</span>
+                  <span class="source-duplicate">{sourceAlreadyPresent(row.address)}</span>
                 {/if}
               </div>
               <div class="source-actions">
@@ -1273,6 +1326,7 @@
   .source-disconnect { min-height: var(--tap); border-color: transparent; background: transparent; color: var(--signal-failure); text-decoration: none; font-weight: var(--weight-medium); }
   .source-renew { min-height: var(--tap); border-color: transparent; background: transparent; color: var(--ink); text-decoration: underline; text-underline-offset: var(--underline-offset); font-weight: var(--weight-strong); }
   .source-duplicate { margin-left: var(--space-2); }
+  .source-limit { margin: 0; color: var(--ink-dim); }
   .connect-source { display: block; width: fit-content; }
   .table-wrap { overflow-x: auto; }
   table { border-collapse: collapse; min-width: var(--table-min); width: 100%; }

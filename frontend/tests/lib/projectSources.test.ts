@@ -11,9 +11,14 @@ import {
   rotateProjectSourceTokenBody,
   sourceHeadline,
   sourceKindLabel,
-  sourceWriteFailure
+  sourceWriteFailure,
+  takeActiveSourcesToday
 } from "../../src/lib/projectSources";
-import { disconnectTitle, settingsPageCopy } from "../../src/lib/settingsPageCopy";
+import {
+  disconnectTitle,
+  settingsPageCopy,
+  sourceAlreadyPresent
+} from "../../src/lib/settingsPageCopy";
 
 const now = new Date("2026-08-28T15:05:00Z");
 
@@ -98,6 +103,28 @@ describe("project source row presentation", () => {
 
   it("marks a duplicate on the existing row", () => {
     expect(presentProjectSource(source(), now, true).duplicate).toBe(true);
+  });
+});
+
+describe("the one-source deferral", () => {
+  it("keeps an empty or single list and names extra items as not built", () => {
+    const first = source();
+    const second = source({
+      public_source_reference: "source1.YWx0ZXJuYXRlLXNvdXJjZS1yZWZlcmVuY2UtYWFhYQ",
+      address: "github.com/other/repo"
+    });
+    expect(takeActiveSourcesToday([])).toEqual({ items: [], severalNotBuilt: false });
+    expect(takeActiveSourcesToday([first])).toEqual({ items: [first], severalNotBuilt: false });
+    expect(takeActiveSourcesToday([first, second])).toEqual({
+      items: [first],
+      severalNotBuilt: true
+    });
+  });
+
+  it("names an already-present source with its address", () => {
+    expect(sourceAlreadyPresent("FlexOr2/atelier-2")).toBe(
+      `FlexOr2/atelier-2 ${settingsPageCopy.alreadyPresent}`
+    );
   });
 });
 

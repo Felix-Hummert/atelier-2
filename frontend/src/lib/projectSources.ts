@@ -10,7 +10,7 @@ export type SourceContentKind = "items" | "library";
 
 export type SourceDoorError = {
   sentence: string;
-  nextStep: string;
+  nextStep: string | null;
 };
 
 export type SourceWriteDoor = "connect" | "disconnect" | "renew";
@@ -83,6 +83,15 @@ export function sourceHeadline(source: ProjectSourceResource): string {
 export function connectedPhrase(connectedAt: string | null, now: Date): string {
   if (connectedAt === null) return settingsPageCopy.connectionTimeNotRecorded;
   return `${settingsPageCopy.connected} ${ageLabel(connectedAt, now, "ago")}`;
+}
+
+export function takeActiveSourcesToday(
+  items: readonly ProjectSourceResource[]
+): { items: ProjectSourceResource[]; severalNotBuilt: boolean } {
+  if (items.length <= 1) {
+    return { items: [...items], severalNotBuilt: false };
+  }
+  return { items: items.slice(0, 1), severalNotBuilt: true };
 }
 
 export function presentProjectSource(
