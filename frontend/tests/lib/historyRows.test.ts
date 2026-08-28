@@ -4,6 +4,10 @@ import type { RunV1, RunV3 } from "../../src/api/client";
 import {
   HISTORY_PERIOD_DAYS,
   hasTimestamplessRows,
+  historyResultNodeId,
+  historyResultSentence,
+  historyWhenLabel,
+  presentHistoryRow,
   projectHistoryRows,
   withinHistoryPeriod
 } from "../../src/lib/historyRows";
@@ -106,10 +110,34 @@ describe("projecting History's finished-run rows", () => {
     expect(v1Row?.purpose).toBeNull();
   });
 
-  it("reads Completed for a completed run and the failed node for a failed one", () => {
-    const [completed] = projectHistoryRows([v3Run()], null);
-    expect(completed?.result).toEqual({ kind: "completed" });
+  it.each([
+    ["nonempty extras.workItem", { workItem: "#510", resultSentence: null as string | null }, "#510"],
+    ["empty extras.workItem", { workItem: "", resultSentence: null }, null],
+    ["no extras", undefined, null]
+  ] as const)("workItem is %s", (_name, extras, expected) => {
+    const row =
+      extras === undefined
+        ? presentHistoryRow(v3Run(), null)
+        : presentHistoryRow(v3Run(), null, extras);
+    expect(row.workItem).toBe(expected);
+  });
 
+  it("never derives workItem from order names", () => {
+    const row = presentHistoryRow(
+      v3Run({ orders: [{ name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) }] }),
+      null
+    );
+    expect(row.purpose).toBe("diff");
+    expect(row.workItem).toBeNull();
+  });
+
+  it("reads a completed result with a null sentence until extras supply one", () => {
+    const [completed] = projectHistoryRows([v3Run()], null);
+    expect(completed?.result).toEqual({ kind: "completed", sentence: null });
+    expect(historyResultNodeId(v3Run())).toBe("final");
+  });
+
+  it("reads a failed result with its node id, and keeps extras.sentence in full", () => {
     const failed = v3Run({
       state: "FAILED",
       node_rail: [
@@ -117,8 +145,20 @@ describe("projecting History's finished-run rows", () => {
         { node_id: "review", state: "failed", attempt: null }
       ]
     });
-    const [failedRow] = projectHistoryRows([failed], null);
-    expect(failedRow?.result).toEqual({ kind: "failed", nodeId: "review" });
+    const long = "x".repeat(5_000);
+    const withSentence = presentHistoryRow(failed, null, {
+      workItem: null,
+      resultSentence: long
+    });
+    expect(withSentence.result).toEqual({ kind: "failed", nodeId: "review", sentence: long });
+    expect(withSentence.result.kind === "failed" && withSentence.result.sentence?.length).toBe(5_000);
+
+    const withoutSentence = presentHistoryRow(failed, null, {
+      workItem: null,
+      resultSentence: null
+    });
+    expect(withoutSentence.result).toEqual({ kind: "failed", nodeId: "review", sentence: null });
+    expect(historyResultNodeId(failed)).toBe("review");
   });
 
   it("reads the current node as the failed one for a V1 run, which carries no rail", () => {
@@ -127,7 +167,9 @@ describe("projecting History's finished-run rows", () => {
     expect(row?.result.kind).toBe("failed");
     if (row?.result.kind === "failed") {
       expect(row.result.nodeId).toBe(v1Failed().current_node.node_id);
+      expect(row.result.sentence).toBeNull();
     }
+    expect(historyResultNodeId(v1Failed())).toBe(v1Failed().current_node.node_id);
   });
 
   it("gives a duration span only for a real V3 pair, never guessed for V1 or a partial V3 row", () => {
@@ -143,6 +185,45 @@ describe("projecting History's finished-run rows", () => {
       startedAt: "2026-08-18T15:00:00Z",
       endedAt: "2026-08-18T15:38:00Z"
     });
+  });
+
+  it("tells two same-workflow finished runs apart by their local clock", () => {
+    const now = new Date("2026-08-18T16:00:00Z");
+    const earlier = historyWhenLabel("2026-08-18T15:38:00Z", now);
+    const later = historyWhenLabel("2026-08-18T15:38:01Z", now);
+    expect(earlier.clock).not.toBe(later.clock);
+  });
+});
+
+describe("historyWhenLabel names local calendar-clock fragments", () => {
+  const now = new Date(2026, 7, 25, 18, 0, 0);
+
+  it.each([
+    ["today", new Date(2026, 7, 25, 9, 5, 7), { kind: "today" as const }, "09:05:07"],
+    ["yesterday", new Date(2026, 7, 24, 23, 59, 1), { kind: "yesterday" as const }, "23:59:01"]
+  ])("reads %s from the local calendar day", (_name, at, day, clock) => {
+    expect(historyWhenLabel(at.toISOString(), now)).toEqual({ day, clock });
+  });
+
+  it("reads any other local day as that locale's short weekday", () => {
+    const at = new Date(2026, 7, 20, 8, 0, 1);
+    expect(historyWhenLabel(at.toISOString(), now)).toEqual({
+      day: { kind: "weekday", weekday: at.toLocaleDateString(undefined, { weekday: "short" }) },
+      clock: "08:00:01"
+    });
+  });
+});
+
+describe("historyResultSentence reads a node answer as one line", () => {
+  it.each([
+    ["plain text", "hello", "hello"],
+    ["a declared answer sentence", '{"answer":"PR merged"}', "PR merged"],
+    ["object fields without a sentence", '{"verdict":"green","findings":2}', "verdict: green; findings: 2"],
+    ["items", '["one","two"]', "one; two"],
+    ["redacted in plain text", "token [redacted] kept", "token [redacted] kept"],
+    ["redacted in a declared sentence", '{"answer":"secret [redacted] ok"}', "secret [redacted] ok"]
+  ])("%s", (_name, raw, expected) => {
+    expect(historyResultSentence(raw)).toBe(expected);
   });
 });
 

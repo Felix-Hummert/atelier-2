@@ -7,9 +7,9 @@
  * (`wrapDisplayCopy`) can prove every string here has a source instead of a
  * second hardcoded copy inline in the page.
  *
- * The word for a run's state is not owned here: `standingWords` in
- * `runState.ts` owns it for every surface, so "Done" reads the same on the
- * Workbench, on the run and in this table (operator ruling 23.08.).
+ * A failed row still borrows the standing word from `standingWords` in
+ * `runState.ts` so "Failed" reads the same on every surface. The completed
+ * result cell is the node's own sentence, not the standing word "Done".
  */
 export const historyPageCopy = {
   title: "History",
@@ -23,13 +23,18 @@ export const historyPageCopy = {
   /** Mockup v8 §05: "Purpose (the order sentence), workflow small beneath". */
   columnName: "Purpose",
   columnWhen: "When",
-  /** ADR 0019 §4; PR #766 projects the first work item onto a run -- until then every row reads `workItemPlaceholder`. */
+  /** ADR 0019 §4. Production rows have no projected work item yet; they read `workItemPlaceholder`. */
   columnWorkItem: "Work item",
   columnResult: "Result",
   columnDuration: "Duration",
-  /** "—" where a run names none (mockup v8 §05); also every row's honest answer until PR #766 lands a work item to show. */
+  today: "today",
+  yesterday: "yesterday",
+  /** "—" where a run names none; production History always reads this. */
   workItemPlaceholder: "—",
-  /** Only a V1/V2 row, or a V3 row with neither stamp, ever reaches this -- the same gap in both When and Duration. */
+  /**
+   * A V1/V2 row (or a V3 row with neither stamp) in When/Duration, and a
+   * completed row whose node extras settled with no readable sentence.
+   */
   notRecorded: "Not recorded",
   /**
    * Only shown when a listed row carries no V3 timestamp (a V1 or V2 run):

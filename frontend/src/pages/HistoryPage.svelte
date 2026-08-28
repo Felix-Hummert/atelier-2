@@ -1,14 +1,21 @@
 <script lang="ts">
   import { onMount } from "svelte";
 
-  import type { AnyRun, CockpitApi } from "../api/client";
+  import type { AnyRun, CockpitApi, NodeDetail } from "../api/client";
   import { connectionState, onConnectionRecovered } from "../lib/connectionState";
   import { wrapDisplayCopy } from "../lib/displayCopy";
+  import { decodeUtf8Base64 } from "../lib/exactBytes";
   import {
     HISTORY_PERIOD_DAYS,
     hasTimestamplessRows,
+    historyResultNodeId,
+    historyResultSentence,
+    historyWhenLabel,
     projectHistoryRows,
-    withinHistoryPeriod
+    withinHistoryPeriod,
+    type HistoryRow,
+    type HistoryRowExtras,
+    type HistoryWhenDay
   } from "../lib/historyRows";
   import { historyPageCopy, periodChipLabel } from "../lib/historyPageCopy";
   import {
@@ -39,9 +46,15 @@
     | { kind: "unavailable"; title: string }
     | { kind: "incomplete"; title: string };
 
+  type ExtrasLoad =
+    | { status: "loading" }
+    | { status: "settled"; extras: HistoryRowExtras };
+
   let history: RetainedRead<HistorySnapshot, HistoryReadFailure> =
     retainedRead<HistorySnapshot, HistoryReadFailure>();
   const now = new Date();
+  let extrasLoadByReference: Map<string, ExtrasLoad> = new Map();
+  let extrasToken = 0;
 
   onMount(() => {
     void load();
@@ -70,12 +83,103 @@
         cockpitApi.getWorkflowRevision(hash)
       );
       history = confirmRead(history, begun.generation, { runs, workflowNames });
+      if (history.generation !== begun.generation) return;
+      const visible = projectHistoryRows(runs, workflowNames).filter((row) =>
+        withinHistoryPeriod(row, now)
+      );
+      void settleExtras(visible);
     } catch {
       history = failRead(history, begun.generation, {
         kind: "unavailable",
         title: historyPageCopy.listUnavailable
       });
     }
+  }
+
+  async function settleExtras(rows: HistoryRow[]): Promise<void> {
+    const token = ++extrasToken;
+    extrasLoadByReference = new Map(
+      rows.map((row) => [row.run.public_run_reference, { status: "loading" as const }])
+    );
+    const settledEntries = await Promise.all(
+      rows.map(async (row) => {
+        const extras = await extrasForRow(row);
+        return [row.run.public_run_reference, extras] as const;
+      })
+    );
+    if (token !== extrasToken) return;
+    extrasLoadByReference = new Map(
+      settledEntries.map(([reference, extras]) => [
+        reference,
+        { status: "settled" as const, extras }
+      ])
+    );
+  }
+
+  async function extrasForRow(row: HistoryRow): Promise<HistoryRowExtras> {
+    try {
+      const detail = await cockpitApi.getNodeDetail(
+        row.run.public_run_reference,
+        historyResultNodeId(row.run)
+      );
+      return {
+        workItem: null,
+        resultSentence: resultSentenceFromDetail(row.result.kind, detail)
+      };
+    } catch {
+      return { workItem: null, resultSentence: null };
+    }
+  }
+
+  function resultSentenceFromDetail(
+    kind: HistoryRow["result"]["kind"],
+    detail: NodeDetail | null | undefined
+  ): string | null {
+    if (detail == null) return null;
+    if (kind === "failed") {
+      const output = detail.refusal_output?.value_base64;
+      if (output != null && output.length > 0) {
+        const decoded = decodeUtf8Base64(output);
+        if (decoded != null) {
+          const sentence = historyResultSentence(decoded);
+          if (sentence.length > 0) return sentence;
+        }
+      }
+      if (detail.refusal != null && detail.refusal.length > 0) {
+        const sentence = historyResultSentence(detail.refusal);
+        return sentence.length === 0 ? null : sentence;
+      }
+      return null;
+    }
+    const value = detail.answer?.value_base64;
+    if (value == null || value.length === 0) return null;
+    const decoded = decodeUtf8Base64(value);
+    if (decoded == null) return null;
+    const sentence = historyResultSentence(decoded);
+    return sentence.length === 0 ? null : sentence;
+  }
+
+  function settledExtrasByReference(
+    loads: ReadonlyMap<string, ExtrasLoad>
+  ): ReadonlyMap<string, HistoryRowExtras> {
+    return new Map(
+      [...loads].flatMap(([reference, load]) =>
+        load.status === "settled" ? [[reference, load.extras] as const] : []
+      )
+    );
+  }
+
+  function whenDayText(day: HistoryWhenDay): string {
+    if (day.kind === "today") return wrapDisplayCopy(historyPageCopy.today);
+    if (day.kind === "yesterday") return wrapDisplayCopy(historyPageCopy.yesterday);
+    return day.weekday;
+  }
+
+  function failedResultCopy(nodeId: string, sentence: string | null, settled: boolean): string {
+    const standing = wrapDisplayCopy(standingWords.failed);
+    if (!settled) return standing;
+    if (sentence !== null) return `${standing} — ${sentence}`;
+    return `${standing} · ${nodeId}`;
   }
 
   function open(publicReference: string) {
@@ -85,11 +189,13 @@
     };
   }
 
+  $: extrasByReference = settledExtrasByReference(extrasLoadByReference);
   $: rows = history.confirmed === null
     ? []
-    : projectHistoryRows(history.confirmed.runs, history.confirmed.workflowNames);
+    : projectHistoryRows(history.confirmed.runs, history.confirmed.workflowNames, extrasByReference);
   $: visibleRows = rows.filter((row) => withinHistoryPeriod(row, now));
   $: showTimestamplessHint = hasTimestamplessRows(visibleRows);
+  $: hasWorkItem = visibleRows.some((row) => row.workItem !== null);
 </script>
 
 <section class="history-page surface" aria-labelledby="history-title">
@@ -123,7 +229,11 @@
         >{wrapDisplayCopy(historyPageCopy.emptyNext)}</a>
       </div>
     {:else}
-      <div class="history-head-row" aria-hidden="true">
+      <div
+        class="history-head-row"
+        class:history-head-no-work-item={!hasWorkItem}
+        aria-hidden="true"
+      >
         <span class="col-when">{wrapDisplayCopy(historyPageCopy.columnWhen)}</span>
         <span class="col-name">{wrapDisplayCopy(historyPageCopy.columnName)}</span>
         <span class="col-work-item">{wrapDisplayCopy(historyPageCopy.columnWorkItem)}</span>
@@ -132,17 +242,20 @@
       </div>
       <ul class="history-rows">
         {#each visibleRows as row (row.run.public_run_reference)}
+          {@const extras = extrasLoadByReference.get(row.run.public_run_reference)}
           <li>
             <a
               class="history-row history-row-{row.result.kind}"
+              class:history-row-no-work-item={row.workItem === null}
               href={runPath(row.run.public_run_reference)}
               onclick={open(row.run.public_run_reference)}
             >
               <span class="row-when">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnWhen)}: </span>
                 {#if row.activityAt !== null}
+                  {@const when = historyWhenLabel(row.activityAt, now)}
                   <time datetime={row.activityAt} title={exactLocal(row.activityAt)}>
-                    {ageLabel(row.activityAt, now, "ago")}
+                    {whenDayText(when.day)} {when.clock}
                   </time>
                 {:else}
                   {wrapDisplayCopy(historyPageCopy.notRecorded)}
@@ -157,16 +270,22 @@
               </span>
               <span class="row-work-item">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnWorkItem)}: </span>
-                <!-- Every run reads the honest placeholder until PR #766 projects a
-                     real work item onto a run; nothing here derives one. -->
-                {wrapDisplayCopy(historyPageCopy.workItemPlaceholder)}
+                {#if row.workItem !== null}
+                  {row.workItem}
+                {:else}
+                  {wrapDisplayCopy(historyPageCopy.workItemPlaceholder)}
+                {/if}
               </span>
               <span class="row-result">
                 <span class="visually-hidden">{wrapDisplayCopy(historyPageCopy.columnResult)}: </span>
                 {#if row.result.kind === "failed"}
-                  {wrapDisplayCopy(standingWords.failed)} · {row.result.nodeId}
-                {:else}
-                  {wrapDisplayCopy(standingWords.done)}
+                  {failedResultCopy(row.result.nodeId, row.result.sentence, extras?.status === "settled")}
+                {:else if extras?.status === "settled"}
+                  {#if row.result.sentence !== null}
+                    {row.result.sentence}
+                  {:else}
+                    {wrapDisplayCopy(historyPageCopy.notRecorded)}
+                  {/if}
                 {/if}
               </span>
               <span class="row-duration">
@@ -236,7 +355,8 @@
     width: var(--name-column);
   }
 
-  .col-when {
+  .col-when,
+  .row-when {
     flex: none;
     width: var(--when-column);
   }
@@ -314,19 +434,17 @@
     white-space: nowrap;
   }
 
-  /* Relative reading, exact local time on hover/title -- the same age/exact
-     split every other timestamp on this surface already draws (`when.ts`). */
+  /* Calendar-clock fragments, exact local time on hover/title. */
   .row-when {
-    flex: none;
-    width: var(--when-column);
     color: var(--ink-dim);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
-  /* Never an ellipsis (REQ-UI-13): a failed row's node id can run long, so the
+  /* Never an ellipsis (REQ-UI-13): a result sentence can run long, so the
      cell wraps and is clamped to two lines instead of being cut mid-word; the
-     run page shows the id in full. */
+     run page shows the sentence in full. */
   .row-result {
     display: -webkit-box;
     flex: 1;
@@ -388,15 +506,9 @@
   }
 
   /* The header keeps naming its columns at every width (operator ruling
-     23.08.): a promise a narrow screen hides while the data still sits in
-     columns is a geometry the header no longer honestly describes. Duration
-     is the one column dropped at this width, so Result -- the fact that must
-     never truncate -- gets the room instead (issue #717). Work item drops
-     with it, but only because it is empty: mockup v8 §05's own narrow layout
-     hides an unfilled work item cell the same way. Once PR #766 lets a row
-     carry a real one, this rule needs the mockup's own answer for a filled
-     cell (a second line spanning the row), not silent disappearance -- named
-     here as that PR's own gap, not solved by guessing at it now. */
+     23.08.). Duration drops at this width so Result -- the fact that must
+     never truncate -- gets the room. Work item drops only when it is the
+     placeholder; a filled cell stays. */
   @media (max-width: 32rem) {
     .row-name {
       flex: 1 1 auto;
@@ -409,9 +521,12 @@
     }
 
     .row-duration,
-    .col-duration,
-    .row-work-item,
-    .col-work-item {
+    .col-duration {
+      display: none;
+    }
+
+    .history-row-no-work-item .row-work-item,
+    .history-head-no-work-item .col-work-item {
       display: none;
     }
   }

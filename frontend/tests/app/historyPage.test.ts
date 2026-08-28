@@ -2,14 +2,16 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "../../src/App.svelte";
-import type { AnyRun, CockpitApi, RunV1, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
+import type { AnyRun, CockpitApi, NodeDetail, RunV1, RunV3, WorkflowRevisionDetail } from "../../src/api/client";
 import {
   reportConnectionLost,
   reportConnectionRestored,
   restartNoticeCopy
 } from "../../src/lib/connectionState";
 import { MutationJournal } from "../../src/lib/mutationJournal";
+import { wrapDisplayCopy } from "../../src/lib/displayCopy";
 import { historyPageCopy } from "../../src/lib/historyPageCopy";
+import { historyWhenLabel } from "../../src/lib/historyRows";
 import { standingWords } from "../../src/lib/runState";
 import { cockpitApiStub } from "../support/cockpitApi";
 import { notCancellableBlock } from "../support/runV3";
@@ -77,6 +79,36 @@ function v3Revision(name = "Two agents in a line", hash = revisionHash): Workflo
       description: null
     }
   };
+}
+
+function nodeDetail(changes: Partial<NodeDetail> = {}): NodeDetail {
+  return {
+    run_id: "v3/run",
+    public_run_reference: publicReference,
+    node_id: "final",
+    state: "succeeded",
+    job_base64: btoa("job bytes must never become the result"),
+    job_hash: "e".repeat(64),
+    answer: null,
+    provenance: null,
+    refusal: null,
+    refusal_output: null,
+    ...changes
+  };
+}
+
+function completedNodeDetail(raw = '{"answer":"PR merged"}'): NodeDetail {
+  return nodeDetail({
+    answer: { value_base64: btoa(raw), value_hash: "f".repeat(64) }
+  });
+}
+
+function failedNodeDetail(raw = '{"answer":"could not merge"}'): NodeDetail {
+  return nodeDetail({
+    state: "failed",
+    refusal: "schema refused",
+    refusal_output: { value_base64: btoa(raw), value_hash: "a".repeat(64) }
+  });
 }
 
 function openHistory(
@@ -175,24 +207,59 @@ describe("History shows only what has finished", () => {
     expect(screen.queryByText("History unavailable")).toBeNull();
   });
 
-  it("names the resolved workflow, when it ran, and the real duration, without a per-row node read", async () => {
+  it("names the resolved workflow, when it ran, and the node result sentence", async () => {
     const run = v3Run();
-    const getNodeDetail = vi.fn();
+    const getNodeDetail = vi.fn(async () => completedNodeDetail());
     openHistory({ completed: [run] }, {
       getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line")),
       getNodeDetail
     });
 
     const row = await screen.findByRole("link", { name: /Two agents in a line/ });
-    // "when" it ran, relative -- with the exact local stamp anchored for hover.
-    expect(within(row).getByText("just now").getAttribute("title")).toEqual(
-      expect.stringContaining(new Date(run.ended_at ?? "").getFullYear().toString())
-    );
-    // "result": the honest standing word, never a guessed sentence.
-    expect(row.textContent).toContain(standingWords.done);
+    await waitFor(() => {
+      expect(getNodeDetail).toHaveBeenCalledWith(publicReference, "final");
+      expect(row.textContent).toContain("PR merged");
+    });
+    const expectedWhen = historyWhenLabel(run.ended_at ?? "", new Date(NOW_MS));
+    expect(row.querySelector("time")?.getAttribute("datetime")).toBe(run.ended_at);
+    expect(row.querySelector("time")?.textContent).toContain(historyPageCopy.today);
+    expect(row.querySelector("time")?.textContent).toContain(expectedWhen.clock);
+    expect(row.textContent).not.toContain("just now");
+    expect(row.textContent).not.toContain(standingWords.done);
+    expect(row.textContent).not.toContain("job bytes must never become the result");
     expect(row.textContent).toContain("38 min");
-    // Never one node read per row -- the list is built from the run resources alone.
-    expect(getNodeDetail).not.toHaveBeenCalled();
+  });
+
+  it("leaves a completed Result empty until extras settle, never Done", async () => {
+    const getNodeDetail = vi.fn(() => new Promise<NodeDetail>(() => undefined));
+    openHistory({ completed: [v3Run()] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line")),
+      getNodeDetail
+    });
+
+    const row = await screen.findByRole("link", { name: /Two agents in a line/ });
+    const result = row.querySelector(".row-result");
+    expect(result?.textContent).not.toContain(standingWords.done);
+    expect(result?.textContent).not.toContain(historyPageCopy.notRecorded);
+    expect(getNodeDetail).toHaveBeenCalled();
+  });
+
+  it("names a completed Result not recorded once extras settle with no readable answer, never Done", async () => {
+    const getNodeDetail = vi.fn(async () => nodeDetail());
+    openHistory({ completed: [v3Run()] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line")),
+      getNodeDetail
+    });
+
+    const row = await screen.findByRole("link", { name: /Two agents in a line/ });
+    await waitFor(() => {
+      expect(row.querySelector(".row-result")?.textContent).toContain(
+        wrapDisplayCopy(historyPageCopy.notRecorded)
+      );
+    });
+    const result = row.querySelector(".row-result");
+    expect(result?.textContent).not.toContain(standingWords.done);
+    expect(row.textContent).not.toContain("job bytes must never become the result");
   });
 
   it("names the run's purpose from its own orders, with the workflow named beneath it", async () => {
@@ -227,15 +294,29 @@ describe("History shows only what has finished", () => {
     expect(label.closest(".row-work-item")?.textContent).toContain("—");
   });
 
-  it("names a failed run's node, without reading it, and shows no duration when no V3 stamp exists", async () => {
-    const getNodeDetail = vi.fn();
+  it("names a failed run from extras, and shows no duration when no V3 stamp exists", async () => {
+    const getNodeDetail = vi.fn(async () => failedNodeDetail());
     openHistory({ failed: [v1Failed({ run_id: "broke" })] }, { getNodeDetail });
 
     const row = await screen.findByRole("link", { name: /broke/ });
-    expect(row.textContent).toContain(`${standingWords.failed} · final`);
+    await waitFor(() => {
+      expect(getNodeDetail).toHaveBeenCalled();
+      expect(row.textContent).toContain("could not merge");
+    });
+    expect(row.textContent).toContain(standingWords.failed);
+    expect(row.textContent).not.toContain(`${standingWords.failed} ·`);
     const durationLabel = within(row).getByText("Duration:", { exact: false });
     expect(durationLabel.closest(".row-duration")?.textContent).toContain("Not recorded");
-    expect(getNodeDetail).not.toHaveBeenCalled();
+  });
+
+  it("names a failed run's node when extras settle with no sentence", async () => {
+    const getNodeDetail = vi.fn(async () => nodeDetail({ state: "failed" }));
+    openHistory({ failed: [v1Failed({ run_id: "broke" })] }, { getNodeDetail });
+
+    const row = await screen.findByRole("link", { name: /broke/ });
+    await waitFor(() => {
+      expect(row.textContent).toContain(`${standingWords.failed} · final`);
+    });
   });
 
   it("leads down into the same run page a live run would open, already frozen", async () => {
@@ -271,12 +352,15 @@ describe("History shows only what has finished", () => {
 
   it("keeps a run outside the 7 day window off the list, honestly reporting nothing recent", async () => {
     const old = v3Run({ run_id: "ancient", ended_at: "2020-01-01T00:00:00Z" });
+    const getNodeDetail = vi.fn();
     openHistory({ completed: [old] }, {
-      getWorkflowRevision: vi.fn(async () => v3Revision())
+      getWorkflowRevision: vi.fn(async () => v3Revision()),
+      getNodeDetail
     });
 
     await screen.findByText(historyPageCopy.emptyTitle);
     expect(screen.queryByText("ancient")).toBeNull();
+    expect(getNodeDetail).not.toHaveBeenCalled();
   });
 });
 
