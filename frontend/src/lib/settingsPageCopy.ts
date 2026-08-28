@@ -5,7 +5,6 @@ export const settingsPageCopy = {
   sourcesTitle: "Sources",
   sourcesLabel: "sources",
   sourcesUnavailable: "Sources unavailable",
-  sourcesEmpty: "No source connected",
   sourceKind: "Kind",
   sourceAddress: "Address",
   sourceAuthMethod: "Authentication",
@@ -19,14 +18,19 @@ export const settingsPageCopy = {
   executorRevision: "Executor revision",
   discovery: "Models are listed as published; discovery from the connected providers follows.",
   defaultsTitle: "Model defaults",
-  defaultsEmptyRegistry: "No models are registered",
   defaultsNoCheckedModels: "Check a model above before choosing defaults",
   defaultsUnavailableModels: "No startable models are available",
   writeFailed: "Change not saved",
+  registryChanged: "The model list changed. Retry to save against the current list.",
   account: "Account",
   registry: "Registry",
   unknownAccount: "Unknown account",
   addModel: "Add a model",
+  checking: "Checking",
+  correctTheId: "Correct the id",
+  alreadyPresent: "schon vorhanden",
+  add: "Add",
+  cancel: "Cancel",
   check: "Check",
   remove: "Remove",
   notCheckedYet: "◇ not checked yet",
@@ -50,4 +54,12 @@ export function retainedAccountChoice(modelId: string, account: string): string 
 
 export function difficultyLabel(difficulty: number): string {
   return `${settingsPageCopy.difficulty} ${difficulty}`;
+}
+
+export function noSuchModel(providerId: string): string {
+  return `No such model at ${providerId}.`;
+}
+
+export function providerAccount(providerId: string, profileId: string): string {
+  return `${providerId} · ${profileId}`;
 }
