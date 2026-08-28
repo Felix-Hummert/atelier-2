@@ -317,7 +317,7 @@ describe("History shows only what has finished", () => {
     expect(row.textContent).not.toContain("job bytes must never become the result");
   });
 
-  it("names the run's purpose from its own orders, with the workflow named beneath it", async () => {
+  it("names the run's purpose as the workflow, never the order names", async () => {
     const run = v3Run({
       orders: [{ name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) }]
     });
@@ -325,9 +325,30 @@ describe("History shows only what has finished", () => {
       getWorkflowRevision: vi.fn(async () => v3Revision("Two agents in a line"))
     });
 
-    const row = await findHistoryCard(/diff/);
-    expect(within(row).getByText("diff").isConnected).toBe(true);
-    expect(within(row).getByText("Two agents in a line").isConnected).toBe(true);
+    const row = await findHistoryCard(/Two agents in a line/);
+    expect(row.querySelector(".row-purpose")?.textContent).toBe("Two agents in a line");
+    expect(row.querySelector(".row-name")?.textContent).not.toContain("diff");
+    expect(row.querySelector(".row-workflow")).toBeNull();
+  });
+
+  it("does not put typical code-review order names in the purpose cell", async () => {
+    const run = v3Run({
+      orders: [
+        { name: "context", bytes: 12, schema_revision_hash: "d".repeat(64) },
+        { name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) },
+        { name: "review_questions", bytes: 12, schema_revision_hash: "d".repeat(64) }
+      ]
+    });
+    openHistory({ completed: [run] }, {
+      getWorkflowRevision: vi.fn(async () => v3Revision("code-review"))
+    });
+
+    const row = await findHistoryCard(/code-review/);
+    const purpose = row.querySelector(".row-purpose")?.textContent ?? "";
+    expect(purpose).toBe("code-review");
+    expect(purpose).not.toContain("context");
+    expect(purpose).not.toContain("diff");
+    expect(purpose).not.toContain("review_questions");
   });
 
   it("names only the workflow, once, for a run started with no orders -- nothing repeats it", async () => {

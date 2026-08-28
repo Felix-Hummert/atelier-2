@@ -80,34 +80,31 @@ describe("projecting History's finished-run rows", () => {
     expect(unresolved[0]?.workflowName).toBe("named-run");
   });
 
-  it("names a V3 run's purpose from its own orders, joined, without reading a node or parsing a job", () => {
-    const [row] = projectHistoryRows(
-      [v3Run({ orders: [{ name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) }] })],
-      null
-    );
-
-    expect(row?.purpose).toBe("diff");
-
-    const [multiOrderRow] = projectHistoryRows(
+  it("never treats joined order names as purpose; a V3 run with orders still names only the resolved workflow or run-id fallback", () => {
+    const [named] = projectHistoryRows(
       [
         v3Run({
           orders: [
+            { name: "context", bytes: 12, schema_revision_hash: "d".repeat(64) },
             { name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) },
-            { name: "target_file", bytes: 6, schema_revision_hash: "d".repeat(64) }
+            { name: "review_questions", bytes: 6, schema_revision_hash: "d".repeat(64) }
           ]
         })
       ],
-      null
+      new Map([[revisionHash, "code-review"]])
     );
-    expect(multiOrderRow?.purpose).toBe("diff, target_file");
-  });
+    expect(named?.workflowName).toBe("code-review");
 
-  it("names no purpose for a run started with no orders, or a V1 run that carries none at all", () => {
-    const [v3NoOrders] = projectHistoryRows([v3Run({ orders: [] })], null);
-    expect(v3NoOrders?.purpose).toBeNull();
-
-    const [v1Row] = projectHistoryRows([completedRun()], null);
-    expect(v1Row?.purpose).toBeNull();
+    const [unresolved] = projectHistoryRows(
+      [
+        v3Run({
+          run_id: "named-run",
+          orders: [{ name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) }]
+        })
+      ],
+      new Map()
+    );
+    expect(unresolved?.workflowName).toBe("named-run");
   });
 
   it.each([
@@ -145,7 +142,6 @@ describe("projecting History's finished-run rows", () => {
       v3Run({ orders: [{ name: "diff", bytes: 12, schema_revision_hash: "d".repeat(64) }] }),
       null
     );
-    expect(row.purpose).toBe("diff");
     expect(row.workItem).toBeNull();
   });
 

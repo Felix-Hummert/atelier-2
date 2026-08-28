@@ -36,21 +36,13 @@ export type HistoryWhenLabel = {
 
 export type HistoryRow = {
   run: AnyRun;
-  workflowName: string;
   /**
-   * What the run was for, in the reader's own words to `run.orders` -- the
-   * order names it was started with, comma-joined, never a node read and
-   * never text parsed out of a job (mockup v8 §05, ADR 0019 §4, PR #736
-   * RESLICE review). Null for a V1/V2 run (no `orders` field exists yet) or
-   * a V3 run declared with none: the row then names only the workflow, as
-   * before -- there is nothing else honest to add.
-   *
-   * A real order *sentence* -- the mockup's own example ("Fix the wait bug")
-   * -- needs the order's redacted material, which `RunOrderResource` does not
-   * carry yet (#738's own named next step, waiting on #666's redaction
-   * owner). This is that slice's honest first step, not the finished shape.
+   * The purpose of a History row is the workflow: the name
+   * `resolveWorkflowName` already owns, including its honest run-id fallback.
+   * Never joined order names -- those are input-parameter labels, not what
+   * the run was for.
    */
-  purpose: string | null;
+  workflowName: string;
   /**
    * The run's work item: reference plus enrichment title when the extras
    * supply one. Never derived from order names, job prose, or a guessed
@@ -92,7 +84,6 @@ export function presentHistoryRow(
   return {
     run,
     workflowName: resolveWorkflowName(run, workflowNames),
-    purpose: historyPurpose(run),
     workItem: historyWorkItem(extras),
     result: historyResult(run, extras?.resultSentence ?? null),
     span: historySpan(run),
@@ -105,11 +96,6 @@ export function historyWorkItemLabel(item: HistoryWorkItem): string {
   const grammar = trackerItemLabel(item.reference);
   if (item.title !== null && item.title.length > 0) return `${grammar} ${item.title}`;
   return grammar;
-}
-
-function historyPurpose(run: AnyRun): string | null {
-  if (!isRunV3(run) || run.orders.length === 0) return null;
-  return run.orders.map((order) => order.name).join(", ");
 }
 
 function historyWorkItem(extras?: HistoryRowExtras | null): HistoryWorkItem | null {
