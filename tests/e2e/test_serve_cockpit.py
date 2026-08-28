@@ -232,12 +232,10 @@ def test_a_reset_recompose_restores_the_exact_cold_boot_baseline(
             harness.RunId(mutation_run_id),
             harness.WorkflowRevision(harness.WORKFLOW),
         )
-        deadline = time.monotonic() + harness.TIMEOUT_SECONDS
-        while (
-            _effect_call_count(effects) == baseline_effect_calls
-            and time.monotonic() < deadline
-        ):
-            time.sleep(0.025)
+        harness.wait_until(
+            lambda: _effect_call_count(effects) == baseline_effect_calls + 1,
+            "the mutation run to write one loopback effect",
+        )
         assert _run_states(database) != baseline_runs
         assert _effect_call_count(effects) == baseline_effect_calls + 1
 
@@ -278,8 +276,9 @@ def test_a_reset_recompose_restores_the_exact_cold_boot_baseline(
             assert restarted.status_code == 202
             expected_generation = restarted.text
 
-            restart_threads[0].join(timeout=harness.TIMEOUT_SECONDS)
-            assert not restart_threads[0].is_alive()
+            harness.join_thread(
+                restart_threads[0], "the reset recompose to finish"
+            )
 
             observed_generation = client.get("/__e2e/generation")
             assert observed_generation.text == expected_generation
@@ -372,6 +371,65 @@ def test_reusing_a_scratch_root_that_still_holds_attempt_directories_refuses_the
     scratch_root.close()
 
 
+def test_a_harness_wait_names_what_it_was_waiting_for() -> None:
+    pending = threading.Event()
+    with pytest.raises(
+        TimeoutError, match="waiting for the held decode to start"
+    ):
+        harness.wait_for(pending, "the held decode to start", timeout=0)
+
+
+def test_a_harness_wait_fails_before_the_deadline_when_the_worker_dies() -> None:
+    pending = threading.Event()
+
+    def die() -> None:
+        return
+
+    thread = threading.Thread(target=die)
+    thread.start()
+    thread.join()
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="thread died before the held decode to start"):
+        harness.wait_for(
+            pending,
+            "the held decode to start",
+            thread=thread,
+            timeout=harness.TIMEOUT_SECONDS,
+        )
+    assert time.monotonic() - started < 1.0
+
+
+def test_a_harness_wait_returns_when_the_signal_already_fired() -> None:
+    ready = threading.Event()
+    ready.set()
+    harness.wait_for(ready, "an already-set signal", timeout=0)
+
+
+def test_a_harness_join_names_what_it_was_waiting_for() -> None:
+    hold = threading.Event()
+
+    def hang() -> None:
+        hold.wait()
+
+    thread = threading.Thread(target=hang)
+    thread.start()
+    try:
+        with pytest.raises(
+            TimeoutError, match="waiting for the recompose thread to finish"
+        ):
+            harness.join_thread(
+                thread, "the recompose thread to finish", timeout=0
+            )
+    finally:
+        hold.set()
+        thread.join()
+
+
+def test_a_harness_wait_until_names_what_it_was_waiting_for() -> None:
+    with pytest.raises(TimeoutError, match="waiting for the mutation effect"):
+        harness.wait_until(lambda: False, "the mutation effect", timeout=0)
+
+
 def test_releasing_fake_provider_holds_unblocks_a_held_decode_before_the_hold_bound() -> (
     None
 ):
@@ -392,10 +450,12 @@ def test_releasing_fake_provider_holds_unblocks_a_held_decode_before_the_hold_bo
 
     thread = threading.Thread(target=run)
     thread.start()
-    assert executor.holding.wait(harness.TIMEOUT_SECONDS)
+    harness.wait_for(
+        executor.holding, "the held decode to start", thread=thread
+    )
     holds.release_all()
-    thread.join(timeout=harness.TIMEOUT_SECONDS)
-    assert not thread.is_alive()
+    harness.join_thread(thread, "the held decode to finish after release")
+    assert executor.released_before_bound
     assert finished.is_set()
 
 
@@ -423,8 +483,7 @@ def test_scratch_root_removal_cannot_precede_an_in_flight_decode_that_outlives_r
 
     def stall_after_release(completion: object) -> object:
         past_release.set()
-        if not stall.wait(harness.TIMEOUT_SECONDS):
-            raise RuntimeError("stalled decode was not resumed")
+        harness.wait_for(stall, "the stalled decode to be resumed")
         result = decode_body(completion)
         order.append("decode-finished")
         return result
@@ -447,18 +506,26 @@ def test_scratch_root_removal_cannot_precede_an_in_flight_decode_that_outlives_r
     closer = threading.Thread(target=drain_then_remove)
     decoder_thread.start()
     try:
-        assert executor.holding.wait(harness.TIMEOUT_SECONDS)
+        harness.wait_for(
+            executor.holding,
+            "the in-flight decode to start holding",
+            thread=decoder_thread,
+        )
         closer.start()
-        assert past_release.wait(harness.TIMEOUT_SECONDS)
+        harness.wait_for(
+            past_release,
+            "the in-flight decode to pass release",
+            thread=decoder_thread,
+        )
         assert created_root.is_dir()
         assert "idle" not in order
         assert "removed" not in order
         assert not runtime.closed
         stall.set()
-        closer.join(timeout=harness.TIMEOUT_SECONDS)
-        decoder_thread.join(timeout=harness.TIMEOUT_SECONDS)
-        assert not closer.is_alive()
-        assert not decoder_thread.is_alive()
+        harness.join_thread(
+            closer, "drain to remove the scratch root after the decode"
+        )
+        harness.join_thread(decoder_thread, "the in-flight decode to finish")
         assert order == ["decode-finished", "idle", "removed"]
         assert runtime.closed
         assert not created_root.exists()
@@ -535,8 +602,7 @@ def test_a_stale_generation_decode_admitted_late_must_not_touch_the_removed_root
 
     def delay_before_admission(invocation: object, completion: object) -> object:
         entered.set()
-        if not proceed.wait(harness.TIMEOUT_SECONDS):
-            raise RuntimeError("stale decode was not resumed")
+        harness.wait_for(proceed, "the stale decode to be resumed")
         return original_decode(invocation, completion)
 
     executor.decode_process_completion = delay_before_admission
@@ -557,15 +623,16 @@ def test_a_stale_generation_decode_admitted_late_must_not_touch_the_removed_root
     next_root = None
     decoder_thread.start()
     try:
-        assert entered.wait(harness.TIMEOUT_SECONDS)
+        harness.wait_for(
+            entered, "the stale decode to reach admission", thread=decoder_thread
+        )
         harness.drain_inflight_fake_decodes(holds)
         runtime.close()
         holds.start_generation()
         next_root = harness.replace_closed_generation_scratch_root(scratch_root)
         assert not gen1.exists()
         proceed.set()
-        decoder_thread.join(timeout=harness.TIMEOUT_SECONDS)
-        assert not decoder_thread.is_alive()
+        harness.join_thread(decoder_thread, "the stale decode to be rejected")
         assert len(outcome) == 1
         assert isinstance(outcome[0], RuntimeError)
         assert "stale generation" in str(outcome[0])
@@ -577,7 +644,7 @@ def test_a_stale_generation_decode_admitted_late_must_not_touch_the_removed_root
         proceed.set()
         holds.release_all()
         if decoder_thread.is_alive():
-            decoder_thread.join(timeout=harness.TIMEOUT_SECONDS)
+            harness.join_thread(decoder_thread, "the leftover stale decode to stop")
         if next_root is not None:
             next_root.close()
 
@@ -662,8 +729,9 @@ def test_a_reset_recompose_opens_the_next_runtime_on_a_fresh_scratch_root(
             restarted = client.post("/__e2e/recompose?reset=true")
             assert restarted.status_code == 202
             expected_generation = restarted.text
-            restart_threads[0].join(timeout=harness.TIMEOUT_SECONDS)
-            assert not restart_threads[0].is_alive()
+            harness.join_thread(
+                restart_threads[0], "the scratch-root reset recompose to finish"
+            )
             observed_generation = client.get("/__e2e/generation")
             assert observed_generation.text == expected_generation
 
@@ -718,8 +786,7 @@ def test_scratch_root_removal_cannot_precede_capture_after_decode(
             harness.AgentProcessCompletion(0, b'"V3 provider bytes"', b""),
         )
         past_decode.set()
-        if not stall.wait(harness.TIMEOUT_SECONDS):
-            raise RuntimeError("stalled capture was not resumed")
+        harness.wait_for(stall, "the stalled capture to be resumed")
         order.append("capture-finished")
 
     tracked = harness.track_execute_agent_attempt(holds, capture_after_decode)
@@ -737,18 +804,26 @@ def test_scratch_root_removal_cannot_precede_capture_after_decode(
     closer = threading.Thread(target=drain_then_remove)
     attempt_thread.start()
     try:
-        assert past_decode.wait(harness.TIMEOUT_SECONDS)
+        harness.wait_for(
+            past_decode,
+            "the tracked attempt to finish decode",
+            thread=attempt_thread,
+        )
         closer.start()
-        assert entered_idle_wait.wait(harness.TIMEOUT_SECONDS)
+        harness.wait_for(
+            entered_idle_wait,
+            "drain to wait for capture after decode",
+            thread=closer,
+        )
         assert created_root.is_dir()
         assert "idle" not in order
         assert "removed" not in order
         assert not runtime.closed
         stall.set()
-        closer.join(timeout=harness.TIMEOUT_SECONDS)
-        attempt_thread.join(timeout=harness.TIMEOUT_SECONDS)
-        assert not closer.is_alive()
-        assert not attempt_thread.is_alive()
+        harness.join_thread(
+            closer, "drain to remove the scratch root after capture"
+        )
+        harness.join_thread(attempt_thread, "the tracked attempt to finish")
         assert order == ["capture-finished", "idle", "removed"]
         assert runtime.closed
         assert not created_root.exists()
@@ -793,14 +868,17 @@ def test_scratch_root_removal_cannot_precede_an_active_dbos_workflow(
     closer = threading.Thread(target=drain_then_remove)
     closer.start()
     try:
-        assert seen_active.wait(harness.TIMEOUT_SECONDS)
+        harness.wait_for(
+            seen_active, "drain to see the active DBOS workflow", thread=closer
+        )
         assert created_root.is_dir()
         assert "idle" not in order
         assert "removed" not in order
         assert not runtime.closed
         workflows.release(workflow_id)
-        closer.join(timeout=harness.TIMEOUT_SECONDS)
-        assert not closer.is_alive()
+        harness.join_thread(
+            closer, "drain to remove the scratch root after workflows idle"
+        )
         assert order == ["idle", "removed"]
         assert runtime.closed
         assert not created_root.exists()
@@ -817,5 +895,5 @@ def test_wait_until_dbos_workflows_idle_fails_loud_when_a_workflow_does_not_fini
     workflows = harness.NotifyingActiveWorkflows()
     workflows.acquire("atelier2-node-still-capturing")
     monkeypatch.setattr(harness, "notifying_active_workflows", lambda: workflows)
-    with pytest.raises(RuntimeError, match="did not finish"):
+    with pytest.raises(TimeoutError, match="waiting for 1 DBOS workflow"):
         harness.wait_until_dbos_workflows_idle(timeout=0)
