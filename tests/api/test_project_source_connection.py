@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+from atelier2.adapters.github.project_connections import GitHubProjectSourceConnector
 from atelier2.api.app import create_app
 from atelier2.api.openapi import PROJECT_SOURCE_CONNECTION_PATH
 from atelier2.api.references import encode_public_project_reference
@@ -12,7 +14,9 @@ from atelier2.contracts.host_configuration import (
     ConnectionActor,
     ProjectId,
     ProjectRootRevision,
+    ProjectSourceConnectionLifecycle,
     ProjectSourceConnectionRevision,
+    ProjectSourceId,
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
@@ -49,12 +53,16 @@ class ProjectChannel:
 def connection() -> ProjectSourceConnectionRevision:
     return ProjectSourceConnectionRevision(
         PROJECT,
+        ProjectSourceId("11111111-1111-1111-1111-111111111111"),
         3,
         SourceKind("github"),
         SourceAddress("FlexOr2/atelier-2"),
         Path("/operator/credentials"),
         SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
         ConnectionActor("operator"),
+        ProjectSourceConnectionLifecycle.CONNECTED,
+        None,
+        None,
     )
 
 
@@ -68,6 +76,7 @@ def client(connection_channel: ConnectionChannel) -> TestClient:
                     ProjectRootRevision(PROJECT, 1, Path("/operator/project"))
                 ),
                 project_source_connection_channel=connection_channel,
+                project_source_connector=GitHubProjectSourceConnector(),
             ),
             limits=api_limits(),
             event_poll_backoff=event_poll_backoff(),
@@ -96,6 +105,29 @@ def test_get_reads_the_connection_without_credential_reference() -> None:
     }
     assert "credentials" not in response.text
     assert "operator" not in response.text
+
+
+@pytest.mark.proves("a-project-source-identity-never-includes-a-branch")
+def test_get_refuses_a_branch_stored_in_the_v45_identity() -> None:
+    revision = connection()
+    legacy = ProjectSourceConnectionRevision(
+        revision.project_id,
+        revision.source_id,
+        revision.revision_number,
+        revision.source_kind,
+        SourceAddress("FlexOr2/atelier-2@legacy-main"),
+        revision.credential_directory,
+        revision.auth_method,
+        revision.connected_by,
+        revision.lifecycle,
+        revision.connected_at,
+        None,
+    )
+
+    response = client(ConnectionChannel(legacy)).get(path())
+
+    assert response.status_code == 500
+    assert response.json()["type"].endswith("durable-state-corrupt")
 
 
 def test_get_names_an_absent_connection() -> None:

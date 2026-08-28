@@ -52,7 +52,9 @@ from atelier2.contracts.host_configuration import (
     MAXIMUM_PROJECT_ROOT_PATH_CHARACTERS,
     MAXIMUM_SOURCE_ADDRESS_CHARACTERS,
     MAXIMUM_SOURCE_KIND_CHARACTERS,
+    MAXIMUM_SOURCE_REFERENCE_CHARACTERS,
     ModelRegistryEntrySource,
+    ProjectSourceConnectionLifecycle,
     ProviderModelCheck,
     SourceConnectionAuthMethod,
 )
@@ -425,6 +427,9 @@ OWNED_VOCABULARIES: Mapping[str, frozenset[str | int]] = {
     "host_project_source_connection_revisions.auth_method": _values(
         SourceConnectionAuthMethod
     ),
+    "host_project_source_connection_revisions.lifecycle": _values(
+        ProjectSourceConnectionLifecycle
+    ),
     "host_model_registry_entries.source": _values(ModelRegistryEntrySource),
     "host_model_registry_entries.provider_check": _values(ProviderModelCheck),
     "host_project_model_defaults.difficulty": frozenset({1, 2, 3}),
@@ -618,12 +623,17 @@ OWNED_FIELD_BOUNDS: Mapping[str, int] = {
     "host_project_source_connection_revisions.source_address": (
         MAXIMUM_SOURCE_ADDRESS_CHARACTERS
     ),
+    "host_project_source_connection_revisions.source_ref": (
+        MAXIMUM_SOURCE_REFERENCE_CHARACTERS
+    ),
     "host_project_source_connection_revisions.credential_directory": (
         MAXIMUM_CREDENTIAL_DIRECTORY_CHARACTERS
     ),
     "host_project_source_connection_revisions.connected_by": (
         MAXIMUM_CONNECTION_ACTOR_CHARACTERS
     ),
+    "host_project_source_connection_revisions.source_id": 36,
+    "host_project_source_connection_revisions.connected_at": 20,
     "host_model_registry_revisions.provider_id": PROVIDER_ID_BOUND,
     "host_model_registry_entries.provider_id": PROVIDER_ID_BOUND,
     "host_model_registry_entries.model_id": MAXIMUM_EXACT_MODEL_ID_CHARACTERS,

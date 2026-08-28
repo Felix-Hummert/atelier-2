@@ -1,0 +1,26 @@
+schema_version = 1
+story = "https://github.com/FlexOr2/atelier-2/issues/567"
+
+[[sentence]]
+id = "v44-project-source-history-migrates-as-one-replayable-hop"
+text = "atelier2 migrate recognizes the exact published V44 project-source table and either commits one V45 hop or leaves the store byte-for-byte at V44; the hop preserves every credential-reference string, gives each project-and-kind history its own deterministic source id, relocates an embedded GitHub branch from the address into its private source ref, writes null connection instants, marks only the unique project-wide latest row connected and every predecessor disconnected, and a replay changes no row."
+
+[[sentence]]
+id = "a-project-source-identity-never-includes-a-branch"
+text = "A project-source connection is the provider project address rather than a branch: a repeated active address remains one source, a different address cannot retarget it before disconnect, GitHub stores its operating ref as a nonidentity detail, and no HTTP projection exposes that ref."
+
+[[sentence]]
+id = "a-project-source-token-never-returns-from-its-http-door"
+text = "A project-source token entered through connect or rotate never appears in a success, provider refusal, request-validation response, log, event, or durable store row."
+
+[[sentence]]
+id = "credential-publication-follows-the-durable-source-revision"
+text = "Connect and token rotation validate before publishing a durable revision, leave the prior credential reference unchanged on refusal, retain a credential deposit whenever an unreadable outcome may have stored its path, and discard only a deposit the durable history cannot name."
+
+[[sentence]]
+id = "disconnect-is-idempotent-and-every-reader-follows-lifecycle"
+text = "Disconnect appends one disconnected revision and repeated DELETE returns 204 without another row; afterward both the source collection and residual singular reader report no active connection until an explicit reconnect."
+
+[[sentence]]
+id = "legacy-connection-unknowns-stay-null-and-private"
+text = "A preserved legacy current row may expose a null connection instant, while migration relocates its embedded GitHub branch into a private source-ref detail that remains absent from every public projection."

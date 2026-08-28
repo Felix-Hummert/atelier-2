@@ -311,7 +311,7 @@ def test_proposal_and_manual_confirmation_are_separate_typed_transitions(
     )
 
 
-def test_v44_fresh_shape_and_phase_d_vocabulary_are_exact(tmp_path: Path) -> None:
+def test_current_fresh_shape_keeps_phase_d_vocabulary_exact(tmp_path: Path) -> None:
     database_path = tmp_path / "atelier.sqlite"
     engine = create_canonical_engine(database_path)
     initialize_schema(engine)
@@ -319,7 +319,7 @@ def test_v44_fresh_shape_and_phase_d_vocabulary_are_exact(tmp_path: Path) -> Non
 
     with sqlite3.connect(database_path) as connection:
         assert (
-            schema_module._fingerprint_for_version(connection, 44)
+            schema_module._fingerprint_for_version(connection, SCHEMA_VERSION)
             == PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
         )
         table_names = {
@@ -880,6 +880,17 @@ def _restore_v43(database_path: Path) -> None:
         connection.execute("BEGIN IMMEDIATE")
         schema_module._rebuild_product_table(
             connection,
+            schema_module.host_project_source_connection_revisions,
+            "project_source_connections_v45",
+            (
+                "host_project_source_connection_revisions_no_update",
+                "host_project_source_connection_revisions_no_delete",
+            ),
+            45,
+            44,
+        )
+        schema_module._rebuild_product_table(
+            connection,
             schema_module.queue_items,
             "queue_items_v44",
             ("queue_items_identity_no_update", "queue_items_no_delete"),
@@ -925,7 +936,7 @@ def test_v43_to_v44_preserves_populated_rows_and_invents_no_queue_decision(
     report = migrate_store(database_path)
 
     assert report.source_version == V43_SCHEMA_HANDOFF.version
-    assert report.target_version == SCHEMA_VERSION == 44
+    assert report.target_version == SCHEMA_VERSION == 45
     assert report.fingerprint_sha256 == PRODUCT_SCHEMA_HANDOFF.fingerprint_sha256
     reopened = create_canonical_engine(database_path)
     try:

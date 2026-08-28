@@ -35,10 +35,13 @@ from atelier2.contracts.effects import AdapterRevision, EffectDestination
 from atelier2.contracts.host_configuration import (
     ConnectionActor,
     ProjectId,
+    ProjectSourceConnectionLifecycle,
     ProjectSourceConnectionRevision,
+    ProjectSourceId,
     SourceAddress,
     SourceConnectionAuthMethod,
     SourceKind,
+    SourceReference,
 )
 from tests.scenarios.api import durable_api_client
 from tests.scenarios.runtime import exact_output_runtime
@@ -99,12 +102,16 @@ def issue_source(
     composed = live_github_issue_source(
         ProjectSourceConnectionRevision(
             PROJECT,
+            ProjectSourceId("11111111-1111-1111-1111-111111111111"),
             1,
             SourceKind("github"),
-            SourceAddress(f"{OWNER}/{REPO}@main"),
+            SourceAddress(f"{OWNER}/{REPO}"),
             credential_directory,
             SourceConnectionAuthMethod.PERSONAL_ACCESS_TOKEN,
             ConnectionActor("felix"),
+            ProjectSourceConnectionLifecycle.CONNECTED,
+            None,
+            SourceReference("main"),
         )
     )
     return replace(composed, transport=httpx.MockTransport(listing.handle))

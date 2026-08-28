@@ -122,31 +122,59 @@ defaults and resolution operation first proves that the reference names the
 project this process serves; a foreign configured project never reaches the
 model-configuration channel.
 
-The channel also holds the project-source connection record
-([ADR 0010](../decisions/0010-github-platform-adapter.md) decision 2). `atelier2
-connect` is the explicit offline operator act: it appends one immutable
-revision binding a configured project to a source kind, an opaque source
-address only the connected platform adapter interprets, a credential-directory
-reference, the chosen auth method (`personal-access-token` today; the App
-method is deferred by naming), and the connecting actor. The record holds
-identities and the reference, never a credential value, and every read answers
-the same; a project without a record is refused in the
-`platform-connection-unknown` shape. Revisions are keyed per project and
-source kind so a second source stays representable, while today's read returns
-the single latest connection. Schema V40 retains the family's append-only
-table under the same immutability trigger pair the channel's other two
-families carry. Serve composes from the record: a served project whose latest
-connection revision names a GitHub source gets the live `open-pr` adapter, and
-the github adapter package alone decodes the opaque address
-(`owner/name@base-branch`) into its repository facts -- no GitHub identifier
-returns to host or serving (ADR 0010 decision 1). The temporary `--github-*`
-serve flags are gone; argparse refuses them as unrecognized arguments. All
-three live-GitHub guards stand on the record-composed path: a non-loopback
-bind refuses to start, admission refuses an agent-authored `open-pr` grant,
-and a start refuses while an earlier run still owes an agent `open-pr`
-redemption.
+The channel also holds project-source connection revisions
+([ADR 0010](../decisions/0010-github-platform-adapter.md) decision 2). Each
+revision carries a stable source id, `CONNECTED` or `DISCONNECTED` lifecycle,
+the connection instant, source kind, the adapter-owned opaque address, and a
+nullable adapter-owned source-ref detail plus a credential-directory reference;
+neither detail is connection identity, and the revision never carries the
+credential value. Schema V45 rebuilds this family in one transaction under its
+immutability triggers. It preserves every credential-directory string, assigns
+one deterministic source id per `(project_id, source_kind)` history, sets
+`connected_at` to null, and relocates a GitHub address's embedded branch into
+the private `source_ref` detail while leaving other adapters' opaque addresses
+unchanged. For each project, only the row with the unique project-wide maximum
+revision remains `CONNECTED`; every earlier row is `DISCONNECTED`, meaning it
+is preserved history rather than evidence that a DELETE was witnessed. Tied
+project-wide maxima refuse before mutation. Replaying the completed hop yields
+the same rows.
 
-The canonical store is schema V40. A fresh store is created as exact V40 and
+`atelier2 connect` remains the compatible offline operator door and cannot
+retarget an active source. The bounded HTTP collection adds `GET` and `POST
+/atelier/api/v1/projects/{public_project_reference}/sources`; `DELETE
+/atelier/api/v1/projects/{public_project_reference}/sources/{public_source_reference}`
+is idempotent disconnect, and `PUT` on that member's `/token` suffix validates
+and rotates the stored credential reference without changing source identity or
+connection instant. Connecting the same provider address keeps one source id;
+a different address cannot take over while that source is active. Connect and
+rotation reconcile the durable write before removing a credential deposit: a
+validation refusal leaves the previous revision and credential reference
+unchanged, and an unreadable write outcome retains any deposit a durable row
+may name. Public problems give a fixed next step; corrupt state stops mutation
+for inspection. A token entered at either HTTP door is never returned in a
+response or error and never enters a log or event. Reads expose only the public
+source reference, kind, provider-owned `owner/name` address, `issues` scope,
+nullable legacy connection instant, revision and auth method. The singular `GET
+/atelier/api/v1/projects/{public_project_reference}/source-connection` remains
+as a residual until its frontend reader moves, but reads only the active
+`CONNECTED` revision: after disconnect it answers not-connected. No public
+projection carries the source ref. This first door deliberately allows zero or
+one active source per project; multi-source queue identity stays with the later
+queue phase.
+
+Serve composes from the record: a served project whose latest connected
+revision names a GitHub source gets the live `open-pr` adapter, and the github
+adapter package alone composes the branchless `owner/name` address and
+source-ref detail into its repository facts. V45 refuses a GitHub identity that
+still embeds a branch; the V44 migration relocates that detail before the row
+can be read. The source-ref detail returns through no public host surface (ADR
+0010 decision 1). The temporary `--github-*` serve flags are gone; argparse
+refuses them as unrecognized arguments. All
+three live-GitHub guards stand on the record-composed path: a non-loopback bind
+refuses to start, admission refuses an agent-authored `open-pr` grant, and a
+start refuses while an earlier run still owes an agent `open-pr` redemption.
+
+The canonical store is schema V45. A fresh store is created as exact V45 and
 carries published revisions of the closed kind set, lineage membership bound
 to those revisions, append-only alias and retirement histories, format-3
 runs, immutable node artifact bytes, node receipts, their ordered output
@@ -158,7 +186,7 @@ artifacts an order may name instead of carrying their bytes, the round a
 declared loop was turning when each run, event and agent receipt was written,
 the host configuration channel's project-root, project-source, provider model
 registry, and project model-default revisions, and the queue projection's
-admission row per work item. V40 retires lineage occupancy instead of carrying
+admission row per work item. V40 retired lineage occupancy instead of carrying
 both authorities. The catalog adapter founds a lineage
 and admits members through a typed writer that derives `CatalogLineageId`
 from kind and founding hash and refuses a mismatched id before mutation. An
