@@ -3,7 +3,9 @@
  * the run view, so those rooms do not each own the graph's name.
  */
 export const workflowGraphCopy = {
-  label: "Workflow"
+  label: "Workflow",
+  /** A rail node reused from an origin fork — the picture's dashed double ring. */
+  carriedOver: "carried over"
 } as const;
 
 export function loopRoundBound(maximumRounds: number): string {

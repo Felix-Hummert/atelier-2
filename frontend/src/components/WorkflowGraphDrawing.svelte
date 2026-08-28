@@ -22,6 +22,7 @@
   import { nodeIsLiveWork } from "../lib/liveWatch";
   import type { NodeState } from "../lib/runProjection";
   import { layerWorkflowGraph } from "../lib/workflowGraph";
+  import { wrapDisplayCopy } from "../lib/displayCopy";
   import { loopLabel, workflowGraphCopy } from "../lib/workflowGraphCopy";
   import { nodeAriaName } from "../lib/stateMarkCopy";
   import { stateGlyphs } from "./StateMark.svelte";
@@ -36,7 +37,11 @@
 
   export let previews: readonly WorkflowGraphPreview[];
   export let loops: readonly WorkflowGraphLoop[] = [];
-  export let rail: readonly { node_id: string; state: NodeState }[] = [];
+  export let rail: readonly {
+    node_id: string;
+    state: NodeState;
+    reused_from_run_reference?: string | null;
+  }[] = [];
   export let currentNodeId: string | null = null;
   export let selectedNodeId: string | null = null;
   export let onSelect: ((nodeId: string) => void) | null = null;
@@ -60,6 +65,13 @@
 
   $: layered = layerWorkflowGraph(previews);
   $: stateById = new Map(rail.map((entry) => [entry.node_id, entry.state]));
+  $: reusedById = new Map(
+    rail.flatMap((entry) =>
+      entry.reused_from_run_reference == null || entry.reused_from_run_reference === ""
+        ? []
+        : [[entry.node_id, entry.reused_from_run_reference] as const]
+    )
+  );
   $: segments = layered.ok === true ? segmentLayers(layered.layers, loops) : [];
   $: scheduleEdges(layered, previews);
   $: scheduleFollowCurrent(currentNodeId);
@@ -304,35 +316,43 @@
           <path d={edge.d} fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#{markerId})" />
         {/each}
       </svg>
-      {#snippet stageBody(preview: WorkflowGraphPreview, state: NodeState | undefined)}
-        <span class="pipe-shape" aria-hidden="true"><i>{state === undefined ? "" : stateGlyphs[state]}</i></span>
+      {#snippet stageBody(preview: WorkflowGraphPreview, state: NodeState | undefined, reused: boolean)}
+        <span class="pipe-shape" aria-hidden="true"><i>{reused ? "↳" : state === undefined ? "" : stateGlyphs[state]}</i></span>
         <b class="pipe-name">{preview.id}</b>
+        {#if reused}<small class="pipe-reuse">{wrapDisplayCopy(workflowGraphCopy.carriedOver)}</small>{/if}
       {/snippet}
       {#snippet layerCard(slot: LayerSlot)}
         <div class="graph-layer" data-layer={slot.index}>
           {#each slot.nodes as preview (preview.id)}
             {@const state = stateById.get(preview.id)}
+            {@const reused = reusedById.has(preview.id)}
             {#if onSelect !== null}
               <button
                 type="button"
                 class="pipe-stage"
                 class:current={preview.id === currentNodeId}
+                class:reused
                 data-node-id={preview.id}
                 data-node-kind={preview.kind}
                 data-layer={slot.index}
                 data-state={state}
+                data-reused={reused ? "true" : undefined}
                 data-live={nodeIsLiveWork(state) ? "true" : undefined}
-                aria-label={nodeLabel(preview.id, state)}
+                aria-label={reused
+                  ? `${nodeLabel(preview.id, state)} ${workflowGraphCopy.carriedOver}`
+                  : nodeLabel(preview.id, state)}
                 aria-expanded={selectedNodeId === preview.id}
                 on:click={() => onSelect?.(preview.id)}
-              >{@render stageBody(preview, state)}</button>
+              >{@render stageBody(preview, state, reused)}</button>
             {:else}
               <span
                 class="pipe-stage"
+                class:reused
                 data-node-id={preview.id}
                 data-node-kind={preview.kind}
                 data-layer={slot.index}
-              >{@render stageBody(preview, undefined)}</span>
+                data-reused={reused ? "true" : undefined}
+              >{@render stageBody(preview, undefined, reused)}</span>
             {/if}
           {/each}
         </div>
@@ -535,6 +555,17 @@
     font-size: var(--text-xs);
     font-weight: var(--weight-strong);
     overflow-wrap: anywhere;
+  }
+
+  .pipe-reuse {
+    color: var(--ink-dim);
+    font-size: var(--text-2xs);
+  }
+
+  .pipe-stage.reused .pipe-shape {
+    box-shadow: 0 0 0 var(--pipe-stroke) var(--line);
+    outline: var(--pipe-stroke) dashed var(--line);
+    outline-offset: calc(var(--pipe-stroke) * 2);
   }
 
   .pipe-stage[data-state="working"] {

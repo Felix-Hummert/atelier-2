@@ -15,6 +15,7 @@ import { cancelMutationId, MutationJournal } from "../../src/lib/mutationJournal
 import { backLinkCopy } from "../../src/lib/backLinkCopy";
 import { runHeaderCopy } from "../../src/lib/runPages";
 import { cancelReasonSentence, runPageCopy } from "../../src/lib/runPageCopy";
+import { runPath } from "../../src/lib/route";
 import { nodeAriaName, stateLabels } from "../../src/lib/stateMarkCopy";
 import { workflowGraphCopy } from "../../src/lib/workflowGraphCopy";
 import { cockpitApiStub, FakeRunEventFeed } from "../support/cockpitApi";
@@ -105,6 +106,24 @@ beforeEach(() => {
 });
 
 afterEach(() => cleanup());
+
+/** jsdom has no modal dialog; the same seam RunCancelCard's staged decision uses. */
+function stubDialogMethods(): void {
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: {
+      configurable: true,
+      value(this: HTMLDialogElement): void {
+        this.open = true;
+      }
+    },
+    close: {
+      configurable: true,
+      value(this: HTMLDialogElement): void {
+        this.open = false;
+      }
+    }
+  });
+}
 
 describe("a version 3 run in the cockpit", () => {
   it("proves(a-v3-run-is-visible-in-the-cockpit): shows the line, which node is running, and no proof plumbing on the way", async () => {
@@ -828,20 +847,7 @@ describe("cancelling a version 3 run from the cockpit", () => {
   const targetNodeExecutionId = "d".repeat(64);
 
   beforeEach(() => {
-    Object.defineProperties(HTMLDialogElement.prototype, {
-      showModal: {
-        configurable: true,
-        value(this: HTMLDialogElement): void {
-          this.open = true;
-        }
-      },
-      close: {
-        configurable: true,
-        value(this: HTMLDialogElement): void {
-          this.open = false;
-        }
-      }
-    });
+    stubDialogMethods();
     sessionStorage.clear();
     window.history.replaceState(null, "", `/atelier/runs/${publicReference}`);
   });
@@ -1192,8 +1198,7 @@ describe("a failed node on the run page", () => {
     expect(screen.getByRole("button", { name: nodeAriaName("implement", "failed") }).isConnected).toBe(true);
     expect(screen.queryByRole("button", { name: new RegExp(stateLabels.working) })).toBeNull();
 
-    // A node that stopped opens on the reason it stopped, not on the first tab.
-    await fireEvent.click(screen.getByRole("button", { name: nodeAriaName("implement", "failed") }));
+    // A failed run opens the node that stopped it, on the reason it stopped.
     expect((await screen.findByRole("tab", { name: runPageCopy.tabResult })).getAttribute("aria-selected")).toBe("true");
     await screen.findByText("Nothing written.");
 
@@ -1209,6 +1214,48 @@ describe("a failed node on the run page", () => {
     const panel = screen.getByRole("complementary");
     await within(panel).findByText(/duration 12 s/);
     expect(within(panel).queryByText(/yet/)).toBeNull();
+  });
+
+  it("keeps the auto-opened failed node open when it is selected again", async () => {
+    const getNodeDetail = vi.fn(async () =>
+      finishedNodeDetail({
+        state: "failed",
+        answer: null,
+        refusal: "output-schema-refused: instance-not-json: Expecting value",
+        started_at: "2026-08-18T15:00:00Z",
+        ended_at: "2026-08-18T15:00:12Z"
+      }) as never
+    );
+    render(App, {
+      props: {
+        cockpitApi: api(
+          v3Run({
+            state: "FAILED",
+            current_node_id: "implement",
+            terminal_hash: terminalHash,
+            ended_at: "2026-08-18T15:00:12Z",
+            node_rail: [
+              { node_id: "implement", state: "failed", attempt: { ordinal: 1, state: "FAILED" } },
+              { node_id: "review", state: "queued", attempt: null }
+            ]
+          }),
+          { getNodeDetail }
+        ),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+
+    const panel = await screen.findByRole("complementary");
+    expect(within(panel).getByRole("heading", { name: "implement" }).isConnected).toBe(true);
+    await within(panel).findByText("Nothing written.");
+
+    await fireEvent.click(screen.getByRole("button", { name: nodeAriaName("implement", "failed") }));
+
+    const stillOpen = screen.getByRole("complementary");
+    expect(within(stillOpen).getByRole("heading", { name: "implement" }).isConnected).toBe(true);
+    expect(within(stillOpen).getByRole("tabpanel").textContent).toContain("Nothing written.");
+    expect(within(stillOpen).getByRole("tabpanel").textContent).not.toContain("yet");
   });
 
   it("proves(a-failed-node-shows-the-stored-reason-on-the-run-page): shows the stored reason beside the state that says the run failed", async () => {
@@ -1705,5 +1752,318 @@ describe("the run page speaking the target words", () => {
 
     const identity = await screen.findByRole("group", { name: "Run id" });
     expect(within(identity).getByText("v3/two-agents").isConnected).toBe(true);
+  });
+});
+
+describe("retry from a node on a finished run", () => {
+  const fork = runPageCopy.fork;
+  const successorReference = "run1.Zm9yaw";
+  const orderName = "work_item";
+
+  beforeEach(() => {
+    stubDialogMethods();
+  });
+
+  function finishedOrigin(overrides: Partial<RunV3> = {}): RunV3 {
+    return v3Run({
+      state: "COMPLETED",
+      terminal_hash: terminalHash,
+      ended_at: "2026-08-18T15:00:12Z",
+      current_node_id: "review",
+      orders: [{ name: orderName, bytes: 48, schema_revision_hash: digest }],
+      node_rail: [
+        { node_id: "implement", state: "succeeded", attempt: null },
+        { node_id: "review", state: "succeeded", attempt: null }
+      ],
+      cancellation: notCancellableBlock("already-ended"),
+      ...overrides
+    });
+  }
+
+  function successorRun(): RunV3 {
+    return v3Run({
+      run_id: "v3/forked",
+      public_run_reference: successorReference,
+      state: "STARTED",
+      current_node_id: "review",
+      fork_origin: {
+        public_run_reference: publicReference,
+        terminal_hash: terminalHash,
+        restart_from_node_id: "review",
+        fork_hash: "e".repeat(64)
+      },
+      node_rail: [
+        {
+          node_id: "implement",
+          state: "succeeded",
+          attempt: null,
+          reused_from_run_reference: publicReference,
+          source_event_hash: "f".repeat(64),
+          source_receipt_hash: "1".repeat(64),
+          source_declared_context_package_hash: "2".repeat(64)
+        },
+        { node_id: "review", state: "working", attempt: null }
+      ]
+    });
+  }
+
+  const carriedSecret = "secret-token";
+
+  function detailFor(nodeId: string) {
+    return finishedNodeDetail({
+      node_id: nodeId,
+      state: "succeeded",
+      job_base64: btoa(`Check what came before, and keep ${carriedSecret} out of the confirmation.`),
+      answer: {
+        value_base64: btoa(`Looks good; the ${carriedSecret} must not leave this panel.`),
+        value_hash: "f".repeat(64)
+      }
+    });
+  }
+
+  async function openRetry(
+    origin: RunV3,
+    nodeName: RegExp | string,
+    overrides: Partial<CockpitApi> = {}
+  ) {
+    const cockpitApi = api(origin, {
+      getNodeDetail: vi.fn(async (_reference: string, nodeId: string) => detailFor(nodeId) as never),
+      ...overrides
+    });
+    render(App, {
+      props: { cockpitApi, mutationJournal: new MutationJournal(sessionStorage) }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+    await fireEvent.click(await screen.findByRole("button", { name: nodeName }));
+    await fireEvent.click(await screen.findByRole("button", { name: fork.retryHere }));
+    return cockpitApi;
+  }
+
+  it("offers the door on a completed, failed, or cancelled run", async () => {
+    const origin = finishedOrigin();
+    render(App, {
+      props: {
+        cockpitApi: api(origin, {
+          getNodeDetail: vi.fn(async (_reference: string, nodeId: string) =>
+            detailFor(nodeId) as never
+          )
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+    await fireEvent.click(
+      await screen.findByRole("button", { name: nodeAriaName("review", "succeeded") })
+    );
+    expect(await screen.findByRole("button", { name: fork.retryHere })).toBeTruthy();
+  });
+
+  it("says why the door is absent on a running, waiting, or reconciling run", async () => {
+    for (const state of ["STARTED", "WAITING_INPUT", "WAITING_RECONCILIATION"] as const) {
+      cleanup();
+      window.history.replaceState(null, "", `/atelier/runs/${publicReference}`);
+      const live = v3Run({
+        state,
+        current_node_id: state === "STARTED" ? "review" : "implement",
+        node_rail: [
+          {
+            node_id: "implement",
+            state: state === "STARTED" ? "succeeded" : "needs_you",
+            attempt: null
+          },
+          { node_id: "review", state: state === "STARTED" ? "working" : "queued", attempt: null }
+        ]
+      });
+      render(App, {
+        props: {
+          cockpitApi: api(live, {
+            getNodeDetail: vi.fn(async () => finishedNodeDetail() as never)
+          }),
+          mutationJournal: new MutationJournal(sessionStorage)
+        }
+      });
+      await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+      await fireEvent.click(await screen.findByRole("button", { name: /implement/ }));
+      expect(await screen.findByText(fork.unavailableRunning)).toBeTruthy();
+      expect(screen.queryByRole("button", { name: fork.retryHere })).toBeNull();
+    }
+  });
+
+  it("says the node is not on the run's line when a preview has no rail entry", async () => {
+    const origin = finishedOrigin({
+      node_rail: [{ node_id: "implement", state: "succeeded", attempt: null }]
+    });
+    render(App, {
+      props: {
+        cockpitApi: api(origin, {
+          getNodeDetail: vi.fn(async (_reference: string, nodeId: string) =>
+            (nodeId === "review" ? detailFor("review") : detailFor("implement")) as never
+          )
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+    const graph = await screen.findByRole("region", { name: workflowGraphCopy.label });
+    await fireEvent.click(within(graph).getByRole("button", { name: "review" }));
+    expect(await screen.findByText(fork.unavailableUnknownNode)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: fork.retryHere })).toBeNull();
+  });
+
+  it("says a step before this one did not succeed when the restart is not reusable", async () => {
+    const origin = finishedOrigin({
+      state: "FAILED",
+      current_node_id: "review",
+      node_rail: [
+        { node_id: "implement", state: "failed", attempt: null },
+        { node_id: "review", state: "queued", attempt: null }
+      ]
+    });
+    render(App, {
+      props: {
+        cockpitApi: api(origin, {
+          getNodeDetail: vi.fn(async () =>
+            ({
+              run_id: "v3/two-agents",
+              public_run_reference: publicReference,
+              node_id: "review",
+              state: "queued",
+              job_base64: null,
+              job_hash: null,
+              answer: null,
+              provenance: null,
+              refusal: null
+            }) as never
+          )
+        }),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+    // A failed run opens the node that stopped it (`review`).
+    const panel = await screen.findByRole("complementary");
+    expect(within(panel).getByRole("heading", { name: "review" }).isConnected).toBe(true);
+    expect(await screen.findByText(fork.unavailablePrefix)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: fork.retryHere })).toBeNull();
+  });
+
+  it("names what is carried over and what will run again, and keeps the carried node's bytes out of the sheet", async () => {
+    await openRetry(finishedOrigin(), nodeAriaName("review", "succeeded"));
+
+    expect(await screen.findByRole("heading", { name: fork.confirmTitle("review") })).toBeTruthy();
+    expect(screen.getByText(fork.carriedOver).closest("p")?.textContent).toContain("implement");
+    expect(screen.getByText(fork.carriedOver).closest("p")?.textContent).toContain(orderName);
+    expect(screen.getByText(fork.runsAgain).closest("p")?.textContent).toContain("review");
+    expect(screen.getByText(fork.deferralSentence)).toBeTruthy();
+
+    const sheet = screen.getByRole("dialog", { name: fork.sheetLabel });
+    expect(sheet.textContent).not.toContain(carriedSecret);
+    expect(sheet.textContent).not.toContain("Check what came before");
+    expect(sheet.textContent).not.toContain("Looks good");
+    // The node panel behind the sheet still shows those exact bytes, so this
+    // is a scoped proof rather than a body-wide sweep that could never see them.
+    expect(screen.getByRole("complementary").textContent).toContain(carriedSecret);
+  });
+
+  it("posts a fork and opens the successor as a distinct run", async () => {
+    const successor = successorRun();
+    const origin = finishedOrigin({
+      fork_successors: [
+        {
+          public_run_reference: successorReference,
+          restart_from_node_id: "review",
+          fork_hash: "e".repeat(64)
+        }
+      ]
+    });
+    const getRun = vi.fn(async (ref: string) => (ref === successorReference ? successor : origin));
+    const forkRun = vi.fn<CockpitApi["forkRun"]>().mockResolvedValue({
+      status: 201,
+      value: successor
+    });
+    await openRetry(origin, nodeAriaName("review", "succeeded"), { forkRun, getRun });
+    await fireEvent.click(screen.getByRole("button", { name: fork.startAgain }));
+
+    await waitFor(() => expect(forkRun).toHaveBeenCalledTimes(1));
+    const sent = forkRun.mock.calls[0]?.[0];
+    expect(sent?.publicRunReference).toBe(publicReference);
+    expect(sent?.restartFromNodeId).toBe("review");
+    expect((sent?.idempotencyKey ?? "").length).toBeGreaterThan(0);
+    await waitFor(() => expect(window.location.pathname).toBe(runPath(successorReference)));
+    expect(await screen.findByText(/Fork of /)).toBeTruthy();
+  });
+
+  it("shows the successor on the origin as a separate line", async () => {
+    render(App, {
+      props: {
+        cockpitApi: api(
+          finishedOrigin({
+            fork_successors: [
+              {
+                public_run_reference: successorReference,
+                restart_from_node_id: "review",
+                fork_hash: "e".repeat(64)
+              }
+            ]
+          })
+        ),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+    const lineage = await screen.findByRole("link", {
+      name: fork.originSuccessor("Two agents in a line", "review")
+    });
+    expect(lineage.getAttribute("href")).toBe(runPath(successorReference));
+  });
+
+  it("opens the failed node so the door is on the stopping step", async () => {
+    render(App, {
+      props: {
+        cockpitApi: api(
+          finishedOrigin({
+            state: "FAILED",
+            current_node_id: "review",
+            node_rail: [
+              { node_id: "implement", state: "succeeded", attempt: null },
+              { node_id: "review", state: "failed", attempt: null }
+            ]
+          }),
+          { getNodeDetail: vi.fn(async () => detailFor("review") as never) }
+        ),
+        mutationJournal: new MutationJournal(sessionStorage)
+      }
+    });
+    await screen.findByRole("heading", { level: 1, name: "Two agents in a line" });
+    const panel = await screen.findByRole("complementary");
+    expect(within(panel).getByRole("heading", { name: "review" }).isConnected).toBe(true);
+    expect(within(panel).getByRole("button", { name: fork.retryHere }).isConnected).toBe(true);
+  });
+
+  it("keeps the origin and the sheet when the fork is refused", async () => {
+    const forkRun = vi.fn<CockpitApi["forkRun"]>(async () => {
+      throw new CockpitRequestError(
+        "This API version forks only a linear workflow without loop rounds.",
+        {
+          type: "urn:atelier2:problem:v1:run-fork-loop-unsupported",
+          title: "Run fork loop is unsupported",
+          status: 409,
+          detail: "This API version forks only a linear workflow without loop rounds."
+        },
+        true
+      );
+    });
+    await openRetry(finishedOrigin(), nodeAriaName("review", "succeeded"), { forkRun });
+    await fireEvent.click(screen.getByRole("button", { name: fork.startAgain }));
+
+    expect(await screen.findByText(/linear workflow without loop rounds/)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: fork.confirmTitle("review") }).isConnected).toBe(true);
+    expect(window.location.pathname).toBe(runPath(publicReference));
+    expect(forkRun).toHaveBeenCalledTimes(1);
+    await fireEvent.click(screen.getByRole("button", { name: fork.startAgain }));
+    await waitFor(() => expect(forkRun).toHaveBeenCalledTimes(2));
+    const keys = forkRun.mock.calls.map((call) => call[0]?.idempotencyKey);
+    expect(keys[0]).toBeTruthy();
+    expect(keys[0]).toBe(keys[1]);
   });
 });

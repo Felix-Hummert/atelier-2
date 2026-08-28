@@ -3055,6 +3055,11 @@ export interface CockpitApi {
   answer(mutation: WaitMutation): Promise<HttpResult<AnyRun>>;
   reconcile(mutation: ReconciliationMutation): Promise<HttpResult<Run>>;
   cancelRun(mutation: CancelMutation): Promise<HttpResult<RunV3>>;
+  forkRun(request: {
+    publicRunReference: string;
+    idempotencyKey: string;
+    restartFromNodeId: string;
+  }): Promise<HttpResult<RunV3>>;
   getRun(publicReference: string): Promise<AnyRun>;
   getNodeDetail(publicReference: string, nodeId: string): Promise<NodeDetail>;
   getWorkflowRevision(revisionHash: string): Promise<WorkflowRevisionDetail>;
@@ -3602,6 +3607,28 @@ export function createCockpitApi(
       if (result.value.public_run_reference !== mutation.public_run_reference) {
         throw new CockpitRequestError(
           "The cancel response named a different run than the one it was for.",
+        );
+      }
+      return { status: result.status, value: result.value };
+    },
+    forkRun: async ({ publicRunReference, idempotencyKey, restartFromNodeId }) => {
+      const result = await requestJsonResult(
+        fetcher,
+        `/atelier/api/v1/runs/${encodeURIComponent(publicRunReference)}/forks`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            idempotency_key: idempotencyKey,
+            restart_from_node_id: restartFromNodeId,
+          }),
+        },
+        [200, 201],
+        anyRunSchema,
+      );
+      if (!isRunV3(result.value)) {
+        throw new CockpitRequestError(
+          "The fork response answered with a run this page cannot read.",
         );
       }
       return { status: result.status, value: result.value };

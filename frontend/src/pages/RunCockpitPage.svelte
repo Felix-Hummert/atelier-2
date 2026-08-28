@@ -865,6 +865,7 @@
       {cockpitApi}
       {mutationJournal}
       {projection}
+      {navigate}
       onRunRead={(read) => {
         v3Run = read;
       }}

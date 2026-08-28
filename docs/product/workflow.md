@@ -173,6 +173,9 @@ replaying an already-opened pull request. The run list and detail expose the sam
 origin/successor lineage and mark referenced nodes on the rail. Forking does not change
 the workflow revision, configuration, orders, budget accounting, or queue policy;
 nonterminal origins and looped workflows are refused.
+The V3 run page offers retry-from-node with a confirmation of the carried prefix
+versus the nodes that run again; it does not change model, workflow revision, or
+budget, because the served fork body has no such fields.
 The V3 run page shows that wait as an answer card. A Wait with no inputs shows
 the authored prompt unchanged; a Wait with inputs shows that prompt composed with
 each declared graph input or named predecessor output. The exact composed question

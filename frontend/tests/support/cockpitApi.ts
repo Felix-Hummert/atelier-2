@@ -53,6 +53,7 @@ export function cockpitApiStub(overrides: Partial<CockpitApi> = {}): CockpitApi 
     answer: vi.fn(),
     reconcile: vi.fn(),
     cancelRun: vi.fn(),
+    forkRun: vi.fn(),
     getRun: vi.fn(),
     getNodeDetail: vi.fn(),
     getWorkflowRevision: vi.fn(),

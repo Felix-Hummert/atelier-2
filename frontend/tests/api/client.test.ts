@@ -1036,6 +1036,66 @@ describe("cancelling a run over its cancel door", () => {
   );
 });
 
+describe("forking a finished run from a node", () => {
+  it("posts the closed fork body and decodes the successor the door returns", async () => {
+    const successor = {
+      workflow_format_version: 3,
+      run_id: "v3/forked",
+      public_run_reference: "run1.Zm9yaw",
+      workflow_revision_hash: digest,
+      agent_binding_set_hash: "b".repeat(64),
+      run_configuration_revision_hash: "c".repeat(64),
+      agent_bindings: [],
+      orders: [],
+      fork_origin: {
+        public_run_reference: publicReference,
+        terminal_hash: digest,
+        restart_from_node_id: "review",
+        fork_hash: digest
+      },
+      state_version: 1,
+      state: "STARTED",
+      current_node_id: "review",
+      node_rail: [
+        {
+          node_id: "implement",
+          state: "succeeded",
+          attempt: null,
+          reused_from_run_reference: publicReference,
+          source_event_hash: digest,
+          source_receipt_hash: digest,
+          source_declared_context_package_hash: digest
+        },
+        { node_id: "review", state: "working", attempt: null }
+      ],
+      cancellation: cancellableBlock(),
+      terminal_hash: null,
+      latest_event_cursor: null
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(successor), {
+        status: 201,
+        headers: { "content-type": "application/json" }
+      })
+    );
+
+    const result = await createCockpitApi(fetcher).forkRun({
+      publicRunReference: publicReference,
+      idempotencyKey: "fork-key-1",
+      restartFromNodeId: "review"
+    });
+
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      `/atelier/api/v1/runs/${publicReference}/forks`
+    );
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({
+      idempotency_key: "fork-key-1",
+      restart_from_node_id: "review"
+    });
+    expect(result).toEqual({ status: 201, value: successor });
+  });
+});
+
 describe("the published agent-configuration listing", () => {
   it("asks the collection with the house page bound and decodes the item form", async () => {
     const item = {
