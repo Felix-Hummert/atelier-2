@@ -211,9 +211,7 @@ def join_thread(
 ) -> None:
     thread.join(timeout=timeout)
     if thread.is_alive():
-        raise TimeoutError(
-            f"timed out after {timeout:g}s waiting for {waiting_for}"
-        )
+        raise TimeoutError(f"timed out after {timeout:g}s waiting for {waiting_for}")
 
 
 def wait_until(

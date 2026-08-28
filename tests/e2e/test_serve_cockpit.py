@@ -276,9 +276,7 @@ def test_a_reset_recompose_restores_the_exact_cold_boot_baseline(
             assert restarted.status_code == 202
             expected_generation = restarted.text
 
-            harness.join_thread(
-                restart_threads[0], "the reset recompose to finish"
-            )
+            harness.join_thread(restart_threads[0], "the reset recompose to finish")
 
             observed_generation = client.get("/__e2e/generation")
             assert observed_generation.text == expected_generation
@@ -373,9 +371,7 @@ def test_reusing_a_scratch_root_that_still_holds_attempt_directories_refuses_the
 
 def test_a_harness_wait_names_what_it_was_waiting_for() -> None:
     pending = threading.Event()
-    with pytest.raises(
-        TimeoutError, match="waiting for the held decode to start"
-    ):
+    with pytest.raises(TimeoutError, match="waiting for the held decode to start"):
         harness.wait_for(pending, "the held decode to start", timeout=0)
 
 
@@ -389,7 +385,9 @@ def test_a_harness_wait_fails_before_the_deadline_when_the_worker_dies() -> None
     thread.start()
     thread.join()
     started = time.monotonic()
-    with pytest.raises(RuntimeError, match="thread died before the held decode to start"):
+    with pytest.raises(
+        RuntimeError, match="thread died before the held decode to start"
+    ):
         harness.wait_for(
             pending,
             "the held decode to start",
@@ -417,9 +415,7 @@ def test_a_harness_join_names_what_it_was_waiting_for() -> None:
         with pytest.raises(
             TimeoutError, match="waiting for the recompose thread to finish"
         ):
-            harness.join_thread(
-                thread, "the recompose thread to finish", timeout=0
-            )
+            harness.join_thread(thread, "the recompose thread to finish", timeout=0)
     finally:
         hold.set()
         thread.join()
@@ -450,9 +446,7 @@ def test_releasing_fake_provider_holds_unblocks_a_held_decode_before_the_hold_bo
 
     thread = threading.Thread(target=run)
     thread.start()
-    harness.wait_for(
-        executor.holding, "the held decode to start", thread=thread
-    )
+    harness.wait_for(executor.holding, "the held decode to start", thread=thread)
     holds.release_all()
     harness.join_thread(thread, "the held decode to finish after release")
     assert executor.released_before_bound
@@ -522,9 +516,7 @@ def test_scratch_root_removal_cannot_precede_an_in_flight_decode_that_outlives_r
         assert "removed" not in order
         assert not runtime.closed
         stall.set()
-        harness.join_thread(
-            closer, "drain to remove the scratch root after the decode"
-        )
+        harness.join_thread(closer, "drain to remove the scratch root after the decode")
         harness.join_thread(decoder_thread, "the in-flight decode to finish")
         assert order == ["decode-finished", "idle", "removed"]
         assert runtime.closed
@@ -820,9 +812,7 @@ def test_scratch_root_removal_cannot_precede_capture_after_decode(
         assert "removed" not in order
         assert not runtime.closed
         stall.set()
-        harness.join_thread(
-            closer, "drain to remove the scratch root after capture"
-        )
+        harness.join_thread(closer, "drain to remove the scratch root after capture")
         harness.join_thread(attempt_thread, "the tracked attempt to finish")
         assert order == ["capture-finished", "idle", "removed"]
         assert runtime.closed
